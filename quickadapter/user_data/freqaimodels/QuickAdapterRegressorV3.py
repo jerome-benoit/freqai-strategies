@@ -1243,6 +1243,15 @@ def get_optuna_study_model_parameters(
         "min_child_samples": (10, 100),
     }
 
+    log_scaled_params = {
+        "learning_rate",
+        "min_child_weight",
+        "reg_alpha",
+        "reg_lambda",
+        "gamma",
+        "min_split_gain",
+    }
+
     ranges = copy.deepcopy(default_ranges)
     if model_training_best_parameters:
         for param, (default_min, default_max) in default_ranges.items():
@@ -1255,14 +1264,7 @@ def get_optuna_study_model_parameters(
             ):
                 continue
 
-            if param in [
-                "learning_rate",
-                "min_child_weight",
-                "reg_alpha",
-                "reg_lambda",
-                "gamma",
-                "min_split_gain",
-            ]:
+            if param in log_scaled_params:
                 new_min = center_value / (1 + expansion_factor)
                 new_max = center_value * (1 + expansion_factor)
             else:
