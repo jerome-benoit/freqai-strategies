@@ -94,8 +94,9 @@ class QuickAdapterV3(IStrategy):
 
     # {stage: (natr_ratio_percent, stake_percent)}
     partial_exit_stages: dict[int, tuple[float, float]] = {
-        0: (0.7, 0.75),
-        1: (0.9, 0.5),
+        0: (0.4, 0.35),
+        1: (0.7, 0.75),
+        2: (0.9, 0.5),
     }
 
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -888,7 +889,12 @@ class QuickAdapterV3(IStrategy):
             secure_take_profit_distance = self.get_take_profit_distance(
                 df,
                 trade,
-                self.config.get("exit_pricing", {}).get("trade_secure_percent", 0.25),
+                min(
+                    self.config.get("exit_pricing", {}).get(
+                        "trade_secure_percent", 0.25
+                    ),
+                    self.partial_exit_stages[start_partial_exit_stage][0] * 0.95,
+                ),
             )
             if isna(secure_take_profit_distance) or secure_take_profit_distance <= 0:
                 return None
