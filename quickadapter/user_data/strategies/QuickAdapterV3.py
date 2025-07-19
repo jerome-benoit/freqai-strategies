@@ -957,6 +957,8 @@ class QuickAdapterV3(IStrategy):
         if trade_exit:
             return f"take_profit_{trade.trade_direction}_{final_exit_stage}"
 
+        return None
+
     def confirm_trade_entry(
         self,
         pair: str,
