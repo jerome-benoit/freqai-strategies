@@ -90,6 +90,14 @@ class QuickAdapterV3(IStrategy):
         "stoploss_on_exchange_limit_ratio": 0.99,
     }
 
+    position_adjustment_enable = True
+
+    # {stage: (natr_ratio_percent, stake_percent)}
+    partial_exit_stages: dict[int, tuple[float, float]] = {
+        0: (0.7, 0.75),
+        1: (0.9, 0.50),
+    }
+
     timeframe_minutes = timeframe_to_minutes(timeframe)
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -169,7 +177,7 @@ class QuickAdapterV3(IStrategy):
                 "FreqAI strategy requires StaticPairList method defined in pairlists configuration and 'pair_whitelist' defined in exchange section configuration"
             )
         if (
-            self.freqai_info.get("identifier") is None
+            not isinstance(self.freqai_info.get("identifier"), str)
             or self.freqai_info.get("identifier").strip() == ""
         ):
             raise ValueError(
@@ -755,7 +763,6 @@ class QuickAdapterV3(IStrategy):
         df, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
-
         if df.empty:
             return None
 
@@ -769,6 +776,72 @@ class QuickAdapterV3(IStrategy):
             leverage=trade.leverage,
         )
 
+    def adjust_trade_position(
+        self,
+        trade: Trade,
+        current_time: datetime.datetime,
+        current_rate: float,
+        current_profit: float,
+        min_stake: float,
+        max_stake: float,
+        current_entry_rate: float,
+        current_exit_rate: float,
+        current_entry_profit: float,
+        current_exit_profit: float,
+        **kwargs,
+    ) -> Optional[float] | tuple[Optional[float], Optional[str]]:
+        if trade.has_open_orders:
+            return None
+
+        exit_stage: int = trade.get_custom_data("exit_stage", 0)
+        if exit_stage not in self.partial_exit_stages:
+            return None
+
+        df, _ = self.dp.get_analyzed_dataframe(
+            trade.pair, timeframe=self.config.get("timeframe")
+        )
+        if df.empty:
+            return None
+
+        natr_ratio_percent, stake_percent = self.partial_exit_stages[exit_stage]
+
+        take_profit_distance = self.get_take_profit_distance(
+            df, trade, natr_ratio_percent
+        )
+        if isna(take_profit_distance) or take_profit_distance <= 0:
+            return None
+
+        take_profit_price = (
+            trade.open_rate + (-1 if trade.is_short else 1) * take_profit_distance
+        )
+        previous_take_profit_price = trade.get_custom_data("take_profit_price", None)
+        if (
+            previous_take_profit_price is None
+            or previous_take_profit_price != take_profit_price
+        ):
+            trade.set_custom_data(key="take_profit_price", value=take_profit_price)
+
+        trade_partial_exit = (trade.is_short and current_rate <= take_profit_price) or (
+            not trade.is_short and current_rate >= take_profit_price
+        )
+        if not trade_partial_exit:
+            self.throttle_callback(
+                pair=trade.pair,
+                current_time=current_time,
+                callback=lambda: logger.info(
+                    f"Trade {trade.trade_direction} for {trade.pair}: open price {trade.open_rate}, current price {current_rate}, partial exit stage {exit_stage} price {take_profit_price}"
+                ),
+            )
+        if trade_partial_exit:
+            trade_stake_amount = trade.stake_amount * stake_percent
+            trade.set_custom_data(key="exit_stage", value=exit_stage + 1)
+            return (
+                -trade_stake_amount,
+                f"take_profit_{trade.trade_direction}_{exit_stage}",
+            )
+
+        return None
+
     def custom_exit(
         self,
         pair: str,
@@ -781,7 +854,6 @@ class QuickAdapterV3(IStrategy):
         df, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
-
         if df.empty:
             return None
 
@@ -806,26 +878,82 @@ class QuickAdapterV3(IStrategy):
         ):
             return "maxima_detected_long"
 
-        take_profit_distance = self.get_take_profit_distance(df, trade, 0.7)
+        start_partial_exit_stage = list(self.partial_exit_stages.keys())[0]
+        end_partial_exit_stage = list(self.partial_exit_stages.keys())[-1]
+        final_exit_stage = end_partial_exit_stage + 1
+        exit_stage: int = trade.get_custom_data("exit_stage", 0)
+        if self.position_adjustment_enable:
+            if exit_stage == start_partial_exit_stage:
+                return None
+            if start_partial_exit_stage < exit_stage <= end_partial_exit_stage:
+                secure_take_profit_distance = self.get_take_profit_distance(
+                    df,
+                    trade,
+                    self.config.get("exit_pricing", {}).get(
+                        "trade_secure_percent", 0.25
+                    ),
+                )
+                if (
+                    isna(secure_take_profit_distance)
+                    or secure_take_profit_distance <= 0
+                ):
+                    return None
+                secure_take_profit_price = (
+                    trade.open_rate
+                    + (-1 if trade.is_short else 1) * secure_take_profit_distance
+                )
+                secure_trade_exit = (
+                    trade.is_short and current_rate <= secure_take_profit_price
+                ) or (not trade.is_short and current_rate >= secure_take_profit_price)
+                if not secure_trade_exit:
+                    self.throttle_callback(
+                        pair=pair,
+                        current_time=current_time,
+                        callback=lambda: logger.info(
+                            f"Trade {trade.trade_direction} for {pair}: open price {trade.open_rate}, current price {current_rate}, secure exit stage {final_exit_stage} price {take_profit_price}"
+                        ),
+                    )
+                if secure_trade_exit:
+                    trade.set_custom_data(
+                        key="take_profit_price", value=secure_take_profit_price
+                    )
+                    trade.set_custom_data(key="exit_stage", value=final_exit_stage)
+                    return (
+                        f"secure_take_profit_{trade.trade_direction}_{final_exit_stage}"
+                    )
+            natr_ratio_percent = 1.0
+        else:
+            if start_partial_exit_stage <= exit_stage <= end_partial_exit_stage:
+                trade.set_custom_data(key="exit_stage", value=final_exit_stage)
+            natr_ratio_percent = 0.7
+
+        take_profit_distance = self.get_take_profit_distance(
+            df, trade, natr_ratio_percent
+        )
         if isna(take_profit_distance) or take_profit_distance <= 0:
             return None
         take_profit_price = (
             trade.open_rate + (-1 if trade.is_short else 1) * take_profit_distance
         )
-        trade.set_custom_data(key="take_profit_price", value=take_profit_price)
-        self.throttle_callback(
-            pair=pair,
-            current_time=current_time,
-            callback=lambda: logger.info(
-                f"Trade {trade.trade_direction} for {pair}: open price {trade.open_rate}, current price {current_rate}, TP price {take_profit_price}"
-            ),
+        previous_take_profit_price = trade.get_custom_data("take_profit_price", None)
+        if (
+            previous_take_profit_price is None
+            or previous_take_profit_price != take_profit_price
+        ):
+            trade.set_custom_data(key="take_profit_price", value=take_profit_price)
+        trade_exit = (trade.is_short and current_rate <= take_profit_price) or (
+            not trade.is_short and current_rate >= take_profit_price
         )
-        if trade.is_short:
-            if current_rate <= take_profit_price:
-                return "take_profit_short"
-        else:
-            if current_rate >= take_profit_price:
-                return "take_profit_long"
+        if not trade_exit:
+            self.throttle_callback(
+                pair=pair,
+                current_time=current_time,
+                callback=lambda: logger.info(
+                    f"Trade {trade.trade_direction} for {pair}: open price {trade.open_rate}, current price {current_rate}, final exit stage {final_exit_stage} price {take_profit_price}"
+                ),
+            )
+        if trade_exit:
+            return f"take_profit_{trade.trade_direction}_{final_exit_stage}"
 
     def confirm_trade_entry(
         self,

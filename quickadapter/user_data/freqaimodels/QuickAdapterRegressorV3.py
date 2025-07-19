@@ -105,7 +105,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "FreqAI model requires StaticPairList method defined in pairlists configuration and 'pair_whitelist' defined in exchange section configuration"
             )
         if (
-            self.freqai_info.get("identifier") is None
+            not isinstance(self.freqai_info.get("identifier"), str)
             or self.freqai_info.get("identifier").strip() == ""
         ):
             raise ValueError(
