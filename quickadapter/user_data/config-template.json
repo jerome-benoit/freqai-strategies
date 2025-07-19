@@ -196,7 +196,6 @@
       // "device": "gpu",
       // "use_rmm:": true,
       "n_jobs": 6, // set to number of CPU threads / 4
-      "n_estimators": 1000,
       "verbosity": 1
     }
   },
