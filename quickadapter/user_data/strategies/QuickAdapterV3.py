@@ -885,43 +885,39 @@ class QuickAdapterV3(IStrategy):
         if self.position_adjustment_enable:
             if exit_stage == start_partial_exit_stage:
                 return None
-            if start_partial_exit_stage < exit_stage <= end_partial_exit_stage:
-                secure_take_profit_distance = self.get_take_profit_distance(
-                    df,
-                    trade,
-                    self.config.get("exit_pricing", {}).get(
-                        "trade_secure_percent", 0.25
+            secure_take_profit_distance = self.get_take_profit_distance(
+                df,
+                trade,
+                self.config.get("exit_pricing", {}).get("trade_secure_percent", 0.25),
+            )
+            if isna(secure_take_profit_distance) or secure_take_profit_distance <= 0:
+                return None
+            secure_take_profit_price = (
+                trade.open_rate
+                + (-1 if trade.is_short else 1) * secure_take_profit_distance
+            )
+            secure_trade_exit = (
+                trade.is_short and current_rate <= secure_take_profit_price
+            ) or (not trade.is_short and current_rate >= secure_take_profit_price)
+            if not secure_trade_exit:
+                self.throttle_callback(
+                    pair=pair,
+                    current_time=current_time,
+                    callback=lambda: logger.info(
+                        f"Trade {trade.trade_direction} for {pair}: open price {trade.open_rate}, current price {current_rate}, secure final exit stage {final_exit_stage} price {secure_take_profit_price}"
                     ),
                 )
-                if (
-                    isna(secure_take_profit_distance)
-                    or secure_take_profit_distance <= 0
-                ):
-                    return None
-                secure_take_profit_price = (
-                    trade.open_rate
-                    + (-1 if trade.is_short else 1) * secure_take_profit_distance
+            if secure_trade_exit:
+                trade.set_custom_data(
+                    key="take_profit_price", value=secure_take_profit_price
                 )
-                secure_trade_exit = (
-                    trade.is_short and current_rate <= secure_take_profit_price
-                ) or (not trade.is_short and current_rate >= secure_take_profit_price)
-                if not secure_trade_exit:
-                    self.throttle_callback(
-                        pair=pair,
-                        current_time=current_time,
-                        callback=lambda: logger.info(
-                            f"Trade {trade.trade_direction} for {pair}: open price {trade.open_rate}, current price {current_rate}, secure exit stage {final_exit_stage} price {take_profit_price}"
-                        ),
-                    )
-                if secure_trade_exit:
-                    trade.set_custom_data(
-                        key="take_profit_price", value=secure_take_profit_price
-                    )
+                if exit_stage < final_exit_stage:
                     trade.set_custom_data(key="exit_stage", value=final_exit_stage)
-                    return (
-                        f"secure_take_profit_{trade.trade_direction}_{final_exit_stage}"
-                    )
-            natr_ratio_percent = 1.0
+                return f"secure_take_profit_{trade.trade_direction}_{final_exit_stage}"
+            if exit_stage == final_exit_stage:
+                natr_ratio_percent = 1.0
+            else:
+                return None
         else:
             if start_partial_exit_stage <= exit_stage <= end_partial_exit_stage:
                 trade.set_custom_data(key="exit_stage", value=final_exit_stage)
