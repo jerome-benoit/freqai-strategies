@@ -891,7 +891,7 @@ class QuickAdapterV3(IStrategy):
                 trade,
                 min(
                     self.config.get("exit_pricing", {}).get(
-                        "trade_secure_percent", 0.25
+                        "trade_secure_percent", 0.2
                     ),
                     self.partial_exit_stages[start_partial_exit_stage][0] * 0.95,
                 ),
