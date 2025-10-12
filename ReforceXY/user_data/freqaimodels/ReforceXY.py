@@ -354,6 +354,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_params: Dict[str, Any] = copy.deepcopy(self.model_training_parameters)
 
         model_params.setdefault("seed", 42)
+        model_params.setdefault("gamma", 0.99)
 
         if not self.hyperopt and self.lr_schedule:
             lr = model_params.get("learning_rate", 0.0003)
@@ -655,6 +656,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
+        # Rebuild train and eval environments before training to sync model parameters
+        prices_train, prices_test = self.build_ohlc_price_dataframes(
+            dk.data_dictionary, dk.pair, dk
+        )
+        self.set_train_and_eval_environments(
+            dk.data_dictionary, prices_train, prices_test, dk
+        )
+
         model = self.get_init_model(dk.pair)
         if model is not None:
             logger.info(
@@ -722,7 +731,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             dtype=np.float32, copy=False
         )
         n = np_dataframe.shape[0]
-        window_size: int = self.CONV_WIDTH
+        window_size: int = self.window_size
         frame_stacking: int = self.frame_stacking
         frame_stacking_enabled: bool = bool(frame_stacking) and frame_stacking > 1
         inference_masking: bool = self.action_masking and self.inference_masking
@@ -1079,6 +1088,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         seed: Optional[int] = None,
         env_info: Optional[Dict[str, Any]] = None,
         trial: Optional[Trial] = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> Tuple[VecEnv, VecEnv]:
         if (
             train_df is None
@@ -1095,7 +1105,30 @@ class ReforceXY(BaseReinforcementLearningModel):
         if trial is not None:
             seed += trial.number
         set_random_seed(seed)
-        env_info = self.pack_env_dict(dk.pair) if env_info is None else env_info
+        env_info: Dict[str, Any] = (
+            self.pack_env_dict(dk.pair) if env_info is None else env_info
+        )
+        gamma: Optional[float] = None
+        best_trial_params: Dict[str, Any] = None
+        if self.hyperopt:
+            best_trial_params = self.load_best_trial_params(
+                dk.pair if self.rl_config_optuna.get("per_pair", False) else None
+            )
+        if model_params and isinstance(model_params.get("gamma"), (int, float)):
+            gamma = model_params.get("gamma")
+        elif best_trial_params:
+            gamma = best_trial_params.get("gamma")
+        elif hasattr(self.model, "gamma") and isinstance(
+            self.model.gamma, (int, float)
+        ):
+            gamma = self.model.gamma
+        elif isinstance(self.get_model_params().get("gamma"), (int, float)):
+            gamma = self.get_model_params().get("gamma")
+        if gamma is not None:
+            # Align RL agent gamma with PBRS gamma for consistent discount factor
+            env_info["config"]["rl_config"]["model_reward_parameters"][
+                "potential_gamma"
+            ] = float(gamma)
         env_prefix = f"trial_{trial.number}_" if trial is not None else ""
 
         train_fns = [
@@ -1216,8 +1249,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             tensorboard_log_path = None
-
-        train_env, eval_env = self._get_train_and_eval_environments(dk, trial=trial)
+        train_env, eval_env = self._get_train_and_eval_environments(
+            dk, trial=trial, model_params=params
+        )
 
         model = self.MODELCLASS(
             self.policy_type,
@@ -1331,6 +1365,434 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
         self._min_unrealized_profit: float = np.inf
+        self._last_potential: float = 0.0
+        model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
+        # === PBRS COMMON PARAMETERS ===
+        self._potential_gamma: float = float(
+            model_reward_parameters.get("potential_gamma", 0.99)
+        )
+        self._potential_softsign_sharpness: float = float(
+            model_reward_parameters.get("potential_softsign_sharpness", 1.0)
+        )
+        self._potential_softsign_sharpness = max(
+            0.01, min(100.0, self._potential_softsign_sharpness)
+        )
+        # === CLOSING MODE ===
+        # closing_potential_mode options (strict set, no legacy aliases):
+        #   'canonical'           -> Φ(next)=0 (baseline PBRS)
+        #   'progressive_release' -> Φ(next)=Φ(prev)*(1-decay_factor)
+        #   'spike_cancel'        -> Φ(next)=Φ(prev)/gamma (shaping_reward ≈ 0)
+        #   'retain_previous'     -> Φ(next)=Φ(prev)
+        self._closing_potential_mode: str = model_reward_parameters.get(
+            "closing_potential_mode", "canonical"
+        )
+        self._closing_potential_decay: float = float(
+            model_reward_parameters.get("closing_potential_decay", 0.5)
+        )
+        # === ENTRY ADDITIVE (non-PBRS additive term) ===
+        self._entry_additive_enabled: bool = bool(
+            model_reward_parameters.get("entry_additive_enabled", False)
+        )
+        self._entry_additive_scale: float = float(
+            model_reward_parameters.get("entry_additive_scale", 1.0)
+        )
+        self._entry_additive_gain: float = float(
+            model_reward_parameters.get("entry_additive_gain", 1.0)
+        )
+        self._entry_additive_transform_pnl: str = str(
+            model_reward_parameters.get("entry_additive_transform_pnl", "tanh")
+        )
+        self._entry_additive_transform_duration: str = str(
+            model_reward_parameters.get("entry_additive_transform_duration", "tanh")
+        )
+        # === HOLD POTENTIAL (PBRS function Φ) ===
+        self._hold_potential_enabled: bool = bool(
+            model_reward_parameters.get("hold_potential_enabled", True)
+        )
+        self._hold_potential_scale: float = float(
+            model_reward_parameters.get("hold_potential_scale", 1.0)
+        )
+        self._hold_potential_gain: float = float(
+            model_reward_parameters.get("hold_potential_gain", 1.0)
+        )
+        self._hold_potential_transform_pnl: str = str(
+            model_reward_parameters.get("hold_potential_transform_pnl", "tanh")
+        )
+        self._hold_potential_transform_duration: str = str(
+            model_reward_parameters.get("hold_potential_transform_duration", "tanh")
+        )
+        # === EXIT ADDITIVE (non-PBRS additive term) ===
+        self._exit_additive_enabled: bool = bool(
+            model_reward_parameters.get("exit_additive_enabled", False)
+        )
+        self._exit_additive_scale: float = float(
+            model_reward_parameters.get("exit_additive_scale", 1.0)
+        )
+        self._exit_additive_gain: float = float(
+            model_reward_parameters.get("exit_additive_gain", 1.0)
+        )
+        self._exit_additive_transform_pnl: str = str(
+            model_reward_parameters.get("exit_additive_transform_pnl", "tanh")
+        )
+        self._exit_additive_transform_duration: str = str(
+            model_reward_parameters.get("exit_additive_transform_duration", "tanh")
+        )
+
+    def _get_next_position(self, action: int) -> Positions:
+        if action == Actions.Long_enter.value and self._position == Positions.Neutral:
+            return Positions.Long
+        if (
+            action == Actions.Short_enter.value
+            and self._position == Positions.Neutral
+            and self.can_short
+        ):
+            return Positions.Short
+        if action == Actions.Long_exit.value and self._position == Positions.Long:
+            return Positions.Neutral
+        if action == Actions.Short_exit.value and self._position == Positions.Short:
+            return Positions.Neutral
+        return self._position
+
+    def _compute_hold_potential(
+        self,
+        position: Positions,
+        duration_ratio: float,
+        pnl: float,
+        pnl_target: float,
+    ) -> float:
+        """Compute potential Φ(s) for hold transitions."""
+        if position not in (Positions.Long, Positions.Short):
+            return 0.0
+        if pnl_target < 0.0 or np.isclose(pnl_target, 0.0):
+            return 0.0
+        pnl_ratio = pnl / pnl_target
+        gain = self._hold_potential_gain
+        pnl_term = self._potential_transform(
+            self._hold_potential_transform_pnl, gain * pnl_ratio
+        )
+        dur_term = self._potential_transform(
+            self._hold_potential_transform_duration, gain * duration_ratio
+        )
+        hold_phi = self._hold_potential_scale * 0.5 * (pnl_term + dur_term)
+        return float(hold_phi) if np.isfinite(hold_phi) else 0.0
+
+    def _compute_exit_additive(
+        self,
+        pnl: float,
+        pnl_target: float,
+        duration_ratio: float,
+    ) -> float:
+        """Compute exit additive for closing transitions (non-PBRS additive term)."""
+        if not self._exit_additive_enabled:
+            return 0.0
+        if pnl_target < 0.0 or np.isclose(pnl_target, 0.0):
+            return 0.0
+        gain = self._exit_additive_gain
+        pnl_term = self._potential_transform(
+            self._exit_additive_transform_pnl, gain * (pnl / pnl_target)
+        )
+        dur_term = self._potential_transform(
+            self._exit_additive_transform_duration, gain * duration_ratio
+        )
+        exit_additive = self._exit_additive_scale * 0.5 * (pnl_term + dur_term)
+        return float(exit_additive) if np.isfinite(exit_additive) else 0.0
+
+    def _compute_entry_additive(
+        self,
+        pnl: float,
+        pnl_target: float,
+        duration_ratio: float,
+    ) -> float:
+        """Compute entry additive for entry transitions (non-PBRS additive term)."""
+        if not self._entry_additive_enabled:
+            return 0.0
+        if pnl_target < 0.0 or np.isclose(pnl_target, 0.0):
+            return 0.0
+        gain = self._entry_additive_gain
+        pnl_term = self._potential_transform(
+            self._entry_additive_transform_pnl, gain * (pnl / pnl_target)
+        )
+        dur_term = self._potential_transform(
+            self._entry_additive_transform_duration, gain * duration_ratio
+        )
+        entry_additive = self._entry_additive_scale * 0.5 * (pnl_term + dur_term)
+        return float(entry_additive) if np.isfinite(entry_additive) else 0.0
+
+    def _potential_transform(self, name: str, x: float) -> float:
+        try:
+            if name == "tanh":
+                return math.tanh(x)
+            if name == "softsign":
+                ax = abs(x)
+                return x / (1.0 + ax) if np.isfinite(ax) else 0.0
+            if name == "softsign_sharp":
+                s = self._potential_softsign_sharpness
+                xs = s * x
+                ax = abs(xs)
+                return xs / (1.0 + ax) if np.isfinite(ax) else 0.0
+            if name == "arctan":
+                return (2.0 / math.pi) * math.atan(x)
+            if name == "logistic":
+                return math.tanh(0.5 * x)
+            if name == "asinh":
+                return x / math.hypot(1.0, x)
+            if name == "clip":
+                return max(-1.0, min(1.0, x))
+        except OverflowError:
+            return 1.0 if x > 0 else -1.0
+        return math.tanh(x)
+
+    def _compute_closing_potential(
+        self, previous_potential: float, gamma: float
+    ) -> Tuple[float, float]:
+        """Compute closing PBRS shaping reward and next potential for non-canonical modes."""
+        mode = self._closing_potential_mode
+        if mode == "canonical":
+            return 0.0, -previous_potential
+        if mode == "progressive_release":
+            decay = self._closing_potential_decay
+            if not np.isfinite(decay) or decay < 0.0:
+                decay = 0.5
+            if decay > 1.0:
+                decay = 1.0
+            next_potential = previous_potential * (1.0 - decay)
+        elif mode == "spike_cancel":
+            if gamma <= 0.0 or not np.isfinite(gamma):
+                next_potential = previous_potential
+            else:
+                next_potential = previous_potential / gamma
+        elif mode == "retain_previous":
+            next_potential = previous_potential
+        else:
+            next_potential = 0.0
+        if not np.isfinite(next_potential):
+            next_potential = 0.0
+        closing_potential_reward = gamma * next_potential - previous_potential
+        return next_potential, closing_potential_reward
+
+    def _apply_potential_shaping(
+        self,
+        base_reward: float,
+        action: int,
+        trade_duration: float,
+        max_trade_duration: float,
+        pnl: float,
+        pnl_target: float,
+    ) -> float:
+        """Apply potential-based reward shaping (PBRS) following Ng et al. 1999.
+
+        Implements the canonical PBRS formula: r'(s,a,s') = r(s,a,s') + γΦ(s') - Φ(s)
+
+        PBRS Theory & Compliance
+        ------------------------
+        This implementation follows academic standards for potential-based reward shaping:
+        - Ng et al. 1999: Canonical formula with invariance guarantees
+        - Wiewiora et al. 2003: Terminal state handling (Φ(terminal)=0)
+        - Maintains policy invariance in canonical mode with proper terminal handling
+
+        Architecture & Transitions
+        --------------------------
+        Three mutually exclusive transition types:
+
+        1. **Entry** (Neutral → Long/Short):
+           - Initialize potential Φ for next step: Φ(s') = hold_potential(next_state)
+           - PBRS shaping reward: γΦ(s') - Φ(s) where Φ(s)=0 (neutral has no potential)
+           - Optional entry additive (non-PBRS additive term, breaks invariance if used)
+
+        2. **Hold** (Long/Short → Long/Short):
+           - Standard PBRS: γΦ(s') - Φ(s) where both potentials computed from hold_potential()
+           - Φ(s') accounts for updated PnL and trade duration progression
+
+        3. **Close/Exit** (Long/Short → Neutral):
+           - **Canonical mode**: Φ(s')=0 (terminal), shaping_reward = -Φ(s)
+           - **Heuristic modes**: Non-zero Φ(s') for gradual potential release
+           - Optional exit additive (non-PBRS additive term for trade quality summary)
+
+        Potential Function Φ(s)
+        -----------------------
+        Hold potential formula: Φ(s) = scale * 0.5 * [T_pnl(g*pnl_ratio) + T_dur(g*duration_ratio)]
+
+        **Bounded Transform Functions** (range [-1,1]):
+        - tanh: smooth saturation, tanh(x)
+        - softsign: x/(1+|x|), gentler than tanh
+        - softsign_sharp: softsign(sharpness*x), tunable steepness
+        - arctan: (2/π)*arctan(x), linear near origin
+        - logistic: 2σ(x)-1 ≈ tanh(0.5x), sigmoid-based
+        - asinh: x/√(1+x²), unbounded but smooth
+        - clip: hard clamp to [-1,1]
+
+        **Parameters**:
+        - gain g: sharpens (g>1) or softens (g<1) transform input
+        - scale: multiplies final potential value
+        - sharpness: affects softsign_sharp transform (must be >0)
+
+        Closing Modes
+        -------------
+        **canonical** (PBRS-compliant):
+        - Φ(s')=0 for all closing transitions
+        - Maintains theoretical invariance guarantees
+        - Shaping reward: -Φ(s)
+
+        **progressive_release** (heuristic):
+        - Φ(s')=Φ(s)*(1-decay_factor), gradual decay
+        - Shaping reward: γΦ(s')-Φ(s) = γΦ(s)*(1-d)-Φ(s)
+
+        **spike_cancel** (heuristic):
+        - Φ(s')=Φ(s)/γ, aims for zero net shaping
+        - Shaping reward: γΦ(s')-Φ(s) = Φ(s)-Φ(s) ≈ 0
+
+        **retain_previous** (heuristic):
+        - Φ(s')=Φ(s), full retention
+        - Shaping reward: (γ-1)Φ(s)
+
+        Additives & Path Dependence
+        ---------------------------
+        **Entry/Exit Additives**: Non-PBRS additive terms that break invariance
+        - Entry additive: Added at entry transitions, computed from trade initialization
+        - Exit additive: Added at closing (canonical mode only), summarizes trade quality
+        - Neither additive persists in potential function (maintains neutrality)
+
+        **Path Dependence**: Only canonical mode preserves PBRS invariance. Heuristic
+        closing modes introduce path dependence through non-zero terminal potentials.
+
+        Invariance & Validation
+        -----------------------
+        **Theoretical Guarantee**: In canonical mode with exit additives disabled,
+        ∑(shaping rewards) = 0 over complete episodes due to Φ(terminal)=0.
+
+        **Deviations from Theory**:
+        - Heuristic closing modes violate invariance
+        - Entry/exit additives break policy invariance
+        - Non-canonical modes may cause path-dependent learning
+
+        **Robustness**:
+        - Bounded transforms prevent potential explosion
+        - Finite value validation with fallback to 0
+        - Terminal state enforcement: Φ(s)=0 when terminated=True
+
+        Parameters
+        ----------
+        base_reward : float
+            Original reward before shaping
+        action : int
+            Action taken leading to transition
+        trade_duration : float
+            Current trade duration in candles
+        max_trade_duration : float
+            Maximum allowed trade duration
+        pnl : float
+            Current position PnL
+        pnl_target : float
+            Target PnL for normalization
+
+        Returns
+        -------
+        float
+            Shaped reward = base_reward + shaping_reward + optional_additives
+
+        Notes
+        -----
+        - Use canonical mode for theoretical compliance
+        - Monitor ∑shaping_rewards for invariance validation
+        - Heuristic modes are experimental and may affect convergence
+        - Transform validation removed from runtime (deferred to analysis tools)
+        """
+        if not self._hold_potential_enabled and not (
+            self._entry_additive_enabled or self._exit_additive_enabled
+        ):
+            return base_reward
+        previous_potential = self._last_potential
+        next_position = self._get_next_position(action)
+
+        if self._position == Positions.Neutral and next_position in (
+            Positions.Long,
+            Positions.Short,
+        ):
+            next_trade_duration = 0
+            next_pnl = 0.0
+        elif (
+            self._position in (Positions.Long, Positions.Short)
+            and next_position == Positions.Neutral
+        ):
+            next_trade_duration = 0
+            next_pnl = 0.0
+        else:
+            next_trade_duration = trade_duration + 1
+            next_pnl = pnl
+
+        if max_trade_duration <= 0:
+            next_duration_ratio = 0.0
+        else:
+            next_duration_ratio = next_trade_duration / max_trade_duration
+
+        gamma = self._potential_gamma
+        is_entry = self._position == Positions.Neutral and next_position in (
+            Positions.Long,
+            Positions.Short,
+        )
+        is_trade_close = (
+            self._position in (Positions.Long, Positions.Short)
+            and next_position == Positions.Neutral
+        )
+        is_holding = self._position in (
+            Positions.Long,
+            Positions.Short,
+        ) and next_position in (Positions.Long, Positions.Short)
+
+        if is_entry:
+            potential = self._compute_hold_potential(
+                next_position, 0.0, 0.0, pnl_target
+            )
+            shaping_reward = (
+                (gamma * potential - previous_potential)
+                if self._hold_potential_enabled
+                else 0.0
+            )
+            entry_additive = self._compute_entry_additive(
+                pnl=0.0, pnl_target=pnl_target, duration_ratio=0.0
+            )
+            self._last_potential = potential if self._hold_potential_enabled else 0.0
+            return base_reward + shaping_reward + entry_additive
+        elif is_holding:
+            potential = self._compute_hold_potential(
+                next_position, next_duration_ratio, next_pnl, pnl_target
+            )
+            shaping_reward = (
+                gamma * potential - previous_potential
+                if self._hold_potential_enabled
+                else 0.0
+            )
+            self._last_potential = potential if self._hold_potential_enabled else 0.0
+            return base_reward + shaping_reward
+        elif is_trade_close:
+            if self._closing_potential_mode == "canonical":
+                closing_potential_reward = -previous_potential
+                next_phi = 0.0
+            else:
+                next_phi, closing_potential_reward = self._compute_closing_potential(
+                    previous_potential, gamma
+                )
+
+            exit_additive = 0.0
+            if (
+                self._exit_additive_enabled
+                and self._closing_potential_mode == "canonical"
+            ):
+                duration_ratio = (
+                    trade_duration / max_trade_duration
+                    if max_trade_duration > 0
+                    else 0.0
+                )
+                exit_additive = self._compute_exit_additive(
+                    pnl, pnl_target, duration_ratio
+                )
+
+            closing_reward = closing_potential_reward + exit_additive
+            self._last_potential = next_phi
+            return base_reward + closing_reward
+        else:
+            self._last_potential = 0.0
+            return base_reward
 
     def _set_observation_space(self) -> None:
         """
@@ -1376,6 +1838,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
+        self._last_potential = 0.0
         return observation, history
 
     def _get_exit_factor(
@@ -1542,65 +2005,41 @@ class MyRLEnv(Base5ActionRLEnv):
         return max(0.0, pnl_target_factor * efficiency_factor)
 
     def calculate_reward(self, action: int) -> float:
-        """
-        An example reward function. This is the one function that users will likely
-        wish to inject their own creativity into.
+        """Compute per-step reward and apply potential shaping.
 
-        Warning!
-        This is function is a showcase of functionality designed to show as many possible
-        environment control features as possible. It is also designed to run quickly
-        on small computers. This is a benchmark, it is *not* for live production.
-
-        :param action: int = The action made by the agent for the current candle.
-        :return:
-        float = the reward to give to the agent for current step (used for optimization
-                of weights in NN)
+        Steps:
+        1. Invalid action penalty
+        2. Idle penalty
+        3. Holding overtime penalty
+        4. Exit reward
+        5. Default 0
+        6. Potential-based shaping
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
+        base_reward: Optional[float] = None
 
-        # first, penalize if the action is not valid
+        # 1. Invalid action
         if not self.action_masking and not self._is_valid(action):
             self.tensorboard_log("invalid", category="actions")
-            return float(model_reward_parameters.get("invalid_action", -2.0))
-
-        pnl = self.get_unrealized_profit()
-        # mrr = self.get_most_recent_return()
-        # mrp = self.get_most_recent_profit()
+            base_reward = float(model_reward_parameters.get("invalid_action", -2.0))
 
         max_trade_duration = max(self.max_trade_duration_candles, 1)
         trade_duration = self.get_trade_duration()
         duration_ratio = trade_duration / max_trade_duration
-
         base_factor = float(model_reward_parameters.get("base_factor", 100.0))
         pnl_target = self.profit_aim * self.rr
         idle_factor = base_factor * pnl_target / 3.0
         holding_factor = idle_factor
 
-        # # you can use feature values from dataframe
-        # rsi_now = self.get_feature_value(
-        #     name="%-rsi",
-        #     period=8,
-        #     pair=self.pair,
-        #     timeframe=self.config.get("timeframe"),
-        #     raw=True,
-        # )
-
-        # # reward agent for entering trades when RSI is low
-        # if (
-        #     action in (Actions.Long_enter.value, Actions.Short_enter.value)
-        #     and self._position == Positions.Neutral
-        # ):
-        #     if rsi_now < 40:
-        #         factor = 40 / rsi_now
-        #     else:
-        #         factor = 1
-        #     return 25.0 * factor
-
-        # discourage agent from sitting idle
-        if action == Actions.Neutral.value and self._position == Positions.Neutral:
+        # 2. Idle penalty
+        if (
+            base_reward is None
+            and action == Actions.Neutral.value
+            and self._position == Positions.Neutral
+        ):
             max_idle_duration = int(
                 model_reward_parameters.get(
-                    "max_idle_duration_candles", 2 * max_trade_duration
+                    "max_idle_duration_candles", 4 * max_trade_duration
                 )
             )
             idle_penalty_scale = float(
@@ -1611,15 +2050,16 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             idle_duration = self.get_idle_duration()
             idle_duration_ratio = idle_duration / max(1, max_idle_duration)
-            return (
+            base_reward = (
                 -idle_factor
                 * idle_penalty_scale
                 * idle_duration_ratio**idle_penalty_power
             )
 
-        # discourage agent from sitting in position
+        # 3. Hold overtime penalty
         if (
-            self._position in (Positions.Short, Positions.Long)
+            base_reward is None
+            and self._position in (Positions.Short, Positions.Long)
             and action == Actions.Neutral.value
         ):
             holding_penalty_scale = float(
@@ -1628,31 +2068,45 @@ class MyRLEnv(Base5ActionRLEnv):
             holding_penalty_power = float(
                 model_reward_parameters.get("holding_penalty_power", 1.025)
             )
-
             if duration_ratio < 1.0:
-                return 0.0
+                base_reward = 0.0
+            else:
+                base_reward = (
+                    -holding_factor
+                    * holding_penalty_scale
+                    * (duration_ratio - 1.0) ** holding_penalty_power
+                )
 
-            return (
-                -holding_factor
-                * holding_penalty_scale
-                * (duration_ratio - 1.0) ** holding_penalty_power
-            )
+        # 4. Exit rewards
+        pnl = self.get_unrealized_profit()
+        if (
+            base_reward is None
+            and action == Actions.Long_exit.value
+            and self._position == Positions.Long
+        ):
+            base_reward = pnl * self._get_exit_factor(base_factor, pnl, duration_ratio)
+        if (
+            base_reward is None
+            and action == Actions.Short_exit.value
+            and self._position == Positions.Short
+        ):
+            base_reward = pnl * self._get_exit_factor(base_factor, pnl, duration_ratio)
 
-        # close long
-        if action == Actions.Long_exit.value and self._position == Positions.Long:
-            return pnl * self._get_exit_factor(base_factor, pnl, duration_ratio)
+        # 5. Default
+        if base_reward is None:
+            base_reward = 0.0
 
-        # close short
-        if action == Actions.Short_exit.value and self._position == Positions.Short:
-            return pnl * self._get_exit_factor(base_factor, pnl, duration_ratio)
-
-        return 0.0
+        # 6. Potential shaping
+        return self._apply_potential_shaping(
+            base_reward=base_reward,
+            action=action,
+            trade_duration=trade_duration,
+            max_trade_duration=max_trade_duration,
+            pnl=pnl,
+            pnl_target=pnl_target,
+        )
 
     def _get_observation(self) -> NDArray[np.float32]:
-        """
-        This may or may not be independent of action types, user can inherit
-        this in their custom "MyRLEnv"
-        """
         start_idx = max(self._start_tick, self._current_tick - self.window_size)
         end_idx = min(self._current_tick, len(self.signal_features))
         features_window = self.signal_features.iloc[start_idx:end_idx]
@@ -1769,10 +2223,14 @@ class MyRLEnv(Base5ActionRLEnv):
             "trade_count": int(len(self.trade_history) // 2),
         }
         self._update_history(info)
+        terminated = self.is_terminated()
+        if terminated:
+            # Enforce Φ(terminal)=0 for PBRS invariance (Wiewiora et al. 2003)
+            self._last_potential = 0.0
         return (
             self._get_observation(),
             reward,
-            self.is_terminated(),
+            terminated,
             self.is_truncated(),
             info,
         )
