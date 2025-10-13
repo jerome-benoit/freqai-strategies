@@ -1127,7 +1127,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             gamma = self.get_model_params().get("gamma")
         if gamma is not None:
             # Align RL agent gamma with PBRS gamma for consistent discount factor
-            env_info["config"]["rl_config"]["model_reward_parameters"][
+            env_info["config"]["freqai"]["rl_config"]["model_reward_parameters"][
                 "potential_gamma"
             ] = float(gamma)
         env_prefix = f"trial_{trial.number}_" if trial is not None else ""
@@ -1986,22 +1986,6 @@ class MyRLEnv(Base5ActionRLEnv):
             return base_reward + exit_reward
         else:
             # Neutral self-loop
-            anomaly_potential = not np.isclose(self._last_potential, 0.0)
-            anomaly_shaping = not np.isclose(self._last_shaping_reward, 0.0)
-            if anomaly_potential or anomaly_shaping:
-                details = []
-                if anomaly_potential:
-                    details.append(f"Φ(s)={self._last_potential:.6f} should be 0")
-                if anomaly_shaping:
-                    details.append(
-                        f"last_Δ={self._last_shaping_reward:.6f} expected 0 after neutral stabilization"
-                    )
-                logger.warning(
-                    "Neutral self-loop anomaly: %s. Resetting Φ(s)=0 and Δ=0. "
-                    "If this follows immediately after a canonical exit, only the residual Δ is expected; "
-                    "otherwise investigate prior transition handling.",
-                    "; ".join(details),
-                )
             self._last_potential = 0.0
             self._last_shaping_reward = 0.0
             return base_reward

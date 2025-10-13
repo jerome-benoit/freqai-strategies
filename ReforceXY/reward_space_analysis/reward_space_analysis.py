@@ -3121,7 +3121,7 @@ def apply_potential_shaping(
         else 0.0
     )
 
-    # Invariance diagnostic (info-level)
+    # Invariance diagnostic
     _log_pbrs_invariance_warning(params)
 
     # Total reward
