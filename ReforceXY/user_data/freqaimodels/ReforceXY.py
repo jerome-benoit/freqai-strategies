@@ -1380,6 +1380,9 @@ class MyRLEnv(Base5ActionRLEnv):
         self._potential_gamma: float = float(
             model_reward_parameters.get("potential_gamma")
         )
+        if self._potential_gamma is None:
+            logger.warning("potential_gamma not specified; defaulting to 0.95")
+            self._potential_gamma = 0.95
         self._potential_softsign_sharpness: float = float(
             model_reward_parameters.get("potential_softsign_sharpness", 1.0)
         )
@@ -1515,7 +1518,7 @@ class MyRLEnv(Base5ActionRLEnv):
             Positions.Short,
         ):
             return next_position, int(trade_duration) + 1, pnl
-        # Neutral self loop
+        # Neutral self-loop
         return next_position, 0, 0.0
 
     def _is_invalid_pnl_target(self, pnl_target: float) -> bool:
@@ -1535,7 +1538,6 @@ class MyRLEnv(Base5ActionRLEnv):
         gain: float,
         transform_pnl: str,
         transform_duration: str,
-        context: str,
     ) -> float:
         """Generic bounded bi-component signal combining PnL and duration.
 
@@ -1717,7 +1719,7 @@ class MyRLEnv(Base5ActionRLEnv):
         return math.tanh(x)
 
     def _compute_exit_potential(self, prev_potential: float, gamma: float) -> float:
-        """Compute next potential Φ(s') for exit transitions based on exit mode.
+        """Compute next potential Φ(s') for exit transitions based on exit potential mode.
 
         See ``_apply_potential_shaping`` for complete PBRS documentation.
         """
@@ -1786,6 +1788,8 @@ class MyRLEnv(Base5ActionRLEnv):
         - γ                : shaping discount (``self._potential_gamma``)
         - Δ(s,s')          : shaping term = γ Φ(s') - Φ(s) (logged as ``shaping_reward`` per step)
         - R'(s, a, s')     : shaped reward delivered to the agent = R_base + Δ(s,s') + (additives if enabled)
+        - pnl_ratio        : pnl / pnl_target (normalized profit component before transform)
+        - duration_ratio   : trade_duration / max_trade_duration (clipped to [0,1] before transform)
 
         PBRS Theory & Compliance
         ------------------------
@@ -1831,7 +1835,7 @@ class MyRLEnv(Base5ActionRLEnv):
         - sharpness: affects softsign_sharp transform (must be >0)
 
         Exit Potential Modes
-        -------------------
+        --------------------
         **canonical** (PBRS-compliant):
         - Φ(s')=0 for all exit transitions
         - Maintains theoretical invariance guarantees
@@ -1875,6 +1879,7 @@ class MyRLEnv(Base5ActionRLEnv):
         - Bounded transforms prevent potential explosion
         - Finite value validation with fallback to 0
         - Terminal state enforcement: Φ(s)=0 when terminated=True
+        - All transform functions are strictly bounded in [-1, 1], ensuring numerical stability
 
         Parameters
         ----------
@@ -1902,6 +1907,7 @@ class MyRLEnv(Base5ActionRLEnv):
         - Monitor ∑Δ(s,s') for invariance validation (should sum to 0 over episodes)
         - Heuristic exit modes are experimental and may affect convergence
         - Transform validation removed from runtime (deferred to analysis tools)
+        - In canonical exit mode, Φ is reset to 0 at exit boundaries, ensuring telescoping cancellation (∑Δ=0) over closed episodes
         """
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
@@ -1980,6 +1986,23 @@ class MyRLEnv(Base5ActionRLEnv):
             self._total_shaping_reward += float(exit_shaping_reward)
             return base_reward + exit_reward
         else:
+            # Neutral self-loop
+            anomaly_potential = not np.isclose(self._last_potential, 0.0)
+            anomaly_shaping = not np.isclose(self._last_shaping_reward, 0.0)
+            if anomaly_potential or anomaly_shaping:
+                details = []
+                if anomaly_potential:
+                    details.append(f"Φ(s)={self._last_potential:.6f} should be 0")
+                if anomaly_shaping:
+                    details.append(
+                        f"last_Δ={self._last_shaping_reward:.6f} expected 0 after neutral stabilization"
+                    )
+                logger.warning(
+                    "Neutral self-loop anomaly: %s. Resetting Φ(s)=0 and Δ=0. "
+                    "If this follows immediately after a canonical exit, only the residual Δ is expected; "
+                    "otherwise investigate prior transition handling.",
+                    "; ".join(details),
+                )
             self._last_potential = 0.0
             self._last_shaping_reward = 0.0
             return base_reward
