@@ -1363,6 +1363,9 @@ class MyRLEnv(Base5ActionRLEnv):
         self.max_trade_duration_candles: int = self.rl_config.get(
             "max_trade_duration_candles", 128
         )
+        # === Constants ===
+        self.MIN_SOFTSIGN_SHARPNESS: float = 0.01
+        self.MAX_SOFTSIGN_SHARPNESS: float = 100.0
         self._last_closed_position: Optional[Positions] = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
@@ -1377,7 +1380,8 @@ class MyRLEnv(Base5ActionRLEnv):
             model_reward_parameters.get("potential_softsign_sharpness", 1.0)
         )
         self._potential_softsign_sharpness = max(
-            0.01, min(100.0, self._potential_softsign_sharpness)
+            self.MIN_SOFTSIGN_SHARPNESS,
+            min(self.MAX_SOFTSIGN_SHARPNESS, self._potential_softsign_sharpness),
         )
         # === CLOSING MODE ===
         # closing_potential_mode options:
@@ -1393,7 +1397,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         # === ENTRY ADDITIVE (non-PBRS additive term) ===
         self._entry_additive_enabled: bool = bool(
-            model_reward_parameters.get("entry_additive_enabled", True)
+            model_reward_parameters.get("entry_additive_enabled", False)
         )
         self._entry_additive_scale: float = float(
             model_reward_parameters.get("entry_additive_scale", 1.0)
@@ -1454,6 +1458,35 @@ class MyRLEnv(Base5ActionRLEnv):
         if action == Actions.Short_exit.value and self._position == Positions.Short:
             return Positions.Neutral
         return self._position
+
+    def _next_transition_state(
+        self,
+        action: int,
+        trade_duration: float,
+        pnl: float,
+    ) -> Tuple[Positions, int, float]:
+        """Compute next transition state tuple."""
+        next_position = self._get_next_position(action)
+        # Entry
+        if self._position == Positions.Neutral and next_position in (
+            Positions.Long,
+            Positions.Short,
+        ):
+            return next_position, 0, 0.0
+        # Exit
+        if (
+            self._position in (Positions.Long, Positions.Short)
+            and next_position == Positions.Neutral
+        ):
+            return next_position, 0, 0.0
+        # Hold
+        if self._position in (Positions.Long, Positions.Short) and next_position in (
+            Positions.Long,
+            Positions.Short,
+        ):
+            return next_position, int(trade_duration) + 1, pnl
+        # Neutral self loop
+        return next_position, 0, 0.0
 
     def _is_invalid_pnl_target(self, pnl_target: float) -> bool:
         """Check if pnl_target is invalid (negative or close to zero)."""
@@ -1709,23 +1742,9 @@ class MyRLEnv(Base5ActionRLEnv):
         ):
             return base_reward
         previous_potential = self._last_potential
-        next_position = self._get_next_position(action)
-
-        if self._position == Positions.Neutral and next_position in (
-            Positions.Long,
-            Positions.Short,
-        ):
-            next_trade_duration = 0
-            next_pnl = 0.0
-        elif (
-            self._position in (Positions.Long, Positions.Short)
-            and next_position == Positions.Neutral
-        ):
-            next_trade_duration = 0
-            next_pnl = 0.0
-        else:
-            next_trade_duration = trade_duration + 1
-            next_pnl = pnl
+        next_position, next_trade_duration, next_pnl = self._next_transition_state(
+            action=action, trade_duration=trade_duration, pnl=pnl
+        )
 
         if max_trade_duration <= 0:
             next_duration_ratio = 0.0

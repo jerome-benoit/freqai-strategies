@@ -126,7 +126,6 @@ DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 RewardParamValue = Union[float, str, bool, None]
 RewardParams = Dict[str, RewardParamValue]
 
-
 # Allowed exit attenuation modes
 ALLOWED_EXIT_MODES = {"legacy", "sqrt", "linear", "power", "half_life"}
 
