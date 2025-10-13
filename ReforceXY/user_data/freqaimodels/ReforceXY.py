@@ -1377,12 +1377,12 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_shaping_reward: float = 0.0
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         # === PBRS COMMON PARAMETERS ===
-        self._potential_gamma: float = float(
-            model_reward_parameters.get("potential_gamma")
-        )
-        if self._potential_gamma is None:
+        potential_gamma = model_reward_parameters.get("potential_gamma")
+        if potential_gamma is None:
             logger.warning("potential_gamma not specified; defaulting to 0.95")
             self._potential_gamma = 0.95
+        else:
+            self._potential_gamma = float(potential_gamma)
         self._potential_softsign_sharpness: float = float(
             model_reward_parameters.get("potential_softsign_sharpness", 1.0)
         )

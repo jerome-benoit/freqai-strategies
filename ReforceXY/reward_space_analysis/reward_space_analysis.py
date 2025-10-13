@@ -2265,7 +2265,7 @@ def write_complete_statistical_analysis(
             f"| Duration overage (>1.0) | {representativity_stats['duration_overage_share']:.1%} |\n"
         )
         f.write(
-            f"| Extreme PnL (|pnl|≥0.14) | {representativity_stats['pnl_extreme']:.1%} |\n"
+            f"| Extreme PnL (\\|pnl\\|≥0.14) | {representativity_stats['pnl_extreme']:.1%} |\n"
         )
         f.write("\n")
 
@@ -2318,6 +2318,62 @@ def write_complete_statistical_analysis(
             corr_df.index.name = "feature"
         f.write(_df_to_md(corr_df, index_name=corr_df.index.name, ndigits=4))
 
+        # Section 3.5: PBRS Analysis
+        f.write("### 3.5 PBRS (Potential-Based Reward Shaping) Analysis\n\n")
+
+        # Check if PBRS components are present in the data
+        pbrs_components = [
+            "reward_shaping",
+            "reward_entry_additive",
+            "reward_exit_additive",
+        ]
+        pbrs_present = all(col in df.columns for col in pbrs_components)
+
+        if pbrs_present:
+            # PBRS activation rates
+            pbrs_activation = {}
+            for comp in pbrs_components:
+                pbrs_activation[comp.replace("reward_", "")] = (df[comp] != 0).mean()
+
+            f.write("**PBRS Component Activation Rates:**\n\n")
+            f.write("| Component | Activation Rate | Description |\n")
+            f.write("|-----------|-----------------|-------------|\n")
+            f.write(
+                f"| Shaping (Φ) | {pbrs_activation['shaping']:.1%} | Potential-based reward shaping |\n"
+            )
+            f.write(
+                f"| Entry Additive | {pbrs_activation['entry_additive']:.1%} | Non-PBRS entry reward |\n"
+            )
+            f.write(
+                f"| Exit Additive | {pbrs_activation['exit_additive']:.1%} | Non-PBRS exit reward |\n"
+            )
+            f.write("\n")
+
+            # PBRS statistics
+            f.write("**PBRS Component Statistics:**\n\n")
+            pbrs_stats = df[pbrs_components].describe(
+                percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]
+            )
+            pbrs_stats_df = pbrs_stats.round(
+                6
+            ).T  # Transpose to make it DataFrame-compatible
+            pbrs_stats_df.index.name = "component"
+            f.write(_df_to_md(pbrs_stats_df, index_name="component", ndigits=6))
+
+            # PBRS invariance check (canonical mode)
+            total_shaping = df["reward_shaping"].sum()
+            if abs(total_shaping) < 1e-6:
+                f.write(
+                    "✅ **PBRS Invariance:** Total shaping reward ≈ 0 (canonical mode preserved)\n\n"
+                )
+            else:
+                f.write(
+                    f"❌ **PBRS Invariance:** Total shaping reward = {total_shaping:.6f} (non-canonical behavior)\n\n"
+                )
+
+        else:
+            f.write("_PBRS components not present in this analysis._\n\n")
+
         # Section 4: Feature Importance Analysis
         f.write("---\n\n")
         f.write("## 4. Feature Importance\n\n")
@@ -2360,7 +2416,7 @@ def write_complete_statistical_analysis(
                 f.write(f"- p-value: {h['p_value']:.4g}\n")
                 if "p_value_adj" in h:
                     f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅' if h['significant_adj'] else '❌'} (α=0.05)\n"
+                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
                     )
                 f.write(f"- 95% CI: [{h['ci_95'][0]:.4f}, {h['ci_95'][1]:.4f}]\n")
                 f.write(f"- Sample size: {h['n_samples']:,}\n")
@@ -2377,7 +2433,7 @@ def write_complete_statistical_analysis(
                 f.write(f"- p-value: {h['p_value']:.4g}\n")
                 if "p_value_adj" in h:
                     f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅' if h['significant_adj'] else '❌'} (α=0.05)\n"
+                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
                     )
                 f.write(f"- Effect size (ε²): {h['effect_size_epsilon_sq']:.4f}\n")
                 f.write(f"- Number of groups: {h['n_groups']}\n")
@@ -2388,13 +2444,13 @@ def write_complete_statistical_analysis(
 
             if "pnl_sign_reward_difference" in hypothesis_tests:
                 h = hypothesis_tests["pnl_sign_reward_difference"]
-                f.write("#### 5.1.4 Positive vs Negative PnL Comparison\n\n")
+                f.write("#### 5.1.3 Positive vs Negative PnL Comparison\n\n")
                 f.write(f"**Test Method:** {h['test']}\n\n")
                 f.write(f"- U-statistic: **{h['statistic']:.4f}**\n")
                 f.write(f"- p-value: {h['p_value']:.4g}\n")
                 if "p_value_adj" in h:
                     f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅' if h['significant_adj'] else '❌'} (α=0.05)\n"
+                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
                     )
                 f.write(f"- Median (PnL+): {h['median_pnl_positive']:.4f}\n")
                 f.write(f"- Median (PnL-): {h['median_pnl_negative']:.4f}\n")
@@ -2479,9 +2535,11 @@ def write_complete_statistical_analysis(
                 f.write("**Interpretation Guide:**\n\n")
                 f.write("| Metric | Threshold | Meaning |\n")
                 f.write("|--------|-----------|--------|\n")
-                f.write("| KL Divergence | < 0.3 | ✅ Good representativeness |\n")
-                f.write("| JS Distance | < 0.2 | ✅ Similar distributions |\n")
-                f.write("| KS p-value | > 0.05 | ✅ No significant difference |\n\n")
+                f.write("| KL Divergence | < 0.3 | ✅ Yes: Good representativeness |\n")
+                f.write("| JS Distance | < 0.2 | ✅ Yes: Similar distributions |\n")
+                f.write(
+                    "| KS p-value | > 0.05 | ✅ Yes: No significant difference |\n\n"
+                )
 
         # Footer
         f.write("---\n\n")
@@ -2494,7 +2552,7 @@ def write_complete_statistical_analysis(
             "2. **Sample Representativity** - Coverage of critical market scenarios\n"
         )
         f.write(
-            "3. **Component Analysis** - Relationships between rewards and conditions\n"
+            "3. **Component Analysis** - Relationships between rewards and conditions (including PBRS)\n"
         )
         f.write(
             "4. **Feature Importance** - Machine learning analysis of key drivers\n"
