@@ -121,6 +121,7 @@ def _is_short_allowed(trading_mode: str) -> bool:
 
 # Mathematical constants pre-computed for performance
 _LOG_2 = math.log(2.0)
+DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 
 RewardParamValue = Union[float, str, bool, None]
 RewardParams = Dict[str, RewardParamValue]
@@ -571,12 +572,16 @@ def _idle_penalty(
 
     max_idle_duration_candles = params.get("max_idle_duration_candles")
     if max_idle_duration_candles is None:
-        max_idle_duration = 4 * max_trade_duration_candles
+        max_idle_duration = (
+            DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
+        )
     else:
         try:
             max_idle_duration = int(max_idle_duration_candles)
         except (TypeError, ValueError):
-            max_idle_duration = 4 * max_trade_duration_candles
+            max_idle_duration = (
+                DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
+            )
 
     idle_duration_ratio = context.idle_duration / max(1, max_idle_duration)
     return -idle_factor * idle_penalty_scale * idle_duration_ratio**idle_penalty_power

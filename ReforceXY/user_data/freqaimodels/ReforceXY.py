@@ -116,6 +116,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     """
 
     _LOG_2 = math.log(2.0)
+    DEFAULT_IDLE_DURATION_MULTIPLIER: int = 4
     _action_masks_cache: Dict[Tuple[bool, float], NDArray[np.bool_]] = {}
 
     def __init__(self, *args, **kwargs):
@@ -2041,7 +2042,8 @@ class MyRLEnv(Base5ActionRLEnv):
         ):
             max_idle_duration = int(
                 model_reward_parameters.get(
-                    "max_idle_duration_candles", 4 * max_trade_duration
+                    "max_idle_duration_candles",
+                    ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration,
                 )
             )
             idle_penalty_scale = float(
