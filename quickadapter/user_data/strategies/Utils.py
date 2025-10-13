@@ -774,8 +774,7 @@ def fit_regressor(
     if regressor == "xgboost":
         from xgboost import XGBRegressor
 
-        if model_training_parameters.get("random_state") is None:
-            model_training_parameters["random_state"] = 1
+        model_training_parameters.setdefault("random_state", 1)
 
         if trial is not None:
             model_training_parameters["random_state"] = (
@@ -799,8 +798,7 @@ def fit_regressor(
     elif regressor == "lightgbm":
         from lightgbm import LGBMRegressor
 
-        if model_training_parameters.get("seed") is None:
-            model_training_parameters["seed"] = 1
+        model_training_parameters.setdefault("seed", 1)
 
         if trial is not None:
             model_training_parameters["seed"] = (
