@@ -137,9 +137,9 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "idle_penalty_power": 1.025,
     # Fallback: 2 * max_trade_duration_candles
     "max_idle_duration_candles": None,
-    # Holding keys (env defaults)
-    "holding_penalty_scale": 0.25,
-    "holding_penalty_power": 1.025,
+    # Hold keys (env defaults)
+    "hold_penalty_scale": 0.25,
+    "hold_penalty_power": 1.025,
     # Exit attenuation configuration (env default)
     "exit_attenuation_mode": "linear",
     "exit_plateau": True,
@@ -164,8 +164,8 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "idle_penalty_power": "Power applied to idle penalty scaling.",
     "idle_penalty_scale": "Scale of idle penalty.",
     "max_idle_duration_candles": "Maximum idle duration candles before full idle penalty scaling.",
-    "holding_penalty_scale": "Scale of holding penalty.",
-    "holding_penalty_power": "Power applied to holding penalty scaling.",
+    "hold_penalty_scale": "Scale of hold penalty.",
+    "hold_penalty_power": "Power applied to hold penalty scaling.",
     "exit_attenuation_mode": "Attenuation kernel (legacy|sqrt|linear|power|half_life).",
     "exit_plateau": "Enable plateau. If true, full strength until grace boundary then apply attenuation.",
     "exit_plateau_grace": "Grace boundary duration ratio for plateau (full strength until this boundary).",
@@ -192,8 +192,8 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "idle_penalty_power": {"min": 0.0},
     "idle_penalty_scale": {"min": 0.0},
     "max_idle_duration_candles": {"min": 0.0},
-    "holding_penalty_scale": {"min": 0.0},
-    "holding_penalty_power": {"min": 0.0},
+    "hold_penalty_scale": {"min": 0.0},
+    "hold_penalty_power": {"min": 0.0},
     "exit_linear_slope": {"min": 0.0},
     "exit_plateau_grace": {"min": 0.0},
     "exit_power_tau": {"min": 1e-6, "max": 1.0},  # open (0,1] approximated
@@ -339,7 +339,7 @@ class RewardBreakdown:
     total: float = 0.0
     invalid_penalty: float = 0.0
     idle_penalty: float = 0.0
-    holding_penalty: float = 0.0
+    hold_penalty: float = 0.0
     exit_component: float = 0.0
 
 
@@ -582,19 +582,19 @@ def _idle_penalty(
     return -idle_factor * idle_penalty_scale * idle_duration_ratio**idle_penalty_power
 
 
-def _holding_penalty(
-    context: RewardContext, holding_factor: float, params: RewardParams
+def _hold_penalty(
+    context: RewardContext, hold_factor: float, params: RewardParams
 ) -> float:
-    """Mirror the environment's holding penalty behaviour."""
-    holding_penalty_scale = _get_param_float(
+    """Mirror the environment's hold penalty behaviour."""
+    hold_penalty_scale = _get_param_float(
         params,
-        "holding_penalty_scale",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("holding_penalty_scale", 0.25),
+        "hold_penalty_scale",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_scale", 0.25),
     )
-    holding_penalty_power = _get_param_float(
+    hold_penalty_power = _get_param_float(
         params,
-        "holding_penalty_power",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("holding_penalty_power", 1.025),
+        "hold_penalty_power",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_power", 1.025),
     )
     duration_ratio = _compute_duration_ratio(
         context.trade_duration, context.max_trade_duration
@@ -604,9 +604,7 @@ def _holding_penalty(
         return 0.0
 
     return (
-        -holding_factor
-        * holding_penalty_scale
-        * (duration_ratio - 1.0) ** holding_penalty_power
+        -hold_factor * hold_penalty_scale * (duration_ratio - 1.0) ** hold_penalty_power
     )
 
 
@@ -663,7 +661,7 @@ def calculate_reward(
     profit_target_final = profit_target * risk_reward_ratio
     idle_factor = factor * profit_target_final / 3.0
     pnl_factor = _get_pnl_factor(params, context, profit_target_final)
-    holding_factor = idle_factor
+    hold_factor = idle_factor
 
     if context.action == Actions.Neutral and context.position == Positions.Neutral:
         breakdown.idle_penalty = _idle_penalty(context, idle_factor, params)
@@ -674,8 +672,8 @@ def calculate_reward(
         context.position in (Positions.Long, Positions.Short)
         and context.action == Actions.Neutral
     ):
-        breakdown.holding_penalty = _holding_penalty(context, holding_factor, params)
-        breakdown.total = breakdown.holding_penalty
+        breakdown.hold_penalty = _hold_penalty(context, hold_factor, params)
+        breakdown.total = breakdown.hold_penalty
         return breakdown
 
     if context.action == Actions.Long_exit and context.position == Positions.Long:
@@ -851,7 +849,7 @@ def simulate_samples(
                 "reward_total": breakdown.total,
                 "reward_invalid": breakdown.invalid_penalty,
                 "reward_idle": breakdown.idle_penalty,
-                "reward_holding": breakdown.holding_penalty,
+                "reward_hold": breakdown.hold_penalty,
                 "reward_exit": breakdown.exit_component,
                 "is_invalid": float(breakdown.invalid_penalty != 0.0),
             }
@@ -945,13 +943,13 @@ def _compute_summary_stats(df: pd.DataFrame) -> Dict[str, Any]:
         ["count", "mean", "std", "min", "max"]
     )
     component_share = df[
-        ["reward_invalid", "reward_idle", "reward_holding", "reward_exit"]
+        ["reward_invalid", "reward_idle", "reward_hold", "reward_exit"]
     ].apply(lambda col: (col != 0).mean())
 
     components = [
         "reward_invalid",
         "reward_idle",
-        "reward_holding",
+        "reward_hold",
         "reward_exit",
         "reward_total",
     ]
@@ -1019,18 +1017,18 @@ def _compute_relationship_stats(
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
     idle_stats = _binned_stats(df, "idle_duration", "reward_idle", idle_bins)
-    holding_stats = _binned_stats(df, "trade_duration", "reward_holding", trade_bins)
+    hold_stats = _binned_stats(df, "trade_duration", "reward_hold", trade_bins)
     exit_stats = _binned_stats(df, "pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
-    holding_stats = holding_stats.round(6)
+    hold_stats = hold_stats.round(6)
     exit_stats = exit_stats.round(6)
 
     correlation_fields = [
         "reward_total",
         "reward_invalid",
         "reward_idle",
-        "reward_holding",
+        "reward_hold",
         "reward_exit",
         "pnl",
         "trade_duration",
@@ -1040,7 +1038,7 @@ def _compute_relationship_stats(
 
     return {
         "idle_stats": idle_stats,
-        "holding_stats": holding_stats,
+        "hold_stats": hold_stats,
         "exit_stats": exit_stats,
         "correlation": correlation,
     }
@@ -1074,7 +1072,7 @@ def _compute_representativity_stats(
 
     duration_overage_share = float((df["duration_ratio"] > 1.0).mean())
     idle_activated = float((df["reward_idle"] != 0).mean())
-    holding_activated = float((df["reward_holding"] != 0).mean())
+    hold_activated = float((df["reward_hold"] != 0).mean())
     exit_activated = float((df["reward_exit"] != 0).mean())
 
     return {
@@ -1086,7 +1084,7 @@ def _compute_representativity_stats(
         "pnl_extreme": pnl_extreme,
         "duration_overage_share": duration_overage_share,
         "idle_activated": idle_activated,
-        "holding_activated": holding_activated,
+        "hold_activated": hold_activated,
         "exit_activated": exit_activated,
     }
 
@@ -1288,7 +1286,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     numeric_optional = {
         "reward_exit",
         "reward_idle",
-        "reward_holding",
+        "reward_hold",
         "reward_invalid",
         "duration_ratio",
         "idle_ratio",
@@ -1858,7 +1856,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         nargs="*",
         default=[],
         metavar="KEY=VALUE",
-        help="Override reward parameters, e.g. holding_penalty_scale=0.5",
+        help="Override reward parameters, e.g. hold_penalty_scale=0.5",
     )
     # Dynamically add CLI options for all tunables
     add_tunable_cli_args(parser)
@@ -1965,7 +1963,7 @@ def write_complete_statistical_analysis(
     metrics_for_ci = [
         "reward_total",
         "reward_idle",
-        "reward_holding",
+        "reward_hold",
         "reward_exit",
         "pnl",
     ]
@@ -2068,9 +2066,7 @@ def write_complete_statistical_analysis(
         f.write("| Component | Activation Rate |\n")
         f.write("|-----------|----------------|\n")
         f.write(f"| Idle penalty | {representativity_stats['idle_activated']:.1%} |\n")
-        f.write(
-            f"| Holding penalty | {representativity_stats['holding_activated']:.1%} |\n"
-        )
+        f.write(f"| Hold penalty | {representativity_stats['hold_activated']:.1%} |\n")
         f.write(f"| Exit reward | {representativity_stats['exit_activated']:.1%} |\n")
         f.write("\n")
 
@@ -2090,14 +2086,14 @@ def write_complete_statistical_analysis(
                 idle_df.index.name = "bin"
             f.write(_df_to_md(idle_df, index_name=idle_df.index.name, ndigits=6))
 
-        f.write("### 3.2 Holding Penalty vs Trade Duration\n\n")
-        if relationship_stats["holding_stats"].empty:
-            f.write("_No holding samples present._\n\n")
+        f.write("### 3.2 Hold Penalty vs Trade Duration\n\n")
+        if relationship_stats["hold_stats"].empty:
+            f.write("_No hold samples present._\n\n")
         else:
-            holding_df = relationship_stats["holding_stats"].copy()
-            if holding_df.index.name is None:
-                holding_df.index.name = "bin"
-            f.write(_df_to_md(holding_df, index_name=holding_df.index.name, ndigits=6))
+            hold_df = relationship_stats["hold_stats"].copy()
+            if hold_df.index.name is None:
+                hold_df.index.name = "bin"
+            f.write(_df_to_md(hold_df, index_name=hold_df.index.name, ndigits=6))
 
         f.write("### 3.3 Exit Reward vs PnL\n\n")
         if relationship_stats["exit_stats"].empty:

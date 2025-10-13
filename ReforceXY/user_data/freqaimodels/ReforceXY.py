@@ -1249,6 +1249,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             tensorboard_log_path = None
+
         train_env, eval_env = self._get_train_and_eval_environments(
             dk, trial=trial, model_params=params
         )
@@ -2010,7 +2011,7 @@ class MyRLEnv(Base5ActionRLEnv):
         Steps:
         1. Invalid action penalty
         2. Idle penalty
-        3. Holding overtime penalty
+        3. Hold overtime penalty
         4. Exit reward
         5. Default 0
         6. Potential-based shaping
@@ -2029,7 +2030,7 @@ class MyRLEnv(Base5ActionRLEnv):
         base_factor = float(model_reward_parameters.get("base_factor", 100.0))
         pnl_target = self.profit_aim * self.rr
         idle_factor = base_factor * pnl_target / 3.0
-        holding_factor = idle_factor
+        hold_factor = idle_factor
 
         # 2. Idle penalty
         if (
@@ -2062,19 +2063,19 @@ class MyRLEnv(Base5ActionRLEnv):
             and self._position in (Positions.Short, Positions.Long)
             and action == Actions.Neutral.value
         ):
-            holding_penalty_scale = float(
-                model_reward_parameters.get("holding_penalty_scale", 0.25)
+            hold_penalty_scale = float(
+                model_reward_parameters.get("hold_penalty_scale", 0.25)
             )
-            holding_penalty_power = float(
-                model_reward_parameters.get("holding_penalty_power", 1.025)
+            hold_penalty_power = float(
+                model_reward_parameters.get("hold_penalty_power", 1.025)
             )
             if duration_ratio < 1.0:
                 base_reward = 0.0
             else:
                 base_reward = (
-                    -holding_factor
-                    * holding_penalty_scale
-                    * (duration_ratio - 1.0) ** holding_penalty_power
+                    -hold_factor
+                    * hold_penalty_scale
+                    * (duration_ratio - 1.0) ** hold_penalty_power
                 )
 
         # 4. Exit rewards

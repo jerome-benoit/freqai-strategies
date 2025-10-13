@@ -289,7 +289,7 @@ class TestStatisticalCoherence(RewardSpaceTestBase):
                     "Idle durations should be non-negative",
                 )
 
-                # Idle rewards should generally be negative (penalty for holding)
+                # Idle rewards should generally be negative (penalty for hold)
                 negative_rewards = (idle_rew < 0).sum()
                 total_rewards = len(idle_rew)
                 negative_ratio = negative_rewards / total_rewards
@@ -887,7 +887,7 @@ class TestRewardAlignment(RewardSpaceTestBase):
                 position=Positions.Neutral,
                 action=Actions.Neutral,
             ),
-            # Holding penalty
+            # Hold penalty
             RewardContext(
                 pnl=0.0,
                 trade_duration=80,
@@ -926,7 +926,7 @@ class TestRewardAlignment(RewardSpaceTestBase):
                 comp_sum = (
                     br.exit_component
                     + br.idle_penalty
-                    + br.holding_penalty
+                    + br.hold_penalty
                     + br.invalid_penalty
                 )
                 self.assertAlmostEqual(
@@ -940,14 +940,14 @@ class TestRewardAlignment(RewardSpaceTestBase):
             components1 = {
                 "exit_component": br1.exit_component,
                 "idle_penalty": br1.idle_penalty,
-                "holding_penalty": br1.holding_penalty,
+                "hold_penalty": br1.hold_penalty,
                 "invalid_penalty": br1.invalid_penalty,
                 "total": br1.total,
             }
             components2 = {
                 "exit_component": br2.exit_component,
                 "idle_penalty": br2.idle_penalty,
-                "holding_penalty": br2.holding_penalty,
+                "hold_penalty": br2.hold_penalty,
                 "invalid_penalty": br2.invalid_penalty,
                 "total": br2.total,
             }
@@ -1089,7 +1089,7 @@ class TestPublicAPI(RewardSpaceTestBase):
             {
                 "reward_total": np.random.normal(0, 1, 300),
                 "reward_idle": np.where(idle_mask, np.random.normal(-1, 0.3, 300), 0.0),
-                "reward_holding": np.where(
+                "reward_hold": np.where(
                     ~idle_mask, np.random.normal(-0.5, 0.2, 300), 0.0
                 ),
                 "reward_exit": np.random.normal(0.8, 0.6, 300),
@@ -1390,7 +1390,7 @@ class TestStatisticalValidation(RewardSpaceTestBase):
             {
                 "reward_total": np.random.normal(0, 1, 300),
                 "reward_idle": np.random.normal(-1, 0.5, 300),
-                "reward_holding": np.random.normal(-0.5, 0.3, 300),
+                "reward_hold": np.random.normal(-0.5, 0.3, 300),
                 "reward_exit": np.random.normal(1, 0.8, 300),
                 "pnl": np.random.normal(0.01, 0.02, 300),
                 "trade_duration": np.random.uniform(5, 150, 300),
@@ -1582,7 +1582,7 @@ class TestStatisticalValidation(RewardSpaceTestBase):
             "reward_total",
             "reward_invalid",
             "reward_idle",
-            "reward_holding",
+            "reward_hold",
             "reward_exit",
         ]
         for col in required_columns:
@@ -1788,7 +1788,7 @@ class TestHelperFunctions(RewardSpaceTestBase):
                 "reward_idle": np.concatenate(
                     [np.zeros(150), np.random.normal(-1, 0.5, 50)]
                 ),
-                "reward_holding": np.concatenate(
+                "reward_hold": np.concatenate(
                     [np.zeros(150), np.random.normal(-0.5, 0.3, 50)]
                 ),
                 "reward_exit": np.concatenate(
@@ -1893,9 +1893,9 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             breakdown.total, breakdown.idle_penalty, "Total should equal idle penalty"
         )
 
-    def test_holding_penalty_via_rewards(self):
-        """Test holding penalty calculation via reward calculation."""
-        # Create context that will trigger holding penalty
+    def test_hold_penalty_via_rewards(self):
+        """Test hold penalty calculation via reward calculation."""
+        # Create context that will trigger hold penalty
         context = RewardContext(
             pnl=0.01,
             trade_duration=150,
@@ -1917,13 +1917,11 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             action_masking=True,
         )
 
-        self.assertLess(
-            breakdown.holding_penalty, 0, "Holding penalty should be negative"
-        )
+        self.assertLess(breakdown.hold_penalty, 0, "Hold penalty should be negative")
         self.assertEqual(
             breakdown.total,
-            breakdown.holding_penalty,
-            "Total should equal holding penalty",
+            breakdown.hold_penalty,
+            "Total should equal hold penalty",
         )
 
     def test_exit_reward_calculation(self):
@@ -2001,8 +1999,8 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             "Total should equal invalid penalty",
         )
 
-    def test_holding_penalty_zero_before_max_duration(self):
-        """Test holding penalty logic: zero penalty before max_trade_duration."""
+    def test_hold_penalty_zero_before_max_duration(self):
+        """Test hold penalty logic: zero penalty before max_trade_duration."""
         max_duration = 128
 
         # Test cases: before, at, and after max_duration
@@ -2017,7 +2015,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         for trade_duration, description in test_cases:
             with self.subTest(duration=trade_duration, desc=description):
                 context = RewardContext(
-                    pnl=0.0,  # Neutral PnL to isolate holding penalty
+                    pnl=0.0,  # Neutral PnL to isolate hold penalty
                     trade_duration=trade_duration,
                     idle_duration=0,
                     max_trade_duration=max_duration,
@@ -2042,34 +2040,34 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                 if duration_ratio < 1.0:
                     # Before max_duration: should be exactly 0.0
                     self.assertEqual(
-                        breakdown.holding_penalty,
+                        breakdown.hold_penalty,
                         0.0,
-                        f"Holding penalty should be 0.0 {description} (ratio={duration_ratio:.2f})",
+                        f"Hold penalty should be 0.0 {description} (ratio={duration_ratio:.2f})",
                     )
                 elif duration_ratio == 1.0:
                     # At max_duration: (1.0-1.0)^power = 0, so should be 0.0
                     self.assertEqual(
-                        breakdown.holding_penalty,
+                        breakdown.hold_penalty,
                         0.0,
-                        f"Holding penalty should be 0.0 {description} (ratio={duration_ratio:.2f})",
+                        f"Hold penalty should be 0.0 {description} (ratio={duration_ratio:.2f})",
                     )
                 else:
                     # After max_duration: should be negative
                     self.assertLess(
-                        breakdown.holding_penalty,
+                        breakdown.hold_penalty,
                         0.0,
-                        f"Holding penalty should be negative {description} (ratio={duration_ratio:.2f})",
+                        f"Hold penalty should be negative {description} (ratio={duration_ratio:.2f})",
                     )
 
-                # Total should equal holding penalty (no other components active)
+                # Total should equal hold penalty (no other components active)
                 self.assertEqual(
                     breakdown.total,
-                    breakdown.holding_penalty,
-                    f"Total should equal holding penalty {description}",
+                    breakdown.hold_penalty,
+                    f"Total should equal hold penalty {description}",
                 )
 
-    def test_holding_penalty_progressive_scaling(self):
-        """Test that holding penalty scales progressively after max_duration."""
+    def test_hold_penalty_progressive_scaling(self):
+        """Test that hold penalty scales progressively after max_duration."""
         max_duration = 100
         durations = [150, 200, 300]  # All > max_duration
         penalties: list[float] = []
@@ -2096,7 +2094,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                 action_masking=True,
             )
 
-            penalties.append(breakdown.holding_penalty)
+            penalties.append(breakdown.hold_penalty)
 
         # Penalties should be increasingly negative (monotonic decrease)
         for i in range(1, len(penalties)):
@@ -2146,7 +2144,7 @@ class TestRewardRobustness(RewardSpaceTestBase):
     - Reward decomposition integrity (total == sum of active component exactly)
     - Exit factor monotonic attenuation per mode where mathematically expected
     - Boundary parameter conditions (tau extremes, plateau grace edges, linear slope = 0)
-    - Non-linear power tests for idle & holding penalties (power != 1)
+    - Non-linear power tests for idle & hold penalties (power != 1)
     - Warning emission (exit_factor_threshold) without capping
     """
 
@@ -2192,7 +2190,7 @@ class TestRewardRobustness(RewardSpaceTestBase):
                 ),
                 active="idle_penalty",
             ),
-            # Holding penalty only
+            # Hold penalty only
             dict(
                 ctx=RewardContext(
                     pnl=0.0,
@@ -2204,7 +2202,7 @@ class TestRewardRobustness(RewardSpaceTestBase):
                     position=Positions.Long,
                     action=Actions.Neutral,
                 ),
-                active="holding_penalty",
+                active="hold_penalty",
             ),
             # Exit reward only (positive pnl)
             dict(
@@ -2242,7 +2240,7 @@ class TestRewardRobustness(RewardSpaceTestBase):
                 components = [
                     br.invalid_penalty,
                     br.idle_penalty,
-                    br.holding_penalty,
+                    br.hold_penalty,
                     br.exit_component,
                 ]
                 non_zero = [
@@ -2510,7 +2508,7 @@ class TestParameterValidation(RewardSpaceTestBase):
         self.assertIn("exit_power_tau", adjustments)
         self.assertIn("min=", str(adjustments["exit_power_tau"]["reason"]))
 
-    def test_idle_and_holding_penalty_power(self):
+    def test_idle_and_hold_penalty_power(self):
         """Test non-linear scaling when penalty powers != 1."""
         params = self.DEFAULT_PARAMS.copy()
         params["idle_penalty_power"] = 2.0
@@ -2557,8 +2555,8 @@ class TestParameterValidation(RewardSpaceTestBase):
             delta=0.8,
             msg=f"Idle penalty quadratic scaling mismatch (ratio={ratio_quadratic})",
         )
-        # Holding penalty with power 2: durations just above threshold
-        params["holding_penalty_power"] = 2.0
+        # Hold penalty with power 2: durations just above threshold
+        params["hold_penalty_power"] = 2.0
         ctx_h1 = RewardContext(
             pnl=0.0,
             trade_duration=130,
@@ -2570,7 +2568,7 @@ class TestParameterValidation(RewardSpaceTestBase):
             action=Actions.Neutral,
         )
         ctx_h2 = dataclasses.replace(ctx_h1, trade_duration=140)
-        # Compute baseline and comparison holding penalties
+        # Compute baseline and comparison hold penalties
         br_h1 = calculate_reward(
             ctx_h1,
             params,
@@ -2591,13 +2589,13 @@ class TestParameterValidation(RewardSpaceTestBase):
         )
         # Quadratic scaling: ((140-100)/(130-100))^2 = (40/30)^2 ≈ 1.777...
         hold_ratio = 0.0
-        if br_h1.holding_penalty != 0:
-            hold_ratio = br_h2.holding_penalty / br_h1.holding_penalty
+        if br_h1.hold_penalty != 0:
+            hold_ratio = br_h2.hold_penalty / br_h1.hold_penalty
         self.assertAlmostEqual(
             abs(hold_ratio),
             (40 / 30) ** 2,
             delta=0.4,
-            msg=f"Holding penalty quadratic scaling mismatch (ratio={hold_ratio})",
+            msg=f"Hold penalty quadratic scaling mismatch (ratio={hold_ratio})",
         )
 
     def test_exit_factor_threshold_warning_emission(self):

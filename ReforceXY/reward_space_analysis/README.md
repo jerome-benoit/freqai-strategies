@@ -262,10 +262,10 @@ _Idle penalty configuration:_
 - `idle_penalty_scale` (default: 0.5) - Scale of idle penalty
 - `idle_penalty_power` (default: 1.025) - Power applied to idle penalty scaling
 
-_Holding penalty configuration:_
+_Hold penalty configuration:_
 
-- `holding_penalty_scale` (default: 0.25) - Scale of holding penalty
-- `holding_penalty_power` (default: 1.025) - Power applied to holding penalty scaling
+- `hold_penalty_scale` (default: 0.25) - Scale of hold penalty
+- `hold_penalty_power` (default: 1.025) - Power applied to hold penalty scaling
 
 _Exit attenuation configuration:_
 
@@ -465,11 +465,11 @@ python reward_space_analysis.py \
     --params exit_attenuation_mode=power exit_power_tau=0.5 efficiency_weight=0.8 \
     --output custom_test
 
-# Test aggressive holding penalties
+# Test aggressive hold penalties
 python reward_space_analysis.py \
     --num_samples 25000 \
-    --params holding_penalty_scale=0.5 \
-    --output aggressive_holding
+    --params hold_penalty_scale=0.5 \
+    --output aggressive_hold
 ```
 
 ### Real Data Comparison
@@ -523,7 +523,7 @@ Always run the full suite after modifying reward logic or attenuation parameters
 | Statistical Validation | TestStatisticalValidation | Mathematical bounds, heteroscedasticity, invariants |
 | Boundary Conditions | TestBoundaryConditions | Extreme params & unknown mode fallback |
 | Helper Functions | TestHelperFunctions | Report writers, model analysis, utility conversions |
-| Private Functions (via public API) | TestPrivateFunctions | Idle / holding / invalid penalties, exit scenarios |
+| Private Functions (via public API) | TestPrivateFunctions | Idle / hold / invalid penalties, exit scenarios |
 | Robustness | TestRewardRobustness | Monotonic attenuation (where applicable), decomposition integrity, boundary regimes |
 | Parameter Validation | TestParameterValidation | Bounds clamping, warning threshold, penalty power scaling |
 | Continuity | TestContinuityPlateau | Plateau boundary continuity & small‑epsilon attenuation scaling |
