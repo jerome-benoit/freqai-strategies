@@ -1379,7 +1379,7 @@ class MyRLEnv(Base5ActionRLEnv):
             0.01, min(100.0, self._potential_softsign_sharpness)
         )
         # === CLOSING MODE ===
-        # closing_potential_mode options (strict set, no legacy aliases):
+        # closing_potential_mode options:
         #   'canonical'           -> Φ(next)=0 (baseline PBRS)
         #   'progressive_release' -> Φ(next)=Φ(prev)*(1-decay_factor)
         #   'spike_cancel'        -> Φ(next)=Φ(prev)/gamma (shaping_reward ≈ 0)
@@ -1454,6 +1454,10 @@ class MyRLEnv(Base5ActionRLEnv):
             return Positions.Neutral
         return self._position
 
+    def _is_invalid_pnl_target(self, pnl_target: float) -> bool:
+        """Check if pnl_target is invalid (negative or close to zero)."""
+        return pnl_target < 0.0 or np.isclose(pnl_target, 0.0)
+
     def _compute_hold_potential(
         self,
         position: Positions,
@@ -1464,7 +1468,7 @@ class MyRLEnv(Base5ActionRLEnv):
         """Compute potential Φ(s) for hold transitions."""
         if position not in (Positions.Long, Positions.Short):
             return 0.0
-        if pnl_target < 0.0 or np.isclose(pnl_target, 0.0):
+        if self._is_invalid_pnl_target(pnl_target):
             return 0.0
         pnl_ratio = pnl / pnl_target
         gain = self._hold_potential_gain
@@ -1486,7 +1490,7 @@ class MyRLEnv(Base5ActionRLEnv):
         """Compute exit additive for closing transitions (non-PBRS additive term)."""
         if not self._exit_additive_enabled:
             return 0.0
-        if pnl_target < 0.0 or np.isclose(pnl_target, 0.0):
+        if self._is_invalid_pnl_target(pnl_target):
             return 0.0
         gain = self._exit_additive_gain
         pnl_term = self._potential_transform(
@@ -1507,7 +1511,7 @@ class MyRLEnv(Base5ActionRLEnv):
         """Compute entry additive for entry transitions (non-PBRS additive term)."""
         if not self._entry_additive_enabled:
             return 0.0
-        if pnl_target < 0.0 or np.isclose(pnl_target, 0.0):
+        if self._is_invalid_pnl_target(pnl_target):
             return 0.0
         gain = self._entry_additive_gain
         pnl_term = self._potential_transform(
