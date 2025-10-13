@@ -1579,8 +1579,10 @@ class MyRLEnv(Base5ActionRLEnv):
                 return max(-1.0, min(1.0, x))
         except OverflowError:
             return 1.0 if x > 0 else -1.0
-        return math.tanh(x)
-
+        try:
+            return math.tanh(x)
+        except OverflowError:
+            return 1.0 if x > 0 else -1.0
     def _compute_closing_potential(
         self, prev_potential: float, gamma: float
     ) -> Tuple[float, float]:
