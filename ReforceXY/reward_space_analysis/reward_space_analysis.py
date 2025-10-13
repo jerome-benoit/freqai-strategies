@@ -29,6 +29,7 @@ import math
 import pickle
 import random
 import warnings
+import logging
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -56,6 +57,9 @@ class Positions(Enum):
     Short = 0
     Long = 1
     Neutral = 0.5
+
+
+logger = logging.getLogger(__name__)
 
 
 def _to_bool(value: Any) -> bool:
@@ -129,6 +133,23 @@ RewardParams = Dict[str, RewardParamValue]
 # Allowed exit attenuation modes
 ALLOWED_EXIT_MODES = {"legacy", "sqrt", "linear", "power", "half_life"}
 
+# PBRS constants
+ALLOWED_TRANSFORMS = {
+    "tanh",
+    "softsign",
+    "softsign_sharp",
+    "arctan",
+    "logistic",
+    "asinh_norm",
+    "clip",
+}
+ALLOWED_EXIT_POTENTIAL_MODES = {
+    "canonical",
+    "progressive_release",
+    "spike_cancel",
+    "retain_previous",
+}
+
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
     "base_factor": 100.0,
@@ -156,6 +177,32 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     # Invariant / safety controls (env defaults)
     "check_invariants": True,
     "exit_factor_threshold": 10000.0,
+    # === PBRS PARAMETERS ===
+    # PBRS common parameters
+    # Discount factor for PBRS potential term (original environment default 0.95)
+    "potential_gamma": 0.95,
+    "potential_softsign_sharpness": 1.0,
+    # Exit potential modes: 'canonical', 'progressive_release', 'spike_cancel', 'retain_previous'
+    "exit_potential_mode": "canonical",
+    "exit_potential_decay": 0.5,
+    # Hold potential (PBRS function Φ)
+    "hold_potential_enabled": True,
+    "hold_potential_scale": 1.0,
+    "hold_potential_gain": 1.0,
+    "hold_potential_transform_pnl": "tanh",
+    "hold_potential_transform_duration": "tanh",
+    # Entry additive (non-PBRS additive term)
+    "entry_additive_enabled": False,
+    "entry_additive_scale": 1.0,
+    "entry_additive_gain": 1.0,
+    "entry_additive_transform_pnl": "tanh",
+    "entry_additive_transform_duration": "tanh",
+    # Exit additive (non-PBRS additive term)
+    "exit_additive_enabled": False,
+    "exit_additive_scale": 1.0,
+    "exit_additive_gain": 1.0,
+    "exit_additive_transform_pnl": "tanh",
+    "exit_additive_transform_duration": "tanh",
 }
 
 DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
@@ -178,6 +225,26 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "pnl_factor_beta": "Sensitivity of amplification around target.",
     "check_invariants": "Boolean flag (true/false) to enable runtime invariant & safety checks.",
     "exit_factor_threshold": "If |exit factor| exceeds this threshold, emit warning.",
+    # PBRS parameters
+    "potential_gamma": "Discount factor γ for PBRS potential-based reward shaping (0 ≤ γ ≤ 1).",
+    "potential_softsign_sharpness": "Sharpness parameter for softsign_sharp transform (smaller = sharper).",
+    "exit_potential_mode": "Exit potential mode: 'canonical' (Φ=0), 'progressive_release', 'spike_cancel', 'retain_previous'.",
+    "exit_potential_decay": "Decay factor for progressive_release exit mode (0 ≤ decay ≤ 1).",
+    "hold_potential_enabled": "Enable PBRS hold potential function Φ(s).",
+    "hold_potential_scale": "Scale factor for hold potential function.",
+    "hold_potential_gain": "Gain factor applied before transforms in hold potential.",
+    "hold_potential_transform_pnl": "Transform function for PnL in hold potential: tanh, softsign, softsign_sharp, arctan, logistic, asinh_norm, clip.",
+    "hold_potential_transform_duration": "Transform function for duration ratio in hold potential.",
+    "entry_additive_enabled": "Enable entry additive reward (non-PBRS component).",
+    "entry_additive_scale": "Scale factor for entry additive reward.",
+    "entry_additive_gain": "Gain factor for entry additive reward.",
+    "entry_additive_transform_pnl": "Transform function for PnL in entry additive.",
+    "entry_additive_transform_duration": "Transform function for duration ratio in entry additive.",
+    "exit_additive_enabled": "Enable exit additive reward (non-PBRS component).",
+    "exit_additive_scale": "Scale factor for exit additive reward.",
+    "exit_additive_gain": "Gain factor for exit additive reward.",
+    "exit_additive_transform_pnl": "Transform function for PnL in exit additive.",
+    "exit_additive_transform_duration": "Transform function for duration ratio in exit additive.",
 }
 
 
@@ -202,6 +269,17 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "efficiency_center": {"min": 0.0, "max": 1.0},
     "win_reward_factor": {"min": 0.0},
     "pnl_factor_beta": {"min": 1e-6},
+    # PBRS parameter bounds
+    "potential_gamma": {"min": 0.0, "max": 1.0},
+    # Clamp sharpness similarly to original environment (min bound only; upper bound implicit by transforms stability)
+    "potential_softsign_sharpness": {"min": 1e-6},
+    "exit_potential_decay": {"min": 0.0, "max": 1.0},
+    "hold_potential_scale": {"min": 0.0},
+    "hold_potential_gain": {"min": 0.0},
+    "entry_additive_scale": {"min": 0.0},
+    "entry_additive_gain": {"min": 0.0},
+    "exit_additive_scale": {"min": 0.0},
+    "exit_additive_gain": {"min": 0.0},
 }
 
 
@@ -312,6 +390,41 @@ def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
                 default=None,
                 help=help_text,
             )
+        elif key == "exit_potential_mode":
+            parser.add_argument(
+                f"--{key}",
+                type=str,
+                choices=sorted(ALLOWED_EXIT_POTENTIAL_MODES),
+                default=None,
+                help=help_text,
+            )
+        elif key in [
+            "hold_potential_transform_pnl",
+            "hold_potential_transform_duration",
+            "entry_additive_transform_pnl",
+            "entry_additive_transform_duration",
+            "exit_additive_transform_pnl",
+            "exit_additive_transform_duration",
+        ]:
+            parser.add_argument(
+                f"--{key}",
+                type=str,
+                choices=sorted(ALLOWED_TRANSFORMS),
+                default=None,
+                help=help_text,
+            )
+        elif key in [
+            "hold_potential_enabled",
+            "entry_additive_enabled",
+            "exit_additive_enabled",
+        ]:
+            parser.add_argument(
+                f"--{key}",
+                type=int,
+                choices=[0, 1],
+                default=None,
+                help=help_text,
+            )
         else:
             # Map numerics to float; leave strings as str
             if isinstance(default, (int, float)):
@@ -341,6 +454,12 @@ class RewardBreakdown:
     idle_penalty: float = 0.0
     hold_penalty: float = 0.0
     exit_component: float = 0.0
+    # PBRS components
+    shaping_reward: float = 0.0
+    entry_additive: float = 0.0
+    exit_additive: float = 0.0
+    current_potential: float = 0.0
+    next_potential: float = 0.0
 
 
 def _get_exit_factor(
@@ -637,6 +756,7 @@ def calculate_reward(
     *,
     short_allowed: bool,
     action_masking: bool,
+    previous_potential: float = 0.0,
 ) -> RewardBreakdown:
     breakdown = RewardBreakdown()
 
@@ -667,42 +787,85 @@ def calculate_reward(
     pnl_factor = _get_pnl_factor(params, context, profit_target_final)
     hold_factor = idle_factor
 
-    if context.action == Actions.Neutral and context.position == Positions.Neutral:
-        breakdown.idle_penalty = _idle_penalty(context, idle_factor, params)
-        breakdown.total = breakdown.idle_penalty
-        return breakdown
+    # Base reward calculation (existing logic)
+    base_reward = 0.0
 
-    if (
+    if context.action == Actions.Neutral and context.position == Positions.Neutral:
+        base_reward = _idle_penalty(context, idle_factor, params)
+        breakdown.idle_penalty = base_reward
+    elif (
         context.position in (Positions.Long, Positions.Short)
         and context.action == Actions.Neutral
     ):
-        breakdown.hold_penalty = _hold_penalty(context, hold_factor, params)
-        breakdown.total = breakdown.hold_penalty
-        return breakdown
+        base_reward = _hold_penalty(context, hold_factor, params)
+        breakdown.hold_penalty = base_reward
+    elif context.action == Actions.Long_exit and context.position == Positions.Long:
+        base_reward = _compute_exit_reward(factor, pnl_factor, context, params)
+        breakdown.exit_component = base_reward
+    elif context.action == Actions.Short_exit and context.position == Positions.Short:
+        base_reward = _compute_exit_reward(factor, pnl_factor, context, params)
+        breakdown.exit_component = base_reward
+    else:
+        base_reward = 0.0
 
-    if context.action == Actions.Long_exit and context.position == Positions.Long:
-        exit_reward = _compute_exit_reward(
-            factor,
-            pnl_factor,
-            context,
-            params,
+    # === PBRS INTEGRATION ===
+    # Determine state transitions for PBRS
+    current_pnl = context.pnl if context.position != Positions.Neutral else 0.0
+    current_duration_ratio = (
+        context.trade_duration / context.max_trade_duration
+        if context.position != Positions.Neutral and context.max_trade_duration > 0
+        else 0.0
+    )
+
+    # Simulate next state for PBRS calculation
+    is_terminal = context.action in (Actions.Long_exit, Actions.Short_exit)
+
+    # For terminal transitions, next state is neutral (PnL=0, duration=0)
+    if is_terminal:
+        next_pnl = 0.0
+        next_duration_ratio = 0.0
+    else:
+        # For non-terminal, use current values (simplified simulation)
+        next_pnl = current_pnl
+        next_duration_ratio = current_duration_ratio
+
+    # Apply PBRS if any PBRS parameters are enabled
+    pbrs_enabled = (
+        _get_bool_param(params, "hold_potential_enabled", True)
+        or _get_bool_param(params, "entry_additive_enabled", False)
+        or _get_bool_param(params, "exit_additive_enabled", False)
+    )
+
+    if pbrs_enabled:
+        total_reward, shaping_reward, next_potential = apply_potential_shaping(
+            base_reward=base_reward,
+            current_pnl=current_pnl,
+            current_duration_ratio=current_duration_ratio,
+            next_pnl=next_pnl,
+            next_duration_ratio=next_duration_ratio,
+            is_terminal=is_terminal,
+            last_potential=previous_potential,
+            params=params,
         )
-        breakdown.exit_component = exit_reward
-        breakdown.total = exit_reward
-        return breakdown
 
-    if context.action == Actions.Short_exit and context.position == Positions.Short:
-        exit_reward = _compute_exit_reward(
-            factor,
-            pnl_factor,
-            context,
-            params,
+        # Update breakdown with PBRS components
+        breakdown.shaping_reward = shaping_reward
+        breakdown.current_potential = _compute_hold_potential(
+            current_pnl, current_duration_ratio, params
         )
-        breakdown.exit_component = exit_reward
-        breakdown.total = exit_reward
-        return breakdown
+        breakdown.next_potential = next_potential
+        breakdown.entry_additive = _compute_entry_additive(
+            current_pnl, current_duration_ratio, params
+        )
+        breakdown.exit_additive = (
+            _compute_exit_additive(next_pnl, next_duration_ratio, params)
+            if is_terminal
+            else 0.0
+        )
+        breakdown.total = total_reward
+    else:
+        breakdown.total = base_reward
 
-    breakdown.total = 0.0
     return breakdown
 
 
@@ -855,6 +1018,12 @@ def simulate_samples(
                 "reward_idle": breakdown.idle_penalty,
                 "reward_hold": breakdown.hold_penalty,
                 "reward_exit": breakdown.exit_component,
+                # PBRS components
+                "reward_shaping": breakdown.shaping_reward,
+                "reward_entry_additive": breakdown.entry_additive,
+                "reward_exit_additive": breakdown.exit_additive,
+                "current_potential": breakdown.current_potential,
+                "next_potential": breakdown.next_potential,
                 "is_invalid": float(breakdown.invalid_penalty != 0.0),
             }
         )
@@ -947,7 +1116,15 @@ def _compute_summary_stats(df: pd.DataFrame) -> Dict[str, Any]:
         ["count", "mean", "std", "min", "max"]
     )
     component_share = df[
-        ["reward_invalid", "reward_idle", "reward_hold", "reward_exit"]
+        [
+            "reward_invalid",
+            "reward_idle",
+            "reward_hold",
+            "reward_exit",
+            "reward_shaping",
+            "reward_entry_additive",
+            "reward_exit_additive",
+        ]
     ].apply(lambda col: (col != 0).mean())
 
     components = [
@@ -2463,6 +2640,551 @@ def main() -> None:
     print(f"Generated {len(df):,} synthetic samples.")
     print(sample_output_message)
     print(f"Artifacts saved to: {args.output.resolve()}")
+
+
+# === PBRS TRANSFORM FUNCTIONS ===
+
+
+def _apply_transform_tanh(value: float, scale: float = 1.0) -> float:
+    """
+    Apply tanh transform: tanh(scale * value).
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+
+    Returns:
+        Transformed value in range (-1, 1)
+    """
+    return float(np.tanh(scale * value))
+
+
+def _apply_transform_softsign(value: float, scale: float = 1.0) -> float:
+    """
+    Apply softsign transform: x / (1 + |x|) where x = scale * value.
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+
+    Returns:
+        Transformed value in range (-1, 1)
+    """
+    x = scale * value
+    return float(x / (1.0 + abs(x)))
+
+
+def _apply_transform_softsign_sharp(
+    value: float, scale: float = 1.0, sharpness: float = 1.0
+) -> float:
+    """
+    Apply sharp softsign transform: x / (sharpness + |x|) where x = scale * value.
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+        sharpness: Sharpness parameter (default: 1.0, smaller = sharper)
+
+    Returns:
+        Transformed value in range (-1, 1)
+    """
+    x = scale * value
+    return float(x / (sharpness + abs(x)))
+
+
+def _apply_transform_arctan(value: float, scale: float = 1.0) -> float:
+    """
+    Apply arctan transform: arctan(scale * value).
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+
+    Returns:
+        Transformed value in range (-π/2, π/2)
+    """
+    return float(np.arctan(scale * value))
+
+
+def _apply_transform_logistic(value: float, scale: float = 1.0) -> float:
+    """
+    Apply logistic transform: 2σ(x) - 1 (tanh-like output in [-1,1]).
+
+    Uses overflow-safe implementation matching original environment.
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+
+    Returns:
+        Transformed value in range (-1, 1)
+    """
+    x = scale * value
+    try:
+        if x >= 0:
+            z = math.exp(-x)  # z in (0,1]
+            return float((1.0 - z) / (1.0 + z))
+        else:
+            z = math.exp(x)  # z in (0,1]
+            return float((z - 1.0) / (z + 1.0))
+    except OverflowError:
+        return 1.0 if x > 0 else -1.0
+
+
+def _apply_transform_asinh_norm(value: float, scale: float = 1.0) -> float:
+    """
+    Apply normalized asinh transform: x / sqrt(1 + x²).
+
+    This matches the original environment implementation for asinh_norm.
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+
+    Returns:
+        Transformed value in range [-1, 1] (bounded but smooth)
+    """
+    scaled = scale * value
+    return float(scaled / math.hypot(1.0, scaled))
+
+
+def _apply_transform_clip(value: float, scale: float = 1.0) -> float:
+    """
+    Apply clipping transform: clip(scale * value, -1, 1).
+
+    Args:
+        value: Input value to transform
+        scale: Scale factor (default: 1.0)
+
+    Returns:
+        Transformed value in range [-1, 1]
+    """
+    return float(np.clip(scale * value, -1.0, 1.0))
+
+
+def apply_transform(transform_name: str, value: float, **kwargs: Any) -> float:
+    """
+    Apply specified transform function to value.
+
+    Matches original environment behavior: unknown transforms fallback to tanh
+    with info logging (not error raising).
+
+    Args:
+        transform_name: Name of transform function
+        value: Input value to transform
+        **kwargs: Additional parameters for transform
+
+    Returns:
+        Transformed value (always succeeds with fallback)
+    """
+    transforms = {
+        "tanh": _apply_transform_tanh,
+        "softsign": _apply_transform_softsign,
+        "softsign_sharp": _apply_transform_softsign_sharp,
+        "arctan": _apply_transform_arctan,
+        "logistic": _apply_transform_logistic,
+        "asinh_norm": _apply_transform_asinh_norm,
+        "clip": _apply_transform_clip,
+    }
+
+    if transform_name not in transforms:
+        logger.info(
+            "Unknown potential transform '%s'; falling back to tanh", transform_name
+        )
+        return _apply_transform_tanh(value, **kwargs)
+
+    return transforms[transform_name](value, **kwargs)
+
+
+# === PBRS HELPER FUNCTIONS ===
+
+
+def _get_float_param(params: RewardParams, key: str, default: float) -> float:
+    """Extract float parameter with type safety."""
+    value = params.get(key, default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _get_potential_gamma(params: RewardParams) -> float:
+    """
+    Extract potential_gamma parameter with original environment behavior.
+
+    Matches ReforceXY.py behavior:
+    - If None or missing: return 0.95 with warning
+    - If valid float: return as-is
+    - Otherwise: return 0.95 default
+    """
+    value = params.get("potential_gamma", None)
+
+    if value is None:
+        logger.warning(
+            "potential_gamma not found in config, using default value of 0.95. "
+            "This parameter controls the discount factor for PBRS potential shaping."
+        )
+        return 0.95
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    logger.warning(
+        f"Invalid potential_gamma value: {value}. Using default 0.95. "
+        "Expected numeric value in [0, 1]."
+    )
+    return 0.95
+
+
+def _get_str_param(params: RewardParams, key: str, default: str) -> str:
+    """Extract string parameter with type safety."""
+    value = params.get(key, default)
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _get_bool_param(params: RewardParams, key: str, default: bool) -> bool:
+    """Extract boolean parameter with type safety."""
+    value = params.get(key, default)
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+# === PBRS IMPLEMENTATION ===
+
+
+def _compute_hold_potential(
+    pnl: float, duration_ratio: float, params: RewardParams
+) -> float:
+    """
+    Compute PBRS hold potential: Φ(s) = scale * 0.5 * [T_pnl(g*pnl_ratio) + T_dur(g*duration_ratio)].
+
+    This implements the canonical PBRS potential function from Ng et al. (1999):
+    R'(s,a,s') = R_base(s,a,s') + γΦ(s') - Φ(s)
+
+    Args:
+        pnl: Current profit/loss ratio
+        duration_ratio: Current duration as fraction of max_trade_duration
+        params: Reward parameters containing PBRS configuration
+
+    Returns:
+        Potential value Φ(s)
+    """
+    if not _get_bool_param(params, "hold_potential_enabled", True):
+        return 0.0
+
+    scale = _get_float_param(params, "hold_potential_scale", 1.0)
+    gain = _get_float_param(params, "hold_potential_gain", 1.0)
+    transform_pnl = _get_str_param(params, "hold_potential_transform_pnl", "tanh")
+    transform_duration = _get_str_param(
+        params, "hold_potential_transform_duration", "tanh"
+    )
+    sharpness = _get_float_param(params, "potential_softsign_sharpness", 1.0)
+
+    # Apply transforms
+    if transform_pnl == "softsign_sharp":
+        t_pnl = apply_transform(transform_pnl, gain * pnl, sharpness=sharpness)
+    else:
+        t_pnl = apply_transform(transform_pnl, gain * pnl)
+
+    if transform_duration == "softsign_sharp":
+        t_dur = apply_transform(
+            transform_duration, gain * duration_ratio, sharpness=sharpness
+        )
+    else:
+        t_dur = apply_transform(transform_duration, gain * duration_ratio)
+
+    potential = scale * 0.5 * (t_pnl + t_dur)
+
+    # Validate numerical safety
+    if not np.isfinite(potential):
+        return 0.0
+
+    return float(potential)
+
+
+def _compute_entry_additive(
+    pnl: float, duration_ratio: float, params: RewardParams
+) -> float:
+    """
+    Compute entry additive reward (non-PBRS component).
+
+    Args:
+        pnl: Current profit/loss ratio
+        duration_ratio: Current duration as fraction of max_trade_duration
+        params: Reward parameters
+
+    Returns:
+        Entry additive reward
+    """
+    if not _get_bool_param(params, "entry_additive_enabled", False):
+        return 0.0
+
+    scale = _get_float_param(params, "entry_additive_scale", 1.0)
+    gain = _get_float_param(params, "entry_additive_gain", 1.0)
+    transform_pnl = _get_str_param(params, "entry_additive_transform_pnl", "tanh")
+    transform_duration = _get_str_param(
+        params, "entry_additive_transform_duration", "tanh"
+    )
+    sharpness = _get_float_param(params, "potential_softsign_sharpness", 1.0)
+
+    # Apply transforms
+    if transform_pnl == "softsign_sharp":
+        t_pnl = apply_transform(transform_pnl, gain * pnl, sharpness=sharpness)
+    else:
+        t_pnl = apply_transform(transform_pnl, gain * pnl)
+
+    if transform_duration == "softsign_sharp":
+        t_dur = apply_transform(
+            transform_duration, gain * duration_ratio, sharpness=sharpness
+        )
+    else:
+        t_dur = apply_transform(transform_duration, gain * duration_ratio)
+
+    additive = scale * 0.5 * (t_pnl + t_dur)
+
+    # Validate numerical safety
+    if not np.isfinite(additive):
+        return 0.0
+
+    return float(additive)
+
+
+def _compute_exit_additive(
+    pnl: float, duration_ratio: float, params: RewardParams
+) -> float:
+    """
+    Compute exit additive reward (non-PBRS component).
+
+    Args:
+        pnl: Final profit/loss ratio at exit
+        duration_ratio: Final duration as fraction of max_trade_duration
+        params: Reward parameters
+
+    Returns:
+        Exit additive reward
+    """
+    if not _get_bool_param(params, "exit_additive_enabled", False):
+        return 0.0
+
+    scale = _get_float_param(params, "exit_additive_scale", 1.0)
+    gain = _get_float_param(params, "exit_additive_gain", 1.0)
+    transform_pnl = _get_str_param(params, "exit_additive_transform_pnl", "tanh")
+    transform_duration = _get_str_param(
+        params, "exit_additive_transform_duration", "tanh"
+    )
+    sharpness = _get_float_param(params, "potential_softsign_sharpness", 1.0)
+
+    # Apply transforms
+    if transform_pnl == "softsign_sharp":
+        t_pnl = apply_transform(transform_pnl, gain * pnl, sharpness=sharpness)
+    else:
+        t_pnl = apply_transform(transform_pnl, gain * pnl)
+
+    if transform_duration == "softsign_sharp":
+        t_dur = apply_transform(
+            transform_duration, gain * duration_ratio, sharpness=sharpness
+        )
+    else:
+        t_dur = apply_transform(transform_duration, gain * duration_ratio)
+
+    additive = scale * 0.5 * (t_pnl + t_dur)
+
+    # Validate numerical safety
+    if not np.isfinite(additive):
+        return 0.0
+
+    return float(additive)
+
+
+def _compute_exit_potential(
+    pnl: float, duration_ratio: float, params: RewardParams, last_potential: float = 0.0
+) -> float:
+    """Compute next potential Φ(s') for closing/exit transitions.
+
+    Mirrors the original environment semantics:
+    - canonical: Φ' = 0.0
+    - progressive_release: Φ' = Φ * (1 - decay) with decay clamped to [0,1]
+    - spike_cancel: Φ' = Φ / γ (neutralizes shaping spike ≈ 0 net effect) if γ>0 else Φ
+    - retain_previous: Φ' = Φ
+    Invalid modes fall back to canonical.
+    Any non-finite resulting potential is coerced to 0.0.
+    """
+    mode = _get_str_param(params, "exit_potential_mode", "canonical")
+    if mode == "canonical":
+        return 0.0
+
+    if mode == "progressive_release":
+        decay = _get_float_param(params, "exit_potential_decay", 0.5)
+        if not np.isfinite(decay) or decay < 0.0:
+            decay = 0.5
+        if decay > 1.0:
+            decay = 1.0
+        next_potential = last_potential * (1.0 - decay)
+    elif mode == "spike_cancel":
+        gamma = _get_potential_gamma(params)
+        if gamma > 0.0 and np.isfinite(gamma):
+            next_potential = last_potential / gamma
+        else:
+            next_potential = last_potential
+    elif mode == "retain_previous":
+        next_potential = last_potential
+    else:
+        next_potential = 0.0
+
+    if not np.isfinite(next_potential):
+        next_potential = 0.0
+    return float(next_potential)
+
+
+def apply_potential_shaping(
+    base_reward: float,
+    current_pnl: float,
+    current_duration_ratio: float,
+    next_pnl: float,
+    next_duration_ratio: float,
+    is_terminal: bool,
+    last_potential: float,
+    params: RewardParams,
+) -> tuple[float, float, float]:
+    """
+    Apply PBRS potential-based reward shaping following Ng et al. (1999).
+
+    Implements: R'(s,a,s') = R_base(s,a,s') + γΦ(s') - Φ(s)
+
+    This function computes the complete PBRS transformation including:
+    - Hold potential: Φ(s) based on current state features
+    - Closing potential: Φ(s') with mode-specific terminal handling
+    - Entry/exit potentials: Non-PBRS additive components
+    - Gamma discounting: Standard RL discount factor
+    - Invariance guarantees: Optimal policy preservation
+
+    Theory:
+    PBRS maintains optimal policy invariance by ensuring that the potential-based
+    shaping reward is the difference of a potential function. Terminal states
+    require special handling to preserve this property.
+
+    Args:
+        base_reward: Base environment reward R_base(s,a,s')
+        current_pnl: Current state PnL ratio
+        current_duration_ratio: Current state duration ratio
+        next_pnl: Next state PnL ratio
+        next_duration_ratio: Next state duration ratio
+        is_terminal: Whether next state is terminal
+        last_potential: Previous potential for closing mode calculations
+        params: Reward parameters containing PBRS configuration
+
+    Returns:
+        tuple[total_reward, shaping_reward, next_potential]:
+        - total_reward: R_base + R_shaping + additives
+        - shaping_reward: Pure PBRS component γΦ(s') - Φ(s)
+        - next_potential: Φ(s') for next iteration
+
+    Raises:
+        ValueError: If gamma is invalid or numerical issues detected
+    """
+    # Enforce PBRS invariance (auto-disable additives in canonical mode)
+    params = _enforce_pbrs_invariance(params)
+
+    # Validate gamma (with None handling matching original environment)
+    gamma = _get_potential_gamma(params)
+    if not (0.0 <= gamma <= 1.0):
+        raise ValueError(f"Invalid gamma: {gamma}. Must be in [0, 1]")
+
+    # Compute current potential Φ(s)
+    current_potential = _compute_hold_potential(
+        current_pnl, current_duration_ratio, params
+    )
+
+    # Compute next potential Φ(s')
+    if is_terminal:
+        next_potential = _compute_exit_potential(
+            next_pnl, next_duration_ratio, params, last_potential
+        )
+    else:
+        next_potential = _compute_hold_potential(next_pnl, next_duration_ratio, params)
+
+    # PBRS shaping reward: γΦ(s') - Φ(s)
+    shaping_reward = gamma * next_potential - current_potential
+
+    # Compute additive components (non-PBRS)
+    entry_additive = _compute_entry_additive(
+        current_pnl, current_duration_ratio, params
+    )
+    exit_additive = (
+        _compute_exit_additive(next_pnl, next_duration_ratio, params)
+        if is_terminal
+        else 0.0
+    )
+
+    # Invariance diagnostic (info-level)
+    _log_pbrs_invariance_warning(params)
+
+    # Total reward
+    total_reward = base_reward + shaping_reward + entry_additive + exit_additive
+
+    # Numerical validation & normalization of tiny shaping
+    if not np.isfinite(total_reward):
+        return float(base_reward), 0.0, 0.0
+    if np.isclose(shaping_reward, 0.0):
+        shaping_reward = 0.0
+    return float(total_reward), float(shaping_reward), float(next_potential)
+
+
+def _enforce_pbrs_invariance(params: RewardParams) -> RewardParams:
+    """Enforce PBRS invariance by auto-disabling additives in canonical mode.
+
+    Matches original environment behavior: canonical mode automatically
+    disables entry/exit additives to preserve theoretical invariance.
+
+    PBRS invariance (Ng et al. 1999) requires:
+    - canonical exit_potential_mode (terminal Φ=0)
+    - No path-dependent additive reward components enabled.
+
+    Returns modified params dict with invariance enforced.
+    """
+    mode = _get_str_param(params, "exit_potential_mode", "canonical")
+    if mode == "canonical":
+        # Make a copy to avoid mutating input
+        enforced_params = dict(params)
+        entry_enabled = _get_bool_param(params, "entry_additive_enabled", False)
+        exit_enabled = _get_bool_param(params, "exit_additive_enabled", False)
+
+        if entry_enabled:
+            logger.info(
+                "Disabling entry additive to preserve PBRS invariance (canonical mode)."
+            )
+            enforced_params["entry_additive_enabled"] = False
+
+        if exit_enabled:
+            logger.info(
+                "Disabling exit additive to preserve PBRS invariance (canonical mode)."
+            )
+            enforced_params["exit_additive_enabled"] = False
+
+        return enforced_params
+    return params
+
+
+def _log_pbrs_invariance_warning(params: RewardParams) -> None:
+    """Log an informational message if invariance conditions are violated.
+
+    PBRS invariance (Ng et al. 1999) requires:
+    - canonical exit_potential_mode (terminal Φ=0)
+    - No path-dependent additive reward components enabled.
+    This mirrors original environment diagnostic behavior.
+    """
+    mode = _get_str_param(params, "exit_potential_mode", "canonical")
+    if mode == "canonical":
+        if _get_bool_param(params, "entry_additive_enabled", False) or _get_bool_param(
+            params, "exit_additive_enabled", False
+        ):
+            logger.info(
+                "PBRS invariance relaxed: canonical mode with additive components enabled (entry_additive_enabled=%s, exit_additive_enabled=%s)",
+                _get_bool_param(params, "entry_additive_enabled", False),
+                _get_bool_param(params, "exit_additive_enabled", False),
+            )
 
 
 if __name__ == "__main__":

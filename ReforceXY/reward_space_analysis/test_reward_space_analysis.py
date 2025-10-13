@@ -43,6 +43,16 @@ try:
         statistical_hypothesis_tests,
         validate_reward_parameters,
         write_complete_statistical_analysis,
+        # PBRS functions
+        apply_transform,
+        _compute_hold_potential,
+        _compute_entry_additive,
+        _compute_exit_additive,
+        _compute_exit_potential,
+        apply_potential_shaping,
+        _get_float_param,
+        _get_str_param,
+        _get_bool_param,
     )
 except ImportError as e:
     print(f"Import error: {e}")
@@ -435,6 +445,70 @@ class TestRewardAlignment(RewardSpaceTestBase):
             breakdown_small.idle_penalty,
             f"Expected less severe penalty with larger max_idle_duration_candles (large={breakdown_large.idle_penalty}, small={breakdown_small.idle_penalty})",
         )
+
+    def test_pbrs_progressive_release_decay_clamped(self):
+        """progressive_release with decay>1 must clamp to 1 so Φ' = 0 and Δ = -Φ_prev."""
+        params = self.DEFAULT_PARAMS.copy()
+        params.update(
+            {
+                "potential_gamma": 0.95,
+                "exit_potential_mode": "progressive_release",
+                "exit_potential_decay": 5.0,  # should clamp to 1.0
+                "hold_potential_enabled": True,
+                "entry_additive_enabled": False,
+                "exit_additive_enabled": False,
+            }
+        )
+        current_pnl = 0.02
+        current_dur = 0.5
+        prev_potential = _compute_hold_potential(current_pnl, current_dur, params)
+        total_reward, shaping_reward, next_potential = apply_potential_shaping(
+            base_reward=0.0,
+            current_pnl=current_pnl,
+            current_duration_ratio=current_dur,
+            next_pnl=0.02,
+            next_duration_ratio=0.6,
+            is_terminal=True,
+            last_potential=prev_potential,
+            params=params,
+        )
+        self.assertAlmostEqualFloat(next_potential, 0.0, tolerance=1e-9)
+        self.assertAlmostEqualFloat(shaping_reward, -prev_potential, tolerance=1e-9)
+        self.assertAlmostEqualFloat(total_reward, shaping_reward, tolerance=1e-9)
+
+    def test_pbrs_spike_cancel_invariance(self):
+        """spike_cancel terminal shaping should be ≈ 0 (γ*(Φ/γ) - Φ)."""
+        params = self.DEFAULT_PARAMS.copy()
+        params.update(
+            {
+                "potential_gamma": 0.9,
+                "exit_potential_mode": "spike_cancel",
+                "hold_potential_enabled": True,
+                "entry_additive_enabled": False,
+                "exit_additive_enabled": False,
+            }
+        )
+        current_pnl = 0.015
+        current_dur = 0.4
+        prev_potential = _compute_hold_potential(current_pnl, current_dur, params)
+        # Use helper accessor to avoid union type issues
+        gamma = _get_float_param(params, "potential_gamma", 0.95)
+        expected_next = (
+            prev_potential / gamma if gamma not in (0.0, None) else prev_potential
+        )
+        total_reward, shaping_reward, next_potential = apply_potential_shaping(
+            base_reward=0.0,
+            current_pnl=current_pnl,
+            current_duration_ratio=current_dur,
+            next_pnl=0.016,
+            next_duration_ratio=0.45,
+            is_terminal=True,
+            last_potential=prev_potential,
+            params=params,
+        )
+        self.assertAlmostEqualFloat(next_potential, expected_next, tolerance=1e-9)
+        self.assertAlmostEqualFloat(shaping_reward, 0.0, tolerance=1e-9)
+        self.assertAlmostEqualFloat(total_reward, 0.0, tolerance=1e-9)
 
     def test_idle_penalty_fallback_and_proportionality(self):
         """Fallback & proportionality validation.
@@ -2858,6 +2932,242 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         self.assertIsInstance(loaded_data, pd.DataFrame)
         self.assertEqual(len(loaded_data), 3)
         self.assertIn("pnl", loaded_data.columns)
+
+
+class TestPBRSIntegration(RewardSpaceTestBase):
+    """Tests for PBRS (Potential-Based Reward Shaping) integration."""
+
+    def test_tanh_transform(self):
+        """Test tanh transform function bounds"""
+        self.assertAlmostEqualFloat(apply_transform("tanh", 0.0), 0.0)
+        self.assertAlmostEqualFloat(apply_transform("tanh", 1.0), math.tanh(1.0))
+        self.assertAlmostEqualFloat(apply_transform("tanh", -1.0), math.tanh(-1.0))
+        self.assertTrue(abs(apply_transform("tanh", 100.0)) <= 1.0)
+        self.assertTrue(abs(apply_transform("tanh", -100.0)) <= 1.0)
+
+    def test_softsign_transform(self):
+        """Test softsign transform function."""
+        self.assertAlmostEqualFloat(apply_transform("softsign", 0.0), 0.0)
+        self.assertAlmostEqualFloat(apply_transform("softsign", 1.0), 0.5)
+        self.assertAlmostEqualFloat(apply_transform("softsign", -1.0), -0.5)
+        self.assertTrue(abs(apply_transform("softsign", 100.0)) < 1.0)
+        self.assertTrue(abs(apply_transform("softsign", -100.0)) < 1.0)
+
+    def test_arctan_transform(self):
+        """Test arctan transform function."""
+        self.assertAlmostEqualFloat(apply_transform("arctan", 0.0), 0.0)
+        self.assertAlmostEqualFloat(
+            apply_transform("arctan", 1.0), math.atan(1.0), tolerance=1e-10
+        )
+        self.assertTrue(abs(apply_transform("arctan", 100.0)) < math.pi / 2)
+        self.assertTrue(abs(apply_transform("arctan", -100.0)) < math.pi / 2)
+
+    def test_logistic_transform(self):
+        """Test logistic transform function."""
+        self.assertAlmostEqualFloat(apply_transform("logistic", 0.0), 0.5)
+        self.assertTrue(apply_transform("logistic", 100.0) > 0.99)
+        self.assertTrue(apply_transform("logistic", -100.0) < 0.01)
+        self.assertTrue(0 < apply_transform("logistic", 10.0) < 1)
+        self.assertTrue(0 < apply_transform("logistic", -10.0) < 1)
+
+    def test_clip_transform(self):
+        """Test clip transform function."""
+        self.assertAlmostEqualFloat(apply_transform("clip", 0.0), 0.0)
+        self.assertAlmostEqualFloat(apply_transform("clip", 0.5), 0.5)
+        self.assertAlmostEqualFloat(apply_transform("clip", 2.0), 1.0)
+        self.assertAlmostEqualFloat(apply_transform("clip", -2.0), -1.0)
+
+    def test_invalid_transform(self):
+        """Test error handling for invalid transforms."""
+        with self.assertRaises(ValueError):
+            apply_transform("invalid_transform", 1.0)
+
+    def test_get_float_param(self):
+        """Test float parameter extraction."""
+        params = {"test_float": 1.5, "test_int": 2, "test_str": "hello"}
+        self.assertEqual(_get_float_param(params, "test_float", 0.0), 1.5)
+        self.assertEqual(_get_float_param(params, "test_int", 0.0), 2.0)
+        self.assertEqual(_get_float_param(params, "test_str", 0.0), 0.0)
+        self.assertEqual(_get_float_param(params, "missing", 3.14), 3.14)
+
+    def test_get_str_param(self):
+        """Test string parameter extraction."""
+        params = {"test_str": "hello", "test_int": 2}
+        self.assertEqual(_get_str_param(params, "test_str", "default"), "hello")
+        self.assertEqual(_get_str_param(params, "test_int", "default"), "default")
+        self.assertEqual(_get_str_param(params, "missing", "default"), "default")
+
+    def test_get_bool_param(self):
+        """Test boolean parameter extraction."""
+        params = {
+            "test_true": True,
+            "test_false": False,
+            "test_int": 1,
+            "test_str": "yes",
+        }
+        self.assertTrue(_get_bool_param(params, "test_true", False))
+        self.assertFalse(_get_bool_param(params, "test_false", True))
+        # Note: _get_bool_param only handles actual boolean values, others return default
+        self.assertFalse(
+            _get_bool_param(params, "test_int", False)
+        )  # Returns default for non-bool
+        self.assertFalse(
+            _get_bool_param(params, "test_str", False)
+        )  # Returns default for non-bool
+        self.assertFalse(_get_bool_param(params, "missing", False))
+
+    def test_hold_potential_basic(self):
+        """Test basic hold potential calculation."""
+        params = {
+            "hold_potential_enabled": True,
+            "hold_potential_scale": 1.0,
+            "hold_potential_gain": 1.0,
+            "hold_potential_transform_pnl": "tanh",
+            "hold_potential_transform_duration": "tanh",
+        }
+        val = _compute_hold_potential(0.5, 0.3, params)
+        self.assertTrue(np.isfinite(val))
+
+    def test_entry_additive_disabled(self):
+        """Test entry additive when disabled."""
+        params = {"entry_additive_enabled": False}
+        val = _compute_entry_additive(0.5, 0.3, params)
+        self.assertEqual(val, 0.0)
+
+    def test_exit_additive_disabled(self):
+        """Test exit additive when disabled."""
+        params = {"exit_additive_enabled": False}
+        val = _compute_exit_additive(0.5, 0.3, params)
+        self.assertEqual(val, 0.0)
+
+    def test_exit_potential_canonical(self):
+        """Test exit potential in canonical mode."""
+        params = {"exit_potential_mode": "canonical"}
+        val = _compute_exit_potential(0.5, 0.3, params, last_potential=1.0)
+        self.assertEqual(val, 0.0)
+
+    def test_exit_potential_progressive_release(self):
+        """Test exit potential in progressive release mode."""
+        params = {
+            "exit_potential_mode": "progressive_release",
+            "exit_potential_decay": 0.8,
+        }
+        # Expected: Φ' = Φ * (1 - decay) = 1 * (1 - 0.8) = 0.2
+        val = _compute_exit_potential(0.5, 0.3, params, last_potential=1.0)
+        self.assertAlmostEqual(val, 0.2)
+
+    def test_exit_potential_spike_cancel(self):
+        """Test exit potential in spike cancel mode."""
+        params = {"exit_potential_mode": "spike_cancel", "potential_gamma": 0.95}
+        val = _compute_exit_potential(0.5, 0.3, params, last_potential=1.0)
+        self.assertAlmostEqual(val, 1.0 / 0.95, places=7)
+
+    def test_exit_potential_retain_previous(self):
+        """Test exit potential in retain previous mode."""
+        params = {"exit_potential_mode": "retain_previous"}
+        val = _compute_exit_potential(0.5, 0.3, params, last_potential=1.0)
+        self.assertEqual(val, 1.0)
+
+    def test_exit_potential_invalid_mode(self):
+        """Test exit potential with invalid mode (falls back to canonical)."""
+        params = {"exit_potential_mode": "invalid_mode"}
+        # Function falls back to canonical mode (returns 0.0) instead of raising error
+        val = _compute_exit_potential(0.5, 0.3, params, last_potential=1.0)
+        self.assertEqual(val, 0.0)  # Fallback to canonical behavior
+
+    def test_pbrs_terminal_canonical(self):
+        """Test PBRS behavior in canonical mode with terminal state."""
+        params = {
+            "potential_gamma": 0.95,
+            "hold_potential_enabled": True,
+            "hold_potential_scale": 1.0,
+            "hold_potential_gain": 1.0,
+            "hold_potential_transform_pnl": "tanh",
+            "hold_potential_transform_duration": "tanh",
+            "exit_potential_mode": "canonical",
+            "entry_additive_enabled": False,
+            "exit_additive_enabled": False,
+        }
+
+        current_pnl = 0.5
+        current_duration_ratio = 0.3
+        expected_current_potential = _compute_hold_potential(
+            current_pnl, current_duration_ratio, params
+        )
+
+        total_reward, shaping_reward, next_potential = apply_potential_shaping(
+            base_reward=100.0,
+            current_pnl=current_pnl,
+            current_duration_ratio=current_duration_ratio,
+            next_pnl=0.0,
+            next_duration_ratio=0.0,
+            is_terminal=True,
+            last_potential=0.0,
+            params=params,
+        )
+
+        # Terminal potential should be 0 in canonical mode
+        self.assertEqual(next_potential, 0.0)
+        # Shaping reward should be negative (releasing potential)
+        self.assertTrue(shaping_reward < 0)
+        # Check exact formula: γΦ(s') - Φ(s) = 0.95 * 0 - expected_current_potential
+        expected_shaping = 0.95 * 0.0 - expected_current_potential
+        self.assertAlmostEqual(shaping_reward, expected_shaping, delta=1e-10)
+
+    def test_pbrs_invalid_gamma(self):
+        """Test PBRS with invalid gamma value."""
+        params = {"potential_gamma": 1.5, "hold_potential_enabled": True}
+        with self.assertRaises(ValueError):
+            apply_potential_shaping(
+                base_reward=0.0,
+                current_pnl=0.0,
+                current_duration_ratio=0.0,
+                next_pnl=0.0,
+                next_duration_ratio=0.0,
+                is_terminal=True,
+                last_potential=0.0,
+                params=params,
+            )
+
+    def test_calculate_reward_with_pbrs_integration(self):
+        """Test that PBRS parameters are properly integrated in defaults."""
+        # Test that PBRS parameters are in the default parameters
+        pbrs_params = [
+            "potential_gamma",
+            "hold_potential_enabled",
+            "hold_potential_scale",
+            "entry_additive_enabled",
+            "exit_additive_enabled",
+        ]
+        for param in pbrs_params:
+            self.assertIn(
+                param,
+                DEFAULT_MODEL_REWARD_PARAMETERS,
+                f"PBRS parameter {param} missing from defaults",
+            )
+
+        # Test basic PBRS function integration works
+        params = {"hold_potential_enabled": True, "hold_potential_scale": 1.0}
+        potential = _compute_hold_potential(0.1, 0.2, params)
+        self.assertTrue(np.isfinite(potential))
+
+    def test_pbrs_default_parameters_completeness(self):
+        """Test that all required PBRS parameters have defaults."""
+        pbrs_required_params = [
+            "potential_gamma",
+            "hold_potential_enabled",
+            "hold_potential_scale",
+            "exit_potential_mode",
+            "entry_additive_enabled",
+            "exit_additive_enabled",
+        ]
+
+        for param in pbrs_required_params:
+            self.assertIn(
+                param,
+                DEFAULT_MODEL_REWARD_PARAMETERS,
+                f"Missing PBRS parameter: {param}",
+            )
 
 
 if __name__ == "__main__":
