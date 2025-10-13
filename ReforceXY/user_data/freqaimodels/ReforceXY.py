@@ -2257,7 +2257,7 @@ class MyRLEnv(Base5ActionRLEnv):
         duration_ratio = trade_duration / max_trade_duration
         base_factor = float(model_reward_parameters.get("base_factor", 100.0))
         pnl_target = self.profit_aim * self.rr
-        idle_factor = base_factor * pnl_target / 3.0
+        idle_factor = base_factor * pnl_target / 4.0
         hold_factor = idle_factor
 
         # 2. Idle penalty

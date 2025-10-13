@@ -29,7 +29,6 @@ import math
 import pickle
 import random
 import warnings
-import logging
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -59,9 +58,6 @@ class Positions(Enum):
     Neutral = 0.5
 
 
-logger = logging.getLogger(__name__)
-
-
 def _to_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -77,7 +73,7 @@ def _to_bool(value: Any) -> bool:
     return bool(text)
 
 
-def _get_param_float(
+def _get_float_param(
     params: RewardParams, key: str, default: RewardParamValue
 ) -> float:
     """Extract float parameter with type safety and default fallback."""
@@ -130,6 +126,15 @@ DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 RewardParamValue = Union[float, str, bool, None]
 RewardParams = Dict[str, RewardParamValue]
 
+
+# Internal safe fallback helper for numeric failures (centralizes semantics)
+def _fail_safely(reason: str) -> float:
+    """Return 0.0 on recoverable numeric failure (reason available for future debug hooks)."""
+    # NOTE: presently silent to preserve legacy behaviour; hook logging here if needed.
+    _ = reason
+    return 0.0
+
+
 # Allowed exit attenuation modes
 ALLOWED_EXIT_MODES = {"legacy", "sqrt", "linear", "power", "half_life"}
 
@@ -178,11 +183,11 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "check_invariants": True,
     "exit_factor_threshold": 10000.0,
     # === PBRS PARAMETERS ===
-    # PBRS common parameters
-    # Discount factor for PBRS potential term (original environment default 0.95)
+    # Potential-based reward shaping core parameters
+    # Discount factor γ for potential term (0 ≤ γ ≤ 1)
     "potential_gamma": 0.95,
     "potential_softsign_sharpness": 1.0,
-    # Exit potential modes: 'canonical', 'progressive_release', 'spike_cancel', 'retain_previous'
+    # Exit potential modes: canonical | progressive_release | spike_cancel | retain_previous
     "exit_potential_mode": "canonical",
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
@@ -271,7 +276,7 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "pnl_factor_beta": {"min": 1e-6},
     # PBRS parameter bounds
     "potential_gamma": {"min": 0.0, "max": 1.0},
-    # Clamp sharpness similarly to original environment (min bound only; upper bound implicit by transforms stability)
+    # Softsign sharpness: only lower bound enforced (upper bound limited implicitly by transform stability)
     "potential_softsign_sharpness": {"min": 1e-6},
     "exit_potential_decay": {"min": 0.0, "max": 1.0},
     "hold_potential_scale": {"min": 0.0},
@@ -311,6 +316,27 @@ def validate_reward_parameters(
     """
     sanitized = dict(params)
     adjustments: Dict[str, Dict[str, Any]] = {}
+    # Normalize boolean-like parameters explicitly to avoid inconsistent types
+    _bool_keys = [
+        "check_invariants",
+        "hold_potential_enabled",
+        "entry_additive_enabled",
+        "exit_additive_enabled",
+    ]
+    for bkey in _bool_keys:
+        if bkey in sanitized:
+            original_val = sanitized[bkey]
+            coerced = _to_bool(original_val)
+            if coerced is not original_val:
+                sanitized[bkey] = coerced
+                adjustments.setdefault(
+                    bkey,
+                    {
+                        "original": original_val,
+                        "adjusted": coerced,
+                        "reason": "bool_coerce",
+                    },
+                )
     for key, bounds in _PARAMETER_BOUNDS.items():
         if key not in sanitized:
             continue
@@ -350,10 +376,10 @@ def _normalize_and_validate_mode(params: RewardParams) -> None:
     - If the key is absent or value is ``None``: leave untouched (upstream defaults
       will inject 'linear').
     """
-    exit_attenuation_mode = params.get("exit_attenuation_mode")
-    if exit_attenuation_mode is None:
+    if "exit_attenuation_mode" not in params:
         return
-    exit_attenuation_mode = str(exit_attenuation_mode)
+
+    exit_attenuation_mode = _get_str_param(params, "exit_attenuation_mode", "linear")
     if exit_attenuation_mode not in ALLOWED_EXIT_MODES:
         params["exit_attenuation_mode"] = "linear"
 
@@ -476,7 +502,7 @@ def _get_exit_factor(
     Assumptions:
     - ``_normalize_and_validate_mode`` has already run (invalid modes replaced by 'linear').
     - ``exit_attenuation_mode`` is therefore either a member of ``ALLOWED_EXIT_MODES`` or 'linear'.
-    - All numeric tunables are accessed through ``_get_param_float`` for safety.
+    - All numeric tunables are accessed through ``_get_float_param`` for safety.
 
     Algorithm steps:
       1. Finiteness & non-negative guard on inputs.
@@ -491,19 +517,19 @@ def _get_exit_factor(
         or not np.isfinite(pnl)
         or not np.isfinite(duration_ratio)
     ):
-        return 0.0
+        return _fail_safely("non_finite_exit_factor_inputs")
 
     # Guard: duration ratio should never be negative
     if duration_ratio < 0.0:
         duration_ratio = 0.0
 
-    exit_attenuation_mode = str(params.get("exit_attenuation_mode", "linear"))
-    exit_plateau = _to_bool(params.get("exit_plateau", True))
+    exit_attenuation_mode = _get_str_param(params, "exit_attenuation_mode", "linear")
+    exit_plateau = _get_bool_param(params, "exit_plateau", True)
 
-    exit_plateau_grace = _get_param_float(params, "exit_plateau_grace", 1.0)
+    exit_plateau_grace = _get_float_param(params, "exit_plateau_grace", 1.0)
     if exit_plateau_grace < 0.0:
         exit_plateau_grace = 1.0
-    exit_linear_slope = _get_param_float(params, "exit_linear_slope", 1.0)
+    exit_linear_slope = _get_float_param(params, "exit_linear_slope", 1.0)
     if exit_linear_slope < 0.0:
         exit_linear_slope = 1.0
 
@@ -517,7 +543,7 @@ def _get_exit_factor(
         return f / (1.0 + exit_linear_slope * dr)
 
     def _power_kernel(f: float, dr: float) -> float:
-        tau = _get_param_float(
+        tau = _get_float_param(
             params,
             "exit_power_tau",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_power_tau", 0.5),
@@ -529,7 +555,7 @@ def _get_exit_factor(
         return f / math.pow(1.0 + dr, alpha)
 
     def _half_life_kernel(f: float, dr: float) -> float:
-        hl = _get_param_float(params, "exit_half_life", 0.5)
+        hl = _get_float_param(params, "exit_half_life", 0.5)
         if hl <= 0.0:
             hl = 0.5
         return f * math.pow(2.0, -dr / hl)
@@ -567,13 +593,13 @@ def _get_exit_factor(
     base_factor *= pnl_factor
 
     # Invariant & safety checks
-    if _to_bool(params.get("check_invariants", True)):
+    if _get_bool_param(params, "check_invariants", True):
         if not np.isfinite(base_factor):
-            return 0.0
+            return _fail_safely("non_finite_exit_factor_after_kernel")
         if base_factor < 0.0 and pnl >= 0.0:
             # Clamp: avoid negative amplification on non-negative pnl
             base_factor = 0.0
-        exit_factor_threshold = _get_param_float(
+        exit_factor_threshold = _get_float_param(
             params,
             "exit_factor_threshold",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_factor_threshold", 10000.0),
@@ -598,16 +624,16 @@ def _get_pnl_factor(
     pnl = context.pnl
 
     if not np.isfinite(pnl) or not np.isfinite(profit_target):
-        return 0.0
+        return _fail_safely("non_finite_pnl_or_target")
 
     profit_target_factor = 1.0
     if profit_target > 0.0 and pnl > profit_target:
-        win_reward_factor = _get_param_float(
+        win_reward_factor = _get_float_param(
             params,
             "win_reward_factor",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("win_reward_factor", 2.0),
         )
-        pnl_factor_beta = _get_param_float(
+        pnl_factor_beta = _get_float_param(
             params,
             "pnl_factor_beta",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("pnl_factor_beta", 0.5),
@@ -618,12 +644,12 @@ def _get_pnl_factor(
         )
 
     efficiency_factor = 1.0
-    efficiency_weight = _get_param_float(
+    efficiency_weight = _get_float_param(
         params,
         "efficiency_weight",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("efficiency_weight", 1.0),
     )
-    efficiency_center = _get_param_float(
+    efficiency_center = _get_float_param(
         params,
         "efficiency_center",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("efficiency_center", 0.5),
@@ -669,12 +695,12 @@ def _idle_penalty(
     context: RewardContext, idle_factor: float, params: RewardParams
 ) -> float:
     """Mirror the environment's idle penalty behaviour."""
-    idle_penalty_scale = _get_param_float(
+    idle_penalty_scale = _get_float_param(
         params,
         "idle_penalty_scale",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_scale", 0.5),
     )
-    idle_penalty_power = _get_param_float(
+    idle_penalty_power = _get_float_param(
         params,
         "idle_penalty_power",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_power", 1.025),
@@ -709,12 +735,12 @@ def _hold_penalty(
     context: RewardContext, hold_factor: float, params: RewardParams
 ) -> float:
     """Mirror the environment's hold penalty behaviour."""
-    hold_penalty_scale = _get_param_float(
+    hold_penalty_scale = _get_float_param(
         params,
         "hold_penalty_scale",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_scale", 0.25),
     )
-    hold_penalty_power = _get_param_float(
+    hold_penalty_power = _get_float_param(
         params,
         "hold_penalty_power",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_power", 1.025),
@@ -724,7 +750,7 @@ def _hold_penalty(
     )
 
     if duration_ratio < 1.0:
-        return 0.0
+        return _fail_safely("hold_penalty_duration_ratio_lt_1")
 
     return (
         -hold_factor * hold_penalty_scale * (duration_ratio - 1.0) ** hold_penalty_power
@@ -766,24 +792,24 @@ def calculate_reward(
         short_allowed=short_allowed,
     )
     if not is_valid and not action_masking:
-        breakdown.invalid_penalty = _get_param_float(params, "invalid_action", -2.0)
+        breakdown.invalid_penalty = _get_float_param(params, "invalid_action", -2.0)
         breakdown.total = breakdown.invalid_penalty
         return breakdown
 
-    factor = _get_param_float(params, "base_factor", base_factor)
+    factor = _get_float_param(params, "base_factor", base_factor)
 
     if "profit_target" in params:
-        profit_target = _get_param_float(params, "profit_target", float(profit_target))
+        profit_target = _get_float_param(params, "profit_target", float(profit_target))
 
     if "risk_reward_ratio" in params:
-        risk_reward_ratio = _get_param_float(
+        risk_reward_ratio = _get_float_param(
             params, "risk_reward_ratio", float(risk_reward_ratio)
         )
 
     # Scale profit target by risk-reward ratio (reward multiplier)
     # E.g., profit_target=0.03, RR=2.0 → profit_target_final=0.06
     profit_target_final = profit_target * risk_reward_ratio
-    idle_factor = factor * profit_target_final / 3.0
+    idle_factor = factor * profit_target_final / 4.0
     pnl_factor = _get_pnl_factor(params, context, profit_target_final)
     hold_factor = idle_factor
 
@@ -919,7 +945,7 @@ def simulate_samples(
 ) -> pd.DataFrame:
     rng = random.Random(seed)
     short_allowed = _is_short_allowed(trading_mode)
-    action_masking = _to_bool(params.get("action_masking", True))
+    action_masking = _get_bool_param(params, "action_masking", True)
     samples: list[Dict[str, float]] = []
     for _ in range(num_samples):
         if short_allowed:
@@ -2503,12 +2529,19 @@ def main() -> None:
     # Early parameter validation (moved before simulation for alignment with docs)
     params_validated, adjustments = validate_reward_parameters(params)
     params = params_validated
+    if adjustments:
+        # Compact adjustments summary (param: original->adjusted [reason])
+        adj_lines = [
+            f"  - {k}: {v['original']} -> {v['adjusted']} ({v['reason']})"
+            for k, v in adjustments.items()
+        ]
+        print("Parameter adjustments applied:\n" + "\n".join(adj_lines))
     # Normalize attenuation mode
     _normalize_and_validate_mode(params)
 
-    base_factor = _get_param_float(params, "base_factor", float(args.base_factor))
-    profit_target = _get_param_float(params, "profit_target", float(args.profit_target))
-    risk_reward_ratio = _get_param_float(
+    base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
+    profit_target = _get_float_param(params, "profit_target", float(args.profit_target))
+    risk_reward_ratio = _get_float_param(
         params, "risk_reward_ratio", float(args.risk_reward_ratio)
     )
 
@@ -2646,30 +2679,12 @@ def main() -> None:
 
 
 def _apply_transform_tanh(value: float, scale: float = 1.0) -> float:
-    """
-    Apply tanh transform: tanh(scale * value).
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-
-    Returns:
-        Transformed value in range (-1, 1)
-    """
+    """tanh(scale*value) ∈ (-1,1)."""
     return float(np.tanh(scale * value))
 
 
 def _apply_transform_softsign(value: float, scale: float = 1.0) -> float:
-    """
-    Apply softsign transform: x / (1 + |x|) where x = scale * value.
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-
-    Returns:
-        Transformed value in range (-1, 1)
-    """
+    """softsign: x/(1+|x|) with x=scale*value."""
     x = scale * value
     return float(x / (1.0 + abs(x)))
 
@@ -2677,48 +2692,19 @@ def _apply_transform_softsign(value: float, scale: float = 1.0) -> float:
 def _apply_transform_softsign_sharp(
     value: float, scale: float = 1.0, sharpness: float = 1.0
 ) -> float:
-    """
-    Apply sharp softsign transform: x / (sharpness + |x|) where x = scale * value.
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-        sharpness: Sharpness parameter (default: 1.0, smaller = sharper)
-
-    Returns:
-        Transformed value in range (-1, 1)
-    """
+    """softsign_sharp: x/(sharpness+|x|) with x=scale*value (smaller sharpness = steeper)."""
     x = scale * value
     return float(x / (sharpness + abs(x)))
 
 
 def _apply_transform_arctan(value: float, scale: float = 1.0) -> float:
-    """
-    Apply arctan transform: arctan(scale * value).
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-
-    Returns:
-        Transformed value in range (-π/2, π/2)
-    """
-    return float(np.arctan(scale * value))
+    """arctan normalized: (2/pi)*atan(scale*value) ∈ (-1,1)."""
+    x = scale * value
+    return float((2.0 / math.pi) * math.atan(x))
 
 
 def _apply_transform_logistic(value: float, scale: float = 1.0) -> float:
-    """
-    Apply logistic transform: 2σ(x) - 1 (tanh-like output in [-1,1]).
-
-    Uses overflow-safe implementation matching original environment.
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-
-    Returns:
-        Transformed value in range (-1, 1)
-    """
+    """Overflow‑safe logistic transform mapped to (-1,1): 2σ(kx)−1 where k=scale."""
     x = scale * value
     try:
         if x >= 0:
@@ -2732,51 +2718,18 @@ def _apply_transform_logistic(value: float, scale: float = 1.0) -> float:
 
 
 def _apply_transform_asinh_norm(value: float, scale: float = 1.0) -> float:
-    """
-    Apply normalized asinh transform: x / sqrt(1 + x²).
-
-    This matches the original environment implementation for asinh_norm.
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-
-    Returns:
-        Transformed value in range [-1, 1] (bounded but smooth)
-    """
+    """Normalized asinh: x / sqrt(1 + x²) producing range (-1,1)."""
     scaled = scale * value
     return float(scaled / math.hypot(1.0, scaled))
 
 
 def _apply_transform_clip(value: float, scale: float = 1.0) -> float:
-    """
-    Apply clipping transform: clip(scale * value, -1, 1).
-
-    Args:
-        value: Input value to transform
-        scale: Scale factor (default: 1.0)
-
-    Returns:
-        Transformed value in range [-1, 1]
-    """
+    """clip(scale*value) to [-1,1]."""
     return float(np.clip(scale * value, -1.0, 1.0))
 
 
 def apply_transform(transform_name: str, value: float, **kwargs: Any) -> float:
-    """
-    Apply specified transform function to value.
-
-    Matches original environment behavior: unknown transforms fallback to tanh
-    with info logging (not error raising).
-
-    Args:
-        transform_name: Name of transform function
-        value: Input value to transform
-        **kwargs: Additional parameters for transform
-
-    Returns:
-        Transformed value (always succeeds with fallback)
-    """
+    """Apply named transform; unknown names fallback to tanh with warning."""
     transforms = {
         "tanh": _apply_transform_tanh,
         "softsign": _apply_transform_softsign,
@@ -2788,8 +2741,10 @@ def apply_transform(transform_name: str, value: float, **kwargs: Any) -> float:
     }
 
     if transform_name not in transforms:
-        logger.info(
-            "Unknown potential transform '%s'; falling back to tanh", transform_name
+        warnings.warn(
+            f"Unknown potential transform '{transform_name}'; falling back to tanh",
+            category=UserWarning,
+            stacklevel=2,
         )
         return _apply_transform_tanh(value, **kwargs)
 
@@ -2799,38 +2754,27 @@ def apply_transform(transform_name: str, value: float, **kwargs: Any) -> float:
 # === PBRS HELPER FUNCTIONS ===
 
 
-def _get_float_param(params: RewardParams, key: str, default: float) -> float:
-    """Extract float parameter with type safety."""
-    value = params.get(key, default)
-    if isinstance(value, (int, float)):
-        return float(value)
-    return default
-
-
 def _get_potential_gamma(params: RewardParams) -> float:
-    """
-    Extract potential_gamma parameter with original environment behavior.
-
-    Matches ReforceXY.py behavior:
-    - If None or missing: return 0.95 with warning
-    - If valid float: return as-is
-    - Otherwise: return 0.95 default
-    """
+    """Return potential_gamma with fallback (missing/invalid -> 0.95 + warning)."""
     value = params.get("potential_gamma", None)
 
     if value is None:
-        logger.warning(
+        warnings.warn(
             "potential_gamma not found in config, using default value of 0.95. "
-            "This parameter controls the discount factor for PBRS potential shaping."
+            "This parameter controls the discount factor for PBRS potential shaping.",
+            category=UserWarning,
+            stacklevel=2,
         )
         return 0.95
 
     if isinstance(value, (int, float)):
         return float(value)
 
-    logger.warning(
+    warnings.warn(
         f"Invalid potential_gamma value: {value}. Using default 0.95. "
-        "Expected numeric value in [0, 1]."
+        "Expected numeric value in [0, 1].",
+        category=UserWarning,
+        stacklevel=2,
     )
     return 0.95
 
@@ -2846,9 +2790,10 @@ def _get_str_param(params: RewardParams, key: str, default: str) -> str:
 def _get_bool_param(params: RewardParams, key: str, default: bool) -> bool:
     """Extract boolean parameter with type safety."""
     value = params.get(key, default)
-    if isinstance(value, bool):
-        return value
-    return default
+    try:
+        return _to_bool(value)
+    except Exception:
+        return bool(default)
 
 
 # === PBRS IMPLEMENTATION ===
@@ -2872,7 +2817,7 @@ def _compute_hold_potential(
         Potential value Φ(s)
     """
     if not _get_bool_param(params, "hold_potential_enabled", True):
-        return 0.0
+        return _fail_safely("hold_potential_disabled")
 
     scale = _get_float_param(params, "hold_potential_scale", 1.0)
     gain = _get_float_param(params, "hold_potential_gain", 1.0)
@@ -2899,7 +2844,7 @@ def _compute_hold_potential(
 
     # Validate numerical safety
     if not np.isfinite(potential):
-        return 0.0
+        return _fail_safely("non_finite_hold_potential")
 
     return float(potential)
 
@@ -2919,7 +2864,7 @@ def _compute_entry_additive(
         Entry additive reward
     """
     if not _get_bool_param(params, "entry_additive_enabled", False):
-        return 0.0
+        return _fail_safely("entry_additive_disabled")
 
     scale = _get_float_param(params, "entry_additive_scale", 1.0)
     gain = _get_float_param(params, "entry_additive_gain", 1.0)
@@ -2946,7 +2891,7 @@ def _compute_entry_additive(
 
     # Validate numerical safety
     if not np.isfinite(additive):
-        return 0.0
+        return _fail_safely("non_finite_entry_additive")
 
     return float(additive)
 
@@ -2966,7 +2911,7 @@ def _compute_exit_additive(
         Exit additive reward
     """
     if not _get_bool_param(params, "exit_additive_enabled", False):
-        return 0.0
+        return _fail_safely("exit_additive_disabled")
 
     scale = _get_float_param(params, "exit_additive_scale", 1.0)
     gain = _get_float_param(params, "exit_additive_gain", 1.0)
@@ -2993,7 +2938,7 @@ def _compute_exit_additive(
 
     # Validate numerical safety
     if not np.isfinite(additive):
-        return 0.0
+        return _fail_safely("non_finite_exit_additive")
 
     return float(additive)
 
@@ -3013,7 +2958,7 @@ def _compute_exit_potential(
     """
     mode = _get_str_param(params, "exit_potential_mode", "canonical")
     if mode == "canonical":
-        return 0.0
+        return _fail_safely("canonical_exit_potential")
 
     if mode == "progressive_release":
         decay = _get_float_param(params, "exit_potential_decay", 0.5)
@@ -3031,10 +2976,10 @@ def _compute_exit_potential(
     elif mode == "retain_previous":
         next_potential = last_potential
     else:
-        next_potential = 0.0
+        next_potential = _fail_safely("invalid_exit_potential_mode")
 
     if not np.isfinite(next_potential):
-        next_potential = 0.0
+        next_potential = _fail_safely("non_finite_next_exit_potential")
     return float(next_potential)
 
 
@@ -3152,14 +3097,18 @@ def _enforce_pbrs_invariance(params: RewardParams) -> RewardParams:
         exit_enabled = _get_bool_param(params, "exit_additive_enabled", False)
 
         if entry_enabled:
-            logger.info(
-                "Disabling entry additive to preserve PBRS invariance (canonical mode)."
+            warnings.warn(
+                "Disabling entry additive to preserve PBRS invariance (canonical mode).",
+                category=UserWarning,
+                stacklevel=2,
             )
             enforced_params["entry_additive_enabled"] = False
 
         if exit_enabled:
-            logger.info(
-                "Disabling exit additive to preserve PBRS invariance (canonical mode)."
+            warnings.warn(
+                "Disabling exit additive to preserve PBRS invariance (canonical mode).",
+                category=UserWarning,
+                stacklevel=2,
             )
             enforced_params["exit_additive_enabled"] = False
 
@@ -3180,10 +3129,14 @@ def _log_pbrs_invariance_warning(params: RewardParams) -> None:
         if _get_bool_param(params, "entry_additive_enabled", False) or _get_bool_param(
             params, "exit_additive_enabled", False
         ):
-            logger.info(
-                "PBRS invariance relaxed: canonical mode with additive components enabled (entry_additive_enabled=%s, exit_additive_enabled=%s)",
-                _get_bool_param(params, "entry_additive_enabled", False),
-                _get_bool_param(params, "exit_additive_enabled", False),
+            warnings.warn(
+                (
+                    "PBRS invariance relaxed: canonical mode with additive components enabled "
+                    f"(entry_additive_enabled={_get_bool_param(params, 'entry_additive_enabled', False)}, "
+                    f"exit_additive_enabled={_get_bool_param(params, 'exit_additive_enabled', False)})"
+                ),
+                category=UserWarning,
+                stacklevel=2,
             )
 
 
