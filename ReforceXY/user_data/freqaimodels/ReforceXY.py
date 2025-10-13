@@ -354,7 +354,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_params: Dict[str, Any] = copy.deepcopy(self.model_training_parameters)
 
         model_params.setdefault("seed", 42)
-        model_params.setdefault("gamma", 0.99)
+        model_params.setdefault("gamma", 0.95)
 
         if not self.hyperopt and self.lr_schedule:
             lr = model_params.get("learning_rate", 0.0003)
@@ -1370,7 +1370,7 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         # === PBRS COMMON PARAMETERS ===
         self._potential_gamma: float = float(
-            model_reward_parameters.get("potential_gamma", 0.99)
+            model_reward_parameters.get("potential_gamma")
         )
         self._potential_softsign_sharpness: float = float(
             model_reward_parameters.get("potential_softsign_sharpness", 1.0)
@@ -1392,7 +1392,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         # === ENTRY ADDITIVE (non-PBRS additive term) ===
         self._entry_additive_enabled: bool = bool(
-            model_reward_parameters.get("entry_additive_enabled", False)
+            model_reward_parameters.get("entry_additive_enabled", True)
         )
         self._entry_additive_scale: float = float(
             model_reward_parameters.get("entry_additive_scale", 1.0)
@@ -1538,8 +1538,8 @@ class MyRLEnv(Base5ActionRLEnv):
             if name == "arctan":
                 return (2.0 / math.pi) * math.atan(x)
             if name == "logistic":
-                return math.tanh(0.5 * x)
-            if name == "asinh":
+                return 2.0 / (1.0 + math.exp(-x)) - 1.0
+            if name == "asinh_norm":
                 return x / math.hypot(1.0, x)
             if name == "clip":
                 return max(-1.0, min(1.0, x))
@@ -1622,8 +1622,8 @@ class MyRLEnv(Base5ActionRLEnv):
         - softsign: x/(1+|x|), gentler than tanh
         - softsign_sharp: softsign(sharpness*x), tunable steepness
         - arctan: (2/π)*arctan(x), linear near origin
-        - logistic: 2σ(x)-1 ≈ tanh(0.5x), sigmoid-based
-        - asinh: x/√(1+x²), unbounded but smooth
+        - logistic: 2σ(x)-1 where σ(x)=1/(1+e^(-x)), sigmoid-like
+        - asinh_norm: x/√(1+x²), normalized asinh-like
         - clip: hard clamp to [-1,1]
 
         **Parameters**:
@@ -1654,16 +1654,17 @@ class MyRLEnv(Base5ActionRLEnv):
         ---------------------------
         **Entry/Exit Additives**: Non-PBRS additive terms that break invariance
         - Entry additive: Added at entry transitions, computed from trade initialization
-        - Exit additive: Added at closing (canonical mode only), summarizes trade quality
-        - Neither additive persists in potential function (maintains neutrality)
+        - Exit additive: Added at closing in heuristic modes only, summarizes trade quality
+        - Neither additive persists in potential function
 
         **Path Dependence**: Only canonical mode preserves PBRS invariance. Heuristic
         closing modes introduce path dependence through non-zero terminal potentials.
 
         Invariance & Validation
         -----------------------
-        **Theoretical Guarantee**: In canonical mode with exit additives disabled,
-        ∑(shaping rewards) = 0 over complete episodes due to Φ(terminal)=0.
+        **Theoretical Guarantee**: In canonical mode, ∑(shaping rewards) = 0 over
+        complete episodes due to Φ(terminal)=0. Exit additives are excluded from
+        canonical mode to preserve this invariance.
 
         **Deviations from Theory**:
         - Heuristic closing modes violate invariance
@@ -1745,29 +1746,29 @@ class MyRLEnv(Base5ActionRLEnv):
         ) and next_position in (Positions.Long, Positions.Short)
 
         if is_entry:
-            potential = self._compute_hold_potential(
-                next_position, 0.0, 0.0, pnl_target
-            )
-            shaping_reward = (
-                (gamma * potential - previous_potential)
-                if self._hold_potential_enabled
-                else 0.0
-            )
+            if self._hold_potential_enabled:
+                potential = self._compute_hold_potential(
+                    next_position, next_duration_ratio, next_pnl, pnl_target
+                )
+                shaping_reward = gamma * potential - previous_potential
+                self._last_potential = potential
+            else:
+                shaping_reward = 0.0
+                self._last_potential = 0.0
             entry_additive = self._compute_entry_additive(
-                pnl=0.0, pnl_target=pnl_target, duration_ratio=0.0
+                pnl=next_pnl, pnl_target=pnl_target, duration_ratio=next_duration_ratio
             )
-            self._last_potential = potential if self._hold_potential_enabled else 0.0
             return base_reward + shaping_reward + entry_additive
         elif is_holding:
-            potential = self._compute_hold_potential(
-                next_position, next_duration_ratio, next_pnl, pnl_target
-            )
-            shaping_reward = (
-                gamma * potential - previous_potential
-                if self._hold_potential_enabled
-                else 0.0
-            )
-            self._last_potential = potential if self._hold_potential_enabled else 0.0
+            if self._hold_potential_enabled:
+                potential = self._compute_hold_potential(
+                    next_position, next_duration_ratio, next_pnl, pnl_target
+                )
+                shaping_reward = gamma * potential - previous_potential
+                self._last_potential = potential
+            else:
+                shaping_reward = 0.0
+                self._last_potential = 0.0
             return base_reward + shaping_reward
         elif is_trade_close:
             if self._closing_potential_mode == "canonical":
@@ -1781,13 +1782,9 @@ class MyRLEnv(Base5ActionRLEnv):
             exit_additive = 0.0
             if (
                 self._exit_additive_enabled
-                and self._closing_potential_mode == "canonical"
+                and self._closing_potential_mode != "canonical"
             ):
-                duration_ratio = (
-                    trade_duration / max_trade_duration
-                    if max_trade_duration > 0
-                    else 0.0
-                )
+                duration_ratio = trade_duration / max(max_trade_duration, 1)
                 exit_additive = self._compute_exit_additive(
                     pnl, pnl_target, duration_ratio
                 )
