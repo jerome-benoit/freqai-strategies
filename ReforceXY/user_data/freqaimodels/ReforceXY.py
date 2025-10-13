@@ -1459,7 +1459,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return Positions.Neutral
         return self._position
 
-    def _next_transition_state(
+    def _get_next_transition_state(
         self,
         action: int,
         trade_duration: float,
@@ -1582,32 +1582,38 @@ class MyRLEnv(Base5ActionRLEnv):
         return math.tanh(x)
 
     def _compute_closing_potential(
-        self, previous_potential: float, gamma: float
+        self, prev_potential: float, gamma: float
     ) -> Tuple[float, float]:
         """Compute closing PBRS shaping reward and next potential for non-canonical modes."""
         mode = self._closing_potential_mode
         if mode == "canonical":
-            return 0.0, -previous_potential
+            return 0.0, -prev_potential
         if mode == "progressive_release":
             decay = self._closing_potential_decay
             if not np.isfinite(decay) or decay < 0.0:
                 decay = 0.5
             if decay > 1.0:
                 decay = 1.0
-            next_potential = previous_potential * (1.0 - decay)
+            next_potential = prev_potential * (1.0 - decay)
         elif mode == "spike_cancel":
             if gamma <= 0.0 or not np.isfinite(gamma):
-                next_potential = previous_potential
+                next_potential = prev_potential
             else:
-                next_potential = previous_potential / gamma
+                next_potential = prev_potential / gamma
         elif mode == "retain_previous":
-            next_potential = previous_potential
+            next_potential = prev_potential
         else:
             next_potential = 0.0
         if not np.isfinite(next_potential):
             next_potential = 0.0
-        closing_potential_reward = gamma * next_potential - previous_potential
-        return next_potential, closing_potential_reward
+        closing_shaping_reward = gamma * next_potential - prev_potential
+        return next_potential, closing_shaping_reward
+
+    def is_pbrs_invariant_mode(self) -> bool:
+        """Return True if current configuration preserves PBRS policy invariance."""
+        return self._closing_potential_mode == "canonical" and not (
+            self._entry_additive_enabled or self._exit_additive_enabled
+        )
 
     def _apply_potential_shaping(
         self,
@@ -1741,8 +1747,8 @@ class MyRLEnv(Base5ActionRLEnv):
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
             return base_reward
-        previous_potential = self._last_potential
-        next_position, next_trade_duration, next_pnl = self._next_transition_state(
+        prev_potential = self._last_potential
+        next_position, next_trade_duration, next_pnl = self._get_next_transition_state(
             action=action, trade_duration=trade_duration, pnl=pnl
         )
 
@@ -1756,11 +1762,11 @@ class MyRLEnv(Base5ActionRLEnv):
             Positions.Long,
             Positions.Short,
         )
-        is_trade_close = (
+        is_close = (
             self._position in (Positions.Long, Positions.Short)
             and next_position == Positions.Neutral
         )
-        is_holding = self._position in (
+        is_hold = self._position in (
             Positions.Long,
             Positions.Short,
         ) and next_position in (Positions.Long, Positions.Short)
@@ -1770,7 +1776,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 potential = self._compute_hold_potential(
                     next_position, next_duration_ratio, next_pnl, pnl_target
                 )
-                shaping_reward = gamma * potential - previous_potential
+                shaping_reward = gamma * potential - prev_potential
                 self._last_potential = potential
             else:
                 shaping_reward = 0.0
@@ -1779,38 +1785,35 @@ class MyRLEnv(Base5ActionRLEnv):
                 pnl=next_pnl, pnl_target=pnl_target, duration_ratio=next_duration_ratio
             )
             return base_reward + shaping_reward + entry_additive
-        elif is_holding:
+        elif is_hold:
             if self._hold_potential_enabled:
                 potential = self._compute_hold_potential(
                     next_position, next_duration_ratio, next_pnl, pnl_target
                 )
-                shaping_reward = gamma * potential - previous_potential
+                shaping_reward = gamma * potential - prev_potential
                 self._last_potential = potential
             else:
                 shaping_reward = 0.0
                 self._last_potential = 0.0
             return base_reward + shaping_reward
-        elif is_trade_close:
+        elif is_close:
             if self._closing_potential_mode == "canonical":
-                closing_potential_reward = -previous_potential
-                next_phi = 0.0
+                closing_shaping_reward = -prev_potential
+                next_potential = 0.0
             else:
-                next_phi, closing_potential_reward = self._compute_closing_potential(
-                    previous_potential, gamma
+                next_potential, closing_shaping_reward = (
+                    self._compute_closing_potential(prev_potential, gamma)
                 )
 
             exit_additive = 0.0
-            if (
-                self._exit_additive_enabled
-                and self._closing_potential_mode != "canonical"
-            ):
+            if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
                 duration_ratio = trade_duration / max(max_trade_duration, 1)
                 exit_additive = self._compute_exit_additive(
                     pnl, pnl_target, duration_ratio
                 )
 
-            closing_reward = closing_potential_reward + exit_additive
-            self._last_potential = next_phi
+            closing_reward = closing_shaping_reward + exit_additive
+            self._last_potential = next_potential
             return base_reward + closing_reward
         else:
             self._last_potential = 0.0
