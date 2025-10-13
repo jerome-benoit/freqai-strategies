@@ -1110,8 +1110,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.pack_env_dict(dk.pair) if env_info is None else env_info
         )
         gamma: Optional[float] = None
+        best_trial_params: Optional[Dict[str, Any]] = None
         if self.hyperopt:
-            best_trial_params: Dict[str, Any] = self.load_best_trial_params(
+            best_trial_params = self.load_best_trial_params(
                 dk.pair if self.rl_config_optuna.get("per_pair", False) else None
             )
         if model_params and isinstance(model_params.get("gamma"), (int, float)):
