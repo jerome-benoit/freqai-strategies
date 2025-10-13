@@ -1578,11 +1578,14 @@ class MyRLEnv(Base5ActionRLEnv):
             if name == "clip":
                 return max(-1.0, min(1.0, x))
         except OverflowError:
-            return 1.0 if x > 0 else -1.0
+            return self._overflow_fallback(x)
         try:
             return math.tanh(x)
         except OverflowError:
-            return 1.0 if x > 0 else -1.0
+            return self._overflow_fallback(x)
+    def _overflow_fallback(self, x: float) -> float:
+        """Fallback value for OverflowError in potential transforms."""
+        return 1.0 if x > 0 else -1.0
     def _compute_closing_potential(
         self, prev_potential: float, gamma: float
     ) -> Tuple[float, float]:
