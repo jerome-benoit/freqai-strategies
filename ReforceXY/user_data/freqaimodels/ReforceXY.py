@@ -1399,7 +1399,6 @@ class MyRLEnv(Base5ActionRLEnv):
         self._exit_potential_mode = str(
             model_reward_parameters.get("exit_potential_mode", "canonical")
         )
-        self._exit_potential_mode: str = self._exit_potential_mode
         _allowed_exit_modes = {
             "canonical",
             "progressive_release",
