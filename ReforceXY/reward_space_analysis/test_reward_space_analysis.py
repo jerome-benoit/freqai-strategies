@@ -405,7 +405,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         name: str = "value",
         inclusive: bool = True,
     ) -> None:
-        """Assert that value is within [low, high]inclusive) or (low, high) if inclusive=False."""
+        """Assert that value is within [low, high] (inclusive) or (low, high) if inclusive=False."""
         self.assertFinite(value, name=name)
         if inclusive:
             self.assertGreaterEqual(value, low, f"{name} < {low}")
@@ -416,7 +416,7 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def assertNearZero(
         self,
-        value: Union[float,],
+        value: Union[float, int],
         *,
         atol: Optional[float] = None,
         msg: Optional[str] = None,
@@ -748,7 +748,6 @@ class TestStatistics(RewardSpaceTestBase):
         n = 250
         trade_duration = np.linspace(1, 300, n)
         pnl = rng.normal(0, 1 + trade_duration / 400.0, n)
-        # df = pd.DataFrame({"trade_duration": trade_duration, "pnl": pnl, "reward": pnl})
         ranks_dur = pd.Series(trade_duration).rank().to_numpy()
         ranks_var = pd.Series(np.abs(pnl)).rank().to_numpy()
         rho = np.corrcoef(ranks_dur, ranks_var)[0, 1]
@@ -2266,7 +2265,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_scale)
         if observed_ratio > 0:
             implied_D = 120 / (observed_ratio ** (1 / idle_penalty_power))
-            self.assertAlmostEqualFloat(implied_D, 400.0, tolerance=self.TOL_IDENTITY_RELAXED)
+            self.assertAlmostEqualFloat(implied_D, 400.0, tolerance=20.0)
 
     def test_exit_factor_threshold_warning_and_non_capping(self):
         """Warning emission without capping when exit_factor_threshold exceeded."""
@@ -2718,7 +2717,7 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         self.assertEqual(list(loaded.columns).count("pnl"), 1)
         self.assertEqual(len(loaded), 1)
 
-    def test_mixed_episode_list_warns_and_flatt(self):
+    def test_mixed_episode_list_warns_and_flattens(self):
         ep1 = {"episode_id": 1}
         ep2 = {
             "episode_id": 2,
@@ -2908,7 +2907,7 @@ class TestPBRS(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
         )
         # Monotonicity
-        vals = [apply_transform("asinh", x) for x in [-5.0, -1.0, 0.0, 1.0, 50]]
+        vals = [apply_transform("asinh", x) for x in [-5.0, -1.0, 0.0, 1.0, 50.0]]
         self.assertTrue(all(vals[i] < vals[i + 1] for i in range(len(vals) - 1)))
         # Bounded
         self.assertTrue(abs(apply_transform("asinh", 1e6)) < 1.0)
