@@ -770,7 +770,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             dtype=np.float32, copy=False
         )
         n = np_dataframe.shape[0]
-        window_size: int = self.window_size
+        window_size: int = self.CONV_WIDTH
         frame_stacking: int = self.frame_stacking
         frame_stacking_enabled: bool = bool(frame_stacking) and frame_stacking > 1
         inference_masking: bool = self.action_masking and self.inference_masking
@@ -1358,8 +1358,18 @@ class MyRLEnv(Base5ActionRLEnv):
         self._min_unrealized_profit: float = np.inf
         self._last_potential: float = 0.0
         # === PBRS INSTRUMENTATION ===
-        self._total_shaping_reward: float = 0.0
-        self._last_shaping_reward: float = 0.0
+        self._last_prev_potential: float = 0.0
+        self._last_next_potential: float = 0.0
+        self._last_reward_shaping: float = 0.0
+        self._total_reward_shaping: float = 0.0
+        self._last_invalid_penalty: float = 0.0
+        self._last_idle_penalty: float = 0.0
+        self._last_hold_penalty: float = 0.0
+        self._last_exit_reward: float = 0.0
+        self._last_entry_additive: float = 0.0
+        self._total_entry_additive: float = 0.0
+        self._last_exit_additive: float = 0.0
+        self._total_exit_additive: float = 0.0
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         # === PBRS COMMON PARAMETERS ===
         potential_gamma = model_reward_parameters.get("potential_gamma")
@@ -1501,7 +1511,7 @@ class MyRLEnv(Base5ActionRLEnv):
             Positions.Long,
             Positions.Short,
         ):
-            return next_position, 0, 0.0
+            return next_position, 0, pnl
         # Exit
         if (
             self._position in (Positions.Long, Positions.Short)
@@ -1709,7 +1719,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if name == "clip":
             return max(-1.0, min(1.0, x))
 
-        logger.info("Unknown potential transform '%s'; falling back to tanh", name)
+        logger.warning("Unknown potential transform '%s'; falling back to tanh", name)
         return math.tanh(x)
 
     def _compute_exit_potential(self, prev_potential: float, gamma: float) -> float:
@@ -1723,7 +1733,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if mode == "progressive_release":
             decay = self._exit_potential_decay
             if not np.isfinite(decay) or decay < 0.0:
-                decay = 0.5
+                decay = 0.0
             if decay > 1.0:
                 decay = 1.0
             next_potential = prev_potential * (1.0 - decay)
@@ -1763,7 +1773,7 @@ class MyRLEnv(Base5ActionRLEnv):
     def is_unsupported_pbrs_config(
         hold_potential_enabled: bool, add_state_info: bool
     ) -> bool:
-        """Return True if PBRS potential relies on hidden (non-observed) state.
+        """Return True if PBRS potential relies on hidden state.
 
         Case: hold_potential enabled while auxiliary state info (pnl, trade_duration) is excluded
         from the observation space (add_state_info=False). In that situation, Φ(s) uses hidden
@@ -1929,11 +1939,13 @@ class MyRLEnv(Base5ActionRLEnv):
                 potential = self._compute_hold_potential(
                     next_position, next_duration_ratio, next_pnl, pnl_target
                 )
-                shaping_reward = gamma * potential - prev_potential
+                reward_shaping = gamma * potential - prev_potential
                 self._last_potential = potential
             else:
-                shaping_reward = 0.0
+                reward_shaping = 0.0
                 self._last_potential = 0.0
+            self._last_exit_additive = 0.0
+            self._last_entry_additive = 0.0
             entry_additive = 0.0
             if self._entry_additive_enabled and not self.is_pbrs_invariant_mode():
                 entry_additive = self._compute_entry_additive(
@@ -1941,48 +1953,62 @@ class MyRLEnv(Base5ActionRLEnv):
                     pnl_target=pnl_target,
                     duration_ratio=next_duration_ratio,
                 )
-            self._last_shaping_reward = float(shaping_reward)
-            self._total_shaping_reward += float(shaping_reward)
-            return base_reward + shaping_reward + entry_additive
+                self._last_entry_additive = float(entry_additive)
+                self._total_entry_additive += float(entry_additive)
+            self._last_reward_shaping = float(reward_shaping)
+            self._total_reward_shaping += float(reward_shaping)
+            self._last_prev_potential = float(prev_potential)
+            self._last_next_potential = float(self._last_potential)
+            return base_reward + reward_shaping + entry_additive
         elif is_hold:
             if self._hold_potential_enabled:
                 potential = self._compute_hold_potential(
                     next_position, next_duration_ratio, next_pnl, pnl_target
                 )
-                shaping_reward = gamma * potential - prev_potential
+                reward_shaping = gamma * potential - prev_potential
                 self._last_potential = potential
             else:
-                shaping_reward = 0.0
+                reward_shaping = 0.0
                 self._last_potential = 0.0
-            self._last_shaping_reward = float(shaping_reward)
-            self._total_shaping_reward += float(shaping_reward)
-            return base_reward + shaping_reward
+            self._last_entry_additive = 0.0
+            self._last_exit_additive = 0.0
+            self._last_reward_shaping = float(reward_shaping)
+            self._total_reward_shaping += float(reward_shaping)
+            self._last_prev_potential = float(prev_potential)
+            self._last_next_potential = float(self._last_potential)
+            return base_reward + reward_shaping
         elif is_exit:
             if (
                 self._exit_potential_mode == "canonical"
                 or self._exit_potential_mode == "non_canonical"
             ):
                 next_potential = 0.0
-                exit_shaping_reward = -prev_potential
+                exit_reward_shaping = -prev_potential
             else:
                 next_potential = self._compute_exit_potential(prev_potential, gamma)
-                exit_shaping_reward = gamma * next_potential - prev_potential
-
+                exit_reward_shaping = gamma * next_potential - prev_potential
+            self._last_entry_additive = 0.0
+            self._last_exit_additive = 0.0
             exit_additive = 0.0
             if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
                 duration_ratio = trade_duration / max(max_trade_duration, 1)
                 exit_additive = self._compute_exit_additive(
                     pnl, pnl_target, duration_ratio
                 )
-
+                self._last_exit_additive = float(exit_additive)
+                self._total_exit_additive += float(exit_additive)
             self._last_potential = next_potential
-            self._last_shaping_reward = float(exit_shaping_reward)
-            self._total_shaping_reward += float(exit_shaping_reward)
-            return base_reward + exit_shaping_reward + exit_additive
+            self._last_reward_shaping = float(exit_reward_shaping)
+            self._total_reward_shaping += float(exit_reward_shaping)
+            self._last_prev_potential = float(prev_potential)
+            self._last_next_potential = float(self._last_potential)
+            return base_reward + exit_reward_shaping + exit_additive
         else:
             # Neutral self-loop
-            self._last_potential = 0.0
-            self._last_shaping_reward = 0.0
+            self._last_prev_potential = float(prev_potential)
+            self._last_next_potential = float(self._last_potential)
+            self._last_entry_additive = 0.0
+            self._last_exit_additive = 0.0
             return base_reward
 
     def _set_observation_space(self) -> None:
@@ -2030,8 +2056,18 @@ class MyRLEnv(Base5ActionRLEnv):
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
         self._last_potential = 0.0
-        self._total_shaping_reward = 0.0
-        self._last_shaping_reward = 0.0
+        self._last_prev_potential = 0.0
+        self._last_next_potential = 0.0
+        self._last_reward_shaping = 0.0
+        self._total_reward_shaping = 0.0
+        self._last_entry_additive = 0.0
+        self._total_entry_additive = 0.0
+        self._last_exit_additive = 0.0
+        self._total_exit_additive = 0.0
+        self._last_invalid_penalty = 0.0
+        self._last_idle_penalty = 0.0
+        self._last_hold_penalty = 0.0
+        self._last_exit_reward = 0.0
         return observation, history
 
     def _get_exit_factor(
@@ -2233,12 +2269,18 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         base_reward: Optional[float] = None
 
+        self._last_invalid_penalty = 0.0
+        self._last_idle_penalty = 0.0
+        self._last_hold_penalty = 0.0
+        self._last_exit_reward = 0.0
+
         # 1. Invalid action
         if not self.action_masking and not self._is_valid(action):
             self.tensorboard_log("invalid", category="actions")
             base_reward = float(model_reward_parameters.get("invalid_action", -2.0))
+            self._last_invalid_penalty = float(base_reward)
 
-        max_trade_duration = max(self.max_trade_duration_candles, 1)
+        max_trade_duration = max(1, self.max_trade_duration_candles)
         trade_duration = self.get_trade_duration()
         duration_ratio = trade_duration / max_trade_duration
         base_factor = float(model_reward_parameters.get("base_factor", 100.0))
@@ -2252,11 +2294,14 @@ class MyRLEnv(Base5ActionRLEnv):
             and action == Actions.Neutral.value
             and self._position == Positions.Neutral
         ):
-            max_idle_duration = int(
-                model_reward_parameters.get(
-                    "max_idle_duration_candles",
-                    ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration,
-                )
+            max_idle_duration = max(
+                1,
+                int(
+                    model_reward_parameters.get(
+                        "max_idle_duration_candles",
+                        ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration,
+                    )
+                ),
             )
             idle_penalty_scale = float(
                 model_reward_parameters.get("idle_penalty_scale", 0.5)
@@ -2271,6 +2316,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 * idle_penalty_scale
                 * idle_duration_ratio**idle_penalty_power
             )
+            self._last_idle_penalty = float(base_reward)
 
         # 3. Hold overtime penalty
         if (
@@ -2292,6 +2338,7 @@ class MyRLEnv(Base5ActionRLEnv):
                     * hold_penalty_scale
                     * (duration_ratio - 1.0) ** hold_penalty_power
                 )
+                self._last_hold_penalty = float(base_reward)
 
         # 4. Exit rewards
         pnl = self.get_unrealized_profit()
@@ -2301,12 +2348,14 @@ class MyRLEnv(Base5ActionRLEnv):
             and self._position == Positions.Long
         ):
             base_reward = pnl * self._get_exit_factor(base_factor, pnl, duration_ratio)
+            self._last_exit_reward = float(base_reward)
         if (
             base_reward is None
             and action == Actions.Short_exit.value
             and self._position == Positions.Short
         ):
             base_reward = pnl * self._get_exit_factor(base_factor, pnl, duration_ratio)
+            self._last_exit_reward = float(base_reward)
 
         # 5. Default
         if base_reward is None:
@@ -2411,7 +2460,6 @@ class MyRLEnv(Base5ActionRLEnv):
         self._update_portfolio_log_returns()
         reward = self.calculate_reward(action)
         self.total_reward += reward
-        self.tensorboard_log(Actions._member_names_[action], category="actions")
         trade_type = self.execute_trade(action)
         if trade_type is not None:
             self.append_trade_history(trade_type, self.current_price(), pre_pnl)
@@ -2420,6 +2468,18 @@ class MyRLEnv(Base5ActionRLEnv):
         self._update_max_unrealized_profit(pnl)
         self._update_min_unrealized_profit(pnl)
         delta_pnl = pnl - pre_pnl
+        max_idle_duration = max(
+            1,
+            int(
+                self.rl_config.get("model_reward_parameters", {}).get(
+                    "max_idle_duration_candles",
+                    ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER
+                    * max(1, self.max_trade_duration_candles),
+                )
+            ),
+        )
+        idle_duration = self.get_idle_duration()
+        trade_duration = self.get_trade_duration()
         info = {
             "tick": self._current_tick,
             "position": float(self._position.value),
@@ -2432,14 +2492,25 @@ class MyRLEnv(Base5ActionRLEnv):
             "most_recent_return": round(self.get_most_recent_return(), 5),
             "most_recent_profit": round(self.get_most_recent_profit(), 5),
             "total_profit": round(self._total_profit, 5),
-            "potential": round(self._last_potential, 5),
-            "shaping_reward": round(self._last_shaping_reward, 5),
-            "total_shaping_reward": round(self._total_shaping_reward, 5),
+            "prev_potential": round(self._last_prev_potential, 5),
+            "next_potential": round(self._last_next_potential, 5),
+            "reward_entry_additive": round(self._last_entry_additive, 5),
+            "reward_exit_additive": round(self._last_exit_additive, 5),
+            "reward_shaping": round(self._last_reward_shaping, 5),
+            "total_reward_shaping": round(self._total_reward_shaping, 5),
+            "reward_invalid": round(self._last_invalid_penalty, 5),
+            "reward_idle": round(self._last_idle_penalty, 5),
+            "reward_hold": round(self._last_hold_penalty, 5),
+            "reward_exit": round(self._last_exit_reward, 5),
             "reward": round(reward, 5),
             "total_reward": round(self.total_reward, 5),
             "pbrs_invariant": self.is_pbrs_invariant_mode(),
-            "idle_duration": self.get_idle_duration(),
-            "trade_duration": self.get_trade_duration(),
+            "idle_duration": idle_duration,
+            "idle_ratio": (idle_duration / max_idle_duration),
+            "trade_duration": trade_duration,
+            "duration_ratio": (
+                trade_duration / max(self.max_trade_duration_candles, 1)
+            ),
             "trade_count": int(len(self.trade_history) // 2),
         }
         self._update_history(info)

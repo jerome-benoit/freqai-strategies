@@ -2,15 +2,12 @@
 
 Purpose
 -------
-Execute a bounded, optionally shuffled subset of parameter combinations for
-`reward_space_analysis.py` to verify end-to-end execution (smoke / regression
-signal, not correctness proof).
+Execute a bounded, optionally shuffled subset of parameter combinations for `reward_space_analysis.py` to verify end-to-end execution (smoke / regression signal, not correctness proof).
 
 Key features
 ------------
-* Deterministic sampling with optional shuffling (`--shuffle-seed`).
-* Optional duplication of first N scenarios under strict diagnostics
-    (`--strict-sample`).
+* Deterministic sampling with optional shuffling (`--shuffle_seed`).
+* Optional duplication of first N scenarios under strict diagnostics (`--strict_sample`).
 * Per-scenario timing and aggregate statistics (mean / min / max seconds).
 * Simple warning counting + (patch adds) breakdown of distinct warning lines.
 * Scenario list + seed metadata exported for reproducibility.
@@ -100,6 +97,7 @@ def build_arg_matrix(
     )
 
     full: List[ConfigTuple] = list(product_iter)
+    full = [c for c in full if not (c[0] == "canonical" and (c[4] == 1 or c[5] == 1))]
     if shuffle_seed is not None:
         rnd = random.Random(shuffle_seed)
         rnd.shuffle(full)
@@ -121,13 +119,15 @@ def run_scenario(
     script: Path,
     out_dir: Path,
     idx: int,
-    total: int,
     base_samples: int,
     conf: ConfigTuple,
     strict: bool,
     bootstrap_resamples: int,
     timeout: int,
     skip_feature_analysis: bool = False,
+    unrealized_pnl: bool = False,
+    action_masking: bool = False,
+    store_full_logs: bool = False,
 ) -> ScenarioResult:
     (
         exit_potential_mode,
@@ -165,13 +165,15 @@ def run_scenario(
     cmd += ["--bootstrap_resamples", str(bootstrap_resamples)]
     if skip_feature_analysis:
         cmd.append("--skip_feature_analysis")
+    if unrealized_pnl:
+        cmd.append("--unrealized_pnl")
+    if action_masking:
+        cmd.append("--action_masking")
     if strict:
         cmd.append("--strict_diagnostics")
     start = time.perf_counter()
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, timeout=timeout
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired:
         return {
             "config": conf,
@@ -186,11 +188,13 @@ def run_scenario(
     end = time.perf_counter()
     combined = (proc.stdout + "\n" + proc.stderr).lower()
     warn_count = combined.count("warning")
+    stdout_out = proc.stdout if store_full_logs else proc.stdout[-5000:]
+    stderr_out = proc.stderr if store_full_logs else proc.stderr[-5000:]
     return {
         "config": conf,
         "status": status,
-        "stdout": proc.stdout[-5000:],
-        "stderr": proc.stderr[-5000:],
+        "stdout": stdout_out,
+        "stderr": stderr_out,
         "strict": strict,
         "seconds": round(end - start, 4),
         "warnings": warn_count,
@@ -203,7 +207,7 @@ def main():
         "--samples",
         type=int,
         default=40,
-        help="num synthetic samples per scenario (minimum 4 for feature analysis)",
+        help="Number of synthetic samples per scenario (minimum 4 for feature analysis)",
     )
     parser.add_argument(
         "--skip_feature_analysis",
@@ -214,7 +218,7 @@ def main():
         "--out_dir",
         type=str,
         default="sample_run_output_smoke",
-        help="output parent directory",
+        help="Output parent directory",
     )
     parser.add_argument(
         "--shuffle_seed",
@@ -251,6 +255,16 @@ def main():
         action="store_true",
         help="If set, store full stdout/stderr (may be large) instead of tail truncation.",
     )
+    parser.add_argument(
+        "--unrealized_pnl",
+        action="store_true",
+        help="Forward --unrealized_pnl to child process to exercise hold Φ(s) path.",
+    )
+    parser.add_argument(
+        "--action_masking",
+        action="store_true",
+        help="Forward --action_masking to child process to exercise coercion path.",
+    )
     args = parser.parse_args()
 
     # Basic validation
@@ -267,9 +281,7 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    scenarios = build_arg_matrix(
-        max_scenarios=args.max_scenarios, shuffle_seed=args.shuffle_seed
-    )
+    scenarios = build_arg_matrix(max_scenarios=args.max_scenarios, shuffle_seed=args.shuffle_seed)
 
     # Prepare list of (conf, strict_flag)
     scenario_pairs: List[Tuple[ConfigTuple, bool]] = [(c, False) for c in scenarios]
@@ -284,16 +296,18 @@ def main():
         for i, (conf, strict_flag) in enumerate(scenario_pairs, start=1):
             # Ensure child process sees the chosen bootstrap resamples via direct CLI args only
             res = run_scenario(
-                script,
-                out_dir,
-                i,
-                total,
-                args.samples,
-                conf,
+                script=script,
+                out_dir=out_dir,
+                idx=i,
+                base_samples=args.samples,
+                conf=conf,
                 strict=strict_flag,
                 bootstrap_resamples=args.bootstrap_resamples,
                 timeout=args.per_scenario_timeout,
                 skip_feature_analysis=args.skip_feature_analysis,
+                unrealized_pnl=args.unrealized_pnl,
+                action_masking=args.action_masking,
+                store_full_logs=args.store_full_logs,
             )
             results.append(res)
             status = res["status"]
@@ -316,9 +330,7 @@ def main():
         "ok": ok,
         "failures": failures,
         "warnings_total": total_warnings,
-        "mean_seconds": round(sum(durations) / len(durations), 4)
-        if durations
-        else None,
+        "mean_seconds": round(sum(durations) / len(durations), 4) if durations else None,
         "max_seconds": max(durations) if durations else None,
         "min_seconds": min(durations) if durations else None,
         "strict_duplicated": strict_n,
@@ -394,7 +406,9 @@ def main():
                 except OSError:
                     pass
     else:
-        if os.path.exists(tmp_path):  # Should have been moved; defensive cleanup
+        if os.path.exists(
+            tmp_path
+        ):  # Defensive cleanup: remove temp file if atomic replace did not clean up
             try:
                 os.remove(tmp_path)
             except OSError:
