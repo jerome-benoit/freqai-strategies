@@ -2077,7 +2077,7 @@ def _validate_hypothesis_test_results(results: Dict[str, Any]) -> None:
             rho = result["rho"]
             if np.isfinite(rho) and not (-1 <= rho <= 1):
                 raise AssertionError(
-                    f"Invalid correlation coefficient for {test_name}: {rho:.6f} " f"not in [-1,1]"
+                    f"Invalid correlation coefficient for {test_name}: {rho:.6f} not in [-1,1]"
                 )
 
         # Confidence intervals must be properly ordered

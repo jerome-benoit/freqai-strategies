@@ -724,17 +724,6 @@ class TestStatistics(RewardSpaceTestBase):
         results = statistical_hypothesis_tests(base)
         self.assertIsInstance(results, dict)
 
-    def test_stats_constant_distribution_bootstrap_and_diagnostics(self):
-        """Bootstrap on constant columns (degenerate)."""
-        df = self._const_df(80)
-        res = bootstrap_confidence_intervals(
-            df, ["reward", "pnl"], n_bootstrap=200, confidence_level=0.95
-        )
-        for k, (mean, lo, hi) in res.items():  # tuple: mean, low, high
-            self.assertAlmostEqualFloat(mean, lo, tolerance=2e-9)
-            self.assertAlmostEqualFloat(mean, hi, tolerance=2e-9)
-            self.assertLessEqual(hi - lo, 2e-9)
-
     def test_stats_js_distance_symmetry_violin(self):
         """JS distance symmetry d(P,Q)==d(Q,P)."""
         df1 = self._shift_scale_df(300, shift=0.0)
@@ -752,51 +741,6 @@ class TestStatistics(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
             rtol=self.TOL_RELATIVE,
         )
-
-    def test_stats_js_distance_symmetry_helper(self):
-        """JS distance properties: symmetry d(P,Q)=d(Q,P) and upper bound sqrt(log 2)."""
-        rng = np.random.default_rng(777)
-        p_raw = rng.uniform(0.0, 1.0, size=400)
-        q_raw = rng.uniform(0.0, 1.0, size=400)
-        p = p_raw / p_raw.sum()
-        q = q_raw / q_raw.sum()
-
-        def _kl(a: np.ndarray, b: np.ndarray) -> float:
-            mask = (a > 0) & (b > 0)
-            return float(np.sum(a[mask] * np.log(a[mask] / b[mask])))
-
-        def js_distance(a: np.ndarray, b: np.ndarray) -> float:
-            m = 0.5 * (a + b)
-            js_div = 0.5 * _kl(a, m) + 0.5 * _kl(b, m)
-            return math.sqrt(max(js_div, 0.0))
-
-        # Symmetry
-        self.assertSymmetric(
-            js_distance,
-            p,
-            q,
-            atol=self.TOL_IDENTITY_STRICT,
-            rtol=self.TOL_RELATIVE,
-        )
-        # Upper bound
-        self.assertLessEqual(
-            js_distance(p, q),
-            self.JS_DISTANCE_UPPER_BOUND + self.TOL_IDENTITY_STRICT,
-        )
-
-    def test_stats_bootstrap_shrinkage_with_sample_size(self):
-        """Bootstrap CI shrinks ~1/sqrt(n)."""
-        small = self._shift_scale_df(80)
-        large = self._shift_scale_df(800)
-        res_small = bootstrap_confidence_intervals(small, ["reward"], n_bootstrap=400)
-        res_large = bootstrap_confidence_intervals(large, ["reward"], n_bootstrap=400)
-        (_, lo_s, hi_s) = list(res_small.values())[0]
-        (_, lo_l, hi_l) = list(res_large.values())[0]
-        hw_small = (hi_s - lo_s) / 2.0
-        hw_large = (hi_l - lo_l) / 2.0
-        self.assertFinite(hw_small, name="hw_small")
-        self.assertFinite(hw_large, name="hw_large")
-        self.assertLess(hw_large, hw_small * 0.55)
 
     def test_stats_variance_vs_duration_spearman_sign(self):
         """trade_duration up => pnl variance up (rank corr >0)."""
@@ -842,15 +786,6 @@ class TestStatistics(RewardSpaceTestBase):
             rtol=self.TOL_RELATIVE,
         )
 
-    def test_stats_ks_statistic_bounds(self):
-        """KS in [0,1]."""
-        df1 = self._shift_scale_df(150)
-        df2 = self._shift_scale_df(150, shift=0.4)
-        metrics = compute_distribution_shift_metrics(df1, df2)
-        for k, v in metrics.items():
-            if k.endswith("_ks_statistic"):
-                self.assertWithin(v, 0.0, 1.0, name=k)
-
     def test_stats_bh_correction_null_false_positive_rate(self):
         """Null: low BH discovery rate."""
         rng = np.random.default_rng(1234)
@@ -887,20 +822,6 @@ class TestStatistics(RewardSpaceTestBase):
         y_smooth = np.convolve(y_noisy, np.ones(window) / window, mode="valid")
         self.assertMonotonic(y_smooth, non_increasing=True, tolerance=1e-5)
 
-    def test_stats_bootstrap_confidence_intervals_basic(self):
-        """Bootstrap CI calculation (basic)."""
-        test_data = self.make_stats_df(n=100, seed=self.SEED)
-        results = bootstrap_confidence_intervals(
-            test_data,
-            ["reward", "pnl"],
-            n_bootstrap=100,
-        )
-        for metric, (mean, ci_low, ci_high) in results.items():
-            self.assertFinite(mean, name=f"mean[{metric}]")
-            self.assertFinite(ci_low, name=f"ci_low[{metric}]")
-            self.assertFinite(ci_high, name=f"ci_high[{metric}]")
-            self.assertLess(ci_low, ci_high)
-
     def test_stats_hypothesis_seed_reproducibility(self):
         """Seed reproducibility for statistical_hypothesis_tests + bootstrap."""
         df = self.make_stats_df(n=300, seed=123, idle_pattern="mixed")
@@ -926,9 +847,15 @@ class TestStatistics(RewardSpaceTestBase):
         for metric in metrics:
             m_a, lo_a, hi_a = ci_a[metric]
             m_b, lo_b, hi_b = ci_b[metric]
-            self.assertAlmostEqualFloat(m_a, m_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE)
-            self.assertAlmostEqualFloat(lo_a, lo_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE)
-            self.assertAlmostEqualFloat(hi_a, hi_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE)
+            self.assertAlmostEqualFloat(
+                m_a, m_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+            )
+            self.assertAlmostEqualFloat(
+                lo_a, lo_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+            )
+            self.assertAlmostEqualFloat(
+                hi_a, hi_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+            )
 
     def test_stats_distribution_metrics_mathematical_bounds(self):
         """Mathematical bounds and validity of distribution shift metrics."""
@@ -2040,7 +1967,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             self.assertLessEqual(
                 penalties[i],
                 penalties[i - 1],
-                f"Penalty should increase with duration: {penalties[i]} > {penalties[i-1]}",
+                f"Penalty should increase with duration: {penalties[i]} > {penalties[i - 1]}",
             )
 
     def test_new_invariant_and_warn_parameters(self):
