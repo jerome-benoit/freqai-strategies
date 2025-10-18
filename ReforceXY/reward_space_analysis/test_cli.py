@@ -406,9 +406,8 @@ def main():
                 except OSError:
                     pass
     else:
-        if os.path.exists(
-            tmp_path
-        ):  # Defensive cleanup: remove temp file if atomic replace did not clean up
+        # Defensive cleanup: remove temp file if atomic replace did not clean up
+        if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:

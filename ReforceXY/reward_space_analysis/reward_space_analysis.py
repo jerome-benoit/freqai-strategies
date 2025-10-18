@@ -101,7 +101,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     # Idle penalty (env defaults)
     "idle_penalty_scale": 0.5,
     "idle_penalty_power": 1.025,
-    # Fallback: 4 * max_trade_duration_candles
+    # Fallback: DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
     "max_idle_duration_candles": None,
     # Hold penalty (env defaults)
     "hold_penalty_scale": 0.25,
@@ -1125,7 +1125,7 @@ def simulate_samples(
     rng = random.Random(seed)
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
-    # Theoretical PBRS invariance flag (mirrors ReforceXY.is_pbrs_invariant_mode semantics)
+    # Theoretical PBRS invariance flag
     exit_mode = _get_str_param(
         params,
         "exit_potential_mode",
@@ -2490,7 +2490,7 @@ def _compute_exit_potential(last_potential: float, params: RewardParams) -> floa
         )
         if not np.isfinite(decay) or decay < 0.0:
             warnings.warn(
-                "exit_potential_decay invalid or < 0; clamped to 0.0",
+                "exit_potential_decay invalid or < 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -2842,7 +2842,7 @@ def write_complete_statistical_analysis(
         try:
             if isinstance(v, numbers.Integral):
                 return f"{int(v)}"
-            if isinstance(v, numbers.Real) and not isinstance(v, numbers.Integral):
+            elif isinstance(v, numbers.Real):
                 fv = float(v)
                 if math.isnan(fv):
                     return "NaN"
@@ -2857,8 +2857,8 @@ def write_complete_statistical_analysis(
             lines.append(f"| {k} | {_fmt_val(v, ndigits)} |")
         return "\n".join(lines) + "\n\n"
 
-    def _df_to_md(df: Optional[pd.DataFrame], index_name: str = "index", ndigits: int = 6) -> str:
-        if df is None or df.empty:
+    def _df_to_md(df: pd.DataFrame, index_name: str = "index", ndigits: int = 6) -> str:
+        if df.empty:
             return "_No data._\n\n"
         # Prepare header
         cols = list(df.columns)
