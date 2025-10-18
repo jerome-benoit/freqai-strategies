@@ -1,9 +1,4 @@
 [tool.pytest.ini_options]
-# Pytest configuration following GitHub Copilot instructions:
-# - Single source of truth for test configuration
-# - Reproducible test execution
-# - Clear error reporting
-
 minversion = "6.0"
 testpaths = [
     "."
@@ -33,13 +28,13 @@ addopts = [
     "--color=yes"
 ]
 
-# Test markers
-markers = [
-    "integration: Integration tests requiring external dependencies",
-    "unit: Fast unit tests",
-    "statistical: Statistical validation tests",
-    "slow: Tests that take more than a few seconds"
-]
-
 # Minimum Python version
-python_version = "3.8"
+python_version = "3.9"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
