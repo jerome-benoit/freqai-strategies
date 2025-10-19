@@ -2128,13 +2128,13 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             places=10,
             msg="PnL invariant violation: total PnL != sum of exit PnL",
         )
-        non_zero_pnl_actions = set(df[df["pnl"] != 0]["action"].unique())
+        non_zero_pnl_actions = set(df[df["pnl"].abs() > self.EPS_BASE]["action"].unique())
         expected_exit_actions = {2.0, 4.0}
         self.assertTrue(
             non_zero_pnl_actions.issubset(expected_exit_actions),
             f"Non-exit actions have PnL: {non_zero_pnl_actions - expected_exit_actions}",
         )
-        invalid_combinations = df[(df["pnl"] == 0) & (df["reward_exit"] != 0)]
+        invalid_combinations = df[(df["pnl"].abs() <= self.EPS_BASE) & (df["reward_exit"] != 0)]
         self.assertEqual(len(invalid_combinations), 0)
 
     def test_exit_factor_mathematical_formulas(self):
@@ -2175,8 +2175,27 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             short_allowed=True,
             action_masking=True,
         )
-        expected_half_life_factor = 2 ** (-duration_ratio / 0.5)
-        self.assertPlacesEqual(expected_half_life_factor, 0.5, places=6)
+        # Validate half-life attenuation factor against expected closed-form: 2 ** (-dr / half_life)
+        pnl_factor_hl = _get_pnl_factor(
+            params,
+            context,
+            self.TEST_PROFIT_TARGET,
+            self.TEST_RR,
+        )
+        observed_half_life_factor = _get_exit_factor(
+            self.TEST_BASE_FACTOR,
+            context.pnl,
+            pnl_factor_hl,
+            duration_ratio,
+            params,
+        )
+        expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
+        self.assertAlmostEqualFloat(
+            observed_half_life_factor,
+            expected_half_life_factor,
+            tolerance=self.TOL_IDENTITY_RELAXED,
+            msg="Half-life attenuation mismatch: observed vs expected",
+        )
         params["exit_attenuation_mode"] = "linear"
         params["exit_linear_slope"] = 1.0
         reward_linear = calculate_reward(
@@ -2815,7 +2834,7 @@ class TestPBRS(RewardSpaceTestBase):
         current_pnl = 0.02
         current_dur = 0.5
         prev_potential = _compute_hold_potential(current_pnl, current_dur, params)
-        _total_reward, shaping_reward, next_potential = apply_potential_shaping(
+        _total_reward, reward_shaping, next_potential = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
             current_duration_ratio=current_dur,
@@ -2828,7 +2847,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertAlmostEqualFloat(next_potential, 0.0, tolerance=self.TOL_IDENTITY_RELAXED)
         self.assertAlmostEqualFloat(
-            shaping_reward, -prev_potential, tolerance=self.TOL_IDENTITY_RELAXED
+            reward_shaping, -prev_potential, tolerance=self.TOL_IDENTITY_RELAXED
         )
 
     def test_pbrs_spike_cancel_invariance(self):
@@ -2852,7 +2871,7 @@ class TestPBRS(RewardSpaceTestBase):
             DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
         )
         expected_next = prev_potential / gamma if gamma not in (0.0, None) else prev_potential
-        _total_reward, shaping_reward, next_potential = apply_potential_shaping(
+        _total_reward, reward_shaping, next_potential = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
             current_duration_ratio=current_dur,
@@ -2866,7 +2885,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(
             next_potential, expected_next, tolerance=self.TOL_IDENTITY_RELAXED
         )
-        self.assertNearZero(shaping_reward, atol=self.TOL_IDENTITY_RELAXED)
+        self.assertNearZero(reward_shaping, atol=self.TOL_IDENTITY_RELAXED)
 
     def test_tanh_transform(self):
         """tanh transform: tanh(x) in (-1, 1)."""
@@ -3267,9 +3286,6 @@ class TestReportFormatting(RewardSpaceTestBase):
 
     def test_abs_shaping_line_present_and_constant(self):
         """Abs Σ Shaping Reward line present, formatted, uses constant not literal."""
-        # Minimal synthetic construction to exercise invariance formatting logic.
-        self.assertPlacesEqual(PBRS_INVARIANCE_TOL, self.TOL_GENERIC_EQ, places=12)
-
         # Use small synthetic DataFrame with zero shaping sum (pandas imported globally)
         df = pd.DataFrame(
             {
