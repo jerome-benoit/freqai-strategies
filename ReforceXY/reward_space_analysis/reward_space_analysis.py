@@ -2681,17 +2681,7 @@ def apply_potential_shaping(
     entry_additive = cand_entry_add if is_entry else 0.0
     exit_additive = cand_exit_add if is_exit else 0.0
 
-    # Deterministic contribution on non-transition steps to exercise additive activation semantics in RSA
-    hold_additive = 0.0
-    if not is_entry and not is_exit:
-        # Only contribute if at least one additive is enabled (in canonical mode they are auto-disabled)
-        if _get_bool_param(params, "entry_additive_enabled", False) or _get_bool_param(
-            params, "exit_additive_enabled", False
-        ):
-            # Use a conservative half-sum to avoid overpowering transition contributions
-            hold_additive = 0.5 * (cand_entry_add + cand_exit_add)
-
-    reward = base_reward + reward_shaping + entry_additive + exit_additive + hold_additive
+    reward = base_reward + reward_shaping + entry_additive + exit_additive
     if not np.isfinite(reward):
         return float(base_reward), 0.0, 0.0
     if np.isclose(reward_shaping, 0.0):

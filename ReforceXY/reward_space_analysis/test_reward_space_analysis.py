@@ -2308,7 +2308,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
 
     def test_negative_slope_sanitization(self):
-        """Negative exit_linear_slope is sanitized to 1.0; resulting exit factors must match slope=1.0 within tolerance."""
+        """Negative exit_linear_slope is sanitized to 0.0; resulting exit factors must match slope=0.0 within tolerance."""
         base_factor = 100.0
         pnl = 0.03
         pnl_factor = 1.0
@@ -2320,7 +2320,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         params_ref = self.base_params(
             exit_attenuation_mode="linear",
-            exit_linear_slope=1.0,
+            exit_linear_slope=0.0,
             exit_plateau=False,
         )
         for dr in duration_ratios:
@@ -3363,6 +3363,7 @@ class TestReportFormatting(RewardSpaceTestBase):
             "current_duration_ratio": 0.2,
             "next_pnl": 0.012,
             "next_duration_ratio": 0.25,
+            "is_entry": True,
             "is_exit": False,
         }
         _t0, s0, _n0 = apply_potential_shaping(last_potential=0.0, params=base, **ctx)
