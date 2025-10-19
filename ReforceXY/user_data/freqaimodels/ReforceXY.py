@@ -2515,7 +2515,7 @@ class MyRLEnv(Base5ActionRLEnv):
             eps = 1e-6
             if self.is_pbrs_invariant_mode() and abs(self._total_reward_shaping) > eps:
                 logger.warning(
-                    "PBRS %s invariance deviation: |sum Δ|=%.6f > eps=%.6f",
+                    "PBRS mode %s invariance deviation: |sum Δ|=%.6f > eps=%.6f",
                     self._exit_potential_mode,
                     self._total_reward_shaping,
                     eps,

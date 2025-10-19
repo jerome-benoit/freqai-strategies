@@ -2056,7 +2056,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             active_label: str = sc["active"]  # type: ignore[index]
             with self.subTest(active=active_label):
                 # Build parameters disabling shaping and additives to enforce strict decomposition
-                params_local = self.base_params(
+                params = self.base_params(
                     entry_additive_enabled=False,
                     exit_additive_enabled=False,
                     hold_potential_enabled=False,
@@ -2065,7 +2065,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 )
                 br = calculate_reward(
                     ctx_obj,
-                    params_local,
+                    params,
                     base_factor=self.TEST_BASE_FACTOR,
                     profit_target=self.TEST_PROFIT_TARGET,
                     risk_reward_ratio=self.TEST_RR,

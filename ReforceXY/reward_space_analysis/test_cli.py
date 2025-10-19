@@ -1,28 +1,32 @@
-"""CLI integration smoke test for reward_space_analysis.
+"""CLI integration test for reward_space_analysis.
 
 Purpose
 -------
-Execute a bounded, optionally shuffled subset of parameter combinations for `reward_space_analysis.py` to verify end-to-end execution (smoke / regression signal, not correctness proof).
+Execute a bounded, optionally shuffled subset of parameter combinations for `reward_space_analysis.py` to verify end-to-end execution.
 
 Key features
 ------------
 * Deterministic sampling with optional shuffling (`--shuffle_seed`).
 * Optional duplication of first N scenarios under strict diagnostics (`--strict_sample`).
-* Per-scenario timing and aggregate statistics (mean / min / max seconds).
-* Simple warning counting + (patch adds) breakdown of distinct warning lines.
-* Scenario list + seed metadata exported for reproducibility.
-* Direct CLI forwarding of bootstrap resample count to child process.
+* Per-scenario timing and aggregate statistics (mean / min / max / median / p95 seconds).
+* Warning counting based on header lines plus a breakdown of distinct warning headers.
+* Log tail truncation controlled via `--tail_chars` (characters) or full logs via `--full_logs`.
+* Direct CLI forwarding of bootstrap resample count to the child process.
 
 Usage
 -----
-python test_cli.py --samples 50 --out_dir ../sample_run_output_smoke \
+python test_cli.py --num_samples 50 --out_dir ../sample_run_output \
     --shuffle_seed 123 --strict_sample 3 --bootstrap_resamples 200
 
 JSON Summary fields
 -------------------
-total, ok, failures[], warnings_total, warnings_breakdown, mean_seconds,
-max_seconds, min_seconds, strict_duplicated, scenarios (list), seeds (metadata).
-
+- total, failures[]
+- mean_seconds, max_seconds, min_seconds, median_seconds, p95_seconds
+- warnings_breakdown
+- successes (array of ScenarioResult)
+- seeds (sampling/configuration seeds)
+- metadata (timestamp_utc, python_version, platform, git_commit, schema_version=2, per_scenario_timeout)
+- interrupted (optional)
 Exit codes
 ----------
 0: success, 1: failures present, 130: interrupted (partial summary written).
@@ -33,20 +37,23 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import os
 import platform
 import random
+import re
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, NotRequired, Optional, Required, Tuple, TypedDict
 
 ConfigTuple = Tuple[str, str, float, int, int, int]
 
 
-SUMMARY_FILENAME = "reward_space_cli_smoke_results.json"
+SUMMARY_FILENAME = "reward_space_cli_results.json"
 
 
 class ScenarioResult(TypedDict):
@@ -59,15 +66,34 @@ class ScenarioResult(TypedDict):
     warnings: int
 
 
-class SummaryResult(TypedDict):
-    total: int
-    ok: int
-    failures: List[ScenarioResult]
-    warnings_total: int
-    mean_seconds: Optional[float]
-    max_seconds: Optional[float]
-    min_seconds: Optional[float]
-    strict_duplicated: int
+class SummaryResult(TypedDict, total=False):
+    # Required keys
+    total: Required[int]
+    successes: Required[List[ScenarioResult]]
+    failures: Required[List[ScenarioResult]]
+    mean_seconds: Required[Optional[float]]
+    max_seconds: Required[Optional[float]]
+    min_seconds: Required[Optional[float]]
+    median_seconds: Required[Optional[float]]
+    p95_seconds: Required[Optional[float]]
+
+    # Extension keys
+    warnings_breakdown: NotRequired[Dict[str, int]]
+    seeds: NotRequired[Dict[str, Any]]
+    metadata: NotRequired[Dict[str, Any]]
+    interrupted: NotRequired[bool]
+
+
+_WARN_HEADER_RE = re.compile(r"^\s*(?:[A-Za-z]+Warning|WARNING)\b:?", re.IGNORECASE)
+
+
+def _is_warning_header(line: str) -> bool:
+    l = line.strip()
+    if not l:
+        return False
+    if "warnings.warn" in l.lower():
+        return False
+    return bool(_WARN_HEADER_RE.search(l))
 
 
 def build_arg_matrix(
@@ -104,13 +130,32 @@ def build_arg_matrix(
     if max_scenarios >= len(full):
         return full
     step = len(full) / max_scenarios
-    idx_pos = 0.0
+    idx_pos = step / 2.0  # Centered sampling
     selected: List[ConfigTuple] = []
+    selected_indices: set[int] = set()
     for _ in range(max_scenarios):
-        idx = int(idx_pos)
-        if idx >= len(full):
+        idx = int(round(idx_pos))
+        if idx < 0:
+            idx = 0
+        elif idx >= len(full):
             idx = len(full) - 1
+        if idx in selected_indices:
+            left = idx - 1
+            right = idx + 1
+            while True:
+                if left >= 0 and left not in selected_indices:
+                    idx = left
+                    break
+                if right < len(full) and right not in selected_indices:
+                    idx = right
+                    break
+                left -= 1
+                right += 1
+                if left < 0 and right >= len(full):
+                    # All indices taken; fallback to current idx
+                    break
         selected.append(full[idx])
+        selected_indices.add(idx)
         idx_pos += step
     return selected
 
@@ -119,15 +164,17 @@ def run_scenario(
     script: Path,
     out_dir: Path,
     idx: int,
-    base_samples: int,
+    num_samples: int,
     conf: ConfigTuple,
     strict: bool,
     bootstrap_resamples: int,
     timeout: int,
     skip_feature_analysis: bool = False,
+    skip_partial_dependence: bool = False,
     unrealized_pnl: bool = False,
-    action_masking: bool = False,
-    store_full_logs: bool = False,
+    full_logs: bool = False,
+    params: Optional[List[str]] = None,
+    tail_chars: int = 5000,
 ) -> ScenarioResult:
     (
         exit_potential_mode,
@@ -143,7 +190,7 @@ def run_scenario(
         sys.executable,
         str(script),
         "--num_samples",
-        str(base_samples),
+        str(num_samples),
         "--out_dir",
         str(scenario_dir),
         "--exit_potential_mode",
@@ -165,12 +212,14 @@ def run_scenario(
     cmd += ["--bootstrap_resamples", str(bootstrap_resamples)]
     if skip_feature_analysis:
         cmd.append("--skip_feature_analysis")
+    if skip_partial_dependence:
+        cmd.append("--skip_partial_dependence")
     if unrealized_pnl:
         cmd.append("--unrealized_pnl")
-    if action_masking:
-        cmd.append("--action_masking")
     if strict:
         cmd.append("--strict_diagnostics")
+    if params:
+        cmd += ["--params"] + list(params)
     start = time.perf_counter()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
@@ -186,10 +235,27 @@ def run_scenario(
         }
     status = "ok" if proc.returncode == 0 else f"error({proc.returncode})"
     end = time.perf_counter()
-    combined = (proc.stdout + "\n" + proc.stderr).lower()
-    warn_count = combined.count("warning")
-    stdout_out = proc.stdout if store_full_logs else proc.stdout[-5000:]
-    stderr_out = proc.stderr if store_full_logs else proc.stderr[-5000:]
+    if proc.returncode != 0:
+        cmd_str = " ".join(cmd)
+        stderr_head_lines = proc.stderr.splitlines()[:3]
+        stderr_head = "\n".join(stderr_head_lines)
+        print(f"[error details] command: {cmd_str}")
+        if stderr_head:
+            print(f"[error details] stderr head:\n{stderr_head}")
+        else:
+            print("[error details] stderr is empty.")
+    combined = proc.stdout.splitlines() + proc.stderr.splitlines()
+    warnings = sum(1 for line in combined if _is_warning_header(line))
+    if full_logs:
+        stdout_out = proc.stdout
+        stderr_out = proc.stderr
+    else:
+        if tail_chars == 0:
+            stdout_out = ""
+            stderr_out = ""
+        else:
+            stdout_out = proc.stdout[-tail_chars:]
+            stderr_out = proc.stderr[-tail_chars:]
     return {
         "config": conf,
         "status": status,
@@ -197,14 +263,14 @@ def run_scenario(
         "stderr": stderr_out,
         "strict": strict,
         "seconds": round(end - start, 4),
-        "warnings": warn_count,
+        "warnings": warnings,
     }
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--samples",
+        "--num_samples",
         type=int,
         default=40,
         help="Number of synthetic samples per scenario (minimum 4 for feature analysis)",
@@ -212,12 +278,17 @@ def main():
     parser.add_argument(
         "--skip_feature_analysis",
         action="store_true",
-        help="Skip feature importance and model-based analysis for all scenarios.",
+        help="Forward --skip_feature_analysis to child process to skip feature importance and model-based analysis for all scenarios.",
+    )
+    parser.add_argument(
+        "--skip_partial_dependence",
+        action="store_true",
+        help="Forward --skip_partial_dependence to child process to skip partial dependence computation.",
     )
     parser.add_argument(
         "--out_dir",
         type=str,
-        default="sample_run_output_smoke",
+        default="sample_run_output",
         help="Output parent directory",
     )
     parser.add_argument(
@@ -251,7 +322,7 @@ def main():
         help="Timeout (seconds) per child process (default: 600)",
     )
     parser.add_argument(
-        "--store_full_logs",
+        "--full_logs",
         action="store_true",
         help="If set, store full stdout/stderr (may be large) instead of tail truncation.",
     )
@@ -261,21 +332,33 @@ def main():
         help="Forward --unrealized_pnl to child process to exercise hold Φ(s) path.",
     )
     parser.add_argument(
-        "--action_masking",
-        action="store_true",
-        help="Forward --action_masking to child process to exercise coercion path.",
+        "--params",
+        nargs="*",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Forward parameter overrides to child process via --params, e.g. action_masking=0",
+    )
+    parser.add_argument(
+        "--tail_chars",
+        type=int,
+        default=5000,
+        help="Characters to keep from stdout/stderr tail when not storing full logs.",
     )
     args = parser.parse_args()
 
     # Basic validation
     if args.max_scenarios <= 0:
         parser.error("--max_scenarios must be > 0")
-    if args.samples < 4 and not args.skip_feature_analysis:
-        parser.error("--samples must be >= 4 unless --skip_feature_analysis is set")
+    if args.num_samples < 4 and not args.skip_feature_analysis:
+        parser.error("--num_samples must be >= 4 unless --skip_feature_analysis is set")
     if args.strict_sample < 0:
         parser.error("--strict_sample must be >= 0")
     if args.bootstrap_resamples <= 0:
         parser.error("--bootstrap_resamples must be > 0")
+    if args.tail_chars < 0:
+        parser.error("--tail_chars must be >= 0")
+    if args.per_scenario_timeout <= 0:
+        parser.error("--per_scenario_timeout must be > 0")
 
     script = Path(__file__).parent / "reward_space_analysis.py"
     out_dir = Path(args.out_dir)
@@ -283,70 +366,101 @@ def main():
 
     scenarios = build_arg_matrix(max_scenarios=args.max_scenarios, shuffle_seed=args.shuffle_seed)
 
-    # Prepare list of (conf, strict_flag)
+    # Validate --params basic KEY=VALUE format
+    valid_params: List[str] = []
+    invalid_params: List[str] = []
+    for p in args.params:
+        if "=" in p:
+            valid_params.append(p)
+        else:
+            invalid_params.append(p)
+    if invalid_params:
+        msg = f"Warning: ignoring malformed --params entries: {invalid_params}"
+        print(msg, file=sys.stderr)
+        print(f"{msg}")
+    args.params = valid_params
+
+    # Prepare list of (conf, strict)
     scenario_pairs: List[Tuple[ConfigTuple, bool]] = [(c, False) for c in scenarios]
-    strict_n = max(0, min(args.strict_sample, len(scenarios)))
-    for c in scenarios[:strict_n]:
+    indices = {conf: idx for idx, conf in enumerate(scenarios, start=1)}
+    n_duplicated = max(0, min(args.strict_sample, len(scenarios)))
+    if n_duplicated > 0:
+        print(f"Duplicating first {n_duplicated} scenarios with --strict_diagnostics")
+    for c in scenarios[:n_duplicated]:
         scenario_pairs.append((c, True))
 
     results: List[ScenarioResult] = []
     total = len(scenario_pairs)
     interrupted = False
     try:
-        for i, (conf, strict_flag) in enumerate(scenario_pairs, start=1):
-            # Ensure child process sees the chosen bootstrap resamples via direct CLI args only
+        for i, (conf, strict) in enumerate(scenario_pairs, start=1):
             res = run_scenario(
                 script=script,
                 out_dir=out_dir,
                 idx=i,
-                base_samples=args.samples,
+                num_samples=args.num_samples,
                 conf=conf,
-                strict=strict_flag,
+                strict=strict,
                 bootstrap_resamples=args.bootstrap_resamples,
                 timeout=args.per_scenario_timeout,
                 skip_feature_analysis=args.skip_feature_analysis,
+                skip_partial_dependence=args.skip_partial_dependence,
                 unrealized_pnl=args.unrealized_pnl,
-                action_masking=args.action_masking,
-                store_full_logs=args.store_full_logs,
+                full_logs=args.full_logs,
+                params=args.params,
+                tail_chars=args.tail_chars,
             )
             results.append(res)
             status = res["status"]
-            tag = "[strict]" if strict_flag else ""
+            strict_str = f"[strict duplicate_of={indices.get(conf, '?')}]" if strict else ""
             secs = res.get("seconds")
             secs_str = f" {secs:.2f}s" if secs is not None else ""
-            print(f"[{i}/{total}] {conf} {tag} -> {status}{secs_str}")
+            print(f"[{i}/{total}] {conf} {strict_str} -> {status}{secs_str}")
     except KeyboardInterrupt:
         interrupted = True
         print("\nKeyboardInterrupt received: writing partial summary...")
 
-    ok = sum(1 for r in results if r["status"] == "ok")
+    successes = [r for r in results if r["status"] == "ok"]
     failures = [r for r in results if r["status"] != "ok"]
-    total_warnings = sum(r["warnings"] for r in results)
     durations: List[float] = [
         float(r["seconds"]) for r in results if isinstance(r["seconds"], float)
     ]
+    if durations:
+        _sorted = sorted(durations)
+        median_seconds = statistics.median(_sorted)
+        n = len(_sorted)
+        if n == 1:
+            p95_seconds = _sorted[0]
+        else:
+            pos = 0.95 * (n - 1)
+            i0 = int(math.floor(pos))
+            i1 = int(math.ceil(pos))
+            if i0 == i1:
+                p95_seconds = _sorted[i0]
+            else:
+                w = pos - i0
+                p95_seconds = _sorted[i0] + (_sorted[i1] - _sorted[i0]) * w
+    else:
+        median_seconds = None
+        p95_seconds = None
     summary: SummaryResult = {
         "total": len(results),
-        "ok": ok,
+        "successes": successes,
         "failures": failures,
-        "warnings_total": total_warnings,
         "mean_seconds": round(sum(durations) / len(durations), 4) if durations else None,
         "max_seconds": max(durations) if durations else None,
         "min_seconds": min(durations) if durations else None,
-        "strict_duplicated": strict_n,
+        "median_seconds": median_seconds,
+        "p95_seconds": p95_seconds,
     }
-    # Build warning breakdown (simple line fingerprinting)
-    warning_counts: Dict[str, int] = {}
+    # Build warnings breakdown
+    warnings_breakdown: Dict[str, int] = {}
     for r in results:
         text = (r["stderr"] + "\n" + r["stdout"]).splitlines()
         for line in text:
-            if "warning" in line.lower():
-                # Fingerprint: trim + collapse whitespace + limit length
+            if _is_warning_header(line):
                 fp = " ".join(line.strip().split())[:160]
-                warning_counts[fp] = warning_counts.get(fp, 0) + 1
-
-    # Scenario export (list of configs only, excluding strict flag duplication detail)
-    scenario_list = [list(c) for c, _ in scenario_pairs]
+                warnings_breakdown[fp] = warnings_breakdown.get(fp, 0) + 1
 
     # Collect environment + reproducibility metadata
     def _git_hash() -> Optional[str]:
@@ -364,40 +478,38 @@ def main():
             return None
         return None
 
-    summary_extra: Dict[str, Any] = {
-        "warnings_breakdown": warning_counts,
-        "scenarios": scenario_list,
-        "seeds": {
-            "shuffle_seed": args.shuffle_seed,
-            "strict_sample": args.strict_sample,
-            "max_scenarios": args.max_scenarios,
-            "bootstrap_resamples": args.bootstrap_resamples,
-        },
-        "metadata": {
-            "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "python_version": sys.version.split()[0],
-            "platform": platform.platform(),
-            "git_commit": _git_hash(),
-            "schema_version": 1,
-            "per_scenario_timeout": args.per_scenario_timeout,
-        },
-    }
-    serializable: Dict[str, Any]
+    summary.update(
+        {
+            "warnings_breakdown": warnings_breakdown,
+            "seeds": {
+                "shuffle_seed": args.shuffle_seed,
+                "strict_sample": args.strict_sample,
+                "max_scenarios": args.max_scenarios,
+                "bootstrap_resamples": args.bootstrap_resamples,
+            },
+            "metadata": {
+                "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "python_version": sys.version.split()[0],
+                "platform": platform.platform(),
+                "git_commit": _git_hash(),
+                "schema_version": 2,
+                "per_scenario_timeout": args.per_scenario_timeout,
+            },
+        }
+    )
     if interrupted:
-        serializable = {**summary, **summary_extra, "interrupted": True}
-    else:
-        serializable = {**summary, **summary_extra}
+        summary["interrupted"] = True
     # Atomic write to avoid corrupt partial files
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="_tmp_summary_", dir=str(out_dir))
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            json.dump(serializable, fh, indent=2)
+            json.dump(summary, fh, indent=2)
         os.replace(tmp_path, out_dir / SUMMARY_FILENAME)
     except Exception:
         # Best effort fallback
         try:
             Path(out_dir / SUMMARY_FILENAME).write_text(
-                json.dumps(serializable, indent=2), encoding="utf-8"
+                json.dumps(summary, indent=2), encoding="utf-8"
             )
         finally:
             if os.path.exists(tmp_path):

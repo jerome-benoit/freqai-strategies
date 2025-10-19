@@ -1072,15 +1072,6 @@ def calculate_reward(
             params=params,
         )
 
-        # exit_mode = _get_str_param(
-        #     params,
-        #     "exit_potential_mode",
-        #     str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
-        # )
-        # if exit_mode == "canonical":
-        #     total_reward = float(total_reward) - float(reward_shaping)
-        #     reward_shaping = 0.0
-
         breakdown.reward_shaping = reward_shaping
         breakdown.prev_potential = float(previous_potential)
         breakdown.next_potential = next_potential
@@ -2556,7 +2547,7 @@ def _compute_exit_potential(last_potential: float, params: RewardParams) -> floa
             decay = 0.0
         if decay > 1.0:
             warnings.warn(
-                f"exit_potential_decay={decay} > 1; clamped to 1.0",
+                f"exit_potential_decay={decay} > 1; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
