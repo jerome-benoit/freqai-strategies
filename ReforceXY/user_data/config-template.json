@@ -160,13 +160,13 @@
       "model_reward_parameters": {
         "rr": 2,
         "profit_aim": 0.025,
-        "win_reward_factor": 2
+        "win_reward_factor": 2,
+        "max_trade_duration_candles": 96 // Maximum trade duration in candles
       },
       "train_cycles": 25,
       "add_state_info": true,
       "cpu_count": 4,
       "max_training_drawdown_pct": 0.02,
-      "max_trade_duration_candles": 96, // Maximum trade duration in candles
       "n_envs": 8, // Number of DummyVecEnv or SubProcVecEnv training environments
       "multiprocessing": true, // Use SubprocVecEnv if n_envs>1 (otherwise DummyVecEnv)
       "frame_stacking": 2, // Number of VecFrameStack stacks (set > 1 to use)

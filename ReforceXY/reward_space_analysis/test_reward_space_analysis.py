@@ -311,7 +311,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         self.assertGreaterEqual(value, 0.0, msg or f"p-value < 0: {value}")
         self.assertLessEqual(value, 1.0, msg or f"p-value > 1: {value}")
 
-    def assertPlaces(
+    def assertPlacesEqual(
         self,
         a: Union[float, int],
         b: Union[float, int],
@@ -325,16 +325,6 @@ class RewardSpaceTestBase(unittest.TestCase):
         """
         tol = 10.0 ** (-places)
         self.assertAlmostEqualFloat(a, b, tolerance=tol, msg=msg)
-
-    def assertPlacesEqual(
-        self,
-        a: Union[float, int],
-        b: Union[float, int],
-        places: int,
-        msg: Optional[str] = None,
-    ) -> None:
-        """Alias for legacy unittest-style places equality, delegating to assertPlaces."""
-        return self.assertPlaces(a, b, places, msg)
 
     def assertDistanceMetric(
         self,
@@ -1125,7 +1115,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
 
     def test_idle_penalty_zero_when_profit_target_zero(self):
-        """If profit_target=0 → idle_factor=0 → idle must be exactly 0 for neutral idle state."""
+        """If profit_target=0 → idle_factor=0 → idle penalty must be exactly 0 for neutral idle state."""
         context = self.make_ctx(
             pnl=0.0,
             trade_duration=0,
@@ -1231,7 +1221,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             )
 
     def test_scale_invariance_and_decomposition(self):
-        """Components scale ~ linearly base_factor; total equals sum(core + shaping + additives)."""
+        """Components scale ~ linearly with base_factor; total equals sum(core + shaping + additives)."""
         params = self.base_params()
         params.pop("base_factor", None)  # explicit base_factor argument below
         base_factor = 80.0
@@ -1358,7 +1348,7 @@ class TestRewardComponents(RewardSpaceTestBase):
                 )
 
     def test_long_short_symmetry(self):
-        """Long Short exit reward magnitudes should match in absolute value for identical PnL (no directional bias)."""
+        """Long vs Short exit reward magnitudes should match in absolute value for identical PnL (no directional bias)."""
         params = self.base_params()
         params.pop("base_factor", None)
         base_factor = 120.0
@@ -1596,7 +1586,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertEqual(_get_str_param(params, "missing", "default"), "default")
 
     def test_get_bool_param(self):
-        """Test boolean extraction."""
+        """Test boolean parameter extraction."""
         params = {
             "test_true": True,
             "test_false": False,
@@ -2356,7 +2346,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             0.5,
             0.25,
             1.0,
-        ]  # include 1.0 => alpha=0 per formula? actually -> -log(1)/log2 = 0
+        ]
         for tau in taus:
             params = self.base_params(
                 exit_attenuation_mode="power",
@@ -3232,7 +3222,7 @@ class TestPBRS(RewardSpaceTestBase):
                         f"{name} not monotonic between {a} and {b}",
                     )
 
-    def test_ps_retain_previous_cumulative_drift(self):
+    def test_pbrs_retain_previous_cumulative_drift(self):
         """retain_previous mode accumulates negative shaping drift (non-invariant)."""
         params = self.base_params(
             exit_potential_mode="retain_previous",
@@ -3698,6 +3688,84 @@ class TestCsvAndSimulationOptions(RewardSpaceTestBase):
             self.TOL_GENERIC_EQ,
             f"No detectable effect of --unrealized_pnl on Φ(s): def={mean_next_def:.6f}, sim={mean_next_sim:.6f}",
         )
+
+
+class TestParamsPropagation(RewardSpaceTestBase):
+    """Integration tests to validate max_trade_duration_candles propagation via CLI params and dynamic flag."""
+
+    def test_max_trade_duration_candles_propagation_params(self):
+        """--params max_trade_duration_candles=X propagates to manifest and simulation params."""
+        out_dir = self.output_path / "mtd_params"
+        cmd = [
+            sys.executable,
+            "reward_space_analysis.py",
+            "--num_samples",
+            "120",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
+            "--params",
+            "max_trade_duration_candles=96",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=Path(__file__).parent)
+        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+
+        manifest_path = out_dir / "manifest.json"
+        self.assertTrue(manifest_path.exists(), "Missing manifest.json")
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+
+        # Basic structure checks
+        self.assertIn("reward_params", manifest)
+        self.assertIn("simulation_params", manifest)
+        self.assertIn("max_trade_duration", manifest)
+
+        # Ensure propagation of max_trade_duration_candles to effective max_trade_duration
+        self.assertEqual(manifest["max_trade_duration"], 96)
+        self.assertEqual(manifest["simulation_params"].get("max_trade_duration"), 96)
+
+        # Reward params should include the tunable (float or int acceptable -> coerce)
+        rp = manifest["reward_params"]
+        self.assertIn("max_trade_duration_candles", rp)
+        self.assertEqual(int(rp["max_trade_duration_candles"]), 96)
+
+    def test_max_trade_duration_candles_propagation_flag(self):
+        """Dynamic flag --max_trade_duration_candles X propagates identically."""
+        out_dir = self.output_path / "mtd_flag"
+        cmd = [
+            sys.executable,
+            "reward_space_analysis.py",
+            "--num_samples",
+            "120",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
+            "--max_trade_duration_candles",
+            "64",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=Path(__file__).parent)
+        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+
+        manifest_path = out_dir / "manifest.json"
+        self.assertTrue(manifest_path.exists(), "Missing manifest.json")
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+
+        # Basic structure checks
+        self.assertIn("reward_params", manifest)
+        self.assertIn("simulation_params", manifest)
+        self.assertIn("max_trade_duration", manifest)
+
+        # Ensure propagation of flag to effective max_trade_duration
+        self.assertEqual(manifest["max_trade_duration"], 64)
+        self.assertEqual(manifest["simulation_params"].get("max_trade_duration"), 64)
+
+        # Reward params should include the tunable (float or int acceptable -> coerce)
+        rp = manifest["reward_params"]
+        self.assertIn("max_trade_duration_candles", rp)
+        self.assertEqual(int(rp["max_trade_duration_candles"]), 64)
 
 
 if __name__ == "__main__":

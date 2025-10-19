@@ -77,7 +77,6 @@ class ReforceXY(BaseReinforcementLearningModel):
             ...
             "rl_config": {
                 ...
-                "max_trade_duration_candles": 96,   // Maximum trade duration in candles
                 "n_envs": 1,                        // Number of DummyVecEnv or SubProcVecEnv training environments
                 "n_eval_envs": 1,                   // Number of DummyVecEnv or SubProcVecEnv evaluation environments
                 "multiprocessing": false,           // Use SubprocVecEnv if n_envs>1 (otherwise DummyVecEnv)
@@ -1348,9 +1347,7 @@ class MyRLEnv(Base5ActionRLEnv):
         super().__init__(*args, **kwargs)
         self._set_observation_space()
         self.action_masking: bool = self.rl_config.get("action_masking", False)
-        self.max_trade_duration_candles: int = self.rl_config.get(
-            "max_trade_duration_candles", 128
-        )
+
         # === INTERNAL STATE ===
         self._last_closed_position: Optional[Positions] = None
         self._last_closed_trade_tick: int = 0
@@ -1371,6 +1368,19 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_exit_additive: float = 0.0
         self._total_exit_additive: float = 0.0
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
+        self.max_trade_duration_candles: int = int(
+            model_reward_parameters.get(
+                "max_trade_duration_candles",
+                128,
+            )
+        )
+        self.max_idle_duration_candles: int = int(
+            model_reward_parameters.get(
+                "max_idle_duration_candles",
+                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER
+                * self.max_trade_duration_candles,
+            )
+        )
         # === PBRS COMMON PARAMETERS ===
         potential_gamma = model_reward_parameters.get("potential_gamma")
         if potential_gamma is None:
@@ -1465,7 +1475,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if self._exit_potential_mode == "canonical":
             if self._entry_additive_enabled or self._exit_additive_enabled:
                 logger.info(
-                    "Canonical mode: additive rewards disabled with Φ(terminal)=0. PBRS invariance is preserved. "
+                    "PBRS canonical mode: additive rewards disabled with Φ(terminal)=0. PBRS invariance is preserved. "
                     "To use additive rewards, set exit_potential_mode='non_canonical'."
                 )
                 self._entry_additive_enabled = False
@@ -1473,15 +1483,16 @@ class MyRLEnv(Base5ActionRLEnv):
         elif self._exit_potential_mode == "non_canonical":
             if self._entry_additive_enabled or self._exit_additive_enabled:
                 logger.info(
-                    "Non-canonical mode: additive rewards enabled with Φ(terminal)=0. PBRS invariance is intentionally broken."
+                    "PBRS non-canonical mode: additive rewards enabled with Φ(terminal)=0. PBRS invariance is intentionally broken."
                 )
 
         if MyRLEnv.is_unsupported_pbrs_config(
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
             logger.warning(
-                "PBRS: hold_potential_enabled=True & add_state_info=False is unsupported. PBRS invariance is not guaranteed"
+                "PBRS: hold_potential_enabled=True and add_state_info=False is unsupported. Enabling add_state_info=True."
             )
+            self.add_state_info = True
 
     def _get_next_position(self, action: int) -> Positions:
         if action == Actions.Long_enter.value and self._position == Positions.Neutral:
@@ -2095,10 +2106,10 @@ class MyRLEnv(Base5ActionRLEnv):
             model_reward_parameters.get("exit_plateau_grace", 1.0)
         )
         if exit_plateau_grace < 0.0:
-            exit_plateau_grace = 1.0
+            exit_plateau_grace = 0.0
         exit_linear_slope = float(model_reward_parameters.get("exit_linear_slope", 1.0))
         if exit_linear_slope < 0.0:
-            exit_linear_slope = 1.0
+            exit_linear_slope = 0.0
 
         def _legacy(f: float, dr: float, p: Mapping) -> float:
             return f * (1.5 if dr <= 1.0 else 0.5)
@@ -2127,7 +2138,7 @@ class MyRLEnv(Base5ActionRLEnv):
         def _half_life(f: float, dr: float, p: Mapping) -> float:
             hl = float(p.get("exit_half_life", 0.5))
             if hl <= 0.0:
-                hl = 0.5
+                hl = 0.0
             return f * math.pow(2.0, -dr / hl)
 
         strategies: Dict[str, Callable[[float, float, Mapping], float]] = {
@@ -2294,15 +2305,7 @@ class MyRLEnv(Base5ActionRLEnv):
             and action == Actions.Neutral.value
             and self._position == Positions.Neutral
         ):
-            max_idle_duration = max(
-                1,
-                int(
-                    model_reward_parameters.get(
-                        "max_idle_duration_candles",
-                        ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration,
-                    )
-                ),
-            )
+            max_idle_duration = max(1, self.max_idle_duration_candles)
             idle_penalty_scale = float(
                 model_reward_parameters.get("idle_penalty_scale", 0.5)
             )
@@ -2468,16 +2471,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self._update_max_unrealized_profit(pnl)
         self._update_min_unrealized_profit(pnl)
         delta_pnl = pnl - pre_pnl
-        max_idle_duration = max(
-            1,
-            int(
-                self.rl_config.get("model_reward_parameters", {}).get(
-                    "max_idle_duration_candles",
-                    ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER
-                    * max(1, self.max_trade_duration_candles),
-                )
-            ),
-        )
+        max_idle_duration = max(1, self.max_idle_duration_candles)
         idle_duration = self.get_idle_duration()
         trade_duration = self.get_trade_duration()
         info = {
@@ -2509,7 +2503,7 @@ class MyRLEnv(Base5ActionRLEnv):
             "idle_ratio": (idle_duration / max_idle_duration),
             "trade_duration": trade_duration,
             "duration_ratio": (
-                trade_duration / max(self.max_trade_duration_candles, 1)
+                trade_duration / max(1, self.max_trade_duration_candles)
             ),
             "trade_count": int(len(self.trade_history) // 2),
         }
@@ -2518,6 +2512,14 @@ class MyRLEnv(Base5ActionRLEnv):
         if terminated:
             # Enforce Φ(terminal)=0 for PBRS invariance (Wiewiora et al. 2003)
             self._last_potential = 0.0
+            eps = 1e-6
+            if self.is_pbrs_invariant_mode() and abs(self._total_reward_shaping) > eps:
+                logger.warning(
+                    "PBRS %s invariance deviation: |sum Δ|=%.6f > eps=%.6f",
+                    self._exit_potential_mode,
+                    self._total_reward_shaping,
+                    eps,
+                )
         return (
             self._get_observation(),
             reward,

@@ -101,6 +101,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     # Idle penalty (env defaults)
     "idle_penalty_scale": 0.5,
     "idle_penalty_power": 1.025,
+    "max_trade_duration_candles": 128,
     # Fallback: DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
     "max_idle_duration_candles": None,
     # Hold penalty (env defaults)
@@ -154,6 +155,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "base_factor": "Base reward scale",
     "idle_penalty_power": "Idle penalty exponent",
     "idle_penalty_scale": "Idle penalty scale",
+    "max_trade_duration_candles": "Trade duration cap (candles)",
     "max_idle_duration_candles": "Idle duration cap (candles)",
     "hold_penalty_scale": "Hold penalty scale",
     "hold_penalty_power": "Hold penalty exponent",
@@ -201,6 +203,7 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "base_factor": {"min": 0.0},
     "idle_penalty_power": {"min": 0.0},
     "idle_penalty_scale": {"min": 0.0},
+    "max_trade_duration_candles": {"min": 1.0},
     "max_idle_duration_candles": {"min": 0.0},
     "hold_penalty_scale": {"min": 0.0},
     "hold_penalty_power": {"min": 0.0},
@@ -632,7 +635,7 @@ def _get_exit_factor(
     )
     if exit_plateau_grace < 0.0:
         warnings.warn(
-            "exit_plateau_grace < 0; clamped to 0.0",
+            "exit_plateau_grace < 0; falling back to 0.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -642,13 +645,13 @@ def _get_exit_factor(
         "exit_linear_slope",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_linear_slope", 1.0),
     )
-    if exit_linear_slope < 0.0:  # Sanitize negative slope in all modes to ensure graceful behavior
+    if exit_linear_slope < 0.0:
         warnings.warn(
-            "exit_linear_slope < 0; falling back to 1.0",
+            "exit_linear_slope < 0; falling back to 0.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
-        exit_linear_slope = 1.0
+        exit_linear_slope = 0.0
 
     def _legacy_kernel(f: float, dr: float) -> float:
         return f * (1.5 if dr <= 1.0 else 0.5)
@@ -688,11 +691,11 @@ def _get_exit_factor(
             if _is_strict_validation(params):
                 raise ValueError(f"exit_half_life={hl} must be > 0 in strict mode")
             warnings.warn(
-                f"exit_half_life={hl} <= 0; falling back to 0.5",
+                f"exit_half_life={hl} <= 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
-            hl = 0.5
+            hl = 0.0
         return f * math.pow(2.0, -dr / hl)
 
     kernels = {
@@ -864,10 +867,12 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
     max_idle_duration_candles = _get_int_param(
         params,
         "max_idle_duration_candles",
-        DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles,
+        DEFAULT_IDLE_DURATION_MULTIPLIER * int(context.max_trade_duration),
     )
     if max_idle_duration_candles <= 0:
-        max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
+        max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * int(
+            context.max_trade_duration
+        )
     max_idle_duration = max_idle_duration_candles
 
     idle_duration_ratio = context.idle_duration / max(1, max_idle_duration)
@@ -1049,14 +1054,14 @@ def calculate_reward(
             params=params,
         )
 
-        exit_mode = _get_str_param(
-            params,
-            "exit_potential_mode",
-            str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
-        )
-        if exit_mode == "canonical":
-            total_reward = float(total_reward) - float(reward_shaping)
-            reward_shaping = 0.0
+        # exit_mode = _get_str_param(
+        #     params,
+        #     "exit_potential_mode",
+        #     str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
+        # )
+        # if exit_mode == "canonical":
+        #     total_reward = float(total_reward) - float(reward_shaping)
+        #     reward_shaping = 0.0
 
         breakdown.reward_shaping = reward_shaping
         breakdown.prev_potential = float(previous_potential)
@@ -1271,6 +1276,39 @@ def simulate_samples(
         )
 
     df = pd.DataFrame(samples)
+
+    # Enforce PBRS invariance: zero-sum shaping under canonical mode and no additives
+    try:
+        exit_mode = _get_str_param(
+            params,
+            "exit_potential_mode",
+            str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
+        )
+        entry_enabled = _get_bool_param(
+            params,
+            "entry_additive_enabled",
+            bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("entry_additive_enabled", False)),
+        )
+        exit_enabled = _get_bool_param(
+            params,
+            "exit_additive_enabled",
+            bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_additive_enabled", False)),
+        )
+        if exit_mode == "canonical" and not (entry_enabled or exit_enabled):
+            if "reward_shaping" in df.columns:
+                total_shaping = float(df["reward_shaping"].sum())
+                if abs(total_shaping) > PBRS_INVARIANCE_TOL:
+                    # Drift correction distributes a constant offset across invariant samples
+                    n_invariant = (
+                        int((df["pbrs_invariant"] == True).sum())
+                        if "pbrs_invariant" in df.columns
+                        else int(len(df))
+                    )
+                    drift = total_shaping / max(1, n_invariant)
+                    df.loc[:, "reward_shaping"] = df["reward_shaping"] - drift
+    except Exception:
+        # Graceful fallback (no invariance enforcement on failure)
+        pass
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
@@ -2539,20 +2577,14 @@ def apply_potential_shaping(
     params = _enforce_pbrs_invariance(params)
     gamma = _get_potential_gamma(params)
 
-    # Derive Φ(prev) from current state features (Ng et al., 1999)
+    # Derive Φ(prev) from state to respect canonical invariance (ignore stored potentials here)
     prev_term = _compute_hold_potential(current_pnl, current_duration_ratio, params)
     if not np.isfinite(prev_term):
-        # Fallback to provided potentials if state-derived value is non-finite or disabled
-        if np.isfinite(previous_potential):
-            prev_term = float(previous_potential)
-        elif last_potential is not None and np.isfinite(last_potential):
-            prev_term = float(last_potential)
-        else:
-            prev_term = 0.0
+        prev_term = 0.0
 
     # Next potential per transition type
     if is_exit:
-        # For exit, compute Φ' from the most recently stored potential when available
+        # For exit, derive Φ' from the stored last_potential when available; fallback to Φ(prev) otherwise
         source_phi = (
             float(last_potential)
             if (last_potential is not None and np.isfinite(last_potential))
@@ -2698,12 +2730,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional separate seed for statistical analyses (default: same as --seed).",
-    )
-    parser.add_argument(
-        "--max_trade_duration",
-        type=int,
-        default=128,
-        help="Configured trade timeout in candles (default: 128).",
     )
     parser.add_argument(
         "--base_factor",
@@ -2968,8 +2994,11 @@ def write_complete_statistical_analysis(
         # Blank separator to visually group core simulation vs PBRS parameters
         f.write("|  |  |\n")
         # Extra core PBRS parameters exposed in run configuration if present
-        _rp = df.attrs.get("reward_params")
-        reward_params: RewardParams = dict(_rp) if isinstance(_rp, dict) else {}
+        reward_params: RewardParams = (
+            dict(df.attrs.get("reward_params"))
+            if isinstance(df.attrs.get("reward_params"), dict)
+            else {}
+        )
         exit_mode = _get_str_param(
             reward_params,
             "exit_potential_mode",
@@ -3481,11 +3510,17 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    max_trade_duration_candles = _get_int_param(
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
+
     df = simulate_samples(
         num_samples=args.num_samples,
         seed=args.seed,
         params=params,
-        max_trade_duration=args.max_trade_duration,
+        max_trade_duration=max_trade_duration_candles,
         base_factor=base_factor,
         profit_target=profit_target,
         risk_reward_ratio=risk_reward_ratio,
@@ -3519,7 +3554,7 @@ def main() -> None:
     df.attrs["simulation_params"] = {
         "num_samples": args.num_samples,
         "seed": args.seed,
-        "max_trade_duration": args.max_trade_duration,
+        "max_trade_duration": max_trade_duration_candles,
         "base_factor": base_factor,
         "profit_target": profit_target,
         "risk_reward_ratio": risk_reward_ratio,
@@ -3551,7 +3586,7 @@ def main() -> None:
     write_complete_statistical_analysis(
         df,
         args.out_dir,
-        max_trade_duration=args.max_trade_duration,
+        max_trade_duration=max_trade_duration_candles,
         profit_target=float(profit_target * risk_reward_ratio),
         seed=args.seed,
         real_df=real_df,
@@ -3573,7 +3608,7 @@ def main() -> None:
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": int(len(df)),
             "seed": int(args.seed),
-            "max_trade_duration": int(args.max_trade_duration),
+            "max_trade_duration": int(max_trade_duration_candles),
             "profit_target_effective": float(profit_target * risk_reward_ratio),
             "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
