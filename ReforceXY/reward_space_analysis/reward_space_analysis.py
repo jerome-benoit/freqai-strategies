@@ -1321,7 +1321,7 @@ def simulate_samples(
                 if abs(total_shaping) > PBRS_INVARIANCE_TOL:
                     # Drift correction distributes a constant offset across invariant samples
                     n_invariant = (
-                        int((df["pbrs_invariant"] == True).sum())
+                        int(df["pbrs_invariant"].sum())
                         if "pbrs_invariant" in df.columns
                         else int(len(df))
                     )
