@@ -605,7 +605,7 @@ class TestStatistics(RewardSpaceTestBase):
 
         metrics = compute_distribution_shift_metrics(df1, df2)
 
-        # pnl metrics
+        # Expected pnl metrics
         expected_keys = {
             "pnl_kl_divergence",
             "pnl_js_distance",
@@ -1989,7 +1989,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
 
 
 class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
-    """Robustness & boundary assertions: invariants, attenuation maths, edges, scaling, warnings."""
+    """Robustness & boundary assertions: invariants, attenuation maths, parameter edges, scaling, warnings."""
 
     def test_decomposition_integrity(self):
         """reward must equal the single active core component under mutually exclusive scenarios (idle/hold/exit/invalid)."""
@@ -2182,12 +2182,16 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             self.TEST_PROFIT_TARGET,
             self.TEST_RR,
         )
-        observed_half_life_factor = _get_exit_factor(
+        observed_exit_factor = _get_exit_factor(
             self.TEST_BASE_FACTOR,
             context.pnl,
             pnl_factor_hl,
             duration_ratio,
             params,
+        )
+        # Isolate attenuation factor
+        observed_half_life_factor = observed_exit_factor / (
+            self.TEST_BASE_FACTOR * max(pnl_factor_hl, self.EPS_BASE)
         )
         expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
         self.assertAlmostEqualFloat(
@@ -2530,7 +2534,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         val_g0 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.5, params_g0)
         val_g1 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.5, params_g1)
-        # With grace=1.0 no attenuation up to 1.0 → value should be higher
+        # With grace=1.0 no attenuation up to 1.0 ratio → value should be higher
         self.assertGreater(
             val_g1,
             val_g0,
@@ -2870,7 +2874,9 @@ class TestPBRS(RewardSpaceTestBase):
             "potential_gamma",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
         )
-        expected_next = prev_potential / gamma if gamma not in (0.0, None) else prev_potential
+        expected_next_potential = (
+            prev_potential / gamma if gamma not in (0.0, None) else prev_potential
+        )
         _total_reward, reward_shaping, next_potential = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
@@ -2883,7 +2889,7 @@ class TestPBRS(RewardSpaceTestBase):
             params=params,
         )
         self.assertAlmostEqualFloat(
-            next_potential, expected_next, tolerance=self.TOL_IDENTITY_RELAXED
+            next_potential, expected_next_potential, tolerance=self.TOL_IDENTITY_RELAXED
         )
         self.assertNearZero(reward_shaping, atol=self.TOL_IDENTITY_RELAXED)
 
@@ -2913,7 +2919,7 @@ class TestPBRS(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
         )
         # Monotonicity
-        vals = [apply_transform("asinh", x) for x in [-1.0, 0.0, 1.0, 50.0]]
+        vals = [apply_transform("asinh", x) for x in [-5.0, -1.0, 0.0, 1.0, 5.0]]
         self.assertTrue(all(vals[i] < vals[i + 1] for i in range(len(vals) - 1)))
         # Bounded
         self.assertTrue(abs(apply_transform("asinh", 1e6)) < 1.0)

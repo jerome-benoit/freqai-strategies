@@ -76,6 +76,10 @@ INTERNAL_GUARDS: dict[str, float] = {
     "distribution_constant_fallback_qq_r2": 1.0,
     "moment_extreme_threshold": 1e4,
     "bootstrap_min_recommended": 200,
+    "sim_pnl_conservation_tol": 1e-10,
+    "sim_zero_pnl_epsilon": 1e-12,
+    "sim_zero_reward_epsilon": 1e-12,
+    "sim_extreme_pnl_threshold": 0.2,
 }
 
 # PBRS constants
@@ -412,14 +416,15 @@ def validate_reward_parameters(
             coerced = _to_bool(original_val)
             if coerced is not original_val:
                 sanitized[bkey] = coerced
-                adjustments.setdefault(
-                    bkey,
-                    {
-                        "original": original_val,
-                        "adjusted": coerced,
-                        "reason": "bool_coerce",
-                    },
-                )
+            adjustments.setdefault(
+                bkey,
+                {
+                    "original": original_val,
+                    "adjusted": coerced,
+                    "reason": "bool_coerce",
+                    "validation_mode": "strict" if strict else "relaxed",
+                },
+            )
 
     # Coerce and clamp numeric-bounded parameters
     for key, bounds in _PARAMETER_BOUNDS.items():
@@ -440,6 +445,7 @@ def validate_reward_parameters(
                     "original": original_val,
                     "adjusted": None,
                     "reason": "derived_default",
+                    "validation_mode": "strict" if strict else "relaxed",
                 }
                 continue
             if strict:
@@ -450,6 +456,7 @@ def validate_reward_parameters(
                 "original": original_val,
                 "adjusted": adjusted,
                 "reason": "non_numeric_reset",
+                "validation_mode": "strict" if strict else "relaxed",
             }
             continue
 
@@ -465,6 +472,7 @@ def validate_reward_parameters(
                     "original": original_val,
                     "adjusted": original_numeric,
                     "reason": "numeric_coerce",
+                    "validation_mode": "strict" if strict else "relaxed",
                 },
             )
             # Update sanitized to numeric before clamping
@@ -490,10 +498,17 @@ def validate_reward_parameters(
 
         if not np.isclose(adjusted, original_numeric):
             sanitized[key] = adjusted
+            prev_reason = adjustments.get(key, {}).get("reason")
+            reason: List[str] = []
+            if prev_reason:
+                reason.append(prev_reason)
+            reason.extend(reason_parts)
+            reason_str = ",".join(reason) if reason else "clamp"
             adjustments[key] = {
                 "original": original_val,
                 "adjusted": adjusted,
-                "reason": ",".join(reason_parts) or adjustments.get(key, {}).get("reason", "clamp"),
+                "reason": reason_str,
+                "validation_mode": "strict" if strict else "relaxed",
             }
 
     return sanitized, adjustments
@@ -591,7 +606,7 @@ class RewardContext:
     """Context for reward computation.
 
     Deprecated:
-    - max_trade_duration: Deprecated. Kept only for test compatibility. Use 'max_trade_duration_candles' in params instead.
+    - max_trade_duration: use 'max_trade_duration_candles' in params.
     """
 
     pnl: float
@@ -640,7 +655,7 @@ def _get_exit_factor(
     duration_ratio: float,
     params: RewardParams,
 ) -> float:
-    """Exit attenuation factor (kernel + optional plateau) * pnl_factor with invariants."""
+    """Exit factor (kernel + optional plateau) * pnl_factor with invariants."""
     # Basic finiteness checks
     if not np.isfinite(base_factor) or not np.isfinite(pnl) or not np.isfinite(duration_ratio):
         return _fail_safely("non_finite_exit_factor_inputs")
@@ -758,45 +773,42 @@ def _get_exit_factor(
         kernel = _linear_kernel
 
     try:
-        base_factor = kernel(base_factor, effective_dr)
+        attenuation_factor = kernel(base_factor, effective_dr)
     except Exception as e:
         warnings.warn(
             f"exit_attenuation_mode '{exit_attenuation_mode}' failed ({e!r}); fallback linear (effective_dr={effective_dr:.5f})",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
-        base_factor = _linear_kernel(base_factor, effective_dr)
+        attenuation_factor = _linear_kernel(base_factor, effective_dr)
 
-    # Apply pnl_factor after time attenuation
-    base_factor *= pnl_factor
+    exit_factor = attenuation_factor * pnl_factor
 
-    # Invariant & safety checks
     if _get_bool_param(
         params,
         "check_invariants",
         bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("check_invariants", True)),
     ):
-        if not np.isfinite(base_factor):
+        if not np.isfinite(exit_factor):
             return _fail_safely("non_finite_exit_factor_after_kernel")
-        if base_factor < 0.0 and pnl >= 0.0:
-            # Clamp: avoid negative amplification on non-negative pnl
-            base_factor = 0.0
+        if exit_factor < 0.0 and pnl >= 0.0:
+            exit_factor = 0.0
         exit_factor_threshold = _get_float_param(
             params,
             "exit_factor_threshold",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_factor_threshold", 10000.0),
         )
         if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):
-            if abs(base_factor) > exit_factor_threshold:
+            if abs(exit_factor) > exit_factor_threshold:
                 warnings.warn(
                     (
-                        f"_get_exit_factor |factor|={abs(base_factor):.2f} exceeds threshold {exit_factor_threshold:.2f}"
+                        f"_get_exit_factor |factor|={abs(exit_factor):.2f} exceeds threshold {exit_factor_threshold:.2f}"
                     ),
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
 
-    return base_factor
+    return exit_factor
 
 
 def _get_pnl_factor(
@@ -900,7 +912,7 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
             DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
         )
 
-    # Temporary fallback for max_idle_duration_candles derives from the runtime context cap, not the default param
+    # Fallback for max_idle_duration_candles derives from the runtime context cap, not the default param
     fallback_idle_from_context = DEFAULT_IDLE_DURATION_MULTIPLIER * int(context.max_trade_duration)
     max_idle_duration_candles = _get_int_param(
         params,
@@ -1180,8 +1192,7 @@ def simulate_samples(
 ) -> pd.DataFrame:
     """Simulate synthetic samples for reward analysis.
 
-    Deprecated parameter:
-    - max_trade_duration: Deprecated. Kept only for test compatibility. Use 'max_trade_duration_candles' (from params) as the canonical duration cap.
+    Deprecated parameter: max_trade_duration; use 'max_trade_duration_candles' from params.
     """
     global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM
     try:
@@ -1395,15 +1406,21 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     exit_action_mask = df["action"].isin([2.0, 4.0])
     exit_pnl_sum = df.loc[exit_action_mask, "pnl"].sum()
 
+    # Tolerances from INTERNAL_GUARDS to handle backend/OS numeric epsilons
+    tol_pnl = float(INTERNAL_GUARDS.get("sim_pnl_conservation_tol", 1e-10))
+    eps_pnl = float(INTERNAL_GUARDS.get("sim_zero_pnl_epsilon", 1e-12))
+    eps_reward = float(INTERNAL_GUARDS.get("sim_zero_reward_epsilon", 1e-12))
+    thr_extreme = float(INTERNAL_GUARDS.get("sim_extreme_pnl_threshold", 0.2))
+
     pnl_diff = abs(total_pnl - exit_pnl_sum)
-    if pnl_diff > 1e-10:
+    if pnl_diff > tol_pnl:
         raise AssertionError(
             f"PnL INVARIANT VIOLATION: Total PnL ({total_pnl:.6f}) != "
             f"Exit PnL sum ({exit_pnl_sum:.6f}), difference = {pnl_diff:.2e}"
         )
 
     # INVARIANT 2: PnL Exclusivity - Only exit actions should have non-zero PnL
-    non_zero_pnl_actions = set(df[df["pnl"] != 0]["action"].unique())
+    non_zero_pnl_actions = set(df[df["pnl"].abs() > eps_pnl]["action"].unique())
     valid_exit_actions = {2.0, 4.0}
     invalid_actions = non_zero_pnl_actions - valid_exit_actions
     if invalid_actions:
@@ -1412,7 +1429,7 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
         )
 
     # INVARIANT 3: Exit Reward Consistency - Non-zero exit rewards require non-zero PnL
-    inconsistent_exits = df[(df["pnl"] == 0) & (df["reward_exit"] != 0)]
+    inconsistent_exits = df[(df["pnl"].abs() <= eps_pnl) & (df["reward_exit"].abs() > eps_reward)]
     if len(inconsistent_exits) > 0:
         raise AssertionError(
             f"EXIT REWARD INCONSISTENCY: {len(inconsistent_exits)} actions have "
@@ -1449,7 +1466,7 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
         )
 
     # INVARIANT 6: Bounded Values - Check realistic bounds
-    extreme_pnl = df[(df["pnl"].abs() > 0.2)]  # Beyond reasonable range
+    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]  # Beyond reasonable range
     if len(extreme_pnl) > 0:
         max_abs_pnl = df["pnl"].abs().max()
         raise AssertionError(
@@ -2641,10 +2658,22 @@ def apply_potential_shaping(
     previous_potential: float = np.nan,
     last_potential: Optional[float] = None,
 ) -> tuple[float, float, float]:
-    """Compute shaped reward:
-    - Shaping Δ = γΦ(next) − Φ(prev) where prev is derived from current state (Φ(current_pnl,current_duration_ratio)).
-    - Entry additive applied only on entry transitions, based on next_* metrics.
-    - Exit additive applied only on exit transitions, based on current_* metrics.
+    """Compute shaped reward with explicit PBRS semantics.
+
+    Notes
+    -----
+    - Shaping Δ = γ·Φ(next) − Φ(prev) with prev = Φ(current_pnl, current_duration_ratio).
+    - previous_potential:
+        Previously computed Φ(s) for the prior transition. When provided and finite, it
+        is used as Φ(prev) in Δ; otherwise Φ(prev) is derived from the current state.
+    - last_potential:
+        Potential used to compute terminal Φ′ at exit via _compute_exit_potential().
+        Fallback logic: if last_potential is None or non-finite, then last_potential := previous_potential
+        (or the derived prev term) to preserve telescoping semantics.
+    - Entry additive is applied only on entry transitions (based on next_* metrics).
+    - Exit additive is applied only on exit transitions (based on current_* metrics).
+    - Canonical invariance: when exit_potential_mode == 'canonical' and additives are disabled,
+      the telescoping sum ensures Σ reward_shaping ≈ 0 across a complete episode.
     """
     params = _enforce_pbrs_invariance(params)
     gamma = _get_potential_gamma(params)
@@ -2927,8 +2956,7 @@ def write_complete_statistical_analysis(
 ) -> None:
     """Generate a single comprehensive statistical analysis report with enhanced tests.
 
-    Deprecated parameter:
-    - max_trade_duration: Deprecated. Kept only for test compatibility and report binning; prefer 'max_trade_duration_candles' in reward params.
+    Deprecated parameter: max_trade_duration; prefer 'max_trade_duration_candles' in reward params.
     """
     global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT
     try:
