@@ -579,7 +579,6 @@ class RewardContext:
     pnl: float
     trade_duration: int
     idle_duration: int
-    max_trade_duration: int
     max_unrealized_profit: float
     min_unrealized_profit: float
     position: Positions
@@ -859,19 +858,23 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
         DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_power", 1.025),
     )
     max_trade_duration_candles = _get_int_param(
-        params, "max_trade_duration_candles", context.max_trade_duration
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
     )
     if max_trade_duration_candles <= 0:
-        max_trade_duration_candles = int(context.max_trade_duration)
+        max_trade_duration_candles = int(
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
+        )
 
     max_idle_duration_candles = _get_int_param(
         params,
         "max_idle_duration_candles",
-        DEFAULT_IDLE_DURATION_MULTIPLIER * int(context.max_trade_duration),
+        DEFAULT_IDLE_DURATION_MULTIPLIER * int(max_trade_duration_candles),
     )
     if max_idle_duration_candles <= 0:
         max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * int(
-            context.max_trade_duration
+            max_trade_duration_candles
         )
     max_idle_duration = max_idle_duration_candles
 
@@ -891,7 +894,12 @@ def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardPara
         "hold_penalty_power",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_power", 1.025),
     )
-    duration_ratio = _compute_duration_ratio(context.trade_duration, context.max_trade_duration)
+    max_trade_duration_candles = _get_int_param(
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
+    duration_ratio = _compute_duration_ratio(context.trade_duration, max_trade_duration_candles)
 
     if duration_ratio < 1.0:
         return _fail_safely("hold_penalty_duration_ratio_lt_1")
@@ -906,7 +914,12 @@ def _compute_exit_reward(
     params: RewardParams,
 ) -> float:
     """Compose the exit reward: pnl * exit_factor."""
-    duration_ratio = _compute_duration_ratio(context.trade_duration, context.max_trade_duration)
+    max_trade_duration_candles = _get_int_param(
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
+    duration_ratio = _compute_duration_ratio(context.trade_duration, max_trade_duration_candles)
     exit_factor = _get_exit_factor(base_factor, context.pnl, pnl_factor, duration_ratio, params)
     return context.pnl * exit_factor
 
@@ -978,9 +991,14 @@ def calculate_reward(
 
     # === PBRS INTEGRATION ===
     current_pnl = context.pnl if context.position != Positions.Neutral else 0.0
+    max_trade_duration_candles = _get_int_param(
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
     current_duration_ratio = (
-        context.trade_duration / context.max_trade_duration
-        if context.position != Positions.Neutral and context.max_trade_duration > 0
+        context.trade_duration / max_trade_duration_candles
+        if context.position != Positions.Neutral and max_trade_duration_candles > 0
         else 0.0
     )
 
@@ -1001,7 +1019,7 @@ def calculate_reward(
         next_pnl = current_pnl
         next_duration_ratio = 0.0
     elif is_hold:
-        next_duration_ratio = (context.trade_duration + 1) / max(1, context.max_trade_duration)
+        next_duration_ratio = (context.trade_duration + 1) / max(1, max_trade_duration_candles)
         # Optionally simulate unrealized PnL during holds to feed Φ(s)
         if _get_bool_param(params, "unrealized_pnl", False):
             center_unrealized = 0.5 * (
@@ -1214,7 +1232,6 @@ def simulate_samples(
             pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
-            max_trade_duration=max_trade_duration,
             max_unrealized_profit=max_unrealized_profit,
             min_unrealized_profit=min_unrealized_profit,
             position=position,
@@ -1235,10 +1252,14 @@ def simulate_samples(
         last_potential = breakdown.next_potential
 
         max_trade_duration_candles = _get_int_param(
-            params, "max_trade_duration_candles", context.max_trade_duration
+            params,
+            "max_trade_duration_candles",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
         )
         if max_trade_duration_candles <= 0:
-            max_trade_duration_candles = int(context.max_trade_duration)
+            max_trade_duration_candles = int(
+                DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
+            )
         max_idle_duration_candles = _get_int_param(
             params,
             "max_idle_duration_candles",

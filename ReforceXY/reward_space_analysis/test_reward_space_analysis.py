@@ -813,7 +813,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_hypothesis_seed_reproducibility(self):
         """Seed reproducibility for statistical_hypothesis_tests + bootstrap."""
-        df = self.make_stats_df(n=300, seed=123, idle_pattern="mixed")
+        df = self.make_stats_df(n=300, seed=self.SEED, idle_pattern="mixed")
         r1 = statistical_hypothesis_tests(df, seed=777)
         r2 = statistical_hypothesis_tests(df, seed=777)
         self.assertEqual(set(r1.keys()), set(r2.keys()))
@@ -1354,7 +1354,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         base_factor = 120.0
         profit_target = 0.04
         rr = self.TEST_RR_HIGH
-        pnls = [0.018, -0.022]
+        pnls = [0.02, -0.022]
         for pnl in pnls:
             ctx_long = self.make_ctx(
                 pnl=pnl,
@@ -1572,10 +1572,8 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertEqual(_get_float_param(params, "test_int", 0.0), 2.0)
         # Non parseable string -> NaN fallback in tolerant parser
         val_str = _get_float_param(params, "test_str", 0.0)
-        if isinstance(val_str, float) and math.isnan(val_str):
-            pass
-        else:
-            self.fail("Expected NaN for non-numeric string in _get_float_param")
+        self.assertTrue(isinstance(val_str, float))
+        self.assertTrue(math.isnan(val_str))
         self.assertEqual(_get_float_param(params, "missing", 3.14), 3.14)
 
     def test_get_str_param(self):
@@ -2586,7 +2584,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             self.assertAlmostEqualFloat(
                 vals[i],
                 ref,
-                self.TOL_IDENTITY_RELAXED,
+                tolerance=self.TOL_IDENTITY_RELAXED,
                 msg=f"Unexpected attenuation before grace end at ratio {r}",
             )
         # Last ratio (1.6) should be attenuated (strictly less than ref)
@@ -2728,7 +2726,6 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             loaded = load_real_episodes(p)
-            # Accept variance in warning emission across platforms
             _ = w
 
         self.assertEqual(len(loaded), 1)
@@ -2897,7 +2894,7 @@ class TestPBRS(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
         )
         # Monotonicity
-        vals = [apply_transform("asinh", x) for x in [-5.0, -1.0, 0.0, 1.0, 50.0]]
+        vals = [apply_transform("asinh", x) for x in [-0.0, -1.0, 0.0, 1.0, 50.0]]
         self.assertTrue(all(vals[i] < vals[i + 1] for i in range(len(vals) - 1)))
         # Bounded
         self.assertTrue(abs(apply_transform("asinh", 1e6)) < 1.0)
