@@ -2894,7 +2894,7 @@ class TestPBRS(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
         )
         # Monotonicity
-        vals = [apply_transform("asinh", x) for x in [-0.0, -1.0, 0.0, 1.0, 50.0]]
+        vals = [apply_transform("asinh", x) for x in [-1.0, 0.0, 1.0, 50.0]]
         self.assertTrue(all(vals[i] < vals[i + 1] for i in range(len(vals) - 1)))
         # Bounded
         self.assertTrue(abs(apply_transform("asinh", 1e6)) < 1.0)
