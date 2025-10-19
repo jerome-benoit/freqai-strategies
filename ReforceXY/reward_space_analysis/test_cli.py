@@ -20,10 +20,9 @@ python test_cli.py --num_samples 50 --out_dir ../sample_run_output \
 
 JSON Summary fields
 -------------------
-- total, failures[]
+- total, successes[], failures[]
 - mean_seconds, max_seconds, min_seconds, median_seconds, p95_seconds
 - warnings_breakdown
-- successes (array of ScenarioResult)
 - seeds (sampling/configuration seeds)
 - metadata (timestamp_utc, python_version, platform, git_commit, schema_version=2, per_scenario_timeout)
 - interrupted (optional)
@@ -48,10 +47,14 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, NotRequired, Optional, Required, Tuple, TypedDict
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
+
+try:
+    from typing import NotRequired, Required  # Python >=3.11
+except ImportError:
+    from typing_extensions import NotRequired, Required  # Python <3.11
 
 ConfigTuple = Tuple[str, str, float, int, int, int]
-
 
 SUMMARY_FILENAME = "reward_space_cli_results.json"
 

@@ -1613,7 +1613,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertEqual(_get_int_param({"k": 9.99}, "k", 0), 9)
         self.assertEqual(_get_int_param({"k": -3.7}, "k", 0), -3)
         # Non-finite floats fallback
-        self.assertEqual(_get_int_param({"k": float("nan")}, "k", 4), 4)
+        self.assertEqual(_get_int_param({"k": np.nan}, "k", 4), 4)
         self.assertEqual(_get_int_param({"k": float("inf")}, "k", 4), 4)
         # String numerics (int, float, exponent)
         self.assertEqual(_get_int_param({"k": "42"}, "k", 0), 42)
@@ -2359,7 +2359,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             else:
                 alpha = 1.0
             expected_ratio = 1.0 / (1.0 + duration_ratio) ** alpha
-            observed_ratio = f1 / f0 if f0 != 0 else float("nan")
+            observed_ratio = f1 / f0 if f0 != 0 else np.nan
             self.assertFinite(observed_ratio, name="observed_ratio")
             self.assertLess(
                 abs(observed_ratio - expected_ratio),
@@ -3091,7 +3091,7 @@ class TestPBRS(RewardSpaceTestBase):
         """potential_gamma=NaN should fall back to default value (indirect comparison)."""
         base_params_dict = self.base_params()
         default_gamma = base_params_dict.get("potential_gamma", 0.95)
-        params_nan = self.base_params(potential_gamma=float("nan"), hold_potential_enabled=True)
+        params_nan = self.base_params(potential_gamma=np.nan, hold_potential_enabled=True)
         # Non-terminal transition so Φ(s') is computed and depends on gamma
         res_nan = apply_potential_shaping(
             base_reward=0.1,

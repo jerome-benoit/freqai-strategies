@@ -193,6 +193,11 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
 }
 
 
+# deprecation warning one-time flags
+_WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT = False
+_WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = False
+_WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = False
+
 # ---------------------------------------------------------------------------
 # Parameter validation utilities
 # ---------------------------------------------------------------------------
@@ -252,7 +257,8 @@ def _to_bool(value: Any) -> bool:
         return True
     if text in {"false", "0", "no", "n", "off"}:
         return False
-    return bool(text)
+    # Unsupported type
+    raise ValueError(f"Unrecognized boolean literal: {value!r}")
 
 
 def _get_bool_param(params: RewardParams, key: str, default: bool) -> bool:
@@ -349,7 +355,13 @@ def _get_str_param(params: RewardParams, key: str, default: str) -> str:
 
 
 def _compute_duration_ratio(trade_duration: int, max_trade_duration: int) -> float:
-    """Compute duration ratio with safe division."""
+    """Compute duration ratio with safe division.
+
+    Note
+    ----
+    The parameter name 'max_trade_duration' is legacy and refers to the canonical
+    'max_trade_duration_candles' cap used throughout the environment.
+    """
     return trade_duration / max(1, max_trade_duration)
 
 
@@ -576,13 +588,34 @@ def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
 
 @dataclasses.dataclass
 class RewardContext:
+    """Context for reward computation.
+
+    Deprecated:
+    - max_trade_duration: Deprecated. Kept only for test compatibility. Use 'max_trade_duration_candles' in params instead.
+    """
+
     pnl: float
     trade_duration: int
     idle_duration: int
+    max_trade_duration: int
     max_unrealized_profit: float
     min_unrealized_profit: float
     position: Positions
     action: Actions
+
+    def __post_init__(self) -> None:
+        global _WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT
+        try:
+            if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT:
+                warnings.warn(
+                    "RewardContext.max_trade_duration is deprecated; use 'max_trade_duration_candles' in params instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                _WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT = True
+        except Exception:
+            # Never fail construction on warning machinery issues
+            pass
 
 
 @dataclasses.dataclass
@@ -867,15 +900,15 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
             DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
         )
 
+    # Temporary fallback for max_idle_duration_candles derives from the runtime context cap, not the default param
+    fallback_idle_from_context = DEFAULT_IDLE_DURATION_MULTIPLIER * int(context.max_trade_duration)
     max_idle_duration_candles = _get_int_param(
         params,
         "max_idle_duration_candles",
-        DEFAULT_IDLE_DURATION_MULTIPLIER * int(max_trade_duration_candles),
+        fallback_idle_from_context,
     )
     if max_idle_duration_candles <= 0:
-        max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * int(
-            max_trade_duration_candles
-        )
+        max_idle_duration_candles = fallback_idle_from_context
     max_idle_duration = max_idle_duration_candles
 
     idle_duration_ratio = context.idle_duration / max(1, max_idle_duration)
@@ -933,7 +966,7 @@ def calculate_reward(
     *,
     short_allowed: bool,
     action_masking: bool,
-    previous_potential: float = 0.0,
+    previous_potential: float = np.nan,
 ) -> RewardBreakdown:
     breakdown = RewardBreakdown()
 
@@ -1060,6 +1093,15 @@ def calculate_reward(
     )
 
     if pbrs_enabled and not is_neutral:
+        # Derive Φ(prev) from current state to ensure telescoping semantics
+        prev_potential = _compute_hold_potential(current_pnl, current_duration_ratio, params)
+        if not np.isfinite(prev_potential):
+            prev_potential = 0.0
+        # Effective previous potential used for reporting: prefer provided previous_potential if finite
+        prev_potential = (
+            float(previous_potential) if np.isfinite(previous_potential) else float(prev_potential)
+        )
+
         total_reward, reward_shaping, next_potential = apply_potential_shaping(
             base_reward=base_reward,
             current_pnl=current_pnl,
@@ -1073,7 +1115,7 @@ def calculate_reward(
         )
 
         breakdown.reward_shaping = reward_shaping
-        breakdown.prev_potential = float(previous_potential)
+        breakdown.prev_potential = prev_potential
         breakdown.next_potential = next_potential
         breakdown.entry_additive = (
             _compute_entry_additive(next_pnl, next_duration_ratio, params) if is_entry else 0.0
@@ -1136,6 +1178,23 @@ def simulate_samples(
     pnl_base_std: float,
     pnl_duration_vol_scale: float,
 ) -> pd.DataFrame:
+    """Simulate synthetic samples for reward analysis.
+
+    Deprecated parameter:
+    - max_trade_duration: Deprecated. Kept only for test compatibility. Use 'max_trade_duration_candles' (from params) as the canonical duration cap.
+    """
+    global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM
+    try:
+        if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM:
+            warnings.warn(
+                "simulate_samples(max_trade_duration=...) is deprecated; pass 'max_trade_duration_candles' via params instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = True
+    except Exception:
+        # Ignore any warning machinery issues
+        pass
     rng = random.Random(seed)
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
@@ -1223,6 +1282,7 @@ def simulate_samples(
             pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
+            max_trade_duration=max_trade_duration,
             max_unrealized_profit=max_unrealized_profit,
             min_unrealized_profit=min_unrealized_profit,
             position=position,
@@ -2578,7 +2638,7 @@ def apply_potential_shaping(
     params: RewardParams,
     is_exit: bool = False,
     is_entry: bool = False,
-    previous_potential: float = 0.0,
+    previous_potential: float = np.nan,
     last_potential: Optional[float] = None,
 ) -> tuple[float, float, float]:
     """Compute shaped reward:
@@ -2589,24 +2649,28 @@ def apply_potential_shaping(
     params = _enforce_pbrs_invariance(params)
     gamma = _get_potential_gamma(params)
 
-    # Derive Φ(prev) from state to respect canonical invariance (ignore stored potentials here)
-    prev_term = _compute_hold_potential(current_pnl, current_duration_ratio, params)
+    # Use provided previous_potential when finite; otherwise derive from current state
+    prev_term = (
+        float(previous_potential)
+        if np.isfinite(previous_potential)
+        else _compute_hold_potential(current_pnl, current_duration_ratio, params)
+    )
     if not np.isfinite(prev_term):
         prev_term = 0.0
 
     # Next potential per transition type
     if is_exit:
-        # For exit, derive Φ' from the stored last_potential when available; fallback to Φ(prev) otherwise
-        source_phi = (
+        # Exit potential is derived from the last potential if provided; otherwise from Φ(prev) (prev_term)
+        last_potential = (
             float(last_potential)
             if (last_potential is not None and np.isfinite(last_potential))
             else float(prev_term)
         )
-        next_potential = _compute_exit_potential(source_phi, params)
+        next_potential = _compute_exit_potential(last_potential, params)
     else:
         next_potential = _compute_hold_potential(next_pnl, next_duration_ratio, params)
 
-    # PBRS shaping uses stored previous potential Φ(prev)
+    # PBRS shaping Δ = γ·Φ(next) − Φ(prev)
     reward_shaping = gamma * next_potential - float(prev_term)
 
     # Non-PBRS additives
@@ -2871,7 +2935,23 @@ def write_complete_statistical_analysis(
     rf_n_jobs: int = -1,
     perm_n_jobs: int = -1,
 ) -> None:
-    """Generate a single comprehensive statistical analysis report with enhanced tests."""
+    """Generate a single comprehensive statistical analysis report with enhanced tests.
+
+    Deprecated parameter:
+    - max_trade_duration: Deprecated. Kept only for test compatibility and report binning; prefer 'max_trade_duration_candles' in reward params.
+    """
+    global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT
+    try:
+        if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT:
+            warnings.warn(
+                "write_complete_statistical_analysis(max_trade_duration=...) is deprecated; use 'max_trade_duration_candles' from params for canonical configuration.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = True
+    except Exception:
+        # Do not fail report generation on warning machinery issues
+        pass
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "statistical_analysis.md"
 
@@ -3414,11 +3494,11 @@ def write_complete_statistical_analysis(
 
                 features = ["pnl", "trade_duration", "idle_duration"]
                 for feature in features:
-                    kl = distribution_shift.get(f"{feature}_kl_divergence", float("nan"))
-                    js = distribution_shift.get(f"{feature}_js_distance", float("nan"))
-                    ws = distribution_shift.get(f"{feature}_wasserstein", float("nan"))
-                    ks_stat = distribution_shift.get(f"{feature}_ks_statistic", float("nan"))
-                    ks_p = distribution_shift.get(f"{feature}_ks_pvalue", float("nan"))
+                    kl = distribution_shift.get(f"{feature}_kl_divergence", np.nan)
+                    js = distribution_shift.get(f"{feature}_js_distance", np.nan)
+                    ws = distribution_shift.get(f"{feature}_wasserstein", np.nan)
+                    ks_stat = distribution_shift.get(f"{feature}_ks_statistic", np.nan)
+                    ks_p = distribution_shift.get(f"{feature}_ks_pvalue", np.nan)
 
                     f.write(
                         f"| {feature} | {kl:.4f} | {js:.4f} | {ws:.4f} | {ks_stat:.4f} | {ks_p:.4g} |\n"
