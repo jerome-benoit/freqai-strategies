@@ -1494,6 +1494,14 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             self.add_state_info = True
 
+        # === PNL TARGET VALIDATION ===
+        pnl_target = float(self.profit_aim) * float(self.rr)
+        if MyRLEnv._is_invalid_pnl_target(pnl_target):
+            raise ValueError(
+                f"Invalid pnl_target={pnl_target:.12g} computed from profit_aim={self.profit_aim:.12g} and rr={self.rr:.12g}"
+            )
+        self._pnl_target = pnl_target
+
     def _get_next_position(self, action: int) -> Positions:
         if action == Actions.Long_enter.value and self._position == Positions.Neutral:
             return Positions.Long
@@ -1538,9 +1546,14 @@ class MyRLEnv(Base5ActionRLEnv):
         # Neutral self-loop
         return next_position, 0, 0.0
 
-    def _is_invalid_pnl_target(self, pnl_target: float) -> bool:
-        """Check if pnl_target is invalid (negative or close to zero)."""
-        return pnl_target < 0.0 or np.isclose(pnl_target, 0.0)
+    @staticmethod
+    def _is_invalid_pnl_target(pnl_target: float) -> bool:
+        """Return True when pnl_target is non-finite, <= 0, or effectively zero within tolerance."""
+        return (
+            (not np.isfinite(pnl_target))
+            or (pnl_target <= 0.0)
+            or np.isclose(pnl_target, 0.0)
+        )
 
     def _compute_pnl_duration_signal(
         self,
@@ -1594,8 +1607,6 @@ class MyRLEnv(Base5ActionRLEnv):
         if not enabled:
             return 0.0
         if require_position and position not in (Positions.Long, Positions.Short):
-            return 0.0
-        if self._is_invalid_pnl_target(pnl_target):
             return 0.0
 
         duration_ratio = 0.0 if duration_ratio < 0.0 else duration_ratio
@@ -2176,7 +2187,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             factor = _linear(factor, effective_dr, model_reward_parameters)
 
-        factor *= self._get_pnl_factor(pnl, self.profit_aim * self.rr)
+        factor *= self._get_pnl_factor(pnl, self._pnl_target)
 
         check_invariants = model_reward_parameters.get("check_invariants", True)
         check_invariants = (
@@ -2208,7 +2219,7 @@ class MyRLEnv(Base5ActionRLEnv):
         return factor
 
     def _get_pnl_factor(self, pnl: float, pnl_target: float) -> float:
-        if not np.isfinite(pnl) or not np.isfinite(pnl_target):
+        if not np.isfinite(pnl):
             return 0.0
 
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
@@ -2295,8 +2306,7 @@ class MyRLEnv(Base5ActionRLEnv):
         trade_duration = self.get_trade_duration()
         duration_ratio = trade_duration / max_trade_duration
         base_factor = float(model_reward_parameters.get("base_factor", 100.0))
-        pnl_target = self.profit_aim * self.rr
-        idle_factor = base_factor * pnl_target / 4.0
+        idle_factor = base_factor * self._pnl_target / 4.0
         hold_factor = idle_factor
 
         # 2. Idle penalty
@@ -2371,7 +2381,7 @@ class MyRLEnv(Base5ActionRLEnv):
             trade_duration=trade_duration,
             max_trade_duration=max_trade_duration,
             pnl=pnl,
-            pnl_target=pnl_target,
+            pnl_target=self._pnl_target,
         )
 
     def _get_observation(self) -> NDArray[np.float32]:
