@@ -129,7 +129,6 @@ class RewardSpaceTestBase(unittest.TestCase):
         pnl: float = 0.0,
         trade_duration: int = 0,
         idle_duration: int = 0,
-        max_trade_duration: int = 100,
         max_unrealized_profit: float = 0.0,
         min_unrealized_profit: float = 0.0,
         position: Positions = Positions.Neutral,
@@ -140,7 +139,6 @@ class RewardSpaceTestBase(unittest.TestCase):
             pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
-            max_trade_duration=max_trade_duration,
             max_unrealized_profit=max_unrealized_profit,
             min_unrealized_profit=min_unrealized_profit,
             position=position,
@@ -993,7 +991,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                     pnl=0.02 if expected_type == "exit_component" else 0.0,
                     trade_duration=50 if position != Positions.Neutral else 0,
                     idle_duration=10 if position == Positions.Neutral else 0,
-                    max_trade_duration=100,
                     max_unrealized_profit=0.03,
                     min_unrealized_profit=-0.01,
                     position=position,
@@ -1018,7 +1015,6 @@ class TestRewardComponents(RewardSpaceTestBase):
         ctx = self.make_ctx(
             pnl=0.0,
             trade_duration=1,
-            max_trade_duration=100,
             max_unrealized_profit=0.0,
             min_unrealized_profit=-0.02,
             position=Positions.Long,
@@ -1038,9 +1034,6 @@ class TestRewardComponents(RewardSpaceTestBase):
             pnl=0.0,
             trade_duration=0,
             idle_duration=40,
-            max_trade_duration=128,
-            max_unrealized_profit=0.0,
-            min_unrealized_profit=0.0,
             position=Positions.Neutral,
             action=Actions.Neutral,
         )
@@ -1118,9 +1111,6 @@ class TestRewardComponents(RewardSpaceTestBase):
             pnl=0.0,
             trade_duration=0,
             idle_duration=30,
-            max_trade_duration=100,
-            max_unrealized_profit=0.0,
-            min_unrealized_profit=0.0,
             position=Positions.Neutral,
             action=Actions.Neutral,
         )
@@ -1165,7 +1155,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=pnl,
                 trade_duration=0,  # duration_ratio=0 -> attenuation = 1
                 idle_duration=0,
-                max_trade_duration=100,
                 max_unrealized_profit=pnl,  # neutral wrt efficiency (disabled anyway)
                 min_unrealized_profit=0.0,
                 position=Positions.Long,
@@ -1233,7 +1222,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=0.025,
                 trade_duration=40,
                 idle_duration=0,
-                max_trade_duration=100,
                 max_unrealized_profit=0.03,
                 min_unrealized_profit=0.0,
                 position=Positions.Long,
@@ -1244,7 +1232,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=-self.TEST_PNL_STD,
                 trade_duration=60,
                 idle_duration=0,
-                max_trade_duration=100,
                 max_unrealized_profit=0.01,
                 min_unrealized_profit=-0.04,
                 position=Positions.Long,
@@ -1255,7 +1242,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=0.0,
                 trade_duration=0,
                 idle_duration=35,
-                max_trade_duration=120,
                 max_unrealized_profit=0.0,
                 min_unrealized_profit=0.0,
                 position=Positions.Neutral,
@@ -1266,7 +1252,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=0.0,
                 trade_duration=80,
                 idle_duration=0,
-                max_trade_duration=100,
                 max_unrealized_profit=0.04,
                 min_unrealized_profit=-0.01,
                 position=Positions.Long,
@@ -1358,7 +1343,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=pnl,
                 trade_duration=55,
                 idle_duration=0,
-                max_trade_duration=100,
                 max_unrealized_profit=pnl if pnl > 0 else 0.01,
                 min_unrealized_profit=pnl if pnl < 0 else -0.01,
                 position=Positions.Long,
@@ -1368,7 +1352,6 @@ class TestRewardComponents(RewardSpaceTestBase):
                 pnl=pnl,
                 trade_duration=55,
                 idle_duration=0,
-                max_trade_duration=100,
                 max_unrealized_profit=pnl if pnl > 0 else 0.01,
                 min_unrealized_profit=pnl if pnl < 0 else -0.01,
                 position=Positions.Short,
@@ -1441,7 +1424,6 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
                 pnl=float(row["pnl"]),
                 trade_duration=int(row["trade_duration"]),
                 idle_duration=int(row["idle_duration"]),
-                max_trade_duration=40,
                 max_unrealized_profit=float(row["pnl"]) + 0.01,
                 min_unrealized_profit=float(row["pnl"]) - 0.01,
                 position=Positions.Long,
@@ -1689,7 +1671,6 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             pnl=0.0,
             trade_duration=0,
             idle_duration=20,
-            max_trade_duration=100,
             max_unrealized_profit=0.0,
             min_unrealized_profit=0.0,
             position=Positions.Neutral,
@@ -1725,7 +1706,6 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             pnl=0.01,
             trade_duration=150,
             idle_duration=0,  # Long duration
-            max_trade_duration=100,
             max_unrealized_profit=0.02,
             min_unrealized_profit=0.0,
             position=Positions.Long,
@@ -1773,7 +1753,6 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                     pnl=pnl,
                     trade_duration=50,
                     idle_duration=0,
-                    max_trade_duration=100,
                     max_unrealized_profit=max(pnl + 0.01, 0.01),
                     min_unrealized_profit=min(pnl - 0.01, -0.01),
                     position=position,
@@ -1807,7 +1786,6 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             pnl=0.02,
             trade_duration=50,
             idle_duration=0,
-            max_trade_duration=100,
             max_unrealized_profit=0.03,
             min_unrealized_profit=0.01,
             position=Positions.Short,
@@ -1858,7 +1836,6 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                     pnl=0.0,  # Neutral PnL to isolate hold penalty
                     trade_duration=trade_duration,
                     idle_duration=0,
-                    max_trade_duration=max_duration,
                     max_unrealized_profit=0.0,
                     min_unrealized_profit=0.0,
                     position=Positions.Long,
@@ -1911,16 +1888,15 @@ class TestPrivateFunctions(RewardSpaceTestBase):
 
     def test_hold_penalty_progressive_scaling(self):
         """Test that hold penalty scales progressively after max_duration."""
-        max_duration = 100
+        params = self.base_params(max_trade_duration_candles=100)
         durations = [150, 200, 300]  # All > max_duration
         penalties: list[float] = []
 
         for duration in durations:
-            context = RewardContext(
+            context = self.make_ctx(
                 pnl=0.0,
                 trade_duration=duration,
                 idle_duration=0,
-                max_trade_duration=max_duration,
                 max_unrealized_profit=0.0,
                 min_unrealized_profit=0.0,
                 position=Positions.Long,
@@ -1929,7 +1905,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
 
             breakdown = calculate_reward(
                 context,
-                self.DEFAULT_PARAMS,
+                params,
                 base_factor=self.TEST_BASE_FACTOR,
                 profit_target=self.TEST_PROFIT_TARGET,
                 risk_reward_ratio=self.TEST_RR,
@@ -1956,11 +1932,10 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         self.assertIn("check_invariants", params)
         self.assertIn("exit_factor_threshold", params)
 
-        context = RewardContext(
+        context = self.make_ctx(
             pnl=0.05,
             trade_duration=300,
             idle_duration=0,
-            max_trade_duration=100,
             max_unrealized_profit=0.06,
             min_unrealized_profit=0.0,
             position=Positions.Long,
@@ -1986,11 +1961,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         scenarios = [
             # Idle penalty only
             dict(
-                ctx=RewardContext(
+                ctx=self.make_ctx(
                     pnl=0.0,
                     trade_duration=0,
                     idle_duration=25,
-                    max_trade_duration=100,
                     max_unrealized_profit=0.0,
                     min_unrealized_profit=0.0,
                     position=Positions.Neutral,
@@ -2000,11 +1974,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             ),
             # Hold penalty only
             dict(
-                ctx=RewardContext(
+                ctx=self.make_ctx(
                     pnl=0.0,
                     trade_duration=150,
                     idle_duration=0,
-                    max_trade_duration=100,
                     max_unrealized_profit=0.0,
                     min_unrealized_profit=0.0,
                     position=Positions.Long,
@@ -2018,7 +1991,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     pnl=self.TEST_PROFIT_TARGET,
                     trade_duration=60,
                     idle_duration=0,
-                    max_trade_duration=100,
                     max_unrealized_profit=0.05,
                     min_unrealized_profit=0.01,
                     position=Positions.Long,
@@ -2028,11 +2000,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             ),
             # Invalid action only
             dict(
-                ctx=RewardContext(
+                ctx=self.make_ctx(
                     pnl=0.01,
                     trade_duration=10,
                     idle_duration=0,
-                    max_trade_duration=100,
                     max_unrealized_profit=0.02,
                     min_unrealized_profit=0.0,
                     position=Positions.Short,
@@ -2132,7 +2103,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl=0.05,
             trade_duration=50,
             idle_duration=0,
-            max_trade_duration=100,
             max_unrealized_profit=0.05,
             min_unrealized_profit=0.01,
             position=Positions.Long,
@@ -2211,7 +2181,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
 
     def test_idle_penalty_fallback_and_proportionality(self):
         """Idle penalty fallback denominator & proportional scaling (robustness)."""
-        params = self.base_params(max_idle_duration_candles=None)
+        params = self.base_params(max_idle_duration_candles=None, max_trade_duration_candles=100)
         base_factor = 90.0
         profit_target = self.TEST_PROFIT_TARGET
         risk_reward_ratio = 1.0
@@ -2219,7 +2189,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl=0.0,
             trade_duration=0,
             idle_duration=20,
-            max_trade_duration=100,
             position=Positions.Neutral,
             action=Actions.Neutral,
         )
@@ -2247,7 +2216,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         ratio = br_b.idle_penalty / br_a.idle_penalty if br_a.idle_penalty != 0 else None
         self.assertIsNotNone(ratio)
         self.assertAlmostEqualFloat(abs(ratio), 2.0, tolerance=0.2)
-        ctx_mid = dataclasses.replace(ctx_a, idle_duration=120, max_trade_duration=100)
+        ctx_mid = dataclasses.replace(ctx_a, idle_duration=120)
         br_mid = calculate_reward(
             ctx_mid,
             params,
@@ -2275,7 +2244,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl=0.08,
             trade_duration=10,
             idle_duration=0,
-            max_trade_duration=100,
             max_unrealized_profit=0.09,
             min_unrealized_profit=0.0,
             position=Positions.Long,
@@ -2389,7 +2357,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl=0.05,
             trade_duration=50,
             idle_duration=0,
-            max_trade_duration=100,
             max_unrealized_profit=0.06,
             min_unrealized_profit=0.02,
             position=Positions.Long,
@@ -2415,7 +2382,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     pnl=0.02,
                     trade_duration=50,
                     idle_duration=0,
-                    max_trade_duration=100,
                     max_unrealized_profit=0.03,
                     min_unrealized_profit=0.01,
                     position=Positions.Long,
@@ -3098,7 +3064,10 @@ class TestPBRS(RewardSpaceTestBase):
             gamma = float(gamma_raw)  # type: ignore[assignment]
         except Exception:
             gamma = 0.95
-            self.assertLessEqual(abs(shaping - gamma * last_potential), self.TOL_GENERIC_EQ)
+        self.assertLessEqual(
+            abs(shaping - gamma * last_potential),
+            self.TOL_GENERIC_EQ,
+        )
         self.assertPlacesEqual(total, shaping, places=12)
 
     def test_potential_gamma_nan_fallback(self):

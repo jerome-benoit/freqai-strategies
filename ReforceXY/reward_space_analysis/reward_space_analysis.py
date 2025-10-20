@@ -198,7 +198,6 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
 
 
 # deprecation warning one-time flags
-_WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT = False
 _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = False
 _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = False
 
@@ -603,34 +602,15 @@ def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
 
 @dataclasses.dataclass
 class RewardContext:
-    """Context for reward computation.
-
-    Deprecated:
-    - max_trade_duration: use 'max_trade_duration_candles' in params.
-    """
+    """Context for reward computation."""
 
     pnl: float
     trade_duration: int
     idle_duration: int
-    max_trade_duration: int
     max_unrealized_profit: float
     min_unrealized_profit: float
     position: Positions
     action: Actions
-
-    def __post_init__(self) -> None:
-        global _WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT
-        try:
-            if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT:
-                warnings.warn(
-                    "RewardContext.max_trade_duration is deprecated; use 'max_trade_duration_candles' in params instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                _WARNED_DEPRECATED_MAX_TRADE_DURATION_CONTEXT = True
-        except Exception:
-            # Never fail construction on warning machinery issues
-            pass
 
 
 @dataclasses.dataclass
@@ -912,11 +892,8 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
             DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
         )
 
-    # default_max_idle_duration_candles = DEFAULT_MODEL_REWARD_PARAMETERS.get(
-    #     "max_idle_duration_candles", DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
-    # )
     default_max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * int(
-        context.max_trade_duration
+        max_trade_duration_candles
     )
     max_idle_duration_candles = _get_int_param(
         params,
@@ -1045,10 +1022,8 @@ def calculate_reward(
         "max_trade_duration_candles",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
     )
-    current_duration_ratio = (
-        context.trade_duration / max_trade_duration_candles
-        if context.position != Positions.Neutral and max_trade_duration_candles > 0
-        else 0.0
+    current_duration_ratio = _compute_duration_ratio(
+        context.trade_duration, max_trade_duration_candles
     )
 
     is_entry = context.position == Positions.Neutral and context.action in (
@@ -1068,7 +1043,9 @@ def calculate_reward(
         next_pnl = current_pnl
         next_duration_ratio = 0.0
     elif is_hold:
-        next_duration_ratio = (context.trade_duration + 1) / max(1, max_trade_duration_candles)
+        next_duration_ratio = _compute_duration_ratio(
+            context.trade_duration + 1, max_trade_duration_candles
+        )
         # Optionally simulate unrealized PnL during holds to feed Φ(s)
         if _get_bool_param(params, "unrealized_pnl", False):
             center_unrealized = 0.5 * (
@@ -1307,7 +1284,6 @@ def simulate_samples(
             pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
-            max_trade_duration=max_trade_duration,
             max_unrealized_profit=max_unrealized_profit,
             min_unrealized_profit=min_unrealized_profit,
             position=position,
@@ -3770,7 +3746,6 @@ def main() -> None:
             sim_params.pop(k)
 
     df.attrs["simulation_params"] = sim_params
-    # Attach resolved reward parameters for inline overrides rendering in report
     df.attrs["reward_params"] = dict(params)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -3834,8 +3809,8 @@ def main() -> None:
                     for k in sorted(resolved_reward_params)
                 },
             }
-            serialized = json.dumps(_hash_source, sort_keys=True)
-            manifest["params_hash"] = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+            _hash_source_str = json.dumps(_hash_source, sort_keys=True)
+            manifest["params_hash"] = hashlib.sha256(_hash_source_str.encode("utf-8")).hexdigest()
             manifest["simulation_params"] = sim_params
         with manifest_path.open("w", encoding="utf-8") as mh:
             json.dump(manifest, mh, indent=2)
