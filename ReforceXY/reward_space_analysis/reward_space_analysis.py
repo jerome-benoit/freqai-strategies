@@ -385,6 +385,32 @@ def _fail_safely(reason: str) -> float:
     return 0.0
 
 
+def get_max_idle_duration_candles(
+    params: RewardParams,
+    *,
+    max_trade_duration_candles: Optional[int] = None,
+) -> int:
+    mtd = (
+        int(max_trade_duration_candles)
+        if isinstance(max_trade_duration_candles, (int, float))
+        else None
+    )
+    if mtd is None or mtd <= 0:
+        mtd = _get_int_param(
+            params,
+            "max_trade_duration_candles",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+        )
+        if mtd <= 0:
+            mtd = int(DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128))
+
+    default_mid = int(DEFAULT_IDLE_DURATION_MULTIPLIER * int(mtd))
+    mid = _get_int_param(params, "max_idle_duration_candles", default_mid)
+    if mid <= 0:
+        mid = default_mid
+    return int(mid)
+
+
 def validate_reward_parameters(
     params: RewardParams,
     strict: bool = True,
@@ -882,29 +908,8 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
         "idle_penalty_power",
         DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_power", 1.025),
     )
-    max_trade_duration_candles = _get_int_param(
-        params,
-        "max_trade_duration_candles",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-    )
-    if max_trade_duration_candles <= 0:
-        max_trade_duration_candles = int(
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
-        )
-
-    default_max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * int(
-        max_trade_duration_candles
-    )
-    max_idle_duration_candles = _get_int_param(
-        params,
-        "max_idle_duration_candles",
-        default_max_idle_duration_candles,
-    )
-    if max_idle_duration_candles <= 0:
-        max_idle_duration_candles = default_max_idle_duration_candles
-    max_idle_duration = max_idle_duration_candles
-
-    idle_duration_ratio = context.idle_duration / max(1, max_idle_duration)
+    max_idle_duration_candles = get_max_idle_duration_candles(params)
+    idle_duration_ratio = context.idle_duration / max(1, max_idle_duration_candles)
     return -idle_factor * idle_penalty_scale * idle_duration_ratio**idle_penalty_power
 
 
@@ -1236,14 +1241,9 @@ def simulate_samples(
 
         if position == Positions.Neutral:
             trade_duration = 0
-            max_idle_duration_candles = _get_int_param(
-                params,
-                "max_idle_duration_candles",
-                DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration,
+            max_idle_duration_candles = get_max_idle_duration_candles(
+                params, max_trade_duration_candles=int(max_trade_duration)
             )
-            if max_idle_duration_candles <= 0:
-                max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration
-
             idle_duration = int(rng.uniform(0, max_idle_duration_candles))
         else:
             trade_duration = int(rng.uniform(1, max_trade_duration * max_duration_ratio))
@@ -1303,24 +1303,7 @@ def simulate_samples(
 
         last_potential = breakdown.next_potential
 
-        max_trade_duration_candles = _get_int_param(
-            params,
-            "max_trade_duration_candles",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-        )
-        if max_trade_duration_candles <= 0:
-            max_trade_duration_candles = int(
-                DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
-            )
-        max_idle_duration_candles = _get_int_param(
-            params,
-            "max_idle_duration_candles",
-            DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles,
-        )
-        if max_idle_duration_candles <= 0:
-            max_idle_duration_candles = (
-                DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
-            )
+        max_idle_duration_candles = get_max_idle_duration_candles(params)
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
 
         samples.append(
@@ -1588,7 +1571,6 @@ def _compute_relationship_stats(df: pd.DataFrame, max_trade_duration: int) -> Di
 def _compute_representativity_stats(
     df: pd.DataFrame,
     profit_target: float,
-    max_trade_duration: int | None = None,
 ) -> Dict[str, Any]:
     """Compute representativity statistics for the reward space.
 
@@ -3019,9 +3001,7 @@ def write_complete_statistical_analysis(
     # Compute all statistics
     summary_stats = _compute_summary_stats(df)
     relationship_stats = _compute_relationship_stats(df, max_trade_duration_candles)
-    representativity_stats = _compute_representativity_stats(
-        df, profit_target, max_trade_duration_candles
-    )
+    representativity_stats = _compute_representativity_stats(df, profit_target)
 
     # Model analysis: skip if requested or not enough samples
     importance_df = None
@@ -3133,9 +3113,10 @@ def write_complete_statistical_analysis(
         f.write(f"| potential_gamma | {potential_gamma} |\n")
         # Additional configuration details
         f.write(f"| max_trade_duration_candles | {max_trade_duration_candles} |\n")
-        f.write(
-            f"| max_idle_duration_candles | {_get_int_param(reward_params, 'max_idle_duration_candles', DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles)} |\n"
+        max_idle_duration_candles = get_max_idle_duration_candles(
+            reward_params, max_trade_duration_candles=max_trade_duration_candles
         )
+        f.write(f"| max_idle_duration_candles | {max_idle_duration_candles} |\n")
         f.write(f"| strict_diagnostics | {strict_diagnostics} |\n")
         f.write(f"| skip_feature_analysis | {skip_feature_analysis} |\n")
         f.write(f"| skip_partial_dependence | {skip_partial_dependence} |\n")
@@ -3793,10 +3774,10 @@ def main() -> None:
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
         }
-        sim_params_obj = df.attrs.get("simulation_params", {})
-        if not isinstance(sim_params_obj, dict):
-            sim_params_obj = {}
-        sim_params: Dict[str, Any] = dict(sim_params_obj)
+        sim_params_dict = df.attrs.get("simulation_params", {})
+        if not isinstance(sim_params_dict, dict):
+            sim_params_dict = {}
+        sim_params: Dict[str, Any] = dict(sim_params_dict)
         if sim_params:
             excluded_for_hash = {"out_dir", "real_episodes"}
             sim_params_for_hash: Dict[str, Any] = {

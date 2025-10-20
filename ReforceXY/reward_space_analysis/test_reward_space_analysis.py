@@ -1667,7 +1667,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
     def test_idle_penalty_via_rewards(self):
         """Test idle penalty calculation via reward calculation."""
         # Create context that will trigger idle penalty
-        context = RewardContext(
+        context = self.make_ctx(
             pnl=0.0,
             trade_duration=0,
             idle_duration=20,
@@ -1702,7 +1702,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
     def test_hold_penalty_via_rewards(self):
         """Test hold penalty calculation via reward calculation."""
         # Create context that will trigger hold penalty
-        context = RewardContext(
+        context = self.make_ctx(
             pnl=0.01,
             trade_duration=150,
             idle_duration=0,  # Long duration
@@ -1749,7 +1749,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
 
         for position, action, pnl, description in scenarios:
             with self.subTest(description=description):
-                context = RewardContext(
+                context = self.make_ctx(
                     pnl=pnl,
                     trade_duration=50,
                     idle_duration=0,
@@ -1782,7 +1782,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
     def test_invalid_action_handling(self):
         """Test invalid action penalty."""
         # Try to exit long when in short position (invalid)
-        context = RewardContext(
+        context = self.make_ctx(
             pnl=0.02,
             trade_duration=50,
             idle_duration=0,
@@ -1832,7 +1832,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
 
         for trade_duration, description in test_cases:
             with self.subTest(duration=trade_duration, desc=description):
-                context = RewardContext(
+                context = self.make_ctx(
                     pnl=0.0,  # Neutral PnL to isolate hold penalty
                     trade_duration=trade_duration,
                     idle_duration=0,
@@ -2378,7 +2378,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         for mode in modes:
             with self.subTest(mode=mode):
                 test_params = self.base_params(exit_attenuation_mode=mode)
-                ctx = RewardContext(
+                ctx = self.make_ctx(
                     pnl=0.02,
                     trade_duration=50,
                     idle_duration=0,
