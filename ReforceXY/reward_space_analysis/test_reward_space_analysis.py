@@ -20,7 +20,7 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -147,9 +147,9 @@ class RewardSpaceTestBase(unittest.TestCase):
             action=action,
         )
 
-    def base_params(self, **overrides) -> dict:
+    def base_params(self, **overrides) -> Dict[str, Any]:
         """Return fresh copy of default reward params with overrides."""
-        params = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
+        params: Dict[str, Any] = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
         params.update(overrides)
         return params
 
@@ -884,10 +884,9 @@ class TestStatistics(RewardSpaceTestBase):
     def test_stats_heteroscedasticity_pnl_validation(self):
         """PnL variance increases with trade duration (heteroscedasticity)."""
         df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
             num_samples=1000,
             seed=123,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -944,10 +943,9 @@ class TestStatistics(RewardSpaceTestBase):
     def test_stats_benjamini_hochberg_adjustment(self):
         """BH adjustment adds p_value_adj & significant_adj with valid bounds."""
         df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
             num_samples=600,
             seed=123,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1424,10 +1422,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
 
     def test_api_simulation_and_reward_smoke(self):
         df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=40),
             num_samples=20,
             seed=7,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=40,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1464,10 +1461,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
     def test_simulate_samples_trading_modes_spot_vs_margin(self):
         """simulate_samples coverage: spot should forbid shorts, margin should allow them."""
         df_spot = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
             num_samples=80,
             seed=self.SEED,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1483,10 +1479,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             "Spot mode must not contain short positions",
         )
         df_margin = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
             num_samples=80,
             seed=self.SEED,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1515,10 +1510,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         """Test _to_bool with various inputs."""
         # Test via simulate_samples which uses action_masking parameter
         df1 = simulate_samples(
+            params=self.base_params(action_masking="true", max_trade_duration_candles=50),
             num_samples=10,
             seed=self.SEED,
-            params={"action_masking": "true"},
-            max_trade_duration=50,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1530,10 +1524,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertIsInstance(df1, pd.DataFrame)
 
         df2 = simulate_samples(
+            params=self.base_params(action_masking="false", max_trade_duration_candles=50),
             num_samples=10,
             seed=self.SEED,
-            params={"action_masking": "false"},
-            max_trade_duration=50,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1548,10 +1541,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         """Test _is_short_allowed via different trading modes."""
         # Test futures mode (shorts allowed)
         df_futures = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=50),
             num_samples=100,
             seed=self.SEED,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=50,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1652,10 +1644,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
 
         # Create comprehensive test data
         test_data = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
             num_samples=200,
             seed=self.SEED,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -1671,7 +1662,6 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             write_complete_statistical_analysis(
                 test_data,
                 output_path,
-                max_trade_duration=100,
                 profit_target=self.TEST_PROFIT_TARGET,
                 seed=self.SEED,
                 real_df=None,
@@ -2107,10 +2097,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
     def test_pnl_invariant_exit_only(self):
         """Invariant: only exit actions have non-zero PnL (robustness category)."""
         df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=50),
             num_samples=200,
             seed=self.SEED,
-            params=self.DEFAULT_PARAMS,
-            max_trade_duration=50,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -3554,10 +3543,6 @@ class TestBootstrapStatistics(RewardSpaceTestBase):
             self.assertFinite(ci_high, name=f"ci_high[{metric}]")
             self.assertLess(ci_low, ci_high)
 
-
-class TestPBRSParity(RewardSpaceTestBase):
-    """Parity tests for PBRS canonical invariance and non-canonical leakage."""
-
     def test_canonical_invariance_flag_and_sum(self):
         """Canonical mode + no additives -> pbrs_invariant True and Σ shaping ≈ 0."""
         params = self.base_params(
@@ -3567,10 +3552,9 @@ class TestPBRSParity(RewardSpaceTestBase):
             hold_potential_enabled=True,
         )
         df = simulate_samples(
+            params={**params, "max_trade_duration_candles": 100},
             num_samples=400,
             seed=self.SEED,
-            params=params,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -3600,10 +3584,9 @@ class TestPBRSParity(RewardSpaceTestBase):
             hold_potential_enabled=True,
         )
         df = simulate_samples(
+            params={**params, "max_trade_duration_candles": 100},
             num_samples=400,
             seed=self.SEED,
-            params=params,
-            max_trade_duration=100,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -3739,11 +3722,6 @@ class TestParamsPropagation(RewardSpaceTestBase):
         # Basic structure checks
         self.assertIn("reward_params", manifest)
         self.assertIn("simulation_params", manifest)
-        self.assertIn("max_trade_duration", manifest)
-
-        # Ensure propagation of max_trade_duration_candles to effective max_trade_duration
-        self.assertEqual(manifest["max_trade_duration"], 96)
-        self.assertEqual(manifest["simulation_params"].get("max_trade_duration"), 96)
 
         # Reward params should include the tunable (float or int acceptable -> coerce)
         rp = manifest["reward_params"]
@@ -3776,11 +3754,6 @@ class TestParamsPropagation(RewardSpaceTestBase):
         # Basic structure checks
         self.assertIn("reward_params", manifest)
         self.assertIn("simulation_params", manifest)
-        self.assertIn("max_trade_duration", manifest)
-
-        # Ensure propagation of flag to effective max_trade_duration
-        self.assertEqual(manifest["max_trade_duration"], 64)
-        self.assertEqual(manifest["simulation_params"].get("max_trade_duration"), 64)
 
         # Reward params should include the tunable (float or int acceptable -> coerce)
         rp = manifest["reward_params"]

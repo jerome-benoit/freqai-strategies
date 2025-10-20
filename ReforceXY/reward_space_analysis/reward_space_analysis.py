@@ -912,15 +912,19 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
             DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128)
         )
 
-    # Fallback for max_idle_duration_candles derives from the runtime context cap, not the default param
-    fallback_idle_from_context = DEFAULT_IDLE_DURATION_MULTIPLIER * int(context.max_trade_duration)
+    # default_max_idle_duration_candles = DEFAULT_MODEL_REWARD_PARAMETERS.get(
+    #     "max_idle_duration_candles", DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
+    # )
+    default_max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * int(
+        context.max_trade_duration
+    )
     max_idle_duration_candles = _get_int_param(
         params,
         "max_idle_duration_candles",
-        fallback_idle_from_context,
+        default_max_idle_duration_candles,
     )
     if max_idle_duration_candles <= 0:
-        max_idle_duration_candles = fallback_idle_from_context
+        max_idle_duration_candles = default_max_idle_duration_candles
     max_idle_duration = max_idle_duration_candles
 
     idle_duration_ratio = context.idle_duration / max(1, max_idle_duration)
@@ -1181,7 +1185,6 @@ def simulate_samples(
     num_samples: int,
     seed: int,
     params: RewardParams,
-    max_trade_duration: int,
     base_factor: float,
     profit_target: float,
     risk_reward_ratio: float,
@@ -1189,24 +1192,35 @@ def simulate_samples(
     trading_mode: str,
     pnl_base_std: float,
     pnl_duration_vol_scale: float,
+    *,
+    max_trade_duration: Optional[int] = None,
 ) -> pd.DataFrame:
     """Simulate synthetic samples for reward analysis.
 
     Deprecated parameter: max_trade_duration; use 'max_trade_duration_candles' from params.
     """
-    global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM
-    try:
-        if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM:
-            warnings.warn(
-                "simulate_samples(max_trade_duration=...) is deprecated; pass 'max_trade_duration_candles' via params instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = True
-    except Exception:
-        # Ignore any warning machinery issues
-        pass
+    if max_trade_duration is not None:
+        global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM
+        try:
+            if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM:
+                warnings.warn(
+                    "simulate_samples(max_trade_duration=...) is deprecated; pass 'max_trade_duration_candles' via params instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = True
+        except Exception:
+            pass
     rng = random.Random(seed)
+    # Derive legacy 'max_trade_duration' from canonical params when not explicitly provided or invalid
+    if (max_trade_duration is None) or (
+        isinstance(max_trade_duration, numbers.Number) and int(max_trade_duration) <= 0
+    ):
+        max_trade_duration = _get_int_param(
+            params,
+            "max_trade_duration_candles",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+        )
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
     # Theoretical PBRS invariance flag
@@ -1248,10 +1262,10 @@ def simulate_samples(
             max_idle_duration_candles = _get_int_param(
                 params,
                 "max_idle_duration_candles",
-                int(max_trade_duration * max_duration_ratio),
+                DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration,
             )
             if max_idle_duration_candles <= 0:
-                max_idle_duration_candles = int(max_trade_duration * max_duration_ratio)
+                max_idle_duration_candles = DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration
 
             idle_duration = int(rng.uniform(0, max_idle_duration_candles))
         else:
@@ -1389,6 +1403,8 @@ def simulate_samples(
                     )
                     drift = total_shaping / max(1, n_invariant)
                     df.loc[:, "reward_shaping"] = df["reward_shaping"] - drift
+        # Attach resolved reward params for downstream consumers (e.g., report derivations)
+        df.attrs["reward_params"] = dict(params)
     except Exception:
         # Graceful fallback (no invariance enforcement on failure)
         pass
@@ -1676,7 +1692,7 @@ def _perform_feature_analysis(
         "action",
         "is_invalid",
     ]
-    X = df[feature_cols]
+    X = df[feature_cols].copy()
     for col in ("trade_duration", "idle_duration"):
         if col in X.columns and pd.api.types.is_integer_dtype(X[col]):
             X.loc[:, col] = X[col].astype(float)
@@ -2940,11 +2956,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def write_complete_statistical_analysis(
     df: pd.DataFrame,
     output_dir: Path,
-    max_trade_duration: int,
     profit_target: float,
     seed: int,
     real_df: Optional[pd.DataFrame] = None,
     *,
+    max_trade_duration: Optional[int] = None,
     adjust_method: str = "none",
     stats_seed: Optional[int] = None,
     strict_diagnostics: bool = False,
@@ -2958,20 +2974,34 @@ def write_complete_statistical_analysis(
 
     Deprecated parameter: max_trade_duration; prefer 'max_trade_duration_candles' in reward params.
     """
-    global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT
-    try:
-        if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT:
-            warnings.warn(
-                "write_complete_statistical_analysis(max_trade_duration=...) is deprecated; use 'max_trade_duration_candles' from params for canonical configuration.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = True
-    except Exception:
-        # Do not fail report generation on warning machinery issues
-        pass
+    if max_trade_duration is not None:
+        global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT
+        try:
+            if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT:
+                warnings.warn(
+                    "write_complete_statistical_analysis(max_trade_duration=...) is deprecated; use 'max_trade_duration_candles' from params for canonical configuration.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = True
+        except Exception:
+            pass
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "statistical_analysis.md"
+
+    if max_trade_duration is None:
+        reward_params: RewardParams = (
+            dict(df.attrs.get("reward_params"))
+            if isinstance(df.attrs.get("reward_params"), dict)
+            else {}
+        )
+        max_trade_duration_candles = _get_int_param(
+            reward_params,
+            "max_trade_duration_candles",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+        )
+    else:
+        max_trade_duration_candles = int(max_trade_duration)
 
     # Helpers: consistent Markdown table renderers
     def _fmt_val(v: Any, ndigits: int = 6) -> str:
@@ -3012,8 +3042,10 @@ def write_complete_statistical_analysis(
 
     # Compute all statistics
     summary_stats = _compute_summary_stats(df)
-    relationship_stats = _compute_relationship_stats(df, max_trade_duration)
-    representativity_stats = _compute_representativity_stats(df, profit_target, max_trade_duration)
+    relationship_stats = _compute_relationship_stats(df, max_trade_duration_candles)
+    representativity_stats = _compute_representativity_stats(
+        df, profit_target, max_trade_duration_candles
+    )
 
     # Model analysis: skip if requested or not enough samples
     importance_df = None
@@ -3075,6 +3107,13 @@ def write_complete_statistical_analysis(
         "reward_exit",
         "pnl",
     ]
+    # Include PBRS-related metrics when present
+    extra_ci_cols = [
+        col
+        for col in ["reward_shaping", "reward_entry_additive", "reward_exit_additive"]
+        if col in df.columns
+    ]
+    metrics_for_ci.extend(extra_ci_cols)
     bootstrap_ci = bootstrap_confidence_intervals(
         df,
         metrics_for_ci,
@@ -3100,10 +3139,9 @@ def write_complete_statistical_analysis(
         f.write(f"| Generated | {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} |\n")
         f.write(f"| Total Samples | {len(df):,} |\n")
         f.write(f"| Random Seed | {seed} |\n")
-        f.write(f"| Max Trade Duration | {max_trade_duration} |\n")
         # Blank separator to visually group core simulation vs PBRS parameters
         f.write("|  |  |\n")
-        # Extra core PBRS parameters exposed in run configuration if present
+        # Core PBRS parameters exposed in run configuration if present
         reward_params: RewardParams = (
             dict(df.attrs.get("reward_params"))
             if isinstance(df.attrs.get("reward_params"), dict)
@@ -3114,12 +3152,21 @@ def write_complete_statistical_analysis(
             "exit_potential_mode",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical"),
         )
-        potential_gamma = reward_params.get(
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", POTENTIAL_GAMMA_DEFAULT),
-        )
+        potential_gamma = _get_potential_gamma(reward_params)
         f.write(f"| exit_potential_mode | {exit_mode} |\n")
         f.write(f"| potential_gamma | {potential_gamma} |\n")
+        # Additional configuration details
+        f.write(f"| max_trade_duration_candles | {max_trade_duration_candles} |\n")
+        f.write(
+            f"| max_idle_duration_candles | {_get_int_param(reward_params, 'max_idle_duration_candles', DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles)} |\n"
+        )
+        f.write(f"| strict_diagnostics | {strict_diagnostics} |\n")
+        f.write(f"| skip_feature_analysis | {skip_feature_analysis} |\n")
+        f.write(f"| skip_partial_dependence | {skip_partial_dependence} |\n")
+        f.write(f"| rf_n_jobs | {rf_n_jobs} |\n")
+        f.write(f"| perm_n_jobs | {perm_n_jobs} |\n")
+        f.write(f"| bootstrap_resamples | {bootstrap_resamples} |\n")
+        f.write(f"| pvalue_adjust_method | {adjust_method} |\n")
         # Blank separator before overrides block
         f.write("|  |  |\n")
 
@@ -3384,29 +3431,36 @@ def write_complete_statistical_analysis(
                     "_Note: --skip_partial_dependence is redundant when feature analysis is skipped._\n\n"
                 )
         else:
-            f.write(
-                "Machine learning analysis to identify which features most influence total reward.\n\n"
-            )
-            f.write("**Model:** Random Forest Regressor (400 trees)  \n")
-            f.write(f"**R² Score:** {analysis_stats['r2_score']:.4f}\n\n")
-
-            f.write("### 4.1 Top 10 Features by Importance\n\n")
-            top_imp = importance_df.head(10).copy().reset_index(drop=True)
-            # Render as markdown without index column
-            header = "| feature | importance_mean | importance_std |\n"
-            sep = "|---------|------------------|----------------|\n"
-            rows: List[str] = []
-            for _, r in top_imp.iterrows():
-                rows.append(
-                    f"| {r['feature']} | {_fmt_val(r['importance_mean'], 6)} | {_fmt_val(r['importance_std'], 6)} |"
+            if importance_df is None or analysis_stats is None:
+                f.write(
+                    "_Feature analysis unavailable (scikit-learn not installed); placeholder artifacts generated._\n\n"
                 )
-            f.write(header + sep + "\n".join(rows) + "\n\n")
-            f.write("**Exported Data:**\n")
-            f.write("- Full feature importance: `feature_importance.csv`\n")
-            if not skip_partial_dependence:
-                f.write("- Partial dependence plots: `partial_dependence_*.csv`\n\n")
             else:
-                f.write("- Partial dependence plots: (skipped via --skip_partial_dependence)\n\n")
+                f.write(
+                    "Machine learning analysis to identify which features most influence total reward.\n\n"
+                )
+                f.write("**Model:** Random Forest Regressor (400 trees)  \n")
+                f.write(f"**R² Score:** {analysis_stats['r2_score']:.4f}\n\n")
+
+                f.write("### 4.1 Top 10 Features by Importance\n\n")
+                top_imp = importance_df.head(10).copy().reset_index(drop=True)
+                # Render as markdown without index column
+                header = "| feature | importance_mean | importance_std |\n"
+                sep = "|---------|------------------|----------------|\n"
+                rows: List[str] = []
+                for _, r in top_imp.iterrows():
+                    rows.append(
+                        f"| {r['feature']} | {_fmt_val(r['importance_mean'], 6)} | {_fmt_val(r['importance_std'], 6)} |"
+                    )
+                f.write(header + sep + "\n".join(rows) + "\n\n")
+                f.write("**Exported Data:**\n")
+                f.write("- Full feature importance: `feature_importance.csv`\n")
+                if not skip_partial_dependence:
+                    f.write("- Partial dependence plots: `partial_dependence_*.csv`\n\n")
+                else:
+                    f.write(
+                        "- Partial dependence plots: (skipped via --skip_partial_dependence)\n\n"
+                    )
 
         # Section 5: Statistical Validation
         if hypothesis_tests:
@@ -3427,6 +3481,7 @@ def write_complete_statistical_analysis(
                         f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
                     )
                 f.write(f"- 95% CI: [{h['ci_95'][0]:.4f}, {h['ci_95'][1]:.4f}]\n")
+                f.write(f"- CI width: {(h['ci_95'][1] - h['ci_95'][0]):.4f}\n")
                 f.write(f"- Sample size: {h['n_samples']:,}\n")
                 f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")
                 f.write(f"- **Interpretation:** {h['interpretation']}\n\n")
@@ -3479,7 +3534,7 @@ def write_complete_statistical_analysis(
             if dist_diagnostics:
                 f.write("### 5.3 Distribution Normality Tests\n\n")
                 f.write("Statistical tests for normality of key distributions:\n\n")
-                for col in ["reward", "pnl", "trade_duration"]:
+                for col in ["reward", "pnl", "trade_duration", "idle_duration"]:
                     if f"{col}_mean" in dist_diagnostics:
                         f.write(f"#### {col.replace('_', ' ').title()}\n\n")
                         f.write("| Metric | Value |\n")
@@ -3497,6 +3552,20 @@ def write_complete_statistical_analysis(
                             f.write(
                                 f"| Normal? (Shapiro-Wilk) | {is_normal} (p={dist_diagnostics[f'{col}_shapiro_pval']:.4e}) |\n"
                             )
+                        # Anderson-Darling diagnostics
+                        if f"{col}_anderson_stat" in dist_diagnostics:
+                            f.write(
+                                f"| Anderson-Darling stat | {dist_diagnostics[f'{col}_anderson_stat']:.4f} |\n"
+                            )
+                            f.write(
+                                f"| Anderson 5% critical | {dist_diagnostics[f'{col}_anderson_critical_5pct']:.4f} |\n"
+                            )
+                            is_normal_anderson = (
+                                "✅ Yes"
+                                if dist_diagnostics.get(f"{col}_is_normal_anderson", False)
+                                else "❌ No"
+                            )
+                            f.write(f"| Normal? (Anderson-Darling) | {is_normal_anderson} |\n")
                         if f"{col}_qq_r_squared" in dist_diagnostics:
                             f.write(
                                 f"| Q-Q Plot R² | {dist_diagnostics[f'{col}_qq_r_squared']:.4f} |\n"
@@ -3620,17 +3689,10 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    max_trade_duration_candles = _get_int_param(
-        params,
-        "max_trade_duration_candles",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-    )
-
     df = simulate_samples(
         num_samples=args.num_samples,
         seed=args.seed,
         params=params,
-        max_trade_duration=max_trade_duration_candles,
         base_factor=base_factor,
         profit_target=profit_target,
         risk_reward_ratio=risk_reward_ratio,
@@ -3661,21 +3723,53 @@ def main() -> None:
             + ", ".join(f"{k}={v}" for k, v in nan_issues.items())
         )
     # Attach simulation parameters for downstream manifest
-    df.attrs["simulation_params"] = {
-        "num_samples": args.num_samples,
-        "seed": args.seed,
-        "max_trade_duration": max_trade_duration_candles,
-        "base_factor": base_factor,
-        "profit_target": profit_target,
-        "risk_reward_ratio": risk_reward_ratio,
-        "max_duration_ratio": args.max_duration_ratio,
-        "trading_mode": args.trading_mode,
-        "action_masking": _get_bool_param(params, "action_masking", True),
-        "pnl_base_std": args.pnl_base_std,
-        "pnl_duration_vol_scale": args.pnl_duration_vol_scale,
-        "rf_n_jobs": int(getattr(args, "rf_n_jobs", -1)),
-        "perm_n_jobs": int(getattr(args, "perm_n_jobs", -1)),
-    }
+    try:
+        defaults = {
+            a.dest: getattr(a, "default", None) for a in parser._actions if hasattr(a, "dest")
+        }
+    except Exception:
+        defaults = {}
+    args_dict = vars(args)
+
+    candidate_keys = [
+        "num_samples",
+        "seed",
+        "out_dir",
+        "trading_mode",
+        "risk_reward_ratio",
+        "profit_target",
+        "max_duration_ratio",
+        "pnl_base_std",
+        "pnl_duration_vol_scale",
+        "rf_n_jobs",
+        "perm_n_jobs",
+        "skip_feature_analysis",
+        "skip_partial_dependence",
+        "stats_seed",
+        "strict_diagnostics",
+        "bootstrap_resamples",
+        "pvalue_adjust",
+        "real_episodes",
+        "unrealized_pnl",
+        "action_masking",
+    ]
+
+    sim_params: Dict[str, Any] = {}
+    for k in candidate_keys:
+        if k in args_dict:
+            v = args_dict[k]
+            v_norm = str(v) if isinstance(v, Path) else v
+            d = defaults.get(k)
+            d_norm = str(d) if isinstance(d, Path) else d
+            if d_norm != v_norm:
+                sim_params[k] = v_norm
+
+    # Deduplicate any keys that overlap with reward_params (single source of truth)
+    for k in list(sim_params.keys()):
+        if k in params:
+            sim_params.pop(k)
+
+    df.attrs["simulation_params"] = sim_params
     # Attach resolved reward parameters for inline overrides rendering in report
     df.attrs["reward_params"] = dict(params)
 
@@ -3696,7 +3790,6 @@ def main() -> None:
     write_complete_statistical_analysis(
         df,
         args.out_dir,
-        max_trade_duration=max_trade_duration_candles,
         profit_target=float(profit_target * risk_reward_ratio),
         seed=args.seed,
         real_df=real_df,
@@ -3713,24 +3806,29 @@ def main() -> None:
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
-        resolved_reward_params = dict(params)  # already validated/normalized upstream
-        manifest = {
+        resolved_reward_params: Dict[str, Any] = dict(
+            params
+        )  # already validated/normalized upstream
+        manifest: Dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": int(len(df)),
             "seed": int(args.seed),
-            "max_trade_duration": int(max_trade_duration_candles),
             "profit_target_effective": float(profit_target * risk_reward_ratio),
             "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
         }
-        sim_params = df.attrs.get("simulation_params", {})
-        if not isinstance(sim_params, dict):
-            sim_params = {}
+        sim_params_obj = df.attrs.get("simulation_params", {})
+        if not isinstance(sim_params_obj, dict):
+            sim_params_obj = {}
+        sim_params: Dict[str, Any] = dict(sim_params_obj)
         if sim_params:
-            # Compose hash source from ALL simulation params and ALL resolved reward params for full reproducibility.
-            _hash_source = {
-                **{f"sim::{k}": sim_params[k] for k in sorted(sim_params)},
+            excluded_for_hash = {"out_dir", "real_episodes"}
+            sim_params_for_hash: Dict[str, Any] = {
+                k: sim_params[k] for k in sim_params if k not in excluded_for_hash
+            }
+            _hash_source: Dict[str, Any] = {
+                **{f"sim::{k}": sim_params_for_hash[k] for k in sorted(sim_params_for_hash)},
                 **{
                     f"reward::{k}": resolved_reward_params[k]
                     for k in sorted(resolved_reward_params)

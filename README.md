@@ -76,8 +76,8 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.enabled | true | bool | Enables HPO. |
 | freqai.optuna_hyperopt.n_jobs | CPU threads / 4 | int >= 1 | Parallel HPO workers. |
 | freqai.optuna_hyperopt.storage | `file` | enum {`file`,`sqlite`} | HPO storage backend. |
-| freqai.optuna_hyperopt.continuous | true | bool | Continuous HPO. |
-| freqai.optuna_hyperopt.warm_start | true | bool | Warm start HPO with previous best value(s). |
+| freqai.optuna_hyperopt.continuous | false | bool | Continuous HPO. |
+| freqai.optuna_hyperopt.warm_start | false | bool | Warm start HPO with previous best value(s). |
 | freqai.optuna_hyperopt.n_startup_trials | 15 | int >= 0 | HPO startup trials. |
 | freqai.optuna_hyperopt.n_trials | 50 | int >= 1 | Maximum HPO trials. |
 | freqai.optuna_hyperopt.timeout | 7200 | int >= 0 | HPO wall-clock timeout in seconds. |
