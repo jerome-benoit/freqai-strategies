@@ -1337,7 +1337,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         base_factor = 120.0
         profit_target = 0.04
         rr = self.TEST_RR_HIGH
-        pnls = [0.02, -0.022]
+        pnls = [0.018, -0.022]
         for pnl in pnls:
             ctx_long = self.make_ctx(
                 pnl=pnl,

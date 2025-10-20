@@ -57,7 +57,7 @@ Deterministic synthetic sampling with diagnostics for reward shaping, penalties,
 
 ## Prerequisites
 
-Requirements: Python 3.8+, ≥4GB RAM (CPU only). Recommended venv:
+Requirements: Python 3.9+, ≥4GB RAM (CPU only). Recommended venv:
 
 ```shell
 cd ReforceXY/reward_space_analysis
@@ -181,7 +181,7 @@ Core frequently tuned parameters:
 | `win_reward_factor` | 2.0 | Profit overshoot multiplier |
 | `pnl_factor_beta` | 0.5 | PnL amplification beta |
 | `idle_penalty_scale` | 0.5 | Idle penalty scale |
-| `idle_penalty_power` | 1.025 | Idle penalty exponent (>1 slightly convex) |
+| `idle_penalty_power` | 1.025 | Idle penalty exponent |
 | `max_trade_duration_candles` | 128 | Trade duration cap | 
 | `max_idle_duration_candles` | None | Idle duration cap; fallback 4× max trade duration |
 | `hold_penalty_scale` | 0.25 | Hold penalty scale |
@@ -343,7 +343,7 @@ Includes: global stats, representativity, component + PBRS analysis, feature imp
 | `parameter_adjustments` | object | Map of any automatic bound clamps (empty if none). |
 | `reward_params` | object | Full resolved reward parameter set (post-validation). |
 | `simulation_params` | object | All simulation inputs (num_samples, seed, volatility knobs, etc.). |
-| `params_hash` | string (sha256) | Hash over ALL `simulation_params` + ALL `reward_params` (lexicographically ordered). |
+| `params_hash` | string (sha256) | Hash over ALL `simulation_params` (excluding `out_dir`, `real_episodes`) + ALL `reward_params` (lexicographically ordered). |
 
 Two runs match iff `params_hash` identical (defaults included in hash scope).
 

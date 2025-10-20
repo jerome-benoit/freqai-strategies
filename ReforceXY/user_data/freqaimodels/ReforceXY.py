@@ -1490,12 +1490,12 @@ class MyRLEnv(Base5ActionRLEnv):
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
             logger.warning(
-                "PBRS: hold_potential_enabled=True and add_state_info=False is unsupported. Enabling add_state_info=True."
+                "PBRS: hold_potential_enabled=True and add_state_info=False is unsupported. Automatically enabling add_state_info=True."
             )
             self.add_state_info = True
 
         # === PNL TARGET VALIDATION ===
-        pnl_target = float(self.profit_aim) * float(self.rr)
+        pnl_target = self.profit_aim * self.rr
         if MyRLEnv._is_invalid_pnl_target(pnl_target):
             raise ValueError(
                 f"Invalid pnl_target={pnl_target:.12g} computed from profit_aim={self.profit_aim:.12g} and rr={self.rr:.12g}"

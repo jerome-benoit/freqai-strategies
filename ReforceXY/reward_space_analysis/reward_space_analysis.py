@@ -197,10 +197,6 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
 }
 
 
-# deprecation warning one-time flags
-_WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = False
-_WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = False
-
 # ---------------------------------------------------------------------------
 # Parameter validation utilities
 # ---------------------------------------------------------------------------
@@ -357,15 +353,9 @@ def _get_str_param(params: RewardParams, key: str, default: str) -> str:
     return default
 
 
-def _compute_duration_ratio(trade_duration: int, max_trade_duration: int) -> float:
-    """Compute duration ratio with safe division.
-
-    Note
-    ----
-    The parameter name 'max_trade_duration' is legacy and refers to the canonical
-    'max_trade_duration_candles' cap used throughout the environment.
-    """
-    return trade_duration / max(1, max_trade_duration)
+def _compute_duration_ratio(trade_duration: int, max_trade_duration_candles: int) -> float:
+    """Compute duration ratio with safe division."""
+    return trade_duration / max(1, max_trade_duration_candles)
 
 
 def _is_short_allowed(trading_mode: str) -> bool:
@@ -464,7 +454,7 @@ def validate_reward_parameters(
         if not np.isfinite(coerced):
             # Treat derived parameters specially: drop to allow downstream derivation
             if key == "max_idle_duration_candles":
-                # Remove the key so downstream helpers derive from max_trade_duration
+                # Remove the key so downstream helpers derive from max_trade_duration_candles
                 del sanitized[key]
                 adjustments[key] = {
                     "original": original_val,
@@ -1000,7 +990,7 @@ def calculate_reward(
     )
     hold_factor = idle_factor
 
-    # Base reward calculation (existing logic)
+    # Base reward calculation
     base_reward = 0.0
 
     if context.action == Actions.Neutral and context.position == Positions.Neutral:
@@ -1174,35 +1164,14 @@ def simulate_samples(
     trading_mode: str,
     pnl_base_std: float,
     pnl_duration_vol_scale: float,
-    *,
-    max_trade_duration: Optional[int] = None,
 ) -> pd.DataFrame:
-    """Simulate synthetic samples for reward analysis.
-
-    Deprecated parameter: max_trade_duration; use 'max_trade_duration_candles' from params.
-    """
-    if max_trade_duration is not None:
-        global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM
-        try:
-            if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM:
-                warnings.warn(
-                    "simulate_samples(max_trade_duration=...) is deprecated; pass 'max_trade_duration_candles' via params instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_SIM = True
-        except Exception:
-            pass
+    """Simulate synthetic samples for reward analysis."""
     rng = random.Random(seed)
-    # Derive legacy 'max_trade_duration' from canonical params when not explicitly provided or invalid
-    if (max_trade_duration is None) or (
-        isinstance(max_trade_duration, numbers.Number) and int(max_trade_duration) <= 0
-    ):
-        max_trade_duration = _get_int_param(
-            params,
-            "max_trade_duration_candles",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-        )
+    max_trade_duration_candles = _get_int_param(
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
     # Theoretical PBRS invariance flag
@@ -1242,11 +1211,11 @@ def simulate_samples(
         if position == Positions.Neutral:
             trade_duration = 0
             max_idle_duration_candles = get_max_idle_duration_candles(
-                params, max_trade_duration_candles=int(max_trade_duration)
+                params, max_trade_duration_candles=max_trade_duration_candles
             )
             idle_duration = int(rng.uniform(0, max_idle_duration_candles))
         else:
-            trade_duration = int(rng.uniform(1, max_trade_duration * max_duration_ratio))
+            trade_duration = int(rng.uniform(1, max_trade_duration_candles * max_duration_ratio))
             trade_duration = max(1, trade_duration)
             idle_duration = 0
 
@@ -1255,16 +1224,15 @@ def simulate_samples(
 
         # Generate PnL only for exit actions (Long_exit=2, Short_exit=4)
         if action in (Actions.Long_exit, Actions.Short_exit):
-            # Apply directional bias for positions
-            duration_factor = trade_duration / max(1, max_trade_duration)
+            duration_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
 
             # PnL variance scales with duration for more realistic heteroscedasticity
-            pnl_std = pnl_base_std * (1.0 + pnl_duration_vol_scale * duration_factor)
+            pnl_std = pnl_base_std * (1.0 + pnl_duration_vol_scale * duration_ratio)
             pnl = rng.gauss(0.0, pnl_std)
             if position == Positions.Long:
-                pnl += 0.005 * duration_factor
+                pnl += 0.005 * duration_ratio
             elif position == Positions.Short:
-                pnl -= 0.005 * duration_factor
+                pnl -= 0.005 * duration_ratio
 
             # Clip PnL to realistic range
             pnl = max(min(pnl, 0.15), -0.15)
@@ -1311,7 +1279,9 @@ def simulate_samples(
                 "pnl": context.pnl,
                 "trade_duration": context.trade_duration,
                 "idle_duration": context.idle_duration,
-                "duration_ratio": context.trade_duration / max(1, max_trade_duration),
+                "duration_ratio": _compute_duration_ratio(
+                    context.trade_duration, max_trade_duration_candles
+                ),
                 "idle_ratio": idle_ratio,
                 "position": float(context.position.value),
                 "action": int(context.action.value),
@@ -1522,10 +1492,20 @@ def _binned_stats(
     return aggregated
 
 
-def _compute_relationship_stats(df: pd.DataFrame, max_trade_duration: int) -> Dict[str, Any]:
+def _compute_relationship_stats(df: pd.DataFrame) -> Dict[str, Any]:
     """Return binned stats dict for idle, trade duration and pnl (uniform bins)."""
-    idle_bins = np.linspace(0, max_trade_duration * 3.0, 13)
-    trade_bins = np.linspace(0, max_trade_duration * 3.0, 13)
+    reward_params: RewardParams = (
+        dict(df.attrs.get("reward_params"))
+        if isinstance(df.attrs.get("reward_params"), dict)
+        else {}
+    )
+    max_trade_duration_candles = _get_int_param(
+        reward_params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
+    idle_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
+    trade_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
     pnl_min = float(df["pnl"].min())
     pnl_max = float(df["pnl"].max())
     if np.isclose(pnl_min, pnl_max):
@@ -1572,10 +1552,7 @@ def _compute_representativity_stats(
     df: pd.DataFrame,
     profit_target: float,
 ) -> Dict[str, Any]:
-    """Compute representativity statistics for the reward space.
-
-    NOTE: The max_trade_duration parameter is reserved for future duration coverage metrics.
-    """
+    """Compute representativity statistics for the reward space."""
     total = len(df)
     # Map numeric position codes to readable labels to avoid casting Neutral (0.5) to 0
     pos_label_map = {0.0: "Short", 0.5: "Neutral", 1.0: "Long"}
@@ -2918,7 +2895,6 @@ def write_complete_statistical_analysis(
     seed: int,
     real_df: Optional[pd.DataFrame] = None,
     *,
-    max_trade_duration: Optional[int] = None,
     adjust_method: str = "none",
     stats_seed: Optional[int] = None,
     strict_diagnostics: bool = False,
@@ -2928,38 +2904,20 @@ def write_complete_statistical_analysis(
     rf_n_jobs: int = -1,
     perm_n_jobs: int = -1,
 ) -> None:
-    """Generate a single comprehensive statistical analysis report with enhanced tests.
-
-    Deprecated parameter: max_trade_duration; prefer 'max_trade_duration_candles' in reward params.
-    """
-    if max_trade_duration is not None:
-        global _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT
-        try:
-            if not _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT:
-                warnings.warn(
-                    "write_complete_statistical_analysis(max_trade_duration=...) is deprecated; use 'max_trade_duration_candles' from params for canonical configuration.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                _WARNED_DEPRECATED_MAX_TRADE_DURATION_API_REPORT = True
-        except Exception:
-            pass
+    """Generate a single comprehensive statistical analysis report."""
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "statistical_analysis.md"
 
-    if max_trade_duration is None:
-        reward_params: RewardParams = (
-            dict(df.attrs.get("reward_params"))
-            if isinstance(df.attrs.get("reward_params"), dict)
-            else {}
-        )
-        max_trade_duration_candles = _get_int_param(
-            reward_params,
-            "max_trade_duration_candles",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-        )
-    else:
-        max_trade_duration_candles = int(max_trade_duration)
+    reward_params: RewardParams = (
+        dict(df.attrs.get("reward_params"))
+        if isinstance(df.attrs.get("reward_params"), dict)
+        else {}
+    )
+    max_trade_duration_candles = _get_int_param(
+        reward_params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
 
     # Helpers: consistent Markdown table renderers
     def _fmt_val(v: Any, ndigits: int = 6) -> str:
@@ -3000,7 +2958,7 @@ def write_complete_statistical_analysis(
 
     # Compute all statistics
     summary_stats = _compute_summary_stats(df)
-    relationship_stats = _compute_relationship_stats(df, max_trade_duration_candles)
+    relationship_stats = _compute_relationship_stats(df)
     representativity_stats = _compute_representativity_stats(df, profit_target)
 
     # Model analysis: skip if requested or not enough samples
@@ -3614,7 +3572,6 @@ def main() -> None:
     # Then apply --params KEY=VALUE overrides (highest precedence)
     params.update(parse_overrides(args.params))
 
-    # Validate parameters before simulation to align with documentation.
     params_validated, adjustments = validate_reward_parameters(
         params, strict=args.strict_validation
     )
