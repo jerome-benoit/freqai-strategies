@@ -295,21 +295,24 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_reward_parameters = rl_cfg.setdefault("model_reward_parameters", {})
 
         gamma: Optional[float] = None
-        best_trial_params: Optional[Dict[str, Any]] = None
-        if self.hyperopt:
-            best_trial_params = self.load_best_trial_params(pair)
 
         if model_params and isinstance(model_params.get("gamma"), (int, float)):
             gamma = float(model_params.get("gamma"))
-        elif best_trial_params and isinstance(
-            best_trial_params.get("gamma"), (int, float)
-        ):
-            gamma = float(best_trial_params.get("gamma"))
-        elif hasattr(self.model, "gamma") and isinstance(
-            self.model.gamma, (int, float)
+        elif self.hyperopt:
+            best_trial_params = self.load_best_trial_params(pair)
+            if best_trial_params and isinstance(
+                best_trial_params.get("gamma"), (int, float)
+            ):
+                gamma = float(best_trial_params.get("gamma"))
+
+        if (
+            gamma is None
+            and hasattr(self.model, "gamma")
+            and isinstance(self.model.gamma, (int, float))
         ):
             gamma = float(self.model.gamma)
-        else:
+
+        if gamma is None:
             model_params_gamma = self.get_model_params().get("gamma")
             if isinstance(model_params_gamma, (int, float)):
                 gamma = float(model_params_gamma)
