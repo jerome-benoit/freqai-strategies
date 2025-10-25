@@ -44,7 +44,9 @@ docker compose up -d --build
 | exit_pricing.thresholds_calibration.decline_quantile | 0.90             | float (0,1) | PNL decline quantile threshold.                                                 |
 | _Reversal confirmation_ |                  |  |                                                                                 |
 | reversal_confirmation.lookback_period | 0                | int >= 0 | Prior confirming candles; 0 = none.                                             |
-| reversal_confirmation.decay_ratio | 0.5              | float (0,1] | Geometric per-step relaxation factor.                                           |
+| reversal_confirmation.decay_ratio | 0.5              | float (0,1] | Geometric per-candle relaxation factor.                                           |
+| reversal_confirmation.min_natr_ratio_percent | 0.009           | float [0,1] | Lower bound fraction for volatility adjusted reversal threshold.                          |
+| reversal_confirmation.max_natr_ratio_percent | 0.035           | float [0,1] | Upper bound fraction (>= lower bound) for volatility adjusted reversal threshold.         |
 | _Regressor model_ |                  |  |                                                                                 |
 | freqai.regressor | `xgboost`        | enum {`xgboost`,`lightgbm`} | Machine learning regressor algorithm.                                           |
 | _Extrema smoothing_ |                  |  |                                                                                 |

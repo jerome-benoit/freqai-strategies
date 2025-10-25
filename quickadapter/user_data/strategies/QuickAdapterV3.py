@@ -98,6 +98,8 @@ class QuickAdapterV3(IStrategy):
     default_reversal_confirmation: dict[str, int | float] = {
         "lookback_period": 0,
         "decay_ratio": 0.5,
+        "min_natr_ratio_percent": 0.009,
+        "max_natr_ratio_percent": 0.035,
     }
 
     position_adjustment_enable = True
@@ -1156,11 +1158,11 @@ class QuickAdapterV3(IStrategy):
         rate: float,
         lookback_period: int,
         decay_ratio: float,
-        min_natr_ratio_percent: float = 0.009,
-        max_natr_ratio_percent: float = 0.035,
+        min_natr_ratio_percent: float,
+        max_natr_ratio_percent: float,
     ) -> bool:
         """Confirm a directional reversal using a volatility-adaptive current-candle
-        threshold and (optionally) a backward confirmation chain with geometric decay.
+        threshold and optionally a backward confirmation chain with geometric decay.
 
         Overview
         --------
@@ -1546,13 +1548,33 @@ class QuickAdapterV3(IStrategy):
         decay_ratio: float = self.config.get("reversal_confirmation", {}).get(
             "decay_ratio", QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
         )
+        min_natr_ratio_percent: float = self.config.get(
+            "reversal_confirmation", {}
+        ).get(
+            "min_natr_ratio_percent",
+            QuickAdapterV3.default_reversal_confirmation["min_natr_ratio_percent"],
+        )
+        max_natr_ratio_percent: float = self.config.get(
+            "reversal_confirmation", {}
+        ).get(
+            "max_natr_ratio_percent",
+            QuickAdapterV3.default_reversal_confirmation["max_natr_ratio_percent"],
+        )
         if (
             trade.trade_direction == "short"
             and last_candle.get("do_predict") == 1
             and last_candle.get("DI_catch") == 1
             and last_candle.get(EXTREMA_COLUMN) < last_candle.get("minima_threshold")
             and self.reversal_confirmed(
-                df, pair, "long", "exit", current_rate, lookback_period, decay_ratio
+                df,
+                pair,
+                "long",
+                "exit",
+                current_rate,
+                lookback_period,
+                decay_ratio,
+                min_natr_ratio_percent,
+                max_natr_ratio_percent,
             )
         ):
             return "minima_detected_short"
@@ -1562,7 +1584,15 @@ class QuickAdapterV3(IStrategy):
             and last_candle.get("DI_catch") == 1
             and last_candle.get(EXTREMA_COLUMN) > last_candle.get("maxima_threshold")
             and self.reversal_confirmed(
-                df, pair, "short", "exit", current_rate, lookback_period, decay_ratio
+                df,
+                pair,
+                "short",
+                "exit",
+                current_rate,
+                lookback_period,
+                decay_ratio,
+                min_natr_ratio_percent,
+                max_natr_ratio_percent,
             )
         ):
             return "maxima_detected_long"
@@ -1701,6 +1731,14 @@ class QuickAdapterV3(IStrategy):
             self.config.get("reversal_confirmation", {}).get(
                 "decay_ratio",
                 QuickAdapterV3.default_reversal_confirmation["decay_ratio"],
+            ),
+            self.config.get("reversal_confirmation", {}).get(
+                "min_natr_ratio_percent",
+                QuickAdapterV3.default_reversal_confirmation["min_natr_ratio_percent"],
+            ),
+            self.config.get("reversal_confirmation", {}).get(
+                "max_natr_ratio_percent",
+                QuickAdapterV3.default_reversal_confirmation["max_natr_ratio_percent"],
             ),
         ):
             return True
