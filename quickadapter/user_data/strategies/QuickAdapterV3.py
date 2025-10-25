@@ -98,7 +98,7 @@ class QuickAdapterV3(IStrategy):
     default_reversal_confirmation: dict[str, int | float] = {
         "lookback_period": 0,
         "decay_ratio": 0.5,
-        "min_natr_ratio_percent": 0.009,
+        "min_natr_ratio_percent": 0.0099,
         "max_natr_ratio_percent": 0.035,
     }
 
@@ -1233,8 +1233,16 @@ class QuickAdapterV3(IStrategy):
             return False
         if order not in {"entry", "exit"}:
             return False
-
         trade_direction = side
+        if (
+            min_natr_ratio_percent < 0.0
+            or max_natr_ratio_percent < min_natr_ratio_percent
+        ):
+            logger.warning(
+                f"User denied {trade_direction} {order} for {pair}: invalid natr_ratio_percent range "
+                f"min={format_number(min_natr_ratio_percent)}, max={format_number(max_natr_ratio_percent)}"
+            )
+            return False
 
         if not isinstance(lookback_period, int):
             logger.info(
