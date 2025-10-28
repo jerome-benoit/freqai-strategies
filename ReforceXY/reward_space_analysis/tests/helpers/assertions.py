@@ -453,3 +453,202 @@ def assert_hold_penalty_threshold_behavior(
                 test_case.assertLessEqual(breakdown.hold_penalty, 0.0)
             else:
                 test_case.assertLess(breakdown.hold_penalty, 0.0)
+
+
+# ---------------- New helper additions for validation & invariance refactors ---------------- #
+
+
+def build_validation_case(
+    param_updates: Dict[str, Any],
+    strict: bool,
+    expect_error: bool = False,
+    expected_reason_substrings: Sequence[str] | None = None,
+) -> Dict[str, Any]:
+    """Build a structured validation test case descriptor.
+
+    Fields:
+    - params: dict of parameter updates
+    - strict: strict flag
+    - expect_error: whether validate should raise
+    - expected_reason_substrings: substrings expected in adjustments reasons (relaxed mode)
+    """
+    return {
+        "params": param_updates,
+        "strict": strict,
+        "expect_error": expect_error,
+        "expected_reason_substrings": list(expected_reason_substrings or []),
+    }
+
+
+def execute_validation_batch(test_case, cases: Sequence[Dict[str, Any]], validate_fn):
+    """Execute a batch of validation cases against `validate_reward_parameters`.
+
+    Each case dict produced by build_validation_case.
+    Strict cases expecting errors assert raises; relaxed cases collect adjustments.
+    """
+    for idx, case in enumerate(cases):
+        with test_case.subTest(
+            case_index=idx, strict=case["strict"], expect_error=case["expect_error"]
+        ):
+            params = case["params"].copy()
+            strict_flag = case["strict"]
+            if strict_flag and case["expect_error"]:
+                test_case.assertRaises(Exception, validate_fn, params, True)
+                continue
+            result = validate_fn(params, strict=strict_flag)
+            if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], dict):
+                sanitized, adjustments = result
+            else:
+                sanitized, adjustments = result, {}
+            # relaxed reason substrings
+            for substr in case.get("expected_reason_substrings", []):
+                # search across all adjustment reasons
+                found = any(substr in adj.get("reason", "") for adj in adjustments.values())
+                test_case.assertTrue(
+                    found, f"Expected substring '{substr}' in some adjustment reason"
+                )
+            # basic sanity: sanitized returns a dict
+            test_case.assertIsInstance(sanitized, dict)
+
+
+def assert_adjustment_reason_contains(
+    test_case, adjustments: Dict[str, Dict[str, Any]], key: str, expected_substrings: Sequence[str]
+):
+    """Assert all expected substrings appear in adjustments[key]['reason'] (order-independent)."""
+    test_case.assertIn(key, adjustments, f"Adjustment key '{key}' missing")
+    reason = adjustments[key].get("reason", "")
+    for sub in expected_substrings:
+        test_case.assertIn(sub, reason, f"Missing substring '{sub}' in reason for key '{key}'")
+
+
+def run_strict_validation_failure_cases(
+    test_case, failure_params_list: Sequence[Dict[str, Any]], validate_fn
+):
+    """Run multiple strict validation failure cases asserting ValueError raised."""
+    for params in failure_params_list:
+        with test_case.subTest(params=params):
+            test_case.assertRaises(ValueError, validate_fn, params, True)
+
+
+def run_relaxed_validation_adjustment_cases(
+    test_case,
+    relaxed_cases: Sequence[Tuple[Dict[str, Any], Sequence[str]]],
+    validate_fn,
+):
+    """Run relaxed validation cases asserting adjustment reasons contain substrings.
+
+    Each tuple: (params, expected_reason_substrings)
+    """
+    for params, substrings in relaxed_cases:
+        with test_case.subTest(params=params):
+            sanitized, adjustments = validate_fn(params, strict=False)
+            test_case.assertIsInstance(sanitized, dict)
+            test_case.assertIsInstance(adjustments, dict)
+            # aggregate reasons
+            all_reasons = ",".join(adj.get("reason", "") for adj in adjustments.values())
+            for s in substrings:
+                test_case.assertIn(
+                    s, all_reasons, f"Expected '{s}' in aggregated adjustment reasons"
+                )
+
+
+def assert_exit_factor_invariant_suite(
+    test_case, suite_cases: Sequence[Dict[str, Any]], exit_factor_fn
+):
+    """Assert exit factor invariants across a suite of scenarios.
+
+    Each case dict keys:
+    - base_factor, pnl, pnl_factor, duration_ratio, params
+    - expectation: 'non_negative', 'safe_zero', 'clamped'
+    - tolerance (optional)
+    """
+    for i, case in enumerate(suite_cases):
+        with test_case.subTest(exit_case=i, expectation=case.get("expectation")):
+            f_val = exit_factor_fn(
+                case["base_factor"],
+                case["pnl"],
+                case["pnl_factor"],
+                case["duration_ratio"],
+                case["params"],
+            )
+            exp = case.get("expectation")
+            if exp == "safe_zero":
+                test_case.assertEqual(f_val, 0.0)
+            elif exp == "non_negative":
+                test_case.assertGreaterEqual(f_val, -case.get("tolerance", 0.0))
+            elif exp == "clamped":
+                test_case.assertGreaterEqual(f_val, 0.0)
+            else:
+                test_case.fail(f"Unknown expectation '{exp}' in exit factor suite case")
+
+
+def assert_exit_factor_kernel_fallback(
+    test_case,
+    exit_factor_fn,
+    base_factor: float,
+    pnl: float,
+    pnl_factor: float,
+    duration_ratio: float,
+    bad_params: Dict[str, Any],
+    reference_params: Dict[str, Any],
+):
+    """Assert kernel failure path falls back to linear and emits warning via context manager.
+
+    Caller handles monkeypatching prior to invocation. Compares numerical equality within tight rel tolerance.
+    """
+
+    f_bad = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, bad_params)
+    f_ref = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, reference_params)
+    test_case.assertAlmostEqual(f_bad, f_ref, delta=1e-12)
+    test_case.assertGreaterEqual(f_bad, 0.0)
+
+
+def assert_relaxed_multi_reason_aggregation(
+    test_case,
+    validate_fn,
+    params: Dict[str, Any],
+    key_expectations: Dict[str, Sequence[str]],
+):
+    """Assert relaxed validation aggregates multiple reasons for specified keys.
+
+    key_expectations: mapping param_key -> sequence of substrings expected in reason
+    """
+    sanitized, adjustments = validate_fn(params, strict=False)
+    test_case.assertIsInstance(sanitized, dict)
+    for k, subs in key_expectations.items():
+        test_case.assertIn(k, adjustments, f"Missing adjustment for key '{k}'")
+        reason = adjustments[k].get("reason", "")
+        for sub in subs:
+            test_case.assertIn(sub, reason, f"Expected substring '{sub}' in reason for key '{k}'")
+        test_case.assertEqual(adjustments[k].get("validation_mode"), "relaxed")
+
+
+def assert_pbrs_invariance_report_classification(
+    test_case, content: str, expected_status: str, expect_additives: bool
+):
+    """Assert PBRS invariance classification line and additive reason presence/absence.
+
+    expected_status: one of ['Canonical', 'Canonical (with warning)', 'Non-canonical']
+    expect_additives: whether additive reasons should appear.
+    """
+    test_case.assertIn(
+        expected_status, content, f"Expected invariance status '{expected_status}' not found"
+    )
+    if expect_additives:
+        test_case.assertRegex(
+            content, r"additives=\['entry', 'exit'\]|additives=\['exit', 'entry'\]"
+        )
+    else:
+        test_case.assertNotRegex(content, r"additives=\[")
+
+
+def assert_pbrs_canonical_sum_within_tolerance(test_case, total_shaping: float, tolerance: float):
+    """Assert canonical cumulative shaping within tolerance (absolute magnitude)."""
+    test_case.assertLess(abs(total_shaping), tolerance)
+
+
+def assert_non_canonical_shaping_exceeds(
+    test_case, total_shaping: float, tolerance_multiple: float
+):
+    """Assert non-canonical shaping exceeds scaled tolerance threshold."""
+    test_case.assertGreater(abs(total_shaping), tolerance_multiple)

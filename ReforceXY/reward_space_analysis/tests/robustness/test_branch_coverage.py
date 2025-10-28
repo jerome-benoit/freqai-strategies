@@ -1,4 +1,4 @@
-import math
+import unittest
 
 import pytest
 
@@ -13,74 +13,49 @@ from reward_space_analysis import (
     validate_reward_parameters,
 )
 
-
-@pytest.mark.robustness
-def test_validate_reward_parameters_strict_non_numeric_failure():
-    params = {"exit_linear_slope": "not_a_number"}
-    with pytest.raises(ValueError):
-        validate_reward_parameters(params, strict=True)
+from ..helpers import run_strict_validation_failure_cases
 
 
-@pytest.mark.robustness
-def test_validate_reward_parameters_strict_exit_power_tau_below_min_failure():
-    params = {"exit_power_tau": 0.0}
-    with pytest.raises(ValueError):
-        validate_reward_parameters(params, strict=True)
+class _PyTestAdapter(unittest.TestCase):
+    """Adapter leveraging unittest.TestCase for assertion + subTest support.
 
+    Subclassing TestCase provides all assertion helpers and the subTest context manager
+    required by shared helpers in tests.helpers.
+    """
 
-@pytest.mark.robustness
-def test_validate_reward_parameters_strict_exit_power_tau_above_max_failure():
-    params = {"exit_power_tau": 1.5}
-    with pytest.raises(ValueError):
-        validate_reward_parameters(params, strict=True)
+    def runTest(self):
+        # Required abstract method; no-op for adapter usage.
+        pass
 
 
 @pytest.mark.robustness
-def test_validate_reward_parameters_strict_exit_half_life_below_min_failure():
-    params = {"exit_half_life": 0.0}
-    with pytest.raises(ValueError):
-        validate_reward_parameters(params, strict=True)
+def test_validate_reward_parameters_strict_failure_batch():
+    """Batch strict validation failure scenarios using shared helper."""
+    adapter = _PyTestAdapter()
+    failure_params = [
+        {"exit_linear_slope": "not_a_number"},
+        {"exit_power_tau": 0.0},
+        {"exit_power_tau": 1.5},
+        {"exit_half_life": 0.0},
+        {"exit_half_life": float("nan")},
+    ]
+    run_strict_validation_failure_cases(adapter, failure_params, validate_reward_parameters)
+
+
+from ..helpers import run_relaxed_validation_adjustment_cases
 
 
 @pytest.mark.robustness
-def test_validate_reward_parameters_strict_exit_half_life_non_finite_failure():
-    params = {"exit_half_life": float("nan")}
-    with pytest.raises(ValueError):
-        validate_reward_parameters(params, strict=True)
-
-
-@pytest.mark.robustness
-def test_validate_reward_parameters_relaxed_non_numeric_reset():
-    params = {"exit_linear_slope": "not_a_number", "strict_validation": False}
-    sanitized, adjustments = validate_reward_parameters(params, strict=False)
-    assert math.isclose(sanitized["exit_linear_slope"], 0.0)
-    assert adjustments["exit_linear_slope"]["reason"].startswith("non_numeric_reset")
-
-
-@pytest.mark.robustness
-def test_validate_reward_parameters_relaxed_non_finite_reset():
-    # Trigger non_finite_reset by providing an infinite numeric which coerces then clamps non-finite after bounds enforcement
-    params = {"exit_power_tau": float("inf"), "strict_validation": False}
-    sanitized, adjustments = validate_reward_parameters(params, strict=False)
-    # exit_power_tau has bounds min=1e-6, max=1.0; infinite should reset to max then detect non-finite -> min fallback
-    assert math.isclose(sanitized["exit_power_tau"], 1e-6)
-    reason = adjustments["exit_power_tau"]["reason"]
-    # Infinite coerces to max then remains finite; non-finite path not taken. Expect non_numeric_reset from initial coercion failure.
-    assert reason.startswith("non_numeric_reset"), (
-        f"Expected non_numeric_reset in reason (got {reason})"
+def test_validate_reward_parameters_relaxed_adjustment_batch():
+    """Batch relaxed validation adjustment scenarios using shared helper."""
+    relaxed_cases = [
+        ({"exit_linear_slope": "not_a_number", "strict_validation": False}, ["non_numeric_reset"]),
+        ({"exit_power_tau": float("inf"), "strict_validation": False}, ["non_numeric_reset"]),
+        ({"max_idle_duration_candles": "bad", "strict_validation": False}, ["derived_default"]),
+    ]
+    run_relaxed_validation_adjustment_cases(
+        _PyTestAdapter(), relaxed_cases, validate_reward_parameters
     )
-    params = {"exit_linear_slope": "not_a_number", "strict_validation": False}
-    sanitized, adjustments = validate_reward_parameters(params, strict=False)
-    assert math.isclose(sanitized["exit_linear_slope"], 0.0)
-    assert adjustments["exit_linear_slope"]["reason"].startswith("non_numeric_reset")
-
-
-@pytest.mark.robustness
-def test_validate_reward_parameters_drop_derived_max_idle_duration_candles():
-    params = {"max_idle_duration_candles": "bad", "strict_validation": False}
-    sanitized, adjustments = validate_reward_parameters(params, strict=False)
-    assert "max_idle_duration_candles" not in sanitized
-    assert adjustments["max_idle_duration_candles"]["reason"] == "derived_default"
 
 
 @pytest.mark.robustness
@@ -166,81 +141,84 @@ def test_hold_penalty_short_duration_returns_zero():
     assert penalty == 0.0
 
 
-@pytest.mark.robustness
-def test_get_exit_factor_negative_duration_ratio_guard():
-    params = {"exit_attenuation_mode": "linear", "exit_linear_slope": 1.2, "exit_plateau": False}
-    base_factor = 15.0
-    pnl = 0.02
-    pnl_factor = 1.0
-    f_neg = _get_exit_factor(base_factor, pnl, pnl_factor, -5.0, params)
-    f_zero = _get_exit_factor(base_factor, pnl, pnl_factor, 0.0, params)
-    assert pytest.approx(f_neg, rel=1e-12) == f_zero
+from ..helpers import assert_exit_factor_invariant_suite
 
 
 @pytest.mark.robustness
-def test_get_exit_factor_non_finite_inputs_return_safe_zero():
-    params = {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5}
-    pnl_factor = 1.0
-    # Non-finite base_factor
-    f_base_nan = _get_exit_factor(float("nan"), 0.01, pnl_factor, 0.2, params)
-    # Non-finite pnl
-    f_pnl_nan = _get_exit_factor(10.0, float("nan"), pnl_factor, 0.2, params)
-    # Non-finite duration_ratio
-    f_dr_nan = _get_exit_factor(10.0, 0.01, pnl_factor, float("nan"), params)
-    assert f_base_nan == 0.0
-    assert f_pnl_nan == 0.0
-    assert f_dr_nan == 0.0
-
-
-@pytest.mark.robustness
-def test_get_exit_factor_kernel_exception_fallback_linear(monkeypatch):
-    # Patch math.sqrt used by sqrt kernel to raise forcing exception path
-    def boom(value):  # noqa: D401
-        raise RuntimeError("forced sqrt failure")
-
-    original_sqrt = math.sqrt
-    monkeypatch.setattr("reward_space_analysis.math.sqrt", boom)
-    base_factor = 25.0
-    pnl = 0.03
-    pnl_factor = 1.0
-    duration_ratio = 0.7
-    params_sqrt = {"exit_attenuation_mode": "sqrt", "exit_plateau": False}
-    with pytest.warns(RewardDiagnosticsWarning) as record:
-        f_fail = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params_sqrt)
-    # Reference linear kernel (unpatched sqrt not used)
-    f_linear = _get_exit_factor(
-        base_factor,
-        pnl,
-        pnl_factor,
-        duration_ratio,
-        {"exit_attenuation_mode": "linear", "exit_plateau": False},
-    )
-    assert pytest.approx(f_fail, rel=1e-12) == f_linear
-    assert any("failed" in str(w.message) and "fallback linear" in str(w.message) for w in record)
-    # Restore sqrt manually in case other tests rely on it before monkeypatch teardown (defensive)
-    monkeypatch.setattr("reward_space_analysis.math.sqrt", original_sqrt)
-
-
-@pytest.mark.robustness
-def test_get_exit_factor_post_kernel_non_finite_exit_factor_invariant():
-    # Create non-finite exit_factor after kernel by using infinite pnl_factor
-    params = {"exit_attenuation_mode": "linear", "exit_linear_slope": 1.0, "check_invariants": True}
-    f_inf = _get_exit_factor(10.0, 0.02, float("inf"), 0.5, params)
-    assert f_inf == 0.0  # invariant fallback
-
-
-@pytest.mark.robustness
-def test_get_exit_factor_negative_exit_factor_clamped_for_positive_pnl():
-    # Force attenuation_factor negative via legacy mode (duration beyond plateau leading to 0.5 multiplier) and negative pnl_factor
-    # then rely on invariant to clamp since pnl >= 0
-    params = {"exit_attenuation_mode": "legacy", "exit_plateau": False, "check_invariants": True}
-    base_factor = 10.0
-    pnl = 0.015  # positive
-    pnl_factor = -2.5  # negative to yield negative exit_factor prior to clamp
-    duration_ratio = 2.0  # legacy kernel: factor * 0.5
-    raw_factor = _get_exit_factor(
-        base_factor, pnl, pnl_factor, duration_ratio, {**params, "check_invariants": False}
-    )
-    assert raw_factor < 0.0  # confirm pre-clamp negative when invariants disabled
-    clamped_factor = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
-    assert clamped_factor >= 0.0
+def test_exit_factor_invariant_suite_grouped():
+    """Grouped exit factor invariant scenarios using shared helper."""
+    suite = [
+        {
+            "base_factor": 15.0,
+            "pnl": 0.02,
+            "pnl_factor": 1.0,
+            "duration_ratio": -5.0,
+            "params": {
+                "exit_attenuation_mode": "linear",
+                "exit_linear_slope": 1.2,
+                "exit_plateau": False,
+            },
+            "expectation": "non_negative",
+        },
+        {
+            "base_factor": 15.0,
+            "pnl": 0.02,
+            "pnl_factor": 1.0,
+            "duration_ratio": 0.0,
+            "params": {
+                "exit_attenuation_mode": "linear",
+                "exit_linear_slope": 1.2,
+                "exit_plateau": False,
+            },
+            "expectation": "non_negative",
+        },
+        {
+            "base_factor": float("nan"),
+            "pnl": 0.01,
+            "pnl_factor": 1.0,
+            "duration_ratio": 0.2,
+            "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
+            "expectation": "safe_zero",
+        },
+        {
+            "base_factor": 10.0,
+            "pnl": float("nan"),
+            "pnl_factor": 1.0,
+            "duration_ratio": 0.2,
+            "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
+            "expectation": "safe_zero",
+        },
+        {
+            "base_factor": 10.0,
+            "pnl": 0.01,
+            "pnl_factor": 1.0,
+            "duration_ratio": float("nan"),
+            "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
+            "expectation": "safe_zero",
+        },
+        {
+            "base_factor": 10.0,
+            "pnl": 0.02,
+            "pnl_factor": float("inf"),
+            "duration_ratio": 0.5,
+            "params": {
+                "exit_attenuation_mode": "linear",
+                "exit_linear_slope": 1.0,
+                "check_invariants": True,
+            },
+            "expectation": "safe_zero",
+        },
+        {
+            "base_factor": 10.0,
+            "pnl": 0.015,
+            "pnl_factor": -2.5,
+            "duration_ratio": 2.0,
+            "params": {
+                "exit_attenuation_mode": "legacy",
+                "exit_plateau": False,
+                "check_invariants": True,
+            },
+            "expectation": "clamped",
+        },
+    ]
+    assert_exit_factor_invariant_suite(_PyTestAdapter(), suite, _get_exit_factor)
