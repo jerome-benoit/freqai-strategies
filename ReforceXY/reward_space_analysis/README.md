@@ -452,34 +452,98 @@ done
 
 ## Testing
 
-### Run Tests
+The test suite enforces reward-space invariants, component mathematics, PBRS invariance, robustness under extremes, CLI behaviors, and statistical correctness. It is organized by taxonomy directories with single ownership per invariant (see `tests/TEST_COVERAGE_MAP.md`).
 
+### Taxonomy Directories & Markers
+
+| Directory | Marker | Scope |
+|-----------|--------|-------|
+| `components/` | `components` | Core reward component math & transforms |
+| `transforms/` | `transforms` | Transform function behavior (bounds, monotonicity) |
+| `robustness/` | `robustness` | Edge cases, extreme parameter stability, progression |
+| `api/` | `api` | Public API helpers & parsing |
+| `cli/` | `cli` | Command-line parameter propagation & output artifacts |
+| `pbrs/` | `pbrs` | Potential-based shaping invariance & mode differences |
+| `statistics/` | `statistics` | Statistical metrics, hypothesis tests, bootstrap |
+| `integration/` | `integration` | Cross-component smoke scenarios & report formatting |
+| `helpers/` | (none) | Pure helper utilities (e.g. data loading) |
+
+Markers are declared in `pyproject.toml` and enforced with `--strict-markers`.
+
+### Running Tests
+
+Full suite (with coverage enforcement ≥85%):
 ```shell
-uv run pytest -q
+uv run pytest
 ```
 
-### Coverage
-
+Selective runs by marker:
 ```shell
-uv run pytest -q --cov=. --cov-report=term-missing
-uv run pytest -q --cov=. --cov-report=html # open htmlcov/index.html
+uv run pytest -m components -q
+uv run pytest -m robustness -q
+uv run pytest -m cli -q
+uv run pytest -m pbrs -q
+uv run pytest -m integration -q
+uv run pytest -m statistics -q  # may be slower
 ```
+Combine markers (OR semantics):
+```shell
+uv run pytest -m "components or robustness" -q
+```
+Exclude slow tests:
+```shell
+uv run pytest -m "not slow" -q
+```
+
+### Coverage Reports
+
+Terminal (already enforced):
+```shell
+uv run pytest --cov=reward_space_analysis --cov-report=term-missing
+```
+HTML report:
+```shell
+uv run pytest --cov=reward_space_analysis --cov-report=html && open htmlcov/index.html
+```
+
+### Duplication Audit
+
+Each invariant ID must appear in exactly one taxonomy directory. Before committing structural changes:
+```shell
+cd ReforceXY/reward_space_analysis/tests
+# Examples from guidance section in TEST_COVERAGE_MAP.md
+grep -R "duration_threshold_behavior" -n .
+grep -R "long_short_symmetry" -n .
+grep -R "component_sum_integrity" -n .
+```
+No pattern should return multiple taxonomy directory paths.
+
+### Parity & Migration Rationale
+
+The refactor preserved semantic coverage while removing redundant detailed assertions from the integration suite. High-level smoke tests remain in `integration/` for activation and symmetry; detailed mathematics moved to `components/` and `robustness/`. Added directories `cli/` and split helpers to isolate data loading logic. Invariants `report-abs-shaping-line-091`, `report-additives-deterministic-092`, and CLI propagation/encoding IDs (093–095) have single, explicit ownership after relocation.
 
 ### When to Run Tests
 
-- After modifying reward logic
-- Before important analyses
-- When results seem unexpected
-- After updating dependencies or Python version
-- When contributing new features (aim for >80% coverage on new code)
+- After modifying any reward component or PBRS logic
+- After changing CLI argument parsing or output structure
+- Before publishing analytical results reliant on invariants
+- After dependency or Python version upgrades
+- Prior to submitting a change proposal implementation summary
 
-### Focused Test Sets
+### Adding New Invariants
 
+1. Assign a new stable ID using `<category>-<shortname>-NNN`.
+2. Add row to `TEST_COVERAGE_MAP.md` before writing the test.
+3. Implement test in the correct taxonomy directory and (optionally) apply marker with `@pytest.mark.<marker>` if outside auto-directory selection.
+4. Run duplication audit and coverage.
+
+### Slow Statistical Tests
+
+If execution time grows, tag long-running bootstrap / distribution tests with `@pytest.mark.slow` and run them selectively:
 ```shell
-uv run pytest -q test_reward_space_analysis.py::TestIntegration
-uv run pytest -q test_reward_space_analysis.py::TestStatisticalCoherence
-uv run pytest -q test_reward_space_analysis.py::TestRewardAlignment
+uv run pytest -m "statistics and slow" -q
 ```
+
 
 ---
 

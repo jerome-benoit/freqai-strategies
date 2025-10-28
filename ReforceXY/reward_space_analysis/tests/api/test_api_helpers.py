@@ -5,13 +5,16 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from reward_space_analysis import (
     Actions,
     Positions,
+    RewardParams,
     _get_bool_param,
     _get_float_param,
     _get_int_param,
@@ -23,7 +26,9 @@ from reward_space_analysis import (
     write_complete_statistical_analysis,
 )
 
-from .test_base import RewardSpaceTestBase
+from ..test_base import RewardSpaceTestBase
+
+pytestmark = pytest.mark.api  # taxonomy classification
 
 
 class TestAPIAndHelpers(RewardSpaceTestBase):
@@ -175,6 +180,38 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertTrue(math.isnan(val_str))
         self.assertEqual(_get_float_param(params, "missing", 3.14), 3.14)
 
+    def test_get_float_param_edge_cases(self):
+        """Robust coercion edge cases for _get_float_param.
+
+        Enumerates:
+        - None -> NaN
+        - bool True/False -> 1.0/0.0
+        - empty string -> NaN
+        - invalid string literal -> NaN
+        - numeric strings (integer, float, scientific, whitespace) -> parsed float
+        - non-finite float (inf, -inf) -> NaN
+        - np.nan -> NaN
+        - unsupported container type -> NaN
+        """
+        self.assertTrue(math.isnan(_get_float_param({"k": None}, "k", 0.0)))
+        self.assertEqual(_get_float_param({"k": True}, "k", 0.0), 1.0)
+        self.assertEqual(_get_float_param({"k": False}, "k", 1.0), 0.0)
+        self.assertTrue(math.isnan(_get_float_param({"k": ""}, "k", 0.0)))
+        self.assertTrue(math.isnan(_get_float_param({"k": "abc"}, "k", 0.0)))
+        self.assertEqual(_get_float_param({"k": "42"}, "k", 0.0), 42.0)
+        self.assertAlmostEqual(
+            _get_float_param({"k": " 17.5 "}, "k", 0.0),
+            17.5,
+            places=6,
+            msg="Whitespace trimmed numeric string should parse",
+        )
+        self.assertEqual(_get_float_param({"k": "1e2"}, "k", 0.0), 100.0)
+        self.assertTrue(math.isnan(_get_float_param({"k": float("inf")}, "k", 0.0)))
+        self.assertTrue(math.isnan(_get_float_param({"k": float("-inf")}, "k", 0.0)))
+        self.assertTrue(math.isnan(_get_float_param({"k": np.nan}, "k", 0.0)))
+        # Unsupported container (list) coerced via cast to suppress type checker complaints
+        self.assertTrue(math.isnan(_get_float_param(cast(RewardParams, {"k": cast(Any, [1, 2, 3])}), "k", 0.0)))
+
     def test_get_str_param(self):
         """Test string parameter extraction."""
         params = {"test_str": "hello", "test_int": 2}
@@ -192,7 +229,19 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertFalse(_get_bool_param(params, "missing", False))
 
     def test_get_int_param_coercions(self):
-        """Robust coercion paths of _get_int_param (bool/int/float/str/None/unsupported)."""
+        """Robust coercion paths of _get_int_param (bool/int/float/str/None/unsupported).
+
+        This test intentionally enumerates edge coercion semantics:
+        - None returns default (numeric default or 0 if non-numeric fallback provided)
+        - bool maps via int(True)=1 / int(False)=0
+        - float truncates toward zero (positive and negative)
+        - NaN/inf treated as invalid -> default
+        - numeric-like strings parsed (including scientific notation, whitespace strip, float truncation)
+        - empty/invalid/NaN strings fall back to default
+        - unsupported container types fall back to default
+        - missing key with non-numeric default coerces to 0
+        Ensures downstream reward parameter normalization logic has consistent integer handling regardless of input source.
+        """
         self.assertEqual(_get_int_param({"k": None}, "k", 5), 5)
         self.assertEqual(_get_int_param({"k": None}, "k", "x"), 0)
         self.assertEqual(_get_int_param({"k": True}, "k", 0), 1)
@@ -209,7 +258,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertEqual(_get_int_param({"k": ""}, "k", 5), 5)
         self.assertEqual(_get_int_param({"k": "abc"}, "k", 5), 5)
         self.assertEqual(_get_int_param({"k": "NaN"}, "k", 5), 5)
-        self.assertEqual(_get_int_param({"k": [1, 2, 3]}, "k", 3), 3)
+        self.assertEqual(_get_int_param(cast(RewardParams, {"k": cast(Any, [1, 2, 3])}), "k", 3), 3)
         self.assertEqual(_get_int_param({}, "missing", "zzz"), 0)
 
     def test_argument_parser_construction(self):

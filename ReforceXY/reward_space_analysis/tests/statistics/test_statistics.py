@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Statistical tests, distribution metrics, and bootstrap validation."""
-
 import unittest
+import warnings
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from reward_space_analysis import (
     bootstrap_confidence_intervals,
@@ -14,11 +15,77 @@ from reward_space_analysis import (
     statistical_hypothesis_tests,
 )
 
-from .test_base import RewardSpaceTestBase
+from ..test_base import RewardSpaceTestBase
+
+pytestmark = pytest.mark.statistics
 
 
 class TestStatistics(RewardSpaceTestBase):
     """Statistical tests: metrics, diagnostics, bootstrap, correlations."""
+
+    def test_stats_feature_analysis_skip_partial_dependence(self):
+        """Invariant 107: skip_partial_dependence=True yields empty partial_deps."""
+        try:
+            from reward_space_analysis import _perform_feature_analysis  # type: ignore
+        except ImportError:
+            self.skipTest("sklearn not available; skipping feature analysis invariance test")
+        # Use existing helper to get synthetic stats df (small for speed)
+        df = self.make_stats_df(n=120, seed=self.SEED, idle_pattern="mixed")
+        importance_df, analysis_stats, partial_deps, model = _perform_feature_analysis(
+            df, seed=self.SEED, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
+        )
+        self.assertIsInstance(importance_df, pd.DataFrame)
+        self.assertIsInstance(analysis_stats, dict)
+        self.assertEqual(partial_deps, {}, "partial_deps must be empty when skip_partial_dependence=True")
+
+    def test_stats_binned_stats_invalid_bins_raises(self):
+        """Invariant 110: _binned_stats must raise ValueError for <2 bin edges."""
+        from reward_space_analysis import _binned_stats  # type: ignore
+        df = self.make_stats_df(n=50, seed=self.SEED)
+        with self.assertRaises(ValueError):
+            _binned_stats(df, "idle_duration", "reward_idle", [0.0])  # single edge invalid
+        # Control: valid case should not raise and produce frame
+        result = _binned_stats(df, "idle_duration", "reward_idle", [0.0, 10.0, 20.0])
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertGreaterEqual(len(result), 1)
+
+    def test_stats_correlation_dropped_constant_columns(self):
+        """Invariant 111: constant columns are listed in correlation_dropped and excluded."""
+        from reward_space_analysis import _compute_relationship_stats  # type: ignore
+        df = self.make_stats_df(n=90, seed=self.SEED)
+        # Force some columns constant
+        df.loc[:, "reward_hold"] = 0.0
+        df.loc[:, "idle_duration"] = 5.0
+        stats_rel = _compute_relationship_stats(df)
+        dropped = stats_rel["correlation_dropped"]
+        self.assertIn("reward_hold", dropped)
+        self.assertIn("idle_duration", dropped)
+        corr = stats_rel["correlation"]
+        self.assertIsInstance(corr, pd.DataFrame)
+        self.assertNotIn("reward_hold", corr.columns)
+        self.assertNotIn("idle_duration", corr.columns)
+
+    def test_stats_distribution_shift_metrics_degenerate_zero(self):
+        """Invariant 112: degenerate distributions yield zero shift metrics and KS p=1.0."""
+        # Build two identical constant distributions (length >=10)
+        n = 40
+        df_const = pd.DataFrame(
+            {
+                "pnl": np.zeros(n),
+                "trade_duration": np.ones(n) * 7.0,
+                "idle_duration": np.ones(n) * 3.0,
+            }
+        )
+        metrics = compute_distribution_shift_metrics(df_const, df_const.copy())
+        # Each feature should have zero metrics and ks_pvalue=1.0
+        for feature in ["pnl", "trade_duration", "idle_duration"]:
+            for suffix in ["kl_divergence", "js_distance", "wasserstein", "ks_statistic"]:
+                key = f"{feature}_{suffix}"
+                if key in metrics:
+                    self.assertPlacesEqual(float(metrics[key]), 0.0, places=12, msg=f"Expected 0 for {key}")
+            p_key = f"{feature}_ks_pvalue"
+            if p_key in metrics:
+                self.assertPlacesEqual(float(metrics[p_key]), 1.0, places=12, msg=f"Expected 1.0 for {p_key}")
 
     def _make_idle_variance_df(self, n: int = 100) -> pd.DataFrame:
         """Synthetic dataframe focusing on idle_duration ↔ reward_idle correlation."""
@@ -109,6 +176,34 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertGreater(
                     negative_ratio, 0.5, "Most idle rewards should be negative (penalties)"
                 )
+
+    def test_stats_distribution_constant_fallback_diagnostics(self):
+        """Invariant 115: constant distribution triggers fallback diagnostics (zero moments, qq_r2=1.0)."""
+        # Build constant reward/pnl columns to force degenerate stats
+        n = 60
+        df_const = pd.DataFrame({
+            "reward": np.zeros(n),
+            "reward_idle": np.zeros(n),
+            "reward_hold": np.zeros(n),
+            "pnl": np.zeros(n),
+            "pnl_raw": np.zeros(n),
+        })
+        diagnostics = distribution_diagnostics(df_const)
+        # Mean and std for constant arrays
+        for key in ["reward_mean", "reward_std", "pnl_mean", "pnl_std"]:
+            if key in diagnostics:
+                self.assertAlmostEqualFloat(float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED)
+        # Skewness & kurtosis fallback to INTERNAL_GUARDS['distribution_constant_fallback_moment'] (0.0)
+        for key in ["reward_skewness", "reward_kurtosis", "pnl_skewness", "pnl_kurtosis"]:
+            if key in diagnostics:
+                self.assertAlmostEqualFloat(float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED)
+        # Q-Q plot r2 fallback value
+        qq_key = next((k for k in diagnostics if k.endswith("_qq_r2")), None)
+        if qq_key is not None:
+            self.assertAlmostEqualFloat(float(diagnostics[qq_key]), 1.0, tolerance=self.TOL_IDENTITY_RELAXED)
+        # All diagnostic values finite
+        for k, v in diagnostics.items():
+            self.assertFinite(v, name=k)
 
     def test_stats_distribution_diagnostics(self):
         """Distribution diagnostics."""
@@ -413,20 +508,44 @@ class TestStatistics(RewardSpaceTestBase):
         self.assertFinite(hw_large, name="hw_large")
         self.assertLess(hw_large, hw_small * 0.55)
 
-    def test_stats_bootstrap_constant_distribution_and_diagnostics(self):
-        """Bootstrap on degenerate columns produce (mean≈lo≈hi) zero-width intervals."""
+    def test_stats_bootstrap_constant_distribution_widening(self):
+        """Invariant 113 (non-strict): constant distribution CI widened with warning (positive epsilon width)."""
+        from reward_space_analysis import RewardDiagnosticsWarning  # type: ignore
         df = self._const_df(80)
-        res = bootstrap_confidence_intervals(
-            df, ["reward", "pnl"], n_bootstrap=200, confidence_level=0.95
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RewardDiagnosticsWarning)
+            res = bootstrap_confidence_intervals(
+                df, ["reward", "pnl"], n_bootstrap=200, confidence_level=0.95, strict_diagnostics=False
+            )
+        diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
+        self.assertTrue(
+            diag_warnings,
+            "Expected RewardDiagnosticsWarning for degenerate bootstrap CI widening",
         )
         for _metric, (mean, lo, hi) in res.items():
-            self.assertAlmostEqualFloat(mean, lo, tolerance=2e-09)
-            self.assertAlmostEqualFloat(mean, hi, tolerance=2e-09)
-            self.assertLessEqual(hi - lo, 2e-09)
-            if "effect_size_rank_biserial" in res:
-                rb = res["effect_size_rank_biserial"]
-                self.assertFinite(rb)
-                self.assertWithin(rb, -1, 1, name="rank_biserial")
+            self.assertLess(
+                lo,
+                hi,
+                "Degenerate CI should be widened (lo < hi) under non-strict diagnostics",
+            )
+            width = hi - lo
+            self.assertGreater(width, 0.0)
+            self.assertLessEqual(width, 3e-09, "Width should be small epsilon range (<=3e-9)")
+            # Mean should be centered (approx) within widened bounds
+            self.assertGreaterEqual(mean, lo)
+            self.assertLessEqual(mean, hi)
+
+    def test_stats_bootstrap_constant_distribution_strict_diagnostics(self):
+        """Invariant 113 (strict): constant distribution metrics are omitted (no widened CI returned)."""
+        df = self._const_df(60)
+        res = bootstrap_confidence_intervals(
+            df, ["reward", "pnl"], n_bootstrap=150, confidence_level=0.95, strict_diagnostics=True
+        )
+        # Strict mode should omit constant metrics entirely
+        self.assertTrue(
+            all(m not in res for m in ["reward", "pnl"]),
+            f"Strict diagnostics should omit constant metrics; got keys: {list(res.keys())}",
+        )
 
 
 if __name__ == "__main__":

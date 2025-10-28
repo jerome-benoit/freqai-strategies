@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Integration tests for CLI interface and reproducibility."""
-
 import json
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 
-from .test_base import RewardSpaceTestBase
+import pytest
+
+from ..test_base import RewardSpaceTestBase
+
+pytestmark = pytest.mark.integration
 
 
 class TestIntegration(RewardSpaceTestBase):
@@ -16,8 +19,10 @@ class TestIntegration(RewardSpaceTestBase):
     def test_cli_execution_produces_expected_files(self):
         """CLI produces expected files."""
         cmd = [
+            "uv",
+            "run",
             sys.executable,
-            "reward_space_analysis.py",
+            str(Path(__file__).parent.parent.parent / "reward_space_analysis.py"),
             "--num_samples",
             str(self.TEST_SAMPLES),
             "--seed",
@@ -45,8 +50,10 @@ class TestIntegration(RewardSpaceTestBase):
     def test_manifest_structure_and_reproducibility(self):
         """Manifest structure + reproducibility."""
         cmd1 = [
+            "uv",
+            "run",
             sys.executable,
-            "reward_space_analysis.py",
+            str(Path(__file__).parent.parent.parent / "reward_space_analysis.py"),
             "--num_samples",
             str(self.TEST_SAMPLES),
             "--seed",
@@ -55,8 +62,10 @@ class TestIntegration(RewardSpaceTestBase):
             str(self.output_path / "run1"),
         ]
         cmd2 = [
+            "uv",
+            "run",
             sys.executable,
-            "reward_space_analysis.py",
+            str(Path(__file__).parent.parent.parent / "reward_space_analysis.py"),
             "--num_samples",
             str(self.TEST_SAMPLES),
             "--seed",

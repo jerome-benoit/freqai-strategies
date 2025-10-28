@@ -91,12 +91,12 @@ _WARN_HEADER_RE = re.compile(r"^\s*(?:[A-Za-z]+Warning|WARNING)\b:?", re.IGNOREC
 
 
 def _is_warning_header(line: str) -> bool:
-    l = line.strip()
-    if not l:
+    line_str = line.strip()
+    if not line_str:
         return False
-    if "warnings.warn" in l.lower():
+    if "warnings.warn" in line_str.lower():
         return False
-    return bool(_WARN_HEADER_RE.search(l))
+    return bool(_WARN_HEADER_RE.search(line_str))
 
 
 def build_arg_matrix(

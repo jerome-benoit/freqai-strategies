@@ -6,12 +6,12 @@ authors = [
     {name = "Jerome Benoit", email = "jerome.benoit@piment-noir.org"}
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "pandas",
     "scikit-learn",
-    "scipy",
+    "scipy==1.16.2",
     "pytest",
 ]
 
@@ -40,6 +40,17 @@ python_classes = [
 python_functions = [
     "test_*"
 ]
+markers = [
+    "components: component-level reward computations",
+    "transforms: transform logic within components",
+    "robustness: stress and edge-case behavior",
+    "api: public API surface and helpers",
+    "cli: command-line interface behaviors",
+    "statistics: statistical aggregation and metrics",
+    "pbrs: potential-based reward shaping specifics",
+    "integration: cross-module integration scenarios",
+    "slow: resource-intensive or long-running tests"
+]
 
 # Logging configuration
 log_cli = true
@@ -53,7 +64,9 @@ addopts = [
     "--tb=short",
     "--strict-markers",
     "--disable-warnings",
-    "--color=yes"
+    "--color=yes",
+    "--cov=reward_space_analysis",
+    "--cov-fail-under=85"
 ]
 
 [tool.ruff]
