@@ -1,13 +1,13 @@
 import math
+
 import numpy as np
-import pytest
 
 from reward_space_analysis import (
-    _get_bool_param,
-    _get_float_param,
     Actions,
     Positions,
     RewardContext,
+    _get_bool_param,
+    _get_float_param,
     calculate_reward,
 )
 

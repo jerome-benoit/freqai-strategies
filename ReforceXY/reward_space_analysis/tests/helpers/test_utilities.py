@@ -6,6 +6,7 @@ Moved tests:
 - Additives deterministic contribution -> components/test_additives.py
 - CLI CSV + params propagation -> cli/test_cli_params_and_csv.py
 """
+
 import pickle
 import unittest
 import warnings
@@ -41,7 +42,9 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         self.assertEqual(len(loaded), 2, "Expected duplicate row removal to reduce length")
         msgs = [str(warning.message) for warning in w]
         dup_msgs = [m for m in msgs if "duplicate transition" in m]
-        self.assertTrue(any("Removed" in m for m in dup_msgs), f"No duplicate removal warning found in: {msgs}")
+        self.assertTrue(
+            any("Removed" in m for m in dup_msgs), f"No duplicate removal warning found in: {msgs}"
+        )
 
     def test_missing_multiple_required_columns_single_warning(self):
         """Invariant 109: enforce_columns=False fills all missing required cols with NaN and single warning."""
@@ -60,7 +63,9 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
             self.assertTrue(loaded[col].isna().all(), f"Column {col} should be all NaN")
         msgs = [str(warning.message) for warning in w]
         miss_msgs = [m for m in msgs if "missing columns" in m]
-        self.assertEqual(len(miss_msgs), 1, f"Expected single missing columns warning (got {miss_msgs})")
+        self.assertEqual(
+            len(miss_msgs), 1, f"Expected single missing columns warning (got {miss_msgs})"
+        )
 
     def write_pickle(self, obj, path: Path):
         with path.open("wb") as f:

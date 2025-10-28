@@ -209,8 +209,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertTrue(math.isnan(_get_float_param({"k": float("inf")}, "k", 0.0)))
         self.assertTrue(math.isnan(_get_float_param({"k": float("-inf")}, "k", 0.0)))
         self.assertTrue(math.isnan(_get_float_param({"k": np.nan}, "k", 0.0)))
-        # Unsupported container (list) coerced via cast to suppress type checker complaints
-        self.assertTrue(math.isnan(_get_float_param(cast(RewardParams, {"k": cast(Any, [1, 2, 3])}), "k", 0.0)))
+        self.assertTrue(
+            math.isnan(_get_float_param(cast(RewardParams, {"k": cast(Any, [1, 2, 3])}), "k", 0.0))
+        )
 
     def test_get_str_param(self):
         """Test string parameter extraction."""

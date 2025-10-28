@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for Potential-Based Reward Shaping (PBRS) mechanics."""
+
 import unittest
 
 import numpy as np
@@ -358,8 +359,8 @@ class TestPBRS(RewardSpaceTestBase):
         params_relaxed.update(
             {
                 "potential_gamma": "not-a-number",  # triggers non_numeric_reset (relaxed)
-                "hold_potential_scale": "-5.0",     # numeric_coerce then min clamp
-                "max_idle_duration_candles": "nan", # derived_default removal
+                "hold_potential_scale": "-5.0",  # numeric_coerce then min clamp
+                "max_idle_duration_candles": "nan",  # derived_default removal
             }
         )
         sanitized, adjustments = validate_reward_parameters(params_relaxed, strict=False)
@@ -368,6 +369,7 @@ class TestPBRS(RewardSpaceTestBase):
         adj_pg = adjustments["potential_gamma"]
         self.assertEqual(adj_pg["validation_mode"], "relaxed")
         self.assertIn("non_numeric_reset", adj_pg["reason"])
+
         # Safe numeric coercion helper for sanitized params avoiding direct float(...) on None/str
         def _safe_num(key: str, default: float = 0.0) -> float:
             raw = sanitized.get(key, default)
@@ -377,6 +379,7 @@ class TestPBRS(RewardSpaceTestBase):
                 return float(raw)
             except Exception:
                 return default
+
         pg_val = _safe_num("potential_gamma", 0.0)
         self.assertGreaterEqual(pg_val, 0.0)
         self.assertLessEqual(pg_val, 1.0)
@@ -533,11 +536,14 @@ class TestPBRS(RewardSpaceTestBase):
             potential_gamma=0.91,
         )
         import pandas as pd
+
         original_sum = pd.DataFrame.sum
+
         def boom(self, *args, **kwargs):  # noqa: D401
             if isinstance(self, pd.DataFrame) and "reward_shaping" in self.columns:
                 raise RuntimeError("forced drift correction failure")
             return original_sum(self, *args, **kwargs)
+
         pd.DataFrame.sum = boom
         try:
             df_exc = simulate_samples(
@@ -612,7 +618,9 @@ class TestPBRS(RewardSpaceTestBase):
         total_can = float(df_can["reward_shaping"].sum())
         total_non = float(df_non["reward_shaping"].sum())
         self.assertLess(abs(total_can), abs(total_non) + self.TOL_IDENTITY_RELAXED)
-        self.assertLess(abs(total_can), PBRS_INVARIANCE_TOL, f"Drift correction insufficient (Σ={total_can})")
+        self.assertLess(
+            abs(total_can), PBRS_INVARIANCE_TOL, f"Drift correction insufficient (Σ={total_can})"
+        )
         invariant_mask = df_can["pbrs_invariant"]
         if bool(getattr(invariant_mask, "any", lambda: False)()):
             corrected_values = df_can.loc[invariant_mask, "reward_shaping"].to_numpy()
@@ -864,7 +872,9 @@ class TestPBRS(RewardSpaceTestBase):
             r"\| Invariance Status \| ✅ Canonical \|",
         )
         self.assertIn(
-            "Theoretical invariance preserved", content, "Expected theoretical invariance note missing"
+            "Theoretical invariance preserved",
+            content,
+            "Expected theoretical invariance note missing",
         )
         # Six-decimal fixed-point formatting for raw sum (should round to 0.000000)
         self.assertRegex(content, r"\| Σ Shaping Reward \| 0\.000000 \|")
@@ -874,7 +884,6 @@ class TestPBRS(RewardSpaceTestBase):
         if m_abs:
             val_abs = float(m_abs.group(1))
             self.assertAlmostEqual(abs(total_shaping), val_abs, places=12)
-
 
     def test_pbrs_canonical_warning_report(self):
         """Invariant: canonical mode + no additives but |Σ shaping| > PBRS_INVARIANCE_TOL -> ⚠️ Canonical (with warning).
@@ -941,7 +950,9 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn(expected_sum_fragment, content)
         # Regex to ensure table line present
         m_status = re.search(r"\| Invariance Status \| ⚠️ Canonical \(with warning\) \|", content)
-        self.assertIsNotNone(m_status, "Invariance Status line missing or misformatted for warning state")
+        self.assertIsNotNone(
+            m_status, "Invariance Status line missing or misformatted for warning state"
+        )
 
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
         """Full report generation: Non-canonical classification aggregates mode and additive reasons.
@@ -997,7 +1008,9 @@ class TestPBRS(RewardSpaceTestBase):
             bootstrap_resamples=25,
         )
         report_path = out_dir / "statistical_analysis.md"
-        self.assertTrue(report_path.exists(), "Report file missing for non-canonical full report test")
+        self.assertTrue(
+            report_path.exists(), "Report file missing for non-canonical full report test"
+        )
         content = report_path.read_text(encoding="utf-8")
         # Invariance Status line should indicate Non-canonical classification
         self.assertIn("❌ Non-canonical", content)
@@ -1062,12 +1075,16 @@ class TestPBRS(RewardSpaceTestBase):
             bootstrap_resamples=25,
         )
         report_path = out_dir / "statistical_analysis.md"
-        self.assertTrue(report_path.exists(), "Report file missing for non-canonical mode-only reason test")
+        self.assertTrue(
+            report_path.exists(), "Report file missing for non-canonical mode-only reason test"
+        )
         content = report_path.read_text(encoding="utf-8")
         # Status should indicate Non-canonical classification
         self.assertIn("❌ Non-canonical", content)
         m_status = re.search(r"\| Invariance Status \| ❌ Non-canonical \|", content)
-        self.assertIsNotNone(m_status, "Invariance Status line missing for non-canonical mode-only state")
+        self.assertIsNotNone(
+            m_status, "Invariance Status line missing for non-canonical mode-only state"
+        )
         # Reasons should include only exit_potential_mode and exclude additives list
         self.assertIn("exit_potential_mode='retain_previous'", content)
         self.assertNotRegex(content, r"additives=\[")
@@ -1096,10 +1113,12 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward": rng.normal(0.05, 0.02, n),
                 # Provide enough non-zero idle rewards to exceed idle_mask.sum() >= 30 threshold.
                 # Half zeros, half small negatives to simulate penalties.
-                "reward_idle": np.concatenate([
-                    rng.normal(-0.01, 0.003, n // 2),
-                    np.zeros(n - n // 2),
-                ]),
+                "reward_idle": np.concatenate(
+                    [
+                        rng.normal(-0.01, 0.003, n // 2),
+                        np.zeros(n - n // 2),
+                    ]
+                ),
                 "reward_hold": rng.normal(0.0, 0.01, n),
                 "reward_exit": rng.normal(0.04, 0.015, n),
                 # Mix positive and negative pnl to potentially trigger pnl_sign_reward_difference test
@@ -1119,13 +1138,16 @@ class TestPBRS(RewardSpaceTestBase):
         out_dir = self.output_path / "pbrs_absence_and_shift_placeholder"
         # Monkeypatch summary stats to bypass references to missing PBRS columns.
         import reward_space_analysis as rsa
+
         original_compute_summary_stats = rsa._compute_summary_stats
+
         # Provide minimal structures matching write_complete_statistical_analysis expectations.
         # component_share: Series with index components (empty acceptable)
         # action_summary: DataFrame indexed by action with required stats columns
         # component_bounds: DataFrame with component_min/component_mean/component_max
         def _minimal_summary_stats(_df):
             import pandas as _pd
+
             comp_share = _pd.Series([], dtype=float)
             action_summary = _pd.DataFrame(
                 columns=["count", "mean", "std", "min", "max"],
@@ -1142,6 +1164,7 @@ class TestPBRS(RewardSpaceTestBase):
                 "component_share": comp_share,
                 "component_bounds": component_bounds,
             }
+
         rsa._compute_summary_stats = _minimal_summary_stats
         try:
             write_complete_statistical_analysis(
@@ -1176,10 +1199,13 @@ class TestPBRS(RewardSpaceTestBase):
 
         base = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
         base["max_trade_duration_candles"] = 64  # explicit trade duration
-        base["max_idle_duration_candles"] = 0    # force fallback
+        base["max_idle_duration_candles"] = 0  # force fallback
         result = get_max_idle_duration_candles(base)
         expected = DEFAULT_IDLE_DURATION_MULTIPLIER * 64
-        self.assertEqual(result, expected, f"Expected fallback {expected} for mid<=0 (got {result})")
+        self.assertEqual(
+            result, expected, f"Expected fallback {expected} for mid<=0 (got {result})"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

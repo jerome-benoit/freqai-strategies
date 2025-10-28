@@ -363,7 +363,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pytest" },
     { name = "scikit-learn" },
-    { name = "scipy", specifier = "==1.16.2" },
+    { name = "scipy" },
 ]
 
 [package.metadata.requires-dev]

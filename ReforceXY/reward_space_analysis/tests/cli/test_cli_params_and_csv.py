@@ -3,6 +3,7 @@
 
 Split out from helpers/test_utilities.py to align with taxonomy refactor.
 """
+
 import json
 import subprocess
 import sys
@@ -69,58 +70,110 @@ class TestParamsPropagation(RewardSpaceTestBase):
         """CLI run with --skip_feature_analysis should mark feature importance skipped in summary and omit feature_importance.csv."""
         out_dir = self.output_path / "skip_feature_analysis"
         cmd = [
-            "uv","run",sys.executable,str(SCRIPT_PATH),"--num_samples","200","--seed",str(self.SEED),"--out_dir",str(out_dir),"--skip_feature_analysis"
+            "uv",
+            "run",
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--num_samples",
+            "200",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
+            "--skip_feature_analysis",
         ]
-        result = subprocess.run(cmd,capture_output=True,text=True,cwd=Path(__file__).parent.parent)
-        self.assertEqual(result.returncode,0,f"CLI failed: {result.stderr}")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        )
+        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
         report_path = out_dir / "statistical_analysis.md"
-        self.assertTrue(report_path.exists(),"Missing statistical_analysis.md")
+        self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
         content = report_path.read_text(encoding="utf-8")
-        self.assertIn("Feature Importance - (skipped)",content)
+        self.assertIn("Feature Importance - (skipped)", content)
         fi_path = out_dir / "feature_importance.csv"
-        self.assertFalse(fi_path.exists(),"feature_importance.csv should be absent when skipped")
+        self.assertFalse(fi_path.exists(), "feature_importance.csv should be absent when skipped")
 
     def test_manifest_params_hash_generation(self):
         """Ensure params_hash appears when non-default simulation params differ (risk_reward_ratio altered)."""
         out_dir = self.output_path / "manifest_hash"
         cmd = [
-            "uv","run",sys.executable,str(SCRIPT_PATH),"--num_samples","150","--seed",str(self.SEED),"--out_dir",str(out_dir),"--risk_reward_ratio","1.5"
+            "uv",
+            "run",
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--num_samples",
+            "150",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
+            "--risk_reward_ratio",
+            "1.5",
         ]
-        result = subprocess.run(cmd,capture_output=True,text=True,cwd=Path(__file__).parent.parent)
-        self.assertEqual(result.returncode,0,f"CLI failed: {result.stderr}")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        )
+        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
         manifest_path = out_dir / "manifest.json"
-        self.assertTrue(manifest_path.exists(),"Missing manifest.json")
+        self.assertTrue(manifest_path.exists(), "Missing manifest.json")
         manifest = json.loads(manifest_path.read_text())
-        self.assertIn("params_hash",manifest,"params_hash should be present when params differ")
-        self.assertIn("simulation_params",manifest)
-        self.assertIn("risk_reward_ratio",manifest["simulation_params"])
+        self.assertIn("params_hash", manifest, "params_hash should be present when params differ")
+        self.assertIn("simulation_params", manifest)
+        self.assertIn("risk_reward_ratio", manifest["simulation_params"])
 
     def test_pbrs_invariance_section_present(self):
         """When reward_shaping column exists, summary should include PBRS invariance section."""
         out_dir = self.output_path / "pbrs_invariance"
         # Use small sample for speed; rely on default shaping logic
         cmd = [
-            "uv","run",sys.executable,str(SCRIPT_PATH),"--num_samples","180","--seed",str(self.SEED),"--out_dir",str(out_dir)
+            "uv",
+            "run",
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--num_samples",
+            "180",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
         ]
-        result = subprocess.run(cmd,capture_output=True,text=True,cwd=Path(__file__).parent.parent)
-        self.assertEqual(result.returncode,0,f"CLI failed: {result.stderr}")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        )
+        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
         report_path = out_dir / "statistical_analysis.md"
-        self.assertTrue(report_path.exists(),"Missing statistical_analysis.md")
+        self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
         content = report_path.read_text(encoding="utf-8")
         # Section numbering includes PBRS invariance line 7
-        self.assertIn("PBRS Invariance",content)
+        self.assertIn("PBRS Invariance", content)
 
     def test_strict_diagnostics_constant_distribution_raises(self):
         """Run with --strict_diagnostics and very low num_samples to increase chance of constant columns; expect success but can parse diagnostics without fallback replacements."""
         out_dir = self.output_path / "strict_diagnostics"
         cmd = [
-            "uv","run",sys.executable,str(SCRIPT_PATH),"--num_samples","120","--seed",str(self.SEED),"--out_dir",str(out_dir),"--strict_diagnostics"
+            "uv",
+            "run",
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--num_samples",
+            "120",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
+            "--strict_diagnostics",
         ]
-        result = subprocess.run(cmd,capture_output=True,text=True,cwd=Path(__file__).parent.parent)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        )
         # Should not raise; if constant distributions occur they should assert before graceful fallback paths, exercising assertion branches.
-        self.assertEqual(result.returncode,0,f"CLI failed (expected pass): {result.stderr}\nSTDOUT:\n{result.stdout[:500]}")
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"CLI failed (expected pass): {result.stderr}\nSTDOUT:\n{result.stdout[:500]}",
+        )
         report_path = out_dir / "statistical_analysis.md"
-        self.assertTrue(report_path.exists(),"Missing statistical_analysis.md")
+        self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
 
     """Integration tests to validate max_trade_duration_candles propagation via CLI params and dynamic flag."""
 

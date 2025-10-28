@@ -3,6 +3,7 @@
 
 Owns invariant: report-abs-shaping-line-091 (integration category)
 """
+
 import re
 import unittest
 
@@ -42,7 +43,9 @@ class TestReportFormatting(RewardSpaceTestBase):
         self.assertNotIn("### 5.4 Distribution Shift Analysis", content)
         self.assertNotIn("_Not performed (no real episodes provided)._", content)
 
-    def _write_report(self, df: pd.DataFrame, *, real_df: pd.DataFrame | None = None, **kwargs) -> str:
+    def _write_report(
+        self, df: pd.DataFrame, *, real_df: pd.DataFrame | None = None, **kwargs
+    ) -> str:
         """Helper: invoke write_complete_statistical_analysis into temp dir and return content."""
         out_dir = self.output_path / "report_tmp"
         # Ensure required columns present (action required for summary stats)
@@ -116,17 +119,24 @@ class TestReportFormatting(RewardSpaceTestBase):
         content = self._write_report(synth_df, real_df=real_df)
         # Assert metrics header and at least one feature row
         self.assertIn("### 5.4 Distribution Shift Analysis", content)
-        self.assertIn("| Feature | KL Div | JS Dist | Wasserstein | KS Stat | KS p-value |", content)
+        self.assertIn(
+            "| Feature | KL Div | JS Dist | Wasserstein | KS Stat | KS p-value |", content
+        )
         # Ensure placeholder text absent
         self.assertNotIn("_Not performed (no real episodes provided)._", content)
         # Basic regex to find a feature row (pnl)
         import re as _re
+
         m = _re.search(r"\| pnl \| ([0-9]+\.[0-9]{4}) \| ([0-9]+\.[0-9]{4}) \|", content)
-        self.assertIsNotNone(m, "pnl feature row missing or misformatted in distribution shift table")
+        self.assertIsNotNone(
+            m, "pnl feature row missing or misformatted in distribution shift table"
+        )
 
     def test_partial_dependence_redundancy_note_emitted(self):
         """Redundancy note appears when both feature analysis and partial dependence skipped."""
-        df = self.make_stats_df(n=10, seed=321)  # small but >=4 so skip_feature_analysis flag drives behavior
+        df = self.make_stats_df(
+            n=10, seed=321
+        )  # small but >=4 so skip_feature_analysis flag drives behavior
         content = self._write_report(
             df,
             real_df=None,
@@ -141,7 +151,6 @@ class TestReportFormatting(RewardSpaceTestBase):
         self.assertIn("Feature Importance - (skipped)", content)
         # Ensure no partial dependence plots line for success path appears
         self.assertNotIn("partial_dependence_*.csv", content)
-
 
 
 if __name__ == "__main__":

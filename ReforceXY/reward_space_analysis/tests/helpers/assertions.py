@@ -3,6 +3,7 @@
 These functions centralize common numeric and behavioral checks to enforce
 single invariant ownership and reduce duplication across taxonomy modules.
 """
+
 from typing import Any, Dict, List, Sequence, Tuple
 
 
@@ -27,14 +28,23 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-
-def assert_monotonic_nonincreasing(test_case, values: Sequence[float], tolerance: float = 0.0, msg: str = "Values should be non-increasing"):
+def assert_monotonic_nonincreasing(
+    test_case,
+    values: Sequence[float],
+    tolerance: float = 0.0,
+    msg: str = "Values should be non-increasing",
+):
     """Assert that each subsequent value is <= previous (non-increasing)."""
     for i in range(1, len(values)):
         test_case.assertLessEqual(values[i], values[i - 1] + tolerance, msg)
 
 
-def assert_monotonic_nonnegative(test_case, values: Sequence[float], tolerance: float = 0.0, msg: str = "Values should be non-negative"):
+def assert_monotonic_nonnegative(
+    test_case,
+    values: Sequence[float],
+    tolerance: float = 0.0,
+    msg: str = "Values should be non-negative",
+):
     """Assert all values are >= 0."""
     for v in values:
         test_case.assertGreaterEqual(v + tolerance, 0.0, msg)
@@ -46,29 +56,53 @@ def assert_finite(test_case, values: Sequence[float], msg: str = "Values must be
         test_case.assertTrue((v == v) and (v not in (float("inf"), float("-inf"))), msg)
 
 
-def assert_almost_equal_list(test_case, values: Sequence[float], target: float, delta: float, msg: str = "Values should be near target"):
+def assert_almost_equal_list(
+    test_case,
+    values: Sequence[float],
+    target: float,
+    delta: float,
+    msg: str = "Values should be near target",
+):
     """Assert each value is within delta of target."""
     for v in values:
         test_case.assertAlmostEqual(v, target, delta=delta, msg=msg)
 
 
-def assert_trend(test_case, values: Sequence[float], trend: str, tolerance: float, msg_prefix: str = "Trend validation failed"):
+def assert_trend(
+    test_case,
+    values: Sequence[float],
+    trend: str,
+    tolerance: float,
+    msg_prefix: str = "Trend validation failed",
+):
     """Generic trend assertion for increasing/decreasing/constant sequences."""
     if trend not in {"increasing", "decreasing", "constant"}:
         raise ValueError(f"Unsupported trend '{trend}'")
     if trend == "increasing":
         for i in range(1, len(values)):
-            test_case.assertGreaterEqual(values[i], values[i - 1] - tolerance, f"{msg_prefix}: expected increasing")
+            test_case.assertGreaterEqual(
+                values[i], values[i - 1] - tolerance, f"{msg_prefix}: expected increasing"
+            )
     elif trend == "decreasing":
         for i in range(1, len(values)):
-            test_case.assertLessEqual(values[i], values[i - 1] + tolerance, f"{msg_prefix}: expected decreasing")
+            test_case.assertLessEqual(
+                values[i], values[i - 1] + tolerance, f"{msg_prefix}: expected decreasing"
+            )
     else:  # constant
         base = values[0]
         for v in values[1:]:
-            test_case.assertAlmostEqual(v, base, delta=tolerance, msg=f"{msg_prefix}: expected constant")
+            test_case.assertAlmostEqual(
+                v, base, delta=tolerance, msg=f"{msg_prefix}: expected constant"
+            )
 
 
-def assert_component_sum_integrity(test_case, breakdown, tolerance_relaxed, exclude_components=None, component_description="components"):
+def assert_component_sum_integrity(
+    test_case,
+    breakdown,
+    tolerance_relaxed,
+    exclude_components=None,
+    component_description="components",
+):
     if exclude_components is None:
         exclude_components = []
     component_sum = 0.0
@@ -86,10 +120,20 @@ def assert_component_sum_integrity(test_case, breakdown, tolerance_relaxed, excl
         component_sum += breakdown.entry_additive
     if "exit_additive" not in exclude_components:
         component_sum += breakdown.exit_additive
-    test_case.assertAlmostEqual(breakdown.total, component_sum, delta=tolerance_relaxed, msg=f"Total should equal sum of {component_description}")
+    test_case.assertAlmostEqual(
+        breakdown.total,
+        component_sum,
+        delta=tolerance_relaxed,
+        msg=f"Total should equal sum of {component_description}",
+    )
 
 
-def assert_progressive_scaling_behavior(test_case, penalties_list: Sequence[float], durations: Sequence[int], penalty_type: str = "penalty"):
+def assert_progressive_scaling_behavior(
+    test_case,
+    penalties_list: Sequence[float],
+    durations: Sequence[int],
+    penalty_type: str = "penalty",
+):
     """Validate penalty progression patterns consistently."""
     for i in range(1, len(penalties_list)):
         test_case.assertLessEqual(
@@ -99,13 +143,25 @@ def assert_progressive_scaling_behavior(test_case, penalties_list: Sequence[floa
         )
 
 
-def assert_single_active_component(test_case, breakdown, active_name: str, tolerance: float, inactive_core: Sequence[str]):
+def assert_single_active_component(
+    test_case, breakdown, active_name: str, tolerance: float, inactive_core: Sequence[str]
+):
     """Assert only one core component is active; others near zero."""
     for name in inactive_core:
         if name == active_name:
-            test_case.assertAlmostEqual(getattr(breakdown, name), breakdown.total, delta=tolerance, msg=f"Active component {name} should equal total")
+            test_case.assertAlmostEqual(
+                getattr(breakdown, name),
+                breakdown.total,
+                delta=tolerance,
+                msg=f"Active component {name} should equal total",
+            )
         else:
-            test_case.assertAlmostEqual(getattr(breakdown, name), 0.0, delta=tolerance, msg=f"Inactive component {name} should be near zero")
+            test_case.assertAlmostEqual(
+                getattr(breakdown, name),
+                0.0,
+                delta=tolerance,
+                msg=f"Inactive component {name} should be near zero",
+            )
 
 
 def assert_reward_calculation_scenarios(
@@ -118,6 +174,7 @@ def assert_reward_calculation_scenarios(
     tolerance_relaxed: float,
 ):
     from reward_space_analysis import calculate_reward
+
     for context, params, description in scenarios:
         with test_case.subTest(scenario=description):
             breakdown = calculate_reward(
@@ -145,6 +202,7 @@ def assert_parameter_sensitivity_behavior(
     tolerance_relaxed: float,
 ):
     from reward_space_analysis import calculate_reward
+
     results = []
     for param_variation in parameter_variations:
         params = base_params.copy()
@@ -162,17 +220,34 @@ def assert_parameter_sensitivity_behavior(
         results.append(component_value)
     if expected_trend == "increasing":
         for i in range(1, len(results)):
-            test_case.assertGreaterEqual(results[i], results[i - 1] - tolerance_relaxed, f"{component_name} should increase with parameter variations")
+            test_case.assertGreaterEqual(
+                results[i],
+                results[i - 1] - tolerance_relaxed,
+                f"{component_name} should increase with parameter variations",
+            )
     elif expected_trend == "decreasing":
         for i in range(1, len(results)):
-            test_case.assertLessEqual(results[i], results[i - 1] + tolerance_relaxed, f"{component_name} should decrease with parameter variations")
+            test_case.assertLessEqual(
+                results[i],
+                results[i - 1] + tolerance_relaxed,
+                f"{component_name} should decrease with parameter variations",
+            )
     elif expected_trend == "constant":
         baseline = results[0]
         for result in results[1:]:
-            test_case.assertAlmostEqual(result, baseline, delta=tolerance_relaxed, msg=f"{component_name} should remain constant with parameter variations")
+            test_case.assertAlmostEqual(
+                result,
+                baseline,
+                delta=tolerance_relaxed,
+                msg=f"{component_name} should remain constant with parameter variations",
+            )
 
 
-def make_idle_penalty_test_contexts(context_factory_fn, idle_duration_scenarios: Sequence[int], base_context_kwargs: Dict[str, Any] = None):
+def make_idle_penalty_test_contexts(
+    context_factory_fn,
+    idle_duration_scenarios: Sequence[int],
+    base_context_kwargs: Dict[str, Any] = None,
+):
     if base_context_kwargs is None:
         base_context_kwargs = {}
     contexts = []
@@ -197,6 +272,7 @@ def assert_exit_factor_attenuation_modes(
     import numpy as np
 
     from reward_space_analysis import _get_exit_factor
+
     for mode in attenuation_modes:
         with test_case.subTest(mode=mode):
             if mode == "plateau_linear":
@@ -215,15 +291,21 @@ def assert_exit_factor_attenuation_modes(
             else:
                 mode_params = base_params_fn(exit_attenuation_mode="sqrt")
             ratios = np.linspace(0, 2, 15)
-            values = [_get_exit_factor(base_factor, pnl, pnl_factor, r, mode_params) for r in ratios]
+            values = [
+                _get_exit_factor(base_factor, pnl, pnl_factor, r, mode_params) for r in ratios
+            ]
             if mode == "plateau_linear":
                 grace = float(mode_params["exit_plateau_grace"])
-                filtered = [(r, v) for r, v in zip(ratios, values) if r >= grace - tolerance_relaxed]
+                filtered = [
+                    (r, v) for r, v in zip(ratios, values) if r >= grace - tolerance_relaxed
+                ]
                 values_to_check = [v for _, v in filtered]
             else:
                 values_to_check = values
             for earlier, later in zip(values_to_check, values_to_check[1:]):
-                test_case.assertLessEqual(later, earlier + tolerance_relaxed, f"Non-monotonic attenuation in mode={mode}")
+                test_case.assertLessEqual(
+                    later, earlier + tolerance_relaxed, f"Non-monotonic attenuation in mode={mode}"
+                )
 
 
 def assert_exit_mode_mathematical_validation(
@@ -236,6 +318,7 @@ def assert_exit_mode_mathematical_validation(
     tolerance_relaxed: float,
 ):
     from reward_space_analysis import _get_exit_factor, _get_pnl_factor, calculate_reward
+
     duration_ratio = context.trade_duration / 100
     params["exit_attenuation_mode"] = "power"
     params["exit_power_tau"] = 0.5
@@ -262,11 +345,18 @@ def assert_exit_mode_mathematical_validation(
         action_masking=True,
     )
     pnl_factor_hl = _get_pnl_factor(params, context, profit_target, risk_reward_ratio)
-    observed_exit_factor = _get_exit_factor(base_factor, context.pnl, pnl_factor_hl, duration_ratio, params)
+    observed_exit_factor = _get_exit_factor(
+        base_factor, context.pnl, pnl_factor_hl, duration_ratio, params
+    )
     eps_base = 1e-8
     observed_half_life_factor = observed_exit_factor / (base_factor * max(pnl_factor_hl, eps_base))
     expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
-    test_case.assertAlmostEqual(observed_half_life_factor, expected_half_life_factor, delta=tolerance_relaxed, msg="Half-life attenuation mismatch: observed vs expected")
+    test_case.assertAlmostEqual(
+        observed_half_life_factor,
+        expected_half_life_factor,
+        delta=tolerance_relaxed,
+        msg="Half-life attenuation mismatch: observed vs expected",
+    )
     params["exit_attenuation_mode"] = "linear"
     params["exit_linear_slope"] = 1.0
     reward_linear = calculate_reward(
@@ -278,7 +368,11 @@ def assert_exit_mode_mathematical_validation(
         short_allowed=True,
         action_masking=True,
     )
-    rewards = [reward_power.exit_component, reward_half_life.exit_component, reward_linear.exit_component]
+    rewards = [
+        reward_power.exit_component,
+        reward_half_life.exit_component,
+        reward_linear.exit_component,
+    ]
     test_case.assertTrue(all((r > 0 for r in rewards)))
     unique_rewards = set((f"{r:.6f}" for r in rewards))
     test_case.assertGreater(len(unique_rewards), 1)
@@ -293,8 +387,11 @@ def assert_multi_parameter_sensitivity(
     tolerance_relaxed: float,
 ):
     from reward_space_analysis import calculate_reward
+
     for profit_target, risk_reward_ratio, description in parameter_test_cases:
-        with test_case.subTest(profit_target=profit_target, risk_reward_ratio=risk_reward_ratio, desc=description):
+        with test_case.subTest(
+            profit_target=profit_target, risk_reward_ratio=risk_reward_ratio, desc=description
+        ):
             idle_context = context_factory_fn(context_type="idle")
             breakdown = calculate_reward(
                 idle_context,
@@ -336,6 +433,7 @@ def assert_hold_penalty_threshold_behavior(
     tolerance_relaxed: float,
 ):
     from reward_space_analysis import calculate_reward
+
     for trade_duration, description in duration_test_cases:
         with test_case.subTest(duration=trade_duration, desc=description):
             context = context_factory_fn(trade_duration=trade_duration)

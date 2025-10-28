@@ -3,6 +3,7 @@
 
 Owns invariant: report-additives-deterministic-092 (components category)
 """
+
 import unittest
 
 import pytest

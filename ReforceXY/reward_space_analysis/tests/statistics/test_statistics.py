@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Statistical tests, distribution metrics, and bootstrap validation."""
+
 import unittest
 import warnings
 
@@ -36,11 +37,14 @@ class TestStatistics(RewardSpaceTestBase):
         )
         self.assertIsInstance(importance_df, pd.DataFrame)
         self.assertIsInstance(analysis_stats, dict)
-        self.assertEqual(partial_deps, {}, "partial_deps must be empty when skip_partial_dependence=True")
+        self.assertEqual(
+            partial_deps, {}, "partial_deps must be empty when skip_partial_dependence=True"
+        )
 
     def test_stats_binned_stats_invalid_bins_raises(self):
         """Invariant 110: _binned_stats must raise ValueError for <2 bin edges."""
         from reward_space_analysis import _binned_stats  # type: ignore
+
         df = self.make_stats_df(n=50, seed=self.SEED)
         with self.assertRaises(ValueError):
             _binned_stats(df, "idle_duration", "reward_idle", [0.0])  # single edge invalid
@@ -52,6 +56,7 @@ class TestStatistics(RewardSpaceTestBase):
     def test_stats_correlation_dropped_constant_columns(self):
         """Invariant 111: constant columns are listed in correlation_dropped and excluded."""
         from reward_space_analysis import _compute_relationship_stats  # type: ignore
+
         df = self.make_stats_df(n=90, seed=self.SEED)
         # Force some columns constant
         df.loc[:, "reward_hold"] = 0.0
@@ -82,10 +87,14 @@ class TestStatistics(RewardSpaceTestBase):
             for suffix in ["kl_divergence", "js_distance", "wasserstein", "ks_statistic"]:
                 key = f"{feature}_{suffix}"
                 if key in metrics:
-                    self.assertPlacesEqual(float(metrics[key]), 0.0, places=12, msg=f"Expected 0 for {key}")
+                    self.assertPlacesEqual(
+                        float(metrics[key]), 0.0, places=12, msg=f"Expected 0 for {key}"
+                    )
             p_key = f"{feature}_ks_pvalue"
             if p_key in metrics:
-                self.assertPlacesEqual(float(metrics[p_key]), 1.0, places=12, msg=f"Expected 1.0 for {p_key}")
+                self.assertPlacesEqual(
+                    float(metrics[p_key]), 1.0, places=12, msg=f"Expected 1.0 for {p_key}"
+                )
 
     def _make_idle_variance_df(self, n: int = 100) -> pd.DataFrame:
         """Synthetic dataframe focusing on idle_duration ↔ reward_idle correlation."""
@@ -181,26 +190,34 @@ class TestStatistics(RewardSpaceTestBase):
         """Invariant 115: constant distribution triggers fallback diagnostics (zero moments, qq_r2=1.0)."""
         # Build constant reward/pnl columns to force degenerate stats
         n = 60
-        df_const = pd.DataFrame({
-            "reward": np.zeros(n),
-            "reward_idle": np.zeros(n),
-            "reward_hold": np.zeros(n),
-            "pnl": np.zeros(n),
-            "pnl_raw": np.zeros(n),
-        })
+        df_const = pd.DataFrame(
+            {
+                "reward": np.zeros(n),
+                "reward_idle": np.zeros(n),
+                "reward_hold": np.zeros(n),
+                "pnl": np.zeros(n),
+                "pnl_raw": np.zeros(n),
+            }
+        )
         diagnostics = distribution_diagnostics(df_const)
         # Mean and std for constant arrays
         for key in ["reward_mean", "reward_std", "pnl_mean", "pnl_std"]:
             if key in diagnostics:
-                self.assertAlmostEqualFloat(float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED)
+                self.assertAlmostEqualFloat(
+                    float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED
+                )
         # Skewness & kurtosis fallback to INTERNAL_GUARDS['distribution_constant_fallback_moment'] (0.0)
         for key in ["reward_skewness", "reward_kurtosis", "pnl_skewness", "pnl_kurtosis"]:
             if key in diagnostics:
-                self.assertAlmostEqualFloat(float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED)
+                self.assertAlmostEqualFloat(
+                    float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED
+                )
         # Q-Q plot r2 fallback value
         qq_key = next((k for k in diagnostics if k.endswith("_qq_r2")), None)
         if qq_key is not None:
-            self.assertAlmostEqualFloat(float(diagnostics[qq_key]), 1.0, tolerance=self.TOL_IDENTITY_RELAXED)
+            self.assertAlmostEqualFloat(
+                float(diagnostics[qq_key]), 1.0, tolerance=self.TOL_IDENTITY_RELAXED
+            )
         # All diagnostic values finite
         for k, v in diagnostics.items():
             self.assertFinite(v, name=k)
@@ -511,11 +528,16 @@ class TestStatistics(RewardSpaceTestBase):
     def test_stats_bootstrap_constant_distribution_widening(self):
         """Invariant 113 (non-strict): constant distribution CI widened with warning (positive epsilon width)."""
         from reward_space_analysis import RewardDiagnosticsWarning  # type: ignore
+
         df = self._const_df(80)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", RewardDiagnosticsWarning)
             res = bootstrap_confidence_intervals(
-                df, ["reward", "pnl"], n_bootstrap=200, confidence_level=0.95, strict_diagnostics=False
+                df,
+                ["reward", "pnl"],
+                n_bootstrap=200,
+                confidence_level=0.95,
+                strict_diagnostics=False,
             )
         diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
         self.assertTrue(

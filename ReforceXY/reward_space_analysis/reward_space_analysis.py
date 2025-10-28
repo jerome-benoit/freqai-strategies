@@ -1751,9 +1751,7 @@ def _perform_feature_analysis(
 
     # Train/test split
     try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.25, random_state=seed
-        )
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=seed)
     except Exception:
         importance_df = pd.DataFrame(
             {
@@ -1843,7 +1841,9 @@ def _perform_feature_analysis(
     # Partial dependence (optional)
     partial_deps: Dict[str, pd.DataFrame] = {}
     if model is not None and not skip_partial_dependence:
-        for feature in [f for f in ["trade_duration", "idle_duration", "pnl"] if f in X_test.columns]:
+        for feature in [
+            f for f in ["trade_duration", "idle_duration", "pnl"] if f in X_test.columns
+        ]:
             try:
                 pd_result = partial_dependence(
                     model,
@@ -1855,7 +1855,9 @@ def _perform_feature_analysis(
                 value_key = "values" if "values" in pd_result else "grid_values"
                 values = pd_result[value_key][0]
                 averaged = pd_result["average"][0]
-                partial_deps[feature] = pd.DataFrame({feature: values, "partial_dependence": averaged})
+                partial_deps[feature] = pd.DataFrame(
+                    {feature: values, "partial_dependence": averaged}
+                )
             except Exception:
                 continue
 
@@ -1864,9 +1866,7 @@ def _perform_feature_analysis(
         if not importance_df.empty and pd.notna(importance_df.iloc[0]["importance_mean"])
         else (usable_features[0] if usable_features else None)
     )
-    top_importance = (
-        importance_df.iloc[0]["importance_mean"] if not importance_df.empty else np.nan
-    )
+    top_importance = importance_df.iloc[0]["importance_mean"] if not importance_df.empty else np.nan
 
     analysis_stats = {
         "r2_score": r2_local,

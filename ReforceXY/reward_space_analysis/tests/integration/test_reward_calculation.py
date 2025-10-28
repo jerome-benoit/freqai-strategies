@@ -112,7 +112,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     breakdown.total,
                     comp_sum,
                     tolerance=self.TOL_IDENTITY_RELAXED,
-                    msg=f"Total != sum components in {name}"
+                    msg=f"Total != sum components in {name}",
                 )
 
     def test_long_short_symmetry_smoke(self):

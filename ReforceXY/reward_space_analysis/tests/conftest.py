@@ -45,6 +45,7 @@ def assert_hold_penalty_threshold_behavior(
     tolerance_relaxed: float,
 ):
     from .helpers.assertions import assert_hold_penalty_threshold_behavior as _impl
+
     return _impl(
         test_case,
         duration_test_cases,
@@ -66,6 +67,7 @@ def assert_component_sum_integrity(
     component_description: str = "components",
 ):
     from .helpers.assertions import assert_component_sum_integrity as _impl
+
     return _impl(test_case, breakdown, tolerance_relaxed, exclude_components, component_description)
 
 

@@ -20,11 +20,13 @@ def test_validate_reward_parameters_strict_non_numeric_failure():
     with pytest.raises(ValueError):
         validate_reward_parameters(params, strict=True)
 
+
 @pytest.mark.robustness
 def test_validate_reward_parameters_strict_exit_power_tau_below_min_failure():
     params = {"exit_power_tau": 0.0}
     with pytest.raises(ValueError):
         validate_reward_parameters(params, strict=True)
+
 
 @pytest.mark.robustness
 def test_validate_reward_parameters_strict_exit_power_tau_above_max_failure():
@@ -32,11 +34,13 @@ def test_validate_reward_parameters_strict_exit_power_tau_above_max_failure():
     with pytest.raises(ValueError):
         validate_reward_parameters(params, strict=True)
 
+
 @pytest.mark.robustness
 def test_validate_reward_parameters_strict_exit_half_life_below_min_failure():
     params = {"exit_half_life": 0.0}
     with pytest.raises(ValueError):
         validate_reward_parameters(params, strict=True)
+
 
 @pytest.mark.robustness
 def test_validate_reward_parameters_strict_exit_half_life_non_finite_failure():
@@ -62,7 +66,9 @@ def test_validate_reward_parameters_relaxed_non_finite_reset():
     assert math.isclose(sanitized["exit_power_tau"], 1e-6)
     reason = adjustments["exit_power_tau"]["reason"]
     # Infinite coerces to max then remains finite; non-finite path not taken. Expect non_numeric_reset from initial coercion failure.
-    assert reason.startswith("non_numeric_reset"), f"Expected non_numeric_reset in reason (got {reason})"
+    assert reason.startswith("non_numeric_reset"), (
+        f"Expected non_numeric_reset in reason (got {reason})"
+    )
     params = {"exit_linear_slope": "not_a_number", "strict_validation": False}
     sanitized, adjustments = validate_reward_parameters(params, strict=False)
     assert math.isclose(sanitized["exit_linear_slope"], 0.0)
@@ -128,7 +134,11 @@ def test_get_exit_factor_invalid_power_tau_relaxed():
 
 @pytest.mark.robustness
 def test_get_exit_factor_half_life_near_zero_relaxed():
-    params = {"exit_attenuation_mode": "half_life", "exit_half_life": 1e-12, "strict_validation": False}
+    params = {
+        "exit_attenuation_mode": "half_life",
+        "exit_half_life": 1e-12,
+        "strict_validation": False,
+    }
     with pytest.warns(RewardDiagnosticsWarning):
         factor = _get_exit_factor(
             base_factor=5.0,
@@ -198,7 +208,13 @@ def test_get_exit_factor_kernel_exception_fallback_linear(monkeypatch):
     with pytest.warns(RewardDiagnosticsWarning) as record:
         f_fail = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params_sqrt)
     # Reference linear kernel (unpatched sqrt not used)
-    f_linear = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, {"exit_attenuation_mode": "linear", "exit_plateau": False})
+    f_linear = _get_exit_factor(
+        base_factor,
+        pnl,
+        pnl_factor,
+        duration_ratio,
+        {"exit_attenuation_mode": "linear", "exit_plateau": False},
+    )
     assert pytest.approx(f_fail, rel=1e-12) == f_linear
     assert any("failed" in str(w.message) and "fallback linear" in str(w.message) for w in record)
     # Restore sqrt manually in case other tests rely on it before monkeypatch teardown (defensive)
@@ -212,6 +228,7 @@ def test_get_exit_factor_post_kernel_non_finite_exit_factor_invariant():
     f_inf = _get_exit_factor(10.0, 0.02, float("inf"), 0.5, params)
     assert f_inf == 0.0  # invariant fallback
 
+
 @pytest.mark.robustness
 def test_get_exit_factor_negative_exit_factor_clamped_for_positive_pnl():
     # Force attenuation_factor negative via legacy mode (duration beyond plateau leading to 0.5 multiplier) and negative pnl_factor
@@ -221,7 +238,9 @@ def test_get_exit_factor_negative_exit_factor_clamped_for_positive_pnl():
     pnl = 0.015  # positive
     pnl_factor = -2.5  # negative to yield negative exit_factor prior to clamp
     duration_ratio = 2.0  # legacy kernel: factor * 0.5
-    raw_factor = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, {**params, "check_invariants": False})
+    raw_factor = _get_exit_factor(
+        base_factor, pnl, pnl_factor, duration_ratio, {**params, "check_invariants": False}
+    )
     assert raw_factor < 0.0  # confirm pre-clamp negative when invariants disabled
     clamped_factor = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
     assert clamped_factor >= 0.0
