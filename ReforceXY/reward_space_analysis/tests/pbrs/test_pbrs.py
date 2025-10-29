@@ -444,6 +444,7 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Drift correction invariants (simulate_samples) ---------------- #
 
+    # Owns invariant: pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_zero_sum(self):
         """Invariant 106: canonical mode enforces near zero-sum shaping (drift correction)."""
         params = self.base_params(
@@ -470,6 +471,7 @@ class TestPBRS(RewardSpaceTestBase):
         flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(flags, {True}, f"Unexpected invariance flags canonical: {flags}")
 
+    # Owns invariant (extension path): pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_exception_fallback(self):
         """Invariant 106 (extension): exception path graceful fallback."""
         params = self.base_params(
@@ -511,6 +513,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue("reward_shaping" in df_exc.columns)
         self.assertIn("reward_shaping", df_exc.columns)
 
+    # Owns invariant (comparison path): pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_uniform_offset(self):
         """Canonical drift correction reduces Σ shaping below tolerance vs non-canonical."""
         params_can = self.base_params(
@@ -588,6 +591,7 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Report classification / formatting ---------------- #
 
+    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101), robustness/test_robustness.py:125 (robustness-exit-pnl-only-117)
     def test_pbrs_non_canonical_report_generation(self):
         """Synthetic invariance section: Non-canonical classification formatting."""
         import re
@@ -738,6 +742,8 @@ class TestPBRS(RewardSpaceTestBase):
             f"Expected non-zero Σ shaping (got {shaping_sum})",
         )
 
+    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    # Owns invariant: pbrs-canonical-near-zero-report-116
     def test_pbrs_canonical_near_zero_report(self):
         """Invariant 116: canonical near-zero cumulative shaping classified in full report."""
         import re
@@ -802,6 +808,7 @@ class TestPBRS(RewardSpaceTestBase):
             val_abs = float(m_abs.group(1))
             self.assertAlmostEqual(abs(total_shaping), val_abs, places=12)
 
+    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     def test_pbrs_canonical_warning_report(self):
         """Canonical mode + no additives but |Σ shaping| > tolerance -> warning classification."""
         import pandas as pd
@@ -855,6 +862,7 @@ class TestPBRS(RewardSpaceTestBase):
         expected_sum_fragment = f"{total_shaping:.6f}"
         self.assertIn(expected_sum_fragment, content)
 
+    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
         """Full report: Non-canonical classification aggregates mode + additives reasons."""
         import pandas as pd
@@ -909,6 +917,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertIn("exit_potential_mode='progressive_release'", content)
 
+    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     def test_pbrs_non_canonical_mode_only_reason(self):
         """Non-canonical exit mode with additives disabled -> reason excludes additive list."""
         import pandas as pd

@@ -450,7 +450,15 @@ done
 
 ---
 
-## Testing
+## Testing (Overview)
+
+Detailed test documentation moved to `tests/README.md`.
+Ownership table: `tests/TEST_COVERAGE_MAP.md`.
+Run full suite: `uv run pytest`.
+Selective markers example: `uv run pytest -m pbrs -q`.
+Coverage: `uv run pytest --cov=reward_space_analysis --cov-report=term-missing`.
+Smoke policy & invariant workflow: see tests README.
+
 
 The test suite enforces reward-space invariants, component mathematics, PBRS invariance, robustness under extremes, CLI behaviors, and statistical correctness. It is organized by taxonomy directories with single ownership per invariant (see `tests/TEST_COVERAGE_MAP.md`).
 
@@ -536,6 +544,27 @@ The refactor preserved semantic coverage while removing redundant detailed asser
 2. Add row to `TEST_COVERAGE_MAP.md` before writing the test.
 3. Implement test in the correct taxonomy directory and (optionally) apply marker with `@pytest.mark.<marker>` if outside auto-directory selection.
 4. Run duplication audit and coverage.
+
+#### Existing Ownership Examples
+
+- `robustness-decomposition-integrity-101` owned by `tests/robustness/test_robustness.py:35` (single active component decomposition). Referenced non-owning in PBRS report classification smoke tests.
+- `robustness-unknown-exit-mode-fallback-102` owned by `tests/robustness/test_robustness.py:520` (unknown `exit_attenuation_mode` warns + linear fallback). No other directory asserts unknown-mode fallback mechanics.
+- `robustness-negative-plateau-grace-clamp-103` owned by `tests/robustness/test_robustness.py:549` (negative `exit_plateau_grace` warning + clamp to 0.0). Single point of ownership; do not replicate clamp logic in integration smoke tests.
+- `robustness-invalid-power-tau-alpha-one-104` owned by `tests/robustness/test_robustness.py:585` (invalid `exit_power_tau` warns, alpha=1 fallback). Ownership restricted to robustness; other tests may only observe downstream attenuation values, never re-assert fallback computation.
+- `robustness-near-zero-half-life-flat-factor-105` owned by `tests/robustness/test_robustness.py:612` (near-zero `exit_half_life` warning + no attenuation). Non-owning tests may format report but cannot duplicate near-zero fallback verification.
+- `pbrs-canonical-drift-correction-106` owned by `tests/pbrs/test_pbrs.py:448` with extension fallback at line 474 sharing same ID (graceful failure path). Both lines constitute ownership (primary + extension) — do not duplicate elsewhere.
+- `pbrs-canonical-near-zero-report-116` owned by `tests/pbrs/test_pbrs.py:742` (full report classification for near-zero shaping sum). Non-owning smoke references may assert formatting but not classification logic.
+- `robustness-exit-pnl-only-117` owned by `tests/robustness/test_robustness.py:125` (PnL appears only in exit actions). Referenced in PBRS report smoke tests.
+
+#### Non-Owning Smoke Policy
+
+Tests that reference invariant outcomes or formatting without asserting the underlying mathematical logic must include a leading comment:
+```
+# Non-owning smoke; ownership: <owning file> [,(optional) second owning file]
+```
+Multiple invariants may be listed if the smoke test renders a combined report section. Line ranges for these smoke tests are tracked in the `Non-Owning Smoke / Reference Checks` table of `TEST_COVERAGE_MAP.md`.
+
+Do not add IDs to smoke tests; IDs live only in owning test(s) and the coverage map. Smoke tests should avoid reproducing detailed calculations already owned elsewhere.
 
 ### Slow Statistical Tests
 
