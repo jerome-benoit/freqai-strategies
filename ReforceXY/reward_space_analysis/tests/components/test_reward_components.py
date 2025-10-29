@@ -16,7 +16,7 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
-from ..conftest import (
+from ..helpers import (
     assert_component_sum_integrity,
     assert_hold_penalty_threshold_behavior,
     assert_progressive_scaling_behavior,
@@ -159,7 +159,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             self.TOL_IDENTITY_RELAXED,
         )
 
-    """Core reward component tests."""
+
 
     def test_efficiency_zero_policy(self):
         """Test efficiency zero policy."""
@@ -211,6 +211,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         self.assertLess(large.idle_penalty, 0.0)
         self.assertGreater(large.idle_penalty, small.idle_penalty)
 
+    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     def test_exit_factor_calculation(self):
         """Exit factor calculation across core modes + plateau variant (plateau via exit_plateau=True)."""
         modes_to_test = ["linear", "power"]
