@@ -526,6 +526,7 @@ class TestStatistics(RewardSpaceTestBase):
         self.assertFinite(hw_large, name="hw_large")
         self.assertLess(hw_large, hw_small * 0.55)
 
+    # Owns invariant: statistics-constant-dist-widened-ci-113a
     def test_stats_bootstrap_constant_distribution_widening(self):
         """Invariant 113 (non-strict): constant distribution CI widened with warning (positive epsilon width)."""
         from reward_space_analysis import RewardDiagnosticsWarning  # type: ignore
@@ -558,6 +559,7 @@ class TestStatistics(RewardSpaceTestBase):
             self.assertGreaterEqual(mean, lo)
             self.assertLessEqual(mean, hi)
 
+    # Owns invariant: statistics-constant-dist-strict-omit-113b
     def test_stats_bootstrap_constant_distribution_strict_diagnostics(self):
         """Invariant 113 (strict): constant distribution metrics are omitted (no widened CI returned)."""
         df = self._const_df(60)

@@ -972,6 +972,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertIn("exit_potential_mode='retain_previous'", content)
 
+    # Owns invariant: pbrs-absence-shift-placeholder-118
     def test_pbrs_absence_and_distribution_shift_placeholder(self):
         """Report generation without PBRS columns triggers absence + shift placeholder."""
         import pandas as pd
