@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI-level tests: CSV encoding and parameter propagation.
 
-Split out from helpers/test_utilities.py to align with taxonomy refactor.
+Purpose: focused CLI CSV encoding and parameter propagation tests.
 """
 
 import json

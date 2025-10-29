@@ -479,7 +479,7 @@ def assert_hold_penalty_threshold_behavior(
                 test_case.assertLess(breakdown.hold_penalty, 0.0)
 
 
-# ---------------- New helper additions for validation & invariance refactors ---------------- #
+# ---------------- Validation & invariance helper cases ---------------- #
 
 
 def build_validation_case(

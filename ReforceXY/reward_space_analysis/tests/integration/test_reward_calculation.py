@@ -12,7 +12,7 @@ from ..test_base import RewardSpaceTestBase
 class TestRewardCalculation(RewardSpaceTestBase):
     """High-level integration smoke tests for reward calculation."""
 
-    def test_reward_component_activation_smoke(self):  # Smoke-only after refactor
+    def test_reward_component_activation_smoke(self):  # Smoke-only: component activation + decomposition identity (detailed invariants in robustness suite)
         """Smoke: each primary component activates in a representative scenario.
 
         # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
