@@ -450,128 +450,19 @@ done
 
 ---
 
-## Testing (Overview)
+## Testing
 
-Detailed test documentation moved to `tests/README.md`.
-Ownership table: `tests/TEST_COVERAGE_MAP.md`.
-Run full suite: `uv run pytest`.
-Selective markers example: `uv run pytest -m pbrs -q`.
-Coverage: `uv run pytest --cov=reward_space_analysis --cov-report=term-missing`.
-Smoke policy & invariant workflow: see tests README.
-
-
-The test suite enforces reward-space invariants, component mathematics, PBRS invariance, robustness under extremes, CLI behaviors, and statistical correctness. It is organized by taxonomy directories with single ownership per invariant (see `tests/TEST_COVERAGE_MAP.md`).
-
-### Taxonomy Directories & Markers
-
-| Directory | Marker | Scope |
-|-----------|--------|-------|
-| `components/` | `components` | Core reward component math & transforms |
-| `transforms/` | `transforms` | Transform function behavior (bounds, monotonicity) |
-| `robustness/` | `robustness` | Edge cases, extreme parameter stability, progression |
-| `api/` | `api` | Public API helpers & parsing |
-| `cli/` | `cli` | Command-line parameter propagation & output artifacts |
-| `pbrs/` | `pbrs` | Potential-based shaping invariance & mode differences |
-| `statistics/` | `statistics` | Statistical metrics, hypothesis tests, bootstrap |
-| `integration/` | `integration` | Cross-component smoke scenarios & report formatting |
-| `helpers/` | (none) | Pure helper utilities (e.g. data loading) |
-
-Markers are declared in `pyproject.toml` and enforced with `--strict-markers`.
-
-### Running Tests
-
-Full suite (with coverage enforcement ≥85%):
+Quick validation (coverage ≥85% auto‑enforced):
 ```shell
 uv run pytest
 ```
 
-Selective runs by marker:
+Selective example:
 ```shell
-uv run pytest -m components -q
-uv run pytest -m robustness -q
-uv run pytest -m cli -q
 uv run pytest -m pbrs -q
-uv run pytest -m integration -q
-uv run pytest -m statistics -q  # may be slower
-```
-Combine markers (OR semantics):
-```shell
-uv run pytest -m "components or robustness" -q
-```
-Exclude slow tests:
-```shell
-uv run pytest -m "not slow" -q
 ```
 
-### Coverage Reports
-
-Terminal (already enforced):
-```shell
-uv run pytest --cov=reward_space_analysis --cov-report=term-missing
-```
-HTML report:
-```shell
-uv run pytest --cov=reward_space_analysis --cov-report=html && open htmlcov/index.html
-```
-
-### Duplication Audit
-
-Each invariant ID must appear in exactly one taxonomy directory. Before committing structural changes:
-```shell
-cd ReforceXY/reward_space_analysis/tests
-# Examples from guidance section in TEST_COVERAGE_MAP.md
-grep -R "duration_threshold_behavior" -n .
-grep -R "long_short_symmetry" -n .
-grep -R "component_sum_integrity" -n .
-```
-No pattern should return multiple taxonomy directory paths.
-
-### Parity & Migration Rationale
-
-The refactor preserved semantic coverage while removing redundant detailed assertions from the integration suite. High-level smoke tests remain in `integration/` for activation and symmetry; detailed mathematics moved to `components/` and `robustness/`. Added directories `cli/` and split helpers to isolate data loading logic. Invariants `report-abs-shaping-line-091`, `report-additives-deterministic-092`, and CLI propagation/encoding IDs (093–095) have single, explicit ownership after relocation.
-
-### When to Run Tests
-
-- After modifying any reward component or PBRS logic
-- After changing CLI argument parsing or output structure
-- Before publishing analytical results reliant on invariants
-- After dependency or Python version upgrades
-- Prior to submitting a change proposal implementation summary
-
-### Adding New Invariants
-
-1. Assign a new stable ID using `<category>-<shortname>-NNN`.
-2. Add row to `TEST_COVERAGE_MAP.md` before writing the test.
-3. Implement test in the correct taxonomy directory and (optionally) apply marker with `@pytest.mark.<marker>` if outside auto-directory selection.
-4. Run duplication audit and coverage.
-
-#### Existing Ownership Examples
-
-- `robustness-decomposition-integrity-101` owned by `tests/robustness/test_robustness.py:35` (single active component decomposition). Referenced non-owning in PBRS report classification smoke tests.
-- `robustness-unknown-exit-mode-fallback-102` owned by `tests/robustness/test_robustness.py:520` (unknown `exit_attenuation_mode` warns + linear fallback). No other directory asserts unknown-mode fallback mechanics.
-- `robustness-negative-plateau-grace-clamp-103` owned by `tests/robustness/test_robustness.py:549` (negative `exit_plateau_grace` warning + clamp to 0.0). Single point of ownership; do not replicate clamp logic in integration smoke tests.
-- `robustness-invalid-power-tau-alpha-one-104` owned by `tests/robustness/test_robustness.py:585` (invalid `exit_power_tau` warns, alpha=1 fallback). Ownership restricted to robustness; other tests may only observe downstream attenuation values, never re-assert fallback computation.
-- `robustness-near-zero-half-life-flat-factor-105` owned by `tests/robustness/test_robustness.py:612` (near-zero `exit_half_life` warning + no attenuation). Non-owning tests may format report but cannot duplicate near-zero fallback verification.
-- `pbrs-canonical-drift-correction-106` owned by `tests/pbrs/test_pbrs.py:448` with extension fallback at line 474 sharing same ID (graceful failure path). Both lines constitute ownership (primary + extension) — do not duplicate elsewhere.
-- `pbrs-canonical-near-zero-report-116` owned by `tests/pbrs/test_pbrs.py:742` (full report classification for near-zero shaping sum). Non-owning smoke references may assert formatting but not classification logic.
-- `robustness-exit-pnl-only-117` owned by `tests/robustness/test_robustness.py:125` (PnL appears only in exit actions). Referenced in PBRS report smoke tests.
-
-#### Non-Owning Smoke Policy
-
-Tests that reference invariant outcomes or formatting without asserting the underlying mathematical logic must include a leading comment:
-```
-# Non-owning smoke; ownership: <owning file> [,(optional) second owning file]
-```
-Multiple invariants may be listed if the smoke test renders a combined report section. Line ranges for these smoke tests are tracked in the `Non-Owning Smoke / Reference Checks` table of `TEST_COVERAGE_MAP.md`.
-
-Do not add IDs to smoke tests; IDs live only in owning test(s) and the coverage map. Smoke tests should avoid reproducing detailed calculations already owned elsewhere.
-
-### Slow Statistical Tests
-
-If execution time grows, tag long-running bootstrap / distribution tests with `@pytest.mark.slow` and run them selectively:
-```shell
-uv run pytest -m "statistics and slow" -q
-```
+For taxonomy, markers, invariant ownership, coverage reporting, duplication audits, adding new invariants, smoke policies, and slow test guidance see `tests/README.md` (authoritative source). Avoid structural test changes without consulting it first.
 
 
 ---

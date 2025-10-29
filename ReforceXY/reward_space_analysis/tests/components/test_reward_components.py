@@ -159,8 +159,6 @@ class TestRewardComponents(RewardSpaceTestBase):
             self.TOL_IDENTITY_RELAXED,
         )
 
-
-
     def test_efficiency_zero_policy(self):
         """Test efficiency zero policy."""
         ctx = self.make_ctx(
