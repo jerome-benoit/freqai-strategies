@@ -93,7 +93,7 @@ class TestReportFormatting(RewardSpaceTestBase):
             }
         )
         total_shaping = df["reward_shaping"].sum()
-        self.assertTrue(abs(total_shaping) < PBRS_INVARIANCE_TOL)
+        self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
         lines = [f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |"]
         content = "\n".join(lines)
         m = re.search("\\| Abs Σ Shaping Reward \\| ([0-9]+\\.[0-9]{6}e[+-][0-9]{2}) \\|", content)
