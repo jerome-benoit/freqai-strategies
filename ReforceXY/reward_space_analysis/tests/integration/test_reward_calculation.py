@@ -1,9 +1,4 @@
-"""Integration reward calculation smoke tests after deduplication.
-
-This module retains only high-level integration smoke verifying component activation
-and basic long/short symmetry. Detailed invariant assertions live in the
-components/ and robustness/ suites per TEST_COVERAGE_MAP taxonomy.
-"""
+"""Integration smoke tests: component activation and long/short symmetry."""
 
 from reward_space_analysis import (
     Actions,
@@ -20,6 +15,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
     def test_reward_component_activation_smoke(self):  # Smoke-only after refactor
         """Smoke: each primary component activates in a representative scenario.
 
+        # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
         Detailed progressive / boundary / proportional invariants are NOT asserted here.
         We only check sign / non-zero activation plus total decomposition identity.
         """

@@ -19,8 +19,8 @@ from reward_space_analysis import (
     simulate_samples,
 )
 
-from ..conftest import (
-    assert_decomposition_integrity_scenario,
+from ..helpers import (
+    assert_single_active_component_with_additives,
     assert_exit_factor_attenuation_modes,
     assert_exit_mode_mathematical_validation,
 )
@@ -30,8 +30,9 @@ pytestmark = pytest.mark.robustness
 
 
 class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
-    """Robustness & boundary assertions: invariants, attenuation maths, parameter edges, scaling, warnings."""
+    """Robustness invariants, attenuation maths, parameter edges, scaling, warnings."""
 
+    # Owns invariant: robustness-decomposition-integrity-101 (robustness category)
     def test_decomposition_integrity(self):
         """reward must equal the single active core component under mutually exclusive scenarios (idle/hold/exit/invalid)."""
         scenarios = [
@@ -108,10 +109,20 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     short_allowed=True,
                     action_masking=True,
                 )
-                assert_decomposition_integrity_scenario(
-                    self, br, active_label, self.TOL_IDENTITY_RELAXED
+                assert_single_active_component_with_additives(
+                    self,
+                    br,
+                    active_label,
+                    self.TOL_IDENTITY_RELAXED,
+                    inactive_core=[
+                        "exit_component",
+                        "idle_penalty",
+                        "hold_penalty",
+                        "invalid_penalty",
+                    ],
                 )
 
+    # Owns invariant: robustness-exit-pnl-only-117 (robustness category)
     def test_pnl_invariant_exit_only(self):
         """Invariant: only exit actions have non-zero PnL (robustness category)."""
         df = simulate_samples(
@@ -505,6 +516,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertLess(ratio, 15.0, f"Scaling ratio too large (ratio={ratio:.2f})")
 
     # === Robustness invariants 102–105 ===
+    # Owns invariant: robustness-exit-mode-fallback-102
     def test_robustness_102_unknown_exit_mode_fallback_linear(self):
         """Invariant 102: Unknown exit_attenuation_mode gracefully warns and falls back to linear kernel."""
         params = self.base_params(
@@ -534,6 +546,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             "Fallback warning message content mismatch",
         )
 
+    # Owns invariant: robustness-negative-grace-clamp-103
     def test_robustness_103_negative_plateau_grace_clamped(self):
         """Invariant 103: Negative exit_plateau_grace emits warning and clamps to 0.0 (no plateau extension)."""
         params = self.base_params(
@@ -570,6 +583,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             "Warning content missing for negative grace clamp",
         )
 
+    # Owns invariant: robustness-invalid-power-tau-104
     def test_robustness_104_invalid_power_tau_fallback_alpha_one(self):
         """Invariant 104: Invalid exit_power_tau (<=0 or >1 or NaN) warns and falls back alpha=1.0."""
         invalid_taus = [0.0, -0.5, 2.0, float("nan")]
@@ -598,6 +612,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 msg=f"Alpha=1 fallback ratio mismatch tau={tau} ratio={ratio} expected={expected_ratio_alpha1}",
             )
 
+    # Owns invariant: robustness-near-zero-half-life-105
     def test_robustness_105_half_life_near_zero_fallback(self):
         """Invariant 105: Near-zero exit_half_life warns and returns factor≈base_factor (no attenuation)."""
         base_factor = 60.0

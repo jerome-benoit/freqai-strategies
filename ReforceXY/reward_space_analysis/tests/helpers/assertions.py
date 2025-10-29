@@ -164,6 +164,30 @@ def assert_single_active_component(
             )
 
 
+def assert_single_active_component_with_additives(
+    test_case,
+    breakdown,
+    active_name: str,
+    tolerance: float,
+    inactive_core: Sequence[str],
+    enforce_additives_zero: bool = True,
+):
+    """Assert single active core component plus additive/shaping near-zero.
+
+    Adds reward_shaping, entry_additive, exit_additive zero checks to core assertion.
+    """
+    # Delegate core component assertions
+    assert_single_active_component(test_case, breakdown, active_name, tolerance, inactive_core)
+    if enforce_additives_zero:
+        for attr in ("reward_shaping", "entry_additive", "exit_additive"):
+            test_case.assertAlmostEqual(
+                getattr(breakdown, attr),
+                0.0,
+                delta=tolerance,
+                msg=f"{attr} should be near zero when inactive decomposition scenario",
+            )
+
+
 def assert_reward_calculation_scenarios(
     test_case,
     scenarios: List[Tuple[Any, Dict[str, Any], str]],
@@ -246,7 +270,7 @@ def assert_parameter_sensitivity_behavior(
 def make_idle_penalty_test_contexts(
     context_factory_fn,
     idle_duration_scenarios: Sequence[int],
-    base_context_kwargs: Dict[str, Any] = None,
+    base_context_kwargs: Dict[str, Any] | None = None,
 ):
     if base_context_kwargs is None:
         base_context_kwargs = {}

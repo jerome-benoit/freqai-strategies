@@ -18,6 +18,7 @@ from .assertions import (
     assert_progressive_scaling_behavior,
     assert_reward_calculation_scenarios,
     assert_single_active_component,
+    assert_single_active_component_with_additives,
     assert_trend,
     make_idle_penalty_test_contexts,
     # Validation batch builders/executors
@@ -47,6 +48,7 @@ __all__ = [
     "assert_component_sum_integrity",
     "assert_progressive_scaling_behavior",
     "assert_single_active_component",
+    "assert_single_active_component_with_additives",
     "assert_reward_calculation_scenarios",
     "assert_parameter_sensitivity_behavior",
     "make_idle_penalty_test_contexts",
