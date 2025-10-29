@@ -1,6 +1,6 @@
 # Tests: Reward Space Analysis
 
-Authoritative documentation for invariant ownership, taxonomy layout, smoke policies, and maintenance workflows. This single README now contains the full coverage mapping (previously in `TEST_COVERAGE_MAP.md`).
+Authoritative documentation for invariant ownership, taxonomy layout, smoke policies, maintenance workflows, and full coverage mapping (consolidated from former separate sources).
 
 ## Purpose
 
@@ -94,7 +94,7 @@ Columns:
 | robustness-exit-pnl-only-117                 | robustness  | Only exit actions have non-zero PnL                                                 | robustness/test_robustness.py:125       | Newly assigned ID (previously unnumbered)                                                                 |
 | pbrs-absence-shift-placeholder-118           | pbrs        | Placeholder shift line present (absence displayed)                                  | pbrs/test_pbrs.py:975                   | Ensures placeholder appears when shaping shift absent                                                     |
 
-Note: `transforms/` directory presently has no owned invariants; future transform-specific invariants should follow ID pattern and be added here before test implementation.
+Note: `transforms/` directory has no owned invariants; future transform-specific invariants should follow the ID pattern and be added here before test implementation.
 
 ### Non-Owning Smoke / Reference Checks
 
@@ -156,9 +156,9 @@ grep -R "drift_correction" -n .
 grep -R "near_zero" -n .
 ```
 
-## Parity & Migration Rationale
+## Coverage Parity Notes
 
-Refactor preserved semantic coverage while moving detailed assertions from integration (report formatting only) into targeted directories (components, robustness). IDs 091–095 clarified ownership; 106 spans multi-path (primary + fallback + comparison) inside a single file.
+Detailed assertions reside in targeted directories (components, robustness) while integration tests focus on report formatting. Ownership IDs (e.g. 091–095, 106) reflect current scope (multi-path when noted).
 
 ## When to Run Tests
 
