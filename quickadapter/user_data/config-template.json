@@ -138,8 +138,8 @@
       "DI_cutoff": 2,
       "&s-minima_threshold": -2,
       "&s-maxima_threshold": 2,
-      "label_period_candles": 24,
-      "label_natr_ratio": 9.0,
+      "label_period_candles": 18,
+      "label_natr_ratio": 10.5,
       "hp_rmse": -1,
       "train_rmse": -1
     },
@@ -155,7 +155,7 @@
         "4h",
         // "1d"
       ],
-      "label_period_candles": 24,
+      "label_period_candles": 18,
       "label_metric": "euclidean",
       "label_weights": [
         0.5,

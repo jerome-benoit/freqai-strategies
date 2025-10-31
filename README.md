@@ -46,7 +46,7 @@ docker compose up -d --build
 | reversal_confirmation.lookback_period | 0                | int >= 0 | Prior confirming candles; 0 = none.                                             |
 | reversal_confirmation.decay_ratio | 0.5              | float (0,1] | Geometric per-candle relaxation factor.                                           |
 | reversal_confirmation.min_natr_ratio_percent | 0.0099          | float [0,1] | Lower bound fraction for volatility adjusted reversal threshold.                          |
-| reversal_confirmation.max_natr_ratio_percent | 0.035           | float [0,1] | Upper bound fraction (>= lower bound) for volatility adjusted reversal threshold.         |
+| reversal_confirmation.max_natr_ratio_percent | 0.4             | float [0,1] | Upper bound fraction (>= lower bound) for volatility adjusted reversal threshold.         |
 | _Regressor model_ |                  |  |                                                                                 |
 | freqai.regressor | `xgboost`        | enum {`xgboost`,`lightgbm`} | Machine learning regressor algorithm.                                           |
 | _Extrema smoothing_ |                  |  |                                                                                 |
@@ -54,10 +54,12 @@ docker compose up -d --build
 | freqai.extrema_smoothing_window | 5                | int >= 1 | Window size for extrema smoothing.                                              |
 | freqai.extrema_smoothing_beta | 8.0              | float > 0 | Kaiser kernel shape parameter.                                                  |
 | _Feature parameters_ |                  |  |                                                                                 |
-| freqai.feature_parameters.label_period_candles | 24               | int >= 1 | Zigzag NATR horizon.                                                            |
-| freqai.feature_parameters.label_natr_ratio | 9.0              | float > 0 | Zigzag NATR ratio.                                                              |
-| freqai.feature_parameters.min_label_natr_ratio | 9.0              | float > 0 | Minimum NATR ratio bound used by label HPO.                                     |
-| freqai.feature_parameters.max_label_natr_ratio | 12.0             | float > 0 | Maximum NATR ratio bound used by label HPO.                                     |
+| freqai.feature_parameters.label_period_candles | min/max midpoint          | int >= 1 | Zigzag labeling NATR horizon.                                                            |
+| freqai.feature_parameters.min_label_period_candles | 12               | int >= 1 | Minimum labeling NATR horizon used for reversals labeling HPO. |
+| freqai.feature_parameters.max_label_period_candles | 24               | int >= 1 | Maximum labeling NATR horizon used for reversals labeling HPO. |
+| freqai.feature_parameters.label_natr_ratio | min/max midpoint              | float > 0 | Zigzag labeling NATR ratio.                                                              |
+| freqai.feature_parameters.min_label_natr_ratio | 9.0              | float > 0 | Minimum labeling NATR ratio used for reversals labeling HPO.                                     |
+| freqai.feature_parameters.max_label_natr_ratio | 12.0             | float > 0 | Maximum labeling NATR ratio used for reversals labeling HPO.                                     |
 | freqai.feature_parameters.label_frequency_candles | `auto`            | int >= 2 \| `auto` | Reversals labeling frequency. `auto` = max(2, 2 * number of whitelisted pairs). |
 | freqai.feature_parameters.label_metric | `euclidean`      | string (supported: `euclidean`,`minkowski`,`cityblock`,`chebyshev`,`mahalanobis`,`seuclidean`,`jensenshannon`,`sqeuclidean`,...) | Metric used in distance calculations to ideal point.                            |
 | freqai.feature_parameters.label_weights | [0.5,0.5]        | list[float] | Per-objective weights used in distance calculations to ideal point.             |
