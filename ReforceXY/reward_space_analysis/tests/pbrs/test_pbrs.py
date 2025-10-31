@@ -508,7 +508,6 @@ class TestPBRS(RewardSpaceTestBase):
             pd.DataFrame.sum = original_sum
         flags_exc = set(df_exc["pbrs_invariant"].unique().tolist())
         self.assertEqual(flags_exc, {True})
-        total_shaping_exc = float(df_exc["reward_shaping"].sum())
         # Column presence and successful completion are primary guarantees under fallback.
         self.assertTrue("reward_shaping" in df_exc.columns)
         self.assertIn("reward_shaping", df_exc.columns)

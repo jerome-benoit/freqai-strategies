@@ -12,7 +12,7 @@ Research, prototype, and refine advanced ML‑driven and RL‑driven trading str
 
 ## Tech Stack
 
-- Python 3.9+.
+- Python 3.11+.
 - Freqtrade + FreqAI (strategy framework & ML integration).
 - TA libraries: TA-Lib, pandas_ta, custom technical helpers.
 - ReforceXY reward space analysis:
@@ -32,8 +32,8 @@ Research, prototype, and refine advanced ML‑driven and RL‑driven trading str
   - Constants: `UPPER_SNAKE_CASE`.
   - Internal strategy transient labels/features use prefixes: `"%-"` for engineered feature columns; special markers like `"&s-"` / `"&-"` for internal prediction target(s).
   - Private helpers or internal state use leading underscore (`_exit_thresholds_calibration`).
-- Avoid one‑letter variable names except; prefer descriptive one (e.g. `trade_duration_candles`, `natr_ratio_percent`).
-- Prefer explicit type hints (Python 3.9+ built‑in generics: `list[str]`, `dict[str, float]`).
+- Avoid one‑letter variable names; prefer descriptive one (e.g. `trade_duration_candles`, `natr_ratio_percent`).
+- Prefer explicit type hints (Python 3.11+ built‑in generics: `list[str]`, `dict[str, float]`).
 - Logging: use module logger (`logger = logging.getLogger(__name__)`), info for decision denials, warning for anomalies, error for exceptions.
 - No non-English terms in code, docs, comments, logs.
 
@@ -68,7 +68,7 @@ Research, prototype, and refine advanced ML‑driven and RL‑driven trading str
 
 ## Important Constraints
 
-- Python version ≥3.9 (target for type hints).
+- Python version ≥3.11 (target for type hints).
 - Trading mode affects short availability (spot disallows shorts); logic must gate short entries accordingly.
 - Computations must handle missing/NaN gracefully.
 - Regulatory / business: none explicit; treat strategies as experimental research (no performance guarantees) and avoid embedding sensitive credentials.
