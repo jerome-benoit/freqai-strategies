@@ -10,8 +10,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from reward_space_analysis import calculate_reward  # retained if some fixtures rely on it
-
 
 @pytest.fixture(scope="session")
 def temp_output_dir():
