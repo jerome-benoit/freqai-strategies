@@ -24,6 +24,7 @@ from Utils import (
     calculate_n_extrema,
     fit_regressor,
     format_number,
+    get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_callbacks,
     get_optuna_study_model_parameters,
@@ -61,7 +62,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.116"
+    version = "3.7.120"
 
     @cached_property
     def _optuna_config(self) -> dict[str, Any]:
@@ -192,6 +193,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
         self._optuna_label_incremented_pairs: list[str] = []
+        self._default_label_natr_ratio, self._default_label_period_candles = (
+            get_label_defaults(self.ft_params, logger)
+        )
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_train_value[pair] = -1
@@ -211,10 +215,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if self.optuna_load_best_params(pair, "label")
                 else {
                     "label_period_candles": self.ft_params.get(
-                        "label_period_candles", 24
+                        "label_period_candles",
+                        self._default_label_period_candles,
                     ),
                     "label_natr_ratio": float(
-                        self.ft_params.get("label_natr_ratio", 9.0)
+                        self.ft_params.get(
+                            "label_natr_ratio",
+                            self._default_label_natr_ratio,
+                        )
                     ),
                 }
             )
@@ -497,6 +505,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ),
                         fit_live_predictions_candles,
                         self._optuna_config.get("label_candles_step"),
+                        min_label_period_candles=self.ft_params.get(
+                            "min_label_period_candles", 12
+                        ),
+                        max_label_period_candles=self.ft_params.get(
+                            "max_label_period_candles", 24
+                        ),
                         min_label_natr_ratio=self.ft_params.get(
                             "min_label_natr_ratio", 9.0
                         ),
@@ -1817,11 +1831,20 @@ def label_objective(
     df: pd.DataFrame,
     fit_live_predictions_candles: int,
     candles_step: int,
+    min_label_period_candles: int = 12,
+    max_label_period_candles: int = 24,
     min_label_natr_ratio: float = 9.0,
     max_label_natr_ratio: float = 12.0,
 ) -> tuple[float, int]:
     min_label_period_candles, max_label_period_candles, candles_step = (
-        get_min_max_label_period_candles(fit_live_predictions_candles, candles_step)
+        get_min_max_label_period_candles(
+            fit_live_predictions_candles,
+            candles_step,
+            min_label_period_candles=min_label_period_candles,
+            max_label_period_candles=max_label_period_candles,
+            min_label_period_candles_fallback=min_label_period_candles,
+            max_label_period_candles_fallback=max_label_period_candles,
+        )
     )
 
     label_period_candles = trial.suggest_int(

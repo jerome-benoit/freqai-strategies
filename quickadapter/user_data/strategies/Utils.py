@@ -4,7 +4,7 @@ import hashlib
 import math
 from enum import IntEnum
 from functools import lru_cache
-from statistics import median
+from logging import Logger
 from typing import Any, Callable, Literal, Optional, TypeVar
 
 import numpy as np
@@ -20,6 +20,11 @@ T = TypeVar("T", pd.Series, float)
 
 def get_distance(p1: T, p2: T) -> T:
     return abs(p1 - p2)
+
+
+def midpoint(value1: T, value2: T) -> T:
+    """Calculate the midpoint (geometric center) between two values."""
+    return (value1 + value2) / 2
 
 
 def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
@@ -567,7 +572,7 @@ def zigzag(
     ) -> float:
         volatility_quantile = calculate_volatility_quantile(pos)
         if np.isnan(volatility_quantile):
-            return median([min_threshold, max_threshold])
+            return midpoint(min_threshold, max_threshold)
 
         return max_threshold - (max_threshold - min_threshold) * volatility_quantile
 
@@ -869,10 +874,10 @@ def get_optuna_study_model_parameters(
         for param, (default_min, default_max) in default_ranges.items():
             center_value = model_training_best_parameters.get(param)
 
-            if (
-                center_value is None
-                or not isinstance(center_value, (int, float))
-                or not np.isfinite(center_value)
+            if center_value is None:
+                center_value = midpoint(default_min, default_max)
+            elif not isinstance(center_value, (int, float)) or not np.isfinite(
+                center_value
             ):
                 continue
 
@@ -1007,11 +1012,11 @@ def get_min_max_label_period_candles(
     fit_live_predictions_candles: int,
     candles_step: int,
     min_label_period_candles: int = 12,
-    max_label_period_candles: int = 36,
-    max_period_candles: int = 36,
-    max_horizon_fraction: float = 1.0 / 3.0,
+    max_label_period_candles: int = 24,
     min_label_period_candles_fallback: int = 12,
-    max_label_period_candles_fallback: int = 36,
+    max_label_period_candles_fallback: int = 24,
+    max_period_candles: int = 48,
+    max_horizon_fraction: float = 1.0 / 3.0,
 ) -> tuple[int, int, int]:
     if min_label_period_candles > max_label_period_candles:
         raise ValueError(
@@ -1107,3 +1112,122 @@ def floor_to_step(value: float | int, step: int) -> int:
     if not np.isfinite(value):
         raise ValueError("value must be finite")
     return int(math.floor(float(value) / step) * step)
+
+
+def validate_range(
+    min_val: float | int,
+    max_val: float | int,
+    logger: Logger,
+    *,
+    name: str,
+    default_min: float | int,
+    default_max: float | int,
+    allow_equal: bool = False,
+    non_negative: bool = True,
+    finite_only: bool = True,
+) -> tuple[float | int, float | int]:
+    min_name = f"min_{name}"
+    max_name = f"max_{name}"
+
+    if not isinstance(default_min, (int, float)) or not isinstance(
+        default_max, (int, float)
+    ):
+        raise ValueError(f"{name}: defaults must be numeric")
+    if default_min > default_max or (not allow_equal and default_min == default_max):
+        raise ValueError(
+            f"{name}: invalid defaults ordering {default_min} >= {default_max}"
+        )
+
+    def _validate_component(
+        value: float | int | None, name: str, default_value: float | int
+    ) -> float | int:
+        ok = True
+        if not isinstance(value, (int, float)):
+            ok = False
+        elif isinstance(value, bool):
+            ok = False
+        elif finite_only and not np.isfinite(value):
+            ok = False
+        elif non_negative and value < 0:
+            ok = False
+        if not ok:
+            logger.warning(
+                f"{name}: invalid value {value!r}, using default {default_value}"
+            )
+            return default_value
+        return value
+
+    sanitized_min = _validate_component(min_val, min_name, default_min)
+    sanitized_max = _validate_component(max_val, max_name, default_max)
+
+    ordering_ok = (
+        (sanitized_min < sanitized_max)
+        if not allow_equal
+        else (sanitized_min <= sanitized_max)
+    )
+    if not ordering_ok:
+        logger.warning(
+            f"{name}: invalid ordering ({min_name}={sanitized_min}, {max_name}={sanitized_max}); using defaults ({default_min}, {default_max})"
+        )
+        sanitized_min, sanitized_max = default_min, default_max
+
+    if sanitized_min != min_val or sanitized_max != max_val:
+        logger.warning(
+            f"{name}: sanitized {min_name}={sanitized_min}, {max_name}={sanitized_max} (defaults=({default_min}, {default_max}))"
+        )
+
+    return sanitized_min, sanitized_max
+
+
+def get_label_defaults(
+    feature_parameters: dict[str, Any],
+    logger: Logger,
+    *,
+    default_min_label_period_candles: int = 12,
+    default_max_label_period_candles: int = 24,
+    default_min_label_natr_ratio: float = 9.0,
+    default_max_label_natr_ratio: float = 12.0,
+) -> tuple[float, int]:
+    min_label_natr_ratio = feature_parameters.get(
+        "min_label_natr_ratio", default_min_label_natr_ratio
+    )
+    max_label_natr_ratio = feature_parameters.get(
+        "max_label_natr_ratio", default_max_label_natr_ratio
+    )
+    min_label_natr_ratio, max_label_natr_ratio = validate_range(
+        min_label_natr_ratio,
+        max_label_natr_ratio,
+        logger,
+        name="label_natr_ratio",
+        default_min=default_min_label_natr_ratio,
+        default_max=default_max_label_natr_ratio,
+        allow_equal=False,
+        non_negative=True,
+        finite_only=True,
+    )
+    default_label_natr_ratio = float(
+        midpoint(min_label_natr_ratio, max_label_natr_ratio)
+    )
+
+    min_label_period_candles = feature_parameters.get(
+        "min_label_period_candles", default_min_label_period_candles
+    )
+    max_label_period_candles = feature_parameters.get(
+        "max_label_period_candles", default_max_label_period_candles
+    )
+    min_label_period_candles, max_label_period_candles = validate_range(
+        min_label_period_candles,
+        max_label_period_candles,
+        logger,
+        name="label_period_candles",
+        default_min=default_min_label_period_candles,
+        default_max=default_max_label_period_candles,
+        allow_equal=True,
+        non_negative=True,
+        finite_only=True,
+    )
+    default_label_period_candles = int(
+        round(midpoint(min_label_period_candles, max_label_period_candles))
+    )
+
+    return default_label_natr_ratio, default_label_period_candles

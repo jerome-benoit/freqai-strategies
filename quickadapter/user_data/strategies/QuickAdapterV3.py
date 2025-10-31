@@ -28,11 +28,13 @@ from Utils import (
     format_number,
     get_callable_sha256,
     get_distance,
+    get_label_defaults,
     get_zl_ma_fn,
     non_zero_diff,
     price_retracement_percent,
     smooth_extrema,
     top_change_percent,
+    validate_range,
     vwapb,
     zigzag,
     zlema,
@@ -67,7 +69,7 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     def version(self) -> str:
-        return "3.3.160"
+        return "3.3.164"
 
     timeframe = "5m"
 
@@ -99,7 +101,7 @@ class QuickAdapterV3(IStrategy):
         "lookback_period": 0,
         "decay_ratio": 0.5,
         "min_natr_ratio_percent": 0.0099,
-        "max_natr_ratio_percent": 0.035,
+        "max_natr_ratio_percent": 0.4,
     }
 
     position_adjustment_enable = True
@@ -230,22 +232,29 @@ class QuickAdapterV3(IStrategy):
             / "models"
             / self.freqai_info.get("identifier")
         )
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        self._default_label_natr_ratio, self._default_label_period_candles = (
+            get_label_defaults(feature_parameters, logger)
+        )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
             self._label_params[pair] = (
                 self.optuna_load_best_params(pair, "label")
                 if self.optuna_load_best_params(pair, "label")
                 else {
-                    "label_period_candles": self.freqai_info["feature_parameters"].get(
-                        "label_period_candles", 24
+                    "label_period_candles": feature_parameters.get(
+                        "label_period_candles",
+                        self._default_label_period_candles,
                     ),
                     "label_natr_ratio": float(
-                        self.freqai_info["feature_parameters"].get(
-                            "label_natr_ratio", 9.0
+                        feature_parameters.get(
+                            "label_natr_ratio",
+                            self._default_label_natr_ratio,
                         )
                     ),
                 }
             )
+        self._init_reversal_confirmation_defaults()
         self._candle_duration_secs = int(
             timeframe_to_minutes(self.config.get("timeframe")) * 60
         )
@@ -259,6 +268,71 @@ class QuickAdapterV3(IStrategy):
             **QuickAdapterV3.default_exit_thresholds_calibration,
             **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
         }
+
+    def _init_reversal_confirmation_defaults(self) -> None:
+        reversal_confirmation = self.config.get("reversal_confirmation", {})
+        lookback_period = reversal_confirmation.get(
+            "lookback_period",
+            QuickAdapterV3.default_reversal_confirmation["lookback_period"],
+        )
+        decay_ratio = reversal_confirmation.get(
+            "decay_ratio", QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
+        )
+        min_natr_ratio_percent = reversal_confirmation.get(
+            "min_natr_ratio_percent",
+            QuickAdapterV3.default_reversal_confirmation["min_natr_ratio_percent"],
+        )
+        max_natr_ratio_percent = reversal_confirmation.get(
+            "max_natr_ratio_percent",
+            QuickAdapterV3.default_reversal_confirmation["max_natr_ratio_percent"],
+        )
+
+        if not isinstance(lookback_period, int) or lookback_period < 0:
+            logger.warning(
+                f"reversal_confirmation: invalid lookback_period {lookback_period!r}, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period']}"
+            )
+            lookback_period = QuickAdapterV3.default_reversal_confirmation[
+                "lookback_period"
+            ]
+
+        if not isinstance(decay_ratio, (int, float)) or not (
+            0.0 < float(decay_ratio) <= 1.0
+        ):
+            logger.warning(
+                f"reversal_confirmation: invalid decay_ratio {decay_ratio!r}, using default {QuickAdapterV3.default_reversal_confirmation['decay_ratio']}"
+            )
+            decay_ratio = QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
+        else:
+            decay_ratio = float(decay_ratio)
+
+        min_natr_ratio_percent, max_natr_ratio_percent = validate_range(
+            min_natr_ratio_percent,
+            max_natr_ratio_percent,
+            logger,
+            name="natr_ratio_percent",
+            default_min=QuickAdapterV3.default_reversal_confirmation[
+                "min_natr_ratio_percent"
+            ],
+            default_max=QuickAdapterV3.default_reversal_confirmation[
+                "max_natr_ratio_percent"
+            ],
+            allow_equal=False,
+            non_negative=True,
+            finite_only=True,
+        )
+
+        self._reversal_lookback_period = int(lookback_period)
+        self._reversal_decay_ratio = float(decay_ratio)
+        self._reversal_min_natr_ratio_percent = float(min_natr_ratio_percent)
+        self._reversal_max_natr_ratio_percent = float(max_natr_ratio_percent)
+
+        logger.debug(
+            "reversal_confirmation: lookback_period=%s, decay_ratio=%s, natr_ratio_percent_range=(%s, %s)",
+            self._reversal_lookback_period,
+            format_number(self._reversal_decay_ratio),
+            format_number(self._reversal_min_natr_ratio_percent),
+            format_number(self._reversal_max_natr_ratio_percent),
+        )
 
     def feature_engineering_expand_all(
         self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs
@@ -432,7 +506,10 @@ class QuickAdapterV3(IStrategy):
         )
         if label_period_candles and isinstance(label_period_candles, int):
             return label_period_candles
-        return self.freqai_info["feature_parameters"].get("label_period_candles", 24)
+        return self.freqai_info.get("feature_parameters", {}).get(
+            "label_period_candles",
+            self._default_label_period_candles,
+        )
 
     def set_label_period_candles(self, pair: str, label_period_candles: int) -> None:
         if isinstance(label_period_candles, int):
@@ -443,7 +520,10 @@ class QuickAdapterV3(IStrategy):
         if label_natr_ratio and isinstance(label_natr_ratio, float):
             return label_natr_ratio
         return float(
-            self.freqai_info["feature_parameters"].get("label_natr_ratio", 9.0)
+            self.freqai_info.get("feature_parameters", {}).get(
+                "label_natr_ratio",
+                self._default_label_natr_ratio,
+            )
         )
 
     def set_label_natr_ratio(self, pair: str, label_natr_ratio: float) -> None:
@@ -1233,27 +1313,9 @@ class QuickAdapterV3(IStrategy):
             return False
         if order not in {"entry", "exit"}:
             return False
-        trade_direction = side
-        if (
-            min_natr_ratio_percent < 0.0
-            or max_natr_ratio_percent < min_natr_ratio_percent
-        ):
-            logger.warning(
-                f"User denied {trade_direction} {order} for {pair}: invalid natr_ratio_percent range "
-                f"min={format_number(min_natr_ratio_percent)}, max={format_number(max_natr_ratio_percent)}"
-            )
-            return False
 
-        if not isinstance(lookback_period, int):
-            logger.info(
-                f"User denied {trade_direction} {order} for {pair}: invalid lookback_period type"
-            )
-            return False
-        if lookback_period < 0:
-            logger.info(
-                f"User denied {trade_direction} {order} for {pair}: negative lookback_period={lookback_period}"
-            )
-            return False
+        trade_direction = side
+
         max_lookback_period = max(0, len(df) - 1)
         if lookback_period > max_lookback_period:
             lookback_period = max_lookback_period
@@ -1549,25 +1611,6 @@ class QuickAdapterV3(IStrategy):
                 trade.set_custom_data("n_outliers", n_outliers)
                 trade.set_custom_data("last_outlier_date", last_candle_date.isoformat())
 
-        lookback_period: int = self.config.get("reversal_confirmation", {}).get(
-            "lookback_period",
-            QuickAdapterV3.default_reversal_confirmation["lookback_period"],
-        )
-        decay_ratio: float = self.config.get("reversal_confirmation", {}).get(
-            "decay_ratio", QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
-        )
-        min_natr_ratio_percent: float = self.config.get(
-            "reversal_confirmation", {}
-        ).get(
-            "min_natr_ratio_percent",
-            QuickAdapterV3.default_reversal_confirmation["min_natr_ratio_percent"],
-        )
-        max_natr_ratio_percent: float = self.config.get(
-            "reversal_confirmation", {}
-        ).get(
-            "max_natr_ratio_percent",
-            QuickAdapterV3.default_reversal_confirmation["max_natr_ratio_percent"],
-        )
         if (
             trade.trade_direction == "short"
             and last_candle.get("do_predict") == 1
@@ -1579,10 +1622,10 @@ class QuickAdapterV3(IStrategy):
                 "long",
                 "exit",
                 current_rate,
-                lookback_period,
-                decay_ratio,
-                min_natr_ratio_percent,
-                max_natr_ratio_percent,
+                self._reversal_lookback_period,
+                self._reversal_decay_ratio,
+                self._reversal_min_natr_ratio_percent,
+                self._reversal_max_natr_ratio_percent,
             )
         ):
             return "minima_detected_short"
@@ -1597,10 +1640,10 @@ class QuickAdapterV3(IStrategy):
                 "short",
                 "exit",
                 current_rate,
-                lookback_period,
-                decay_ratio,
-                min_natr_ratio_percent,
-                max_natr_ratio_percent,
+                self._reversal_lookback_period,
+                self._reversal_decay_ratio,
+                self._reversal_min_natr_ratio_percent,
+                self._reversal_max_natr_ratio_percent,
             )
         ):
             return "maxima_detected_long"
@@ -1732,22 +1775,10 @@ class QuickAdapterV3(IStrategy):
             side,
             "entry",
             rate,
-            self.config.get("reversal_confirmation", {}).get(
-                "lookback_period",
-                QuickAdapterV3.default_reversal_confirmation["lookback_period"],
-            ),
-            self.config.get("reversal_confirmation", {}).get(
-                "decay_ratio",
-                QuickAdapterV3.default_reversal_confirmation["decay_ratio"],
-            ),
-            self.config.get("reversal_confirmation", {}).get(
-                "min_natr_ratio_percent",
-                QuickAdapterV3.default_reversal_confirmation["min_natr_ratio_percent"],
-            ),
-            self.config.get("reversal_confirmation", {}).get(
-                "max_natr_ratio_percent",
-                QuickAdapterV3.default_reversal_confirmation["max_natr_ratio_percent"],
-            ),
+            self._reversal_lookback_period,
+            self._reversal_decay_ratio,
+            self._reversal_min_natr_ratio_percent,
+            self._reversal_max_natr_ratio_percent,
         ):
             return True
         return False
