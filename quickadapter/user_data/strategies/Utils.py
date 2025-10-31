@@ -1013,10 +1013,10 @@ def get_min_max_label_period_candles(
     candles_step: int,
     min_label_period_candles: int = 12,
     max_label_period_candles: int = 24,
-    max_period_candles: int = 36,
-    max_horizon_fraction: float = 1.0 / 3.0,
     min_label_period_candles_fallback: int = 12,
     max_label_period_candles_fallback: int = 24,
+    max_period_candles: int = 48,
+    max_horizon_fraction: float = 1.0 / 3.0,
 ) -> tuple[int, int, int]:
     if min_label_period_candles > max_label_period_candles:
         raise ValueError(
