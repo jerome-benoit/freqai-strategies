@@ -38,6 +38,7 @@ from Utils import (
     vwapb,
     zigzag,
     zlema,
+
 )
 
 debug = False
@@ -67,6 +68,7 @@ class QuickAdapterV3(IStrategy):
     """
 
     INTERFACE_VERSION = 3
+
 
     def version(self) -> str:
         return "3.3.163"
@@ -335,7 +337,6 @@ class QuickAdapterV3(IStrategy):
 
     def _init_label_defaults(self) -> None:
         feature_parameters = self.freqai_info.get("feature_parameters", {})
-
         default_min_label_natr_ratio = 9.0
         default_max_label_natr_ratio = 12.0
         min_label_natr_ratio = feature_parameters.get(
@@ -358,7 +359,6 @@ class QuickAdapterV3(IStrategy):
         self._default_label_natr_ratio = float(
             midpoint(min_label_natr_ratio, max_label_natr_ratio)
         )
-
         default_min_label_period_candles = 12
         default_max_label_period_candles = 24
         min_label_period_candles = feature_parameters.get(
