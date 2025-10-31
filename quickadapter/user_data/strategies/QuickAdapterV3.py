@@ -28,8 +28,8 @@ from Utils import (
     format_number,
     get_callable_sha256,
     get_distance,
+    get_label_defaults,
     get_zl_ma_fn,
-    midpoint,
     non_zero_diff,
     price_retracement_percent,
     smooth_extrema,
@@ -38,8 +38,6 @@ from Utils import (
     vwapb,
     zigzag,
     zlema,
-    get_label_defaults,
-
 )
 
 debug = False
@@ -69,7 +67,6 @@ class QuickAdapterV3(IStrategy):
     """
 
     INTERFACE_VERSION = 3
-
 
     def version(self) -> str:
         return "3.3.164"
@@ -235,21 +232,22 @@ class QuickAdapterV3(IStrategy):
             / "models"
             / self.freqai_info.get("identifier")
         )
-        self._default_label_natr_ratio, self._default_label_period_candles = get_label_defaults(self.freqai_info.get("feature_parameters", {}), logger)
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        self._default_label_natr_ratio, self._default_label_period_candles = (
+            get_label_defaults(feature_parameters, logger)
+        )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
             self._label_params[pair] = (
                 self.optuna_load_best_params(pair, "label")
                 if self.optuna_load_best_params(pair, "label")
                 else {
-                    "label_period_candles": self.freqai_info.get(
-                        "feature_parameters", {}
-                    ).get(
+                    "label_period_candles": feature_parameters.get(
                         "label_period_candles",
                         self._default_label_period_candles,
                     ),
                     "label_natr_ratio": float(
-                        self.freqai_info.get("feature_parameters", {}).get(
+                        feature_parameters.get(
                             "label_natr_ratio",
                             self._default_label_natr_ratio,
                         )
@@ -335,7 +333,6 @@ class QuickAdapterV3(IStrategy):
             format_number(self._reversal_min_natr_ratio_percent),
             format_number(self._reversal_max_natr_ratio_percent),
         )
-
 
     def feature_engineering_expand_all(
         self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs

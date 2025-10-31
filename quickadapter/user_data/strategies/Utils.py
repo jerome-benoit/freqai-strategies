@@ -1179,17 +1179,15 @@ def validate_range(
     return sanitized_min, sanitized_max
 
 
-def get_label_defaults(params_dict: dict[str, Any], logger: Logger) -> tuple[float, int]:
-    """Compute default label_natr_ratio and label_period_candles.
-
-    Reads min/max ranges from params_dict (feature/ft params) and validates them with
-    validate_range, then returns midpoint defaults.
-    """
-    feature_parameters = params_dict or {}
-
-    # NATR ratio defaults
-    default_min_label_natr_ratio = 9.0
-    default_max_label_natr_ratio = 12.0
+def get_label_defaults(
+    feature_parameters: dict[str, Any],
+    logger: Logger,
+    *,
+    default_min_label_period_candles: int = 12,
+    default_max_label_period_candles: int = 24,
+    default_min_label_natr_ratio: float = 9.0,
+    default_max_label_natr_ratio: float = 12.0,
+) -> tuple[float, int]:
     min_label_natr_ratio = feature_parameters.get(
         "min_label_natr_ratio", default_min_label_natr_ratio
     )
@@ -1207,11 +1205,10 @@ def get_label_defaults(params_dict: dict[str, Any], logger: Logger) -> tuple[flo
         non_negative=True,
         finite_only=True,
     )
-    default_label_natr_ratio = float(midpoint(min_label_natr_ratio, max_label_natr_ratio))
+    default_label_natr_ratio = float(
+        midpoint(min_label_natr_ratio, max_label_natr_ratio)
+    )
 
-    # Period candles defaults
-    default_min_label_period_candles = 12
-    default_max_label_period_candles = 24
     min_label_period_candles = feature_parameters.get(
         "min_label_period_candles", default_min_label_period_candles
     )

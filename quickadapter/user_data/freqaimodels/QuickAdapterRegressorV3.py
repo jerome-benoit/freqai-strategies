@@ -24,14 +24,12 @@ from Utils import (
     calculate_n_extrema,
     fit_regressor,
     format_number,
+    get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_callbacks,
     get_optuna_study_model_parameters,
-    midpoint,
     soft_extremum,
-    validate_range,
     zigzag,
-    get_label_defaults,
 )
 
 debug = False
@@ -64,7 +62,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.119"
+    version = "3.7.120"
 
     @cached_property
     def _optuna_config(self) -> dict[str, Any]:
@@ -195,7 +193,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
         self._optuna_label_incremented_pairs: list[str] = []
-        self._default_label_natr_ratio, self._default_label_period_candles = get_label_defaults(self.ft_params, logger)
+        self._default_label_natr_ratio, self._default_label_period_candles = (
+            get_label_defaults(self.ft_params, logger)
+        )
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_train_value[pair] = -1
@@ -232,7 +232,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(
             f"Initialized {self.__class__.__name__} {self.freqai_info.get('regressor', 'xgboost')} regressor model version {self.version}"
         )
-
 
     def get_optuna_params(self, pair: str, namespace: str) -> dict[str, Any]:
         if namespace == "hp":
