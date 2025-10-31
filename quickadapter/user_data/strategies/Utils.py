@@ -1177,3 +1177,60 @@ def validate_range(
         )
 
     return sanitized_min, sanitized_max
+
+
+def get_label_defaults(params_dict: dict[str, Any], logger: Logger) -> tuple[float, int]:
+    """Compute default label_natr_ratio and label_period_candles.
+
+    Reads min/max ranges from params_dict (feature/ft params) and validates them with
+    validate_range, then returns midpoint defaults.
+    """
+    feature_parameters = params_dict or {}
+
+    # NATR ratio defaults
+    default_min_label_natr_ratio = 9.0
+    default_max_label_natr_ratio = 12.0
+    min_label_natr_ratio = feature_parameters.get(
+        "min_label_natr_ratio", default_min_label_natr_ratio
+    )
+    max_label_natr_ratio = feature_parameters.get(
+        "max_label_natr_ratio", default_max_label_natr_ratio
+    )
+    min_label_natr_ratio, max_label_natr_ratio = validate_range(
+        min_label_natr_ratio,
+        max_label_natr_ratio,
+        logger,
+        name="label_natr_ratio",
+        default_min=default_min_label_natr_ratio,
+        default_max=default_max_label_natr_ratio,
+        allow_equal=False,
+        non_negative=True,
+        finite_only=True,
+    )
+    default_label_natr_ratio = float(midpoint(min_label_natr_ratio, max_label_natr_ratio))
+
+    # Period candles defaults
+    default_min_label_period_candles = 12
+    default_max_label_period_candles = 24
+    min_label_period_candles = feature_parameters.get(
+        "min_label_period_candles", default_min_label_period_candles
+    )
+    max_label_period_candles = feature_parameters.get(
+        "max_label_period_candles", default_max_label_period_candles
+    )
+    min_label_period_candles, max_label_period_candles = validate_range(
+        min_label_period_candles,
+        max_label_period_candles,
+        logger,
+        name="label_period_candles",
+        default_min=default_min_label_period_candles,
+        default_max=default_max_label_period_candles,
+        allow_equal=True,
+        non_negative=True,
+        finite_only=True,
+    )
+    default_label_period_candles = int(
+        round(midpoint(min_label_period_candles, max_label_period_candles))
+    )
+
+    return default_label_natr_ratio, default_label_period_candles

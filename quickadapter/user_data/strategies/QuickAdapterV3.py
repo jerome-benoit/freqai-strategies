@@ -38,6 +38,7 @@ from Utils import (
     vwapb,
     zigzag,
     zlema,
+    get_label_defaults,
 
 )
 
@@ -71,7 +72,7 @@ class QuickAdapterV3(IStrategy):
 
 
     def version(self) -> str:
-        return "3.3.163"
+        return "3.3.164"
 
     timeframe = "5m"
 
@@ -234,7 +235,7 @@ class QuickAdapterV3(IStrategy):
             / "models"
             / self.freqai_info.get("identifier")
         )
-        self._init_label_defaults()
+        self._default_label_natr_ratio, self._default_label_period_candles = get_label_defaults(self.freqai_info.get("feature_parameters", {}), logger)
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
             self._label_params[pair] = (
@@ -335,52 +336,6 @@ class QuickAdapterV3(IStrategy):
             format_number(self._reversal_max_natr_ratio_percent),
         )
 
-    def _init_label_defaults(self) -> None:
-        feature_parameters = self.freqai_info.get("feature_parameters", {})
-        default_min_label_natr_ratio = 9.0
-        default_max_label_natr_ratio = 12.0
-        min_label_natr_ratio = feature_parameters.get(
-            "min_label_natr_ratio", default_min_label_natr_ratio
-        )
-        max_label_natr_ratio = feature_parameters.get(
-            "max_label_natr_ratio", default_max_label_natr_ratio
-        )
-        min_label_natr_ratio, max_label_natr_ratio = validate_range(
-            min_label_natr_ratio,
-            max_label_natr_ratio,
-            logger,
-            name="label_natr_ratio",
-            default_min=default_min_label_natr_ratio,
-            default_max=default_max_label_natr_ratio,
-            allow_equal=False,
-            non_negative=True,
-            finite_only=True,
-        )
-        self._default_label_natr_ratio = float(
-            midpoint(min_label_natr_ratio, max_label_natr_ratio)
-        )
-        default_min_label_period_candles = 12
-        default_max_label_period_candles = 24
-        min_label_period_candles = feature_parameters.get(
-            "min_label_period_candles", default_min_label_period_candles
-        )
-        max_label_period_candles = feature_parameters.get(
-            "max_label_period_candles", default_max_label_period_candles
-        )
-        min_label_period_candles, max_label_period_candles = validate_range(
-            min_label_period_candles,
-            max_label_period_candles,
-            logger,
-            name="label_period_candles",
-            default_min=default_min_label_period_candles,
-            default_max=default_max_label_period_candles,
-            allow_equal=True,
-            non_negative=True,
-            finite_only=True,
-        )
-        self._default_label_period_candles = int(
-            round(midpoint(min_label_period_candles, max_label_period_candles))
-        )
 
     def feature_engineering_expand_all(
         self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs

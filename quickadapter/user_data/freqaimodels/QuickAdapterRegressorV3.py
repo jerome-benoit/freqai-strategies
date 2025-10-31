@@ -31,6 +31,7 @@ from Utils import (
     soft_extremum,
     validate_range,
     zigzag,
+    get_label_defaults,
 )
 
 debug = False
@@ -63,7 +64,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.117"
+    version = "3.7.119"
 
     @cached_property
     def _optuna_config(self) -> dict[str, Any]:
@@ -194,7 +195,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
         self._optuna_label_incremented_pairs: list[str] = []
-        self._init_label_defaults()
+        self._default_label_natr_ratio, self._default_label_period_candles = get_label_defaults(self.ft_params, logger)
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_train_value[pair] = -1
@@ -232,52 +233,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"Initialized {self.__class__.__name__} {self.freqai_info.get('regressor', 'xgboost')} regressor model version {self.version}"
         )
 
-    def _init_label_defaults(self) -> None:
-        default_min_label_natr_ratio = 9.0
-        default_max_label_natr_ratio = 12.0
-        min_label_natr_ratio = self.ft_params.get(
-            "min_label_natr_ratio", default_min_label_natr_ratio
-        )
-        max_label_natr_ratio = self.ft_params.get(
-            "max_label_natr_ratio", default_max_label_natr_ratio
-        )
-        min_label_natr_ratio, max_label_natr_ratio = validate_range(
-            min_label_natr_ratio,
-            max_label_natr_ratio,
-            logger,
-            name="label_natr_ratio",
-            default_min=default_min_label_natr_ratio,
-            default_max=default_max_label_natr_ratio,
-            allow_equal=False,
-            non_negative=True,
-            finite_only=True,
-        )
-        self._default_label_natr_ratio = float(
-            midpoint(min_label_natr_ratio, max_label_natr_ratio)
-        )
-
-        default_min_label_period_candles = 12
-        default_max_label_period_candles = 24
-        min_label_period_candles = self.ft_params.get(
-            "min_label_period_candles", default_min_label_period_candles
-        )
-        max_label_period_candles = self.ft_params.get(
-            "max_label_period_candles", default_max_label_period_candles
-        )
-        min_label_period_candles, max_label_period_candles = validate_range(
-            min_label_period_candles,
-            max_label_period_candles,
-            logger,
-            name="label_period_candles",
-            default_min=default_min_label_period_candles,
-            default_max=default_max_label_period_candles,
-            allow_equal=True,
-            non_negative=True,
-            finite_only=True,
-        )
-        self._default_label_period_candles = int(
-            round(midpoint(min_label_period_candles, max_label_period_candles))
-        )
 
     def get_optuna_params(self, pair: str, namespace: str) -> dict[str, Any]:
         if namespace == "hp":
