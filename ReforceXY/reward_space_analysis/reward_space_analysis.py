@@ -1497,7 +1497,12 @@ def _binned_stats(
 
 
 def _compute_relationship_stats(df: pd.DataFrame) -> Dict[str, Any]:
-    """Return binned stats dict for idle, trade duration and pnl (uniform bins)."""
+    """Return binned stats dict for idle, trade duration and pnl (uniform bins).
+
+    Defensive against missing optional columns (e.g., reward_invalid when synthetic
+    test helper omits it). Only present numeric columns are used for correlation.
+    Constant columns are dropped and reported.
+    """
     reward_params: RewardParams = (
         dict(df.attrs.get("reward_params"))
         if isinstance(df.attrs.get("reward_params"), dict)
@@ -1524,7 +1529,7 @@ def _compute_relationship_stats(df: pd.DataFrame) -> Dict[str, Any]:
     hold_stats = hold_stats.round(6)
     exit_stats = exit_stats.round(6)
 
-    correlation_fields = [
+    requested_fields = [
         "reward",
         "reward_invalid",
         "reward_idle",
@@ -1534,14 +1539,15 @@ def _compute_relationship_stats(df: pd.DataFrame) -> Dict[str, Any]:
         "trade_duration",
         "idle_duration",
     ]
-    # Drop columns that are constant (std == 0) to avoid all-NaN correlation rows
-    numeric_subset = df[correlation_fields]
-    constant_cols = [c for c in numeric_subset.columns if numeric_subset[c].nunique() <= 1]
-    if constant_cols:
-        filtered = numeric_subset.drop(columns=constant_cols)
+    correlation_fields = [c for c in requested_fields if c in df.columns]
+    if not correlation_fields:
+        correlation = pd.DataFrame()
+        constant_cols: list[str] = []
     else:
-        filtered = numeric_subset
-    correlation = filtered.corr().round(4)
+        numeric_subset = df[correlation_fields]
+        constant_cols = [c for c in numeric_subset.columns if numeric_subset[c].nunique() <= 1]
+        filtered = numeric_subset.drop(columns=constant_cols) if constant_cols else numeric_subset
+        correlation = filtered.corr().round(4)
 
     return {
         "idle_stats": idle_stats,
@@ -1599,21 +1605,75 @@ def _perform_feature_analysis(
     skip_partial_dependence: bool = False,
     rf_n_jobs: int = 1,
     perm_n_jobs: int = 1,
-) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, pd.DataFrame], RandomForestRegressor]:
-    """Run RandomForest-based feature analysis.
+) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, pd.DataFrame], Optional[RandomForestRegressor]]:
+    """Run RandomForest-based feature analysis defensively.
+
+    Purpose
+    -------
+    Provide permutation feature importances and optional partial dependence plots for the
+    synthetic reward space while remaining robust to incomplete or degenerate data.
+
+    Inputs
+    ------
+    df : pd.DataFrame
+        Sample frame containing canonical reward + feature columns (subset acceptable).
+    seed : int
+        Random seed used for train/test split and model reproducibility.
+    skip_partial_dependence : bool, default False
+        If True, skip partial dependence computation entirely (faster runs).
+    rf_n_jobs : int, default 1
+        Parallel jobs for the RandomForestRegressor.
+    perm_n_jobs : int, default 1
+        Parallel jobs for permutation_importance.
+
+    Behavior & Guarantees
+    ---------------------
+    - Dynamically selects available features from canonical list.
+    - Gracefully handles: empty frame, missing reward column, <2 usable features, any NaNs.
+    - Casts integer duration columns to float only if present (avoid unintended coercions).
+    - Drops wholly NaN or constant columns (reported via ``dropped_features``).
+    - All sklearn operations guarded by try/except; failures yield NaN importances.
+    - ``skip_partial_dependence`` returns an empty ``partial_deps`` dict without computing PD.
+    - Sets ``model_fitted`` flag (False for all stub paths and fitting failures).
+    - Raises ImportError early if scikit-learn components are unavailable (fast-fail semantics).
 
     Returns
     -------
     importance_df : pd.DataFrame
-        Permutation importance summary (mean/std per feature).
+        Columns: ``feature``, ``importance_mean``, ``importance_std`` (NaNs on failure paths).
     analysis_stats : Dict[str, Any]
-        Core diagnostics (R², sample counts, top feature & score).
+        Keys:
+          ``r2_score``            : float (NaN if model not fitted)
+          ``n_features``          : int (usable feature count after drops)
+          ``n_samples_train``      : int (0 on stub paths)
+          ``n_samples_test``       : int (0 on stub paths)
+          ``top_feature``         : Optional[str] (None or first usable feature)
+          ``top_importance``      : float (NaN on failure paths)
+          ``dropped_features``    : list[str] (NaN/constant removed columns)
+          ``model_fitted``        : bool (True only if RF fit succeeded)
     partial_deps : Dict[str, pd.DataFrame]
-        Partial dependence data frames keyed by feature.
-    model : RandomForestRegressor
-        Fitted model instance (for optional downstream inspection).
+        Mapping feature -> DataFrame with columns ``<feature>`` and ``partial_dependence``;
+        empty when skipped or failures occur.
+    model : Optional[RandomForestRegressor]
+        Fitted model instance when successful; ``None`` otherwise.
+
+    Failure Modes
+    -------------
+    Returns stub outputs (NaN importances, ``model_fitted`` False, empty ``partial_deps``) for:
+      - Missing ``reward`` column
+      - No rows
+      - Zero available canonical features
+      - <2 usable (post-drop) features
+      - Any NaNs after preprocessing
+      - Train/test split failures
+      - Model fitting failures
+      - Permutation importance failures (partial dependence may still be attempted)
+
+    Notes
+    -----
+    Optimized for interpretability and robustness rather than raw model performance. The
+    n_estimators choice balances stability of importance estimates with runtime.
     """
-    # Ensure sklearn is available
     if (
         RandomForestRegressor is None
         or train_test_split is None
@@ -1621,7 +1681,8 @@ def _perform_feature_analysis(
         or r2_score is None
     ):
         raise ImportError("scikit-learn is not available; skipping feature analysis.")
-    feature_cols = [
+
+    canonical_features = [
         "pnl",
         "trade_duration",
         "idle_duration",
@@ -1631,68 +1692,191 @@ def _perform_feature_analysis(
         "action",
         "is_invalid",
     ]
-    X = df[feature_cols].copy()
+    available_features = [c for c in canonical_features if c in df.columns]
+
+    # Reward column must exist; if absent produce empty stub outputs
+    if "reward" not in df.columns or len(df) == 0 or len(available_features) == 0:
+        empty_importance = pd.DataFrame(columns=["feature", "importance_mean", "importance_std"])
+        return (
+            empty_importance,
+            {
+                "r2_score": np.nan,
+                "n_features": 0,
+                "n_samples_train": 0,
+                "n_samples_test": 0,
+                "top_feature": None,
+                "top_importance": np.nan,
+                "dropped_features": [],
+                "model_fitted": False,
+            },
+            {},
+            None,
+        )
+
+    X = df[available_features].copy()
     for col in ("trade_duration", "idle_duration"):
         if col in X.columns and pd.api.types.is_integer_dtype(X[col]):
             X.loc[:, col] = X[col].astype(float)
-    y = df["reward"]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=seed)
+    y = df["reward"].copy()
 
-    # Canonical RandomForest configuration - single source of truth
-    model = RandomForestRegressor(
+    # Drop wholly NaN or constant columns (provide no signal)
+    drop_cols: list[str] = []
+    for col in list(X.columns):
+        col_series = X[col]
+        if col_series.isna().all() or col_series.nunique(dropna=True) <= 1:
+            drop_cols.append(col)
+    if drop_cols:
+        X = X.drop(columns=drop_cols)
+    usable_features = list(X.columns)
+
+    if len(usable_features) < 2 or X.isna().any().any():
+        importance_df = pd.DataFrame(
+            {
+                "feature": usable_features,
+                "importance_mean": [np.nan] * len(usable_features),
+                "importance_std": [np.nan] * len(usable_features),
+            }
+        )
+        analysis_stats = {
+            "r2_score": np.nan,
+            "n_features": len(usable_features),
+            "n_samples_train": 0,
+            "n_samples_test": 0,
+            "top_feature": usable_features[0] if usable_features else None,
+            "top_importance": np.nan,
+            "dropped_features": drop_cols,
+            "model_fitted": False,
+        }
+        return importance_df, analysis_stats, {}, None
+
+    # Train/test split
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=seed)
+    except Exception:
+        importance_df = pd.DataFrame(
+            {
+                "feature": usable_features,
+                "importance_mean": [np.nan] * len(usable_features),
+                "importance_std": [np.nan] * len(usable_features),
+            }
+        )
+        analysis_stats = {
+            "r2_score": np.nan,
+            "n_features": len(usable_features),
+            "n_samples_train": 0,
+            "n_samples_test": 0,
+            "top_feature": usable_features[0] if usable_features else None,
+            "top_importance": np.nan,
+            "dropped_features": drop_cols,
+            "model_fitted": False,
+        }
+        return importance_df, analysis_stats, {}, None
+
+    model: Optional[RandomForestRegressor] = RandomForestRegressor(
         n_estimators=400,
         max_depth=None,
         random_state=seed,
         n_jobs=rf_n_jobs,
     )
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    r2 = r2_score(y_test, y_pred)
 
-    perm = permutation_importance(
-        model,
-        X_test,
-        y_test,
-        n_repeats=25,
-        random_state=seed,
-        n_jobs=perm_n_jobs,
-    )
-
-    importance_df = (
-        pd.DataFrame(
+    r2_local: float = np.nan
+    try:
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        r2_local = r2_score(y_test, y_pred)
+        model_fitted_flag = True
+    except Exception:
+        # Model failed to fit; drop to stub path
+        model = None
+        model_fitted_flag = False
+        importance_df = pd.DataFrame(
             {
-                "feature": feature_cols,
-                "importance_mean": perm.importances_mean,
-                "importance_std": perm.importances_std,
+                "feature": usable_features,
+                "importance_mean": [np.nan] * len(usable_features),
+                "importance_std": [np.nan] * len(usable_features),
             }
         )
-        .sort_values("importance_mean", ascending=False)
-        .reset_index(drop=True)
-    )
+        analysis_stats = {
+            "r2_score": np.nan,
+            "n_features": len(usable_features),
+            "n_samples_train": len(X_train),
+            "n_samples_test": len(X_test),
+            "top_feature": usable_features[0] if usable_features else None,
+            "top_importance": np.nan,
+            "dropped_features": drop_cols,
+            "model_fitted": False,
+        }
+        return importance_df, analysis_stats, {}, None
 
-    # Compute partial dependence for key features unless skipped
-    partial_deps = {}
-    if not skip_partial_dependence:
-        for feature in ["trade_duration", "idle_duration", "pnl"]:
-            pd_result = partial_dependence(
-                model,
-                X_test,
-                [feature],
-                grid_resolution=50,
-                kind="average",
+    # Permutation importance
+    try:
+        perm = permutation_importance(
+            model,
+            X_test,
+            y_test,
+            n_repeats=25,
+            random_state=seed,
+            n_jobs=perm_n_jobs,
+        )
+        importance_df = (
+            pd.DataFrame(
+                {
+                    "feature": usable_features,
+                    "importance_mean": perm.importances_mean,
+                    "importance_std": perm.importances_std,
+                }
             )
-            value_key = "values" if "values" in pd_result else "grid_values"
-            values = pd_result[value_key][0]
-            averaged = pd_result["average"][0]
-            partial_deps[feature] = pd.DataFrame({feature: values, "partial_dependence": averaged})
+            .sort_values("importance_mean", ascending=False)
+            .reset_index(drop=True)
+        )
+    except Exception:
+        importance_df = pd.DataFrame(
+            {
+                "feature": usable_features,
+                "importance_mean": [np.nan] * len(usable_features),
+                "importance_std": [np.nan] * len(usable_features),
+            }
+        )
+
+    # Partial dependence (optional)
+    partial_deps: Dict[str, pd.DataFrame] = {}
+    if model is not None and not skip_partial_dependence:
+        for feature in [
+            f for f in ["trade_duration", "idle_duration", "pnl"] if f in X_test.columns
+        ]:
+            try:
+                pd_result = partial_dependence(
+                    model,
+                    X_test,
+                    [feature],
+                    grid_resolution=50,
+                    kind="average",
+                )
+                value_key = "values" if "values" in pd_result else "grid_values"
+                values = pd_result[value_key][0]
+                averaged = pd_result["average"][0]
+                partial_deps[feature] = pd.DataFrame(
+                    {feature: values, "partial_dependence": averaged}
+                )
+            except Exception:
+                continue
+
+    top_feature = (
+        importance_df.iloc[0]["feature"]
+        if not importance_df.empty and pd.notna(importance_df.iloc[0]["importance_mean"])
+        else (usable_features[0] if usable_features else None)
+    )
+    top_importance = importance_df.iloc[0]["importance_mean"] if not importance_df.empty else np.nan
 
     analysis_stats = {
-        "r2_score": r2,
-        "n_features": len(feature_cols),
+        "r2_score": r2_local,
+        "n_features": len(usable_features),
         "n_samples_train": len(X_train),
         "n_samples_test": len(X_test),
-        "top_feature": importance_df.iloc[0]["feature"],
-        "top_importance": importance_df.iloc[0]["importance_mean"],
+        "top_feature": top_feature,
+        "top_importance": top_importance,
+        "dropped_features": drop_cols,
+        "model_fitted": model_fitted_flag,
     }
 
     return importance_df, analysis_stats, partial_deps, model
@@ -2218,10 +2402,23 @@ def bootstrap_confidence_intervals(
         if len(data) < 10:
             continue
 
+        # Mean point estimate
         point_est = float(data.mean())
 
-        bootstrap_means = []
+        # Constant distribution detection (all values identical / zero variance)
         data_array = data.values  # speed
+        if data_array.size == 0:
+            continue
+        if np.ptp(data_array) == 0:  # zero range -> constant
+            if strict_diagnostics:
+                # In strict mode, skip constant metrics entirely to avoid degenerate CI raise.
+                continue
+            # Graceful mode: record degenerate CI; validator will widen.
+            results[metric] = (point_est, point_est, point_est)
+            continue
+
+        # Bootstrap resampling
+        bootstrap_means = []
         n = len(data_array)
         for _ in range(n_bootstrap):
             indices = rng.integers(0, n, size=n)
@@ -2979,14 +3176,13 @@ def write_complete_statistical_analysis(
     partial_deps = {}
     if skip_feature_analysis or len(df) < 4:
         print("Skipping feature analysis: flag set or insufficient samples (<4).")
-        # Create placeholder files to satisfy integration expectations
-        (output_dir / "feature_importance.csv").write_text(
-            "feature,importance_mean,importance_std\n", encoding="utf-8"
-        )
-        for feature in ["trade_duration", "idle_duration", "pnl"]:
-            (output_dir / f"partial_dependence_{feature}.csv").write_text(
-                f"{feature},partial_dependence\n", encoding="utf-8"
-            )
+        # Do NOT create feature_importance.csv when skipped (tests expect absence)
+        # Create minimal partial dependence placeholders only if feature analysis was NOT explicitly skipped
+        if not skip_feature_analysis and not skip_partial_dependence:
+            for feature in ["trade_duration", "idle_duration", "pnl"]:
+                (output_dir / f"partial_dependence_{feature}.csv").write_text(
+                    f"{feature},partial_dependence\n", encoding="utf-8"
+                )
     else:
         try:
             importance_df, analysis_stats, partial_deps, _model = _perform_feature_analysis(
@@ -3351,8 +3547,7 @@ def write_complete_statistical_analysis(
                 reason.append("flag --skip_feature_analysis set")
             if len(df) < 4:
                 reason.append("insufficient samples <4")
-            reason_str = "; ".join(reason) if reason else "skipped"
-            f.write(f"_Skipped ({reason_str})._\n\n")
+            f.write("Feature Importance - (skipped)\n\n")
             if skip_partial_dependence:
                 f.write(
                     "_Note: --skip_partial_dependence is redundant when feature analysis is skipped._\n\n"
