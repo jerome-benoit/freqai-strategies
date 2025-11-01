@@ -45,11 +45,11 @@
     "privateKey": "",
     "ccxt_config": {
       "enableRateLimit": true,
-      "rateLimit": 60
+      // "rateLimit": 60
     },
     "ccxt_async_config": {
       "enableRateLimit": true,
-      "rateLimit": 60
+      // "rateLimit": 60
     },
     // Spot top 5
     "pair_whitelist": [
