@@ -76,18 +76,6 @@ class QuickAdapterV3(IStrategy):
     stoploss = -0.02
     use_custom_stoploss = True
 
-    order_types = {
-        "entry": "limit",
-        "exit": "limit",
-        "emergency_exit": "limit",
-        "force_exit": "limit",
-        "force_entry": "limit",
-        "stoploss": "limit",
-        "stoploss_on_exchange": False,
-        "stoploss_on_exchange_interval": 60,
-        "stoploss_on_exchange_limit_ratio": 0.99,
-    }
-
     default_exit_thresholds: dict[str, float] = {
         "k_decl_v": 0.6,
         "k_decl_a": 0.4,
@@ -101,7 +89,7 @@ class QuickAdapterV3(IStrategy):
         "lookback_period": 0,
         "decay_ratio": 0.5,
         "min_natr_ratio_percent": 0.0099,
-        "max_natr_ratio_percent": 0.4,
+        "max_natr_ratio_percent": 0.33,
     }
 
     position_adjustment_enable = True
