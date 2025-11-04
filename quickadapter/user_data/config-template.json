@@ -52,7 +52,7 @@
       // "rateLimit": 60
     },
     // Spot top 5
-    "pair_whitelist": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
+    "pair_whitelist": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"],
     // // Spot IA
     // "pair_whitelist": [
     //     "NEAR/USDT",
@@ -143,7 +143,7 @@
         "5m",
         "15m",
         "1h",
-        "4h"
+        "4h",
         // "1d"
       ],
       "label_period_candles": 18,

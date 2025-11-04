@@ -53,7 +53,7 @@
       // "rateLimit": 60
     },
     // Spot top 5
-    "pair_whitelist": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
+    "pair_whitelist": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"],
     // // Spot IA
     // "pair_whitelist": [
     //     "NEAR/USDT",
@@ -114,7 +114,13 @@
     "track_performance": false,
     "feature_parameters": {
       "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
-      "include_timeframes": ["5m", "15m", "1h", "4h"],
+      "include_timeframes": [
+        "5m",
+        "15m",
+        "1h",
+        "4h",
+        // "1d"
+      ],
       "include_shifted_candles": 6,
       "weight_factor": 0.9,
       "principal_component_analysis": false,
