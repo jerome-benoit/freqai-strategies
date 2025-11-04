@@ -44,11 +44,11 @@
     "walletAddress": "",
     "privateKey": "",
     "ccxt_config": {
-      "enableRateLimit": true
+      "enableRateLimit": true,
       // "rateLimit": 60
     },
     "ccxt_async_config": {
-      "enableRateLimit": true
+      "enableRateLimit": true,
       // "rateLimit": 60
     },
     // Spot top 5
