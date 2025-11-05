@@ -1,6 +1,7 @@
+import datetime
 import logging
 from functools import cached_property, reduce
-from typing import Any
+from typing import Any, Optional
 
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
@@ -117,6 +118,33 @@ class RLAgentStrategy(IStrategy):
                     dataframe.at[last_index, "exit_long"] = 1
 
         return dataframe
+
+    def leverage(
+        self,
+        pair: str,
+        current_time: datetime.datetime,
+        current_rate: float,
+        proposed_leverage: float,
+        max_leverage: float,
+        entry_tag: Optional[str],
+        side: str,
+        **kwargs: Any,
+    ) -> float:
+        """
+        Customize leverage for each new trade. This method is only called in trading modes
+        which allow leverage (margin / futures). The strategy is expected to return a
+        leverage value between 1.0 and max_leverage.
+
+        :param pair: Pair that's currently analyzed
+        :param current_time: datetime object, containing the current datetime
+        :param current_rate: Rate, calculated based on pricing settings in exit_pricing.
+        :param proposed_leverage: A leverage proposed by the bot.
+        :param max_leverage: Max leverage allowed on this pair
+        :param entry_tag: Optional entry_tag (buy_tag) if provided with the buy signal.
+        :param side: 'long' or 'short' - indicating the direction of the proposed trade
+        :return: A leverage amount, which will be between 1.0 and max_leverage.
+        """
+        return min(self.config.get("leverage", proposed_leverage), max_leverage)
 
     def is_short_allowed(self) -> bool:
         trading_mode = self.config.get("trading_mode")
