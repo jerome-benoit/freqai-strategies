@@ -69,7 +69,7 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     def version(self) -> str:
-        return "3.3.164"
+        return "3.3.165"
 
     timeframe = "5m"
 
@@ -1093,6 +1093,20 @@ class QuickAdapterV3(IStrategy):
         if trade_partial_exit:
             trade_stake_percent = self.partial_exit_stages[trade_exit_stage][1]
             trade_partial_stake_amount = trade.stake_amount * trade_stake_percent
+            if min_stake and trade_partial_stake_amount < min_stake:
+                logger.info(
+                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"Stake amount {format_number(trade_partial_stake_amount)} < min_stake {format_number(min_stake)}, "
+                    f"clamped to {format_number(min_stake)}"
+                )
+                trade_partial_stake_amount = min_stake
+            elif max_stake and trade_partial_stake_amount > max_stake:
+                logger.info(
+                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"Stake amount {format_number(trade_partial_stake_amount)} > max_stake {format_number(max_stake)}, "
+                    f"clamped to {format_number(max_stake)}"
+                )
+                trade_partial_stake_amount = max_stake
             return (
                 -trade_partial_stake_amount,
                 f"take_profit_{trade.trade_direction}_{trade_exit_stage}",
