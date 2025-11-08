@@ -91,6 +91,7 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.train_candles_step | 10               | int >= 1 | Step for training sets size search space.                                       |
 | freqai.optuna_hyperopt.space_reduction | false            | bool | Enable/disable HPO search space reduction based on previous best parameters.    |
 | freqai.optuna_hyperopt.expansion_ratio | 0.4              | float [0,1] | HPO search space expansion ratio.                                               |
+| freqai.optuna_hyperopt.min_resource | 3                | int >= 1 | Minimum resource per Hyperband pruner rung.           |
 | freqai.optuna_hyperopt.seed | 1                | int >= 0 | HPO RNG seed.                                                                   |
 
 ## ReforceXY

@@ -84,6 +84,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "train_candles_step": 10,
             "space_reduction": False,
             "expansion_ratio": 0.4,
+            "min_resource": 3,
             "seed": 1,
         }
         return {
@@ -1533,8 +1534,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise ValueError(
                 "Cannot specify both 'direction' and 'directions'. Use one or the other"
             )
+
+        is_study_single_objective = direction is not None and directions is None
+        if not is_study_single_objective:
+            if directions is None or len(directions) < 2:
+                raise ValueError(
+                    "Multi-objective study must have at least 2 directions specified"
+                )
+
         identifier = self.freqai_info.get("identifier")
         study_name = f"{identifier}-{pair}-{namespace}"
+
         try:
             storage = self.optuna_storage(pair)
         except Exception as e:
@@ -1548,19 +1558,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if continuous:
             QuickAdapterRegressorV3.optuna_study_delete(study_name, storage)
 
-        is_study_single_objective = direction is not None and directions is None
-        if (
-            not is_study_single_objective
-            and isinstance(directions, list)
-            and len(directions) < 2
-        ):
-            raise ValueError(
-                "Multi-objective study must have at least 2 directions specified"
-            )
         if is_study_single_objective:
-            pruner = optuna.pruners.HyperbandPruner(min_resource=3)
+            pruner = optuna.pruners.HyperbandPruner(
+                min_resource=self._optuna_config.get("min_resource")
+            )
         else:
             pruner = optuna.pruners.NopPruner()
+
         try:
             return optuna.create_study(
                 study_name=study_name,
@@ -1861,7 +1865,7 @@ def label_objective(
     df = df.iloc[-(max(2, int(label_period_cycles)) * label_period_candles) :]
 
     if df.empty:
-        return -np.inf, -np.inf
+        return -np.inf, 0
 
     _, pivots_values, _, pivots_thresholds = zigzag(
         df,
