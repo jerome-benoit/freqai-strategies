@@ -811,15 +811,13 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
-        exit_side = "buy" if trade.is_short else "sell"
-        try:
-            return sum(
-                1
-                for order in trade.orders
-                if order.side == exit_side and order.status in {"open", "closed"}
+        n_open_orders = 0
+        if trade.has_open_orders:
+            exit_side = "buy" if trade.is_short else "sell"
+            n_open_orders = sum(
+                1 for open_order in trade.open_orders if open_order.side == exit_side
             )
-        except Exception:
-            return 0
+        return trade.nr_of_successful_exits + n_open_orders
 
     @staticmethod
     @lru_cache(maxsize=128)
