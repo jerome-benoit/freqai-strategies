@@ -30,7 +30,6 @@ from Utils import (
     get_distance,
     get_label_defaults,
     get_zl_ma_fn,
-    midpoint,
     non_zero_diff,
     price_retracement_percent,
     smooth_extrema,
@@ -70,7 +69,7 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     def version(self) -> str:
-        return "3.3.166"
+        return "3.3.167"
 
     timeframe = "5m"
 
@@ -1046,57 +1045,6 @@ class QuickAdapterV3(IStrategy):
             )
         return trade_take_profit_price_history
 
-    @staticmethod
-    def _interp_partial_stake_amount(
-        stake_amount: float,
-        percent: float,
-        min_percent: float,
-        max_percent: float,
-        min_stake: float,
-        max_stake: float,
-    ) -> float:
-        max_stake = max_stake if max_stake > 0 else stake_amount
-        if max_stake < min_stake:
-            max_stake = min_stake
-        if max_percent <= min_percent or not np.isfinite(max_percent - min_percent):
-            return float(midpoint(min_stake, max_stake))
-        interp_partial_stake_amount = float(
-            np.interp(percent, [min_percent, max_percent], [min_stake, max_stake])
-        )
-        if interp_partial_stake_amount < min_stake:
-            return float(min_stake)
-        return (
-            float(max_stake)
-            if interp_partial_stake_amount > max_stake
-            else interp_partial_stake_amount
-        )
-
-    @staticmethod
-    @lru_cache(maxsize=8)
-    def get_min_stake_multiplier(
-        percent: float,
-        min_percent: float,
-        max_percent: float,
-        min_multiplier: float = 1.15,
-        max_multiplier: float = 1.40,
-    ) -> float:
-        if not (
-            isinstance(percent, (int, float))
-            and isinstance(min_percent, (int, float))
-            and isinstance(max_percent, (int, float))
-        ):
-            return min_multiplier
-        if max_percent <= min_percent or not np.isfinite(max_percent - min_percent):
-            return min_multiplier
-        normalized_percent = (percent - min_percent) / (max_percent - min_percent)
-        if not np.isfinite(normalized_percent):
-            return min_multiplier
-        if normalized_percent < 0.0:
-            normalized_percent = 0.0
-        elif normalized_percent > 1.0:
-            normalized_percent = 1.0
-        return min_multiplier + (max_multiplier - min_multiplier) * normalized_percent
-
     def adjust_trade_position(
         self,
         trade: Trade,
@@ -1144,37 +1092,18 @@ class QuickAdapterV3(IStrategy):
             )
         if trade_partial_exit:
             if min_stake is None:
-                min_stake = np.finfo(float).eps
-            percent = self.partial_exit_stages[trade_exit_stage][1]
-            percent_values = [
-                v[1]
-                for v in self.partial_exit_stages.values()
-                if isinstance(v[1], (int, float))
-            ]
-            min_percent = min(percent_values)
-            max_percent = max(percent_values)
-            trade_partial_stake_amount = QuickAdapterV3._interp_partial_stake_amount(
-                stake_amount=trade.stake_amount,
-                percent=percent,
-                min_percent=min_percent,
-                max_percent=max_percent,
-                min_stake=min_stake,
-                max_stake=max_stake,
-            )
-            safe_min_stake = min_stake * QuickAdapterV3.get_min_stake_multiplier(
-                percent=percent,
-                min_percent=min_percent,
-                max_percent=max_percent,
-            )
+                min_stake = 0.0
+            if min_stake > trade.stake_amount:
+                return None
+            trade_stake_percent = self.partial_exit_stages[trade_exit_stage][1]
+            trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             remaining_stake_amount = trade.stake_amount - trade_partial_stake_amount
-            if remaining_stake_amount < safe_min_stake:
+            if remaining_stake_amount < min_stake:
+                initial_trade_partial_stake_amount = trade_partial_stake_amount
+                trade_partial_stake_amount = trade.stake_amount - min_stake
                 logger.info(
-                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | Remaining stake amount {format_number(remaining_stake_amount)} < safe_min_stake {format_number(safe_min_stake)}, closing position"
-                )
-                last_exit_stage = max(self.partial_exit_stages.keys()) + 1
-                return (
-                    -trade.stake_amount,
-                    f"take_profit_{trade.trade_direction}_{last_exit_stage}",
+                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} to {format_number(trade_partial_stake_amount)} to respect min_stake {format_number(min_stake)}"
                 )
             return (
                 -trade_partial_stake_amount,
