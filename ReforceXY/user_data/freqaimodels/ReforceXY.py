@@ -2448,7 +2448,6 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         Execute trade based on the given action
         """
-
         if not self.is_tradesignal(action):
             return None
 
