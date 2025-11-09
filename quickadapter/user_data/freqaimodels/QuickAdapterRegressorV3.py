@@ -595,12 +595,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pair, "label"
         ).get("label_natr_ratio")
 
-        dk.data["extra_returns_per_train"]["hp_rmse"] = self.get_optuna_value(
-            pair, "hp"
+        hp_rmse = self.validate_optuna_value(self.get_optuna_value(pair, "hp"))
+        dk.data["extra_returns_per_train"]["hp_rmse"] = (
+            hp_rmse if hp_rmse is not None else np.inf
         )
-        dk.data["extra_returns_per_train"]["train_rmse"] = self.get_optuna_value(
-            pair, "train"
+        train_rmse = self.validate_optuna_value(self.get_optuna_value(pair, "train"))
+        dk.data["extra_returns_per_train"]["train_rmse"] = (
+            train_rmse
+            if (train_rmse is not None and hp_rmse is not None and train_rmse < hp_rmse)
+            else np.inf
         )
+
+    @staticmethod
+    def validate_optuna_value(value: Any) -> Optional[float]:
+        return value if isinstance(value, (int, float)) and np.isfinite(value) else None
 
     @staticmethod
     def eval_set_and_weights(
@@ -1598,13 +1606,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(best_values, list)
                 and len(best_values) == n_objectives
                 and all(
-                    isinstance(value, (int, float)) and np.isfinite(value)
+                    self.validate_optuna_value(value) is not None
                     for value in best_values
                 )
             )
         else:
             best_value = self.get_optuna_value(pair, namespace)
-            return isinstance(best_value, (int, float)) and np.isfinite(best_value)
+            return self.validate_optuna_value(best_value) is not None
 
     def optuna_enqueue_previous_best_params(
         self, pair: str, namespace: str, study: Optional[optuna.study.Study]
