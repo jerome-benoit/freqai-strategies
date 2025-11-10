@@ -75,8 +75,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 max(int(self.max_system_threads / 4), 1),
             ),
             "storage": "file",
-            "continuous": False,
-            "warm_start": False,
+            "continuous": True,
+            "warm_start": True,
             "n_startup_trials": 15,
             "n_trials": 50,
             "timeout": 7200,
@@ -84,6 +84,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "train_candles_step": 10,
             "space_reduction": False,
             "expansion_ratio": 0.4,
+            "min_resource": 3,
             "seed": 1,
         }
         return {
@@ -594,12 +595,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pair, "label"
         ).get("label_natr_ratio")
 
-        dk.data["extra_returns_per_train"]["hp_rmse"] = self.get_optuna_value(
-            pair, "hp"
+        hp_rmse = self.validate_optuna_value(self.get_optuna_value(pair, "hp"))
+        dk.data["extra_returns_per_train"]["hp_rmse"] = (
+            hp_rmse if hp_rmse is not None else np.inf
         )
-        dk.data["extra_returns_per_train"]["train_rmse"] = self.get_optuna_value(
-            pair, "train"
+        train_rmse = self.validate_optuna_value(self.get_optuna_value(pair, "train"))
+        dk.data["extra_returns_per_train"]["train_rmse"] = (
+            train_rmse
+            if (train_rmse is not None and hp_rmse is not None and train_rmse < hp_rmse)
+            else np.inf
         )
+
+    @staticmethod
+    def validate_optuna_value(value: Any) -> Optional[float]:
+        return value if isinstance(value, (int, float)) and np.isfinite(value) else None
 
     @staticmethod
     def eval_set_and_weights(
@@ -1533,8 +1542,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise ValueError(
                 "Cannot specify both 'direction' and 'directions'. Use one or the other"
             )
+
+        is_study_single_objective = direction is not None and directions is None
+        if not is_study_single_objective:
+            if directions is None or len(directions) < 2:
+                raise ValueError(
+                    "Multi-objective study must have at least 2 directions specified"
+                )
+
         identifier = self.freqai_info.get("identifier")
         study_name = f"{identifier}-{pair}-{namespace}"
+
         try:
             storage = self.optuna_storage(pair)
         except Exception as e:
@@ -1548,19 +1566,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if continuous:
             QuickAdapterRegressorV3.optuna_study_delete(study_name, storage)
 
-        is_study_single_objective = direction is not None and directions is None
-        if (
-            not is_study_single_objective
-            and isinstance(directions, list)
-            and len(directions) < 2
-        ):
-            raise ValueError(
-                "Multi-objective study must have at least 2 directions specified"
-            )
         if is_study_single_objective:
-            pruner = optuna.pruners.HyperbandPruner(min_resource=3)
+            pruner = optuna.pruners.HyperbandPruner(
+                min_resource=self._optuna_config.get("min_resource")
+            )
         else:
             pruner = optuna.pruners.NopPruner()
+
         try:
             return optuna.create_study(
                 study_name=study_name,
@@ -1594,13 +1606,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(best_values, list)
                 and len(best_values) == n_objectives
                 and all(
-                    isinstance(value, (int, float)) and np.isfinite(value)
+                    self.validate_optuna_value(value) is not None
                     for value in best_values
                 )
             )
         else:
             best_value = self.get_optuna_value(pair, namespace)
-            return isinstance(best_value, (int, float)) and np.isfinite(best_value)
+            return self.validate_optuna_value(best_value) is not None
 
     def optuna_enqueue_previous_best_params(
         self, pair: str, namespace: str, study: Optional[optuna.study.Study]
@@ -1861,7 +1873,7 @@ def label_objective(
     df = df.iloc[-(max(2, int(label_period_cycles)) * label_period_candles) :]
 
     if df.empty:
-        return -np.inf, -np.inf
+        return -np.inf, 0
 
     _, pivots_values, _, pivots_thresholds = zigzag(
         df,

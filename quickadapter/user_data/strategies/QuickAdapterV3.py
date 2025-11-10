@@ -69,11 +69,11 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     def version(self) -> str:
-        return "3.3.164"
+        return "3.3.168"
 
     timeframe = "5m"
 
-    stoploss = -0.02
+    stoploss = -0.025
     use_custom_stoploss = True
 
     default_exit_thresholds: dict[str, float] = {
@@ -89,7 +89,7 @@ class QuickAdapterV3(IStrategy):
         "lookback_period": 0,
         "decay_ratio": 0.5,
         "min_natr_ratio_percent": 0.0099,
-        "max_natr_ratio_percent": 0.33,
+        "max_natr_ratio_percent": 0.2,
     }
 
     position_adjustment_enable = True
@@ -811,15 +811,13 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
-        exit_side = "buy" if trade.is_short else "sell"
-        try:
-            return sum(
-                1
-                for order in trade.orders
-                if order.side == exit_side and order.status in {"open", "closed"}
+        n_open_orders = 0
+        if trade.has_open_orders:
+            exit_side = "buy" if trade.is_short else "sell"
+            n_open_orders = sum(
+                1 for open_order in trade.open_orders if open_order.side == exit_side
             )
-        except Exception:
-            return 0
+        return trade.nr_of_successful_exits + n_open_orders
 
     @staticmethod
     @lru_cache(maxsize=128)
@@ -1091,8 +1089,20 @@ class QuickAdapterV3(IStrategy):
                 ),
             )
         if trade_partial_exit:
+            if min_stake is None:
+                min_stake = 0.0
+            if min_stake > trade.stake_amount:
+                return None
             trade_stake_percent = self.partial_exit_stages[trade_exit_stage][1]
-            trade_partial_stake_amount = trade.stake_amount * trade_stake_percent
+            trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
+            remaining_stake_amount = trade.stake_amount - trade_partial_stake_amount
+            if remaining_stake_amount < min_stake:
+                initial_trade_partial_stake_amount = trade_partial_stake_amount
+                trade_partial_stake_amount = trade.stake_amount - min_stake
+                logger.info(
+                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} to {format_number(trade_partial_stake_amount)} to respect min_stake {format_number(min_stake)}"
+                )
             return (
                 -trade_partial_stake_amount,
                 f"take_profit_{trade.trade_direction}_{trade_exit_stage}",
