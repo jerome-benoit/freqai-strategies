@@ -140,13 +140,7 @@
     },
     "feature_parameters": {
       "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
-      "include_timeframes": [
-        "5m",
-        "15m",
-        "1h",
-        "4h",
-        // "1d"
-      ],
+      "include_timeframes": ["5m", "15m", "1h", "4h"],
       "label_period_candles": 18,
       "label_metric": "euclidean",
       "label_weights": [0.5, 0.5],
