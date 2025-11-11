@@ -89,7 +89,7 @@ class QuickAdapterV3(IStrategy):
         "lookback_period": 0,
         "decay_ratio": 0.5,
         "min_natr_ratio_percent": 0.0099,
-        "max_natr_ratio_percent": 0.2,
+        "max_natr_ratio_percent": 0.33,
     }
 
     position_adjustment_enable = True
