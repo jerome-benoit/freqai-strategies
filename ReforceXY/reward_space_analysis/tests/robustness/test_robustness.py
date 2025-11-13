@@ -3,7 +3,6 @@
 
 import math
 import unittest
-import warnings
 
 import numpy as np
 import pytest
@@ -14,16 +13,17 @@ from reward_space_analysis import (
     Actions,
     Positions,
     RewardContext,
-    RewardDiagnosticsWarning,
     _get_exit_factor,
     calculate_reward,
     simulate_samples,
 )
 
 from ..helpers import (
+    assert_diagnostic_warning,
     assert_exit_factor_attenuation_modes,
     assert_exit_mode_mathematical_validation,
     assert_single_active_component_with_additives,
+    capture_warnings,
 )
 from ..test_base import RewardSpaceTestBase
 
@@ -205,8 +205,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with capture_warnings() as caught:
             baseline = calculate_reward(
                 context,
                 params,
@@ -532,8 +531,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         pnl = 0.05
         pnl_factor = 1.0
         duration_ratio = 0.8
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", RewardDiagnosticsWarning)
+        with assert_diagnostic_warning(["Unknown exit_attenuation_mode"]):
             f_unknown = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
         linear_params = self.base_params(exit_attenuation_mode="linear", exit_plateau=False)
         f_linear = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, linear_params)
@@ -542,14 +540,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             f_linear,
             tolerance=self.TOL_IDENTITY_RELAXED,
             msg=f"Fallback linear mismatch unknown={f_unknown} linear={f_linear}",
-        )
-        diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
-        self.assertTrue(
-            diag_warnings, "No RewardDiagnosticsWarning emitted for unknown mode fallback"
-        )
-        self.assertTrue(
-            any("Unknown exit_attenuation_mode" in str(w.message) for w in diag_warnings),
-            "Fallback warning message content mismatch",
         )
 
     # Owns invariant: robustness-negative-grace-clamp-103
@@ -565,8 +555,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         pnl = 0.03
         pnl_factor = 1.0
         duration_ratio = 0.5
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", RewardDiagnosticsWarning)
+        with assert_diagnostic_warning(["exit_plateau_grace < 0"]):
             f_neg = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
         # Reference with grace=0.0 (since negative should clamp)
         ref_params = self.base_params(
@@ -581,12 +570,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             f_ref,
             tolerance=self.TOL_IDENTITY_RELAXED,
             msg=f"Negative grace clamp mismatch f_neg={f_neg} f_ref={f_ref}",
-        )
-        diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
-        self.assertTrue(diag_warnings, "No RewardDiagnosticsWarning for negative grace")
-        self.assertTrue(
-            any("exit_plateau_grace < 0" in str(w.message) for w in diag_warnings),
-            "Warning content missing for negative grace clamp",
         )
 
     # Owns invariant: robustness-invalid-power-tau-104
@@ -603,13 +586,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             params = self.base_params(
                 exit_attenuation_mode="power", exit_power_tau=tau, exit_plateau=False
             )
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", RewardDiagnosticsWarning)
+            with assert_diagnostic_warning(["exit_power_tau"]):
                 f0 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.0, params)
                 f1 = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
-            diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
-            self.assertTrue(diag_warnings, f"No RewardDiagnosticsWarning for invalid tau={tau}")
-            self.assertTrue(any("exit_power_tau" in str(w.message) for w in diag_warnings))
             ratio = f1 / max(f0, self.TOL_NUMERIC_GUARD)
             self.assertAlmostEqual(
                 ratio,
@@ -628,20 +607,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         near_zero_values = [1e-15, 1e-12, 5e-14]
         for hl in near_zero_values:
             params = self.base_params(exit_attenuation_mode="half_life", exit_half_life=hl)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", RewardDiagnosticsWarning)
+            with assert_diagnostic_warning(["exit_half_life", "close to 0"]):
                 _ = _get_exit_factor(base_factor, pnl, pnl_factor, 0.0, params)
                 fdr = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
-            diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
-            self.assertTrue(
-                diag_warnings, f"No RewardDiagnosticsWarning for near-zero half-life hl={hl}"
-            )
-            self.assertTrue(
-                any(
-                    "exit_half_life" in str(w.message) and "close to 0" in str(w.message)
-                    for w in diag_warnings
-                )
-            )
             self.assertAlmostEqualFloat(
                 fdr,
                 1.0 * pnl_factor,  # Kernel returns 1.0 then * pnl_factor

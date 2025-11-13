@@ -17,6 +17,9 @@ from reward_space_analysis import (
 )
 
 from ..helpers import (
+    RewardScenarioConfig,
+    ThresholdTestConfig,
+    ValidationConfig,
     assert_component_sum_integrity,
     assert_exit_factor_plateau_behavior,
     assert_hold_penalty_threshold_behavior,
@@ -45,13 +48,9 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_hold_penalty_basic_calculation(self):
         """Test hold penalty calculation when trade_duration exceeds max_duration.
 
-        Tests:
-            - Hold penalty is negative when duration exceeds threshold
-            - Component sum integrity maintained
-
-        Expected behavior:
-            - trade_duration > max_duration → hold_penalty < 0
-            - Total reward equals sum of active components
+        Verifies:
+        - trade_duration > max_duration → hold_penalty < 0
+        - Total reward equals sum of active components
         """
         context = self.make_ctx(
             pnl=0.01,
@@ -72,24 +71,20 @@ class TestRewardComponents(RewardSpaceTestBase):
             action_masking=True,
         )
         self.assertLess(breakdown.hold_penalty, 0, "Hold penalty should be negative")
-        assert_component_sum_integrity(
-            self,
-            breakdown,
-            self.TOL_IDENTITY_RELAXED,
+        config = ValidationConfig(
+            tolerance_strict=self.TOL_IDENTITY_STRICT,
+            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
             exclude_components=["idle_penalty", "exit_component", "invalid_penalty"],
             component_description="hold + shaping/additives",
         )
+        assert_component_sum_integrity(self, breakdown, config)
 
     def test_hold_penalty_threshold_behavior(self):
         """Test hold penalty activation at max_duration threshold.
 
-        Tests:
-            - No penalty before max_duration
-            - Penalty activation at and after max_duration
-
-        Expected behavior:
-            - duration < max_duration → hold_penalty = 0
-            - duration >= max_duration → hold_penalty <= 0
+        Verifies:
+        - duration < max_duration → hold_penalty = 0
+        - duration >= max_duration → hold_penalty <= 0
         """
         max_duration = 128
         threshold_test_cases = [
@@ -108,31 +103,32 @@ class TestRewardComponents(RewardSpaceTestBase):
                 action=Actions.Neutral,
             )
 
+        config = ThresholdTestConfig(
+            max_duration=max_duration,
+            test_cases=threshold_test_cases,
+            tolerance=self.TOL_IDENTITY_RELAXED,
+        )
         assert_hold_penalty_threshold_behavior(
             self,
-            threshold_test_cases,
-            max_duration,
             context_factory,
             self.DEFAULT_PARAMS,
             self.TEST_BASE_FACTOR,
             self.TEST_PROFIT_TARGET,
             1.0,
-            self.TOL_IDENTITY_RELAXED,
+            config,
         )
 
     def test_hold_penalty_progressive_scaling(self):
         """Test hold penalty scales progressively with increasing duration.
 
-        Tests:
-            - Penalty magnitude increases monotonically with duration
-            - Progressive scaling beyond max_duration threshold
-
-        Expected behavior:
-            - For d1 < d2 < d3: penalty(d1) >= penalty(d2) >= penalty(d3)
-            - Penalties become more negative with longer durations
+        Verifies:
+        - For d1 < d2 < d3: penalty(d1) >= penalty(d2) >= penalty(d3)
+        - Progressive scaling beyond max_duration threshold
         """
+        from ..constants import SCENARIOS
+
         params = self.base_params(max_trade_duration_candles=100)
-        durations = [150, 200, 300]
+        durations = list(SCENARIOS.DURATION_SCENARIOS)
         penalties = []
         for duration in durations:
             context = self.make_ctx(
@@ -158,13 +154,9 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_idle_penalty_calculation(self):
         """Test idle penalty calculation for neutral idle state.
 
-        Tests:
-            - Idle penalty is negative for idle duration > 0
-            - Component sum integrity maintained
-
-        Expected behavior:
-            - idle_duration > 0 → idle_penalty < 0
-            - Total reward equals sum of active components
+        Verifies:
+        - idle_duration > 0 → idle_penalty < 0
+        - Component sum integrity maintained
         """
         context = self.make_ctx(
             pnl=0.0,
@@ -178,35 +170,34 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         def validate_idle_penalty(test_case, breakdown, description, tolerance):
             test_case.assertLess(breakdown.idle_penalty, 0, "Idle penalty should be negative")
-            assert_component_sum_integrity(
-                test_case,
-                breakdown,
-                tolerance,
+            config = ValidationConfig(
+                tolerance_strict=test_case.TOL_IDENTITY_STRICT,
+                tolerance_relaxed=tolerance,
                 exclude_components=["hold_penalty", "exit_component", "invalid_penalty"],
                 component_description="idle + shaping/additives",
             )
+            assert_component_sum_integrity(test_case, breakdown, config)
 
         scenarios = [(context, self.DEFAULT_PARAMS, "idle_penalty_basic")]
+        config = RewardScenarioConfig(
+            base_factor=self.TEST_BASE_FACTOR,
+            profit_target=self.TEST_PROFIT_TARGET,
+            risk_reward_ratio=1.0,
+            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
+        )
         assert_reward_calculation_scenarios(
             self,
             scenarios,
-            self.TEST_BASE_FACTOR,
-            self.TEST_PROFIT_TARGET,
-            1.0,
+            config,
             validate_idle_penalty,
-            self.TOL_IDENTITY_RELAXED,
         )
 
     def test_efficiency_zero_policy(self):
         """Test efficiency zero policy produces expected PnL factor.
 
-        Tests:
-            - PnL factor calculation with efficiency weight = 0
-            - Finite and positive factor values
-
-        Expected behavior:
-            - efficiency_weight = 0 → pnl_factor ≈ 1.0
-            - Factor is finite and well-defined
+        Verifies:
+        - efficiency_weight = 0 → pnl_factor ≈ 1.0
+        - Factor is finite and positive
         """
         ctx = self.make_ctx(
             pnl=0.0,
@@ -225,13 +216,9 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_max_idle_duration_candles_logic(self):
         """Test max idle duration candles parameter affects penalty magnitude.
 
-        Tests:
-            - Smaller max_idle_duration → larger penalty magnitude
-            - Larger max_idle_duration → smaller penalty magnitude
-            - Both penalties are negative
-
-        Expected behavior:
-            - penalty(max=50) < penalty(max=200) < 0
+        Verifies:
+        - penalty(max=50) < penalty(max=200) < 0
+        - Smaller max → larger penalty magnitude
         """
         params_small = self.base_params(max_idle_duration_candles=50)
         params_large = self.base_params(max_idle_duration_candles=200)
@@ -271,13 +258,9 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         Non-owning smoke test; ownership: robustness/test_robustness.py:35
 
-        Tests:
-            - Exit factor finiteness for linear and power modes
-            - Plateau behavior with grace period
-
-        Expected behavior:
-            - All exit factors are finite and positive
-            - Plateau mode attenuates after grace period
+        Verifies:
+        - Exit factors are finite and positive (linear, power modes)
+        - Plateau mode attenuates after grace period
         """
         modes_to_test = ["linear", "power"]
         for mode in modes_to_test:
@@ -307,13 +290,9 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_idle_penalty_zero_when_profit_target_zero(self):
         """Test idle penalty is zero when profit_target is zero.
 
-        Tests:
-            - profit_target = 0 → idle_penalty = 0
-            - Total reward is zero in this configuration
-
-        Expected behavior:
-            - profit_target = 0 → idle_factor = 0 → idle_penalty = 0
-            - No other components active for neutral idle state
+        Verifies:
+        - profit_target = 0 → idle_penalty = 0
+        - Total reward is zero in this configuration
         """
         context = self.make_ctx(
             pnl=0.0,
@@ -332,28 +311,26 @@ class TestRewardComponents(RewardSpaceTestBase):
             )
 
         scenarios = [(context, self.DEFAULT_PARAMS, "profit_target_zero")]
+        config = RewardScenarioConfig(
+            base_factor=self.TEST_BASE_FACTOR,
+            profit_target=0.0,
+            risk_reward_ratio=self.TEST_RR,
+            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
+        )
         assert_reward_calculation_scenarios(
             self,
             scenarios,
-            self.TEST_BASE_FACTOR,
-            0.0,  # profit_target=0
-            self.TEST_RR,
+            config,
             validate_zero_penalty,
-            self.TOL_IDENTITY_RELAXED,
         )
 
     def test_win_reward_factor_saturation(self):
         """Test PnL amplification factor saturates at asymptotic limit.
 
-        Tests:
-            - Amplification ratio increases monotonically with PnL
-            - Saturation approaches (1 + win_reward_factor)
-            - Mathematical formula validation
-
-        Expected behavior:
-            - As PnL → ∞: amplification → (1 + win_reward_factor)
-            - Monotonic increase: ratio(PnL1) <= ratio(PnL2) for PnL1 < PnL2
-            - Observed matches theoretical tanh-based formula
+        Verifies:
+        - Amplification ratio increases monotonically with PnL
+        - Saturation approaches (1 + win_reward_factor)
+        - Observed matches theoretical saturation behavior
         """
         win_reward_factor = 3.0
         beta = 0.5
@@ -421,22 +398,16 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_idle_penalty_fallback_and_proportionality(self):
         """Test idle penalty fallback and proportional scaling behavior.
 
-        Tests:
-            - Fallback to max_trade_duration when max_idle_duration is None
-            - Proportional scaling with idle duration (2:1 ratio validation)
-            - Mathematical validation of penalty formula
-
-        Expected behavior:
-            - max_idle_duration = None → use max_trade_duration as fallback
-            - penalty(duration=40) ≈ 2 × penalty(duration=20)
-            - Formula: penalty ∝ (duration/max)^power × scale
+        Verifies:
+        - max_idle_duration = None → use max_trade_duration as fallback
+        - penalty(duration=40) ≈ 2 × penalty(duration=20)
+        - Proportional scaling with idle duration
         """
         params = self.base_params(max_idle_duration_candles=None, max_trade_duration_candles=100)
         base_factor = 90.0
         profit_target = self.TEST_PROFIT_TARGET
         risk_reward_ratio = 1.0
 
-        # Generate test contexts using helper
         base_context_kwargs = {
             "pnl": 0.0,
             "trade_duration": 0,
@@ -448,7 +419,6 @@ class TestRewardComponents(RewardSpaceTestBase):
             self.make_ctx, idle_scenarios, base_context_kwargs
         )
 
-        # Calculate all rewards
         results = []
         for context, description in contexts_and_descriptions:
             breakdown = calculate_reward(
@@ -462,19 +432,16 @@ class TestRewardComponents(RewardSpaceTestBase):
             )
             results.append((breakdown, context.idle_duration, description))
 
-        # Validate proportional scaling
         br_a, br_b, br_mid = [r[0] for r in results]
         self.assertLess(br_a.idle_penalty, 0.0)
         self.assertLess(br_b.idle_penalty, 0.0)
         self.assertLess(br_mid.idle_penalty, 0.0)
 
-        # Check 2:1 ratio between 40 and 20 idle duration
         ratio = br_b.idle_penalty / br_a.idle_penalty if br_a.idle_penalty != 0 else None
         self.assertIsNotNone(ratio)
         if ratio is not None:
             self.assertAlmostEqualFloat(abs(ratio), 2.0, tolerance=0.2)
 
-        # Mathematical validation for mid-duration case
         idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 0.5)
         idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
         factor = _get_float_param(params, "base_factor", float(base_factor))

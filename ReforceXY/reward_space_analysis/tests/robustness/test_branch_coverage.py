@@ -13,7 +13,11 @@ from reward_space_analysis import (
     validate_reward_parameters,
 )
 
-from ..helpers import run_strict_validation_failure_cases
+from ..helpers import (
+    assert_exit_factor_invariant_suite,
+    run_relaxed_validation_adjustment_cases,
+    run_strict_validation_failure_cases,
+)
 
 
 class _PyTestAdapter(unittest.TestCase):
@@ -40,9 +44,6 @@ def test_validate_reward_parameters_strict_failure_batch():
         {"exit_half_life": float("nan")},
     ]
     run_strict_validation_failure_cases(adapter, failure_params, validate_reward_parameters)
-
-
-from ..helpers import run_relaxed_validation_adjustment_cases
 
 
 @pytest.mark.robustness
@@ -139,9 +140,6 @@ def test_hold_penalty_short_duration_returns_zero():
     params = {"max_trade_duration_candles": 128}
     penalty = _hold_penalty(context, hold_factor=1.0, params=params)
     assert penalty == 0.0
-
-
-from ..helpers import assert_exit_factor_invariant_suite
 
 
 @pytest.mark.robustness

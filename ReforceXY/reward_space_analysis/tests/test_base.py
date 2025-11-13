@@ -20,6 +20,13 @@ from reward_space_analysis import (
     apply_potential_shaping,
 )
 
+from .constants import (
+    CONTINUITY,
+    EXIT_FACTOR,
+    PBRS,
+    TOLERANCE,
+)
+
 # Global constants
 PBRS_INTEGRATION_PARAMS = [
     "potential_gamma",
@@ -67,22 +74,35 @@ class RewardSpaceTestBase(unittest.TestCase):
         """Clean up temporary files."""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    PBRS_TERMINAL_TOL = 1e-12
-    PBRS_MAX_ABS_SHAPING = 5.0
+    # ===============================================
+    # Constants imported from tests.constants module
+    # ===============================================
+
+    # Tolerance constants
+    TOL_IDENTITY_STRICT = TOLERANCE.IDENTITY_STRICT
+    TOL_IDENTITY_RELAXED = TOLERANCE.IDENTITY_RELAXED
+    TOL_GENERIC_EQ = TOLERANCE.GENERIC_EQ
+    TOL_NUMERIC_GUARD = TOLERANCE.NUMERIC_GUARD
+    TOL_NEGLIGIBLE = TOLERANCE.NEGLIGIBLE
+    TOL_RELATIVE = TOLERANCE.RELATIVE
+    TOL_DISTRIB_SHAPE = TOLERANCE.DISTRIB_SHAPE
+
+    # PBRS constants
+    PBRS_TERMINAL_TOL = PBRS.TERMINAL_TOL
+    PBRS_MAX_ABS_SHAPING = PBRS.MAX_ABS_SHAPING
+
+    # Continuity constants
+    CONTINUITY_EPS_SMALL = CONTINUITY.EPS_SMALL
+    CONTINUITY_EPS_LARGE = CONTINUITY.EPS_LARGE
+
+    # Exit factor constants
+    MIN_EXIT_POWER_TAU = EXIT_FACTOR.MIN_POWER_TAU
+
+    # Test-specific constants (not in constants.py)
     PBRS_TERMINAL_PROB = 0.08
     PBRS_SWEEP_ITER = 120
-    EPS_BASE = 1e-12
-    TOL_NUMERIC_GUARD = EPS_BASE
-    TOL_IDENTITY_STRICT = EPS_BASE
-    TOL_IDENTITY_RELAXED = 1e-09
-    TOL_GENERIC_EQ = 1e-06
-    TOL_NEGLIGIBLE = 1e-08
-    MIN_EXIT_POWER_TAU = 1e-06
-    TOL_DISTRIB_SHAPE = 0.05
+    EPS_BASE = TOLERANCE.IDENTITY_STRICT  # Alias for backward compatibility
     JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
-    TOL_RELATIVE = 1e-09
-    CONTINUITY_EPS_SMALL = 0.0001
-    CONTINUITY_EPS_LARGE = 0.001
 
     def make_ctx(
         self,
@@ -410,5 +430,21 @@ class RewardSpaceTestBase(unittest.TestCase):
                 "pnl": shift + scale * base * 0.2,
                 "trade_duration": rng.exponential(20, n),
                 "idle_duration": rng.exponential(10, n),
+            }
+        )
+
+    def _make_idle_variance_df(self, n: int = 100) -> pd.DataFrame:
+        """Synthetic dataframe focusing on idle_duration ↔ reward_idle correlation."""
+        self.seed_all(self.SEED)
+        idle_duration = np.random.exponential(10, n)
+        reward_idle = -0.01 * idle_duration + np.random.normal(0, 0.001, n)
+        return pd.DataFrame(
+            {
+                "idle_duration": idle_duration,
+                "reward_idle": reward_idle,
+                "position": np.random.choice([0.0, 0.5, 1.0], n),
+                "reward": np.random.normal(0, 1, n),
+                "pnl": np.random.normal(0, self.TEST_PNL_STD, n),
+                "trade_duration": np.random.exponential(20, n),
             }
         )

@@ -69,7 +69,7 @@ POTENTIAL_GAMMA_DEFAULT: float = 0.95
 ATTENUATION_MODES: Tuple[str, ...] = ("sqrt", "linear", "power", "half_life")
 ATTENUATION_MODES_WITH_LEGACY: Tuple[str, ...] = ATTENUATION_MODES + ("legacy",)
 
-# Centralized internal numeric guards & behavior toggles (single source of truth for internal tunables)
+# Centralized internal numeric guards & behavior toggles
 INTERNAL_GUARDS: dict[str, float] = {
     "degenerate_ci_epsilon": 1e-9,
     "distribution_constant_fallback_moment": 0.0,
@@ -419,7 +419,7 @@ def validate_reward_parameters(
     sanitized = dict(params)
     adjustments: Dict[str, Dict[str, Any]] = {}
 
-    # Normalize boolean-like parameters explicitly to avoid inconsistent types
+    # Boolean parameter coercion
     _bool_keys = [
         "check_invariants",
         "hold_potential_enabled",
@@ -480,7 +480,7 @@ def validate_reward_parameters(
         adjusted = original_numeric
         reason_parts: List[str] = []
 
-        # Record numeric coercion if type changed (e.g., from str/bool/None)
+        # Track type coercion
         if not isinstance(original_val, (int, float)):
             adjustments.setdefault(
                 key,
@@ -491,7 +491,6 @@ def validate_reward_parameters(
                     "validation_mode": "strict" if strict else "relaxed",
                 },
             )
-            # Update sanitized to numeric before clamping
             sanitized[key] = original_numeric
 
         # Bounds enforcement
@@ -1245,10 +1244,9 @@ def simulate_samples(
             max_unrealized_profit = 0.0
             min_unrealized_profit = 0.0
         else:
-            # Unrealized profits should bracket the final PnL
-            # Max represents peak profit during trade, min represents lowest point
+            # Unrealized profit bounds
             span = abs(rng.gauss(0.0, 0.015))
-            # Ensure max >= pnl >= min by construction
+            # max >= pnl >= min by construction
             max_unrealized_profit = pnl + abs(rng.gauss(0.0, span))
             min_unrealized_profit = pnl - abs(rng.gauss(0.0, span))
 
@@ -1336,7 +1334,6 @@ def simulate_samples(
                     )
                     drift = total_shaping / max(1, n_invariant)
                     df.loc[:, "reward_shaping"] = df["reward_shaping"] - drift
-        # Attach resolved reward params for downstream consumers (e.g., report derivations)
         df.attrs["reward_params"] = dict(params)
     except Exception:
         # Graceful fallback (no invariance enforcement on failure)

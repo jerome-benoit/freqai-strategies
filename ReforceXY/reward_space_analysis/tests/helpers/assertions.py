@@ -12,6 +12,8 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
+from .configs import RewardScenarioConfig, ThresholdTestConfig, ValidationConfig
+
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     """Coerce value to float safely for test parameter handling.
@@ -178,21 +180,18 @@ def assert_trend(
 def assert_component_sum_integrity(
     test_case,
     breakdown,
-    tolerance_relaxed,
-    exclude_components=None,
-    component_description="components",
+    config: ValidationConfig,
 ):
     """Assert that reward component sum matches total within tolerance.
 
     Validates the mathematical integrity of reward component decomposition by
     ensuring the sum of individual components equals the reported total.
+    Uses ValidationConfig to simplify parameter passing.
 
     Args:
         test_case: Test case instance with assertion methods
         breakdown: Reward breakdown object with component attributes
-        tolerance_relaxed: Numerical tolerance for sum validation
-        exclude_components: List of component names to exclude from sum (default: None)
-        component_description: Human-readable description for error messages
+        config: ValidationConfig with tolerance and exclusion settings
 
     Components checked (if not excluded):
         - hold_penalty
@@ -204,14 +203,15 @@ def assert_component_sum_integrity(
         - exit_additive
 
     Example:
-        assert_component_sum_integrity(
-            self, breakdown, 1e-09,
+        config = ValidationConfig(
+            tolerance_strict=1e-12,
+            tolerance_relaxed=1e-09,
             exclude_components=["reward_shaping"],
             component_description="core components"
         )
+        assert_component_sum_integrity(self, breakdown, config)
     """
-    if exclude_components is None:
-        exclude_components = []
+    exclude_components = config.exclude_components or []
     component_sum = 0.0
     if "hold_penalty" not in exclude_components:
         component_sum += breakdown.hold_penalty
@@ -230,8 +230,8 @@ def assert_component_sum_integrity(
     test_case.assertAlmostEqual(
         breakdown.total,
         component_sum,
-        delta=tolerance_relaxed,
-        msg=f"Total should equal sum of {component_description}",
+        delta=config.tolerance_relaxed,
+        msg=f"Total should equal sum of {config.component_description}",
     )
 
 
@@ -347,34 +347,34 @@ def assert_single_active_component_with_additives(
 def assert_reward_calculation_scenarios(
     test_case,
     scenarios: List[Tuple[Any, Dict[str, Any], str]],
-    base_factor: float,
-    profit_target: float,
-    risk_reward_ratio: float,
+    config: RewardScenarioConfig,
     validation_fn,
-    tolerance_relaxed: float,
 ):
     """Execute and validate multiple reward calculation scenarios.
 
     Runs a batch of reward calculations with different contexts and parameters,
-    applying a custom validation function to each result. Reduces test boilerplate
-    for scenario-based testing.
+    applying a custom validation function to each result. Uses RewardScenarioConfig
+    to simplify parameter passing and improve maintainability.
 
     Args:
         test_case: Test case instance with assertion methods
         scenarios: List of (context, params, description) tuples defining test cases
-        base_factor: Base scaling factor for reward calculations
-        profit_target: Target profit threshold
-        risk_reward_ratio: Risk/reward ratio for position sizing
+        config: RewardScenarioConfig with all calculation parameters
         validation_fn: Callback function (test_case, breakdown, description, tolerance) -> None
-        tolerance_relaxed: Numerical tolerance passed to validation function
 
     Example:
+        config = RewardScenarioConfig(
+            base_factor=90.0,
+            profit_target=0.06,
+            risk_reward_ratio=1.0,
+            tolerance_relaxed=1e-09
+        )
         scenarios = [
             (idle_context, {}, "idle scenario"),
             (exit_context, {"exit_additive": 5.0}, "profitable exit"),
         ]
         assert_reward_calculation_scenarios(
-            self, scenarios, 90.0, 0.06, 1.0, my_validation_fn, 1e-09
+            self, scenarios, config, my_validation_fn
         )
     """
     for context, params, description in scenarios:
@@ -382,13 +382,13 @@ def assert_reward_calculation_scenarios(
             breakdown = calculate_reward(
                 context,
                 params,
-                base_factor=base_factor,
-                profit_target=profit_target,
-                risk_reward_ratio=risk_reward_ratio,
-                short_allowed=True,
-                action_masking=True,
+                base_factor=config.base_factor,
+                profit_target=config.profit_target,
+                risk_reward_ratio=config.risk_reward_ratio,
+                short_allowed=config.short_allowed,
+                action_masking=config.action_masking,
             )
-            validation_fn(test_case, breakdown, description, tolerance_relaxed)
+            validation_fn(test_case, breakdown, description, config.tolerance_relaxed)
 
 
 def assert_parameter_sensitivity_behavior(
@@ -396,39 +396,39 @@ def assert_parameter_sensitivity_behavior(
     parameter_variations: List[Dict[str, Any]],
     base_context,
     base_params: Dict[str, Any],
-    base_factor: float,
-    profit_target: float,
-    risk_reward_ratio: float,
     component_name: str,
     expected_trend: str,
-    tolerance_relaxed: float,
+    config: RewardScenarioConfig,
 ):
     """Validate that a component responds predictably to parameter changes.
 
     Tests component sensitivity by applying parameter variations and verifying
     the component value follows the expected trend (increasing, decreasing, or constant).
+    Uses RewardScenarioConfig to simplify parameter passing.
 
     Args:
         test_case: Test case instance with assertion methods
         parameter_variations: List of parameter dicts to merge with base_params
         base_context: Context object for reward calculation
         base_params: Base parameter dictionary
-        base_factor: Base scaling factor
-        profit_target: Target profit threshold
-        risk_reward_ratio: Risk/reward ratio
         component_name: Name of component to track (e.g., "exit_component")
         expected_trend: Expected trend: "increasing", "decreasing", or "constant"
-        tolerance_relaxed: Numerical tolerance for trend validation
+        config: RewardScenarioConfig with calculation parameters
 
     Example:
+        config = RewardScenarioConfig(
+            base_factor=90.0,
+            profit_target=0.06,
+            risk_reward_ratio=1.0,
+            tolerance_relaxed=1e-09
+        )
         variations = [
             {"exit_additive": 0.0},
             {"exit_additive": 5.0},
             {"exit_additive": 10.0},
         ]
         assert_parameter_sensitivity_behavior(
-            self, variations, ctx, params, 90.0, 0.06, 1.0,
-            "exit_component", "increasing", 1e-09
+            self, variations, ctx, params, "exit_component", "increasing", config
         )
     """
     from reward_space_analysis import calculate_reward
@@ -440,11 +440,11 @@ def assert_parameter_sensitivity_behavior(
         breakdown = calculate_reward(
             base_context,
             params,
-            base_factor=base_factor,
-            profit_target=profit_target,
-            risk_reward_ratio=risk_reward_ratio,
-            short_allowed=True,
-            action_masking=True,
+            base_factor=config.base_factor,
+            profit_target=config.profit_target,
+            risk_reward_ratio=config.risk_reward_ratio,
+            short_allowed=config.short_allowed,
+            action_masking=config.action_masking,
         )
         component_value = getattr(breakdown, component_name)
         results.append(component_value)
@@ -452,14 +452,14 @@ def assert_parameter_sensitivity_behavior(
         for i in range(1, len(results)):
             test_case.assertGreaterEqual(
                 results[i],
-                results[i - 1] - tolerance_relaxed,
+                results[i - 1] - config.tolerance_relaxed,
                 f"{component_name} should increase with parameter variations",
             )
     elif expected_trend == "decreasing":
         for i in range(1, len(results)):
             test_case.assertLessEqual(
                 results[i],
-                results[i - 1] + tolerance_relaxed,
+                results[i - 1] + config.tolerance_relaxed,
                 f"{component_name} should decrease with parameter variations",
             )
     elif expected_trend == "constant":
@@ -468,7 +468,7 @@ def assert_parameter_sensitivity_behavior(
             test_case.assertAlmostEqual(
                 result,
                 baseline,
-                delta=tolerance_relaxed,
+                delta=config.tolerance_relaxed,
                 msg=f"{component_name} should remain constant with parameter variations",
             )
 
@@ -684,31 +684,35 @@ def assert_multi_parameter_sensitivity(
     parameter_test_cases: List[Tuple[float, float, str]],
     context_factory_fn,
     base_params: Dict[str, Any],
-    base_factor: float,
-    tolerance_relaxed: float,
+    config: RewardScenarioConfig,
 ):
     """Validate reward behavior across multiple parameter combinations.
 
     Tests reward calculation with various profit_target and risk_reward_ratio
     combinations, ensuring consistent behavior including edge cases like
-    zero profit_target.
+    zero profit_target. Uses RewardScenarioConfig to simplify parameter passing.
 
     Args:
         test_case: Test case instance with assertion methods
         parameter_test_cases: List of (profit_target, risk_reward_ratio, description) tuples
         context_factory_fn: Factory function for creating context objects
         base_params: Base parameter dictionary
-        base_factor: Base scaling factor
-        tolerance_relaxed: Numerical tolerance for assertions
+        config: RewardScenarioConfig with base calculation parameters
 
     Example:
+        config = RewardScenarioConfig(
+            base_factor=90.0,
+            profit_target=0.06,
+            risk_reward_ratio=1.0,
+            tolerance_relaxed=1e-09
+        )
         test_cases = [
             (0.0, 1.0, "zero profit target"),
             (0.06, 1.0, "standard parameters"),
             (0.06, 2.0, "high risk/reward ratio"),
         ]
         assert_multi_parameter_sensitivity(
-            self, test_cases, make_context, params, 90.0, 1e-09
+            self, test_cases, make_context, params, config
         )
     """
     for profit_target, risk_reward_ratio, description in parameter_test_cases:
@@ -719,11 +723,11 @@ def assert_multi_parameter_sensitivity(
             breakdown = calculate_reward(
                 idle_context,
                 base_params,
-                base_factor=base_factor,
+                base_factor=config.base_factor,
                 profit_target=profit_target,
                 risk_reward_ratio=risk_reward_ratio,
-                short_allowed=True,
-                action_masking=True,
+                short_allowed=config.short_allowed,
+                action_masking=config.action_masking,
             )
             if profit_target == 0.0:
                 test_case.assertEqual(breakdown.idle_penalty, 0.0)
@@ -735,54 +739,54 @@ def assert_multi_parameter_sensitivity(
                 exit_breakdown = calculate_reward(
                     exit_context,
                     base_params,
-                    base_factor=base_factor,
+                    base_factor=config.base_factor,
                     profit_target=profit_target,
                     risk_reward_ratio=risk_reward_ratio,
-                    short_allowed=True,
-                    action_masking=True,
+                    short_allowed=config.short_allowed,
+                    action_masking=config.action_masking,
                 )
                 test_case.assertNotEqual(exit_breakdown.exit_component, 0.0)
 
 
 def assert_hold_penalty_threshold_behavior(
     test_case,
-    duration_test_cases: Sequence[Tuple[int, str]],
-    max_duration: int,
     context_factory_fn,
     params: Dict[str, Any],
     base_factor: float,
     profit_target: float,
     risk_reward_ratio: float,
-    tolerance_relaxed: float,
+    config: ThresholdTestConfig,
 ):
     """Validate hold penalty activation at max_duration threshold.
 
     Tests that hold penalty is zero before max_duration, then becomes
-    negative (penalty) at and after the threshold. Critical for verifying
-    threshold-based penalty logic.
+    negative (penalty) at and after the threshold. Uses ThresholdTestConfig
+    to simplify parameter passing.
 
     Args:
         test_case: Test case instance with assertion methods
-        duration_test_cases: List of (trade_duration, description) tuples to test
-        max_duration: Maximum duration threshold for penalty activation
         context_factory_fn: Factory function for creating context objects
         params: Parameter dictionary
         base_factor: Base scaling factor
         profit_target: Target profit threshold
         risk_reward_ratio: Risk/reward ratio
-        tolerance_relaxed: Numerical tolerance for assertions
+        config: ThresholdTestConfig with threshold settings
 
     Example:
-        test_cases = [
-            (50, "below threshold"),
-            (100, "at threshold"),
-            (150, "above threshold"),
-        ]
+        config = ThresholdTestConfig(
+            max_duration=100,
+            test_cases=[
+                (50, "below threshold"),
+                (100, "at threshold"),
+                (150, "above threshold"),
+            ],
+            tolerance=1e-09
+        )
         assert_hold_penalty_threshold_behavior(
-            self, test_cases, 100, make_context, params, 90.0, 0.06, 1.0, 1e-09
+            self, make_context, params, 90.0, 0.06, 1.0, config
         )
     """
-    for trade_duration, description in duration_test_cases:
+    for trade_duration, description in config.test_cases:
         with test_case.subTest(duration=trade_duration, desc=description):
             context = context_factory_fn(trade_duration=trade_duration)
             breakdown = calculate_reward(
@@ -794,7 +798,7 @@ def assert_hold_penalty_threshold_behavior(
                 short_allowed=True,
                 action_masking=True,
             )
-            duration_ratio = trade_duration / max_duration
+            duration_ratio = trade_duration / config.max_duration
             if duration_ratio < 1.0:
                 test_case.assertEqual(breakdown.hold_penalty, 0.0)
             elif duration_ratio == 1.0:

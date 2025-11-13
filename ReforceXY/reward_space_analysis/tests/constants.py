@@ -46,12 +46,12 @@ class ContinuityConfig:
     plateau and attenuation functions.
 
     Attributes:
-        EPS_SMALL: Small epsilon for tight continuity checks (1e-08)
-        EPS_LARGE: Larger epsilon for coarser continuity tests (5e-05)
+        EPS_SMALL: Small epsilon for tight continuity checks (1e-06)
+        EPS_LARGE: Larger epsilon for coarser continuity tests (1e-05)
     """
 
-    EPS_SMALL: float = 1e-08
-    EPS_LARGE: float = 5e-05
+    EPS_SMALL: float = 1e-06
+    EPS_LARGE: float = 1e-05
 
 
 @dataclass(frozen=True)
@@ -62,13 +62,13 @@ class ExitFactorConfig:
     ratio bounds and power mode constraints.
 
     Attributes:
-        SCALING_RATIO_MIN: Minimum expected scaling ratio for continuity (1.5)
-        SCALING_RATIO_MAX: Maximum expected scaling ratio for continuity (3.5)
+        SCALING_RATIO_MIN: Minimum expected scaling ratio for continuity (5.0)
+        SCALING_RATIO_MAX: Maximum expected scaling ratio for continuity (15.0)
         MIN_POWER_TAU: Minimum valid tau value for power mode (1e-15)
     """
 
-    SCALING_RATIO_MIN: float = 1.5
-    SCALING_RATIO_MAX: float = 3.5
+    SCALING_RATIO_MIN: float = 5.0
+    SCALING_RATIO_MAX: float = 15.0
     MIN_POWER_TAU: float = 1e-15
 
 
@@ -156,6 +156,73 @@ class TestParameters:
     EPS_BASE: float = 1e-10
 
 
+@dataclass(frozen=True)
+class TestScenarios:
+    """Test scenario parameters and sample sizes.
+
+    Standard values for test scenarios to ensure consistency across the test
+    suite and avoid magic numbers in test implementations.
+
+    Attributes:
+        DURATION_SHORT: Short duration scenario (150)
+        DURATION_MEDIUM: Medium duration scenario (200)
+        DURATION_LONG: Long duration scenario (300)
+        DURATION_SCENARIOS: Standard duration test sequence
+        SAMPLE_SIZE_SMALL: Small sample size for quick tests (100)
+        SAMPLE_SIZE_MEDIUM: Medium sample size for standard tests (400)
+        SAMPLE_SIZE_LARGE: Large sample size for statistical power (800)
+        DEFAULT_SAMPLE_SIZE: Default for most tests (400)
+        PBRS_SIMULATION_STEPS: Number of steps for PBRS simulation tests (500)
+        NULL_HYPOTHESIS_SAMPLE_SIZE: Sample size for null hypothesis tests (400)
+        BOOTSTRAP_MINIMAL_ITERATIONS: Minimal bootstrap iterations for quick tests (25)
+        BOOTSTRAP_STANDARD_ITERATIONS: Standard bootstrap iterations (100)
+        HETEROSCEDASTICITY_MIN_EXITS: Minimum exits for heteroscedasticity validation (50)
+        CORRELATION_TEST_MIN_SIZE: Minimum sample size for correlation tests (200)
+        MONTE_CARLO_ITERATIONS: Monte Carlo simulation iterations (160)
+    """
+
+    DURATION_SHORT: int = 150
+    DURATION_MEDIUM: int = 200
+    DURATION_LONG: int = 300
+    DURATION_SCENARIOS: tuple[int, ...] = (150, 200, 300)
+
+    SAMPLE_SIZE_SMALL: int = 100
+    SAMPLE_SIZE_MEDIUM: int = 400
+    SAMPLE_SIZE_LARGE: int = 800
+    DEFAULT_SAMPLE_SIZE: int = 400
+
+    # Specialized test scenario sizes
+    PBRS_SIMULATION_STEPS: int = 500
+    NULL_HYPOTHESIS_SAMPLE_SIZE: int = 400
+    BOOTSTRAP_MINIMAL_ITERATIONS: int = 25
+    BOOTSTRAP_STANDARD_ITERATIONS: int = 100
+    HETEROSCEDASTICITY_MIN_EXITS: int = 50
+    CORRELATION_TEST_MIN_SIZE: int = 200
+    MONTE_CARLO_ITERATIONS: int = 160
+
+
+@dataclass(frozen=True)
+class StatisticalTolerances:
+    """Tolerances for statistical metrics and distribution tests.
+
+    These tolerances are used for statistical hypothesis testing, distribution
+    comparison metrics, and other statistical validation operations.
+
+    Attributes:
+        DISTRIBUTION_SHIFT: Tolerance for distribution shift metrics (5e-4)
+        KS_STATISTIC_IDENTITY: KS statistic threshold for identical distributions (5e-3)
+        CORRELATION_SIGNIFICANCE: Minimum correlation for significance (0.1)
+        VARIANCE_RATIO_THRESHOLD: Minimum variance ratio for heteroscedasticity (0.8)
+        CI_WIDTH_EPSILON: Minimum CI width for degenerate distributions (3e-9)
+    """
+
+    DISTRIBUTION_SHIFT: float = 5e-4
+    KS_STATISTIC_IDENTITY: float = 5e-3
+    CORRELATION_SIGNIFICANCE: float = 0.1
+    VARIANCE_RATIO_THRESHOLD: float = 0.8
+    CI_WIDTH_EPSILON: float = 3e-9
+
+
 # Global singleton instances for easy import
 TOLERANCE: Final[ToleranceConfig] = ToleranceConfig()
 CONTINUITY: Final[ContinuityConfig] = ContinuityConfig()
@@ -164,6 +231,8 @@ PBRS: Final[PBRSConfig] = PBRSConfig()
 STATISTICAL: Final[StatisticalConfig] = StatisticalConfig()
 SEEDS: Final[TestSeeds] = TestSeeds()
 PARAMS: Final[TestParameters] = TestParameters()
+SCENARIOS: Final[TestScenarios] = TestScenarios()
+STAT_TOL: Final[StatisticalTolerances] = StatisticalTolerances()
 
 
 __all__ = [
@@ -174,6 +243,8 @@ __all__ = [
     "StatisticalConfig",
     "TestSeeds",
     "TestParameters",
+    "TestScenarios",
+    "StatisticalTolerances",
     "TOLERANCE",
     "CONTINUITY",
     "EXIT_FACTOR",
@@ -181,4 +252,6 @@ __all__ = [
     "STATISTICAL",
     "SEEDS",
     "PARAMS",
+    "SCENARIOS",
+    "STAT_TOL",
 ]

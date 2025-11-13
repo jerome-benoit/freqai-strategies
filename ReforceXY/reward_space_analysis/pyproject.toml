@@ -42,6 +42,7 @@ python_functions = [
 ]
 markers = [
     "components: component-level reward computations",
+    "transforms: mathematical transform functions",
     "robustness: stress and edge-case behavior",
     "api: public API surface and helpers",
     "cli: command-line interface behaviors",

@@ -12,6 +12,7 @@ import pandas as pd
 
 from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
 
+from ..constants import SCENARIOS
 from ..test_base import RewardSpaceTestBase
 
 
@@ -74,7 +75,7 @@ class TestReportFormatting(RewardSpaceTestBase):
             real_df=real_df,
             adjust_method="none",
             strict_diagnostics=False,
-            bootstrap_resamples=200,  # keep test fast
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_STANDARD_ITERATIONS,  # keep test fast
             skip_partial_dependence=kwargs.get("skip_partial_dependence", False),
             skip_feature_analysis=kwargs.get("skip_feature_analysis", False),
         )

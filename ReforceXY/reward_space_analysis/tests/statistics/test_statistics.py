@@ -2,7 +2,6 @@
 """Statistical tests, distribution metrics, and bootstrap validation."""
 
 import unittest
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -19,6 +18,7 @@ from reward_space_analysis import (
     statistical_hypothesis_tests,
 )
 
+from ..helpers import assert_diagnostic_warning
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.statistics
@@ -97,22 +97,6 @@ class TestStatistics(RewardSpaceTestBase):
                     float(metrics[p_key]), 1.0, places=12, msg=f"Expected 1.0 for {p_key}"
                 )
 
-    def _make_idle_variance_df(self, n: int = 100) -> pd.DataFrame:
-        """Synthetic dataframe focusing on idle_duration ↔ reward_idle correlation."""
-        self.seed_all(self.SEED)
-        idle_duration = np.random.exponential(10, n)
-        reward_idle = -0.01 * idle_duration + np.random.normal(0, 0.001, n)
-        return pd.DataFrame(
-            {
-                "idle_duration": idle_duration,
-                "reward_idle": reward_idle,
-                "position": np.random.choice([0.0, 0.5, 1.0], n),
-                "reward": np.random.normal(0, 1, n),
-                "pnl": np.random.normal(0, self.TEST_PNL_STD, n),
-                "trade_duration": np.random.exponential(20, n),
-            }
-        )
-
     def test_statistics_distribution_shift_metrics(self):
         """KL/JS/Wasserstein metrics."""
         df1 = self._make_idle_variance_df(100)
@@ -159,9 +143,11 @@ class TestStatistics(RewardSpaceTestBase):
                     f"Metric {name} expected ≈ 0 on identical distributions (got {val})",
                 )
             elif name.endswith("_ks_statistic"):
+                from ..constants import STAT_TOL
+
                 self.assertLess(
                     abs(val),
-                    0.005,
+                    STAT_TOL.KS_STATISTIC_IDENTITY,
                     f"KS statistic should be near 0 on identical distributions (got {val})",
                 )
 
@@ -264,19 +250,23 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_variance_vs_duration_spearman_sign(self):
         """trade_duration up => pnl variance up (rank corr >0)."""
+        from ..constants import SCENARIOS, STAT_TOL
+
         rng = np.random.default_rng(99)
         n = 250
-        trade_duration = np.linspace(1, 300, n)
+        trade_duration = np.linspace(1, SCENARIOS.DURATION_LONG, n)
         pnl = rng.normal(0, 1 + trade_duration / 400.0, n)
         ranks_dur = pd.Series(trade_duration).rank().to_numpy()
         ranks_var = pd.Series(np.abs(pnl)).rank().to_numpy()
         rho = np.corrcoef(ranks_dur, ranks_var)[0, 1]
         self.assertFinite(rho, name="spearman_rho")
-        self.assertGreater(rho, 0.1)
+        self.assertGreater(rho, STAT_TOL.CORRELATION_SIGNIFICANCE)
 
     def test_stats_scaling_invariance_distribution_metrics(self):
         """Equal scaling keeps KL/JS ≈0."""
-        df1 = self._shift_scale_df(400)
+        from ..constants import SCENARIOS, STAT_TOL
+
+        df1 = self._shift_scale_df(SCENARIOS.DEFAULT_SAMPLE_SIZE)
         scale = 3.5
         df2 = df1.copy()
         df2["pnl"] *= scale
@@ -286,7 +276,7 @@ class TestStatistics(RewardSpaceTestBase):
             if k.endswith("_kl_divergence") or k.endswith("_js_distance"):
                 self.assertLess(
                     abs(v),
-                    0.0005,
+                    STAT_TOL.DISTRIBUTION_SHIFT,
                     f"Expected near-zero divergence after equal scaling (k={k}, v={v})",
                 )
 
@@ -306,8 +296,10 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_bh_correction_null_false_positive_rate(self):
         """Null: low BH discovery rate."""
+        from ..constants import SCENARIOS
+
         rng = np.random.default_rng(1234)
-        n = 400
+        n = SCENARIOS.NULL_HYPOTHESIS_SAMPLE_SIZE
         df = pd.DataFrame(
             {
                 "pnl": rng.normal(0, 1, n),
@@ -416,9 +408,11 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_heteroscedasticity_pnl_validation(self):
         """PnL variance increases with trade duration (heteroscedasticity)."""
+        from ..constants import SCENARIOS
+
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
-            num_samples=1000,
+            num_samples=SCENARIOS.SAMPLE_SIZE_LARGE + 200,
             seed=self.SEED_HETEROSCEDASTICITY,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
@@ -429,16 +423,18 @@ class TestStatistics(RewardSpaceTestBase):
             pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
         )
         exit_data = df[df["reward_exit"] != 0].copy()
-        if len(exit_data) < 50:
+        if len(exit_data) < SCENARIOS.HETEROSCEDASTICITY_MIN_EXITS:
             self.skipTest("Insufficient exit actions for heteroscedasticity test")
         exit_data["duration_bin"] = pd.cut(
             exit_data["duration_ratio"], bins=4, labels=["Q1", "Q2", "Q3", "Q4"]
         )
         variance_by_bin = exit_data.groupby("duration_bin")["pnl"].var().dropna()
         if "Q1" in variance_by_bin.index and "Q4" in variance_by_bin.index:
+            from ..constants import STAT_TOL
+
             self.assertGreater(
                 variance_by_bin["Q4"],
-                variance_by_bin["Q1"] * 0.8,
+                variance_by_bin["Q1"] * STAT_TOL.VARIANCE_RATIO_THRESHOLD,
                 "PnL heteroscedasticity: variance should increase with duration",
             )
 
@@ -474,9 +470,11 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_benjamini_hochberg_adjustment(self):
         """BH adjustment adds p_value_adj & significant_adj with valid bounds."""
+        from ..constants import SCENARIOS
+
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
-            num_samples=600,
+            num_samples=SCENARIOS.SAMPLE_SIZE_LARGE - 200,
             seed=self.SEED_HETEROSCEDASTICITY,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
@@ -518,8 +516,10 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_bootstrap_shrinkage_with_sample_size(self):
         """Bootstrap CI half-width decreases with larger sample (~1/sqrt(n) heuristic)."""
-        small = self._shift_scale_df(80)
-        large = self._shift_scale_df(800)
+        from ..constants import SCENARIOS
+
+        small = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_SMALL - 20)
+        large = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_LARGE)
         res_small = bootstrap_confidence_intervals(small, ["reward"], n_bootstrap=400)
         res_large = bootstrap_confidence_intervals(large, ["reward"], n_bootstrap=400)
         _, lo_s, hi_s = list(res_small.values())[0]
@@ -535,8 +535,11 @@ class TestStatistics(RewardSpaceTestBase):
         """Invariant 113 (non-strict): constant distribution CI widened with warning (positive epsilon width)."""
 
         df = self._const_df(80)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", RewardDiagnosticsWarning)
+        with assert_diagnostic_warning(
+            ["degenerate", "bootstrap", "CI"],
+            warning_category=RewardDiagnosticsWarning,
+            strict_mode=False,
+        ):
             res = bootstrap_confidence_intervals(
                 df,
                 ["reward", "pnl"],
@@ -544,11 +547,6 @@ class TestStatistics(RewardSpaceTestBase):
                 confidence_level=0.95,
                 strict_diagnostics=False,
             )
-        diag_warnings = [w for w in caught if issubclass(w.category, RewardDiagnosticsWarning)]
-        self.assertTrue(
-            diag_warnings,
-            "Expected RewardDiagnosticsWarning for degenerate bootstrap CI widening",
-        )
         for _metric, (mean, lo, hi) in res.items():
             self.assertLess(
                 lo,
@@ -557,7 +555,11 @@ class TestStatistics(RewardSpaceTestBase):
             )
             width = hi - lo
             self.assertGreater(width, 0.0)
-            self.assertLessEqual(width, 3e-09, "Width should be small epsilon range (<=3e-9)")
+            from ..constants import STAT_TOL
+
+            self.assertLessEqual(
+                width, STAT_TOL.CI_WIDTH_EPSILON, "Width should be small epsilon range"
+            )
             # Mean should be centered (approx) within widened bounds
             self.assertGreaterEqual(mean, lo)
             self.assertLessEqual(mean, hi)
