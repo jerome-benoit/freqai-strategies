@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from reward_space_analysis import DEFAULT_MODEL_REWARD_PARAMETERS
+
 
 @pytest.fixture(scope="session")
 def temp_output_dir():
@@ -28,6 +30,4 @@ def setup_rng():
 @pytest.fixture
 def base_reward_params():
     """Default reward parameters."""
-    from reward_space_analysis import DEFAULT_MODEL_REWARD_PARAMETERS
-
     return DEFAULT_MODEL_REWARD_PARAMETERS.copy()

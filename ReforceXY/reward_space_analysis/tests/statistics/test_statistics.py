@@ -9,6 +9,9 @@ import pandas as pd
 import pytest
 
 from reward_space_analysis import (
+    RewardDiagnosticsWarning,
+    _binned_stats,
+    _compute_relationship_stats,
     bootstrap_confidence_intervals,
     compute_distribution_shift_metrics,
     distribution_diagnostics,
@@ -24,7 +27,7 @@ pytestmark = pytest.mark.statistics
 class TestStatistics(RewardSpaceTestBase):
     """Statistical tests: metrics, diagnostics, bootstrap, correlations."""
 
-    def test_stats_feature_analysis_skip_partial_dependence(self):
+    def test_statistics_feature_analysis_skip_partial_dependence(self):
         """Invariant 107: skip_partial_dependence=True yields empty partial_deps."""
         try:
             from reward_space_analysis import _perform_feature_analysis  # type: ignore
@@ -41,9 +44,8 @@ class TestStatistics(RewardSpaceTestBase):
             partial_deps, {}, "partial_deps must be empty when skip_partial_dependence=True"
         )
 
-    def test_stats_binned_stats_invalid_bins_raises(self):
+    def test_statistics_binned_stats_invalid_bins_raises(self):
         """Invariant 110: _binned_stats must raise ValueError for <2 bin edges."""
-        from reward_space_analysis import _binned_stats  # type: ignore
 
         df = self.make_stats_df(n=50, seed=self.SEED)
         with self.assertRaises(ValueError):
@@ -53,9 +55,8 @@ class TestStatistics(RewardSpaceTestBase):
         self.assertIsInstance(result, pd.DataFrame)
         self.assertGreaterEqual(len(result), 1)
 
-    def test_stats_correlation_dropped_constant_columns(self):
+    def test_statistics_correlation_dropped_constant_columns(self):
         """Invariant 111: constant columns are listed in correlation_dropped and excluded."""
-        from reward_space_analysis import _compute_relationship_stats  # type: ignore
 
         df = self.make_stats_df(n=90, seed=self.SEED)
         # Force some columns constant
@@ -70,7 +71,7 @@ class TestStatistics(RewardSpaceTestBase):
         self.assertNotIn("reward_hold", corr.columns)
         self.assertNotIn("idle_duration", corr.columns)
 
-    def test_stats_distribution_shift_metrics_degenerate_zero(self):
+    def test_statistics_distribution_shift_metrics_degenerate_zero(self):
         """Invariant 112: degenerate distributions yield zero shift metrics and KS p=1.0."""
         # Build two identical constant distributions (length >=10)
         n = 40
@@ -112,7 +113,7 @@ class TestStatistics(RewardSpaceTestBase):
             }
         )
 
-    def test_stats_distribution_shift_metrics(self):
+    def test_statistics_distribution_shift_metrics(self):
         """KL/JS/Wasserstein metrics."""
         df1 = self._make_idle_variance_df(100)
         df2 = self._make_idle_variance_df(100)
@@ -146,7 +147,7 @@ class TestStatistics(RewardSpaceTestBase):
                 else:
                     self.assertFinite(value, name=metric_name)
 
-    def test_stats_distribution_shift_identity_null_metrics(self):
+    def test_statistics_distribution_shift_identity_null_metrics(self):
         """Identity distributions -> near-zero shift metrics."""
         df = self._make_idle_variance_df(180)
         metrics_id = compute_distribution_shift_metrics(df, df.copy())
@@ -164,7 +165,7 @@ class TestStatistics(RewardSpaceTestBase):
                     f"KS statistic should be near 0 on identical distributions (got {val})",
                 )
 
-    def test_stats_hypothesis_testing(self):
+    def test_statistics_hypothesis_testing(self):
         """Light correlation sanity check."""
         df = self._make_idle_variance_df(200)
         if len(df) > 30:
@@ -186,7 +187,7 @@ class TestStatistics(RewardSpaceTestBase):
                     negative_ratio, 0.5, "Most idle rewards should be negative (penalties)"
                 )
 
-    def test_stats_distribution_constant_fallback_diagnostics(self):
+    def test_statistics_distribution_constant_fallback_diagnostics(self):
         """Invariant 115: constant distribution triggers fallback diagnostics (zero moments, qq_r2=1.0)."""
         # Build constant reward/pnl columns to force degenerate stats
         n = 60
@@ -290,6 +291,7 @@ class TestStatistics(RewardSpaceTestBase):
                 )
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    @pytest.mark.smoke
     def test_stats_mean_decomposition_consistency(self):
         """Batch mean additivity."""
         df_a = self._shift_scale_df(120)
@@ -326,7 +328,9 @@ class TestStatistics(RewardSpaceTestBase):
                     flags.append(bool(v["significant"]))
         if flags:
             rate = sum(flags) / len(flags)
-            self.assertLess(rate, 0.15, f"BH null FP rate too high under null: {rate:.3f}")
+            self.assertLess(
+                rate, self.BH_FP_RATE_THRESHOLD, f"BH null FP rate too high under null: {rate:.3f}"
+            )
 
     def test_stats_half_life_monotonic_series(self):
         """Smoothed exponential decay monotonic."""
@@ -357,10 +361,10 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertEqual(v1, v2, f"Mismatch for {k}:{field}")
         metrics = ["reward", "pnl"]
         ci_a = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=150, seed=self.SEED_BOOTSTRAP
+            df, metrics, n_bootstrap=self.BOOTSTRAP_DEFAULT_ITERATIONS, seed=self.SEED_BOOTSTRAP
         )
         ci_b = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=150, seed=self.SEED_BOOTSTRAP
+            df, metrics, n_bootstrap=self.BOOTSTRAP_DEFAULT_ITERATIONS, seed=self.SEED_BOOTSTRAP
         )
         for metric in metrics:
             m_a, lo_a, hi_a = ci_a[metric]
@@ -529,7 +533,6 @@ class TestStatistics(RewardSpaceTestBase):
     # Owns invariant: statistics-constant-dist-widened-ci-113a
     def test_stats_bootstrap_constant_distribution_widening(self):
         """Invariant 113 (non-strict): constant distribution CI widened with warning (positive epsilon width)."""
-        from reward_space_analysis import RewardDiagnosticsWarning  # type: ignore
 
         df = self._const_df(80)
         with warnings.catch_warnings(record=True) as caught:

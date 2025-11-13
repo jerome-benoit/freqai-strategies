@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from reward_space_analysis import (
+    ATTENUATION_MODES,
     ATTENUATION_MODES_WITH_LEGACY,
     Actions,
     Positions,
@@ -20,9 +21,9 @@ from reward_space_analysis import (
 )
 
 from ..helpers import (
-    assert_single_active_component_with_additives,
     assert_exit_factor_attenuation_modes,
     assert_exit_mode_mathematical_validation,
+    assert_single_active_component_with_additives,
 )
 from ..test_base import RewardSpaceTestBase
 
@@ -157,9 +158,6 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
 
     def test_exit_factor_comprehensive(self):
         """Comprehensive exit factor test: mathematical correctness and monotonic attenuation."""
-
-        from reward_space_analysis import ATTENUATION_MODES  # local import retained for clarity
-
         # Part 1: Mathematical formulas validation
         context = self.make_ctx(
             pnl=0.05,
@@ -512,8 +510,16 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         diff1 = f_boundary - f1
         diff2 = f_boundary - f2
         ratio = diff1 / max(diff2, self.TOL_NUMERIC_GUARD)
-        self.assertGreater(ratio, 5.0, f"Scaling ratio too small (ratio={ratio:.2f})")
-        self.assertLess(ratio, 15.0, f"Scaling ratio too large (ratio={ratio:.2f})")
+        self.assertGreater(
+            ratio,
+            self.EXIT_FACTOR_SCALING_RATIO_MIN,
+            f"Scaling ratio too small (ratio={ratio:.2f})",
+        )
+        self.assertLess(
+            ratio,
+            self.EXIT_FACTOR_SCALING_RATIO_MAX,
+            f"Scaling ratio too large (ratio={ratio:.2f})",
+        )
 
     # === Robustness invariants 102–105 ===
     # Owns invariant: robustness-exit-mode-fallback-102

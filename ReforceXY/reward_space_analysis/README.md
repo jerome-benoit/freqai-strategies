@@ -140,7 +140,7 @@ Generates shift metrics for comparison (see Outputs section).
 **`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for synthetic PnL generation (pre-scaling). (Simulation-only).
 **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL volatility scale proportional to trade duration ratio. (Simulation-only).
 **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic distribution shift metrics. (Simulation-only; triggers additional outputs when provided).
-**`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL accrual during holds for shaping potential Φ. (Simulation-only; affects PBRS components).
+**`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL accrual during holds for potential Φ. (Simulation-only; affects PBRS components).
 
 ### Reward & Shaping
 
@@ -225,12 +225,12 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`, `range = m
 
 #### PBRS (Potential-Based Reward Shaping)
 
-| Parameter                | Default   | Description                        |
-| ------------------------ | --------- | ---------------------------------- |
-| `potential_gamma`        | 0.95      | Discount γ for shaping potential Φ |
-| `exit_potential_mode`    | canonical | Potential release mode             |
-| `exit_potential_decay`   | 0.5       | Decay for progressive_release      |
-| `hold_potential_enabled` | true      | Enable hold potential Φ            |
+| Parameter                | Default   | Description                       |
+| ------------------------ | --------- | --------------------------------- |
+| `potential_gamma`        | 0.95      | Discount factor γ for potential Φ |
+| `exit_potential_mode`    | canonical | Potential release mode            |
+| `exit_potential_decay`   | 0.5       | Decay for progressive_release     |
+| `hold_potential_enabled` | true      | Enable hold potential Φ           |
 
 PBRS invariance holds when: `exit_potential_mode=canonical` AND `entry_additive_enabled=false` AND `exit_additive_enabled=false`. Under this condition the algorithm enforces zero-sum shaping: if the summed shaping term deviates by more than 1e-6 (`PBRS_INVARIANCE_TOL`), a uniform drift correction subtracts the mean shaping offset across invariant samples.
 
@@ -423,7 +423,7 @@ Combine with other overrides cautiously; use distinct `out_dir` per configuratio
 
 ### PBRS Rationale
 
-Canonical mode seeks near zero-sum shaping (Φ terminal ≈ 0) ensuring invariance: reward differences reflect environment performance, not potential leakage. Non-canonical modes or additives (entry/exit) trade strict invariance for potential extra signal shaping. Progressive release & spike cancel adjust temporal release of Φ. Choose canonical for theory alignment; use non-canonical or additives only when empirical gain outweighs invariance guarantees. Symbol Φ denotes shaping potential. See invariance condition and drift correction mechanics under PBRS section.
+Canonical mode seeks near zero-sum shaping (Φ terminal ≈ 0) ensuring invariance: reward differences reflect environment performance, not potential leakage. Non-canonical modes or additives (entry/exit) trade strict invariance for potential extra signal shaping. Progressive release & spike cancel adjust temporal release of Φ. Choose canonical for theory alignment; use non-canonical or additives only when empirical gain outweighs invariance guarantees. Symbol Φ denotes potential. See invariance condition and drift correction mechanics under PBRS section.
 
 ### Real Data Comparison
 

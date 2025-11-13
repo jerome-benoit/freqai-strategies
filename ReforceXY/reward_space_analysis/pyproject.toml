@@ -49,7 +49,8 @@ markers = [
     "statistics: statistical aggregation and metrics",
     "pbrs: potential-based reward shaping specifics",
     "integration: cross-module integration scenarios",
-    "slow: resource-intensive or long-running tests"
+    "slow: resource-intensive or long-running tests",
+    "smoke: non-owning smoke tests for early regression detection"
 ]
 
 # Logging configuration

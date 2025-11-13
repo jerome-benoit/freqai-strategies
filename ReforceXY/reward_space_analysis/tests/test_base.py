@@ -46,11 +46,16 @@ class RewardSpaceTestBase(unittest.TestCase):
         cls.TEST_RR_HIGH = 2.0
         cls.TEST_PNL_STD = 0.02
         cls.TEST_PNL_DUR_VOL_SCALE = 0.5
-        # Specialized seeds for different test contexts
+        # Seeds for different test contexts
         cls.SEED_SMOKE_TEST = 7
         cls.SEED_REPRODUCIBILITY = 777
         cls.SEED_BOOTSTRAP = 2024
         cls.SEED_HETEROSCEDASTICITY = 123
+        # Statistical test thresholds
+        cls.BOOTSTRAP_DEFAULT_ITERATIONS = 200
+        cls.BH_FP_RATE_THRESHOLD = 0.15
+        cls.EXIT_FACTOR_SCALING_RATIO_MIN = 5.0
+        cls.EXIT_FACTOR_SCALING_RATIO_MAX = 15.0
 
     def setUp(self):
         """Set up test fixtures with reproducible random seed."""

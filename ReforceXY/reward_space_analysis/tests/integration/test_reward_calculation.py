@@ -1,5 +1,7 @@
 """Integration smoke tests: component activation and long/short symmetry."""
 
+import pytest
+
 from reward_space_analysis import (
     Actions,
     Positions,
@@ -12,6 +14,7 @@ from ..test_base import RewardSpaceTestBase
 class TestRewardCalculation(RewardSpaceTestBase):
     """High-level integration smoke tests for reward calculation."""
 
+    @pytest.mark.smoke
     def test_reward_component_activation_smoke(
         self,
     ):

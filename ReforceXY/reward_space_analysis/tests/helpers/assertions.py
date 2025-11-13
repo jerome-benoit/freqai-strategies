@@ -6,6 +6,12 @@ single invariant ownership and reduce duplication across taxonomy modules.
 
 from typing import Any, Dict, List, Sequence, Tuple
 
+from reward_space_analysis import (
+    _get_exit_factor,
+    _get_pnl_factor,
+    calculate_reward,
+)
+
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     """Coerce value to float safely for test parameter handling.
@@ -34,7 +40,21 @@ def assert_monotonic_nonincreasing(
     tolerance: float = 0.0,
     msg: str = "Values should be non-increasing",
 ):
-    """Assert that each subsequent value is <= previous (non-increasing)."""
+    """Assert that a sequence is monotonically non-increasing.
+
+    Validates that each element in the sequence is less than or equal to the
+    previous element, with an optional tolerance for floating-point comparisons.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        values: Sequence of numeric values to validate
+        tolerance: Numerical tolerance for comparisons (default: 0.0)
+        msg: Custom error message for assertion failures
+
+    Example:
+        assert_monotonic_nonincreasing(self, [5.0, 4.0, 3.0, 3.0, 2.0])
+        # Validates: 4.0 <= 5.0, 3.0 <= 4.0, 3.0 <= 3.0, 2.0 <= 3.0
+    """
     for i in range(1, len(values)):
         test_case.assertLessEqual(values[i], values[i - 1] + tolerance, msg)
 
@@ -45,13 +65,40 @@ def assert_monotonic_nonnegative(
     tolerance: float = 0.0,
     msg: str = "Values should be non-negative",
 ):
-    """Assert all values are >= 0."""
+    """Assert that all values in a sequence are non-negative.
+
+    Validates that each element is greater than or equal to zero, with an
+    optional tolerance for floating-point comparisons.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        values: Sequence of numeric values to validate
+        tolerance: Numerical tolerance for comparisons (default: 0.0)
+        msg: Custom error message for assertion failures
+
+    Example:
+        assert_monotonic_nonnegative(self, [0.0, 1.5, 2.3, 0.1])
+    """
     for v in values:
         test_case.assertGreaterEqual(v + tolerance, 0.0, msg)
 
 
 def assert_finite(test_case, values: Sequence[float], msg: str = "Values must be finite"):
-    """Assert all values are finite numbers."""
+    """Assert that all values are finite (not NaN or infinity).
+
+    Validates that no element in the sequence is NaN, positive infinity, or
+    negative infinity. Essential for numerical stability checks.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        values: Sequence of numeric values to validate
+        msg: Custom error message for assertion failures
+
+    Example:
+        assert_finite(self, [1.0, 2.5, -3.7, 0.0])  # Passes
+        assert_finite(self, [1.0, float('nan')])    # Fails
+        assert_finite(self, [1.0, float('inf')])    # Fails
+    """
     for v in values:
         test_case.assertTrue((v == v) and (v not in (float("inf"), float("-inf"))), msg)
 
@@ -63,7 +110,21 @@ def assert_almost_equal_list(
     delta: float,
     msg: str = "Values should be near target",
 ):
-    """Assert each value is within delta of target."""
+    """Assert that all values in a sequence are approximately equal to a target.
+
+    Validates that each element is within a specified tolerance (delta) of the
+    target value. Useful for checking plateau behavior or constant outputs.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        values: Sequence of numeric values to validate
+        target: Target value for comparison
+        delta: Maximum allowed deviation from target
+        msg: Custom error message for assertion failures
+
+    Example:
+        assert_almost_equal_list(self, [1.0, 1.01, 0.99], 1.0, delta=0.02)
+    """
     for v in values:
         test_case.assertAlmostEqual(v, target, delta=delta, msg=msg)
 
@@ -75,7 +136,25 @@ def assert_trend(
     tolerance: float,
     msg_prefix: str = "Trend validation failed",
 ):
-    """Generic trend assertion for increasing/decreasing/constant sequences."""
+    """Assert that a sequence follows a specific trend pattern.
+
+    Generic trend validation supporting increasing, decreasing, or constant
+    patterns. More flexible than specialized monotonic assertions.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        values: Sequence of numeric values to validate
+        trend: Expected trend: "increasing", "decreasing", or "constant"
+        tolerance: Numerical tolerance for comparisons
+        msg_prefix: Prefix for error messages
+
+    Raises:
+        ValueError: If trend parameter is not one of the supported values
+
+    Example:
+        assert_trend(self, [1.0, 2.0, 3.0], "increasing", 1e-09)
+        assert_trend(self, [5.0, 5.0, 5.0], "constant", 1e-09)
+    """
     if trend not in {"increasing", "decreasing", "constant"}:
         raise ValueError(f"Unsupported trend '{trend}'")
     if trend == "increasing":
@@ -103,6 +182,34 @@ def assert_component_sum_integrity(
     exclude_components=None,
     component_description="components",
 ):
+    """Assert that reward component sum matches total within tolerance.
+
+    Validates the mathematical integrity of reward component decomposition by
+    ensuring the sum of individual components equals the reported total.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        breakdown: Reward breakdown object with component attributes
+        tolerance_relaxed: Numerical tolerance for sum validation
+        exclude_components: List of component names to exclude from sum (default: None)
+        component_description: Human-readable description for error messages
+
+    Components checked (if not excluded):
+        - hold_penalty
+        - idle_penalty
+        - exit_component
+        - invalid_penalty
+        - reward_shaping
+        - entry_additive
+        - exit_additive
+
+    Example:
+        assert_component_sum_integrity(
+            self, breakdown, 1e-09,
+            exclude_components=["reward_shaping"],
+            component_description="core components"
+        )
+    """
     if exclude_components is None:
         exclude_components = []
     component_sum = 0.0
@@ -134,7 +241,22 @@ def assert_progressive_scaling_behavior(
     durations: Sequence[int],
     penalty_type: str = "penalty",
 ):
-    """Validate penalty progression patterns consistently."""
+    """Validate that penalties scale progressively with increasing durations.
+
+    Ensures penalties become more severe (more negative) as duration increases,
+    which is a key invariant for hold and idle penalty calculations.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        penalties_list: Sequence of penalty values (typically negative)
+        durations: Corresponding sequence of duration values
+        penalty_type: Type of penalty for error messages (default: "penalty")
+
+    Example:
+        durations = [10, 50, 100, 200]
+        penalties = [-5.0, -10.0, -15.0, -20.0]
+        assert_progressive_scaling_behavior(self, penalties, durations, "hold_penalty")
+    """
     for i in range(1, len(penalties_list)):
         test_case.assertLessEqual(
             penalties_list[i],
@@ -146,7 +268,24 @@ def assert_progressive_scaling_behavior(
 def assert_single_active_component(
     test_case, breakdown, active_name: str, tolerance: float, inactive_core: Sequence[str]
 ):
-    """Assert only one core component is active; others near zero."""
+    """Assert that exactly one reward component is active in a breakdown.
+
+    Validates reward component isolation by ensuring the active component equals
+    the total reward while all other components are negligible (near zero).
+
+    Args:
+        test_case: Test case instance with assertion methods
+        breakdown: Reward breakdown object with component attributes
+        active_name: Name of the component expected to be active
+        tolerance: Numerical tolerance for near-zero checks
+        inactive_core: List of core component names to check
+
+    Example:
+        assert_single_active_component(
+            self, breakdown, "exit_component", 1e-09,
+            ["hold_penalty", "idle_penalty", "invalid_penalty"]
+        )
+    """
     for name in inactive_core:
         if name == active_name:
             test_case.assertAlmostEqual(
@@ -172,9 +311,26 @@ def assert_single_active_component_with_additives(
     inactive_core: Sequence[str],
     enforce_additives_zero: bool = True,
 ):
-    """Assert single active core component plus additive/shaping near-zero.
+    """Assert single active core component with optional additive checks.
 
-    Adds reward_shaping, entry_additive, exit_additive zero checks to core assertion.
+    Extended version of assert_single_active_component that additionally validates
+    that additive components (reward_shaping, entry_additive, exit_additive) are
+    near zero when they should be inactive.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        breakdown: Reward breakdown object with component attributes
+        active_name: Name of the component expected to be active
+        tolerance: Numerical tolerance for near-zero checks
+        inactive_core: List of core component names to check
+        enforce_additives_zero: If True, also check additives are near zero
+
+    Example:
+        assert_single_active_component_with_additives(
+            self, breakdown, "exit_component", 1e-09,
+            ["hold_penalty", "idle_penalty"],
+            enforce_additives_zero=True
+        )
     """
     # Delegate core component assertions
     assert_single_active_component(test_case, breakdown, active_name, tolerance, inactive_core)
@@ -197,8 +353,30 @@ def assert_reward_calculation_scenarios(
     validation_fn,
     tolerance_relaxed: float,
 ):
-    from reward_space_analysis import calculate_reward
+    """Execute and validate multiple reward calculation scenarios.
 
+    Runs a batch of reward calculations with different contexts and parameters,
+    applying a custom validation function to each result. Reduces test boilerplate
+    for scenario-based testing.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        scenarios: List of (context, params, description) tuples defining test cases
+        base_factor: Base scaling factor for reward calculations
+        profit_target: Target profit threshold
+        risk_reward_ratio: Risk/reward ratio for position sizing
+        validation_fn: Callback function (test_case, breakdown, description, tolerance) -> None
+        tolerance_relaxed: Numerical tolerance passed to validation function
+
+    Example:
+        scenarios = [
+            (idle_context, {}, "idle scenario"),
+            (exit_context, {"exit_additive": 5.0}, "profitable exit"),
+        ]
+        assert_reward_calculation_scenarios(
+            self, scenarios, 90.0, 0.06, 1.0, my_validation_fn, 1e-09
+        )
+    """
     for context, params, description in scenarios:
         with test_case.subTest(scenario=description):
             breakdown = calculate_reward(
@@ -225,6 +403,34 @@ def assert_parameter_sensitivity_behavior(
     expected_trend: str,
     tolerance_relaxed: float,
 ):
+    """Validate that a component responds predictably to parameter changes.
+
+    Tests component sensitivity by applying parameter variations and verifying
+    the component value follows the expected trend (increasing, decreasing, or constant).
+
+    Args:
+        test_case: Test case instance with assertion methods
+        parameter_variations: List of parameter dicts to merge with base_params
+        base_context: Context object for reward calculation
+        base_params: Base parameter dictionary
+        base_factor: Base scaling factor
+        profit_target: Target profit threshold
+        risk_reward_ratio: Risk/reward ratio
+        component_name: Name of component to track (e.g., "exit_component")
+        expected_trend: Expected trend: "increasing", "decreasing", or "constant"
+        tolerance_relaxed: Numerical tolerance for trend validation
+
+    Example:
+        variations = [
+            {"exit_additive": 0.0},
+            {"exit_additive": 5.0},
+            {"exit_additive": 10.0},
+        ]
+        assert_parameter_sensitivity_behavior(
+            self, variations, ctx, params, 90.0, 0.06, 1.0,
+            "exit_component", "increasing", 1e-09
+        )
+    """
     from reward_space_analysis import calculate_reward
 
     results = []
@@ -272,6 +478,27 @@ def make_idle_penalty_test_contexts(
     idle_duration_scenarios: Sequence[int],
     base_context_kwargs: Dict[str, Any] | None = None,
 ):
+    """Generate contexts for idle penalty testing with varying durations.
+
+    Factory function that creates a list of (context, description) tuples for
+    idle penalty scenario testing, reducing boilerplate in test setup.
+
+    Args:
+        context_factory_fn: Factory function that creates context objects
+        idle_duration_scenarios: Sequence of idle duration values to test
+        base_context_kwargs: Base kwargs merged with idle_duration for each scenario
+
+    Returns:
+        List of (context, description) tuples
+
+    Example:
+        contexts = make_idle_penalty_test_contexts(
+            make_context, [0, 50, 100, 200],
+            base_context_kwargs={"context_type": "idle"}
+        )
+        for context, desc in contexts:
+            breakdown = calculate_reward(context, ...)
+    """
     if base_context_kwargs is None:
         base_context_kwargs = {}
     contexts = []
@@ -293,9 +520,35 @@ def assert_exit_factor_attenuation_modes(
     base_params_fn,
     tolerance_relaxed: float,
 ):
-    import numpy as np
+    """Validate exit factor attenuation across multiple modes.
 
-    from reward_space_analysis import _get_exit_factor
+    Tests that exit factor decreases monotonically (attenuates) over duration
+    for various attenuation modes: linear, power, half_life, sqrt, and plateau_linear.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        base_factor: Base scaling factor
+        pnl: Profit/loss value
+        pnl_factor: PnL amplification factor
+        attenuation_modes: List of mode names to test
+        base_params_fn: Factory function for creating parameter dicts
+        tolerance_relaxed: Numerical tolerance for monotonicity checks
+
+    Supported modes:
+        - "plateau_linear": Linear attenuation after grace period
+        - "linear": Linear attenuation with configurable slope
+        - "power": Power-law attenuation with tau parameter
+        - "half_life": Exponential decay with half-life parameter
+        - "sqrt": Square root attenuation (default fallback)
+
+    Example:
+        assert_exit_factor_attenuation_modes(
+            self, 90.0, 0.08, 1.5,
+            ["linear", "power", "half_life"],
+            make_params, 1e-09
+        )
+    """
+    import numpy as np
 
     for mode in attenuation_modes:
         with test_case.subTest(mode=mode):
@@ -341,8 +594,32 @@ def assert_exit_mode_mathematical_validation(
     risk_reward_ratio: float,
     tolerance_relaxed: float,
 ):
-    from reward_space_analysis import _get_exit_factor, _get_pnl_factor, calculate_reward
+    """Validate mathematical correctness of exit factor calculation modes.
 
+    Performs deep mathematical validation of exit factor attenuation modes,
+    including verification of half-life exponential decay formula and
+    ensuring different modes produce distinct results.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        context: Context object with trade_duration and pnl attributes
+        params: Parameter dictionary (will be modified in-place for testing)
+        base_factor: Base scaling factor
+        profit_target: Target profit threshold
+        risk_reward_ratio: Risk/reward ratio
+        tolerance_relaxed: Numerical tolerance for formula validation
+
+    Tests performed:
+        1. Power mode produces positive exit component
+        2. Half-life mode matches theoretical exponential decay formula
+        3. Linear mode produces positive exit component
+        4. Different modes produce distinguishable results
+
+    Example:
+        assert_exit_mode_mathematical_validation(
+            self, context, params, 90.0, 0.06, 1.0, 1e-09
+        )
+    """
     duration_ratio = context.trade_duration / 100
     params["exit_attenuation_mode"] = "power"
     params["exit_power_tau"] = 0.5
@@ -410,8 +687,30 @@ def assert_multi_parameter_sensitivity(
     base_factor: float,
     tolerance_relaxed: float,
 ):
-    from reward_space_analysis import calculate_reward
+    """Validate reward behavior across multiple parameter combinations.
 
+    Tests reward calculation with various profit_target and risk_reward_ratio
+    combinations, ensuring consistent behavior including edge cases like
+    zero profit_target.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        parameter_test_cases: List of (profit_target, risk_reward_ratio, description) tuples
+        context_factory_fn: Factory function for creating context objects
+        base_params: Base parameter dictionary
+        base_factor: Base scaling factor
+        tolerance_relaxed: Numerical tolerance for assertions
+
+    Example:
+        test_cases = [
+            (0.0, 1.0, "zero profit target"),
+            (0.06, 1.0, "standard parameters"),
+            (0.06, 2.0, "high risk/reward ratio"),
+        ]
+        assert_multi_parameter_sensitivity(
+            self, test_cases, make_context, params, 90.0, 1e-09
+        )
+    """
     for profit_target, risk_reward_ratio, description in parameter_test_cases:
         with test_case.subTest(
             profit_target=profit_target, risk_reward_ratio=risk_reward_ratio, desc=description
@@ -456,8 +755,33 @@ def assert_hold_penalty_threshold_behavior(
     risk_reward_ratio: float,
     tolerance_relaxed: float,
 ):
-    from reward_space_analysis import calculate_reward
+    """Validate hold penalty activation at max_duration threshold.
 
+    Tests that hold penalty is zero before max_duration, then becomes
+    negative (penalty) at and after the threshold. Critical for verifying
+    threshold-based penalty logic.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        duration_test_cases: List of (trade_duration, description) tuples to test
+        max_duration: Maximum duration threshold for penalty activation
+        context_factory_fn: Factory function for creating context objects
+        params: Parameter dictionary
+        base_factor: Base scaling factor
+        profit_target: Target profit threshold
+        risk_reward_ratio: Risk/reward ratio
+        tolerance_relaxed: Numerical tolerance for assertions
+
+    Example:
+        test_cases = [
+            (50, "below threshold"),
+            (100, "at threshold"),
+            (150, "above threshold"),
+        ]
+        assert_hold_penalty_threshold_behavior(
+            self, test_cases, 100, make_context, params, 90.0, 0.06, 1.0, 1e-09
+        )
+    """
     for trade_duration, description in duration_test_cases:
         with test_case.subTest(duration=trade_duration, desc=description):
             context = context_factory_fn(trade_duration=trade_duration)
@@ -490,11 +814,24 @@ def build_validation_case(
 ) -> Dict[str, Any]:
     """Build a structured validation test case descriptor.
 
-    Fields:
-    - params: dict of parameter updates
-    - strict: strict flag
-    - expect_error: whether validate should raise
-    - expected_reason_substrings: substrings expected in adjustments reasons (relaxed mode)
+    Creates a standardized test case dictionary for parameter validation testing,
+    supporting both strict (raise on error) and relaxed (adjust and warn) modes.
+
+    Args:
+        param_updates: Dictionary of parameter updates to apply
+        strict: If True, validation should raise on invalid params
+        expect_error: If True, expect validation to raise an exception
+        expected_reason_substrings: Substrings expected in adjustment reasons (relaxed mode)
+
+    Returns:
+        Dictionary with keys: params, strict, expect_error, expected_reason_substrings
+
+    Example:
+        case = build_validation_case(
+            {"exit_plateau_grace": -0.5},
+            strict=False,
+            expected_reason_substrings=["clamped", "exit_plateau_grace"]
+        )
     """
     return {
         "params": param_updates,
@@ -505,10 +842,24 @@ def build_validation_case(
 
 
 def execute_validation_batch(test_case, cases: Sequence[Dict[str, Any]], validate_fn):
-    """Execute a batch of validation cases against `validate_reward_parameters`.
+    """Execute a batch of parameter validation test cases.
 
-    Each case dict produced by build_validation_case.
-    Strict cases expecting errors assert raises; relaxed cases collect adjustments.
+    Runs multiple validation scenarios in batch, handling both strict (error-raising)
+    and relaxed (adjustment-collecting) modes. Validates that adjustment reasons
+    contain expected substrings in relaxed mode.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        cases: Sequence of validation case dictionaries from build_validation_case
+        validate_fn: Validation function to test (typically validate_reward_parameters)
+
+    Example:
+        cases = [
+            build_validation_case({"exit_power_tau": -1.0}, strict=True, expect_error=True),
+            build_validation_case({"exit_power_tau": -1.0}, strict=False,
+                                 expected_reason_substrings=["clamped"]),
+        ]
+        execute_validation_batch(self, cases, validate_reward_parameters)
     """
     for idx, case in enumerate(cases):
         with test_case.subTest(
@@ -538,7 +889,28 @@ def execute_validation_batch(test_case, cases: Sequence[Dict[str, Any]], validat
 def assert_adjustment_reason_contains(
     test_case, adjustments: Dict[str, Dict[str, Any]], key: str, expected_substrings: Sequence[str]
 ):
-    """Assert all expected substrings appear in adjustments[key]['reason'] (order-independent)."""
+    """Assert adjustment reason contains all expected substrings.
+
+    Validates that all expected substrings appear in the adjustment reason
+    message for a specific parameter key, regardless of order.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        adjustments: Dictionary of adjustment information from validation
+        key: Parameter key to check in adjustments dict
+        expected_substrings: List of substrings that must appear in reason
+
+    Example:
+        adjustments = {
+            "exit_plateau_grace": {
+                "reason": "clamped to valid range [0.0, 1.0]",
+                "validation_mode": "relaxed"
+            }
+        }
+        assert_adjustment_reason_contains(
+            self, adjustments, "exit_plateau_grace", ["clamped", "valid range"]
+        )
+    """
     test_case.assertIn(key, adjustments, f"Adjustment key '{key}' missing")
     reason = adjustments[key].get("reason", "")
     for sub in expected_substrings:
@@ -548,7 +920,27 @@ def assert_adjustment_reason_contains(
 def run_strict_validation_failure_cases(
     test_case, failure_params_list: Sequence[Dict[str, Any]], validate_fn
 ):
-    """Run multiple strict validation failure cases asserting ValueError raised."""
+    """Batch test strict validation failures.
+
+    Runs multiple parameter dictionaries through validation in strict mode,
+    asserting that each raises a ValueError. Reduces boilerplate for testing
+    multiple invalid parameter combinations.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        failure_params_list: List of parameter dicts that should fail validation
+        validate_fn: Validation function to test
+
+    Example:
+        invalid_params = [
+            {"exit_power_tau": -1.0},
+            {"exit_plateau_grace": 1.5},
+            {"exit_half_life": 0.0},
+        ]
+        run_strict_validation_failure_cases(
+            self, invalid_params, validate_reward_parameters
+        )
+    """
     for params in failure_params_list:
         with test_case.subTest(params=params):
             test_case.assertRaises(ValueError, validate_fn, params, True)
@@ -559,9 +951,25 @@ def run_relaxed_validation_adjustment_cases(
     relaxed_cases: Sequence[Tuple[Dict[str, Any], Sequence[str]]],
     validate_fn,
 ):
-    """Run relaxed validation cases asserting adjustment reasons contain substrings.
+    """Batch test relaxed validation adjustments.
 
-    Each tuple: (params, expected_reason_substrings)
+    Runs multiple parameter dictionaries through validation in relaxed mode,
+    asserting that adjustment reasons contain expected substrings. Validates
+    that the system properly adjusts and reports issues rather than raising.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        relaxed_cases: List of (params, expected_reason_substrings) tuples
+        validate_fn: Validation function to test
+
+    Example:
+        relaxed_cases = [
+            ({"exit_power_tau": -1.0}, ["clamped", "tau"]),
+            ({"exit_plateau_grace": 1.5}, ["clamped", "grace"]),
+        ]
+        run_relaxed_validation_adjustment_cases(
+            self, relaxed_cases, validate_reward_parameters
+        )
     """
     for params, substrings in relaxed_cases:
         with test_case.subTest(params=params):
@@ -579,12 +987,38 @@ def run_relaxed_validation_adjustment_cases(
 def assert_exit_factor_invariant_suite(
     test_case, suite_cases: Sequence[Dict[str, Any]], exit_factor_fn
 ):
-    """Assert exit factor invariants across a suite of scenarios.
+    """Validate exit factor invariants across multiple scenarios.
 
-    Each case dict keys:
-    - base_factor, pnl, pnl_factor, duration_ratio, params
-    - expectation: 'non_negative', 'safe_zero', 'clamped'
-    - tolerance (optional)
+    Batch validation of exit factor behavior under various conditions,
+    checking different invariants like non-negativity, safe zero handling,
+    and clamping behavior.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        suite_cases: List of scenario dicts with keys:
+            - base_factor: Base scaling factor
+            - pnl: Profit/loss value
+            - pnl_factor: PnL amplification factor
+            - duration_ratio: Duration ratio (0-2)
+            - params: Parameter dictionary
+            - expectation: Expected invariant ("non_negative", "safe_zero", "clamped")
+            - tolerance: Optional numerical tolerance
+        exit_factor_fn: Exit factor calculation function to test
+
+    Example:
+        cases = [
+            {
+                "base_factor": 90.0, "pnl": 0.08, "pnl_factor": 1.5,
+                "duration_ratio": 0.5, "params": {...},
+                "expectation": "non_negative", "tolerance": 1e-09
+            },
+            {
+                "base_factor": 90.0, "pnl": 0.0, "pnl_factor": 0.0,
+                "duration_ratio": 0.5, "params": {...},
+                "expectation": "safe_zero"
+            },
+        ]
+        assert_exit_factor_invariant_suite(self, cases, _get_exit_factor)
     """
     for i, case in enumerate(suite_cases):
         with test_case.subTest(exit_case=i, expectation=case.get("expectation")):
@@ -616,9 +1050,36 @@ def assert_exit_factor_kernel_fallback(
     bad_params: Dict[str, Any],
     reference_params: Dict[str, Any],
 ):
-    """Assert kernel failure path falls back to linear and emits warning via context manager.
+    """Validate exit factor fallback behavior on kernel failure.
 
-    Caller handles monkeypatching prior to invocation. Compares numerical equality within tight rel tolerance.
+    Tests that when an attenuation kernel fails (e.g., invalid parameters),
+    the system falls back to linear mode and produces numerically equivalent
+    results. Caller must monkeypatch the kernel to trigger failure before calling.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        exit_factor_fn: Exit factor calculation function
+        base_factor: Base scaling factor
+        pnl: Profit/loss value
+        pnl_factor: PnL amplification factor
+        duration_ratio: Duration ratio
+        bad_params: Parameters that trigger kernel failure
+        reference_params: Reference linear mode parameters for comparison
+
+    Validates:
+        1. Fallback produces non-negative result
+        2. Fallback result matches linear reference within tight tolerance (1e-12)
+
+    Note:
+        Warning emission should be validated separately with warning context managers.
+
+    Example:
+        # After monkeypatching kernel to fail:
+        assert_exit_factor_kernel_fallback(
+            self, _get_exit_factor, 90.0, 0.08, 1.5, 0.5,
+            bad_params={"exit_attenuation_mode": "power", "exit_power_tau": -1.0},
+            reference_params={"exit_attenuation_mode": "linear"}
+        )
     """
 
     f_bad = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, bad_params)
@@ -633,9 +1094,26 @@ def assert_relaxed_multi_reason_aggregation(
     params: Dict[str, Any],
     key_expectations: Dict[str, Sequence[str]],
 ):
-    """Assert relaxed validation aggregates multiple reasons for specified keys.
+    """Validate relaxed validation produces expected adjustment reasons.
 
-    key_expectations: mapping param_key -> sequence of substrings expected in reason
+    Tests that relaxed validation properly aggregates and reports multiple
+    adjustment reasons for specified parameter keys, ensuring transparency
+    in parameter sanitization.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        validate_fn: Validation function to test
+        params: Parameter dictionary to validate
+        key_expectations: Mapping of param_key -> expected reason substrings
+
+    Example:
+        key_expectations = {
+            "exit_power_tau": ["clamped", "minimum"],
+            "exit_plateau_grace": ["clamped", "range"],
+        }
+        assert_relaxed_multi_reason_aggregation(
+            self, validate_reward_parameters, params, key_expectations
+        )
     """
     sanitized, adjustments = validate_fn(params, strict=False)
     test_case.assertIsInstance(sanitized, dict)
@@ -650,10 +1128,25 @@ def assert_relaxed_multi_reason_aggregation(
 def assert_pbrs_invariance_report_classification(
     test_case, content: str, expected_status: str, expect_additives: bool
 ):
-    """Assert PBRS invariance classification line and additive reason presence/absence.
+    """Validate PBRS invariance report classification and additive reporting.
 
-    expected_status: one of ['Canonical', 'Canonical (with warning)', 'Non-canonical']
-    expect_additives: whether additive reasons should appear.
+    Checks that the invariance report correctly classifies PBRS behavior
+    and appropriately reports additive component involvement.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        content: Report content string to validate
+        expected_status: Expected classification: "Canonical",
+                        "Canonical (with warning)", or "Non-canonical"
+        expect_additives: Whether additive components should be mentioned
+
+    Example:
+        assert_pbrs_invariance_report_classification(
+            self, report_content, "Canonical", expect_additives=False
+        )
+        assert_pbrs_invariance_report_classification(
+            self, report_content, "Non-canonical", expect_additives=True
+        )
     """
     test_case.assertIn(
         expected_status, content, f"Expected invariance status '{expected_status}' not found"
@@ -667,12 +1160,91 @@ def assert_pbrs_invariance_report_classification(
 
 
 def assert_pbrs_canonical_sum_within_tolerance(test_case, total_shaping: float, tolerance: float):
-    """Assert canonical cumulative shaping within tolerance (absolute magnitude)."""
+    """Validate cumulative PBRS shaping satisfies canonical bound.
+
+    For canonical PBRS, the cumulative reward shaping across a trajectory
+    must be near zero (within tolerance). This is a core PBRS invariant.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        total_shaping: Total cumulative reward shaping value
+        tolerance: Maximum allowed absolute deviation from zero
+
+    Example:
+        assert_pbrs_canonical_sum_within_tolerance(self, 5e-10, 1e-09)
+    """
     test_case.assertLess(abs(total_shaping), tolerance)
 
 
 def assert_non_canonical_shaping_exceeds(
     test_case, total_shaping: float, tolerance_multiple: float
 ):
-    """Assert non-canonical shaping exceeds scaled tolerance threshold."""
+    """Validate non-canonical PBRS shaping exceeds threshold.
+
+    For non-canonical PBRS (e.g., with additives), the cumulative shaping
+    should exceed a scaled tolerance threshold, indicating violation of
+    the canonical PBRS invariant.
+
+    Args:
+        test_case: Test case instance with assertion methods
+        total_shaping: Total cumulative reward shaping value
+        tolerance_multiple: Threshold value (typically scaled tolerance)
+
+    Example:
+        # Expect shaping to exceed 10x tolerance for non-canonical case
+        assert_non_canonical_shaping_exceeds(self, 0.05, 1e-08)
+    """
     test_case.assertGreater(abs(total_shaping), tolerance_multiple)
+
+
+def assert_exit_factor_plateau_behavior(
+    test_case,
+    exit_factor_fn,
+    base_factor: float,
+    pnl: float,
+    pnl_factor: float,
+    plateau_params: dict,
+    grace: float,
+    tolerance_strict: float,
+):
+    """Assert plateau behavior: factor before grace >= factor after grace (attenuation begins after grace boundary).
+
+    Args:
+        test_case: Test case instance with assertion methods
+        exit_factor_fn: Exit factor calculation function (_get_exit_factor)
+        base_factor: Base factor for exit calculation
+        pnl: PnL value
+        pnl_factor: PnL factor multiplier
+        plateau_params: Parameters dict with plateau configuration
+        grace: Grace period threshold (exit_plateau_grace value)
+        tolerance_strict: Tolerance for numerical comparisons
+    """
+    # Test points: one before grace, one after grace
+    duration_ratio_pre = grace - 0.1 if grace >= 0.1 else grace * 0.5
+    duration_ratio_post = grace + 0.3
+
+    plateau_factor_pre = exit_factor_fn(
+        base_factor=base_factor,
+        pnl=pnl,
+        pnl_factor=pnl_factor,
+        duration_ratio=duration_ratio_pre,
+        params=plateau_params,
+    )
+    plateau_factor_post = exit_factor_fn(
+        base_factor=base_factor,
+        pnl=pnl,
+        pnl_factor=pnl_factor,
+        duration_ratio=duration_ratio_post,
+        params=plateau_params,
+    )
+
+    # Both factors should be positive
+    test_case.assertGreater(plateau_factor_pre, 0, "Pre-grace factor should be positive")
+    test_case.assertGreater(plateau_factor_post, 0, "Post-grace factor should be positive")
+
+    # Pre-grace factor should be >= post-grace factor (attenuation begins after grace)
+    test_case.assertGreaterEqual(
+        plateau_factor_pre,
+        plateau_factor_post - tolerance_strict,
+        "Plateau pre-grace factor should be >= post-grace factor",
+    )

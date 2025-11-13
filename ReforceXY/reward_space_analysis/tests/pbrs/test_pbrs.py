@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from reward_space_analysis import (
+    DEFAULT_IDLE_DURATION_MULTIPLIER,
     DEFAULT_MODEL_REWARD_PARAMETERS,
     PBRS_INVARIANCE_TOL,
     _compute_entry_additive,
@@ -18,6 +19,7 @@ from reward_space_analysis import (
     get_max_idle_duration_candles,
     simulate_samples,
     validate_reward_parameters,
+    write_complete_statistical_analysis,
 )
 
 from ..helpers import (
@@ -591,6 +593,7 @@ class TestPBRS(RewardSpaceTestBase):
     # ---------------- Report classification / formatting ---------------- #
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101), robustness/test_robustness.py:125 (robustness-exit-pnl-only-117)
+    @pytest.mark.smoke
     def test_pbrs_non_canonical_report_generation(self):
         """Synthetic invariance section: Non-canonical classification formatting."""
         import re
@@ -743,6 +746,7 @@ class TestPBRS(RewardSpaceTestBase):
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     # Owns invariant: pbrs-canonical-near-zero-report-116
+    @pytest.mark.smoke
     def test_pbrs_canonical_near_zero_report(self):
         """Invariant 116: canonical near-zero cumulative shaping classified in full report."""
         import re
@@ -750,7 +754,7 @@ class TestPBRS(RewardSpaceTestBase):
         import numpy as np
         import pandas as pd
 
-        from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
+        from reward_space_analysis import PBRS_INVARIANCE_TOL
 
         small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
         total_shaping = float(sum(small_vals))
@@ -808,11 +812,12 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertAlmostEqual(abs(total_shaping), val_abs, places=12)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    @pytest.mark.smoke
     def test_pbrs_canonical_warning_report(self):
         """Canonical mode + no additives but |Σ shaping| > tolerance -> warning classification."""
         import pandas as pd
 
-        from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
+        from reward_space_analysis import PBRS_INVARIANCE_TOL
 
         shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # sum = 4.5e-4 (> tol)
         total_shaping = sum(shaping_vals)
@@ -862,11 +867,10 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn(expected_sum_fragment, content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    @pytest.mark.smoke
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
         """Full report: Non-canonical classification aggregates mode + additives reasons."""
         import pandas as pd
-
-        from reward_space_analysis import write_complete_statistical_analysis
 
         shaping_vals = [0.02, -0.005, 0.007]
         entry_add_vals = [0.003, 0.0, 0.004]
@@ -917,11 +921,12 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("exit_potential_mode='progressive_release'", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    @pytest.mark.smoke
     def test_pbrs_non_canonical_mode_only_reason(self):
         """Non-canonical exit mode with additives disabled -> reason excludes additive list."""
         import pandas as pd
 
-        from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
+        from reward_space_analysis import PBRS_INVARIANCE_TOL
 
         shaping_vals = [0.002, -0.0005, 0.0012]
         total_shaping = sum(shaping_vals)
@@ -975,8 +980,6 @@ class TestPBRS(RewardSpaceTestBase):
     def test_pbrs_absence_and_distribution_shift_placeholder(self):
         """Report generation without PBRS columns triggers absence + shift placeholder."""
         import pandas as pd
-
-        from reward_space_analysis import write_complete_statistical_analysis
 
         n = 90
         rng = np.random.default_rng(123)
@@ -1048,7 +1051,6 @@ class TestPBRS(RewardSpaceTestBase):
     def test_get_max_idle_duration_candles_negative_or_zero_fallback(self):
         """Explicit mid<=0 fallback path returns derived default multiplier."""
         from reward_space_analysis import (
-            DEFAULT_IDLE_DURATION_MULTIPLIER,
             DEFAULT_MODEL_REWARD_PARAMETERS,
         )
 
