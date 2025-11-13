@@ -132,41 +132,44 @@ Generates shift metrics for comparison (see Outputs section).
 
 ### Simulation & Environment
 
-**`--num_samples`** (int, default: 20000) – Synthetic scenarios. More = better stats (slower). Recommended: 10k (quick), 50k (standard), 100k+ (deep). (Simulation-only; not overridable via `--params`).
-**`--seed`** (int, default: 42) – Master seed (reuse for identical runs). (Simulation-only).
-**`--trading_mode`** (spot|margin|futures, default: spot) – spot: no shorts; margin/futures: shorts enabled. (Simulation-only).
-**`--action_masking`** (bool, default: true) – Simulate environment action masking; invalid actions receive penalties only if masking disabled. (Simulation-only; not present in reward params; cannot be set via `--params`).
-**`--max_duration_ratio`** (float, default: 2.5) – Upper multiple for sampled trade durations (idle derived). (Simulation-only; not in reward params; cannot be set via `--params`).
-**`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for synthetic PnL generation (pre-scaling). (Simulation-only).
-**`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL volatility scale proportional to trade duration ratio. (Simulation-only).
-**`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic distribution shift metrics. (Simulation-only; triggers additional outputs when provided).
-**`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL accrual during holds for potential Φ. (Simulation-only; affects PBRS components).
+- **`--num_samples`** (int, default: 20000) – Synthetic scenarios. More = better stats (slower). Recommended: 10k (quick), 50k (standard), 100k+ (deep). (Simulation-only; not overridable via `--params`).
+- **`--seed`** (int, default: 42) – Master seed (reuse for identical runs). (Simulation-only).
+- **`--trading_mode`** (spot|margin|futures, default: spot) – spot: no shorts; margin/futures: shorts enabled. (Simulation-only).
+- **`--action_masking`** (bool, default: true) – Simulate environment action masking; invalid actions receive penalties only if masking disabled. (Simulation-only; not present in reward params; cannot be set via `--params`).
+- **`--max_duration_ratio`** (float, default: 2.5) – Upper multiple for sampled trade durations (idle derived). (Simulation-only; not in reward params; cannot be set via `--params`).
+- **`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for synthetic PnL generation (pre-scaling). (Simulation-only).
+- **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL volatility scale proportional to trade duration ratio. (Simulation-only).
+- **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic distribution shift metrics. (Simulation-only; triggers additional outputs when provided).
+- **`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL accrual during holds for potential Φ. (Simulation-only; affects PBRS components).
 
 ### Reward & Shaping
 
-**`--base_factor`** (float, default: 100.0) – Base reward scale.
-**`--profit_target`** (float, default: 0.03) – Target profit (e.g. 0.03=3%). (May be overridden via `--params` though not stored in `reward_params` object.)
-**`--risk_reward_ratio`** (float, default: 1.0) – Adjusts effective profit target (`profit_target * risk_reward_ratio`). (May be overridden via `--params`).
-**`--win_reward_factor`** (float, default: 2.0) – Profit overshoot multiplier.
+- **`--base_factor`** (float, default: 100.0) – Base reward scale.
+- **`--profit_target`** (float, default: 0.03) – Target profit (e.g. 0.03=3%). (May be overridden via `--params` though not stored in `reward_params` object.)
+- **`--risk_reward_ratio`** (float, default: 1.0) – Adjusts effective profit target (`profit_target * risk_reward_ratio`). (May be overridden via `--params`).
+- **`--win_reward_factor`** (float, default: 2.0) – Profit overshoot multiplier.
+
 **Duration penalties**: idle / hold scales & powers shape time-cost.
+
 **Exit attenuation**: kernel factors applied to exit duration ratio.
+
 **Efficiency weighting**: scales efficiency contribution.
 
 ### Diagnostics & Validation
 
-**`--check_invariants`** (bool, default: true) – Enable runtime invariant checks (diagnostics become advisory if disabled). Toggle rarely; disabling may hide reward drift or invariance violations.
-**`--strict_validation`** (flag, default: true) – Enforce parameter bounds and finite checks; raises instead of silent clamp/discard when enabled.
-**`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate statistical diagnostics (zero-width CIs, undefined distribution metrics) instead of graceful fallbacks.
-**`--exit_factor_threshold`** (float, default: 10000.0) – Warn if exit factor exceeds threshold.
-**`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple testing p-value adjustment method.
-**`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for confidence intervals; lower for speed (e.g. 500) during smoke tests.
-**`--skip_feature_analysis`** / **`--skip_partial_dependence`** – Skip feature importance or PD grids (see Skipping Feature Analysis section); influence runtime only.
-**`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker counts for RandomForest and permutation importance (-1 = all cores).
+- **`--check_invariants`** (bool, default: true) – Enable runtime invariant checks (diagnostics become advisory if disabled). Toggle rarely; disabling may hide reward drift or invariance violations.
+- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and finite checks; raises instead of silent clamp/discard when enabled.
+- **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate statistical diagnostics (zero-width CIs, undefined distribution metrics) instead of graceful fallbacks.
+- **`--exit_factor_threshold`** (float, default: 10000.0) – Warn if exit factor exceeds threshold.
+- **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple testing p-value adjustment method.
+- **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for confidence intervals; lower for speed (e.g. 500) during smoke tests.
+- **`--skip_feature_analysis`** / **`--skip_partial_dependence`** – Skip feature importance or PD grids (see Skipping Feature Analysis section); influence runtime only.
+- **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker counts for RandomForest and permutation importance (-1 = all cores).
 
 ### Overrides
 
-**`--out_dir`** (path, default: reward_space_outputs) – Output directory (auto-created). (Simulation-only).
-**`--params`** (k=v ...) – Bulk override reward params and selected hybrid scalars (`profit_target`, `risk_reward_ratio`). Conflicts: individual flags vs `--params` ⇒ `--params` wins.
+- **`--out_dir`** (path, default: reward_space_outputs) – Output directory (auto-created). (Simulation-only).
+- **`--params`** (k=v ...) – Bulk override reward params and selected hybrid scalars (`profit_target`, `risk_reward_ratio`). Conflicts: individual flags vs `--params` ⇒ `--params` wins.
 
 ### Reward Parameter Cheat Sheet
 
@@ -208,13 +211,15 @@ Generates shift metrics for comparison (see Outputs section).
 | `efficiency_weight` | 1.0     | Efficiency contribution weight |
 | `efficiency_center` | 0.5     | Efficiency pivot in [0,1]      |
 
-Formula (unrealized profit normalization):
+**Formula (unrealized profit normalization):**
+
 Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`, `range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
 
 - If `pnl > 0`: `efficiency_factor = 1 + efficiency_weight * (ratio - efficiency_center)`
 - If `pnl < 0`: `efficiency_factor = 1 + efficiency_weight * (efficiency_center - ratio)`
 - Else: `efficiency_factor = 1`
-  Final exit multiplier path: `exit_reward = pnl * exit_factor`, where `exit_factor = kernel(base_factor, duration_ratio_adjusted) * pnl_factor` and `pnl_factor` includes the efficiency_factor above.
+
+Final exit multiplier path: `exit_reward = pnl * exit_factor`, where `exit_factor = kernel(base_factor, duration_ratio_adjusted) * pnl_factor` and `pnl_factor` includes the `efficiency_factor` above.
 
 #### Validation
 
@@ -265,9 +270,9 @@ PBRS invariance holds when: `exit_potential_mode=canonical` AND `entry_additive_
 
 ### Exit Attenuation Kernels
 
-r = duration ratio and grace = `exit_plateau_grace`.
+`r` = duration ratio and `grace` = `exit_plateau_grace`.
 
-```
+```text
 r* = 0            if exit_plateau and r <= grace
 r* = r - grace    if exit_plateau and r >  grace
 r* = r            if not exit_plateau
@@ -295,12 +300,14 @@ r* = r            if not exit_plateau
 ### Skipping Feature Analysis
 
 Flags hierarchy:
-| Scenario | `--skip_feature_analysis` | `--skip_partial_dependence` | Feature Importance | Partial Dependence | Report Section 4 |
-|----------|---------------------------|-----------------------------|--------------------|-------------------|------------------|
-| Default | ✗ | ✗ | Yes | Yes | Full |
-| PD skipped | ✗ | ✓ | Yes | No | PD note |
-| Feature analysis skipped | ✓ | ✗ | No | No | Marked “(skipped)” |
-| Both skipped | ✓ | ✓ | No | No | Marked “(skipped)” |
+
+| Scenario                 | `--skip_feature_analysis` | `--skip_partial_dependence` | Feature Importance | Partial Dependence | Report Section 4   |
+| ------------------------ | ------------------------- | --------------------------- | ------------------ | ------------------ | ------------------ |
+| Default                  | ✗                         | ✗                           | Yes                | Yes                | Full               |
+| PD skipped               | ✗                         | ✓                           | Yes                | No                 | PD note            |
+| Feature analysis skipped | ✓                         | ✗                           | No                 | No                 | Marked "(skipped)" |
+| Both skipped             | ✓                         | ✓                           | No                 | No                 | Marked "(skipped)" |
+
 Auto-skip if `num_samples < 4`.
 
 ### Reproducibility
@@ -331,7 +338,12 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 ```
 
 `--params` wins on conflicts.
-Simulation-only keys (not allowed in `--params`): `num_samples`, `seed`, `trading_mode`, `action_masking`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`, `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`, `strict_diagnostics`, `strict_validation`, `bootstrap_resamples`, `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`, `pvalue_adjust`. Hybrid override keys allowed in `--params`: `profit_target`, `risk_reward_ratio`. Reward parameter keys (tunable via either direct flag or `--params`) correspond to those listed under Cheat Sheet, Exit Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit additive transforms.
+
+**Simulation-only keys** (not allowed in `--params`): `num_samples`, `seed`, `trading_mode`, `action_masking`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`, `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`, `strict_diagnostics`, `strict_validation`, `bootstrap_resamples`, `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`, `pvalue_adjust`.
+
+**Hybrid override keys** allowed in `--params`: `profit_target`, `risk_reward_ratio`.
+
+**Reward parameter keys** (tunable via either direct flag or `--params`) correspond to those listed under Cheat Sheet, Exit Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit additive transforms.
 
 ## Examples
 
