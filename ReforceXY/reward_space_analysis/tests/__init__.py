@@ -1,28 +1,8 @@
-"""Test package for reward space analysis."""
+"""Test package for reward space analysis.
 
-from .test_api_helpers import TestAPIAndHelpers, TestPrivateFunctions
-from .test_integration import TestIntegration
-from .test_pbrs import TestPBRS
-from .test_reward_components import TestRewardComponents
-from .test_robustness import TestRewardRobustnessAndBoundaries
-from .test_statistics import TestStatistics
-from .test_utilities import (
-    TestCsvAndSimulationOptions,
-    TestLoadRealEpisodes,
-    TestParamsPropagation,
-    TestReportFormatting,
-)
+This file intentionally avoids importing test modules to prevent
+side-effect imports and early dependency loading. Pytest will
+discover all tests recursively without re-exporting them here.
+"""
 
-__all__ = [
-    "TestIntegration",
-    "TestStatistics",
-    "TestRewardComponents",
-    "TestPBRS",
-    "TestAPIAndHelpers",
-    "TestPrivateFunctions",
-    "TestRewardRobustnessAndBoundaries",
-    "TestLoadRealEpisodes",
-    "TestReportFormatting",
-    "TestCsvAndSimulationOptions",
-    "TestParamsPropagation",
-]
+__all__: list[str] = []

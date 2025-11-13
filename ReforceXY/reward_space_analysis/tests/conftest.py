@@ -1,4 +1,7 @@
-"""Pytest configuration for reward space analysis tests."""
+"""Pytest configuration: fixtures and RNG setup.
+
+Helper assertion wrappers live in `reward_space_analysis.tests.helpers`.
+"""
 
 import shutil
 import tempfile
@@ -6,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
+from reward_space_analysis import DEFAULT_MODEL_REWARD_PARAMETERS
 
 
 @pytest.fixture(scope="session")
@@ -25,6 +30,4 @@ def setup_rng():
 @pytest.fixture
 def base_reward_params():
     """Default reward parameters."""
-    from reward_space_analysis import DEFAULT_MODEL_REWARD_PARAMETERS
-
     return DEFAULT_MODEL_REWARD_PARAMETERS.copy()
