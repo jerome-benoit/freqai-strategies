@@ -1,11 +1,5 @@
 {
-  "extends": [
-    "config:recommended",
-    ":dependencyDashboard",
-    ":semanticCommits",
-    "group:allNonMajor",
-    "schedule:daily"
-  ],
+  "extends": ["config:recommended", "group:allNonMajor", "schedule:daily"],
   "regexManagers": [
     {
       "fileMatch": ["(^|/)Dockerfile[^/]*$"],
