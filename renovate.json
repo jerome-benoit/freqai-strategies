@@ -9,10 +9,24 @@
   "regexManagers": [
     {
       "fileMatch": ["(^|/)Dockerfile[^/]*$"],
+      "matchStrings": ["ARG\\s+scikit_learn_extra_version=(?<currentValue>[^\\s]+)"],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "scikit_learn_extra",
+      "packageNameTemplate": "scikit-learn-extra"
+    },
+    {
+      "fileMatch": ["(^|/)Dockerfile[^/]*$"],
+      "matchStrings": ["ARG\\s+skimage_version=(?<currentValue>[^\\s]+)"],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "skimage",
+      "packageNameTemplate": "scikit-image"
+    },
+    {
+      "fileMatch": ["(^|/)Dockerfile[^/]*$"],
       "matchStrings": ["ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "{{depName}}",
-      "packageNameTemplate": "{{#if (eq depName 'scikit_learn_extra')}}scikit-learn-extra{{else if (eq depName 'skimage')}}scikit-image{{else}}{{depName}}{{/if}}"
+      "packageNameTemplate": "{{depName}}"
     }
   ]
 }
