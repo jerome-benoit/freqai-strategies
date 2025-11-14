@@ -4,6 +4,9 @@
     "group:allNonMajor",
     "schedule:daily"
   ],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
   "customManagers": [
     {
       "customType": "regex",
