@@ -19,7 +19,7 @@ services:
       args:
         optuna_version: 4.5.0
         scikit_learn_extra_version: 0.3.0
-        skimage_version: 0.25.2
+        scikit_image_version: 0.25.2
     restart: unless-stopped
     container_name: freqtrade-quickadapter
     environment:

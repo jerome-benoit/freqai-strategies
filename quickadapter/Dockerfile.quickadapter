@@ -2,7 +2,7 @@ FROM freqtradeorg/freqtrade:stable_freqai
 
 ARG optuna_version=4.6.0
 ARG scikit_learn_extra_version=0.3.0
-ARG skimage_version=0.25.2
+ARG scikit_image_version=0.25.2
 
 USER root
 RUN apt-get update \
@@ -14,7 +14,7 @@ RUN pip install --user --no-cache-dir \
     optuna-integration==${optuna_version} \
     optuna-dashboard \
     scikit-learn-extra==${scikit_learn_extra_version} \
-    scikit-image==${skimage_version}
+    scikit-image==${scikit_image_version}
 
 LABEL org.opencontainers.image.source="freqai-strategies" \
       org.opencontainers.image.title="freqtrade-quickadapter" \
