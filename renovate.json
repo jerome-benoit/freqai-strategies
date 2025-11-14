@@ -11,10 +11,12 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/(^|/)Dockerfile[^/]*$/"
+        "**/Dockerfile*",
+        "**/docker-compose*.yml"
       ],
       "matchStrings": [
-        "ARG\\s+scikit_learn_extra_version=(?<currentValue>[^\\s]+)"
+        "ARG\\s+scikit_learn_extra_version=(?<currentValue>[^\\s]+)",
+        "\\s+scikit_learn_extra_version:\\s*(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "scikit_learn_extra",
@@ -23,10 +25,12 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/(^|/)Dockerfile[^/]*$/"
+        "**/Dockerfile*",
+        "**/docker-compose*.yml"
       ],
       "matchStrings": [
-        "ARG\\s+skimage_version=(?<currentValue>[^\\s]+)"
+        "ARG\\s+skimage_version=(?<currentValue>[^\\s]+)",
+        "\\s+skimage_version:\\s*(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "skimage",
@@ -35,10 +39,12 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/(^|/)Dockerfile[^/]*$/"
+        "**/Dockerfile*",
+        "**/docker-compose*.yml"
       ],
       "matchStrings": [
-        "ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"
+        "ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)",
+        "\\s+(?<depName>\\w+)_version:\\s*(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "{{depName}}",
