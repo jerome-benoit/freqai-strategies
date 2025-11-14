@@ -433,9 +433,9 @@ done
 
 Combine with other overrides cautiously; use distinct `out_dir` per configuration.
 
-### PBRS Rationale
+### PBRS Configuration
 
-Canonical mode seeks near zero-sum shaping (Φ terminal ≈ 0) ensuring invariance: reward differences reflect environment performance, not potential leakage. Non-canonical modes or additives (entry/exit) trade strict invariance for potential extra signal shaping. Progressive release & spike cancel adjust temporal release of Φ. Choose canonical for theory alignment; use non-canonical or additives only when empirical gain outweighs invariance guarantees. Symbol Φ denotes potential. See invariance condition and drift correction mechanics under PBRS section.
+Canonical mode enforces zero-sum shaping (Φ terminal ≈ 0) for theoretical invariance. Non-canonical modes or additives modify this behavior. Choose canonical for standard PBRS compliance; use non-canonical when specific shaping behavior is required.
 
 ### Real Data Comparison
 
