@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""CLI-level tests: CSV encoding and parameter propagation.
-
-Purpose: focused CLI CSV encoding and parameter propagation tests.
-"""
+"""CLI-level tests: CSV encoding and parameter propagation."""
 
 import json
 import subprocess
