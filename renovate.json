@@ -12,7 +12,7 @@
       "matchStrings": ["ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "{{depName}}",
-      "packageNameTemplate": "{{#if (eq depName 'scikit_learn_extra')}}scikit-learn-extra{{else}}{{depName}}{{/if}}"
+      "packageNameTemplate": "{{#if (eq depName 'scikit_learn_extra')}}scikit-learn-extra{{else if (eq depName 'skimage')}}scikit-image{{else}}{{depName}}{{/if}}"
     }
   ]
 }
