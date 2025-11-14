@@ -98,10 +98,9 @@ class RewardSpaceTestBase(unittest.TestCase):
     # Exit factor constants
     MIN_EXIT_POWER_TAU = EXIT_FACTOR.MIN_POWER_TAU
 
-    # Test-specific constants (not in constants.py)
+    # Test-specific constants
     PBRS_TERMINAL_PROB = 0.08
     PBRS_SWEEP_ITER = 120
-    EPS_BASE = TOLERANCE.IDENTITY_STRICT  # Alias for backward compatibility
     JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def make_ctx(

@@ -6,6 +6,8 @@ single invariant ownership and reduce duplication across taxonomy modules.
 
 from typing import Any, Dict, List, Sequence, Tuple
 
+import numpy as np
+
 from reward_space_analysis import (
     _get_exit_factor,
     _get_pnl_factor,
@@ -649,8 +651,9 @@ def assert_exit_mode_mathematical_validation(
     observed_exit_factor = _get_exit_factor(
         base_factor, context.pnl, pnl_factor_hl, duration_ratio, params
     )
-    eps_base = 1e-8
-    observed_half_life_factor = observed_exit_factor / (base_factor * max(pnl_factor_hl, eps_base))
+    observed_half_life_factor = observed_exit_factor / (
+        base_factor * max(pnl_factor_hl, np.finfo(float).eps)
+    )
     expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
     test_case.assertAlmostEqual(
         observed_half_life_factor,

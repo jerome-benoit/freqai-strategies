@@ -144,7 +144,6 @@ class TestParameters:
         RISK_REWARD_RATIO_HIGH: High risk/reward ratio for stress tests (2.0)
         PNL_STD: Standard deviation for PnL generation (0.02)
         PNL_DUR_VOL_SCALE: Duration-based volatility scaling factor (0.001)
-        EPS_BASE: Base epsilon for near-zero checks (1e-10)
     """
 
     BASE_FACTOR: float = 90.0
@@ -153,7 +152,6 @@ class TestParameters:
     RISK_REWARD_RATIO_HIGH: float = 2.0
     PNL_STD: float = 0.02
     PNL_DUR_VOL_SCALE: float = 0.001
-    EPS_BASE: float = 1e-10
 
 
 @dataclass(frozen=True)

@@ -147,13 +147,15 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             places=10,
             msg="PnL invariant violation: total PnL != sum of exit PnL",
         )
-        non_zero_pnl_actions = set(np.unique(df[df["pnl"].abs() > self.EPS_BASE]["action"]))
+        non_zero_pnl_actions = set(np.unique(df[df["pnl"].abs() > np.finfo(float).eps]["action"]))
         expected_exit_actions = {2.0, 4.0}
         self.assertTrue(
             non_zero_pnl_actions.issubset(expected_exit_actions),
             f"Non-exit actions have PnL: {non_zero_pnl_actions - expected_exit_actions}",
         )
-        invalid_combinations = df[(df["pnl"].abs() <= self.EPS_BASE) & (df["reward_exit"] != 0)]
+        invalid_combinations = df[
+            (df["pnl"].abs() <= np.finfo(float).eps) & (df["reward_exit"] != 0)
+        ]
         self.assertEqual(len(invalid_combinations), 0)
 
     def test_exit_factor_comprehensive(self):
