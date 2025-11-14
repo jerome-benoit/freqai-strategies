@@ -1,26 +1,42 @@
 {
-  "extends": ["config:recommended", "group:allNonMajor", "schedule:daily"],
+  "extends": [
+    "config:recommended",
+    "group:allNonMajor",
+    "schedule:daily"
+  ],
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["(^|/)Dockerfile[^/]*$"],
-      "matchStrings": ["ARG\\s+scikit_learn_extra_version=(?<currentValue>[^\\s]+)"],
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile[^/]*$/"
+      ],
+      "matchStrings": [
+        "ARG\\s+scikit_learn_extra_version=(?<currentValue>[^\\s]+)"
+      ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "scikit_learn_extra",
       "packageNameTemplate": "scikit-learn-extra"
     },
     {
       "customType": "regex",
-      "fileMatch": ["(^|/)Dockerfile[^/]*$"],
-      "matchStrings": ["ARG\\s+skimage_version=(?<currentValue>[^\\s]+)"],
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile[^/]*$/"
+      ],
+      "matchStrings": [
+        "ARG\\s+skimage_version=(?<currentValue>[^\\s]+)"
+      ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "skimage",
       "packageNameTemplate": "scikit-image"
     },
     {
       "customType": "regex",
-      "fileMatch": ["(^|/)Dockerfile[^/]*$"],
-      "matchStrings": ["ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"],
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile[^/]*$/"
+      ],
+      "matchStrings": [
+        "ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"
+      ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "{{depName}}",
       "packageNameTemplate": "{{depName}}"
