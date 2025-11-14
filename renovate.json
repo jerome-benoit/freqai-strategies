@@ -1,7 +1,8 @@
 {
   "extends": ["config:recommended", "group:allNonMajor", "schedule:daily"],
-  "regexManagers": [
+  "customManagers": [
     {
+      "customType": "regex",
       "fileMatch": ["(^|/)Dockerfile[^/]*$"],
       "matchStrings": ["ARG\\s+scikit_learn_extra_version=(?<currentValue>[^\\s]+)"],
       "datasourceTemplate": "pypi",
@@ -9,6 +10,7 @@
       "packageNameTemplate": "scikit-learn-extra"
     },
     {
+      "customType": "regex",
       "fileMatch": ["(^|/)Dockerfile[^/]*$"],
       "matchStrings": ["ARG\\s+skimage_version=(?<currentValue>[^\\s]+)"],
       "datasourceTemplate": "pypi",
@@ -16,6 +18,7 @@
       "packageNameTemplate": "scikit-image"
     },
     {
+      "customType": "regex",
       "fileMatch": ["(^|/)Dockerfile[^/]*$"],
       "matchStrings": ["ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"],
       "datasourceTemplate": "pypi",
