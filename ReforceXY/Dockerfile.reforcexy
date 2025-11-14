@@ -1,6 +1,6 @@
 FROM freqtradeorg/freqtrade:stable_freqairl
 
-ARG optuna_version=4.5.0
+ARG optuna_version=4.6.0
 
 RUN pip install --user --no-cache-dir \
     optuna==${optuna_version} \
