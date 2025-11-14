@@ -1,0 +1,18 @@
+{
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "group:allNonMajor",
+    "schedule:daily"
+  ],
+  "regexManagers": [
+    {
+      "fileMatch": ["(^|/)Dockerfile[^/]*$"],
+      "matchStrings": ["ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)"],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "{{depName}}",
+      "packageNameTemplate": "{{#if (eq depName 'scikit_learn_extra')}}scikit-learn-extra{{else}}{{depName}}{{/if}}"
+    }
+  ]
+}
