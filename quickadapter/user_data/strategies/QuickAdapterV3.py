@@ -5,7 +5,7 @@ import logging
 import math
 from functools import cached_property, lru_cache, reduce
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Sequence
+from typing import Any, Callable, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas_ta as pta
@@ -40,6 +40,12 @@ from Utils import (
     zlema,
 )
 
+DfSignature = Tuple[int, Optional[datetime.datetime]]
+CandleDeviationCacheKey = Tuple[
+    str, DfSignature, float, float, int, Literal["direct", "inverse"], float
+]
+CandleThresholdCacheKey = Tuple[str, DfSignature, str, int, float, float]
+
 debug = False
 
 logger = logging.getLogger(__name__)
@@ -69,7 +75,7 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     def version(self) -> str:
-        return "3.3.168"
+        return "3.3.169"
 
     timeframe = "5m"
 
@@ -256,6 +262,17 @@ class QuickAdapterV3(IStrategy):
             **QuickAdapterV3.default_exit_thresholds_calibration,
             **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
         }
+        self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}
+        self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
+        self._cached_df_signature: dict[str, DfSignature] = {}
+
+    def _df_signature(self, df: DataFrame) -> DfSignature:
+        n = len(df)
+        if n == 0:
+            return (0, None)
+        dates = df.get("date")
+        last_date = dates.iloc[-1] if dates is not None and not dates.empty else None
+        return (n, last_date)
 
     def _init_reversal_confirmation_defaults(self) -> None:
         reversal_confirmation = self.config.get("reversal_confirmation", {})
@@ -796,18 +813,21 @@ class QuickAdapterV3(IStrategy):
         trade_price_target = self.config.get("exit_pricing", {}).get(
             "trade_price_target", "moving_average"
         )
-        if trade_price_target == "interpolation":
-            return self.get_trade_interpolation_natr(df, trade)
-        elif trade_price_target == "weighted_interpolation":
-            return self.get_trade_weighted_interpolation_natr(df, trade)
-        elif trade_price_target == "moving_average":
-            return self.get_trade_moving_average_natr(
+        trade_price_target_methods: dict[str, Callable[[], Optional[float]]] = {
+            "moving_average": lambda: self.get_trade_moving_average_natr(
                 df, trade.pair, trade_duration_candles
-            )
-        else:
+            ),
+            "interpolation": lambda: self.get_trade_interpolation_natr(df, trade),
+            "weighted_interpolation": lambda: self.get_trade_weighted_interpolation_natr(
+                df, trade
+            ),
+        }
+        trade_price_target_fn = trade_price_target_methods.get(trade_price_target)
+        if trade_price_target_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target: {trade_price_target}. Expected 'interpolation', 'weighted_interpolation' or 'moving_average'."
+                f"Invalid trade_price_target: {trade_price_target}. Available: {', '.join(sorted(trade_price_target_methods.keys()))}"
             )
+        return trade_price_target_fn()
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
@@ -1138,10 +1158,28 @@ class QuickAdapterV3(IStrategy):
         candle_idx: int = -1,
         interpolation_direction: Literal["direct", "inverse"] = "direct",
         quantile_exponent: float = 1.5,
-    ) -> Optional[float]:
+    ) -> float:
+        df_signature = self._df_signature(df)
+        prev_df_signature = self._cached_df_signature.get(pair)
+        if prev_df_signature != df_signature:
+            self._candle_deviation_cache = {
+                k: v for k, v in self._candle_deviation_cache.items() if k[0] != pair
+            }
+            self._cached_df_signature[pair] = df_signature
+        cache_key: CandleDeviationCacheKey = (
+            pair,
+            df_signature,
+            float(min_natr_ratio_percent),
+            float(max_natr_ratio_percent),
+            candle_idx,
+            interpolation_direction,
+            float(quantile_exponent),
+        )
+        if cache_key in self._candle_deviation_cache:
+            return self._candle_deviation_cache[cache_key]
         label_natr_series = df.get("natr_label_period_candles")
         if label_natr_series is None or label_natr_series.empty:
-            return None
+            return np.nan
 
         candle_idx = QuickAdapterV3._normalize_candle_idx(
             len(label_natr_series), candle_idx
@@ -1149,16 +1187,16 @@ class QuickAdapterV3(IStrategy):
 
         label_natr_values = label_natr_series.iloc[: candle_idx + 1].to_numpy()
         if label_natr_values.size == 0:
-            return None
+            return np.nan
         candle_label_natr_value = label_natr_values[-1]
         if isna(candle_label_natr_value) or candle_label_natr_value < 0:
-            return None
+            return np.nan
         label_period_candles = self.get_label_period_candles(pair)
         candle_label_natr_value_quantile = calculate_quantile(
             label_natr_values[-label_period_candles:], candle_label_natr_value
         )
         if isna(candle_label_natr_value_quantile):
-            return None
+            return np.nan
 
         if interpolation_direction == "direct":
             natr_ratio_percent = (
@@ -1176,11 +1214,13 @@ class QuickAdapterV3(IStrategy):
             raise ValueError(
                 f"Invalid interpolation_direction: {interpolation_direction}. Expected 'direct' or 'inverse'"
             )
-        return (candle_label_natr_value / 100.0) * self.get_label_natr_ratio_percent(
-            pair, natr_ratio_percent
-        )
+        candle_deviation = (
+            candle_label_natr_value / 100.0
+        ) * self.get_label_natr_ratio_percent(pair, natr_ratio_percent)
+        self._candle_deviation_cache[cache_key] = candle_deviation
+        return self._candle_deviation_cache[cache_key]
 
-    def calculate_candle_threshold(
+    def _calculate_candle_threshold(
         self,
         df: DataFrame,
         pair: str,
@@ -1189,6 +1229,23 @@ class QuickAdapterV3(IStrategy):
         max_natr_ratio_percent: float,
         candle_idx: int = -1,
     ) -> float:
+        df_signature = self._df_signature(df)
+        prev_df_signature = self._cached_df_signature.get(pair)
+        if prev_df_signature != df_signature:
+            self._candle_threshold_cache = {
+                k: v for k, v in self._candle_threshold_cache.items() if k[0] != pair
+            }
+            self._cached_df_signature[pair] = df_signature
+        cache_key: CandleThresholdCacheKey = (
+            pair,
+            df_signature,
+            side,
+            candle_idx,
+            float(min_natr_ratio_percent),
+            float(max_natr_ratio_percent),
+        )
+        if cache_key in self._candle_threshold_cache:
+            return self._candle_threshold_cache[cache_key]
         current_deviation = self._calculate_candle_deviation(
             df,
             pair,
@@ -1216,16 +1273,18 @@ class QuickAdapterV3(IStrategy):
                 if is_candle_bearish
                 else candle_close
             )
-            return base_price * (1 + current_deviation)
+            candle_threshold = base_price * (1 + current_deviation)
         elif side == "short":
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bullish
                 else candle_close
             )
-            return base_price * (1 - current_deviation)
-
-        raise ValueError(f"Invalid side: {side}. Expected 'long' or 'short'")
+            candle_threshold = base_price * (1 - current_deviation)
+        else:
+            raise ValueError(f"Invalid side: {side}. Expected 'long' or 'short'")
+        self._candle_threshold_cache[cache_key] = candle_threshold
+        return self._candle_threshold_cache[cache_key]
 
     def reversal_confirmed(
         self,
@@ -1328,7 +1387,7 @@ class QuickAdapterV3(IStrategy):
             )
             return False
 
-        current_threshold = self.calculate_candle_threshold(
+        current_threshold = self._calculate_candle_threshold(
             df,
             pair,
             side,
@@ -1368,7 +1427,7 @@ class QuickAdapterV3(IStrategy):
                 min(1.0, max_natr_ratio_percent * decay_factor),
             )
 
-            threshold_k = self.calculate_candle_threshold(
+            threshold_k = self._calculate_candle_threshold(
                 df,
                 pair,
                 side,
