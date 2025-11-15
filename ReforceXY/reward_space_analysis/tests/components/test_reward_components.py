@@ -29,7 +29,7 @@ from ..helpers import (
 )
 from ..test_base import RewardSpaceTestBase
 
-pytestmark = pytest.mark.components  # selective execution marker
+pytestmark = pytest.mark.components
 
 
 class TestRewardComponents(RewardSpaceTestBase):
@@ -450,6 +450,62 @@ class TestRewardComponents(RewardSpaceTestBase):
         if observed_ratio > 0:
             implied_D = 120 / observed_ratio ** (1 / idle_penalty_power)
             self.assertAlmostEqualFloat(implied_D, 400.0, tolerance=20.0)
+
+    # Owns invariant: components-pbrs-breakdown-fields-119
+    def test_pbrs_breakdown_fields_finite_and_aligned(self):
+        """Test PBRS breakdown fields are finite and mathematically aligned.
+
+        Verifies:
+        - base_reward, pbrs_delta, invariance_correction are finite
+        - reward_shaping = pbrs_delta + invariance_correction (within tolerance)
+        - In canonical mode with no additives: invariance_correction ≈ 0
+        """
+        # Test with canonical PBRS (invariance_correction should be ~0)
+        canonical_params = self.base_params(
+            exit_potential_mode="canonical",
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        context = self.make_ctx(
+            pnl=0.02,
+            trade_duration=50,
+            idle_duration=0,
+            max_unrealized_profit=0.03,
+            min_unrealized_profit=0.01,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        breakdown = calculate_reward(
+            context,
+            canonical_params,
+            base_factor=self.TEST_BASE_FACTOR,
+            profit_target=self.TEST_PROFIT_TARGET,
+            risk_reward_ratio=self.TEST_RR,
+            short_allowed=True,
+            action_masking=True,
+        )
+
+        # Verify all PBRS fields are finite
+        self.assertFinite(breakdown.base_reward, name="base_reward")
+        self.assertFinite(breakdown.pbrs_delta, name="pbrs_delta")
+        self.assertFinite(breakdown.invariance_correction, name="invariance_correction")
+
+        # Verify mathematical alignment: reward_shaping = pbrs_delta + invariance_correction
+        expected_shaping = breakdown.pbrs_delta + breakdown.invariance_correction
+        self.assertAlmostEqualFloat(
+            breakdown.reward_shaping,
+            expected_shaping,
+            tolerance=self.TOL_IDENTITY_STRICT,
+            msg="reward_shaping should equal pbrs_delta + invariance_correction",
+        )
+
+        # In canonical mode with no additives, invariance_correction should be ~0
+        self.assertAlmostEqualFloat(
+            breakdown.invariance_correction,
+            0.0,
+            tolerance=self.TOL_IDENTITY_STRICT,
+            msg="invariance_correction should be ~0 in canonical mode",
+        )
 
 
 if __name__ == "__main__":

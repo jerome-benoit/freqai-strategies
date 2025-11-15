@@ -9,11 +9,14 @@ import unittest
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
 
 from ..constants import SCENARIOS
 from ..test_base import RewardSpaceTestBase
+
+pytestmark = pytest.mark.integration
 
 
 class TestReportFormatting(RewardSpaceTestBase):
@@ -152,6 +155,68 @@ class TestReportFormatting(RewardSpaceTestBase):
         self.assertIn("Feature Importance - (skipped)", content)
         # Ensure no partial dependence plots line for success path appears
         self.assertNotIn("partial_dependence_*.csv", content)
+
+    # Owns invariant: integration-pbrs-metrics-section-120
+    def test_report_includes_pbrs_metrics_section(self):
+        """Verify statistical_analysis.md includes PBRS Metrics section with tracing metrics.
+
+        Verifies:
+        - PBRS Metrics subsection exists when PBRS columns present
+        - Section includes Mean Base Reward, Mean PBRS Term, Mean Invariance Correction
+        - All metrics are formatted with proper precision
+        """
+        # Create df with PBRS columns
+        n = 100
+        df = pd.DataFrame(
+            {
+                "reward": np.random.normal(0, 0.1, n),
+                "reward_invalid": np.zeros(n),
+                "reward_idle": np.zeros(n),
+                "reward_hold": np.zeros(n),
+                "reward_exit": np.random.normal(0, 0.05, n),
+                "reward_shaping": np.random.normal(0, 0.02, n),
+                "reward_entry_additive": np.zeros(n),
+                "reward_exit_additive": np.zeros(n),
+                # PBRS columns
+                "reward_base": np.random.normal(0, 0.1, n),
+                "reward_pbrs_delta": np.random.normal(0, 0.02, n),
+                "reward_invariance_correction": np.random.normal(0, 1e-6, n),
+                "pnl": np.random.normal(0, 0.01, n),
+                "trade_duration": np.random.randint(10, 100, n).astype(float),
+                "idle_duration": np.zeros(n),
+                "position": np.random.choice([0, 1, 2], n).astype(float),
+                "action": np.random.choice([0, 1, 2, 3, 4], n).astype(float),
+                "duration_ratio": np.random.uniform(0, 1, n),
+                "idle_ratio": np.zeros(n),
+            }
+        )
+
+        content = self._write_report(df)
+
+        # Verify PBRS Metrics section exists
+        self.assertIn("**PBRS Metrics (Tracing):**", content)
+
+        # Verify key metrics are present
+        required_metrics = [
+            "Mean Base Reward",
+            "Std Base Reward",
+            "Mean PBRS Delta",
+            "Std PBRS Delta",
+            "Mean Invariance Correction",
+            "Std Invariance Correction",
+            "Max \\|Invariance Correction\\|",
+            "Mean \\|PBRS\\| / \\|Base\\| Ratio",
+        ]
+
+        for metric in required_metrics:
+            self.assertIn(metric, content, f"Missing metric in PBRS Metrics section: {metric}")
+
+        # Verify proper formatting (values should be formatted with proper precision)
+        import re as _re
+
+        # Check for at least one properly formatted metric line
+        m = _re.search(r"\| Mean Base Reward \| (-?[0-9]+\.[0-9]{6}) \|", content)
+        self.assertIsNotNone(m, "Mean Base Reward metric missing or misformatted")
 
 
 if __name__ == "__main__":

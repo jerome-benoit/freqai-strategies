@@ -12,7 +12,7 @@ from reward_space_analysis import apply_potential_shaping
 
 from ..test_base import RewardSpaceTestBase
 
-pytestmark = pytest.mark.components  # selective execution marker
+pytestmark = pytest.mark.components
 
 
 class TestAdditivesDeterministicContribution(RewardSpaceTestBase):

@@ -1,4 +1,13 @@
-"""Integration smoke tests: component activation and long/short symmetry."""
+"""Integration smoke tests: component activation and long/short symmetry.
+
+Non-owning smoke tests covering:
+- Component activation scenarios (ownership: robustness/test_robustness.py)
+- Long/short symmetry verification
+- High-level reward calculation integration
+
+These tests verify integration behavior without owning specific invariants.
+Detailed invariant ownership is tracked in tests/README.md Coverage Mapping.
+"""
 
 import pytest
 
@@ -9,6 +18,8 @@ from reward_space_analysis import (
 )
 
 from ..test_base import RewardSpaceTestBase
+
+pytestmark = pytest.mark.integration
 
 
 class TestRewardCalculation(RewardSpaceTestBase):

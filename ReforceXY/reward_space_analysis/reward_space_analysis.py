@@ -637,6 +637,10 @@ class RewardBreakdown:
     exit_additive: float = 0.0
     prev_potential: float = 0.0
     next_potential: float = 0.0
+    # PBRS helpers
+    base_reward: float = 0.0
+    pbrs_delta: float = 0.0  # Δ(s,s') = γ·Φ(s') − Φ(s)
+    invariance_correction: float = 0.0
 
 
 def _get_exit_factor(
@@ -1085,28 +1089,30 @@ def calculate_reward(
             else float(current_potential)
         )
 
-        total_reward, reward_shaping, next_potential = apply_potential_shaping(
-            base_reward=base_reward,
-            current_pnl=current_pnl,
-            current_duration_ratio=current_duration_ratio,
-            next_pnl=next_pnl,
-            next_duration_ratio=next_duration_ratio,
-            is_exit=is_exit,
-            is_entry=is_entry,
-            previous_potential=current_potential,
-            last_potential=last_potential,
-            params=params,
+        total_reward, reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive = (
+            apply_potential_shaping(
+                base_reward=base_reward,
+                current_pnl=current_pnl,
+                current_duration_ratio=current_duration_ratio,
+                next_pnl=next_pnl,
+                next_duration_ratio=next_duration_ratio,
+                is_exit=is_exit,
+                is_entry=is_entry,
+                previous_potential=current_potential,
+                last_potential=last_potential,
+                params=params,
+            )
         )
 
         breakdown.reward_shaping = reward_shaping
         breakdown.prev_potential = current_potential
         breakdown.next_potential = next_potential
-        breakdown.entry_additive = (
-            _compute_entry_additive(next_pnl, next_duration_ratio, params) if is_entry else 0.0
-        )
-        breakdown.exit_additive = (
-            _compute_exit_additive(current_pnl, current_duration_ratio, params) if is_exit else 0.0
-        )
+        breakdown.entry_additive = entry_additive
+        breakdown.exit_additive = exit_additive
+        breakdown.base_reward = base_reward
+        breakdown.pbrs_delta = pbrs_delta
+        # In canonical mode with additives disabled, this should be ~0
+        breakdown.invariance_correction = reward_shaping - pbrs_delta
         breakdown.total = total_reward
     else:
         breakdown.total = base_reward
@@ -1291,6 +1297,10 @@ def simulate_samples(
                 "reward_exit_additive": breakdown.exit_additive,
                 "prev_potential": breakdown.prev_potential,
                 "next_potential": breakdown.next_potential,
+                # PBRS columns
+                "reward_base": breakdown.base_reward,
+                "reward_pbrs_delta": breakdown.pbrs_delta,
+                "reward_invariance_correction": breakdown.invariance_correction,
                 "is_invalid": float(breakdown.invalid_penalty != 0.0),
                 "pbrs_invariant": bool(pbrs_invariant),
             }
@@ -2731,8 +2741,14 @@ def apply_potential_shaping(
     is_entry: bool = False,
     previous_potential: float = np.nan,
     last_potential: Optional[float] = None,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float, float, float]:
     """Compute shaped reward with explicit PBRS semantics.
+
+    Returns
+    -------
+    tuple[float, float, float, float, float, float]
+        (reward, reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive)
+        where pbrs_delta = gamma * next_potential - prev_term is the pure PBRS component.
 
     Notes
     -----
@@ -2761,9 +2777,7 @@ def apply_potential_shaping(
     if not np.isfinite(prev_term):
         prev_term = 0.0
 
-    # Next potential per transition type
     if is_exit:
-        # Exit potential is derived from the last potential if provided; otherwise from Φ(prev) (prev_term)
         last_potential = (
             float(last_potential)
             if (last_potential is not None and np.isfinite(last_potential))
@@ -2774,7 +2788,8 @@ def apply_potential_shaping(
         next_potential = _compute_hold_potential(next_pnl, next_duration_ratio, params)
 
     # PBRS shaping Δ = γ·Φ(next) − Φ(prev)
-    reward_shaping = gamma * next_potential - float(prev_term)
+    pbrs_delta = gamma * next_potential - float(prev_term)
+    reward_shaping = pbrs_delta
 
     # Non-PBRS additives
     # Pre-compute candidate additives (return 0.0 if corresponding feature disabled)
@@ -2786,10 +2801,18 @@ def apply_potential_shaping(
 
     reward = base_reward + reward_shaping + entry_additive + exit_additive
     if not np.isfinite(reward):
-        return float(base_reward), 0.0, 0.0
+        return float(base_reward), 0.0, 0.0, 0.0, 0.0, 0.0
     if np.isclose(reward_shaping, 0.0):
         reward_shaping = 0.0
-    return float(reward), float(reward_shaping), float(next_potential)
+        pbrs_delta = 0.0
+    return (
+        float(reward),
+        float(reward_shaping),
+        float(next_potential),
+        float(pbrs_delta),
+        float(entry_additive),
+        float(exit_additive),
+    )
 
 
 def _enforce_pbrs_invariance(params: RewardParams) -> RewardParams:
@@ -3391,6 +3414,50 @@ def write_complete_statistical_analysis(
             pbrs_stats_df = pbrs_stats.round(6).T  # Transpose to make it DataFrame-compatible
             pbrs_stats_df.index.name = "component"
             f.write(_df_to_md(pbrs_stats_df, index_name="component", ndigits=6))
+
+            # PBRS metrics
+            pbrs_tracing_cols = ["reward_base", "reward_pbrs_delta", "reward_invariance_correction"]
+            if all(col in df.columns for col in pbrs_tracing_cols):
+                f.write("**PBRS Metrics:**\n\n")
+                f.write("Internal decomposition of reward shaping for diagnostic analysis:\n\n")
+
+                # Calculate key metrics
+                mean_base = df["reward_base"].mean()
+                std_base = df["reward_base"].std()
+                mean_pbrs = df["reward_pbrs_delta"].mean()
+                std_pbrs = df["reward_pbrs_delta"].std()
+                mean_inv_corr = df["reward_invariance_correction"].mean()
+                std_inv_corr = df["reward_invariance_correction"].std()
+                max_inv_corr = df["reward_invariance_correction"].abs().max()
+
+                # Calculate ratio of |pbrs_delta| / |base_reward| (only where base_reward != 0)
+                base_nonzero = df[df["reward_base"].abs() > 1e-10]
+                if len(base_nonzero) > 0:
+                    pbrs_to_base_ratio = (
+                        base_nonzero["reward_pbrs_delta"].abs() / base_nonzero["reward_base"].abs()
+                    ).mean()
+                else:
+                    pbrs_to_base_ratio = 0.0
+
+                f.write("| Metric | Value | Description |\n")
+                f.write("|--------|-------|-------------|\n")
+                f.write(f"| Mean Base Reward | {mean_base:.6f} | Average reward before PBRS |\n")
+                f.write(f"| Std Base Reward | {std_base:.6f} | Variability of base reward |\n")
+                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s')−Φ(s) |\n")
+                f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
+                f.write(
+                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping − pbrs_delta |\n"
+                )
+                f.write(
+                    f"| Std Invariance Correction | {std_inv_corr:.6f} | Variability of correction |\n"
+                )
+                f.write(
+                    f"| Max \\|Invariance Correction\\| | {max_inv_corr:.6e} | Peak deviation from pure PBRS |\n"
+                )
+                f.write(
+                    f"| Mean \\|PBRS\\| / \\|Base\\| Ratio | {pbrs_to_base_ratio:.4f} | Shaping magnitude vs base reward |\n"
+                )
+                f.write("\n")
 
             # PBRS invariance check
             total_shaping = df["reward_shaping"].sum()

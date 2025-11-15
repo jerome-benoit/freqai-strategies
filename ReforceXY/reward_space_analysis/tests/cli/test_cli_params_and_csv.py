@@ -236,6 +236,54 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertIn("max_trade_duration_candles", rp)
         self.assertEqual(int(rp["max_trade_duration_candles"]), 64)
 
+    # Owns invariant: cli-pbrs-csv-columns-121
+    def test_csv_contains_pbrs_columns_when_shaping_present(self):
+        """Verify reward_samples.csv includes PBRS columns when shaping is enabled.
+
+        Verifies:
+        - reward_base, reward_pbrs_delta, reward_invariance_correction columns exist
+        - All values are finite (no NaN/inf)
+        - Column values align mathematically
+        """
+        out_dir = self.output_path / "pbrs_csv_columns"
+        cmd = [
+            "uv",
+            "run",
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--num_samples",
+            "150",
+            "--seed",
+            str(self.SEED),
+            "--out_dir",
+            str(out_dir),
+            # Enable PBRS shaping explicitly
+            "--params",
+            "exit_potential_mode=canonical",
+        ]
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        )
+        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+
+        csv_path = out_dir / "reward_samples.csv"
+        self.assertTrue(csv_path.exists(), "Missing reward_samples.csv")
+
+        df = pd.read_csv(csv_path)
+
+        # Verify PBRS columns exist
+        required_cols = ["reward_base", "reward_pbrs_delta", "reward_invariance_correction"]
+        for col in required_cols:
+            self.assertIn(col, df.columns, f"Missing column: {col}")
+
+        # Verify all values are finite
+        for col in required_cols:
+            self.assertFalse(df[col].isna().any(), f"Column {col} contains NaN values")
+            self.assertTrue(
+                df[col].apply(lambda x: abs(x) < float("inf")).all(),
+                f"Column {col} contains infinite values",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

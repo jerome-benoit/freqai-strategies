@@ -28,7 +28,7 @@ from reward_space_analysis import (
 
 from ..test_base import RewardSpaceTestBase
 
-pytestmark = pytest.mark.api  # taxonomy classification
+pytestmark = pytest.mark.api
 
 
 class TestAPIAndHelpers(RewardSpaceTestBase):

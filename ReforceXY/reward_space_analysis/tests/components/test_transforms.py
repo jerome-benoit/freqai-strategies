@@ -12,7 +12,7 @@ from reward_space_analysis import apply_transform
 
 from ..test_base import RewardSpaceTestBase
 
-pytestmark = pytest.mark.transforms  # taxonomy classification
+pytestmark = pytest.mark.transforms
 
 
 class TestTransforms(RewardSpaceTestBase):
