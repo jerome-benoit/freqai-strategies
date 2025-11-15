@@ -109,7 +109,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         }
     }
     Requirements:
-        - pip install optuna
+        - pip install optuna optunahub -r https://hub.optuna.org/samplers/auto_sampler/requirements.txt
 
     Optional:
         - pip install optuna-dashboard
