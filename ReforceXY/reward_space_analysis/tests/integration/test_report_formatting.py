@@ -194,7 +194,7 @@ class TestReportFormatting(RewardSpaceTestBase):
         content = self._write_report(df)
 
         # Verify PBRS Metrics section exists
-        self.assertIn("**PBRS Metrics (Tracing):**", content)
+        self.assertIn("**PBRS Metrics:**", content)
 
         # Verify key metrics are present
         required_metrics = [

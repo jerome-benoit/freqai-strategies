@@ -45,8 +45,12 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "is_entry": True,
             "is_exit": False,
         }
-        _t0, s0, _n0 = apply_potential_shaping(last_potential=0.0, params=base, **ctx)
-        t1, s1, _n1 = apply_potential_shaping(last_potential=0.0, params=with_add, **ctx)
+        _t0, s0, _n0, _pbrs0, _entry0, _exit0 = apply_potential_shaping(
+            last_potential=0.0, params=base, **ctx
+        )
+        t1, s1, _n1, _pbrs1, _entry1, _exit1 = apply_potential_shaping(
+            last_potential=0.0, params=with_add, **ctx
+        )
         self.assertFinite(t1)
         self.assertFinite(s1)
         self.assertLess(abs(s1 - s0), 0.2)

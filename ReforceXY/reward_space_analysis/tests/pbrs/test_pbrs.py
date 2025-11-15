@@ -56,7 +56,14 @@ class TestPBRS(RewardSpaceTestBase):
         current_pnl = 0.02
         current_dur = 0.5
         prev_potential = _compute_hold_potential(current_pnl, current_dur, params)
-        _total_reward, reward_shaping, next_potential = apply_potential_shaping(
+        (
+            _total_reward,
+            reward_shaping,
+            next_potential,
+            _pbrs_delta,
+            _entry_additive,
+            _exit_additive,
+        ) = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
             current_duration_ratio=current_dur,
@@ -93,7 +100,14 @@ class TestPBRS(RewardSpaceTestBase):
         expected_next_potential = (
             prev_potential / gamma if gamma not in (0.0, None) else prev_potential
         )
-        _total_reward, reward_shaping, next_potential = apply_potential_shaping(
+        (
+            _total_reward,
+            reward_shaping,
+            next_potential,
+            _pbrs_delta,
+            _entry_additive,
+            _exit_additive,
+        ) = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
             current_duration_ratio=current_dur,
@@ -190,16 +204,18 @@ class TestPBRS(RewardSpaceTestBase):
         current_duration_ratio = 0.4
         next_pnl = 0.0
         next_duration_ratio = 0.0
-        total, shaping, next_potential = apply_potential_shaping(
-            base_reward=base_reward,
-            current_pnl=current_pnl,
-            current_duration_ratio=current_duration_ratio,
-            next_pnl=next_pnl,
-            next_duration_ratio=next_duration_ratio,
-            is_exit=True,
-            is_entry=False,
-            last_potential=0.789,
-            params=params,
+        total, shaping, next_potential, _pbrs_delta, _entry_additive, _exit_additive = (
+            apply_potential_shaping(
+                base_reward=base_reward,
+                current_pnl=current_pnl,
+                current_duration_ratio=current_duration_ratio,
+                next_pnl=next_pnl,
+                next_duration_ratio=next_duration_ratio,
+                is_exit=True,
+                is_entry=False,
+                last_potential=0.789,
+                params=params,
+            )
         )
         self.assertIn("_pbrs_invariance_applied", params)
         self.assertFalse(
@@ -230,7 +246,7 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=True,
         )
         terminal_next_potentials, shaping_values = self._canonical_sweep(params)
-        _t1, _s1, _n1 = apply_potential_shaping(
+        _t1, _s1, _n1, _pbrs_delta, _entry_additive, _exit_additive = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=0.05,
             current_duration_ratio=0.3,
@@ -251,7 +267,7 @@ class TestPBRS(RewardSpaceTestBase):
         max_abs = max((abs(v) for v in shaping_values)) if shaping_values else 0.0
         self.assertLessEqual(max_abs, self.PBRS_MAX_ABS_SHAPING)
         state_after = (params["entry_additive_enabled"], params["exit_additive_enabled"])
-        _t2, _s2, _n2 = apply_potential_shaping(
+        _t2, _s2, _n2, _pbrs_delta2, _entry_additive2, _exit_additive2 = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=0.02,
             current_duration_ratio=0.1,
@@ -274,15 +290,17 @@ class TestPBRS(RewardSpaceTestBase):
             hold_potential_enabled=True,
         )
         last_potential = 0.42
-        total, shaping, next_potential = apply_potential_shaping(
-            base_reward=0.0,
-            current_pnl=0.0,
-            current_duration_ratio=0.0,
-            next_pnl=0.0,
-            next_duration_ratio=0.0,
-            is_exit=True,
-            last_potential=last_potential,
-            params=params,
+        total, shaping, next_potential, _pbrs_delta, _entry_additive, _exit_additive = (
+            apply_potential_shaping(
+                base_reward=0.0,
+                current_pnl=0.0,
+                current_duration_ratio=0.0,
+                next_pnl=0.0,
+                next_duration_ratio=0.0,
+                is_exit=True,
+                last_potential=last_potential,
+                params=params,
+            )
         )
         self.assertPlacesEqual(next_potential, last_potential, places=12)
         gamma_raw = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
@@ -646,15 +664,17 @@ class TestPBRS(RewardSpaceTestBase):
                 exit_potential_mode="canonical",
                 potential_gamma=gamma,
             )
-            _tot, shap, next_pot = apply_potential_shaping(
-                base_reward=0.0,
-                current_pnl=0.02,
-                current_duration_ratio=0.3,
-                next_pnl=0.025,
-                next_duration_ratio=0.35,
-                is_exit=False,
-                last_potential=0.0,
-                params=params,
+            _tot, shap, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
+                apply_potential_shaping(
+                    base_reward=0.0,
+                    current_pnl=0.02,
+                    current_duration_ratio=0.3,
+                    next_pnl=0.025,
+                    next_duration_ratio=0.35,
+                    is_exit=False,
+                    last_potential=0.0,
+                    params=params,
+                )
             )
             self.assertTrue(np.isfinite(shap))
             self.assertTrue(np.isfinite(next_pot))
@@ -684,15 +704,17 @@ class TestPBRS(RewardSpaceTestBase):
             current_dur = float(rng.uniform(0, 1))
             next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.05))
             next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
-            _tot, _shap, next_potential = apply_potential_shaping(
-                base_reward=0.0,
-                current_pnl=current_pnl,
-                current_duration_ratio=current_dur,
-                next_pnl=next_pnl,
-                next_duration_ratio=next_dur,
-                is_exit=is_exit,
-                last_potential=last_potential,
-                params=params,
+            _tot, _shap, next_potential, _pbrs_delta, _entry_additive, _exit_additive = (
+                apply_potential_shaping(
+                    base_reward=0.0,
+                    current_pnl=current_pnl,
+                    current_duration_ratio=current_dur,
+                    next_pnl=next_pnl,
+                    next_duration_ratio=next_dur,
+                    is_exit=is_exit,
+                    last_potential=last_potential,
+                    params=params,
+                )
             )
             inc = gamma * next_potential - last_potential
             telescoping_sum += inc
@@ -733,15 +755,17 @@ class TestPBRS(RewardSpaceTestBase):
             is_exit = rng.uniform() < 0.15
             next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.07))
             next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
-            _tot, shap, next_pot = apply_potential_shaping(
-                base_reward=0.0,
-                current_pnl=float(rng.normal(0, 0.07)),
-                current_duration_ratio=float(rng.uniform(0, 1)),
-                next_pnl=next_pnl,
-                next_duration_ratio=next_dur,
-                is_exit=is_exit,
-                last_potential=last_potential,
-                params=params,
+            _tot, shap, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
+                apply_potential_shaping(
+                    base_reward=0.0,
+                    current_pnl=float(rng.normal(0, 0.07)),
+                    current_duration_ratio=float(rng.uniform(0, 1)),
+                    next_pnl=next_pnl,
+                    next_duration_ratio=next_dur,
+                    is_exit=is_exit,
+                    last_potential=last_potential,
+                    params=params,
+                )
             )
             shaping_sum += shap
             last_potential = 0.0 if is_exit else next_pot

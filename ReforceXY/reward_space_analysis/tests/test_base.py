@@ -156,16 +156,18 @@ class RewardSpaceTestBase(unittest.TestCase):
             next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.2))
             inc = rng.uniform(0, 0.12)
             next_dur = 0.0 if is_exit else float(min(1.0, current_dur + inc))
-            _tot, shap_val, next_pot = apply_potential_shaping(
-                base_reward=0.0,
-                current_pnl=current_pnl,
-                current_duration_ratio=current_dur,
-                next_pnl=next_pnl,
-                next_duration_ratio=next_dur,
-                is_exit=is_exit,
-                is_entry=False,
-                last_potential=last_potential,
-                params=params,
+            _tot, shap_val, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
+                apply_potential_shaping(
+                    base_reward=0.0,
+                    current_pnl=current_pnl,
+                    current_duration_ratio=current_dur,
+                    next_pnl=next_pnl,
+                    next_duration_ratio=next_dur,
+                    is_exit=is_exit,
+                    is_entry=False,
+                    last_potential=last_potential,
+                    params=params,
+                )
             )
             shaping_vals.append(shap_val)
             if is_exit:
