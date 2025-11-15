@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import optuna
+import optunahub
 import pandas as pd
 import scipy as sp
 import skimage
@@ -74,6 +75,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 .get("n_jobs", 1),
                 max(int(self.max_system_threads / 4), 1),
             ),
+            "sampler": "tpe",
             "storage": "file",
             "continuous": True,
             "warm_start": True,
@@ -1531,6 +1533,34 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         return storage
 
+    def optuna_create_pruner(
+        self, is_single_objective: bool
+    ) -> optuna.pruners.BasePruner:
+        if is_single_objective:
+            return optuna.pruners.HyperbandPruner(
+                min_resource=self._optuna_config.get("min_resource")
+            )
+        else:
+            return optuna.pruners.NopPruner()
+
+    def optuna_create_sampler(self) -> optuna.samplers.BaseSampler:
+        sampler = self._optuna_config.get("sampler", "tpe")
+        if sampler == "auto":
+            return optunahub.load_module("samplers/auto_sampler").AutoSampler(
+                seed=self._optuna_config.get("seed")
+            )
+        elif sampler == "tpe":
+            return optuna.samplers.TPESampler(
+                n_startup_trials=self._optuna_config.get("n_startup_trials"),
+                multivariate=True,
+                group=True,
+                seed=self._optuna_config.get("seed"),
+            )
+        else:
+            raise ValueError(
+                f"Unsupported sampler: '{sampler}'. Supported samplers: 'tpe', 'auto'"
+            )
+
     def optuna_create_study(
         self,
         pair: str,
@@ -1566,23 +1596,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if continuous:
             QuickAdapterRegressorV3.optuna_study_delete(study_name, storage)
 
-        if is_study_single_objective:
-            pruner = optuna.pruners.HyperbandPruner(
-                min_resource=self._optuna_config.get("min_resource")
-            )
-        else:
-            pruner = optuna.pruners.NopPruner()
-
         try:
             return optuna.create_study(
                 study_name=study_name,
-                sampler=optuna.samplers.TPESampler(
-                    n_startup_trials=self._optuna_config.get("n_startup_trials"),
-                    multivariate=True,
-                    group=True,
-                    seed=self._optuna_config.get("seed"),
-                ),
-                pruner=pruner,
+                sampler=self.optuna_create_sampler(),
+                pruner=self.optuna_create_pruner(is_study_single_objective),
                 direction=direction,
                 directions=directions,
                 storage=storage,

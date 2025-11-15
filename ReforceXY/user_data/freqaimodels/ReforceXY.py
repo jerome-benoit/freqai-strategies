@@ -14,6 +14,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
+import optunahub
 import torch as th
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
@@ -28,8 +29,8 @@ from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from optuna import Trial, TrialPruned, create_study, delete_study
 from optuna.exceptions import ExperimentalWarning
-from optuna.pruners import HyperbandPruner
-from optuna.samplers import TPESampler
+from optuna.pruners import BasePruner, HyperbandPruner
+from optuna.samplers import BaseSampler, TPESampler
 from optuna.storages import (
     BaseStorage,
     JournalStorage,
@@ -101,9 +102,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "timeout_hours": 0,                 // Maximum time in hours for hyperopt (0 = no timeout)
                 "continuous": false,                // If true, perform continuous optimization
                 "warm_start": false,                // If true, enqueue previous best params if exists
-                "seed": 42,                         // RNG seed
+                "sampler": "tpe",                   // Optuna sampler (tpe|auto)
                 "storage": "sqlite",                // Optuna storage backend (sqlite|file)
-            }
+                "seed": 42,                         // RNG seed
         }
     }
     Requirements:
@@ -942,6 +943,34 @@ class ReforceXY(BaseReinforcementLearningModel):
         except (ValueError, KeyError):
             return False
 
+    def create_sampler(self) -> BaseSampler:
+        sampler = self.rl_config_optuna.get("sampler", "tpe")
+        if sampler == "auto":
+            return optunahub.load_module("samplers/auto_sampler").AutoSampler(
+                seed=self.rl_config_optuna.get("seed", 42)
+            )
+        elif sampler == "tpe":
+            return TPESampler(
+                n_startup_trials=self.optuna_n_startup_trials,
+                multivariate=True,
+                group=True,
+                seed=self.rl_config_optuna.get("seed", 42),
+            )
+        else:
+            raise ValueError(
+                f"Unsupported sampler: '{sampler}'. Supported samplers: 'tpe', 'auto'"
+            )
+
+    @staticmethod
+    def create_pruner(
+        min_resource: int, max_resource: int, reduction_factor: int
+    ) -> BasePruner:
+        return HyperbandPruner(
+            min_resource=min_resource,
+            max_resource=max_resource,
+            reduction_factor=reduction_factor,
+        )
+
     def optimize(
         self, dk: FreqaiDataKitchen, total_timesteps: int
     ) -> Optional[Dict[str, Any]]:
@@ -963,18 +992,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             reduction_factor * 2, (total_timesteps // self.n_envs) // resource_eval_freq
         )
         min_resource = max(1, max_resource // reduction_factor)
+
         study: Study = create_study(
             study_name=study_name,
-            sampler=TPESampler(
-                n_startup_trials=self.optuna_n_startup_trials,
-                multivariate=True,
-                group=True,
-                seed=self.rl_config_optuna.get("seed", 42),
-            ),
-            pruner=HyperbandPruner(
-                min_resource=min_resource,
-                max_resource=max_resource,
-                reduction_factor=reduction_factor,
+            sampler=self.create_sampler(),
+            pruner=ReforceXY.create_pruner(
+                min_resource, max_resource, reduction_factor
             ),
             direction=StudyDirection.MAXIMIZE,
             storage=storage,

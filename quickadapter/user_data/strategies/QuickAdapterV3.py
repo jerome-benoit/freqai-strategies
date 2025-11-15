@@ -75,7 +75,7 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     def version(self) -> str:
-        return "3.3.169"
+        return "3.3.170"
 
     timeframe = "5m"
 
@@ -266,7 +266,8 @@ class QuickAdapterV3(IStrategy):
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
         self._cached_df_signature: dict[str, DfSignature] = {}
 
-    def _df_signature(self, df: DataFrame) -> DfSignature:
+    @staticmethod
+    def _df_signature(df: DataFrame) -> DfSignature:
         n = len(df)
         if n == 0:
             return (0, None)
@@ -1159,7 +1160,7 @@ class QuickAdapterV3(IStrategy):
         interpolation_direction: Literal["direct", "inverse"] = "direct",
         quantile_exponent: float = 1.5,
     ) -> float:
-        df_signature = self._df_signature(df)
+        df_signature = QuickAdapterV3._df_signature(df)
         prev_df_signature = self._cached_df_signature.get(pair)
         if prev_df_signature != df_signature:
             self._candle_deviation_cache = {
@@ -1229,7 +1230,7 @@ class QuickAdapterV3(IStrategy):
         max_natr_ratio_percent: float,
         candle_idx: int = -1,
     ) -> float:
-        df_signature = self._df_signature(df)
+        df_signature = QuickAdapterV3._df_signature(df)
         prev_df_signature = self._cached_df_signature.get(pair)
         if prev_df_signature != df_signature:
             self._candle_threshold_cache = {
