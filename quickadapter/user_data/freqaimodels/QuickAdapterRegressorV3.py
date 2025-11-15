@@ -65,6 +65,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     version = "3.7.120"
 
+    _SQRT_2 = np.sqrt(2.0)
+
     @cached_property
     def _optuna_config(self) -> dict[str, Any]:
         optuna_default_config = {
@@ -412,7 +414,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             optuna_train_value = self.get_optuna_value(dk.pair, "train")
             if (
                 optuna_train_params
-                and self.optuna_params_valid(dk.pair, "train", train_study)
+                and self.optuna_validate_params(dk.pair, "train", train_study)
                 and optuna_train_value < optuna_hp_value
             ):
                 train_period_candles = optuna_train_params.get("train_period_candles")
@@ -597,11 +599,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pair, "label"
         ).get("label_natr_ratio")
 
-        hp_rmse = self.validate_optuna_value(self.get_optuna_value(pair, "hp"))
+        hp_rmse = self.optuna_validate_value(self.get_optuna_value(pair, "hp"))
         dk.data["extra_returns_per_train"]["hp_rmse"] = (
             hp_rmse if hp_rmse is not None else np.inf
         )
-        train_rmse = self.validate_optuna_value(self.get_optuna_value(pair, "train"))
+        train_rmse = self.optuna_validate_value(self.get_optuna_value(pair, "train"))
         dk.data["extra_returns_per_train"]["train_rmse"] = (
             train_rmse
             if (train_rmse is not None and hp_rmse is not None and train_rmse < hp_rmse)
@@ -609,7 +611,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
     @staticmethod
-    def validate_optuna_value(value: Any) -> Optional[float]:
+    def optuna_validate_value(value: Any) -> Optional[float]:
         return value if isinstance(value, (int, float)) and np.isfinite(value) else None
 
     @staticmethod
@@ -1068,13 +1070,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             "shellinger metric requires non-zero variance for all objectives"
                         )
                     np_weights = 1 / variances
-                return np.sqrt(
-                    np.sum(
-                        np_weights
-                        * (np_sqrt_normalized_matrix - np.sqrt(ideal_point)) ** 2,
-                        axis=1,
+                return (
+                    np.sqrt(
+                        np.sum(
+                            np_weights
+                            * (np_sqrt_normalized_matrix - np.sqrt(ideal_point)) ** 2,
+                            axis=1,
+                        )
                     )
-                ) / np.sqrt(2.0)
+                    / QuickAdapterRegressorV3._SQRT_2
+                )
             elif metric in {
                 "harmonic_mean",
                 "geometric_mean",
@@ -1502,14 +1507,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(
                 f"Optuna {pair} {namespace} {objective_type} objective hyperopt | {key:>20s} : {formatted_value}"
             )
-        if not self.optuna_params_valid(pair, namespace, study):
+        if not self.optuna_validate_params(pair, namespace, study):
             logger.warning(
                 f"Optuna {pair} {namespace} {objective_type} objective hyperopt best params found has invalid optimization target value(s)"
             )
         self.optuna_save_best_params(pair, namespace)
         return study
 
-    def optuna_storage(self, pair: str) -> optuna.storages.BaseStorage:
+    def optuna_create_storage(self, pair: str) -> optuna.storages.BaseStorage:
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
         storage_backend = self._optuna_config.get("storage")
@@ -1584,7 +1589,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         study_name = f"{identifier}-{pair}-{namespace}"
 
         try:
-            storage = self.optuna_storage(pair)
+            storage = self.optuna_create_storage(pair)
         except Exception as e:
             logger.error(
                 f"Failed to create optuna storage for study {study_name}: {repr(e)}",
@@ -1594,7 +1599,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         continuous = self._optuna_config.get("continuous")
         if continuous:
-            QuickAdapterRegressorV3.optuna_study_delete(study_name, storage)
+            QuickAdapterRegressorV3.optuna_delete_study(study_name, storage)
 
         try:
             return optuna.create_study(
@@ -1612,7 +1617,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return None
 
-    def optuna_params_valid(
+    def optuna_validate_params(
         self, pair: str, namespace: str, study: Optional[optuna.study.Study]
     ) -> bool:
         if not study:
@@ -1624,19 +1629,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(best_values, list)
                 and len(best_values) == n_objectives
                 and all(
-                    self.validate_optuna_value(value) is not None
+                    self.optuna_validate_value(value) is not None
                     for value in best_values
                 )
             )
         else:
             best_value = self.get_optuna_value(pair, namespace)
-            return self.validate_optuna_value(best_value) is not None
+            return self.optuna_validate_value(best_value) is not None
 
     def optuna_enqueue_previous_best_params(
         self, pair: str, namespace: str, study: Optional[optuna.study.Study]
     ) -> None:
         best_params = self.get_optuna_params(pair, namespace)
-        if best_params and self.optuna_params_valid(pair, namespace, study):
+        if best_params and self.optuna_validate_params(pair, namespace, study):
             study.enqueue_trial(best_params)
 
     def optuna_save_best_params(self, pair: str, namespace: str) -> None:
@@ -1665,7 +1670,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return None
 
     @staticmethod
-    def optuna_study_delete(
+    def optuna_delete_study(
         study_name: str, storage: optuna.storages.BaseStorage
     ) -> None:
         try:
@@ -1674,7 +1679,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pass
 
     @staticmethod
-    def optuna_study_load(
+    def optuna_load_study(
         study_name: str, storage: optuna.storages.BaseStorage
     ) -> Optional[optuna.study.Study]:
         try:

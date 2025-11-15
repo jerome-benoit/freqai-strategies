@@ -905,13 +905,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         return DataFrame({label: actions_df["action"] for label in dk.label_list})
 
     @staticmethod
-    def study_delete(study_name: str, storage: BaseStorage) -> None:
+    def delete_study(study_name: str, storage: BaseStorage) -> None:
         try:
             delete_study(study_name=study_name, storage=storage)
         except Exception:
             pass
 
-    def get_storage(self, pair: str) -> BaseStorage:
+    def create_storage(self, pair: str) -> BaseStorage:
         """
         Get the storage for Optuna
         """
@@ -980,10 +980,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         """
         identifier = self.freqai_info.get("identifier", "no_id_provided")
         study_name = f"{identifier}-{dk.pair}"
-        storage = self.get_storage(dk.pair)
+        storage = self.create_storage(dk.pair)
         continuous = self.rl_config_optuna.get("continuous", False)
         if continuous:
-            ReforceXY.study_delete(study_name, storage)
+            ReforceXY.delete_study(study_name, storage)
         if "PPO" in self.model_type:
             resource_eval_freq = min(PPO_N_STEPS)
         else:
