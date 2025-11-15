@@ -105,6 +105,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "sampler": "tpe",                   // Optuna sampler (tpe|auto)
                 "storage": "sqlite",                // Optuna storage backend (sqlite|file)
                 "seed": 42,                         // RNG seed
+            }
         }
     }
     Requirements:
