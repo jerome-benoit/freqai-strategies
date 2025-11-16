@@ -94,8 +94,8 @@ class QuickAdapterV3(IStrategy):
     default_reversal_confirmation: dict[str, int | float] = {
         "lookback_period": 0,
         "decay_ratio": 0.5,
-        "min_natr_ratio_percent": 0.0099,
-        "max_natr_ratio_percent": 0.33,
+        "min_natr_ratio_percent": 0.0095,
+        "max_natr_ratio_percent": 0.25,
     }
 
     position_adjustment_enable = True
