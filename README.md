@@ -157,7 +157,7 @@ docker logs -f freqtrade-quickadapter
 docker compose down
 ```
 
-**Automatically update Freqtrade Docker images:**
+**Automatically update docker images:**
 
 ```shell
 cd ReforceXY  # or quickadapter
