@@ -128,20 +128,20 @@ The rewarding logic and tunables are documented in the [reward space analysis](.
 
 ## Common workflows
 
-List running compose services and the containers they created:
+**List running compose services and the containers they created:**
 
 ```shell
 docker compose ps
 ```
 
-Enter a running service:
+**Enter a running service:**
 
 ```shell
 # use the compose service name (e.g. "freqtrade")
 docker compose exec freqtrade /bin/sh
 ```
 
-View logs:
+**View logs:**
 
 ```shell
 # service logs (compose maps service -> container(s))
@@ -151,10 +151,34 @@ docker compose logs -f freqtrade
 docker logs -f freqtrade-quickadapter
 ```
 
-Stop and remove the compose stack:
+**Stop and remove the compose stack:**
 
 ```shell
 docker compose down
+```
+
+**Automatically update Freqtrade Docker images:**
+
+```shell
+cd ReforceXY  # or quickadapter
+cp ../scripts/docker-upgrade.sh .
+./docker-upgrade.sh
+```
+
+The script checks for new Freqtrade image versions on Docker Hub, rebuilds and restarts containers if updates are found, sends Telegram notifications (if configured), and cleans up unused images.
+
+_Configuration and environment variables:_
+
+| Variable            | Default                                  | Description                          |
+| ------------------- | ---------------------------------------- | ------------------------------------ |
+| FREQTRADE_CONFIG    | `./user_data/config.json`                | Freqtrade configuration file path    |
+| LOCAL_DOCKER_IMAGE  | `reforcexy-freqtrade`                    | Local image name                     |
+| REMOTE_DOCKER_IMAGE | `freqtradeorg/freqtrade:stable_freqairl` | Freqtrade image to track for updates |
+
+_Cronjob setup (daily check at 3:00 AM):_
+
+```cron
+0 3 * * * cd /path/to/freqai-strategies/ReforceXY && ./docker-upgrade.sh >> user_data/logs/docker-upgrade.log 2>&1
 ```
 
 ---
