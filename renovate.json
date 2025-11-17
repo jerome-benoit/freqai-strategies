@@ -3,18 +3,13 @@
   "extends": [
     "config:recommended",
     "group:allNonMajor",
-    "schedule:daily"
+    "schedule:daily",
+    ":maintainLockFilesWeekly"
   ],
-  "lockFileMaintenance": {
-    "enabled": true
-  },
   "customManagers": [
     {
       "customType": "regex",
-      "managerFilePatterns": [
-        "**/Dockerfile*",
-        "**/docker-compose*.yml"
-      ],
+      "managerFilePatterns": ["**/Dockerfile*", "**/docker-compose*.yml"],
       "matchStrings": [
         "ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)",
         "\\s+(?<depName>\\w+)_version:\\s*(?<currentValue>[^\\s]+)"
