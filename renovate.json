@@ -15,8 +15,7 @@
         "\\s+(?<depName>\\w+)_version:\\s*(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "pypi",
-      "depNameTemplate": "{{depName}}",
-      "packageNameTemplate": "{{{replace '_' '-' depName}}}"
+      "depNameTemplate": "{{{replace '_' '-' depName}}}"
     }
   ]
 }
