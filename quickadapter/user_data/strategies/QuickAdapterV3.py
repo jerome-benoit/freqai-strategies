@@ -54,6 +54,12 @@ EXTREMA_COLUMN = "&s-extrema"
 MAXIMA_THRESHOLD_COLUMN = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN = "&s-minima_threshold"
 
+# Type aliases
+TradeDirection = Literal["long", "short"]
+InterpolationDirection = Literal["direct", "inverse"]
+OrderType = Literal["entry", "exit"]
+TradingMode = Literal["spot", "margin", "futures"]
+
 
 class QuickAdapterV3(IStrategy):
     """
@@ -73,6 +79,14 @@ class QuickAdapterV3(IStrategy):
     """
 
     INTERFACE_VERSION = 3
+
+    _TRADE_DIRECTIONS: tuple[TradeDirection, ...] = ("long", "short")
+    _INTERPOLATION_DIRECTIONS: tuple[InterpolationDirection, ...] = (
+        "direct",
+        "inverse",
+    )
+    _ORDER_TYPES: tuple[OrderType, ...] = ("entry", "exit")
+    _TRADING_MODES: tuple[TradingMode, ...] = ("spot", "margin", "futures")
 
     def version(self) -> str:
         return "3.3.170"
@@ -128,6 +142,17 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def can_short(self) -> bool:
         return self.is_short_allowed()
+
+    @staticmethod
+    def _trade_directions_set() -> set[TradeDirection]:
+        return {
+            QuickAdapterV3._TRADE_DIRECTIONS[0],
+            QuickAdapterV3._TRADE_DIRECTIONS[1],
+        }
+
+    @staticmethod
+    def _order_types_set() -> set[OrderType]:
+        return {QuickAdapterV3._ORDER_TYPES[0], QuickAdapterV3._ORDER_TYPES[1]}
 
     @cached_property
     def plot_config(self) -> dict[str, Any]:
@@ -1199,13 +1224,13 @@ class QuickAdapterV3(IStrategy):
         if isna(candle_label_natr_value_quantile):
             return np.nan
 
-        if interpolation_direction == "direct":
+        if interpolation_direction == self._INTERPOLATION_DIRECTIONS[0]:  # "direct"
             natr_ratio_percent = (
                 min_natr_ratio_percent
                 + (max_natr_ratio_percent - min_natr_ratio_percent)
                 * candle_label_natr_value_quantile**quantile_exponent
             )
-        elif interpolation_direction == "inverse":
+        elif interpolation_direction == self._INTERPOLATION_DIRECTIONS[1]:  # "inverse"
             natr_ratio_percent = (
                 max_natr_ratio_percent
                 - (max_natr_ratio_percent - min_natr_ratio_percent)
@@ -1213,7 +1238,8 @@ class QuickAdapterV3(IStrategy):
             )
         else:
             raise ValueError(
-                f"Invalid interpolation_direction: {interpolation_direction}. Expected 'direct' or 'inverse'"
+                f"Invalid interpolation_direction: {interpolation_direction}. "
+                f"Expected {', '.join(self._INTERPOLATION_DIRECTIONS)}"
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
@@ -1253,7 +1279,7 @@ class QuickAdapterV3(IStrategy):
             min_natr_ratio_percent=min_natr_ratio_percent,
             max_natr_ratio_percent=max_natr_ratio_percent,
             candle_idx=candle_idx,
-            interpolation_direction="direct",
+            interpolation_direction=self._INTERPOLATION_DIRECTIONS[0],  # "direct"
         )
         if isna(current_deviation) or current_deviation <= 0:
             return np.nan
@@ -1268,14 +1294,14 @@ class QuickAdapterV3(IStrategy):
         is_candle_bullish: bool = candle_close > candle_open
         is_candle_bearish: bool = candle_close < candle_open
 
-        if side == "long":
+        if side == self._TRADE_DIRECTIONS[0]:  # "long"
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bearish
                 else candle_close
             )
             candle_threshold = base_price * (1 + current_deviation)
-        elif side == "short":
+        elif side == self._TRADE_DIRECTIONS[1]:  # "short"
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bullish
@@ -1283,7 +1309,9 @@ class QuickAdapterV3(IStrategy):
             )
             candle_threshold = base_price * (1 - current_deviation)
         else:
-            raise ValueError(f"Invalid side: {side}. Expected 'long' or 'short'")
+            raise ValueError(
+                f"Invalid side: {side}. Expected {', '.join(self._TRADE_DIRECTIONS)}"
+            )
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]
 
@@ -1367,9 +1395,9 @@ class QuickAdapterV3(IStrategy):
         """
         if df.empty:
             return False
-        if side not in {"long", "short"}:
+        if side not in self._sides_set():
             return False
-        if order not in {"entry", "exit"}:
+        if order not in self._order_types_set():
             return False
 
         trade_direction = side
@@ -1397,14 +1425,16 @@ class QuickAdapterV3(IStrategy):
             candle_idx=-1,
         )
         current_ok = np.isfinite(current_threshold) and (
-            (side == "long" and rate > current_threshold)
-            or (side == "short" and rate < current_threshold)
+            (side == self._TRADE_DIRECTIONS[0] and rate > current_threshold)  # "long"
+            or (
+                side == self._TRADE_DIRECTIONS[1] and rate < current_threshold
+            )  # "short"
         )
-        if order == "exit":
-            if side == "long":
-                trade_direction = "short"
-            if side == "short":
-                trade_direction = "long"
+        if order == self._ORDER_TYPES[1]:  # "exit"
+            if side == self._TRADE_DIRECTIONS[0]:  # "long"
+                trade_direction = self._TRADE_DIRECTIONS[1]  # "short"
+            if side == self._TRADE_DIRECTIONS[1]:  # "short"
+                trade_direction = self._TRADE_DIRECTIONS[0]  # "long"
         if not current_ok:
             logger.info(
                 f"User denied {trade_direction} {order} for {pair}: rate {format_number(rate)} did not break threshold {format_number(current_threshold)}"
@@ -1441,8 +1471,11 @@ class QuickAdapterV3(IStrategy):
             ):
                 return current_ok
 
-            if (side == "long" and not (close_k > threshold_k)) or (
-                side == "short" and not (close_k < threshold_k)
+            if (
+                side == self._TRADE_DIRECTIONS[0] and not (close_k > threshold_k)
+            ) or (  # "long"
+                side == self._TRADE_DIRECTIONS[1]
+                and not (close_k < threshold_k)  # "short"
             ):
                 logger.info(
                     f"User denied {trade_direction} {order} for {pair}: "
@@ -1670,15 +1703,15 @@ class QuickAdapterV3(IStrategy):
                 trade.set_custom_data("last_outlier_date", last_candle_date.isoformat())
 
         if (
-            trade.trade_direction == "short"
+            trade.trade_direction == self._TRADE_DIRECTIONS[1]  # "short"
             and last_candle.get("do_predict") == 1
             and last_candle.get("DI_catch") == 1
             and last_candle.get(EXTREMA_COLUMN) < last_candle.get("minima_threshold")
             and self.reversal_confirmed(
                 df,
                 pair,
-                "long",
-                "exit",
+                self._TRADE_DIRECTIONS[0],  # "long"
+                self._ORDER_TYPES[1],  # "exit"
                 current_rate,
                 self._reversal_lookback_period,
                 self._reversal_decay_ratio,
@@ -1688,15 +1721,15 @@ class QuickAdapterV3(IStrategy):
         ):
             return "minima_detected_short"
         if (
-            trade.trade_direction == "long"
+            trade.trade_direction == self._TRADE_DIRECTIONS[0]  # "long"
             and last_candle.get("do_predict") == 1
             and last_candle.get("DI_catch") == 1
             and last_candle.get(EXTREMA_COLUMN) > last_candle.get("maxima_threshold")
             and self.reversal_confirmed(
                 df,
                 pair,
-                "short",
-                "exit",
+                self._TRADE_DIRECTIONS[1],  # "short"
+                self._ORDER_TYPES[1],  # "exit"
                 current_rate,
                 self._reversal_lookback_period,
                 self._reversal_decay_ratio,
@@ -1805,9 +1838,9 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs,
     ) -> bool:
-        if side not in {"long", "short"}:
+        if side not in self._sides_set():
             return False
-        if side == "short" and not self.can_short:
+        if side == self._TRADE_DIRECTIONS[1] and not self.can_short:  # "short"
             logger.info(f"User denied short entry for {pair}: shorting not allowed")
             return False
         if Trade.get_open_trade_count() >= self.config.get("max_open_trades"):
@@ -1831,7 +1864,7 @@ class QuickAdapterV3(IStrategy):
             df,
             pair,
             side,
-            "entry",
+            self._ORDER_TYPES[0],  # "entry"
             rate,
             self._reversal_lookback_period,
             self._reversal_decay_ratio,
@@ -1843,12 +1876,18 @@ class QuickAdapterV3(IStrategy):
 
     def is_short_allowed(self) -> bool:
         trading_mode = self.config.get("trading_mode")
-        if trading_mode in {"margin", "futures"}:
+        if trading_mode in {
+            self._TRADING_MODES[1],
+            self._TRADING_MODES[2],
+        }:  # margin, futures
             return True
-        elif trading_mode == "spot":
+        elif trading_mode == self._TRADING_MODES[0]:  # "spot"
             return False
         else:
-            raise ValueError(f"Invalid trading_mode: {trading_mode}")
+            raise ValueError(
+                f"Invalid trading_mode: {trading_mode}. "
+                f"Expected {', '.join(self._TRADING_MODES)}"
+            )
 
     def leverage(
         self,
