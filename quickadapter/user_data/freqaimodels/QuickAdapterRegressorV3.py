@@ -33,6 +33,9 @@ from Utils import (
     zigzag,
 )
 
+ExtremaSelectionMethod = Literal["peak_values", "extrema_rank"]
+OptunaNamespace = Literal["hp", "train", "label"]
+
 debug = False
 
 TEST_SIZE = 0.1
@@ -44,9 +47,6 @@ MINIMA_THRESHOLD_COLUMN = "&s-minima_threshold"
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
-
-ExtremaSelectionMethod = Literal["peak_values", "extrema_rank"]
-OptunaNamespace = Literal["hp", "train", "label"]
 
 
 class QuickAdapterRegressorV3(BaseRegressionModel):
@@ -66,7 +66,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.120"
+    version = "3.7.121"
 
     _SQRT_2 = np.sqrt(2.0)
 
@@ -710,7 +710,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         extrema_selection = str(
             self.freqai_info.get(
                 "prediction_extrema_selection",
-                self._EXTREMA_SELECTION_METHODS[0],
+                self._EXTREMA_SELECTION_METHODS[1],
             )
         )
         if extrema_selection not in self._extrema_selection_methods_set():
@@ -718,7 +718,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Unsupported extrema selection method: {extrema_selection}. "
                 f"Supported methods are {', '.join(self._EXTREMA_SELECTION_METHODS)}"
             )
-        extrema_selection: ExtremaSelectionMethod = extrema_selection  # type: ignore[assignment]
+        extrema_selection: ExtremaSelectionMethod = extrema_selectionx
         thresholds_smoothing = str(
             self.freqai_info.get("prediction_thresholds_smoothing", "mean")
         )

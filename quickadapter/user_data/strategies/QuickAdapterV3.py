@@ -40,6 +40,11 @@ from Utils import (
     zlema,
 )
 
+TradeDirection = Literal["long", "short"]
+InterpolationDirection = Literal["direct", "inverse"]
+OrderType = Literal["entry", "exit"]
+TradingMode = Literal["spot", "margin", "futures"]
+
 DfSignature = Tuple[int, Optional[datetime.datetime]]
 CandleDeviationCacheKey = Tuple[
     str, DfSignature, float, float, int, Literal["direct", "inverse"], float
@@ -53,12 +58,6 @@ logger = logging.getLogger(__name__)
 EXTREMA_COLUMN = "&s-extrema"
 MAXIMA_THRESHOLD_COLUMN = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN = "&s-minima_threshold"
-
-# Type aliases
-TradeDirection = Literal["long", "short"]
-InterpolationDirection = Literal["direct", "inverse"]
-OrderType = Literal["entry", "exit"]
-TradingMode = Literal["spot", "margin", "futures"]
 
 
 class QuickAdapterV3(IStrategy):
@@ -89,7 +88,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: tuple[TradingMode, ...] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.170"
+        return "3.3.171"
 
     timeframe = "5m"
 
@@ -139,10 +138,6 @@ class QuickAdapterV3(IStrategy):
 
     process_only_new_candles = True
 
-    @cached_property
-    def can_short(self) -> bool:
-        return self.is_short_allowed()
-
     @staticmethod
     def _trade_directions_set() -> set[TradeDirection]:
         return {
@@ -153,6 +148,10 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     def _order_types_set() -> set[OrderType]:
         return {QuickAdapterV3._ORDER_TYPES[0], QuickAdapterV3._ORDER_TYPES[1]}
+
+    @cached_property
+    def can_short(self) -> bool:
+        return self.is_short_allowed()
 
     @cached_property
     def plot_config(self) -> dict[str, Any]:
@@ -666,7 +665,7 @@ class QuickAdapterV3(IStrategy):
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_long_conditions),
             ["enter_long", "enter_tag"],
-        ] = (1, "long")
+        ] = (1, self._TRADE_DIRECTIONS[0])  # "long"
 
         enter_short_conditions = [
             dataframe.get("do_predict") == 1,
@@ -676,7 +675,7 @@ class QuickAdapterV3(IStrategy):
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_short_conditions),
             ["enter_short", "enter_tag"],
-        ] = (1, "short")
+        ] = (1, self._TRADE_DIRECTIONS[1])  # "short"
 
         return dataframe
 
@@ -1395,7 +1394,7 @@ class QuickAdapterV3(IStrategy):
         """
         if df.empty:
             return False
-        if side not in self._sides_set():
+        if side not in self._trade_directions_set():
             return False
         if order not in self._order_types_set():
             return False
@@ -1838,7 +1837,7 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs,
     ) -> bool:
-        if side not in self._sides_set():
+        if side not in self._trade_directions_set():
             return False
         if side == self._TRADE_DIRECTIONS[1] and not self.can_short:  # "short"
             logger.info(f"User denied short entry for {pair}: shorting not allowed")

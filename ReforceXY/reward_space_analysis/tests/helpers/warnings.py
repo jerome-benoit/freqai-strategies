@@ -21,7 +21,7 @@ from typing import Any, Optional
 try:
     from reward_space_analysis import RewardDiagnosticsWarning
 except ImportError:
-    RewardDiagnosticsWarning = RuntimeWarning  # type: ignore
+    RewardDiagnosticsWarning = RuntimeWarning
 
 
 @contextmanager
