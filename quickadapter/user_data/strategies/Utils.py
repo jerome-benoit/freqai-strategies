@@ -17,18 +17,27 @@ from technical import qtpylib
 
 T = TypeVar("T", pd.Series, float)
 
+WEIGHT_STRATEGIES = ("none", "pivot_threshold")
 WeightStrategy = Literal["none", "pivot_threshold"]
 
+NORMALIZATION_TYPES = ("minmax", "l1", "none")
+NormalizationType = Literal["minmax", "l1", "none"]
+
+SMOOTHING_METHODS = ("gaussian", "kaiser", "triang", "smm", "sma")
+SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
+SmoothingMethod = Literal["gaussian", "kaiser", "triang", "smm", "sma"]
+
+
 DEFAULTS_EXTREMA_SMOOTHING = {
-    "method": "gaussian",
+    "method": SMOOTHING_METHODS[0],  # "gaussian"
     "window": 5,
     "beta": 8.0,
 }
 
 DEFAULTS_EXTREMA_WEIGHTING = {
-    "normalization": "minmax",
+    "normalization": NORMALIZATION_TYPES[0],  # "minmax"
     "gamma": 1.0,
-    "strategy": "none",
+    "strategy": WEIGHT_STRATEGIES[0],  # "none"
 }
 
 DEFAULT_EXTREMA_WEIGHT = 1.0
@@ -65,15 +74,15 @@ def get_gaussian_std(window: int) -> float:
 @lru_cache(maxsize=8)
 def _calculate_coeffs(
     window: int,
-    win_type: Literal["gaussian", "kaiser", "triang"],
+    win_type: SmoothingKernel,
     std: float,
     beta: float,
 ) -> NDArray[np.floating]:
-    if win_type == "gaussian":
+    if win_type == SMOOTHING_METHODS[0]:  # "gaussian"
         coeffs = sp.signal.windows.gaussian(M=window, std=std, sym=True)
-    elif win_type == "kaiser":
+    elif win_type == SMOOTHING_METHODS[1]:  # "kaiser"
         coeffs = sp.signal.windows.kaiser(M=window, beta=beta, sym=True)
-    elif win_type == "triang":
+    elif win_type == SMOOTHING_METHODS[2]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(f"Unknown window type: {win_type}")
@@ -83,7 +92,7 @@ def _calculate_coeffs(
 def zero_phase(
     series: pd.Series,
     window: int,
-    win_type: Literal["gaussian", "kaiser", "triang"],
+    win_type: SmoothingKernel,
     std: float,
     beta: float,
 ) -> pd.Series:
@@ -99,7 +108,10 @@ def zero_phase(
 
 
 def smooth_extrema(
-    series: pd.Series, method: str, window: int, beta: float
+    series: pd.Series,
+    method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
+    window: int = DEFAULTS_EXTREMA_SMOOTHING["window"],
+    beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
 ) -> pd.Series:
     if window < 3:
         window = 3
@@ -108,45 +120,51 @@ def smooth_extrema(
 
     std = get_gaussian_std(window)
     odd_window = get_odd_window(window)
-    smoothing_methods: dict[str, pd.Series] = {
-        "gaussian": zero_phase(
+    smoothing_methods_dict: dict[SmoothingMethod, pd.Series] = {
+        SMOOTHING_METHODS[0]: zero_phase(  # "gaussian"
             series=series,
             window=window,
-            win_type="gaussian",
+            win_type=SMOOTHING_METHODS[0],
             std=std,
             beta=beta,
         ),
-        "kaiser": zero_phase(
+        SMOOTHING_METHODS[1]: zero_phase(  # "kaiser"
             series=series,
             window=window,
-            win_type="kaiser",
+            win_type=SMOOTHING_METHODS[1],
             std=std,
             beta=beta,
         ),
-        "triang": zero_phase(
+        SMOOTHING_METHODS[2]: zero_phase(  # "triang"
             series=series,
             window=window,
-            win_type="triang",
+            win_type=SMOOTHING_METHODS[2],
             std=std,
             beta=beta,
         ),
-        "smm": series.rolling(window=odd_window, center=True).median(),
-        "sma": series.rolling(window=odd_window, center=True).mean(),
+        SMOOTHING_METHODS[3]: series.rolling(
+            window=odd_window, center=True
+        ).median(),  # "smm"
+        SMOOTHING_METHODS[4]: series.rolling(
+            window=odd_window, center=True
+        ).mean(),  # "sma"
     }
-    return smoothing_methods.get(method, smoothing_methods["gaussian"])
+    return smoothing_methods_dict.get(
+        method, smoothing_methods_dict[SMOOTHING_METHODS[0]]
+    )
 
 
 def normalize_weights(
     weights: NDArray[np.floating],
-    normalization: Literal["minmax", "l1", "none"] = "minmax",
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> NDArray[np.floating]:
     if weights.size == 0:
         return weights
-    if normalization == "none":
+    if normalization == NORMALIZATION_TYPES[2]:  # "none"
         return weights
 
-    if normalization == "minmax":
+    if normalization == NORMALIZATION_TYPES[0]:  # "minmax"
         weights = weights.astype(float, copy=False)
         if np.isnan(weights).any():
             return np.full_like(weights, 1.0, dtype=float)
@@ -166,7 +184,7 @@ def normalize_weights(
                 return np.full_like(weights, 1.0, dtype=float)
         return normalized_weights
 
-    if normalization == "l1":
+    if normalization == NORMALIZATION_TYPES[1]:  # "l1"
         weights_sum = weights.sum()
         if weights_sum <= 0 or np.isnan(weights_sum):
             return np.full_like(weights, 1.0, dtype=float)
@@ -186,9 +204,7 @@ def calculate_extrema_weights(
     series: pd.Series,
     indices: list[int],
     weights: NDArray[np.floating],
-    normalization: Literal["minmax", "l1", "none"] = DEFAULTS_EXTREMA_WEIGHTING[
-        "normalization"
-    ],
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> pd.Series:
     if len(indices) == 0 or len(weights) == 0:
@@ -221,17 +237,17 @@ def get_weighted_extrema(
     extrema: pd.Series,
     indices: list[int],
     weights: NDArray[np.floating],
-    strategy: WeightStrategy = "none",
-    normalization: Literal["minmax", "l1", "none"] = DEFAULTS_EXTREMA_WEIGHTING[
-        "normalization"
-    ],
+    strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> tuple[pd.Series, pd.Series]:
     default_weights = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=extrema.index)
-    if len(indices) == 0 or len(weights) == 0 or strategy == "none":
+    if (
+        len(indices) == 0 or len(weights) == 0 or strategy == WEIGHT_STRATEGIES[0]
+    ):  # "none"
         return extrema, default_weights
 
-    if strategy == "pivot_threshold":
+    if strategy == WEIGHT_STRATEGIES[1]:  # "pivot_threshold"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,

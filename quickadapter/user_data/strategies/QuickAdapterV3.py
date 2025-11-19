@@ -30,6 +30,9 @@ from technical.pivots_points import pivots_points
 from Utils import (
     DEFAULTS_EXTREMA_SMOOTHING,
     DEFAULTS_EXTREMA_WEIGHTING,
+    NORMALIZATION_TYPES,
+    SMOOTHING_METHODS,
+    WEIGHT_STRATEGIES,
     TrendDirection,
     alligator,
     bottom_change_percent,
@@ -634,6 +637,11 @@ class QuickAdapterV3(IStrategy):
         smoothing_method = str(
             extrema_smoothing_config.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
         )
+        if smoothing_method not in SMOOTHING_METHODS:
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing method '{smoothing_method}', using default '{SMOOTHING_METHODS[0]}'"
+            )
+            smoothing_method = SMOOTHING_METHODS[0]
         smoothing_window = int(
             extrema_smoothing_config.get("window", DEFAULTS_EXTREMA_SMOOTHING["window"])
         )
@@ -650,16 +658,21 @@ class QuickAdapterV3(IStrategy):
                 "strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"]
             )
         )
+        if weighting_strategy not in WEIGHT_STRATEGIES:
+            logger.warning(
+                f"{pair}: invalid extrema_weighting strategy '{weighting_strategy}', using default '{WEIGHT_STRATEGIES[0]}'"
+            )
+            weighting_strategy = WEIGHT_STRATEGIES[0]
         weighting_normalization = str(
             extrema_weighting_config.get(
                 "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
             )
         )
-        if weighting_normalization not in {"minmax", "l1", "none"}:
+        if weighting_normalization not in NORMALIZATION_TYPES:
             logger.warning(
-                f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default 'minmax'"
+                f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default '{NORMALIZATION_TYPES[0]}'"
             )
-            weighting_normalization = "minmax"
+            weighting_normalization = NORMALIZATION_TYPES[0]
         weighting_gamma = extrema_weighting_config.get(
             "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
         )
