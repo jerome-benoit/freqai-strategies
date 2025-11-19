@@ -190,7 +190,7 @@ def normalize_weights(
         return normalized_weights
 
     if normalization == NORMALIZATION_TYPES[1]:  # "l1"
-        weights_sum = np.abs(weights).sum()
+        weights_sum = np.sum(np.abs(weights))
         if weights_sum <= 0 or not np.isfinite(weights_sum):
             return np.full_like(weights, 1.0, dtype=float)
         normalized_weights = weights / weights_sum
