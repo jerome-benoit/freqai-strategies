@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from reward_space_analysis import apply_transform
+from reward_space_analysis import ALLOWED_TRANSFORMS, apply_transform
 
 from ..test_base import RewardSpaceTestBase
 
@@ -19,8 +19,8 @@ class TestTransforms(RewardSpaceTestBase):
     """Comprehensive transform function tests with parameterized scenarios."""
 
     # Transform function test data
-    SMOOTH_TRANSFORMS = ["tanh", "softsign", "arctan", "sigmoid", "asinh"]
-    ALL_TRANSFORMS = SMOOTH_TRANSFORMS + ["clip"]
+    SMOOTH_TRANSFORMS = [t for t in ALLOWED_TRANSFORMS if t != "clip"]
+    ALL_TRANSFORMS = list(ALLOWED_TRANSFORMS)
 
     def test_transform_exact_values(self):
         """Test transform functions produce exact expected values for specific inputs."""

@@ -266,7 +266,7 @@ class TestStatistics(RewardSpaceTestBase):
         """Equal scaling keeps KL/JS ≈0."""
         from ..constants import SCENARIOS, STAT_TOL
 
-        df1 = self._shift_scale_df(SCENARIOS.DEFAULT_SAMPLE_SIZE)
+        df1 = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_MEDIUM)
         scale = 3.5
         df2 = df1.copy()
         df2["pnl"] *= scale
@@ -299,7 +299,7 @@ class TestStatistics(RewardSpaceTestBase):
         from ..constants import SCENARIOS
 
         rng = np.random.default_rng(1234)
-        n = SCENARIOS.NULL_HYPOTHESIS_SAMPLE_SIZE
+        n = SCENARIOS.SAMPLE_SIZE_MEDIUM
         df = pd.DataFrame(
             {
                 "pnl": rng.normal(0, 1, n),
@@ -423,7 +423,7 @@ class TestStatistics(RewardSpaceTestBase):
             pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
         )
         exit_data = df[df["reward_exit"] != 0].copy()
-        if len(exit_data) < SCENARIOS.HETEROSCEDASTICITY_MIN_EXITS:
+        if len(exit_data) < SCENARIOS.SAMPLE_SIZE_TINY:
             self.skipTest("Insufficient exit actions for heteroscedasticity test")
         exit_data["duration_bin"] = pd.cut(
             exit_data["duration_ratio"], bins=4, labels=["Q1", "Q2", "Q3", "Q4"]

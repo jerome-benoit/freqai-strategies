@@ -436,7 +436,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
 
     def test_plateau_continuity_at_grace_boundary(self):
         """Test plateau continuity at grace boundary."""
-        modes = ["sqrt", "linear", "power", "half_life"]
+        modes = list(ATTENUATION_MODES)
         grace = 0.8
         eps = self.CONTINUITY_EPS_SMALL
         base_factor = self.TEST_BASE_FACTOR

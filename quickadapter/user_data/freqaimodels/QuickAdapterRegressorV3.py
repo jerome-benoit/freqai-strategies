@@ -6,7 +6,7 @@ import time
 import warnings
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Final, Literal, Optional
 
 import numpy as np
 import optuna
@@ -38,11 +38,11 @@ OptunaNamespace = Literal["hp", "train", "label"]
 
 debug = False
 
-TEST_SIZE = 0.1
+TEST_SIZE: Final = 0.1
 
-EXTREMA_COLUMN = "&s-extrema"
-MAXIMA_THRESHOLD_COLUMN = "&s-maxima_threshold"
-MINIMA_THRESHOLD_COLUMN = "&s-minima_threshold"
+EXTREMA_COLUMN: Final = "&s-extrema"
+MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
+MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -68,15 +68,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     version = "3.7.121"
 
-    _SQRT_2 = np.sqrt(2.0)
+    _SQRT_2: Final[float] = np.sqrt(2.0)
 
-    _EXTREMA_SELECTION_METHODS: tuple[ExtremaSelectionMethod, ...] = (
+    _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
         "peak_values",
         "extrema_rank",
     )
-    _OPTUNA_STORAGE_BACKENDS: tuple[str, ...] = ("sqlite", "file")
-    _OPTUNA_SAMPLERS: tuple[str, ...] = ("tpe", "auto")
-    _OPTUNA_NAMESPACES: tuple[OptunaNamespace, ...] = ("hp", "train", "label")
+    _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("sqlite", "file")
+    _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
+    _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
 
     @staticmethod
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:

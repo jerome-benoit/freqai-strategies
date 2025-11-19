@@ -7,12 +7,13 @@ reducing parameter proliferation.
 
 Usage:
     from tests.helpers.configs import RewardScenarioConfig
+    from tests.constants import PARAMS, TOLERANCE
 
     config = RewardScenarioConfig(
-        base_factor=90.0,
-        profit_target=0.06,
-        risk_reward_ratio=1.0,
-        tolerance_relaxed=1e-09
+        base_factor=PARAMS.BASE_FACTOR,
+        profit_target=PARAMS.PROFIT_TARGET,
+        risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+        tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
     )
 
     assert_reward_calculation_scenarios(
@@ -22,6 +23,8 @@ Usage:
 
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+from ..constants import SEEDS, STATISTICAL, TOLERANCE
 
 
 @dataclass
@@ -62,8 +65,8 @@ class ValidationConfig:
         component_description: Human-readable description of validated components
     """
 
-    tolerance_strict: float
-    tolerance_relaxed: float
+    tolerance_strict: float = TOLERANCE.IDENTITY_STRICT
+    tolerance_relaxed: float = TOLERANCE.IDENTITY_RELAXED
     exclude_components: Optional[list[str]] = None
     component_description: str = "reward components"
 
@@ -131,7 +134,7 @@ class ExitFactorConfig:
     attenuation_mode: str
     plateau_enabled: bool = False
     plateau_grace: float = 0.0
-    tolerance: float = 1e-09
+    tolerance: float = TOLERANCE.IDENTITY_RELAXED
 
 
 @dataclass
@@ -149,9 +152,9 @@ class StatisticalTestConfig:
         alpha: Significance level
     """
 
-    n_bootstrap: int = 100
+    n_bootstrap: int = STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS
     confidence_level: float = 0.95
-    seed: int = 42
+    seed: int = SEEDS.BASE
     adjust_method: Optional[str] = None
     alpha: float = 0.05
 

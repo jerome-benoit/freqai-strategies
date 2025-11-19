@@ -12,6 +12,8 @@ import pytest
 
 from reward_space_analysis import DEFAULT_MODEL_REWARD_PARAMETERS
 
+from .constants import SEEDS
+
 
 @pytest.fixture(scope="session")
 def temp_output_dir():
@@ -24,7 +26,7 @@ def temp_output_dir():
 @pytest.fixture(autouse=True)
 def setup_rng():
     """Configure RNG for reproducibility."""
-    np.random.seed(42)
+    np.random.seed(SEEDS.BASE)
 
 
 @pytest.fixture

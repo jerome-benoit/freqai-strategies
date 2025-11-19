@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import (
     Any,
     Callable,
+    ClassVar,
     Dict,
+    Final,
     List,
     Literal,
     Optional,
@@ -143,25 +145,25 @@ class ReforceXY(BaseReinforcementLearningModel):
         - pip install optuna-dashboard
     """
 
-    _LOG_2 = math.log(2.0)
-    DEFAULT_IDLE_DURATION_MULTIPLIER: int = 4
+    _LOG_2: Final[float] = math.log(2.0)
+    DEFAULT_IDLE_DURATION_MULTIPLIER: Final[int] = 4
 
-    _MODEL_TYPES: tuple[ModelType, ...] = (
+    _MODEL_TYPES: Final[tuple[ModelType, ...]] = (
         "PPO",
         "RecurrentPPO",
         "MaskablePPO",
         "DQN",
         "QRDQN",
     )
-    _SCHEDULE_TYPES: tuple[ScheduleType, ...] = ("linear", "constant", "unknown")
-    _EXIT_POTENTIAL_MODES: tuple[ExitPotentialMode, ...] = (
+    _SCHEDULE_TYPES: Final[tuple[ScheduleType, ...]] = ("linear", "constant", "unknown")
+    _EXIT_POTENTIAL_MODES: Final[tuple[ExitPotentialMode, ...]] = (
         "canonical",
         "non_canonical",
         "progressive_release",
         "spike_cancel",
         "retain_previous",
     )
-    _TRANSFORM_FUNCTIONS: tuple[TransformFunction, ...] = (
+    _TRANSFORM_FUNCTIONS: Final[tuple[TransformFunction, ...]] = (
         "tanh",
         "softsign",
         "arctan",
@@ -169,30 +171,30 @@ class ReforceXY(BaseReinforcementLearningModel):
         "asinh",
         "clip",
     )
-    _EXIT_ATTENUATION_MODES: tuple[ExitAttenuationMode, ...] = (
+    _EXIT_ATTENUATION_MODES: Final[tuple[ExitAttenuationMode, ...]] = (
         "legacy",
         "sqrt",
         "linear",
         "power",
         "half_life",
     )
-    _ACTIVATION_FUNCTIONS: tuple[ActivationFunction, ...] = (
+    _ACTIVATION_FUNCTIONS: Final[tuple[ActivationFunction, ...]] = (
         "tanh",
         "relu",
         "elu",
         "leaky_relu",
     )
-    _OPTIMIZER_CLASSES: tuple[OptimizerClass, ...] = ("adam", "adamw", "rmsprop")
-    _NET_ARCH_SIZES: tuple[NetArchSize, ...] = (
+    _OPTIMIZER_CLASSES: Final[tuple[OptimizerClass, ...]] = ("adam", "adamw", "rmsprop")
+    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
         "small",
         "medium",
         "large",
         "extra_large",
     )
-    _STORAGE_BACKENDS: tuple[StorageBackend, ...] = ("sqlite", "file")
-    _SAMPLER_TYPES: tuple[SamplerType, ...] = ("tpe", "auto")
+    _STORAGE_BACKENDS: Final[tuple[StorageBackend, ...]] = ("sqlite", "file")
+    _SAMPLER_TYPES: Final[tuple[SamplerType, ...]] = ("tpe", "auto")
 
-    _action_masks_cache: Dict[Tuple[bool, float], NDArray[np.bool_]] = {}
+    _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
 
     @staticmethod
     def _model_types_set() -> set[ModelType]:
@@ -1375,7 +1377,6 @@ class ReforceXY(BaseReinforcementLearningModel):
         logger.info("Trial %s params: %s", trial.number, params)
 
         # "PPO"
-
         if self._MODEL_TYPES[0] in self.model_type:
             n_steps = params.get("n_steps", 0)
             if n_steps > 0:
@@ -4016,7 +4017,7 @@ def sample_params_ppo(trial: Trial) -> Dict[str, Any]:
     Sampler for PPO hyperparams
     """
     return convert_optuna_params_to_model_params(
-        "PPO", get_common_ppo_optuna_params(trial)
+        ReforceXY._MODEL_TYPES[0], get_common_ppo_optuna_params(trial)
     )
 
 
@@ -4096,7 +4097,7 @@ def sample_params_dqn(trial: Trial) -> Dict[str, Any]:
     Sampler for DQN hyperparams
     """
     return convert_optuna_params_to_model_params(
-        "DQN", get_common_dqn_optuna_params(trial)
+        ReforceXY._MODEL_TYPES[3], get_common_dqn_optuna_params(trial)
     )
 
 
@@ -4106,4 +4107,6 @@ def sample_params_qrdqn(trial: Trial) -> Dict[str, Any]:
     """
     dqn_optuna_params = get_common_dqn_optuna_params(trial)
     dqn_optuna_params.update({"n_quantiles": trial.suggest_int("n_quantiles", 10, 160)})
-    return convert_optuna_params_to_model_params("QRDQN", dqn_optuna_params)
+    return convert_optuna_params_to_model_params(
+        ReforceXY._MODEL_TYPES[4], dqn_optuna_params
+    )

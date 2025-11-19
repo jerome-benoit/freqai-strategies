@@ -54,6 +54,7 @@ try:
 except ImportError:
     from typing_extensions import NotRequired, Required  # Python <3.11
 
+
 ConfigTuple = Tuple[str, str, float, int, int, int]
 
 SUMMARY_FILENAME = "reward_space_cli.json"
@@ -103,14 +104,16 @@ def build_arg_matrix(
     max_scenarios: int = 40,
     shuffle_seed: Optional[int] = None,
 ) -> List[ConfigTuple]:
+    # Constants from reward_space_analysis.py
+    # ALLOWED_EXIT_POTENTIAL_MODES and ATTENUATION_MODES_WITH_LEGACY
     exit_potential_modes = [
         "canonical",
         "non_canonical",
         "progressive_release",
-        "retain_previous",
         "spike_cancel",
+        "retain_previous",
     ]
-    exit_attenuation_modes = ["linear", "sqrt", "power", "half_life", "legacy"]
+    exit_attenuation_modes = ["sqrt", "linear", "power", "half_life", "legacy"]
     potential_gammas = [0.0, 0.5, 0.95, 0.999]
     hold_enabled = [0, 1]
     entry_additive_enabled = [0, 1]

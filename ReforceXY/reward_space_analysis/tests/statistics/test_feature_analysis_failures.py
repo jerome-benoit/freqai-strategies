@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from reward_space_analysis import _perform_feature_analysis  # type: ignore
+from tests.constants import SEEDS
 
 pytestmark = pytest.mark.statistics
 
@@ -41,7 +42,7 @@ def _minimal_df(n: int = 30) -> pd.DataFrame:
 def test_feature_analysis_missing_reward_column():
     df = _minimal_df().drop(columns=["reward"])  # remove reward
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=7, skip_partial_dependence=True
+        df, seed=SEEDS.FEATURE_EMPTY, skip_partial_dependence=True
     )
     assert importance_df.empty
     assert stats["model_fitted"] is False
@@ -53,7 +54,7 @@ def test_feature_analysis_missing_reward_column():
 def test_feature_analysis_empty_frame():
     df = _minimal_df(0)  # empty
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=7, skip_partial_dependence=True
+        df, seed=SEEDS.FEATURE_EMPTY, skip_partial_dependence=True
     )
     assert importance_df.empty
     assert stats["n_features"] == 0
@@ -63,7 +64,7 @@ def test_feature_analysis_empty_frame():
 def test_feature_analysis_single_feature_path():
     df = pd.DataFrame({"pnl": np.random.normal(0, 1, 25), "reward": np.random.normal(0, 1, 25)})
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=11, skip_partial_dependence=True
+        df, seed=SEEDS.FEATURE_PRIME_11, skip_partial_dependence=True
     )
     assert stats["n_features"] == 1
     # Importance stub path returns NaNs
@@ -81,7 +82,7 @@ def test_feature_analysis_nans_present_path():
         }
     )
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=13, skip_partial_dependence=True
+        df, seed=SEEDS.FEATURE_PRIME_13, skip_partial_dependence=True
     )
     # Should hit NaN stub path (model_fitted False)
     assert stats["model_fitted"] is False
@@ -101,7 +102,7 @@ def test_feature_analysis_model_fitting_failure(monkeypatch):
     monkeypatch.setattr(RandomForestRegressor, "fit", boom)
     df = _minimal_df(50)
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=21, skip_partial_dependence=True
+        df, seed=SEEDS.FEATURE_PRIME_21, skip_partial_dependence=True
     )
     assert stats["model_fitted"] is False
     assert model is None
@@ -117,7 +118,7 @@ def test_feature_analysis_permutation_failure_partial_dependence(monkeypatch):
     monkeypatch.setattr("reward_space_analysis.permutation_importance", perm_boom)
     df = _minimal_df(60)
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=33, skip_partial_dependence=False
+        df, seed=SEEDS.FEATURE_PRIME_33, skip_partial_dependence=False
     )
     assert stats["model_fitted"] is True
     # Importance should be NaNs due to failure
@@ -130,7 +131,7 @@ def test_feature_analysis_permutation_failure_partial_dependence(monkeypatch):
 def test_feature_analysis_success_partial_dependence():
     df = _minimal_df(70)
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
-        df, seed=47, skip_partial_dependence=False
+        df, seed=SEEDS.FEATURE_PRIME_47, skip_partial_dependence=False
     )
     # Expect at least one non-NaN importance (model fitted path)
     assert importance_df["importance_mean"].notna().any()
@@ -148,7 +149,7 @@ def test_feature_analysis_import_fallback(monkeypatch):
     monkeypatch.setattr("reward_space_analysis.r2_score", None)
     df = _minimal_df(10)
     with pytest.raises(ImportError):
-        _perform_feature_analysis(df, seed=5, skip_partial_dependence=True)
+        _perform_feature_analysis(df, seed=SEEDS.FEATURE_SMALL_5, skip_partial_dependence=True)
 
 
 def test_module_level_sklearn_import_failure_reload():
@@ -188,7 +189,9 @@ def test_module_level_sklearn_import_failure_reload():
         # Perform feature analysis should raise ImportError under missing components
         df = _minimal_df(15)
         with pytest.raises(ImportError):
-            rsa_fallback._perform_feature_analysis(df, seed=3, skip_partial_dependence=True)  # type: ignore[attr-defined]
+            rsa_fallback._perform_feature_analysis(
+                df, seed=SEEDS.FEATURE_SMALL_3, skip_partial_dependence=True
+            )  # type: ignore[attr-defined]
     finally:
         # Restore importer
         builtins.__import__ = orig_import

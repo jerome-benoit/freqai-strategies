@@ -24,6 +24,9 @@ from .constants import (
     CONTINUITY,
     EXIT_FACTOR,
     PBRS,
+    SCENARIOS,
+    SEEDS,
+    STATISTICAL,
     TOLERANCE,
 )
 
@@ -44,9 +47,9 @@ class RewardSpaceTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up class-level constants."""
-        cls.SEED = 42
+        cls.SEED = SEEDS.BASE
         cls.DEFAULT_PARAMS = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
-        cls.TEST_SAMPLES = 50
+        cls.TEST_SAMPLES = SCENARIOS.SAMPLE_SIZE_TINY
         cls.TEST_BASE_FACTOR = 100.0
         cls.TEST_PROFIT_TARGET = 0.03
         cls.TEST_RR = 1.0
@@ -54,15 +57,15 @@ class RewardSpaceTestBase(unittest.TestCase):
         cls.TEST_PNL_STD = 0.02
         cls.TEST_PNL_DUR_VOL_SCALE = 0.5
         # Seeds for different test contexts
-        cls.SEED_SMOKE_TEST = 7
-        cls.SEED_REPRODUCIBILITY = 777
-        cls.SEED_BOOTSTRAP = 2024
-        cls.SEED_HETEROSCEDASTICITY = 123
+        cls.SEED_SMOKE_TEST = SEEDS.SMOKE_TEST
+        cls.SEED_REPRODUCIBILITY = SEEDS.REPRODUCIBILITY
+        cls.SEED_BOOTSTRAP = SEEDS.BOOTSTRAP
+        cls.SEED_HETEROSCEDASTICITY = SEEDS.HETEROSCEDASTICITY
         # Statistical test thresholds
-        cls.BOOTSTRAP_DEFAULT_ITERATIONS = 200
-        cls.BH_FP_RATE_THRESHOLD = 0.15
-        cls.EXIT_FACTOR_SCALING_RATIO_MIN = 5.0
-        cls.EXIT_FACTOR_SCALING_RATIO_MAX = 15.0
+        cls.BOOTSTRAP_DEFAULT_ITERATIONS = SCENARIOS.BOOTSTRAP_EXTENDED_ITERATIONS
+        cls.BH_FP_RATE_THRESHOLD = STATISTICAL.BH_FP_RATE_THRESHOLD
+        cls.EXIT_FACTOR_SCALING_RATIO_MIN = EXIT_FACTOR.SCALING_RATIO_MIN
+        cls.EXIT_FACTOR_SCALING_RATIO_MAX = EXIT_FACTOR.SCALING_RATIO_MAX
 
     def setUp(self):
         """Set up test fixtures with reproducible random seed."""
@@ -99,8 +102,8 @@ class RewardSpaceTestBase(unittest.TestCase):
     MIN_EXIT_POWER_TAU = EXIT_FACTOR.MIN_POWER_TAU
 
     # Test-specific constants
-    PBRS_TERMINAL_PROB = 0.08
-    PBRS_SWEEP_ITER = 120
+    PBRS_TERMINAL_PROB = PBRS.TERMINAL_PROBABILITY
+    PBRS_SWEEP_ITER = SCENARIOS.PBRS_SWEEP_ITERATIONS
     JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def make_ctx(
@@ -137,7 +140,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         *,
         iterations: Optional[int] = None,
         terminal_prob: Optional[float] = None,
-        seed: int = 123,
+        seed: int = SEEDS.CANONICAL_SWEEP,
     ) -> tuple[list[float], list[float]]:
         """Run a lightweight canonical invariance sweep.
 
@@ -273,7 +276,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         if diff <= tolerance:
             return
         if rtol is not None:
-            scale = max(abs(first), abs(second), 1e-15)
+            scale = max(abs(first), abs(second), self.TOL_NEGLIGIBLE)
             if diff <= rtol * scale:
                 return
         self.fail(
@@ -407,12 +410,12 @@ class RewardSpaceTestBase(unittest.TestCase):
         self.assertAlmostEqualFloat(va, vb, tolerance=atol, rtol=rtol, msg=msg)
 
     @staticmethod
-    def seed_all(seed: int = 123) -> None:
+    def seed_all(seed: int = SEEDS.CANONICAL_SWEEP) -> None:
         """Seed all RNGs used (numpy & random)."""
         np.random.seed(seed)
         random.seed(seed)
 
-    def _const_df(self, n: int = 64) -> pd.DataFrame:
+    def _const_df(self, n: int = SCENARIOS.SAMPLE_SIZE_CONST_DF) -> pd.DataFrame:
         return pd.DataFrame(
             {
                 "reward": np.ones(n) * 0.5,
@@ -422,8 +425,10 @@ class RewardSpaceTestBase(unittest.TestCase):
             }
         )
 
-    def _shift_scale_df(self, n: int = 256, shift: float = 0.0, scale: float = 1.0) -> pd.DataFrame:
-        rng = np.random.default_rng(123)
+    def _shift_scale_df(
+        self, n: int = SCENARIOS.SAMPLE_SIZE_SHIFT_SCALE, shift: float = 0.0, scale: float = 1.0
+    ) -> pd.DataFrame:
+        rng = np.random.default_rng(SEEDS.CANONICAL_SWEEP)
         base = rng.normal(0, 1, n)
         return pd.DataFrame(
             {

@@ -13,7 +13,7 @@ import pytest
 
 from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
 
-from ..constants import SCENARIOS
+from ..constants import SCENARIOS, SEEDS
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.integration
@@ -78,7 +78,7 @@ class TestReportFormatting(RewardSpaceTestBase):
             real_df=real_df,
             adjust_method="none",
             strict_diagnostics=False,
-            bootstrap_resamples=SCENARIOS.BOOTSTRAP_STANDARD_ITERATIONS,  # keep test fast
+            bootstrap_resamples=SCENARIOS.SAMPLE_SIZE_SMALL,  # keep test fast
             skip_partial_dependence=kwargs.get("skip_partial_dependence", False),
             skip_feature_analysis=kwargs.get("skip_feature_analysis", False),
         )
@@ -114,7 +114,7 @@ class TestReportFormatting(RewardSpaceTestBase):
     def test_distribution_shift_section_present_with_real_episodes(self):
         """Distribution Shift section renders metrics table when real episodes provided."""
         # Synthetic df (ensure >=10 non-NaN per feature)
-        synth_df = self.make_stats_df(n=60, seed=123)
+        synth_df = self.make_stats_df(n=60, seed=SEEDS.REPORT_FORMAT_1)
         # Real df: shift slightly (different mean) so metrics non-zero
         real_df = synth_df.copy()
         real_df["pnl"] = real_df["pnl"] + 0.001  # small mean shift
@@ -139,7 +139,7 @@ class TestReportFormatting(RewardSpaceTestBase):
     def test_partial_dependence_redundancy_note_emitted(self):
         """Redundancy note appears when both feature analysis and partial dependence skipped."""
         df = self.make_stats_df(
-            n=10, seed=321
+            n=10, seed=SEEDS.REPORT_FORMAT_2
         )  # small but >=4 so skip_feature_analysis flag drives behavior
         content = self._write_report(
             df,

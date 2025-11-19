@@ -22,6 +22,7 @@ from reward_space_analysis import (
     write_complete_statistical_analysis,
 )
 
+from ..constants import SEEDS
 from ..helpers import (
     assert_non_canonical_shaping_exceeds,
     assert_pbrs_canonical_sum_within_tolerance,
@@ -137,7 +138,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         df = simulate_samples(
             params={**params, "max_trade_duration_candles": 100},
-            num_samples=SCENARIOS.DEFAULT_SAMPLE_SIZE,
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=self.SEED,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
@@ -165,7 +166,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         df = simulate_samples(
             params={**params, "max_trade_duration_candles": 100},
-            num_samples=SCENARIOS.DEFAULT_SAMPLE_SIZE,
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=self.SEED,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
@@ -478,7 +479,7 @@ class TestPBRS(RewardSpaceTestBase):
         df = simulate_samples(
             params={**params, "max_trade_duration_candles": 140},
             num_samples=SCENARIOS.SAMPLE_SIZE_LARGE // 2,  # 500 ≈ 400 (keep original intent)
-            seed=913,
+            seed=SEEDS.PBRS_INVARIANCE_1,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -516,7 +517,7 @@ class TestPBRS(RewardSpaceTestBase):
             df_exc = simulate_samples(
                 params={**params, "max_trade_duration_candles": 120},
                 num_samples=250,
-                seed=515,
+                seed=SEEDS.PBRS_INVARIANCE_2,
                 base_factor=self.TEST_BASE_FACTOR,
                 profit_target=self.TEST_PROFIT_TARGET,
                 risk_reward_ratio=self.TEST_RR,
@@ -547,8 +548,8 @@ class TestPBRS(RewardSpaceTestBase):
         )
         df_can = simulate_samples(
             params={**params_can, "max_trade_duration_candles": 120},
-            num_samples=SCENARIOS.DEFAULT_SAMPLE_SIZE,
-            seed=777,
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
+            seed=SEEDS.PBRS_TERMINAL,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -566,8 +567,8 @@ class TestPBRS(RewardSpaceTestBase):
         )
         df_non = simulate_samples(
             params={**params_non, "max_trade_duration_candles": 120},
-            num_samples=SCENARIOS.DEFAULT_SAMPLE_SIZE,
-            seed=777,
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
+            seed=SEEDS.PBRS_TERMINAL,
             base_factor=self.TEST_BASE_FACTOR,
             profit_target=self.TEST_PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
@@ -602,8 +603,8 @@ class TestPBRS(RewardSpaceTestBase):
             m2 = np.mean(c**2)
             m3 = np.mean(c**3)
             m4 = np.mean(c**4)
-            skew = m3 / (m2**1.5 + 1e-18)
-            kurt = m4 / (m2**2 + 1e-18) - 3.0
+            skew = m3 / (m2**1.5 + self.TOL_NUMERIC_GUARD)
+            kurt = m4 / (m2**2 + self.TOL_NUMERIC_GUARD) - 3.0
             return (float(skew), float(kurt))
 
         s_base, k_base = _skew_kurt(base)
@@ -751,8 +752,10 @@ class TestPBRS(RewardSpaceTestBase):
         rng = np.random.default_rng(321)
         last_potential = 0.0
         shaping_sum = 0.0
+        from ..constants import STATISTICAL
+
         for _ in range(SCENARIOS.MONTE_CARLO_ITERATIONS):
-            is_exit = rng.uniform() < 0.15
+            is_exit = rng.uniform() < STATISTICAL.EXIT_PROBABILITY_THRESHOLD
             next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.07))
             next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
             _tot, shap, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
@@ -1020,8 +1023,10 @@ class TestPBRS(RewardSpaceTestBase):
         """Report generation without PBRS columns triggers absence + shift placeholder."""
         import pandas as pd
 
+        from ..constants import SEEDS
+
         n = 90
-        rng = np.random.default_rng(123)
+        rng = np.random.default_rng(SEEDS.CANONICAL_SWEEP)
         df = pd.DataFrame(
             {
                 "reward": rng.normal(0.05, 0.02, n),

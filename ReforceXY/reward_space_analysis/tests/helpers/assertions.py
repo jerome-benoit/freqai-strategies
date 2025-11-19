@@ -14,6 +14,7 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
+from ..constants import TOLERANCE
 from .configs import RewardScenarioConfig, ThresholdTestConfig, ValidationConfig
 
 
@@ -206,8 +207,8 @@ def assert_component_sum_integrity(
 
     Example:
         config = ValidationConfig(
-            tolerance_strict=1e-12,
-            tolerance_relaxed=1e-09,
+            tolerance_strict=TOLERANCE.IDENTITY_STRICT,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
             exclude_components=["reward_shaping"],
             component_description="core components"
         )
@@ -284,7 +285,7 @@ def assert_single_active_component(
 
     Example:
         assert_single_active_component(
-            self, breakdown, "exit_component", 1e-09,
+            self, breakdown, "exit_component", TOLERANCE.IDENTITY_RELAXED,
             ["hold_penalty", "idle_penalty", "invalid_penalty"]
         )
     """
@@ -329,7 +330,7 @@ def assert_single_active_component_with_additives(
 
     Example:
         assert_single_active_component_with_additives(
-            self, breakdown, "exit_component", 1e-09,
+            self, breakdown, "exit_component", TOLERANCE.IDENTITY_RELAXED,
             ["hold_penalty", "idle_penalty"],
             enforce_additives_zero=True
         )
@@ -366,10 +367,10 @@ def assert_reward_calculation_scenarios(
 
     Example:
         config = RewardScenarioConfig(
-            base_factor=90.0,
-            profit_target=0.06,
-            risk_reward_ratio=1.0,
-            tolerance_relaxed=1e-09
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_target=PARAMS.PROFIT_TARGET,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
         )
         scenarios = [
             (idle_context, {}, "idle scenario"),
@@ -419,10 +420,10 @@ def assert_parameter_sensitivity_behavior(
 
     Example:
         config = RewardScenarioConfig(
-            base_factor=90.0,
-            profit_target=0.06,
-            risk_reward_ratio=1.0,
-            tolerance_relaxed=1e-09
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_target=PARAMS.PROFIT_TARGET,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
         )
         variations = [
             {"exit_additive": 0.0},
@@ -619,7 +620,8 @@ def assert_exit_mode_mathematical_validation(
 
     Example:
         assert_exit_mode_mathematical_validation(
-            self, context, params, 90.0, 0.06, 1.0, 1e-09
+            self, context, params, PARAMS.BASE_FACTOR, PARAMS.PROFIT_TARGET,
+            PARAMS.RISK_REWARD_RATIO, TOLERANCE.IDENTITY_RELAXED
         )
     """
     duration_ratio = context.trade_duration / 100
@@ -704,14 +706,14 @@ def assert_multi_parameter_sensitivity(
 
     Example:
         config = RewardScenarioConfig(
-            base_factor=90.0,
-            profit_target=0.06,
-            risk_reward_ratio=1.0,
-            tolerance_relaxed=1e-09
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_target=PARAMS.PROFIT_TARGET,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
         )
         test_cases = [
-            (0.0, 1.0, "zero profit target"),
-            (0.06, 1.0, "standard parameters"),
+            (0.0, PARAMS.RISK_REWARD_RATIO, "zero profit target"),
+            (PARAMS.PROFIT_TARGET, PARAMS.RISK_REWARD_RATIO, "standard parameters"),
             (0.06, 2.0, "high risk/reward ratio"),
         ]
         assert_multi_parameter_sensitivity(
@@ -783,10 +785,11 @@ def assert_hold_penalty_threshold_behavior(
                 (100, "at threshold"),
                 (150, "above threshold"),
             ],
-            tolerance=1e-09
+            tolerance=TOLERANCE.IDENTITY_RELAXED
         )
         assert_hold_penalty_threshold_behavior(
-            self, make_context, params, 90.0, 0.06, 1.0, config
+            self, make_context, params, PARAMS.BASE_FACTOR, PARAMS.PROFIT_TARGET,
+            PARAMS.RISK_REWARD_RATIO, config
         )
     """
     for trade_duration, description in config.test_cases:
@@ -1091,7 +1094,7 @@ def assert_exit_factor_kernel_fallback(
 
     f_bad = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, bad_params)
     f_ref = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, reference_params)
-    test_case.assertAlmostEqual(f_bad, f_ref, delta=1e-12)
+    test_case.assertAlmostEqual(f_bad, f_ref, delta=TOLERANCE.IDENTITY_STRICT)
     test_case.assertGreaterEqual(f_bad, 0.0)
 
 

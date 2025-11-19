@@ -5,7 +5,7 @@ import logging
 import math
 from functools import cached_property, lru_cache, reduce
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, ClassVar, Final, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas_ta as pta
@@ -55,9 +55,9 @@ debug = False
 
 logger = logging.getLogger(__name__)
 
-EXTREMA_COLUMN = "&s-extrema"
-MAXIMA_THRESHOLD_COLUMN = "&s-maxima_threshold"
-MINIMA_THRESHOLD_COLUMN = "&s-minima_threshold"
+EXTREMA_COLUMN: Final = "&s-extrema"
+MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
+MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
 
 class QuickAdapterV3(IStrategy):
@@ -79,13 +79,13 @@ class QuickAdapterV3(IStrategy):
 
     INTERFACE_VERSION = 3
 
-    _TRADE_DIRECTIONS: tuple[TradeDirection, ...] = ("long", "short")
-    _INTERPOLATION_DIRECTIONS: tuple[InterpolationDirection, ...] = (
+    _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _INTERPOLATION_DIRECTIONS: Final[tuple[InterpolationDirection, ...]] = (
         "direct",
         "inverse",
     )
-    _ORDER_TYPES: tuple[OrderType, ...] = ("entry", "exit")
-    _TRADING_MODES: tuple[TradingMode, ...] = ("spot", "margin", "futures")
+    _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
+    _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
         return "3.3.171"
@@ -95,16 +95,16 @@ class QuickAdapterV3(IStrategy):
     stoploss = -0.025
     use_custom_stoploss = True
 
-    default_exit_thresholds: dict[str, float] = {
+    default_exit_thresholds: ClassVar[dict[str, float]] = {
         "k_decl_v": 0.6,
         "k_decl_a": 0.4,
     }
 
-    default_exit_thresholds_calibration: dict[str, float] = {
+    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
         "decline_quantile": 0.90,
     }
 
-    default_reversal_confirmation: dict[str, int | float] = {
+    default_reversal_confirmation: ClassVar[dict[str, int | float]] = {
         "lookback_period": 0,
         "decay_ratio": 0.5,
         "min_natr_ratio_percent": 0.0095,
@@ -114,7 +114,7 @@ class QuickAdapterV3(IStrategy):
     position_adjustment_enable = True
 
     # {stage: (natr_ratio_percent, stake_percent)}
-    partial_exit_stages: dict[int, tuple[float, float]] = {
+    partial_exit_stages: ClassVar[dict[int, tuple[float, float]]] = {
         0: (0.4858, 0.4),
         1: (0.6180, 0.3),
         2: (0.7640, 0.2),
@@ -1181,7 +1181,7 @@ class QuickAdapterV3(IStrategy):
         min_natr_ratio_percent: float,
         max_natr_ratio_percent: float,
         candle_idx: int = -1,
-        interpolation_direction: Literal["direct", "inverse"] = "direct",
+        interpolation_direction: InterpolationDirection = "direct",
         quantile_exponent: float = 1.5,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)

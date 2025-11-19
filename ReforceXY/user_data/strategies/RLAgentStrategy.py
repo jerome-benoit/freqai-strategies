@@ -1,7 +1,7 @@
 import datetime
 import logging
 from functools import cached_property, reduce
-from typing import Any, Literal, Optional
+from typing import Any, Final, Literal, Optional
 
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
@@ -13,7 +13,7 @@ TradeDirection = Literal["long", "short"]
 
 logger = logging.getLogger(__name__)
 
-ACTION_COLUMN = "&-action"
+ACTION_COLUMN: Final = "&-action"
 
 
 class RLAgentStrategy(IStrategy):
@@ -23,12 +23,12 @@ class RLAgentStrategy(IStrategy):
 
     INTERFACE_VERSION = 3
 
-    _TRADING_MODES: tuple[TradingMode, ...] = ("margin", "futures", "spot")
-    _TRADE_DIRECTIONS: tuple[TradeDirection, ...] = ("long", "short")
-    _ACTION_ENTER_LONG: int = 1
-    _ACTION_EXIT_LONG: int = 2
-    _ACTION_ENTER_SHORT: int = 3
-    _ACTION_EXIT_SHORT: int = 4
+    _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("margin", "futures", "spot")
+    _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _ACTION_ENTER_LONG: Final[int] = 1
+    _ACTION_EXIT_LONG: Final[int] = 2
+    _ACTION_ENTER_SHORT: Final[int] = 3
+    _ACTION_EXIT_SHORT: Final[int] = 4
 
     @cached_property
     def can_short(self) -> bool:

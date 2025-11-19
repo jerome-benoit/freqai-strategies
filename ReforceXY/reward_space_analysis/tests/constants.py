@@ -81,10 +81,12 @@ class PBRSConfig:
     Attributes:
         TERMINAL_TOL: Terminal potential must be within this tolerance of zero (1e-09)
         MAX_ABS_SHAPING: Maximum absolute shaping value for bounded checks (10.0)
+        TERMINAL_PROBABILITY: Default probability of terminal state in sweeps (0.08)
     """
 
     TERMINAL_TOL: float = 1e-09
     MAX_ABS_SHAPING: float = 10.0
+    TERMINAL_PROBABILITY: float = 0.08
 
 
 @dataclass(frozen=True)
@@ -97,10 +99,12 @@ class StatisticalConfig:
     Attributes:
         BH_FP_RATE_THRESHOLD: Benjamini-Hochberg false positive rate threshold (0.15)
         BOOTSTRAP_DEFAULT_ITERATIONS: Default bootstrap resampling count (100)
+        EXIT_PROBABILITY_THRESHOLD: Probability threshold for exit events (0.15)
     """
 
     BH_FP_RATE_THRESHOLD: float = 0.15
     BOOTSTRAP_DEFAULT_ITERATIONS: int = 100
+    EXIT_PROBABILITY_THRESHOLD: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -116,18 +120,62 @@ class TestSeeds:
         - BOOTSTRAP: Prime number for bootstrap confidence interval tests to ensure
           independence from other random sequences
         - HETEROSCEDASTICITY: Dedicated seed for variance structure validation tests
+        - SMOKE_TEST: Seed for smoke tests
+        - CANONICAL_SWEEP: Seed for canonical PBRS sweep tests
 
     Attributes:
         BASE: Default seed for standard tests (42)
         REPRODUCIBILITY: Seed for reproducibility validation (12345)
         BOOTSTRAP: Seed for bootstrap CI tests (999)
         HETEROSCEDASTICITY: Seed for heteroscedasticity tests (7890)
+        SMOKE_TEST: Seed for smoke tests (7)
+        CANONICAL_SWEEP: Seed for canonical sweep tests (123)
+
+        # PBRS-specific seeds
+        PBRS_INVARIANCE_1: Seed for PBRS invariance test case 1 (913)
+        PBRS_INVARIANCE_2: Seed for PBRS invariance test case 2 (515)
+        PBRS_TERMINAL: Seed for PBRS terminal potential tests (777)
+
+        # Feature analysis failure seeds
+        FEATURE_EMPTY: Seed for empty feature tests (17)
+        FEATURE_PRIME_11: Seed for feature test variant (11)
+        FEATURE_PRIME_13: Seed for feature test variant (13)
+        FEATURE_PRIME_21: Seed for feature test variant (21)
+        FEATURE_PRIME_33: Seed for feature test variant (33)
+        FEATURE_PRIME_47: Seed for feature test variant (47)
+        FEATURE_SMALL_5: Seed for small feature test (5)
+        FEATURE_SMALL_3: Seed for small feature test (3)
+
+        # Report formatting seeds
+        REPORT_FORMAT_1: Seed for report formatting test 1 (234)
+        REPORT_FORMAT_2: Seed for report formatting test 2 (321)
     """
 
     BASE: int = 42
     REPRODUCIBILITY: int = 12345
     BOOTSTRAP: int = 999
     HETEROSCEDASTICITY: int = 7890
+    SMOKE_TEST: int = 7
+    CANONICAL_SWEEP: int = 123
+
+    # PBRS-specific seeds
+    PBRS_INVARIANCE_1: int = 913
+    PBRS_INVARIANCE_2: int = 515
+    PBRS_TERMINAL: int = 777
+
+    # Feature analysis failure seeds
+    FEATURE_EMPTY: int = 17
+    FEATURE_PRIME_11: int = 11
+    FEATURE_PRIME_13: int = 13
+    FEATURE_PRIME_21: int = 21
+    FEATURE_PRIME_33: int = 33
+    FEATURE_PRIME_47: int = 47
+    FEATURE_SMALL_5: int = 5
+    FEATURE_SMALL_3: int = 3
+
+    # Report formatting seeds
+    REPORT_FORMAT_1: int = 234
+    REPORT_FORMAT_2: int = 321
 
 
 @dataclass(frozen=True)
@@ -166,17 +214,17 @@ class TestScenarios:
         DURATION_MEDIUM: Medium duration scenario (200)
         DURATION_LONG: Long duration scenario (300)
         DURATION_SCENARIOS: Standard duration test sequence
+        SAMPLE_SIZE_TINY: Tiny sample size for smoke tests (50)
         SAMPLE_SIZE_SMALL: Small sample size for quick tests (100)
         SAMPLE_SIZE_MEDIUM: Medium sample size for standard tests (400)
         SAMPLE_SIZE_LARGE: Large sample size for statistical power (800)
-        DEFAULT_SAMPLE_SIZE: Default for most tests (400)
+        SAMPLE_SIZE_CONST_DF: Sample size for constant dataframes (64)
+        SAMPLE_SIZE_SHIFT_SCALE: Sample size for shift/scale tests (256)
         PBRS_SIMULATION_STEPS: Number of steps for PBRS simulation tests (500)
-        NULL_HYPOTHESIS_SAMPLE_SIZE: Sample size for null hypothesis tests (400)
-        BOOTSTRAP_MINIMAL_ITERATIONS: Minimal bootstrap iterations for quick tests (25)
-        BOOTSTRAP_STANDARD_ITERATIONS: Standard bootstrap iterations (100)
-        HETEROSCEDASTICITY_MIN_EXITS: Minimum exits for heteroscedasticity validation (50)
-        CORRELATION_TEST_MIN_SIZE: Minimum sample size for correlation tests (200)
         MONTE_CARLO_ITERATIONS: Monte Carlo simulation iterations (160)
+        PBRS_SWEEP_ITERATIONS: Number of iterations for PBRS sweep tests (120)
+        BOOTSTRAP_MINIMAL_ITERATIONS: Minimal bootstrap iterations for quick tests (25)
+        BOOTSTRAP_EXTENDED_ITERATIONS: Extended bootstrap iterations (200)
     """
 
     DURATION_SHORT: int = 150
@@ -184,19 +232,19 @@ class TestScenarios:
     DURATION_LONG: int = 300
     DURATION_SCENARIOS: tuple[int, ...] = (150, 200, 300)
 
+    SAMPLE_SIZE_TINY: int = 50
     SAMPLE_SIZE_SMALL: int = 100
     SAMPLE_SIZE_MEDIUM: int = 400
     SAMPLE_SIZE_LARGE: int = 800
-    DEFAULT_SAMPLE_SIZE: int = 400
+    SAMPLE_SIZE_CONST_DF: int = 64
+    SAMPLE_SIZE_SHIFT_SCALE: int = 256
 
     # Specialized test scenario sizes
     PBRS_SIMULATION_STEPS: int = 500
-    NULL_HYPOTHESIS_SAMPLE_SIZE: int = 400
-    BOOTSTRAP_MINIMAL_ITERATIONS: int = 25
-    BOOTSTRAP_STANDARD_ITERATIONS: int = 100
-    HETEROSCEDASTICITY_MIN_EXITS: int = 50
-    CORRELATION_TEST_MIN_SIZE: int = 200
     MONTE_CARLO_ITERATIONS: int = 160
+    PBRS_SWEEP_ITERATIONS: int = 120
+    BOOTSTRAP_MINIMAL_ITERATIONS: int = 25
+    BOOTSTRAP_EXTENDED_ITERATIONS: int = 200
 
 
 @dataclass(frozen=True)
