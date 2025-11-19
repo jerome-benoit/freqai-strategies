@@ -157,6 +157,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         "QRDQN",
     )
     _SCHEDULE_TYPES: Final[tuple[ScheduleType, ...]] = ("linear", "constant", "unknown")
+    _SCHEDULE_TYPES_KNOWN: Final[tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
     _EXIT_POTENTIAL_MODES: Final[tuple[ExitPotentialMode, ...]] = (
         "canonical",
         "non_canonical",
@@ -186,6 +187,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         "leaky_relu",
     )
     _OPTIMIZER_CLASSES: Final[tuple[OptimizerClass, ...]] = ("adam", "adamw", "rmsprop")
+    _OPTIMIZER_CLASSES_OPTUNA: Final[tuple[OptimizerClass, ...]] = ("adamw", "rmsprop")
     _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
         "small",
         "medium",
@@ -3997,10 +3999,10 @@ def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
         "max_grad_norm": trial.suggest_float("max_grad_norm", 0.3, 1.0, step=0.05),
         "vf_coef": trial.suggest_float("vf_coef", 0.0, 1.0, step=0.05),
         "lr_schedule": trial.suggest_categorical(
-            "lr_schedule", list(ReforceXY._SCHEDULE_TYPES)
+            "lr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
         ),
         "cr_schedule": trial.suggest_categorical(
-            "cr_schedule", list(ReforceXY._SCHEDULE_TYPES)
+            "cr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
         ),
         "target_kl": trial.suggest_categorical(
             "target_kl", [None, 0.01, 0.015, 0.02, 0.03, 0.04]
@@ -4013,8 +4015,7 @@ def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
             "activation_fn", list(ReforceXY._ACTIVATION_FUNCTIONS)
         ),
         "optimizer_class": trial.suggest_categorical(
-            "optimizer_class",
-            [ReforceXY._OPTIMIZER_CLASSES[1], ReforceXY._OPTIMIZER_CLASSES[2]],
+            "optimizer_class", list(ReforceXY._OPTIMIZER_CLASSES_OPTUNA)
         ),
     }
 
@@ -4070,8 +4071,8 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
         ),
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
         "lr_schedule": trial.suggest_categorical(
-            "lr_schedule", list(ReforceXY._SCHEDULE_TYPES[:2])
-        ),  # ["linear", "constant"]
+            "lr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
+        ),
         "buffer_size": trial.suggest_categorical(
             "buffer_size", [int(1e4), int(5e4), int(1e5), int(2e5)]
         ),
@@ -4093,8 +4094,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
             "activation_fn", list(ReforceXY._ACTIVATION_FUNCTIONS)
         ),
         "optimizer_class": trial.suggest_categorical(
-            "optimizer_class",
-            [ReforceXY._OPTIMIZER_CLASSES[1], ReforceXY._OPTIMIZER_CLASSES[2]],
+            "optimizer_class", list(ReforceXY._OPTIMIZER_CLASSES_OPTUNA)
         ),
     }
 

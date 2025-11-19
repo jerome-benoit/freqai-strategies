@@ -5,7 +5,7 @@ import math
 from enum import IntEnum
 from functools import lru_cache
 from logging import Logger
-from typing import Any, Callable, Literal, Optional, TypeVar, Union
+from typing import Any, Callable, Final, Literal, Optional, TypeVar, Union
 
 import numpy as np
 import optuna
@@ -19,14 +19,14 @@ T = TypeVar("T", pd.Series, float)
 
 
 WeightStrategy = Literal["none", "pivot_threshold"]
-WEIGHT_STRATEGIES: tuple[WeightStrategy, ...] = ("none", "pivot_threshold")
+WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = ("none", "pivot_threshold")
 
 NormalizationType = Literal["minmax", "l1", "none"]
-NORMALIZATION_TYPES: tuple[NormalizationType, ...] = ("minmax", "l1", "none")
+NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = ("minmax", "l1", "none")
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SmoothingMethod = Union[SmoothingKernel, Literal["smm", "sma"]]
-SMOOTHING_METHODS: tuple[SmoothingMethod, ...] = (
+SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
     "gaussian",
     "kaiser",
     "triang",
@@ -35,13 +35,13 @@ SMOOTHING_METHODS: tuple[SmoothingMethod, ...] = (
 )
 
 
-DEFAULTS_EXTREMA_SMOOTHING: dict[str, Any] = {
+DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
     "method": SMOOTHING_METHODS[0],  # "gaussian"
     "window": 5,
     "beta": 8.0,
 }
 
-DEFAULTS_EXTREMA_WEIGHTING: dict[str, Any] = {
+DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "normalization": NORMALIZATION_TYPES[0],  # "minmax"
     "gamma": 1.0,
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
