@@ -150,8 +150,8 @@ def normalize_weights(
         weights = weights.astype(float, copy=False)
         if np.isnan(weights).any():
             return np.full_like(weights, 1.0, dtype=float)
-        w_min = np.nanmin(weights)
-        w_max = np.nanmax(weights)
+        w_min = np.min(weights)
+        w_max = np.max(weights)
         if not (np.isfinite(w_min) and np.isfinite(w_max)):
             return np.full_like(weights, 1.0, dtype=float)
         w_range = w_max - w_min
