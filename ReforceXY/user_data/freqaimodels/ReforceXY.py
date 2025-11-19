@@ -196,6 +196,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     )
     _STORAGE_BACKENDS: Final[tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLER_TYPES: Final[tuple[SamplerType, ...]] = ("tpe", "auto")
+    _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
 
     _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
 
@@ -622,7 +623,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         For PPO:
         - Use n_steps from model_params if available
-        - Otherwise, select the largest value from PPO_N_STEPS that is <= total_timesteps
+        - Otherwise, select the largest value from ReforceXY._PPO_N_STEPS that is <= total_timesteps
 
         For DQN:
         - Use n_eval_steps divided by n_envs (rounded up)
@@ -652,10 +653,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 eval_freq = next(
                     (
                         step
-                        for step in sorted(PPO_N_STEPS, reverse=True)
+                        for step in sorted(ReforceXY._PPO_N_STEPS, reverse=True)
                         if step <= total_timesteps
                     ),
-                    PPO_N_STEPS[0],
+                    ReforceXY._PPO_N_STEPS[0],
                 )
         else:
             eval_freq = max(1, (self.n_eval_steps + self.n_envs - 1) // self.n_envs)
@@ -1120,7 +1121,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             ReforceXY.delete_study(study_name, storage)
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            resource_eval_freq = min(PPO_N_STEPS)
+            resource_eval_freq = min(ReforceXY._PPO_N_STEPS)
         else:
             resource_eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True)
         reduction_factor = 3
@@ -3979,12 +3980,9 @@ def convert_optuna_params_to_model_params(
     return model_params
 
 
-PPO_N_STEPS: Tuple[int, ...] = (512, 1024, 2048, 4096)
-
-
 def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
     return {
-        "n_steps": trial.suggest_categorical("n_steps", list(PPO_N_STEPS)),
+        "n_steps": trial.suggest_categorical("n_steps", list(ReforceXY._PPO_N_STEPS)),
         "batch_size": trial.suggest_categorical(
             "batch_size", [64, 128, 256, 512, 1024]
         ),
