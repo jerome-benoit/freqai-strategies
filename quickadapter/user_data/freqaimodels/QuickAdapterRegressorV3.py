@@ -66,7 +66,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.121"
+    version = "3.7.122"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -1118,7 +1118,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 raise ValueError("label_weights must contain only finite values")
             if np.any(np_weights < 0):
                 raise ValueError("label_weights values must be non-negative")
-            label_weights_sum = np.sum(np_weights)
+            label_weights_sum = np.sum(np.abs(np_weights))
             if np.isclose(label_weights_sum, 0.0):
                 raise ValueError("label_weights sum cannot be zero")
             np_weights = np_weights / label_weights_sum

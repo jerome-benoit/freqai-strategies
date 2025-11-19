@@ -120,38 +120,43 @@ def smooth_extrema(
 
     std = get_gaussian_std(window)
     odd_window = get_odd_window(window)
-    smoothing_methods_dict: dict[SmoothingMethod, pd.Series] = {
-        SMOOTHING_METHODS[0]: zero_phase(  # "gaussian"
+
+    if method == SMOOTHING_METHODS[0]:  # "gaussian"
+        return zero_phase(
             series=series,
             window=window,
             win_type=SMOOTHING_METHODS[0],
             std=std,
             beta=beta,
-        ),
-        SMOOTHING_METHODS[1]: zero_phase(  # "kaiser"
+        )
+    elif method == SMOOTHING_METHODS[1]:  # "kaiser"
+        return zero_phase(
             series=series,
             window=window,
             win_type=SMOOTHING_METHODS[1],
             std=std,
             beta=beta,
-        ),
-        SMOOTHING_METHODS[2]: zero_phase(  # "triang"
+        )
+    elif method == SMOOTHING_METHODS[2]:  # "triang"
+        return zero_phase(
             series=series,
             window=window,
             win_type=SMOOTHING_METHODS[2],
             std=std,
             beta=beta,
-        ),
-        SMOOTHING_METHODS[3]: series.rolling(
-            window=odd_window, center=True
-        ).median(),  # "smm"
-        SMOOTHING_METHODS[4]: series.rolling(
-            window=odd_window, center=True
-        ).mean(),  # "sma"
-    }
-    return smoothing_methods_dict.get(
-        method, smoothing_methods_dict[SMOOTHING_METHODS[0]]
-    )
+        )
+    elif method == SMOOTHING_METHODS[3]:  # "smm" (Simple Moving Median)
+        return series.rolling(window=odd_window, center=True).median()
+    elif method == SMOOTHING_METHODS[4]:  # "sma" (Simple Moving Average)
+        return series.rolling(window=odd_window, center=True).mean()
+    else:
+        return zero_phase(
+            series=series,
+            window=window,
+            win_type=SMOOTHING_METHODS[0],
+            std=std,
+            beta=beta,
+        )
 
 
 def normalize_weights(
