@@ -676,7 +676,7 @@ class QuickAdapterV3(IStrategy):
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
-            weights=np.asarray(pivots_thresholds, dtype=float),
+            weights=np.array(pivots_thresholds),
             strategy=weighting_strategy,
             normalization=weighting_normalization,
             gamma=weighting_gamma,
