@@ -676,11 +676,13 @@ class QuickAdapterV3(IStrategy):
         weighting_gamma = extrema_weighting_config.get(
             "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
         )
-        if not isinstance(weighting_gamma, (int, float)) or not (
-            0 < float(weighting_gamma) <= 10.0
+        if (
+            not isinstance(weighting_gamma, (int, float))
+            or not np.isfinite(weighting_gamma)
+            or not (0 < float(weighting_gamma) <= 10.0)
         ):
             logger.warning(
-                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be in (0, 10], using default 1.0"
+                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default 1.0"
             )
             weighting_gamma = 1.0
         else:
