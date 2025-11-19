@@ -278,24 +278,24 @@ r* = r - grace    if exit_plateau and r >  grace
 r* = r            if not exit_plateau
 ```
 
-| Mode      | Multiplier applied to base_factor \* pnl \* pnl_factor \* efficiency_factor | Monotonic | Notes                                       |
-| --------- | --------------------------------------------------------------------------- | --------- | ------------------------------------------- |
-| legacy    | step: ×1.5 if r\* ≤ 1 else ×0.5                                             | No        | Non-monotonic legacy mode (not recommended) |
-| sqrt      | 1 / sqrt(1 + r\*)                                                           | Yes       | Sub-linear decay                            |
-| linear    | 1 / (1 + slope \* r\*)                                                      | Yes       | slope = `exit_linear_slope`                 |
-| power     | (1 + r\*)^(-alpha)                                                          | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     |
-| half_life | 2^(- r\* / hl)                                                              | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor ×0.5 |
+| Mode      | Multiplier applied to base_factor \* pnl \* pnl_factor \* efficiency_factor | Monotonic | Notes                                       | Use Case                             |
+| --------- | --------------------------------------------------------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
+| legacy    | step: ×1.5 if r\* ≤ 1 else ×0.5                                             | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
+| sqrt      | 1 / sqrt(1 + r\*)                                                           | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
+| linear    | 1 / (1 + slope \* r\*)                                                      | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
+| power     | (1 + r\*)^(-alpha)                                                          | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
+| half_life | 2^(- r\* / hl)                                                              | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor ×0.5 | Time-based exponential discount      |
 
 ### Transform Functions
 
-| Transform  | Formula            | Range   | Characteristics   | Use Case                      |
-| ---------- | ------------------ | ------- | ----------------- | ----------------------------- |
-| `tanh`     | tanh(x)            | (-1, 1) | Smooth sigmoid    | Balanced transforms (default) |
-| `softsign` | x / (1 + \|x\|)    | (-1, 1) | Linear near 0     | Less aggressive saturation    |
-| `arctan`   | (2/π) \* arctan(x) | (-1, 1) | Slower saturation | Wide dynamic range            |
-| `sigmoid`  | 2σ(x) - 1          | (-1, 1) | Standard sigmoid  | Generic shaping               |
-| `asinh`    | x / sqrt(1 + x^2)  | (-1, 1) | Outlier robust    | Extreme stability             |
-| `clip`     | clip(x, -1, 1)     | [-1, 1] | Hard clipping     | Preserve linearity            |
+| Transform  | Formula                          | Range   | Characteristics   | Use Case                      |
+| ---------- | -------------------------------- | ------- | ----------------- | ----------------------------- |
+| `tanh`     | tanh(x)                          | (-1, 1) | Smooth sigmoid    | Balanced transforms (default) |
+| `softsign` | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
+| `arctan`   | (2/π) \* arctan(x)               | (-1, 1) | Slower saturation | Wide dynamic range            |
+| `sigmoid`  | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
+| `asinh`    | x / sqrt(1 + x^2)                | (-1, 1) | Outlier robust    | Extreme stability             |
+| `clip`     | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |
 
 ### Skipping Feature Analysis
 
