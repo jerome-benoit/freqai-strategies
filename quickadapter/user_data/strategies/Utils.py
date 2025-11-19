@@ -19,7 +19,18 @@ T = TypeVar("T", pd.Series, float)
 
 WeightStrategy = Literal["none", "pivot_threshold"]
 
-DEFAULTS_EXTREMA_WEIGHTING = {"normalization": "minmax", "gamma": 1.0}
+DEFAULTS_EXTREMA_SMOOTHING = {
+    "method": "gaussian",
+    "window": 5,
+    "beta": 8.0,
+}
+
+DEFAULTS_EXTREMA_WEIGHTING = {
+    "normalization": "minmax",
+    "gamma": 1.0,
+    "strategy": "none",
+}
+
 DEFAULT_EXTREMA_WEIGHT = 1.0
 
 

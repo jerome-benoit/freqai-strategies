@@ -28,6 +28,7 @@ from scipy.stats import t
 from technical.pivots_points import pivots_points
 
 from Utils import (
+    DEFAULTS_EXTREMA_SMOOTHING,
     DEFAULTS_EXTREMA_WEIGHTING,
     TrendDirection,
     alligator,
@@ -626,53 +627,66 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3.td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
 
+        extrema_smoothing_config = self.freqai_info.get("extrema_smoothing", {})
+        if not isinstance(extrema_smoothing_config, dict):
+            extrema_smoothing_config = {}
+
+        smoothing_method = str(
+            extrema_smoothing_config.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
+        )
+        smoothing_window = int(
+            extrema_smoothing_config.get("window", DEFAULTS_EXTREMA_SMOOTHING["window"])
+        )
+        smoothing_beta = float(
+            extrema_smoothing_config.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
+        )
+
         extrema_weighting_config = self.freqai_info.get("extrema_weighting", {})
         if not isinstance(extrema_weighting_config, dict):
             extrema_weighting_config = {}
-        weight_normalization = str(
+
+        weighting_strategy = str(
+            extrema_weighting_config.get(
+                "strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"]
+            )
+        )
+        weighting_normalization = str(
             extrema_weighting_config.get(
                 "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
             )
         )
-        if weight_normalization not in {"minmax", "l1", "none"}:
+        if weighting_normalization not in {"minmax", "l1", "none"}:
             logger.warning(
-                f"{pair}: invalid extrema_weighting normalization '{weight_normalization}', using default 'minmax'"
+                f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default 'minmax'"
             )
-            weight_normalization = "minmax"
-        weight_gamma = extrema_weighting_config.get(
-            "gamma", DEFAULTS_EXTREMA_WEIGHTING.get("gamma", 1.0)
+            weighting_normalization = "minmax"
+        weighting_gamma = extrema_weighting_config.get(
+            "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
         )
-        if not isinstance(weight_gamma, (int, float)) or not (
-            0 < float(weight_gamma) <= 10.0
+        if not isinstance(weighting_gamma, (int, float)) or not (
+            0 < float(weighting_gamma) <= 10.0
         ):
             logger.warning(
-                f"{pair}: invalid extrema_weighting gamma {weight_gamma}, must be in (0, 10], using default 1.0"
+                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be in (0, 10], using default 1.0"
             )
-            weight_gamma = 1.0
+            weighting_gamma = 1.0
         else:
-            weight_gamma = float(weight_gamma)
-        weight_strategy = str(
-            self.freqai_info.get("extrema_smoothing_weight_strategy", "none")
-        )
-        weighted_extrema, extrema_weights_series = get_weighted_extrema(
+            weighting_gamma = float(weighting_gamma)
+
+        weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
             weights=pivots_thresholds,
-            strategy=weight_strategy,
-            normalization=weight_normalization,
-            gamma=weight_gamma,
+            strategy=weighting_strategy,
+            normalization=weighting_normalization,
+            gamma=weighting_gamma,
         )
-        dataframe["&s-extrema_weights"] = extrema_weights_series
-        if weight_strategy != "none" and len(pivots_indices) > 0:
-            logger.info(
-                f"{pair}: extrema weighting applied (strategy={weight_strategy}, normalization={weight_normalization}, gamma={weight_gamma})"
-            )
 
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
             weighted_extrema,
-            str(self.freqai_info.get("extrema_smoothing", "gaussian")),
-            int(self.freqai_info.get("extrema_smoothing_window", 5)),
-            float(self.freqai_info.get("extrema_smoothing_beta", 8.0)),
+            smoothing_method,
+            smoothing_window,
+            smoothing_beta,
         )
         if debug:
             extrema = dataframe[EXTREMA_COLUMN]
