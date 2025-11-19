@@ -16,6 +16,7 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
+from ..constants import PARAMS
 from ..helpers import (
     RewardScenarioConfig,
     ThresholdTestConfig,
@@ -243,7 +244,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             context,
             params_large,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=0.06,
+            profit_target=PARAMS.PROFIT_TARGET,
             risk_reward_ratio=self.TEST_RR,
             short_allowed=True,
             action_masking=True,
@@ -404,7 +405,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         - Proportional scaling with idle duration
         """
         params = self.base_params(max_idle_duration_candles=None, max_trade_duration_candles=100)
-        base_factor = 90.0
+        base_factor = PARAMS.BASE_FACTOR
         profit_target = self.TEST_PROFIT_TARGET
         risk_reward_ratio = 1.0
 

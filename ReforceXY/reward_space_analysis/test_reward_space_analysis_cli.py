@@ -104,8 +104,6 @@ def build_arg_matrix(
     max_scenarios: int = 40,
     shuffle_seed: Optional[int] = None,
 ) -> List[ConfigTuple]:
-    # Constants from reward_space_analysis.py
-    # ALLOWED_EXIT_POTENTIAL_MODES and ATTENUATION_MODES_WITH_LEGACY
     exit_potential_modes = [
         "canonical",
         "non_canonical",

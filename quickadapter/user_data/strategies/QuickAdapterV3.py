@@ -47,7 +47,7 @@ TradingMode = Literal["spot", "margin", "futures"]
 
 DfSignature = Tuple[int, Optional[datetime.datetime]]
 CandleDeviationCacheKey = Tuple[
-    str, DfSignature, float, float, int, Literal["direct", "inverse"], float
+    str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = Tuple[str, DfSignature, str, int, float, float]
 

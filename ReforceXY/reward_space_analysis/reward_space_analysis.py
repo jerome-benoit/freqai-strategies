@@ -18,7 +18,7 @@ import random
 import warnings
 from enum import Enum, IntEnum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -37,6 +37,13 @@ except Exception:
     permutation_importance = None
     r2_score = None
     train_test_split = None
+
+
+AttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
+TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "asinh"]
+ExitPotentialMode = Literal[
+    "canonical", "non_canonical", "progressive_release", "spike_cancel", "retain_previous"
+]
 
 
 class Actions(IntEnum):
@@ -78,6 +85,7 @@ INTERNAL_GUARDS: dict[str, float] = {
     "sim_zero_reward_epsilon": 1e-12,
     "sim_extreme_pnl_threshold": 0.2,
     "histogram_epsilon": 1e-10,
+    "distribution_identity_epsilon": 1e-12,
 }
 
 # PBRS constants
@@ -96,6 +104,7 @@ ALLOWED_EXIT_POTENTIAL_MODES = {
     "spike_cancel",
     "retain_previous",
 }
+
 
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
@@ -240,6 +249,31 @@ class RewardDiagnosticsWarning(RuntimeWarning):
     """
 
     pass
+
+
+def _warn_unknown_mode(
+    mode_type: str,
+    provided_value: str,
+    valid_values: Iterable[str],
+    fallback_value: str,
+    stacklevel: int = 2,
+) -> None:
+    """Emit standardized warning for unknown mode values.
+
+    Args:
+        mode_type: Type of mode (e.g., "exit_attenuation_mode")
+        provided_value: The invalid value that was provided
+        valid_values: Iterable of valid values
+        fallback_value: The value being used as fallback
+        stacklevel: Stack level for warnings.warn
+    """
+    valid_sorted = sorted(valid_values)
+    warnings.warn(
+        f"Unknown {mode_type} '{provided_value}'. "
+        f"Expected one of: {valid_sorted}. Falling back to '{fallback_value}'.",
+        RewardDiagnosticsWarning,
+        stacklevel=stacklevel,
+    )
 
 
 def _to_bool(value: Any) -> bool:
@@ -524,20 +558,6 @@ def validate_reward_parameters(
     return sanitized, adjustments
 
 
-def _normalize_and_validate_mode(params: RewardParams) -> None:
-    """Validate exit_attenuation_mode; silently fallback to 'linear' if invalid."""
-    if "exit_attenuation_mode" not in params:
-        return
-
-    exit_attenuation_mode = _get_str_param(
-        params,
-        "exit_attenuation_mode",
-        str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_attenuation_mode", "linear")),
-    )
-    if exit_attenuation_mode not in ATTENUATION_MODES_WITH_LEGACY:
-        params["exit_attenuation_mode"] = "linear"
-
-
 def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
     """Dynamically add CLI options for each tunable in DEFAULT_MODEL_REWARD_PARAMETERS.
 
@@ -755,12 +775,11 @@ def _get_exit_factor(
 
     kernel = kernels.get(exit_attenuation_mode, None)
     if kernel is None:
-        warnings.warn(
-            (
-                f"Unknown exit_attenuation_mode '{exit_attenuation_mode}'; defaulting to 'linear' "
-                f"(effective_dr={effective_dr:.5f})"
-            ),
-            RewardDiagnosticsWarning,
+        _warn_unknown_mode(
+            "exit_attenuation_mode",
+            exit_attenuation_mode,
+            ATTENUATION_MODES_WITH_LEGACY,
+            "linear",
             stacklevel=2,
         )
         kernel = _linear_kernel
@@ -2031,7 +2050,12 @@ def compute_distribution_shift_metrics(
         # Guard against degenerate distributions (all values identical)
         if not np.isfinite(min_val) or not np.isfinite(max_val):
             continue
-        if np.isclose(max_val, min_val, rtol=0, atol=1e-12):
+        if np.isclose(
+            max_val,
+            min_val,
+            rtol=0,
+            atol=float(INTERNAL_GUARDS.get("distribution_identity_epsilon", 1e-12)),
+        ):
             # All mass at a single point -> shift metrics are all zero by definition
             metrics[f"{feature}_kl_divergence"] = 0.0
             metrics[f"{feature}_js_distance"] = 0.0
@@ -2567,7 +2591,7 @@ def _apply_transform_clip(value: float) -> float:
     return float(np.clip(value, -1.0, 1.0))
 
 
-def apply_transform(transform_name: str, value: float, **kwargs: Any) -> float:
+def apply_transform(transform_name: TransformFunction | str, value: float, **kwargs: Any) -> float:
     """Apply named transform; unknown names fallback to tanh with warning."""
     transforms = {
         "tanh": _apply_transform_tanh,
@@ -2579,9 +2603,11 @@ def apply_transform(transform_name: str, value: float, **kwargs: Any) -> float:
     }
 
     if transform_name not in transforms:
-        warnings.warn(
-            f"Unknown potential transform '{transform_name}'; falling back to tanh",
-            RewardDiagnosticsWarning,
+        _warn_unknown_mode(
+            "potential_transform",
+            transform_name,
+            transforms.keys(),
+            "tanh",
             stacklevel=2,
         )
         return _apply_transform_tanh(value)
@@ -2723,6 +2749,13 @@ def _compute_exit_potential(last_potential: float, params: RewardParams) -> floa
     elif mode == "retain_previous":
         next_potential = last_potential
     else:
+        _warn_unknown_mode(
+            "exit_potential_mode",
+            mode,
+            sorted(ALLOWED_EXIT_POTENTIAL_MODES),
+            "canonical (via _fail_safely)",
+            stacklevel=2,
+        )
         next_potential = _fail_safely("invalid_exit_potential_mode")
 
     if not np.isfinite(next_potential):
@@ -3771,8 +3804,6 @@ def main() -> None:
             for k, v in adjustments.items()
         ]
         print("Parameter adjustments applied:\n" + "\n".join(adj_lines))
-    # Normalize attenuation mode
-    _normalize_and_validate_mode(params)
 
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_target = _get_float_param(params, "profit_target", float(args.profit_target))

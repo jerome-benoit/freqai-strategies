@@ -74,6 +74,7 @@ from stable_baselines3.common.vec_env import (
 
 ModelType = Literal["PPO", "RecurrentPPO", "MaskablePPO", "DQN", "QRDQN"]
 ScheduleType = Literal["linear", "constant", "unknown"]
+ScheduleTypeKnown = Literal["linear", "constant"]  # Subset for get_schedule() function
 ExitPotentialMode = Literal[
     "canonical",
     "non_canonical",
@@ -495,7 +496,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             if isinstance(lr, (int, float)):
                 lr = float(lr)
                 model_params["learning_rate"] = get_schedule(
-                    self._SCHEDULE_TYPES[0], lr
+                    cast(ScheduleTypeKnown, self._SCHEDULE_TYPES[0]), lr
                 )
                 logger.info(
                     "Learning rate linear schedule enabled, initial value: %s", lr
@@ -510,7 +511,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             cr = model_params.get("clip_range", 0.2)
             if isinstance(cr, (int, float)):
                 cr = float(cr)
-                model_params["clip_range"] = get_schedule(self._SCHEDULE_TYPES[0], cr)
+                model_params["clip_range"] = get_schedule(
+                    cast(ScheduleTypeKnown, self._SCHEDULE_TYPES[0]), cr
+                )
                 logger.info("Clip range linear schedule enabled, initial value: %s", cr)
 
         # "DQN"
@@ -529,7 +532,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         net_arch: Union[
             List[int],
             Dict[str, List[int]],
-            Literal["small", "medium", "large", "extra_large"],
+            NetArchSize,
         ] = model_params.get("policy_kwargs", {}).get("net_arch", default_net_arch)
 
         # "PPO"
@@ -3737,7 +3740,7 @@ def steps_to_days(steps: int, timeframe: str) -> float:
 
 def get_schedule_type(
     schedule: Any,
-) -> Tuple[Literal["constant", "linear", "unknown"], float, float]:
+) -> Tuple[ScheduleType, float, float]:
     if isinstance(schedule, (int, float)):
         try:
             schedule = float(schedule)
@@ -3767,12 +3770,12 @@ def get_schedule_type(
 
 
 def get_schedule(
-    schedule_type: Literal["linear", "constant"],
+    schedule_type: ScheduleTypeKnown,
     initial_value: float,
 ) -> Callable[[float], float]:
-    if schedule_type == ReforceXY._SCHEDULE_TYPES[0]:
+    if schedule_type == ReforceXY._SCHEDULE_TYPES[0]:  # "linear"
         return SimpleLinearSchedule(initial_value)
-    elif schedule_type == ReforceXY._SCHEDULE_TYPES[1]:
+    elif schedule_type == ReforceXY._SCHEDULE_TYPES[1]:  # "constant"
         return ConstantSchedule(initial_value)
     else:
         return ConstantSchedule(initial_value)
@@ -3789,11 +3792,11 @@ def get_net_arch(
             ReforceXY._NET_ARCH_SIZES[0]: {
                 "pi": [128, 128],
                 "vf": [128, 128],
-            },  # ReforceXY._NET_ARCH_SIZES[0]
+            },  # "small"
             ReforceXY._NET_ARCH_SIZES[1]: {
                 "pi": [256, 256],
                 "vf": [256, 256],
-            },  # ReforceXY._NET_ARCH_SIZES[1]
+            },  # "medium"
             ReforceXY._NET_ARCH_SIZES[2]: {
                 "pi": [512, 512],
                 "vf": [512, 512],

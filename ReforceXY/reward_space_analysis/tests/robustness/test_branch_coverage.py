@@ -9,7 +9,6 @@ from reward_space_analysis import (
     RewardDiagnosticsWarning,
     _get_exit_factor,
     _hold_penalty,
-    _normalize_and_validate_mode,
     validate_reward_parameters,
 )
 
@@ -57,13 +56,6 @@ def test_validate_reward_parameters_relaxed_adjustment_batch():
     run_relaxed_validation_adjustment_cases(
         _PyTestAdapter(), relaxed_cases, validate_reward_parameters
     )
-
-
-@pytest.mark.robustness
-def test_normalize_and_validate_mode_fallback():
-    params = {"exit_attenuation_mode": "invalid_mode"}
-    _normalize_and_validate_mode(params)
-    assert params["exit_attenuation_mode"] == "linear"
 
 
 @pytest.mark.robustness

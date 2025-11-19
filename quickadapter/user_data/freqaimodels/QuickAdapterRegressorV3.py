@@ -33,7 +33,7 @@ from Utils import (
     zigzag,
 )
 
-ExtremaSelectionMethod = Literal["peak_values", "extrema_rank"]
+ExtremaSelectionMethod = Literal["peak_values", "extrema_rank", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
 
 debug = False
@@ -73,6 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
         "peak_values",
         "extrema_rank",
+        "partition",
     )
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("sqlite", "file")
     _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
@@ -763,10 +764,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pred_extrema.empty:
             return pd.Series(dtype=float), pd.Series(dtype=float)
 
-        minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
-        maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
-
         if extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]:
+            minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
+            maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
+
             pred_minima = (
                 pred_extrema.iloc[minima_indices]
                 if minima_indices.size > 0
@@ -778,6 +779,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 else pd.Series(dtype=float)
             )
         elif extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]:
+            minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
+            maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
+
             n_minima = minima_indices.size
             n_maxima = maxima_indices.size
 
@@ -790,6 +794,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_maxima = pred_extrema.nlargest(n_maxima)
             else:
                 pred_maxima = pd.Series(dtype=float)
+        elif extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[2]:
+            eps = np.finfo(float).eps
+
+            pred_maxima = pred_extrema[pred_extrema > eps]
+            pred_minima = pred_extrema[pred_extrema < eps]
         else:
             raise ValueError(
                 f"Unsupported extrema selection method: {extrema_selection}. "

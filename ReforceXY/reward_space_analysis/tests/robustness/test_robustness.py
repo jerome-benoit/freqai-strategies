@@ -18,6 +18,7 @@ from reward_space_analysis import (
     simulate_samples,
 )
 
+from ..constants import PARAMS
 from ..helpers import (
     assert_diagnostic_warning,
     assert_exit_factor_attenuation_modes,
@@ -553,7 +554,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_plateau_grace=-2.0,
             exit_linear_slope=1.2,
         )
-        base_factor = 90.0
+        base_factor = PARAMS.BASE_FACTOR
         pnl = 0.03
         pnl_factor = 1.0
         duration_ratio = 0.5
