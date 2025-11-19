@@ -17,6 +17,11 @@ from technical import qtpylib
 
 T = TypeVar("T", pd.Series, float)
 
+WeightStrategy = Literal["none", "pivot_threshold"]
+
+DEFAULTS_EXTREMA_WEIGHTING = {"normalization": "minmax", "gamma": 1.0}
+DEFAULT_EXTREMA_WEIGHT = 1.0
+
 
 def get_distance(p1: T, p2: T) -> T:
     return abs(p1 - p2)
@@ -74,7 +79,7 @@ def zero_phase(
     if len(series) == 0:
         return series
     if len(series) < window:
-        raise ValueError("Series length must be greater than or equal to window size")
+        return series
     values = series.to_numpy()
     b = _calculate_coeffs(window=window, win_type=win_type, std=std, beta=beta)
     a = 1.0
@@ -85,6 +90,11 @@ def zero_phase(
 def smooth_extrema(
     series: pd.Series, method: str, window: int, beta: float
 ) -> pd.Series:
+    if window < 3:
+        window = 3
+    if beta <= 0 or not np.isfinite(beta):
+        beta = 1.0
+
     std = get_gaussian_std(window)
     odd_window = get_odd_window(window)
     smoothing_methods: dict[str, pd.Series] = {
@@ -112,10 +122,119 @@ def smooth_extrema(
         "smm": series.rolling(window=odd_window, center=True).median(),
         "sma": series.rolling(window=odd_window, center=True).mean(),
     }
-    return smoothing_methods.get(
-        method,
-        smoothing_methods["gaussian"],
-    )
+    return smoothing_methods.get(method, smoothing_methods["gaussian"])
+
+
+def normalize_weights(
+    weights: NDArray[np.floating],
+    normalization: Literal["minmax", "l1", "none"] = "minmax",
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> NDArray[np.floating]:
+    if weights.size == 0:
+        return weights
+    if normalization == "none":
+        return weights
+
+    if normalization == "minmax":
+        weights = weights.astype(float, copy=False)
+        if np.isnan(weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+        w_min = np.nanmin(weights)
+        w_max = np.nanmax(weights)
+        if not (np.isfinite(w_min) and np.isfinite(w_max)):
+            return np.full_like(weights, 1.0, dtype=float)
+        w_range = w_max - w_min
+        if np.isclose(w_range, 0.0):
+            return np.full_like(weights, 1.0, dtype=float)
+        normalized_weights = (weights - w_min) / w_range
+        if np.isnan(normalized_weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+        if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
+            normalized_weights = np.power(normalized_weights, gamma)
+            if np.isnan(normalized_weights).any():
+                return np.full_like(weights, 1.0, dtype=float)
+        return normalized_weights
+
+    if normalization == "l1":
+        weights_sum = weights.sum()
+        if weights_sum <= 0 or np.isnan(weights_sum):
+            return np.full_like(weights, 1.0)
+        normalized_weights = weights / weights_sum
+        if np.isnan(normalized_weights).any():
+            return np.full_like(weights, 1.0)
+        if np.allclose(normalized_weights, normalized_weights[0]):
+            return np.full_like(weights, 1.0)
+        if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
+            normalized_weights = np.power(normalized_weights, gamma)
+            if np.isnan(normalized_weights).any():
+                return np.full_like(weights, 1.0)
+        return normalized_weights
+
+    raise ValueError(f"Unknown normalization method: {normalization}")
+
+
+def calculate_extrema_weights(
+    series: pd.Series,
+    indices: list[int],
+    weights: NDArray[np.floating],
+    normalization: Literal["minmax", "l1", "none"] = DEFAULTS_EXTREMA_WEIGHTING[
+        "normalization"
+    ],
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> pd.Series:
+    if len(indices) == 0 or len(weights) == 0:
+        return pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
+
+    if len(indices) != len(weights):
+        raise ValueError(
+            f"Length mismatch: {len(indices)} indices but {len(weights)} weights"
+        )
+
+    normalized_weights = normalize_weights(weights, normalization, gamma)
+
+    if normalized_weights.size == 0 or np.allclose(
+        normalized_weights, normalized_weights[0]
+    ):
+        normalized_weights = np.full_like(
+            normalized_weights, float(DEFAULT_EXTREMA_WEIGHT)
+        )
+
+    weights_series = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
+    mask = pd.Index(indices).isin(series.index)
+    normalized_weights = normalized_weights[mask]
+    valid_indices = [idx for idx, is_valid in zip(indices, mask) if is_valid]
+    if len(valid_indices) > 0:
+        weights_series.loc[valid_indices] = normalized_weights
+    return weights_series
+
+
+def get_weighted_extrema(
+    extrema: pd.Series,
+    indices: list[int],
+    weights: NDArray[np.floating],
+    strategy: WeightStrategy = "none",
+    normalization: Literal["minmax", "l1", "none"] = DEFAULTS_EXTREMA_WEIGHTING[
+        "normalization"
+    ],
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> tuple[pd.Series, pd.Series]:
+    default_weights = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=extrema.index)
+    if len(indices) == 0 or len(weights) == 0 or strategy == "none":
+        return extrema, default_weights
+
+    if strategy == "pivot_threshold":
+        extrema_weights = calculate_extrema_weights(
+            series=extrema,
+            indices=indices,
+            weights=weights,
+            normalization=normalization,
+            gamma=gamma,
+        )
+        if (extrema_weights == DEFAULT_EXTREMA_WEIGHT).all():
+            return extrema, default_weights
+        return extrema * extrema_weights, extrema_weights
+
+    raise ValueError(f"Unknown weight strategy: {strategy}")
 
 
 def get_callable_sha256(fn: Callable) -> str:

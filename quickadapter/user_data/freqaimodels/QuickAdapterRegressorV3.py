@@ -731,7 +731,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Unsupported extrema selection method: {extrema_selection}. "
                 f"Supported methods are {', '.join(self._EXTREMA_SELECTION_METHODS)}"
             )
-        extrema_selection: ExtremaSelectionMethod = extrema_selectionx
         thresholds_smoothing = str(
             self.freqai_info.get("prediction_thresholds_smoothing", "mean")
         )

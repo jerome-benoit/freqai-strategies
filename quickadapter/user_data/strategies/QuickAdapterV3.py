@@ -5,7 +5,16 @@ import logging
 import math
 from functools import cached_property, lru_cache, reduce
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Final, Literal, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Final,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 import pandas_ta as pta
@@ -19,6 +28,7 @@ from scipy.stats import t
 from technical.pivots_points import pivots_points
 
 from Utils import (
+    DEFAULTS_EXTREMA_WEIGHTING,
     TrendDirection,
     alligator,
     bottom_change_percent,
@@ -29,6 +39,7 @@ from Utils import (
     get_callable_sha256,
     get_distance,
     get_label_defaults,
+    get_weighted_extrema,
     get_zl_ma_fn,
     non_zero_diff,
     price_retracement_percent,
@@ -88,7 +99,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.171"
+        return "3.3.172"
 
     timeframe = "5m"
 
@@ -590,7 +601,7 @@ class QuickAdapterV3(IStrategy):
         pair = str(metadata.get("pair"))
         label_period_candles = self.get_label_period_candles(pair)
         label_natr_ratio = self.get_label_natr_ratio(pair)
-        pivots_indices, _, pivots_directions, _ = zigzag(
+        pivots_indices, _, pivots_directions, pivots_thresholds = zigzag(
             dataframe,
             natr_period=label_period_candles,
             natr_ratio=label_natr_ratio,
@@ -614,8 +625,51 @@ class QuickAdapterV3(IStrategy):
             logger.info(
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3.td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
+
+        extrema_weighting_config = self.freqai_info.get("extrema_weighting", {})
+        if not isinstance(extrema_weighting_config, dict):
+            extrema_weighting_config = {}
+        weight_normalization = str(
+            extrema_weighting_config.get(
+                "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
+            )
+        )
+        if weight_normalization not in {"minmax", "l1", "none"}:
+            logger.warning(
+                f"{pair}: invalid extrema_weighting normalization '{weight_normalization}', using default 'minmax'"
+            )
+            weight_normalization = "minmax"
+        weight_gamma = extrema_weighting_config.get(
+            "gamma", DEFAULTS_EXTREMA_WEIGHTING.get("gamma", 1.0)
+        )
+        if not isinstance(weight_gamma, (int, float)) or not (
+            0 < float(weight_gamma) <= 10.0
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting gamma {weight_gamma}, must be in (0, 10], using default 1.0"
+            )
+            weight_gamma = 1.0
+        else:
+            weight_gamma = float(weight_gamma)
+        weight_strategy = str(
+            self.freqai_info.get("extrema_smoothing_weight_strategy", "none")
+        )
+        weighted_extrema, extrema_weights_series = get_weighted_extrema(
+            extrema=dataframe[EXTREMA_COLUMN],
+            indices=pivots_indices,
+            weights=pivots_thresholds,
+            strategy=weight_strategy,
+            normalization=weight_normalization,
+            gamma=weight_gamma,
+        )
+        dataframe["&s-extrema_weights"] = extrema_weights_series
+        if weight_strategy != "none" and len(pivots_indices) > 0:
+            logger.info(
+                f"{pair}: extrema weighting applied (strategy={weight_strategy}, normalization={weight_normalization}, gamma={weight_gamma})"
+            )
+
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
-            dataframe[EXTREMA_COLUMN],
+            weighted_extrema,
             str(self.freqai_info.get("extrema_smoothing", "gaussian")),
             int(self.freqai_info.get("extrema_smoothing_window", 5)),
             float(self.freqai_info.get("extrema_smoothing_beta", 8.0)),
