@@ -32,7 +32,7 @@ Minimal selective test example:
 uv run pytest -m pbrs -q
 ```
 
-Full test documentation: `tests/README.md`.
+Full test documentation: [tests/README.md](./tests/README.md).
 
 ## Table of Contents
 
@@ -487,7 +487,7 @@ Selective example:
 uv run pytest -m pbrs -q
 ```
 
-Coverage threshold enforced: 85% (`--cov-fail-under=85` in `pyproject.toml`). Full coverage, invariants, markers, smoke policy, and maintenance workflow: `tests/README.md`.
+Coverage threshold enforced: 85% (`--cov-fail-under=85` in `pyproject.toml`). Full coverage, invariants, markers, smoke policy, and maintenance workflow: [tests/README.md](./tests/README.md).
 
 ---
 
