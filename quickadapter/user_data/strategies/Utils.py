@@ -255,7 +255,7 @@ def get_weighted_extrema(
             normalization=normalization,
             gamma=gamma,
         )
-        if (extrema_weights == DEFAULT_EXTREMA_WEIGHT).all():
+        if np.allclose(extrema_weights, DEFAULT_EXTREMA_WEIGHT):
             return extrema, default_weights
         return extrema * extrema_weights, extrema_weights
 
