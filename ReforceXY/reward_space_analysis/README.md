@@ -42,6 +42,7 @@ Full test documentation: `tests/README.md`.
 - [Common Use Cases](#common-use-cases)
 - [CLI Parameters](#cli-parameters)
   - [Simulation & Environment](#simulation--environment)
+  - [Hybrid Simulation Scalars](#hybrid-simulation-scalars)
   - [Reward & Shaping](#reward--shaping)
   - [Diagnostics & Validation](#diagnostics--validation)
   - [Overrides](#overrides)
@@ -135,18 +136,23 @@ Generates shift metrics for comparison (see Outputs section).
 - **`--num_samples`** (int, default: 20000) – Synthetic scenarios. More = better stats (slower). Recommended: 10k (quick), 50k (standard), 100k+ (deep). (Simulation-only; not overridable via `--params`).
 - **`--seed`** (int, default: 42) – Master seed (reuse for identical runs). (Simulation-only).
 - **`--trading_mode`** (spot|margin|futures, default: spot) – spot: no shorts; margin/futures: shorts enabled. (Simulation-only).
-- **`--action_masking`** (bool, default: true) – Simulate environment action masking; invalid actions receive penalties only if masking disabled. (Simulation-only; not present in reward params; cannot be set via `--params`).
 - **`--max_duration_ratio`** (float, default: 2.5) – Upper multiple for sampled trade durations (idle derived). (Simulation-only; not in reward params; cannot be set via `--params`).
 - **`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for synthetic PnL generation (pre-scaling). (Simulation-only).
 - **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL volatility scale proportional to trade duration ratio. (Simulation-only).
 - **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic distribution shift metrics. (Simulation-only; triggers additional outputs when provided).
 - **`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL accrual during holds for potential Φ. (Simulation-only; affects PBRS components).
 
+### Hybrid Simulation Scalars
+
+These parameters influence simulation behavior and reward computation. They can be overridden via `--params`.
+
+- **`--profit_target`** (float, default: 0.03) – Target profit threshold (e.g. 0.03=3%). Combined with `risk_reward_ratio` to compute effective profit target.
+- **`--risk_reward_ratio`** (float, default: 1.0) – Risk-reward multiplier. Effective profit target = `profit_target * risk_reward_ratio`.
+- **`--action_masking`** (bool, default: true) – Simulate environment action masking. Invalid actions receive penalties only if masking disabled.
+
 ### Reward & Shaping
 
 - **`--base_factor`** (float, default: 100.0) – Base reward scale.
-- **`--profit_target`** (float, default: 0.03) – Target profit (e.g. 0.03=3%). (May be overridden via `--params` though not stored in `reward_params` object.)
-- **`--risk_reward_ratio`** (float, default: 1.0) – Adjusts effective profit target (`profit_target * risk_reward_ratio`). (May be overridden via `--params`).
 - **`--win_reward_factor`** (float, default: 2.0) – Profit overshoot multiplier.
 
 **Duration penalties**: idle / hold scales & powers shape time-cost.
@@ -169,7 +175,7 @@ Generates shift metrics for comparison (see Outputs section).
 ### Overrides
 
 - **`--out_dir`** (path, default: reward_space_outputs) – Output directory (auto-created). (Simulation-only).
-- **`--params`** (k=v ...) – Bulk override reward params and selected hybrid scalars (`profit_target`, `risk_reward_ratio`). Conflicts: individual flags vs `--params` ⇒ `--params` wins.
+- **`--params`** (k=v ...) – Bulk override reward tunables and hybrid simulation scalars (`profit_target`, `risk_reward_ratio`, `action_masking`). Conflicts: individual flags vs `--params` ⇒ `--params` wins.
 
 ### Reward Parameter Cheat Sheet
 
@@ -339,11 +345,11 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 
 `--params` wins on conflicts.
 
-**Simulation-only keys** (not allowed in `--params`): `num_samples`, `seed`, `trading_mode`, `action_masking`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`, `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`, `strict_diagnostics`, `strict_validation`, `bootstrap_resamples`, `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`, `pvalue_adjust`.
+**Simulation-only keys** (not allowed in `--params`): `num_samples`, `seed`, `trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`, `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`, `strict_diagnostics`, `strict_validation`, `bootstrap_resamples`, `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`, `pvalue_adjust`.
 
-**Hybrid override keys** allowed in `--params`: `profit_target`, `risk_reward_ratio`.
+**Hybrid simulation scalars** allowed in `--params`: `profit_target`, `risk_reward_ratio`, `action_masking`.
 
-**Reward parameter keys** (tunable via either direct flag or `--params`) correspond to those listed under Cheat Sheet, Exit Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit additive transforms.
+**Reward tunables** (tunable via either direct flag or `--params`) correspond to those listed under Reward Parameter Cheat Sheet: Core, Duration Penalties, Exit Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit Potential Transforms.
 
 ## Examples
 
