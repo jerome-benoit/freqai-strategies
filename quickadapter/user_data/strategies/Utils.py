@@ -17,6 +17,31 @@ from technical import qtpylib
 
 T = TypeVar("T", pd.Series, float)
 
+WEIGHT_STRATEGIES = ("none", "pivot_threshold")
+WeightStrategy = Literal["none", "pivot_threshold"]
+
+NORMALIZATION_TYPES = ("minmax", "l1", "none")
+NormalizationType = Literal["minmax", "l1", "none"]
+
+SMOOTHING_METHODS = ("gaussian", "kaiser", "triang", "smm", "sma")
+SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
+SmoothingMethod = Literal["gaussian", "kaiser", "triang", "smm", "sma"]
+
+
+DEFAULTS_EXTREMA_SMOOTHING = {
+    "method": SMOOTHING_METHODS[0],  # "gaussian"
+    "window": 5,
+    "beta": 8.0,
+}
+
+DEFAULTS_EXTREMA_WEIGHTING = {
+    "normalization": NORMALIZATION_TYPES[0],  # "minmax"
+    "gamma": 1.0,
+    "strategy": WEIGHT_STRATEGIES[0],  # "none"
+}
+
+DEFAULT_EXTREMA_WEIGHT = 1.0
+
 
 def get_distance(p1: T, p2: T) -> T:
     return abs(p1 - p2)
@@ -49,15 +74,15 @@ def get_gaussian_std(window: int) -> float:
 @lru_cache(maxsize=8)
 def _calculate_coeffs(
     window: int,
-    win_type: Literal["gaussian", "kaiser", "triang"],
+    win_type: SmoothingKernel,
     std: float,
     beta: float,
 ) -> NDArray[np.floating]:
-    if win_type == "gaussian":
+    if win_type == SMOOTHING_METHODS[0]:  # "gaussian"
         coeffs = sp.signal.windows.gaussian(M=window, std=std, sym=True)
-    elif win_type == "kaiser":
+    elif win_type == SMOOTHING_METHODS[1]:  # "kaiser"
         coeffs = sp.signal.windows.kaiser(M=window, beta=beta, sym=True)
-    elif win_type == "triang":
+    elif win_type == SMOOTHING_METHODS[2]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(f"Unknown window type: {win_type}")
@@ -67,14 +92,14 @@ def _calculate_coeffs(
 def zero_phase(
     series: pd.Series,
     window: int,
-    win_type: Literal["gaussian", "kaiser", "triang"],
+    win_type: SmoothingKernel,
     std: float,
     beta: float,
 ) -> pd.Series:
     if len(series) == 0:
         return series
     if len(series) < window:
-        raise ValueError("Series length must be greater than or equal to window size")
+        return series
     values = series.to_numpy()
     b = _calculate_coeffs(window=window, win_type=win_type, std=std, beta=beta)
     a = 1.0
@@ -83,39 +108,163 @@ def zero_phase(
 
 
 def smooth_extrema(
-    series: pd.Series, method: str, window: int, beta: float
+    series: pd.Series,
+    method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
+    window: int = DEFAULTS_EXTREMA_SMOOTHING["window"],
+    beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
 ) -> pd.Series:
+    if window < 3:
+        window = 3
+    if beta <= 0 or not np.isfinite(beta):
+        beta = 1.0
+
     std = get_gaussian_std(window)
     odd_window = get_odd_window(window)
-    smoothing_methods: dict[str, pd.Series] = {
-        "gaussian": zero_phase(
+
+    if method == SMOOTHING_METHODS[0]:  # "gaussian"
+        return zero_phase(
             series=series,
             window=window,
-            win_type="gaussian",
+            win_type=SMOOTHING_METHODS[0],
             std=std,
             beta=beta,
-        ),
-        "kaiser": zero_phase(
+        )
+    elif method == SMOOTHING_METHODS[1]:  # "kaiser"
+        return zero_phase(
             series=series,
             window=window,
-            win_type="kaiser",
+            win_type=SMOOTHING_METHODS[1],
             std=std,
             beta=beta,
-        ),
-        "triang": zero_phase(
+        )
+    elif method == SMOOTHING_METHODS[2]:  # "triang"
+        return zero_phase(
             series=series,
             window=window,
-            win_type="triang",
+            win_type=SMOOTHING_METHODS[2],
             std=std,
             beta=beta,
-        ),
-        "smm": series.rolling(window=odd_window, center=True).median(),
-        "sma": series.rolling(window=odd_window, center=True).mean(),
-    }
-    return smoothing_methods.get(
-        method,
-        smoothing_methods["gaussian"],
-    )
+        )
+    elif method == SMOOTHING_METHODS[3]:  # "smm" (Simple Moving Median)
+        return series.rolling(window=odd_window, center=True).median()
+    elif method == SMOOTHING_METHODS[4]:  # "sma" (Simple Moving Average)
+        return series.rolling(window=odd_window, center=True).mean()
+    else:
+        return zero_phase(
+            series=series,
+            window=window,
+            win_type=SMOOTHING_METHODS[0],
+            std=std,
+            beta=beta,
+        )
+
+
+def normalize_weights(
+    weights: NDArray[np.floating],
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> NDArray[np.floating]:
+    if weights.size == 0:
+        return weights
+    if normalization == NORMALIZATION_TYPES[2]:  # "none"
+        return weights
+
+    if normalization == NORMALIZATION_TYPES[0]:  # "minmax"
+        weights = weights.astype(float, copy=False)
+        if np.isnan(weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+        w_min = np.min(weights)
+        w_max = np.max(weights)
+        if not (np.isfinite(w_min) and np.isfinite(w_max)):
+            return np.full_like(weights, 1.0, dtype=float)
+        w_range = w_max - w_min
+        if np.isclose(w_range, 0.0):
+            return np.full_like(weights, 1.0, dtype=float)
+        normalized_weights = (weights - w_min) / w_range
+        if np.isnan(normalized_weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+        if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
+            normalized_weights = np.power(normalized_weights, gamma)
+            if np.isnan(normalized_weights).any():
+                return np.full_like(weights, 1.0, dtype=float)
+        return normalized_weights
+
+    if normalization == NORMALIZATION_TYPES[1]:  # "l1"
+        weights_sum = np.sum(np.abs(weights))
+        if weights_sum <= 0 or not np.isfinite(weights_sum):
+            return np.full_like(weights, 1.0, dtype=float)
+        normalized_weights = weights / weights_sum
+        if np.isnan(normalized_weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+        if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
+            normalized_weights = np.power(normalized_weights, gamma)
+            if np.isnan(normalized_weights).any():
+                return np.full_like(weights, 1.0, dtype=float)
+        return normalized_weights
+
+    raise ValueError(f"Unknown normalization method: {normalization}")
+
+
+def calculate_extrema_weights(
+    series: pd.Series,
+    indices: list[int],
+    weights: NDArray[np.floating],
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> pd.Series:
+    if len(indices) == 0 or len(weights) == 0:
+        return pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
+
+    if len(indices) != len(weights):
+        raise ValueError(
+            f"Length mismatch: {len(indices)} indices but {len(weights)} weights"
+        )
+
+    normalized_weights = normalize_weights(weights, normalization, gamma)
+
+    if normalized_weights.size == 0 or np.allclose(
+        normalized_weights, normalized_weights[0]
+    ):
+        normalized_weights = np.full_like(
+            normalized_weights, float(DEFAULT_EXTREMA_WEIGHT)
+        )
+
+    weights_series = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
+    mask = pd.Index(indices).isin(series.index)
+    normalized_weights = normalized_weights[mask]
+    valid_indices = [idx for idx, is_valid in zip(indices, mask) if is_valid]
+    if len(valid_indices) > 0:
+        weights_series.loc[valid_indices] = normalized_weights
+    return weights_series
+
+
+def get_weighted_extrema(
+    extrema: pd.Series,
+    indices: list[int],
+    weights: NDArray[np.floating],
+    strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> tuple[pd.Series, pd.Series]:
+    default_weights = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=extrema.index)
+    if (
+        len(indices) == 0 or len(weights) == 0 or strategy == WEIGHT_STRATEGIES[0]
+    ):  # "none"
+        return extrema, default_weights
+
+    if strategy == WEIGHT_STRATEGIES[1]:  # "pivot_threshold"
+        extrema_weights = calculate_extrema_weights(
+            series=extrema,
+            indices=indices,
+            weights=weights,
+            normalization=normalization,
+            gamma=gamma,
+        )
+        if np.allclose(extrema_weights, DEFAULT_EXTREMA_WEIGHT):
+            return extrema, default_weights
+        return extrema * extrema_weights, extrema_weights
+
+    raise ValueError(f"Unknown weight strategy: {strategy}")
 
 
 def get_callable_sha256(fn: Callable) -> str:

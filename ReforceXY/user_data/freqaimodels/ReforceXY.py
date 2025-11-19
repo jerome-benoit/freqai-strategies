@@ -2374,8 +2374,9 @@ class MyRLEnv(Base5ActionRLEnv):
         strategy_fn = strategies.get(exit_attenuation_mode, None)
         if strategy_fn is None:
             logger.debug(
-                "Unknown exit_attenuation_mode '%s'; defaulting to linear. Valid modes: %s",
+                "Unknown exit_attenuation_mode '%s'; defaulting to %s. Valid modes: %s",
                 exit_attenuation_mode,
+                ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
                 ", ".join(ReforceXY._EXIT_ATTENUATION_MODES),
             )
             strategy_fn = _linear
@@ -2384,9 +2385,10 @@ class MyRLEnv(Base5ActionRLEnv):
             factor = strategy_fn(factor, effective_dr, model_reward_parameters)
         except Exception as e:
             logger.warning(
-                "exit_attenuation_mode '%s' failed (%r); fallback linear (effective_dr=%.5f)",
+                "exit_attenuation_mode '%s' failed (%r); fallback to %s (effective_dr=%.5f)",
                 exit_attenuation_mode,
                 e,
+                ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
                 effective_dr,
             )
             factor = _linear(factor, effective_dr, model_reward_parameters)
