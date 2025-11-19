@@ -169,16 +169,14 @@ def normalize_weights(
     if normalization == "l1":
         weights_sum = weights.sum()
         if weights_sum <= 0 or np.isnan(weights_sum):
-            return np.full_like(weights, 1.0)
+            return np.full_like(weights, 1.0, dtype=float)
         normalized_weights = weights / weights_sum
         if np.isnan(normalized_weights).any():
-            return np.full_like(weights, 1.0)
-        if np.allclose(normalized_weights, normalized_weights[0]):
-            return np.full_like(weights, 1.0)
+            return np.full_like(weights, 1.0, dtype=float)
         if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
             normalized_weights = np.power(normalized_weights, gamma)
             if np.isnan(normalized_weights).any():
-                return np.full_like(weights, 1.0)
+                return np.full_like(weights, 1.0, dtype=float)
         return normalized_weights
 
     raise ValueError(f"Unknown normalization method: {normalization}")
