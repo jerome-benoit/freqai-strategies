@@ -97,8 +97,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 .get("n_jobs", 1),
                 max(int(self.max_system_threads / 4), 1),
             ),
-            "sampler": self._OPTUNA_SAMPLERS[0],  # "tpe"
-            "storage": self._OPTUNA_STORAGE_BACKENDS[1],  # "file"
+            "sampler": QuickAdapterRegressorV3._OPTUNA_SAMPLERS[0],  # "tpe"
+            "storage": QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[1],  # "file"
             "continuous": True,
             "warm_start": True,
             "n_startup_trials": 15,
@@ -226,22 +226,30 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_train_value[pair] = -1
             self._optuna_label_values[pair] = [-1, -1]
             self._optuna_hp_params[pair] = (
-                self.optuna_load_best_params(pair, self._OPTUNA_NAMESPACES[0])  # "hp"
-                if self.optuna_load_best_params(pair, self._OPTUNA_NAMESPACES[0])
+                self.optuna_load_best_params(
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
+                )  # "hp"
+                if self.optuna_load_best_params(
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
+                )
                 else {}
             )
             self._optuna_train_params[pair] = (
                 self.optuna_load_best_params(
-                    pair, self._OPTUNA_NAMESPACES[1]
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
                 )  # "train"
-                if self.optuna_load_best_params(pair, self._OPTUNA_NAMESPACES[1])
+                if self.optuna_load_best_params(
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
+                )
                 else {}
             )
             self._optuna_label_params[pair] = (
                 self.optuna_load_best_params(
-                    pair, self._OPTUNA_NAMESPACES[2]
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
                 )  # "label"
-                if self.optuna_load_best_params(pair, self._OPTUNA_NAMESPACES[2])
+                if self.optuna_load_best_params(
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
+                )
                 else {
                     "label_period_candles": self.ft_params.get(
                         "label_period_candles",
@@ -263,76 +271,76 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
     def get_optuna_params(self, pair: str, namespace: str) -> dict[str, Any]:
-        if namespace == self._OPTUNA_NAMESPACES[0]:  # "hp"
+        if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             params = self._optuna_hp_params.get(pair)
-        elif namespace == self._OPTUNA_NAMESPACES[1]:  # "train"
+        elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "train"
             params = self._optuna_train_params.get(pair)
-        elif namespace == self._OPTUNA_NAMESPACES[2]:  # "label"
+        elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]:  # "label"
             params = self._optuna_label_params.get(pair)
         else:
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(self._OPTUNA_NAMESPACES)}"
+                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
         return params
 
     def set_optuna_params(
         self, pair: str, namespace: str, params: dict[str, Any]
     ) -> None:
-        if namespace == self._OPTUNA_NAMESPACES[0]:  # "hp"
+        if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             self._optuna_hp_params[pair] = params
-        elif namespace == self._OPTUNA_NAMESPACES[1]:  # "train"
+        elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "train"
             self._optuna_train_params[pair] = params
-        elif namespace == self._OPTUNA_NAMESPACES[2]:  # "label"
+        elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]:  # "label"
             self._optuna_label_params[pair] = params
         else:
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(self._OPTUNA_NAMESPACES)}"
+                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
 
     def get_optuna_value(self, pair: str, namespace: str) -> float:
-        if namespace == self._OPTUNA_NAMESPACES[0]:  # "hp"
+        if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             value = self._optuna_hp_value.get(pair)
-        elif namespace == self._OPTUNA_NAMESPACES[1]:  # "train"
+        elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "train"
             value = self._optuna_train_value.get(pair)
         else:
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(self._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
+                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
             )
         return value
 
     def set_optuna_value(self, pair: str, namespace: str, value: float) -> None:
-        if namespace == self._OPTUNA_NAMESPACES[0]:  # "hp"
+        if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             self._optuna_hp_value[pair] = value
-        elif namespace == self._OPTUNA_NAMESPACES[1]:  # "train"
+        elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "train"
             self._optuna_train_value[pair] = value
         else:
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(self._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
+                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
             )
 
     def get_optuna_values(self, pair: str, namespace: str) -> list[float | int]:
-        if namespace == self._OPTUNA_NAMESPACES[2]:  # "label"
+        if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]:  # "label"
             values = self._optuna_label_values.get(pair)
         else:
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {self._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         return values
 
     def set_optuna_values(
         self, pair: str, namespace: str, values: list[float | int]
     ) -> None:
-        if namespace == self._OPTUNA_NAMESPACES[2]:  # "label"
+        if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]:  # "label"
             self._optuna_label_values[pair] = values
         else:
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {self._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
 
     def init_optuna_label_candle_pool(self) -> None:
@@ -406,7 +414,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if self._optuna_hyperopt:
             self.optuna_optimize(
                 pair=dk.pair,
-                namespace=self._OPTUNA_NAMESPACES[0],  # "hp"
+                namespace=QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0],  # "hp"
                 objective=lambda trial: hp_objective(
                     trial,
                     str(self.freqai_info.get("regressor", "xgboost")),
@@ -416,7 +424,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     X_test,
                     y_test,
                     test_weights,
-                    self.get_optuna_params(dk.pair, self._OPTUNA_NAMESPACES[0]),  # "hp"
+                    self.get_optuna_params(
+                        dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
+                    ),  # "hp"
                     model_training_parameters,
                     self._optuna_config.get("space_reduction"),
                     self._optuna_config.get("expansion_ratio"),
@@ -425,7 +435,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
             optuna_hp_params = self.get_optuna_params(
-                dk.pair, self._OPTUNA_NAMESPACES[0]
+                dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
             )  # "hp"
             if optuna_hp_params:
                 model_training_parameters = {
@@ -435,7 +445,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             train_study = self.optuna_optimize(
                 pair=dk.pair,
-                namespace=self._OPTUNA_NAMESPACES[1],  # "train"
+                namespace=QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1],  # "train"
                 objective=lambda trial: train_objective(
                     trial,
                     str(self.freqai_info.get("regressor", "xgboost")),
@@ -454,18 +464,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
             optuna_hp_value = self.get_optuna_value(
-                dk.pair, self._OPTUNA_NAMESPACES[0]
+                dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
             )  # "hp"
             optuna_train_params = self.get_optuna_params(
-                dk.pair, self._OPTUNA_NAMESPACES[1]
+                dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
             )  # "train"
             optuna_train_value = self.get_optuna_value(
-                dk.pair, self._OPTUNA_NAMESPACES[1]
+                dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
             )  # "train"
             if (
                 optuna_train_params
                 and self.optuna_validate_params(
-                    dk.pair, self._OPTUNA_NAMESPACES[1], train_study
+                    dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1], train_study
                 )  # "train"
                 and optuna_train_value < optuna_hp_value
             ):
@@ -513,10 +523,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         namespace: str,
         callback: Callable[[], None],
     ) -> None:
-        if namespace not in {self._OPTUNA_NAMESPACES[2]}:  # Only "label"
+        if namespace not in {
+            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
+        }:  # Only "label"
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {self._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         if not callable(callback):
             raise ValueError("callback must be callable")
@@ -554,10 +566,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if self._optuna_hyperopt:
             self.optuna_throttle_callback(
                 pair=pair,
-                namespace=self._OPTUNA_NAMESPACES[2],  # "label"
+                namespace=QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
                 callback=lambda: self.optuna_optimize(
                     pair=pair,
-                    namespace=self._OPTUNA_NAMESPACES[2],  # "label"
+                    namespace=QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
                     objective=lambda trial: label_objective(
                         trial,
                         self.data_provider.get_pair_dataframe(
@@ -610,9 +622,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             min_pred, max_pred = self.min_max_pred(
                 pred_df,
                 fit_live_predictions_candles,
-                self.get_optuna_params(pair, self._OPTUNA_NAMESPACES[2]).get(
-                    "label_period_candles"
-                ),  # "label"
+                self.get_optuna_params(
+                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
+                ).get("label_period_candles"),  # "label"
             )
             dk.data["extra_returns_per_train"][MINIMA_THRESHOLD_COLUMN] = min_pred
             dk.data["extra_returns_per_train"][MAXIMA_THRESHOLD_COLUMN] = max_pred
@@ -650,17 +662,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
 
         dk.data["extra_returns_per_train"]["label_period_candles"] = (
-            self.get_optuna_params(pair, self._OPTUNA_NAMESPACES[2]).get(
-                "label_period_candles"
-            )  # "label"
+            self.get_optuna_params(
+                pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
+            ).get("label_period_candles")  # "label"
         )
         dk.data["extra_returns_per_train"]["label_natr_ratio"] = self.get_optuna_params(
             pair,
-            self._OPTUNA_NAMESPACES[2],  # "label"
+            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
         ).get("label_natr_ratio")
 
         hp_rmse = self.optuna_validate_value(
-            self.get_optuna_value(pair, self._OPTUNA_NAMESPACES[0])
+            self.get_optuna_value(pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0])
         )  # "hp"
         dk.data["extra_returns_per_train"]["hp_rmse"] = (
             hp_rmse if hp_rmse is not None else np.inf
@@ -711,7 +723,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         extrema_selection = str(
             self.freqai_info.get(
                 "prediction_extrema_selection",
-                self._EXTREMA_SELECTION_METHODS[1],
+                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1],
             )
         )
         if extrema_selection not in self._extrema_selection_methods_set():
@@ -1004,10 +1016,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def get_multi_objective_study_best_trial(
         self, namespace: str, study: optuna.study.Study
     ) -> Optional[optuna.trial.FrozenTrial]:
-        if namespace not in {self._OPTUNA_NAMESPACES[2]}:  # Only "label"
+        if namespace not in {
+            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
+        }:  # Only "label"
             raise ValueError(
                 f"Invalid namespace: {namespace}. "
-                f"Expected {self._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         n_objectives = len(study.directions)
         if n_objectives < 2:
@@ -1643,7 +1657,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
         storage_backend = self._optuna_config.get("storage")
-        if storage_backend == self._OPTUNA_STORAGE_BACKENDS[0]:  # "sqlite"
+        if (
+            storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[0]
+        ):  # "sqlite"
             storage = optuna.storages.RDBStorage(
                 url=f"sqlite:///{storage_dir}/{storage_filename}.sqlite",
                 heartbeat_interval=60,
@@ -1651,7 +1667,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     max_retry=3
                 ),
             )
-        elif storage_backend == self._OPTUNA_STORAGE_BACKENDS[1]:  # "file"
+        elif (
+            storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[1]
+        ):  # "file"
             storage = optuna.storages.JournalStorage(
                 optuna.storages.journal.JournalFileBackend(
                     f"{storage_dir}/{storage_filename}.log"
@@ -1660,7 +1678,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Unsupported optuna storage backend: {storage_backend}. "
-                f"Supported backends are {', '.join(self._OPTUNA_STORAGE_BACKENDS)}"
+                f"Supported backends are {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
             )
         return storage
 
@@ -1675,12 +1693,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return optuna.pruners.NopPruner()
 
     def optuna_create_sampler(self) -> optuna.samplers.BaseSampler:
-        sampler = self._optuna_config.get("sampler", self._OPTUNA_SAMPLERS[0])
-        if sampler == self._OPTUNA_SAMPLERS[1]:  # "auto"
+        sampler = self._optuna_config.get(
+            "sampler", QuickAdapterRegressorV3._OPTUNA_SAMPLERS[0]
+        )
+        if sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[1]:  # "auto"
             return optunahub.load_module("samplers/auto_sampler").AutoSampler(
                 seed=self._optuna_config.get("seed")
             )
-        elif sampler == self._OPTUNA_SAMPLERS[0]:  # "tpe"
+        elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[0]:  # "tpe"
             return optuna.samplers.TPESampler(
                 n_startup_trials=self._optuna_config.get("n_startup_trials"),
                 multivariate=True,
@@ -1690,7 +1710,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Unsupported sampler: {sampler}. "
-                f"Supported samplers are {', '.join(self._OPTUNA_SAMPLERS)}"
+                f"Supported samplers are {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
             )
 
     def optuna_create_study(

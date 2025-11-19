@@ -82,21 +82,21 @@ class RLAgentStrategy(IStrategy):
     ) -> DataFrame:
         enter_long_conditions = [
             dataframe.get("do_predict") == 1,
-            dataframe.get(ACTION_COLUMN) == self._ACTION_ENTER_LONG,  # 1,
+            dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_ENTER_LONG,  # 1,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_long_conditions),
             ["enter_long", "enter_tag"],
-        ] = (1, self._TRADE_DIRECTIONS[0])  # "long"
+        ] = (1, RLAgentStrategy._TRADE_DIRECTIONS[0])  # "long"
 
         enter_short_conditions = [
             dataframe.get("do_predict") == 1,
-            dataframe.get(ACTION_COLUMN) == self._ACTION_ENTER_SHORT,  # 3,
+            dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_ENTER_SHORT,  # 3,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_short_conditions),
             ["enter_short", "enter_tag"],
-        ] = (1, self._TRADE_DIRECTIONS[1])  # "short"
+        ] = (1, RLAgentStrategy._TRADE_DIRECTIONS[1])  # "short"
 
         return dataframe
 
@@ -105,13 +105,13 @@ class RLAgentStrategy(IStrategy):
     ) -> DataFrame:
         exit_long_conditions = [
             dataframe.get("do_predict") == 1,
-            dataframe.get(ACTION_COLUMN) == self._ACTION_EXIT_LONG,  # 2,
+            dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_EXIT_LONG,  # 2,
         ]
         dataframe.loc[reduce(lambda x, y: x & y, exit_long_conditions), "exit_long"] = 1
 
         exit_short_conditions = [
             dataframe.get("do_predict") == 1,
-            dataframe.get(ACTION_COLUMN) == self._ACTION_EXIT_SHORT,  # 4,
+            dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_EXIT_SHORT,  # 4,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, exit_short_conditions), "exit_short"
@@ -159,10 +159,13 @@ class RLAgentStrategy(IStrategy):
     def is_short_allowed(self) -> bool:
         trading_mode = self.config.get("trading_mode")
         # "margin", "futures"
-        if trading_mode in {self._TRADING_MODES[0], self._TRADING_MODES[1]}:
+        if trading_mode in {
+            RLAgentStrategy._TRADING_MODES[0],
+            RLAgentStrategy._TRADING_MODES[1],
+        }:
             return True
         # "spot"
-        elif trading_mode == self._TRADING_MODES[2]:
+        elif trading_mode == RLAgentStrategy._TRADING_MODES[2]:
             return False
         else:
             raise ValueError(f"Invalid trading_mode: {trading_mode}")

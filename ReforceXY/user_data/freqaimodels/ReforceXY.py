@@ -74,7 +74,7 @@ from stable_baselines3.common.vec_env import (
 
 ModelType = Literal["PPO", "RecurrentPPO", "MaskablePPO", "DQN", "QRDQN"]
 ScheduleType = Literal["linear", "constant", "unknown"]
-ScheduleTypeKnown = Literal["linear", "constant"]  # Subset for get_schedule() function
+ScheduleTypeKnown = Literal["linear", "constant"]
 ExitPotentialMode = Literal[
     "canonical",
     "non_canonical",
@@ -217,11 +217,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "FreqAI model requires StaticPairList method defined in pairlists configuration and pair_whitelist defined in exchange section configuration"
             )
         self.action_masking: bool = (
-            self.model_type == self._MODEL_TYPES[2]
+            self.model_type == ReforceXY._MODEL_TYPES[2]
         )  # "MaskablePPO"
         self.rl_config.setdefault("action_masking", self.action_masking)
         self.inference_masking: bool = self.rl_config.get("inference_masking", True)
-        self.recurrent: bool = self.model_type == self._MODEL_TYPES[1]  # "RecurrentPPO"
+        self.recurrent: bool = (
+            self.model_type == ReforceXY._MODEL_TYPES[1]
+        )  # "RecurrentPPO"
         self.lr_schedule: bool = self.rl_config.get("lr_schedule", False)
         self.cr_schedule: bool = self.rl_config.get("cr_schedule", False)
         self.n_envs: int = self.rl_config.get("n_envs", 1)
@@ -496,7 +498,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             if isinstance(lr, (int, float)):
                 lr = float(lr)
                 model_params["learning_rate"] = get_schedule(
-                    cast(ScheduleTypeKnown, self._SCHEDULE_TYPES[0]), lr
+                    cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), lr
                 )
                 logger.info(
                     "Learning rate linear schedule enabled, initial value: %s", lr
@@ -505,19 +507,19 @@ class ReforceXY(BaseReinforcementLearningModel):
         # "PPO"
         if (
             not self.hyperopt
-            and self._MODEL_TYPES[0] in self.model_type
+            and ReforceXY._MODEL_TYPES[0] in self.model_type
             and self.cr_schedule
         ):
             cr = model_params.get("clip_range", 0.2)
             if isinstance(cr, (int, float)):
                 cr = float(cr)
                 model_params["clip_range"] = get_schedule(
-                    cast(ScheduleTypeKnown, self._SCHEDULE_TYPES[0]), cr
+                    cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), cr
                 )
                 logger.info("Clip range linear schedule enabled, initial value: %s", cr)
 
         # "DQN"
-        if self._MODEL_TYPES[3] in self.model_type:
+        if ReforceXY._MODEL_TYPES[3] in self.model_type:
             if model_params.get("gradient_steps") is None:
                 model_params["gradient_steps"] = compute_gradient_steps(
                     model_params.get("train_freq"), model_params.get("subsample_steps")
@@ -536,9 +538,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         ] = model_params.get("policy_kwargs", {}).get("net_arch", default_net_arch)
 
         # "PPO"
-        if self._MODEL_TYPES[0] in self.model_type:
+        if ReforceXY._MODEL_TYPES[0] in self.model_type:
             if isinstance(net_arch, str):
-                if net_arch in self._NET_ARCH_SIZES:
+                if net_arch in ReforceXY._NET_ARCH_SIZES:
                     model_params["policy_kwargs"]["net_arch"] = get_net_arch(
                         self.model_type,
                         cast(NetArchSize, net_arch),
@@ -576,7 +578,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 }
         else:
             if isinstance(net_arch, str):
-                if net_arch in self._NET_ARCH_SIZES:
+                if net_arch in ReforceXY._NET_ARCH_SIZES:
                     model_params["policy_kwargs"]["net_arch"] = get_net_arch(
                         self.model_type,
                         cast(NetArchSize, net_arch),
@@ -594,12 +596,12 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         model_params["policy_kwargs"]["activation_fn"] = get_activation_fn(
             model_params.get("policy_kwargs", {}).get(
-                "activation_fn", self._ACTIVATION_FUNCTIONS[1]
+                "activation_fn", ReforceXY._ACTIVATION_FUNCTIONS[1]
             )  # "relu"
         )
         model_params["policy_kwargs"]["optimizer_class"] = get_optimizer_class(
             model_params.get("policy_kwargs", {}).get(
-                "optimizer_class", self._OPTIMIZER_CLASSES[1]
+                "optimizer_class", ReforceXY._OPTIMIZER_CLASSES[1]
             )  # "adamw"
         )
 
@@ -638,7 +640,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if total_timesteps <= 0:
             return 1
         # "PPO"
-        if self._MODEL_TYPES[0] in self.model_type:
+        if ReforceXY._MODEL_TYPES[0] in self.model_type:
             eval_freq: Optional[int] = None
             if model_params:
                 n_steps = model_params.get("n_steps")
@@ -790,7 +792,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         logger.info("%s params: %s", self.model_type, model_params)
 
         # "PPO"
-        if self._MODEL_TYPES[0] in self.model_type:
+        if ReforceXY._MODEL_TYPES[0] in self.model_type:
             n_steps = model_params.get("n_steps", 0)
             min_timesteps = 2 * n_steps * self.n_envs
             if total_timesteps <= min_timesteps:
@@ -1040,23 +1042,23 @@ class ReforceXY(BaseReinforcementLearningModel):
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
         storage_backend: StorageBackend = self.rl_config_optuna.get(
-            "storage", self._STORAGE_BACKENDS[0]
+            "storage", ReforceXY._STORAGE_BACKENDS[0]
         )  # "sqlite"
         # "sqlite"
-        if storage_backend == self._STORAGE_BACKENDS[0]:
+        if storage_backend == ReforceXY._STORAGE_BACKENDS[0]:
             storage = RDBStorage(
                 url=f"sqlite:///{storage_dir}/{storage_filename}.sqlite",
                 heartbeat_interval=60,
                 failed_trial_callback=RetryFailedTrialCallback(max_retry=3),
             )
         # "file"
-        elif storage_backend == self._STORAGE_BACKENDS[1]:
+        elif storage_backend == ReforceXY._STORAGE_BACKENDS[1]:
             storage = JournalStorage(
                 JournalFileBackend(f"{storage_dir}/{storage_filename}.log")
             )
         else:
             raise ValueError(
-                f"Unsupported storage backend: {storage_backend}. Supported backends are: {', '.join(self._STORAGE_BACKENDS)}"
+                f"Unsupported storage backend: {storage_backend}. Supported backends are: {', '.join(ReforceXY._STORAGE_BACKENDS)}"
             )
         return storage
 
@@ -1072,15 +1074,15 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def create_sampler(self) -> BaseSampler:
         sampler: SamplerType = self.rl_config_optuna.get(
-            "sampler", self._SAMPLER_TYPES[0]
+            "sampler", ReforceXY._SAMPLER_TYPES[0]
         )  # "tpe"
         # "auto"
-        if sampler == self._SAMPLER_TYPES[1]:
+        if sampler == ReforceXY._SAMPLER_TYPES[1]:
             return optunahub.load_module("samplers/auto_sampler").AutoSampler(
                 seed=self.rl_config_optuna.get("seed", 42)
             )
         # "tpe"
-        elif sampler == self._SAMPLER_TYPES[0]:
+        elif sampler == ReforceXY._SAMPLER_TYPES[0]:
             return TPESampler(
                 n_startup_trials=self.optuna_n_startup_trials,
                 multivariate=True,
@@ -1089,7 +1091,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             raise ValueError(
-                f"Unsupported sampler: {sampler}. Supported samplers: {', '.join(self._SAMPLER_TYPES)}"
+                f"Unsupported sampler: {sampler}. Supported samplers: {', '.join(ReforceXY._SAMPLER_TYPES)}"
             )
 
     @staticmethod
@@ -1115,7 +1117,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if continuous:
             ReforceXY.delete_study(study_name, storage)
         # "PPO"
-        if self._MODEL_TYPES[0] in self.model_type:
+        if ReforceXY._MODEL_TYPES[0] in self.model_type:
             resource_eval_freq = min(PPO_N_STEPS)
         else:
             resource_eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True)
@@ -1322,16 +1324,16 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def get_optuna_params(self, trial: Trial) -> Dict[str, Any]:
         # "RecurrentPPO"
-        if self._MODEL_TYPES[1] in self.model_type:
+        if ReforceXY._MODEL_TYPES[1] in self.model_type:
             return sample_params_recurrentppo(trial)
         # "PPO"
-        elif self._MODEL_TYPES[0] in self.model_type:
+        elif ReforceXY._MODEL_TYPES[0] in self.model_type:
             return sample_params_ppo(trial)
         # "QRDQN"
-        elif self._MODEL_TYPES[4] in self.model_type:
+        elif ReforceXY._MODEL_TYPES[4] in self.model_type:
             return sample_params_qrdqn(trial)
         # "DQN"
-        elif self._MODEL_TYPES[3] in self.model_type:
+        elif ReforceXY._MODEL_TYPES[3] in self.model_type:
             return sample_params_dqn(trial)
         else:
             raise NotImplementedError(f"{self.model_type} not supported for hyperopt")
@@ -1347,7 +1349,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         params = self.get_optuna_params(trial)
 
         # "PPO"
-        if self._MODEL_TYPES[0] in self.model_type:
+        if ReforceXY._MODEL_TYPES[0] in self.model_type:
             n_steps = params.get("n_steps")
             if n_steps * self.n_envs > total_timesteps:
                 raise TrialPruned(
@@ -1360,7 +1362,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
 
         # "DQN"
-        if self._MODEL_TYPES[3] in self.model_type:
+        if ReforceXY._MODEL_TYPES[3] in self.model_type:
             gradient_steps = params.get("gradient_steps")
             if isinstance(gradient_steps, int) and gradient_steps <= 0:
                 raise TrialPruned(f"{gradient_steps=} is negative or zero")
@@ -1380,7 +1382,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         logger.info("Trial %s params: %s", trial.number, params)
 
         # "PPO"
-        if self._MODEL_TYPES[0] in self.model_type:
+        if ReforceXY._MODEL_TYPES[0] in self.model_type:
             n_steps = params.get("n_steps", 0)
             if n_steps > 0:
                 rollout = n_steps * self.n_envs
