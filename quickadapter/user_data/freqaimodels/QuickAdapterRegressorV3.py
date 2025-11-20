@@ -6,7 +6,7 @@ import time
 import warnings
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Final, Literal, Optional
+from typing import Any, Callable, Final, Literal, Optional, Union
 
 import numpy as np
 import optuna
@@ -35,6 +35,11 @@ from Utils import (
 
 ExtremaSelectionMethod = Literal["peak_values", "extrema_rank", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
+CustomThresholdMethod = Literal["median", "soft_extremum"]
+SkimageThresholdMethod = Literal[
+    "isodata", "li", "mean", "minimum", "otsu", "triangle", "yen"
+]
+ThresholdMethod = Union[CustomThresholdMethod, SkimageThresholdMethod]
 
 debug = False
 
@@ -75,6 +80,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "extrema_rank",
         "partition",
     )
+    _CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
+        "median",
+        "soft_extremum",
+    )
+    _SKIMAGE_THRESHOLD_METHODS: Final[tuple[SkimageThresholdMethod, ...]] = (
+        "isodata",
+        "li",
+        "mean",
+        "minimum",
+        "otsu",
+        "triangle",
+        "yen",
+    )
+    _THRESHOLD_METHODS: Final[tuple[ThresholdMethod, ...]] = (
+        *_CUSTOM_THRESHOLD_METHODS,
+        *_SKIMAGE_THRESHOLD_METHODS,
+    )
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("sqlite", "file")
     _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
@@ -82,6 +104,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
         return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
+
+    @staticmethod
+    def _custom_threshold_methods_set() -> set[CustomThresholdMethod]:
+        return set(QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS)
+
+    @staticmethod
+    def _skimage_threshold_methods_set() -> set[SkimageThresholdMethod]:
+        return set(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)
+
+    @staticmethod
+    def _threshold_methods_set() -> set[ThresholdMethod]:
+        return set(QuickAdapterRegressorV3._THRESHOLD_METHODS)
 
     @staticmethod
     def _optuna_namespaces_set() -> set[OptunaNamespace]:
@@ -728,38 +762,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1],
             )
         )
-        if extrema_selection not in self._extrema_selection_methods_set():
+        if (
+            extrema_selection
+            not in QuickAdapterRegressorV3._extrema_selection_methods_set()
+        ):
             raise ValueError(
                 f"Unsupported extrema selection method: {extrema_selection}. "
-                f"Supported methods are {', '.join(self._EXTREMA_SELECTION_METHODS)}"
+                f"Supported methods are {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
             )
         thresholds_smoothing = str(
-            predictions_extrema.get("thresholds_smoothing", "mean")
+            predictions_extrema.get(
+                "thresholds_smoothing",
+                QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS[2],
+            )
         )
-        skimage_thresholds_smoothing_methods = {
-            "isodata",
-            "li",
-            "mean",
-            "minimum",
-            "otsu",
-            "triangle",
-            "yen",
-        }
-        thresholds_smoothing_methods = skimage_thresholds_smoothing_methods.union(
-            {"soft_extremum"}
-        )
-        if thresholds_smoothing == "soft_extremum":
+        if thresholds_smoothing not in QuickAdapterRegressorV3._threshold_methods_set():
+            raise ValueError(
+                f"Unsupported thresholds smoothing method: {thresholds_smoothing}. "
+                f"Supported methods are {', '.join(QuickAdapterRegressorV3._THRESHOLD_METHODS)}"
+            )
+        if (
+            thresholds_smoothing == QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS[0]
+        ):  # "median"
+            return QuickAdapterRegressorV3.median_min_max(
+                pred_extrema, extrema_selection
+            )
+        elif (
+            thresholds_smoothing == QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS[1]
+        ):  # "soft_extremum"
             thresholds_alpha = float(predictions_extrema.get("thresholds_alpha", 12.0))
             return QuickAdapterRegressorV3.soft_extremum_min_max(
                 pred_extrema, thresholds_alpha, extrema_selection
             )
-        elif thresholds_smoothing in skimage_thresholds_smoothing_methods:
+        else:
             return QuickAdapterRegressorV3.skimage_min_max(
                 pred_extrema, thresholds_smoothing, extrema_selection
-            )
-        else:
-            raise ValueError(
-                f"Unsupported thresholds smoothing method: {thresholds_smoothing}. Supported methods are {', '.join(thresholds_smoothing_methods)}"
             )
 
     @staticmethod
@@ -866,6 +903,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return soft_minimum, soft_maximum
 
     @staticmethod
+    def median_min_max(
+        pred_extrema: pd.Series,
+        extrema_selection: ExtremaSelectionMethod,
+    ) -> tuple[float, float]:
+        pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
+            pred_extrema, extrema_selection
+        )
+
+        if pred_minima.empty:
+            min_val = np.nan
+        else:
+            min_val = np.median(pred_minima.to_numpy())
+        if not np.isfinite(min_val):
+            min_val = QuickAdapterRegressorV3.safe_min_pred(pred_extrema)
+
+        if pred_maxima.empty:
+            max_val = np.nan
+        else:
+            max_val = np.median(pred_maxima.to_numpy())
+        if not np.isfinite(max_val):
+            max_val = QuickAdapterRegressorV3.safe_max_pred(pred_extrema)
+
+        return min_val, max_val
+
+    @staticmethod
     def skimage_min_max(
         pred_extrema: pd.Series,
         method: str,
@@ -875,26 +937,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pred_extrema, extrema_selection
         )
 
-        method_functions = {
-            "isodata": QuickAdapterRegressorV3.apply_skimage_threshold,
-            "li": QuickAdapterRegressorV3.apply_skimage_threshold,
-            "mean": QuickAdapterRegressorV3.apply_skimage_threshold,
-            "minimum": QuickAdapterRegressorV3.apply_skimage_threshold,
-            "otsu": QuickAdapterRegressorV3.apply_skimage_threshold,
-            "triangle": QuickAdapterRegressorV3.apply_skimage_threshold,
-            "yen": QuickAdapterRegressorV3.apply_skimage_threshold,
-        }
-
-        if method not in method_functions:
-            raise ValueError(f"Unsupported method: {method}")
-
-        min_func = method_functions[method]
-        max_func = method_functions[method]
-
         try:
             threshold_func = getattr(skimage.filters, f"threshold_{method}")
         except AttributeError:
             raise ValueError(f"Unknown skimage threshold function: threshold_{method}")
+
+        min_func = QuickAdapterRegressorV3.apply_skimage_threshold
+        max_func = QuickAdapterRegressorV3.apply_skimage_threshold
 
         min_val = min_func(pred_minima, threshold_func)
         if not np.isfinite(min_val):

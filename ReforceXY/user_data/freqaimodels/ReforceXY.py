@@ -73,8 +73,8 @@ from stable_baselines3.common.vec_env import (
 )
 
 ModelType = Literal["PPO", "RecurrentPPO", "MaskablePPO", "DQN", "QRDQN"]
-ScheduleType = Literal["linear", "constant", "unknown"]
 ScheduleTypeKnown = Literal["linear", "constant"]
+ScheduleType = Union[ScheduleTypeKnown, Literal["unknown"]]
 ExitPotentialMode = Literal[
     "canonical",
     "non_canonical",
@@ -85,7 +85,8 @@ ExitPotentialMode = Literal[
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "asinh", "clip"]
 ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
 ActivationFunction = Literal["tanh", "relu", "elu", "leaky_relu"]
-OptimizerClass = Literal["adam", "adamw", "rmsprop"]
+OptimizerClassOptuna = Literal["adamw", "rmsprop"]
+OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
 StorageBackend = Literal["sqlite", "file"]
 SamplerType = Literal["tpe", "auto"]
@@ -156,8 +157,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         "DQN",
         "QRDQN",
     )
-    _SCHEDULE_TYPES: Final[tuple[ScheduleType, ...]] = ("linear", "constant", "unknown")
     _SCHEDULE_TYPES_KNOWN: Final[tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
+    _SCHEDULE_TYPES: Final[tuple[ScheduleType, ...]] = (
+        *_SCHEDULE_TYPES_KNOWN,
+        "unknown",
+    )
     _EXIT_POTENTIAL_MODES: Final[tuple[ExitPotentialMode, ...]] = (
         "canonical",
         "non_canonical",
@@ -186,8 +190,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         "elu",
         "leaky_relu",
     )
-    _OPTIMIZER_CLASSES: Final[tuple[OptimizerClass, ...]] = ("adam", "adamw", "rmsprop")
-    _OPTIMIZER_CLASSES_OPTUNA: Final[tuple[OptimizerClass, ...]] = ("adamw", "rmsprop")
+    _OPTIMIZER_CLASSES_OPTUNA: Final[tuple[OptimizerClassOptuna, ...]] = (
+        "adamw",
+        "rmsprop",
+    )
+    _OPTIMIZER_CLASSES: Final[tuple[OptimizerClass, ...]] = (
+        *_OPTIMIZER_CLASSES_OPTUNA,
+        "adam",
+    )
     _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
         "small",
         "medium",
@@ -604,7 +614,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         model_params["policy_kwargs"]["optimizer_class"] = get_optimizer_class(
             model_params.get("policy_kwargs", {}).get(
-                "optimizer_class", ReforceXY._OPTIMIZER_CLASSES[1]
+                "optimizer_class", ReforceXY._OPTIMIZER_CLASSES[0]
             )  # "adamw"
         )
 
@@ -3842,9 +3852,9 @@ def get_optimizer_class(
     Get optimizer class
     """
     return {
-        ReforceXY._OPTIMIZER_CLASSES[0]: th.optim.Adam,  # "adam"
-        ReforceXY._OPTIMIZER_CLASSES[1]: th.optim.AdamW,  # "adamw"
-        ReforceXY._OPTIMIZER_CLASSES[2]: th.optim.RMSprop,  # "rmsprop"
+        ReforceXY._OPTIMIZER_CLASSES[0]: th.optim.AdamW,  # "adamw"
+        ReforceXY._OPTIMIZER_CLASSES[1]: th.optim.RMSprop,  # "rmsprop"
+        ReforceXY._OPTIMIZER_CLASSES[2]: th.optim.Adam,  # "adam"
     }.get(optimizer_class_name, th.optim.Adam)
 
 

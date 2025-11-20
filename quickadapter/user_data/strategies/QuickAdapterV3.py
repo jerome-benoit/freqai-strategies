@@ -1066,8 +1066,8 @@ class QuickAdapterV3(IStrategy):
         self, df: DataFrame, trade: Trade, exit_stage: int
     ) -> Optional[float]:
         natr_ratio_percent = (
-            self.partial_exit_stages[exit_stage][0]
-            if exit_stage in self.partial_exit_stages
+            QuickAdapterV3.partial_exit_stages[exit_stage][0]
+            if exit_stage in QuickAdapterV3.partial_exit_stages
             else 1.0
         )
         take_profit_distance = self.get_take_profit_distance(
@@ -1187,7 +1187,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
         trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
-        if trade_exit_stage not in self.partial_exit_stages:
+        if trade_exit_stage not in QuickAdapterV3.partial_exit_stages:
             return None
 
         df, _ = self.dp.get_analyzed_dataframe(
@@ -1219,7 +1219,9 @@ class QuickAdapterV3(IStrategy):
                 min_stake = 0.0
             if min_stake > trade.stake_amount:
                 return None
-            trade_stake_percent = self.partial_exit_stages[trade_exit_stage][1]
+            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][
+                1
+            ]
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             remaining_stake_amount = trade.stake_amount - trade_partial_stake_amount
             if remaining_stake_amount < min_stake:
@@ -1481,9 +1483,9 @@ class QuickAdapterV3(IStrategy):
         """
         if df.empty:
             return False
-        if side not in self._trade_directions_set():
+        if side not in QuickAdapterV3._trade_directions_set():
             return False
-        if order not in self._order_types_set():
+        if order not in QuickAdapterV3._order_types_set():
             return False
 
         trade_direction = side
@@ -1829,7 +1831,7 @@ class QuickAdapterV3(IStrategy):
             return "maxima_detected_long"
 
         trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
-        if trade_exit_stage in self.partial_exit_stages:
+        if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
             return None
 
         trade_take_profit_price = self.get_take_profit_price(
@@ -1927,7 +1929,7 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs,
     ) -> bool:
-        if side not in self._trade_directions_set():
+        if side not in QuickAdapterV3._trade_directions_set():
             return False
         if (
             side == QuickAdapterV3._TRADE_DIRECTIONS[1] and not self.can_short
