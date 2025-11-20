@@ -630,12 +630,12 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3.td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
 
-        extrema_smoothing_config = self.freqai_info.get("extrema_smoothing", {})
-        if not isinstance(extrema_smoothing_config, dict):
-            extrema_smoothing_config = {}
+        extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
+        if not isinstance(extrema_smoothing, dict):
+            extrema_smoothing = {}
 
         smoothing_method = str(
-            extrema_smoothing_config.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
+            extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
         )
         if smoothing_method not in SMOOTHING_METHODS:
             logger.warning(
@@ -643,20 +643,18 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_method = SMOOTHING_METHODS[0]
         smoothing_window = int(
-            extrema_smoothing_config.get("window", DEFAULTS_EXTREMA_SMOOTHING["window"])
+            extrema_smoothing.get("window", DEFAULTS_EXTREMA_SMOOTHING["window"])
         )
         smoothing_beta = float(
-            extrema_smoothing_config.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
+            extrema_smoothing.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
         )
 
-        extrema_weighting_config = self.freqai_info.get("extrema_weighting", {})
-        if not isinstance(extrema_weighting_config, dict):
-            extrema_weighting_config = {}
+        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
+        if not isinstance(extrema_weighting, dict):
+            extrema_weighting = {}
 
         weighting_strategy = str(
-            extrema_weighting_config.get(
-                "strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"]
-            )
+            extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
         )
         if weighting_strategy not in WEIGHT_STRATEGIES:
             logger.warning(
@@ -664,7 +662,7 @@ class QuickAdapterV3(IStrategy):
             )
             weighting_strategy = WEIGHT_STRATEGIES[0]
         weighting_normalization = str(
-            extrema_weighting_config.get(
+            extrema_weighting.get(
                 "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
             )
         )
@@ -673,7 +671,7 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default '{NORMALIZATION_TYPES[0]}'"
             )
             weighting_normalization = NORMALIZATION_TYPES[0]
-        weighting_gamma = extrema_weighting_config.get(
+        weighting_gamma = extrema_weighting.get(
             "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
         )
         if (
