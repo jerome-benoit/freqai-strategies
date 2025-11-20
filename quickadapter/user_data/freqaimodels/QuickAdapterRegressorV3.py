@@ -650,8 +650,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f = sp.stats.weibull_min.fit(
                 pd.to_numeric(di_values, errors="coerce").dropna()
             )
+            predictions_extrema = self.freqai_info.get("predictions_extrema", {})
             cutoff = sp.stats.weibull_min.ppf(
-                self.freqai_info.get("outlier_threshold", 0.999), *f
+                predictions_extrema.get("threshold_outlier", 0.999), *f
             )
 
         dk.data["DI_value_mean"] = di_values.mean()
@@ -720,9 +721,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
 
+        predictions_extrema = self.freqai_info.get("predictions_extrema", {})
         extrema_selection = str(
-            self.freqai_info.get(
-                "prediction_extrema_selection",
+            predictions_extrema.get(
+                "selection_method",
                 QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1],
             )
         )
@@ -732,7 +734,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Supported methods are {', '.join(self._EXTREMA_SELECTION_METHODS)}"
             )
         thresholds_smoothing = str(
-            self.freqai_info.get("prediction_thresholds_smoothing", "mean")
+            predictions_extrema.get("thresholds_smoothing", "mean")
         )
         skimage_thresholds_smoothing_methods = {
             "isodata",
@@ -747,9 +749,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             {"soft_extremum"}
         )
         if thresholds_smoothing == "soft_extremum":
-            thresholds_alpha = float(
-                self.freqai_info.get("prediction_thresholds_alpha", 12.0)
-            )
+            thresholds_alpha = float(predictions_extrema.get("thresholds_alpha", 12.0))
             return QuickAdapterRegressorV3.soft_extremum_min_max(
                 pred_extrema, thresholds_alpha, extrema_selection
             )
