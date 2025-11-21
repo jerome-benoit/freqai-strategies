@@ -21,6 +21,8 @@ from numpy.typing import NDArray
 from sklearn_extra.cluster import KMedoids
 
 from Utils import (
+    REGRESSORS,
+    Regressor,
     calculate_min_extrema,
     calculate_n_extrema,
     fit_regressor,
@@ -71,7 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.122"
+    version = "3.7.123"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -300,8 +302,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self.set_optuna_label_candle(pair)
             self._optuna_label_candles[pair] = 0
 
+        self.regressor: Regressor = self.freqai_info.get("regressor", REGRESSORS[0])
+        if self.regressor not in REGRESSORS:
+            self.regressor = REGRESSORS[0]
+            self.freqai_info["regressor"] = self.regressor
         logger.info(
-            f"Initialized {self.__class__.__name__} {self.freqai_info.get('regressor', 'xgboost')} regressor model version {self.version}"
+            f"Initialized {self.__class__.__name__} {self.regressor} regressor model version {self.version}"
         )
 
     def get_optuna_params(self, pair: str, namespace: str) -> dict[str, Any]:
@@ -451,7 +457,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 namespace=QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0],  # "hp"
                 objective=lambda trial: hp_objective(
                     trial,
-                    str(self.freqai_info.get("regressor", "xgboost")),
+                    self.regressor,
                     X,
                     y,
                     train_weights,
@@ -482,7 +488,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 namespace=QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1],  # "train"
                 objective=lambda trial: train_objective(
                     trial,
-                    str(self.freqai_info.get("regressor", "xgboost")),
+                    self.regressor,
                     X,
                     y,
                     train_weights,
@@ -537,7 +543,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         model = fit_regressor(
-            regressor=str(self.freqai_info.get("regressor", "xgboost")),
+            regressor=self.regressor,
             X=X,
             y=y,
             train_weights=train_weights,
@@ -1912,7 +1918,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
 def train_objective(
     trial: optuna.trial.Trial,
-    regressor: str,
+    regressor: Regressor,
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
@@ -2023,7 +2029,7 @@ def train_objective(
 
 def hp_objective(
     trial: optuna.trial.Trial,
-    regressor: str,
+    regressor: Regressor,
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
@@ -2099,10 +2105,13 @@ def label_objective(
     if df.empty:
         return -np.inf, 0
 
-    _, pivots_values, _, pivots_thresholds = zigzag(
+    _, pivots_values, _, pivots_amplitudes, _ = zigzag(
         df,
         natr_period=label_period_candles,
         natr_ratio=label_natr_ratio,
     )
 
-    return np.median(pivots_thresholds), len(pivots_values)
+    median_amplitude = np.nanmedian(pivots_amplitudes)
+    if not np.isfinite(median_amplitude):
+        median_amplitude = 0.0
+    return median_amplitude, len(pivots_values)

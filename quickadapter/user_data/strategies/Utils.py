@@ -18,8 +18,12 @@ from technical import qtpylib
 T = TypeVar("T", pd.Series, float)
 
 
-WeightStrategy = Literal["none", "threshold"]
-WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = ("none", "threshold")
+WeightStrategy = Literal["none", "amplitude", "amplitude_excess"]
+WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
+    "none",
+    "amplitude",
+    "amplitude_excess",
+)
 
 NormalizationType = Literal[
     "minmax", "zscore", "l1", "l2", "robust", "softmax", "tanh", "rank", "none"
@@ -473,7 +477,10 @@ def get_weighted_extrema(
     ):  # "none"
         return extrema, default_weights
 
-    if strategy == WEIGHT_STRATEGIES[1]:  # "threshold"
+    if strategy in (
+        WEIGHT_STRATEGIES[1],
+        WEIGHT_STRATEGIES[2],
+    ):  # "amplitude" or "amplitude_excess"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,
@@ -902,10 +909,10 @@ def zigzag(
     df: pd.DataFrame,
     natr_period: int = 14,
     natr_ratio: float = 9.0,
-) -> tuple[list[int], list[float], list[TrendDirection], list[float]]:
+) -> tuple[list[int], list[float], list[TrendDirection], list[float], list[float]]:
     n = len(df)
     if df.empty or n < natr_period:
-        return [], [], [], []
+        return [], [], [], [], []
 
     natr_values = (ta.NATR(df, timeperiod=natr_period).bfill() / 100.0).to_numpy()
 
@@ -921,7 +928,8 @@ def zigzag(
     pivots_indices: list[int] = []
     pivots_values: list[float] = []
     pivots_directions: list[TrendDirection] = []
-    pivots_thresholds: list[float] = []
+    pivots_amplitudes: list[float] = []
+    pivots_amplitude_excesses: list[float] = []
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -971,7 +979,26 @@ def zigzag(
         pivots_indices.append(indices[pos])
         pivots_values.append(value)
         pivots_directions.append(direction)
-        pivots_thresholds.append(thresholds[pos])
+        if len(pivots_values) > 1:
+            prev_value = pivots_values[-2]
+            if np.isclose(prev_value, 0.0):
+                amplitude = np.nan
+            else:
+                amplitude = abs(value - prev_value) / abs(prev_value)
+            threshold_current = thresholds[pos]
+            if (
+                np.isfinite(threshold_current)
+                and threshold_current > 0
+                and np.isfinite(amplitude)
+            ):
+                amplitude_excess = amplitude / threshold_current
+            else:
+                amplitude_excess = np.nan
+        else:
+            amplitude = np.nan
+            amplitude_excess = np.nan
+        pivots_amplitudes.append(amplitude)
+        pivots_amplitude_excesses.append(amplitude_excess)
         last_pivot_pos = pos
         reset_candidate_pivot()
 
@@ -1089,7 +1116,7 @@ def zigzag(
                 state = TrendDirection.UP
                 break
     else:
-        return [], [], [], []
+        return [], [], [], [], []
 
     for i in range(last_pivot_pos + 1, n):
         current_high = highs[i]
@@ -1119,30 +1146,37 @@ def zigzag(
                 )
                 state = TrendDirection.UP
 
-    return pivots_indices, pivots_values, pivots_directions, pivots_thresholds
+    return (
+        pivots_indices,
+        pivots_values,
+        pivots_directions,
+        pivots_amplitudes,
+        pivots_amplitude_excesses,
+    )
 
 
-regressors = {"xgboost", "lightgbm"}
+Regressor = Literal["xgboost", "lightgbm"]
+REGRESSORS: Final[tuple[Regressor, ...]] = ("xgboost", "lightgbm")
 
 
 def get_optuna_callbacks(
-    trial: optuna.trial.Trial, regressor: str
+    trial: optuna.trial.Trial, regressor: Regressor
 ) -> list[Callable[[optuna.trial.Trial, str], None]]:
-    if regressor == "xgboost":
+    if regressor == REGRESSORS[0]:  # "xgboost"
         callbacks = [
             optuna.integration.XGBoostPruningCallback(trial, "validation_0-rmse")
         ]
-    elif regressor == "lightgbm":
+    elif regressor == REGRESSORS[1]:  # "lightgbm"
         callbacks = [optuna.integration.LightGBMPruningCallback(trial, "rmse")]
     else:
         raise ValueError(
-            f"Unsupported regressor model: {regressor} (supported: {', '.join(regressors)})"
+            f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
         )
     return callbacks
 
 
 def fit_regressor(
-    regressor: str,
+    regressor: Regressor,
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
@@ -1153,7 +1187,7 @@ def fit_regressor(
     callbacks: Optional[list[Callable[[optuna.trial.Trial, str], None]]] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
-    if regressor == "xgboost":
+    if regressor == REGRESSORS[0]:  # "xgboost"
         from xgboost import XGBRegressor
 
         model_training_parameters.setdefault("random_state", 1)
@@ -1177,7 +1211,7 @@ def fit_regressor(
             sample_weight_eval_set=eval_weights,
             xgb_model=init_model,
         )
-    elif regressor == "lightgbm":
+    elif regressor == REGRESSORS[1]:  # "lightgbm"
         from lightgbm import LGBMRegressor
 
         model_training_parameters.setdefault("seed", 1)
@@ -1200,21 +1234,21 @@ def fit_regressor(
         )
     else:
         raise ValueError(
-            f"Unsupported regressor model: {regressor} (supported: {', '.join(regressors)})"
+            f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
         )
     return model
 
 
 def get_optuna_study_model_parameters(
     trial: optuna.trial.Trial,
-    regressor: str,
+    regressor: Regressor,
     model_training_best_parameters: dict[str, Any],
     space_reduction: bool,
     expansion_ratio: float,
 ) -> dict[str, Any]:
-    if regressor not in regressors:
+    if regressor not in set(REGRESSORS):
         raise ValueError(
-            f"Unsupported regressor model: {regressor} (supported: {', '.join(regressors)})"
+            f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
         )
     if not isinstance(expansion_ratio, (int, float)) or not (
         0.0 <= expansion_ratio <= 1.0
@@ -1305,7 +1339,7 @@ def get_optuna_study_model_parameters(
             "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
         ),
     }
-    if regressor == "xgboost":
+    if regressor == REGRESSORS[0]:  # "xgboost"
         study_model_parameters.update(
             {
                 "max_depth": trial.suggest_int(
@@ -1318,7 +1352,7 @@ def get_optuna_study_model_parameters(
                 ),
             }
         )
-    elif regressor == "lightgbm":
+    elif regressor == REGRESSORS[1]:  # "lightgbm"
         study_model_parameters.update(
             {
                 "num_leaves": trial.suggest_int(

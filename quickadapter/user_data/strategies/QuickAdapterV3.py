@@ -104,7 +104,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.172"
+        return "3.3.173"
 
     timeframe = "5m"
 
@@ -715,7 +715,7 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     @lru_cache(maxsize=128)
-    def td_format(
+    def _td_format(
         delta: datetime.timedelta, pattern: str = "{sign}{d}:{h:02d}:{m:02d}:{s:02d}"
     ) -> str:
         negative_duration = delta.total_seconds() < 0
@@ -730,13 +730,36 @@ class QuickAdapterV3(IStrategy):
         except (KeyError, ValueError) as e:
             raise ValueError(f"Invalid pattern '{pattern}': {repr(e)}")
 
+    @staticmethod
+    def _get_weights(
+        strategy: str, amplitudes: list[float], amplitude_excesses: list[float]
+    ) -> list[float]:
+        if not isinstance(strategy, str):
+            return []
+        strategy = strategy.lower().strip()
+        if strategy == "amplitude_excess":
+            return (
+                amplitude_excesses
+                if len(amplitude_excesses) == len(amplitudes)
+                else amplitudes
+            )
+        if strategy == "amplitude":
+            return amplitudes
+        return []
+
     def set_freqai_targets(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
         label_period_candles = self.get_label_period_candles(pair)
         label_natr_ratio = self.get_label_natr_ratio(pair)
-        pivots_indices, _, pivots_directions, pivots_thresholds = zigzag(
+        (
+            pivots_indices,
+            _,
+            pivots_directions,
+            pivots_amplitudes,
+            pivots_amplitude_excesses,
+        ) = zigzag(
             dataframe,
             natr_period=label_period_candles,
             natr_ratio=label_natr_ratio,
@@ -747,7 +770,7 @@ class QuickAdapterV3(IStrategy):
         dataframe[EXTREMA_COLUMN] = 0
         if len(pivots_indices) == 0:
             logger.warning(
-                f"{pair}: no extrema to label (label_period={QuickAdapterV3.td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
+                f"{pair}: no extrema to label (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
         else:
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
@@ -758,7 +781,7 @@ class QuickAdapterV3(IStrategy):
                 dataframe[EXTREMA_COLUMN] == TrendDirection.UP, 1, 0
             )
             logger.info(
-                f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3.td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
+                f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
 
         extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
@@ -787,10 +810,15 @@ class QuickAdapterV3(IStrategy):
             extrema_weighting, pair
         )
 
+        pivot_weights = QuickAdapterV3._get_weights(
+            extrema_weighting_params["strategy"],
+            pivots_amplitudes,
+            pivots_amplitude_excesses,
+        )
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
-            weights=np.array(pivots_thresholds),
+            weights=np.array(pivot_weights),
             strategy=extrema_weighting_params["strategy"],
             normalization=extrema_weighting_params["normalization"],
             gamma=extrema_weighting_params["gamma"],
