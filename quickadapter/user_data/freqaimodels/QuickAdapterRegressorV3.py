@@ -802,7 +802,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         elif (
             thresholds_smoothing
-            in QuickAdapterRegressorV3.skimage_threshold_methods_set()
+            in QuickAdapterRegressorV3._skimage_threshold_methods_set()
         ):
             return QuickAdapterRegressorV3.skimage_min_max(
                 pred_extrema, thresholds_smoothing, extrema_selection
