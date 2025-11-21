@@ -71,7 +71,7 @@ POTENTIAL_GAMMA_DEFAULT: float = 0.95
 
 # Supported attenuation modes
 ATTENUATION_MODES: Tuple[str, ...] = ("sqrt", "linear", "power", "half_life")
-ATTENUATION_MODES_WITH_LEGACY: Tuple[str, ...] = ATTENUATION_MODES + ("legacy",)
+ATTENUATION_MODES_WITH_LEGACY: Tuple[str, ...] = ("legacy",) + ATTENUATION_MODES
 
 # Internal numeric guards and behavior toggles
 INTERNAL_GUARDS: dict[str, float] = {
@@ -94,8 +94,8 @@ ALLOWED_TRANSFORMS = {
     "softsign",
     "arctan",
     "sigmoid",
-    "clip",
     "asinh",
+    "clip",
 }
 ALLOWED_EXIT_POTENTIAL_MODES = {
     "canonical",

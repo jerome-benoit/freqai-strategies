@@ -737,14 +737,14 @@ class QuickAdapterV3(IStrategy):
         amplitudes: list[float],
         amplitude_excesses: list[float],
     ) -> list[float]:
+        if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
+            return amplitudes
         if strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_excess"
             return (
                 amplitude_excesses
                 if len(amplitude_excesses) == len(amplitudes)
                 else amplitudes
             )
-        if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
-            return amplitudes
         return []
 
     def set_freqai_targets(
