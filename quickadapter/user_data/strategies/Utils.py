@@ -69,6 +69,7 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "softmax_temperature": 1.0,
     "tanh_scale": 1.0,
     "tanh_gain": 1.0,
+    "robust_quantiles": (0.25, 0.75),
     "rank_method": RANK_METHODS[0],  # "average"
 }
 
