@@ -68,8 +68,7 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
     "softmax_temperature": 1.0,
     "tanh_scale": 1.0,
-    "tanh_gain": 0.5,
-    "robust_quantiles": (0.25, 0.75),
+    "tanh_gain": 1.0,
     "rank_method": RANK_METHODS[0],  # "average"
 }
 
@@ -274,7 +273,8 @@ def _normalize_l2(weights: NDArray[np.floating]) -> NDArray[np.floating]:
 
 
 def _normalize_robust(
-    weights: NDArray[np.floating], quantiles: tuple[float, float] = (0.25, 0.75)
+    weights: NDArray[np.floating],
+    quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"],
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
@@ -287,12 +287,22 @@ def _normalize_robust(
     if np.isclose(iqr, 0.0):
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
 
-    normalized_weights = (weights - median) / iqr
+    robust_scores = (weights - median) / iqr
+
+    r_min = np.min(robust_scores)
+    r_max = np.max(robust_scores)
+    r_range = r_max - r_min
+
+    if np.isclose(r_range, 0.0):
+        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+
+    normalized_weights = (robust_scores - r_min) / r_range
     return normalized_weights
 
 
 def _normalize_softmax(
-    weights: NDArray[np.floating], temperature: float = 1.0
+    weights: NDArray[np.floating],
+    temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
@@ -303,19 +313,22 @@ def _normalize_softmax(
 
 
 def _normalize_tanh(
-    weights: NDArray[np.floating], scale: float = 1.0, gain: float = 0.5
+    weights: NDArray[np.floating],
+    scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
+    gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
 
     z_scores = _normalize_zscore(weights, rescale_to_unit_range=False)
-    normalized_weights = gain * (np.tanh(scale * z_scores) + 1.0)
+    normalized_weights = gain * 0.5 * (np.tanh(scale * z_scores) + 1.0)
     return normalized_weights
 
 
 def _normalize_rank(
-    weights: NDArray[np.floating], method: RankMethod = "average"
+    weights: NDArray[np.floating],
+    method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
