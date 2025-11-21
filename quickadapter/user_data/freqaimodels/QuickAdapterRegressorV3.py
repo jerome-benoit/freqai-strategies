@@ -35,13 +35,13 @@ from Utils import (
     zigzag,
 )
 
-ExtremaSelectionMethod = Literal["values", "rank", "partition"]
+ExtremaSelectionMethod = Literal["rank", "values", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
-    "isodata", "li", "mean", "minimum", "otsu", "triangle", "yen"
+    "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
 ]
-ThresholdMethod = Union[CustomThresholdMethod, SkimageThresholdMethod]
+ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
 
 debug = False
 
@@ -78,8 +78,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
-        "values",
         "rank",
+        "values",
         "partition",
     )
     _CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
@@ -87,19 +87,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "soft_extremum",
     )
     _SKIMAGE_THRESHOLD_METHODS: Final[tuple[SkimageThresholdMethod, ...]] = (
+        "mean",
         "isodata",
         "li",
-        "mean",
         "minimum",
         "otsu",
         "triangle",
         "yen",
     )
     _THRESHOLD_METHODS: Final[tuple[ThresholdMethod, ...]] = (
-        *_CUSTOM_THRESHOLD_METHODS,
         *_SKIMAGE_THRESHOLD_METHODS,
+        *_CUSTOM_THRESHOLD_METHODS,
     )
-    _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("sqlite", "file")
+    _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
     _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
 
@@ -134,7 +134,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 max(int(self.max_system_threads / 4), 1),
             ),
             "sampler": QuickAdapterRegressorV3._OPTUNA_SAMPLERS[0],  # "tpe"
-            "storage": QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[1],  # "file"
+            "storage": QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[0],  # "file"
             "continuous": True,
             "warm_start": True,
             "n_startup_trials": 15,
@@ -765,7 +765,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         extrema_selection = str(
             predictions_extrema.get(
                 "selection_method",
-                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1],
+                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank"
             )
         )
         if (
@@ -779,7 +779,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         thresholds_smoothing = str(
             predictions_extrema.get(
                 "thresholds_smoothing",
-                QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS[2],
+                QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
             )
         )
         if thresholds_smoothing not in QuickAdapterRegressorV3._threshold_methods_set():
@@ -788,19 +788,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Supported methods are {', '.join(QuickAdapterRegressorV3._THRESHOLD_METHODS)}"
             )
         if (
-            thresholds_smoothing == QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS[0]
+            thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
         ):  # "median"
             return QuickAdapterRegressorV3.median_min_max(
                 pred_extrema, extrema_selection
             )
         elif (
-            thresholds_smoothing == QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS[1]
+            thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
         ):  # "soft_extremum"
             thresholds_alpha = float(predictions_extrema.get("thresholds_alpha", 12.0))
             return QuickAdapterRegressorV3.soft_extremum_min_max(
                 pred_extrema, thresholds_alpha, extrema_selection
             )
-        else:
+        elif (
+            thresholds_smoothing
+            in QuickAdapterRegressorV3.skimage_threshold_methods_set()
+        ):
             return QuickAdapterRegressorV3.skimage_min_max(
                 pred_extrema, thresholds_smoothing, extrema_selection
             )
@@ -820,22 +823,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if (
             extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
-        ):  # "values"
-            minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
-            maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
-
-            pred_minima = (
-                pred_extrema.iloc[minima_indices]
-                if minima_indices.size > 0
-                else pd.Series(dtype=float)
-            )
-            pred_maxima = (
-                pred_extrema.iloc[maxima_indices]
-                if maxima_indices.size > 0
-                else pd.Series(dtype=float)
-            )
-        elif (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
         ):  # "rank"
             minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
             maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
@@ -852,6 +839,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_maxima = pred_extrema.nlargest(n_maxima)
             else:
                 pred_maxima = pd.Series(dtype=float)
+        elif (
+            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
+        ):  # "values"
+            minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
+            maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
+
+            pred_minima = (
+                pred_extrema.iloc[minima_indices]
+                if minima_indices.size > 0
+                else pd.Series(dtype=float)
+            )
+            pred_maxima = (
+                pred_extrema.iloc[maxima_indices]
+                if maxima_indices.size > 0
+                else pd.Series(dtype=float)
+            )
+
         elif (
             extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[2]
         ):  # "partition"
@@ -1719,6 +1723,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         storage_backend = self._optuna_config.get("storage")
         if (
             storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[0]
+        ):  # "file"
+            storage = optuna.storages.JournalStorage(
+                optuna.storages.journal.JournalFileBackend(
+                    f"{storage_dir}/{storage_filename}.log"
+                )
+            )
+        elif (
+            storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[1]
         ):  # "sqlite"
             storage = optuna.storages.RDBStorage(
                 url=f"sqlite:///{storage_dir}/{storage_filename}.sqlite",
@@ -1726,14 +1738,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 failed_trial_callback=optuna.storages.RetryFailedTrialCallback(
                     max_retry=3
                 ),
-            )
-        elif (
-            storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[1]
-        ):  # "file"
-            storage = optuna.storages.JournalStorage(
-                optuna.storages.journal.JournalFileBackend(
-                    f"{storage_dir}/{storage_filename}.log"
-                )
             )
         else:
             raise ValueError(

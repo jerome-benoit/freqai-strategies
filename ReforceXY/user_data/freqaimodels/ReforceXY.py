@@ -84,7 +84,7 @@ ExitPotentialMode = Literal[
 ]
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "asinh", "clip"]
 ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
-ActivationFunction = Literal["tanh", "relu", "elu", "leaky_relu"]
+ActivationFunction = Literal["relu", "tanh", "elu", "leaky_relu"]
 OptimizerClassOptuna = Literal["adamw", "rmsprop"]
 OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
@@ -185,8 +185,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         "half_life",
     )
     _ACTIVATION_FUNCTIONS: Final[tuple[ActivationFunction, ...]] = (
-        "tanh",
         "relu",
+        "tanh",
         "elu",
         "leaky_relu",
     )
@@ -609,7 +609,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         model_params["policy_kwargs"]["activation_fn"] = get_activation_fn(
             model_params.get("policy_kwargs", {}).get(
-                "activation_fn", ReforceXY._ACTIVATION_FUNCTIONS[1]
+                "activation_fn", ReforceXY._ACTIVATION_FUNCTIONS[0]
             )  # "relu"
         )
         model_params["policy_kwargs"]["optimizer_class"] = get_optimizer_class(
@@ -3838,8 +3838,8 @@ def get_activation_fn(
     Get activation function
     """
     return {
-        ReforceXY._ACTIVATION_FUNCTIONS[0]: th.nn.Tanh,  # "tanh"
-        ReforceXY._ACTIVATION_FUNCTIONS[1]: th.nn.ReLU,  # "relu"
+        ReforceXY._ACTIVATION_FUNCTIONS[0]: th.nn.ReLU,  # "relu"
+        ReforceXY._ACTIVATION_FUNCTIONS[1]: th.nn.Tanh,  # "tanh"
         ReforceXY._ACTIVATION_FUNCTIONS[2]: th.nn.ELU,  # "elu"
         ReforceXY._ACTIVATION_FUNCTIONS[3]: th.nn.LeakyReLU,  # "leaky_relu"
     }.get(activation_fn_name, th.nn.ReLU)
