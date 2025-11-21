@@ -303,7 +303,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_candles[pair] = 0
 
         self.regressor: Regressor = self.freqai_info.get("regressor", REGRESSORS[0])
-        if self.regressor not in REGRESSORS:
+        if self.regressor not in set(REGRESSORS):
             self.regressor = REGRESSORS[0]
             self.freqai_info["regressor"] = self.regressor
         logger.info(

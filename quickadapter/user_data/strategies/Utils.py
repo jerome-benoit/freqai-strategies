@@ -980,11 +980,11 @@ def zigzag(
         pivots_values.append(value)
         pivots_directions.append(direction)
         if len(pivots_values) > 1:
-            prev_value = pivots_values[-2]
-            if np.isclose(prev_value, 0.0):
+            prev_pivot_value = pivots_values[-2]
+            if np.isclose(prev_pivot_value, 0.0):
                 amplitude = np.nan
             else:
-                amplitude = abs(value - prev_value) / abs(prev_value)
+                amplitude = abs(value - prev_pivot_value) / abs(prev_pivot_value)
             current_threshold = thresholds[pos]
             if (
                 np.isfinite(current_threshold)
