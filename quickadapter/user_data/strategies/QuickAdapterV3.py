@@ -31,6 +31,7 @@ from Utils import (
     DEFAULTS_EXTREMA_SMOOTHING,
     DEFAULTS_EXTREMA_WEIGHTING,
     NORMALIZATION_TYPES,
+    RANK_METHODS,
     SMOOTHING_METHODS,
     WEIGHT_STRATEGIES,
     TrendDirection,
@@ -583,6 +584,104 @@ class QuickAdapterV3(IStrategy):
         return self.get_label_natr_ratio(pair) * percent
 
     @staticmethod
+    def _get_extrema_weighting_params(
+        extrema_weighting: dict[str, Any], pair: str
+    ) -> dict[str, Any]:
+        weighting_strategy = str(
+            extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
+        )
+        if weighting_strategy not in set(WEIGHT_STRATEGIES):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting strategy '{weighting_strategy}', using default '{WEIGHT_STRATEGIES[0]}'"
+            )
+            weighting_strategy = WEIGHT_STRATEGIES[0]
+
+        weighting_normalization = str(
+            extrema_weighting.get(
+                "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
+            )
+        )
+        if weighting_normalization not in set(NORMALIZATION_TYPES):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default '{NORMALIZATION_TYPES[0]}'"
+            )
+            weighting_normalization = NORMALIZATION_TYPES[0]
+
+        weighting_gamma = extrema_weighting.get(
+            "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
+        )
+        if (
+            not isinstance(weighting_gamma, (int, float))
+            or not np.isfinite(weighting_gamma)
+            or not (0 < float(weighting_gamma) <= 10.0)
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default 1.0"
+            )
+            weighting_gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
+        else:
+            weighting_gamma = float(weighting_gamma)
+
+        weighting_softmax_temperature = extrema_weighting.get(
+            "softmax_temperature", DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
+        )
+        if (
+            not isinstance(weighting_softmax_temperature, (int, float))
+            or not np.isfinite(weighting_softmax_temperature)
+            or weighting_softmax_temperature <= 0
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting softmax_temperature {weighting_softmax_temperature}, must be > 0, using default 1.0"
+            )
+            weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
+                "softmax_temperature"
+            ]
+        else:
+            weighting_softmax_temperature = float(weighting_softmax_temperature)
+
+        weighting_robust_quantiles = extrema_weighting.get(
+            "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
+        )
+        if (
+            not isinstance(weighting_robust_quantiles, (list, tuple))
+            or len(weighting_robust_quantiles) != 2
+            or not all(
+                isinstance(q, (int, float)) and np.isfinite(q) and 0 <= q <= 1
+                for q in weighting_robust_quantiles
+            )
+            or weighting_robust_quantiles[0] >= weighting_robust_quantiles[1]
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting robust_quantiles {weighting_robust_quantiles}, must be (q_low, q_high) with 0 <= q_low < q_high <= 1, using default (0.25, 0.75)"
+            )
+            weighting_robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
+        else:
+            weighting_robust_quantiles = (
+                float(weighting_robust_quantiles[0]),
+                float(weighting_robust_quantiles[1]),
+            )
+
+        weighting_rank_method = str(
+            extrema_weighting.get(
+                "rank_method", DEFAULTS_EXTREMA_WEIGHTING["rank_method"]
+            )
+        )
+        if weighting_rank_method not in set(RANK_METHODS):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting rank_method '{weighting_rank_method}', using default '{RANK_METHODS[0]}'"
+            )
+            weighting_rank_method = RANK_METHODS[0]
+
+        return {
+            "strategy": weighting_strategy,
+            "normalization": weighting_normalization,
+            "gamma": weighting_gamma,
+            "softmax_temperature": weighting_softmax_temperature,
+            "robust_quantiles": weighting_robust_quantiles,
+            "rank_method": weighting_rank_method,
+        }
+
+    @staticmethod
     @lru_cache(maxsize=128)
     def td_format(
         delta: datetime.timedelta, pattern: str = "{sign}{d}:{h:02d}:{m:02d}:{s:02d}"
@@ -652,47 +751,20 @@ class QuickAdapterV3(IStrategy):
         extrema_weighting = self.freqai_info.get("extrema_weighting", {})
         if not isinstance(extrema_weighting, dict):
             extrema_weighting = {}
-
-        weighting_strategy = str(
-            extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
+        extrema_weighting_params = QuickAdapterV3._get_extrema_weighting_params(
+            extrema_weighting, pair
         )
-        if weighting_strategy not in set(WEIGHT_STRATEGIES):
-            logger.warning(
-                f"{pair}: invalid extrema_weighting strategy '{weighting_strategy}', using default '{WEIGHT_STRATEGIES[0]}'"
-            )
-            weighting_strategy = WEIGHT_STRATEGIES[0]
-        weighting_normalization = str(
-            extrema_weighting.get(
-                "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
-            )
-        )
-        if weighting_normalization not in set(NORMALIZATION_TYPES):
-            logger.warning(
-                f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default '{NORMALIZATION_TYPES[0]}'"
-            )
-            weighting_normalization = NORMALIZATION_TYPES[0]
-        weighting_gamma = extrema_weighting.get(
-            "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
-        )
-        if (
-            not isinstance(weighting_gamma, (int, float))
-            or not np.isfinite(weighting_gamma)
-            or not (0 < float(weighting_gamma) <= 10.0)
-        ):
-            logger.warning(
-                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default 1.0"
-            )
-            weighting_gamma = 1.0
-        else:
-            weighting_gamma = float(weighting_gamma)
 
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
             weights=np.array(pivots_thresholds),
-            strategy=weighting_strategy,
-            normalization=weighting_normalization,
-            gamma=weighting_gamma,
+            strategy=extrema_weighting_params["strategy"],
+            normalization=extrema_weighting_params["normalization"],
+            gamma=extrema_weighting_params["gamma"],
+            softmax_temperature=extrema_weighting_params["softmax_temperature"],
+            robust_quantiles=extrema_weighting_params["robust_quantiles"],
+            rank_method=extrema_weighting_params["rank_method"],
         )
 
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
