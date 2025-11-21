@@ -18,8 +18,8 @@ from technical import qtpylib
 T = TypeVar("T", pd.Series, float)
 
 
-WeightStrategy = Literal["none", "pivot_threshold"]
-WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = ("none", "pivot_threshold")
+WeightStrategy = Literal["none", "threshold"]
+WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = ("none", "threshold")
 
 NormalizationType = Literal["minmax", "l1", "none"]
 NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = ("minmax", "l1", "none")
@@ -259,7 +259,7 @@ def get_weighted_extrema(
     ):  # "none"
         return extrema, default_weights
 
-    if strategy == WEIGHT_STRATEGIES[1]:  # "pivot_threshold"
+    if strategy == WEIGHT_STRATEGIES[1]:  # "threshold"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,

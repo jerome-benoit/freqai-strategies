@@ -33,7 +33,7 @@ from Utils import (
     zigzag,
 )
 
-ExtremaSelectionMethod = Literal["peak_values", "extrema_rank", "partition"]
+ExtremaSelectionMethod = Literal["values", "rank", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
@@ -76,8 +76,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
-        "peak_values",
-        "extrema_rank",
+        "values",
+        "rank",
         "partition",
     )
     _CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
@@ -812,7 +812,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pred_extrema.empty:
             return pd.Series(dtype=float), pd.Series(dtype=float)
 
-        if extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]:
+        if (
+            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
+        ):  # "values"
             minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
             maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
 
@@ -826,7 +828,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if maxima_indices.size > 0
                 else pd.Series(dtype=float)
             )
-        elif extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]:
+        elif (
+            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
+        ):  # "rank"
             minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
             maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
 
@@ -842,7 +846,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_maxima = pred_extrema.nlargest(n_maxima)
             else:
                 pred_maxima = pd.Series(dtype=float)
-        elif extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[2]:
+        elif (
+            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[2]
+        ):  # "partition"
             eps = np.finfo(float).eps
 
             pred_maxima = pred_extrema[pred_extrema > eps]
