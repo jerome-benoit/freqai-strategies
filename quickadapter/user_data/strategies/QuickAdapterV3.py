@@ -616,7 +616,7 @@ class QuickAdapterV3(IStrategy):
             or not (0 < float(weighting_gamma) <= 10.0)
         ):
             logger.warning(
-                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default 1.0"
+                f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']}"
             )
             weighting_gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
         else:
@@ -631,7 +631,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_softmax_temperature <= 0
         ):
             logger.warning(
-                f"{pair}: invalid extrema_weighting softmax_temperature {weighting_softmax_temperature}, must be > 0, using default 1.0"
+                f"{pair}: invalid extrema_weighting softmax_temperature {weighting_softmax_temperature}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']}"
             )
             weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
                 "softmax_temperature"
@@ -652,7 +652,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_robust_quantiles[0] >= weighting_robust_quantiles[1]
         ):
             logger.warning(
-                f"{pair}: invalid extrema_weighting robust_quantiles {weighting_robust_quantiles}, must be (q_low, q_high) with 0 <= q_low < q_high <= 1, using default (0.25, 0.75)"
+                f"{pair}: invalid extrema_weighting robust_quantiles {weighting_robust_quantiles}, must be (q_low, q_high) with 0 <= q_low < q_high <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']}"
             )
             weighting_robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
         else:
@@ -672,11 +672,43 @@ class QuickAdapterV3(IStrategy):
             )
             weighting_rank_method = RANK_METHODS[0]
 
+        weighting_tanh_scale = extrema_weighting.get(
+            "tanh_scale", DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"]
+        )
+        if (
+            not isinstance(weighting_tanh_scale, (int, float))
+            or not np.isfinite(weighting_tanh_scale)
+            or weighting_tanh_scale <= 0
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting tanh_scale {weighting_tanh_scale}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['tanh_scale']}"
+            )
+            weighting_tanh_scale = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"]
+        else:
+            weighting_tanh_scale = float(weighting_tanh_scale)
+
+        weighting_tanh_gain = extrema_weighting.get(
+            "tanh_gain", DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"]
+        )
+        if (
+            not isinstance(weighting_tanh_gain, (int, float))
+            or not np.isfinite(weighting_tanh_gain)
+            or weighting_tanh_gain <= 0
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting tanh_gain {weighting_tanh_gain}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['tanh_gain']}"
+            )
+            weighting_tanh_gain = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"]
+        else:
+            weighting_tanh_gain = float(weighting_tanh_gain)
+
         return {
             "strategy": weighting_strategy,
             "normalization": weighting_normalization,
             "gamma": weighting_gamma,
             "softmax_temperature": weighting_softmax_temperature,
+            "tanh_scale": weighting_tanh_scale,
+            "tanh_gain": weighting_tanh_gain,
             "robust_quantiles": weighting_robust_quantiles,
             "rank_method": weighting_rank_method,
         }
@@ -763,6 +795,8 @@ class QuickAdapterV3(IStrategy):
             normalization=extrema_weighting_params["normalization"],
             gamma=extrema_weighting_params["gamma"],
             softmax_temperature=extrema_weighting_params["softmax_temperature"],
+            tanh_scale=extrema_weighting_params["tanh_scale"],
+            tanh_gain=extrema_weighting_params["tanh_gain"],
             robust_quantiles=extrema_weighting_params["robust_quantiles"],
             rank_method=extrema_weighting_params["rank_method"],
         )

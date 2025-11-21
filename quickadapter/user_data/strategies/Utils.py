@@ -67,6 +67,8 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "gamma": 1.0,
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
     "softmax_temperature": 1.0,
+    "tanh_scale": 1.0,
+    "tanh_gain": 0.5,
     "robust_quantiles": (0.25, 0.75),
     "rank_method": RANK_METHODS[0],  # "average"
 }
@@ -300,13 +302,15 @@ def _normalize_softmax(
     return sp.special.softmax(weights)
 
 
-def _normalize_tanh(weights: NDArray[np.floating]) -> NDArray[np.floating]:
+def _normalize_tanh(
+    weights: NDArray[np.floating], scale: float = 1.0, gain: float = 0.5
+) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
 
     z_scores = _normalize_zscore(weights, rescale_to_unit_range=False)
-    normalized_weights = 0.5 * (np.tanh(z_scores) + 1.0)
+    normalized_weights = gain * (np.tanh(scale * z_scores) + 1.0)
     return normalized_weights
 
 
@@ -331,6 +335,8 @@ def normalize_weights(
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
     softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
+    tanh_scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
+    tanh_gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
@@ -364,7 +370,7 @@ def normalize_weights(
         )
 
     elif normalization == NORMALIZATION_TYPES[6]:  # "tanh"
-        normalized_weights = _normalize_tanh(weights)
+        normalized_weights = _normalize_tanh(weights, scale=tanh_scale, gain=tanh_gain)
 
     elif normalization == NORMALIZATION_TYPES[7]:  # "rank"
         normalized_weights = _normalize_rank(weights, method=rank_method)
@@ -390,6 +396,8 @@ def calculate_extrema_weights(
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
     softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
+    tanh_scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
+    tanh_gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
@@ -408,6 +416,8 @@ def calculate_extrema_weights(
         normalization,
         gamma,
         softmax_temperature,
+        tanh_scale,
+        tanh_gain,
         robust_quantiles,
         rank_method,
     )
@@ -436,6 +446,8 @@ def get_weighted_extrema(
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
     softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
+    tanh_scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
+    tanh_gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
@@ -455,6 +467,8 @@ def get_weighted_extrema(
             normalization=normalization,
             gamma=gamma,
             softmax_temperature=softmax_temperature,
+            tanh_scale=tanh_scale,
+            tanh_gain=tanh_gain,
             robust_quantiles=robust_quantiles,
             rank_method=rank_method,
         )
