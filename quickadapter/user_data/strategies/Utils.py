@@ -21,8 +21,14 @@ T = TypeVar("T", pd.Series, float)
 WeightStrategy = Literal["none", "threshold"]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = ("none", "threshold")
 
-NormalizationType = Literal["minmax", "l1", "none"]
-NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = ("minmax", "l1", "none")
+NormalizationType = Literal["minmax", "zscore", "l1", "l2", "none"]
+NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = (
+    "minmax",  # 0
+    "zscore",  # 1
+    "l1",  # 2
+    "l2",  # 3
+    "none",  # 4
+)
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SmoothingMethod = Union[SmoothingKernel, Literal["smm", "sma"]]
@@ -166,6 +172,50 @@ def smooth_extrema(
         )
 
 
+def zscore_normalize_weights(
+    weights: NDArray[np.floating],
+    rescale_to_unit_range: bool = True,
+) -> NDArray[np.floating]:
+    if weights.size == 0:
+        return weights
+
+    weights = weights.astype(float, copy=False)
+
+    if np.isnan(weights).any():
+        return np.full_like(weights, 1.0, dtype=float)
+
+    if weights.size == 1 or np.allclose(weights, weights[0]):
+        if rescale_to_unit_range:
+            return np.full_like(weights, 1.0, dtype=float)
+        else:
+            return np.zeros_like(weights, dtype=float)
+
+    try:
+        z_scores = sp.stats.zscore(weights, ddof=1, nan_policy="raise")
+    except Exception:
+        return np.full_like(weights, 1.0, dtype=float)
+
+    if np.isnan(z_scores).any() or not np.isfinite(z_scores).all():
+        return np.full_like(weights, 1.0, dtype=float)
+
+    if not rescale_to_unit_range:
+        return z_scores
+
+    z_min = np.min(z_scores)
+    z_max = np.max(z_scores)
+    z_range = z_max - z_min
+
+    if np.isclose(z_range, 0.0):
+        return np.full_like(weights, 1.0, dtype=float)
+
+    normalized_weights = (z_scores - z_min) / z_range
+
+    if np.isnan(normalized_weights).any():
+        return np.full_like(weights, 1.0, dtype=float)
+
+    return normalized_weights
+
+
 def normalize_weights(
     weights: NDArray[np.floating],
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
@@ -173,8 +223,10 @@ def normalize_weights(
 ) -> NDArray[np.floating]:
     if weights.size == 0:
         return weights
-    if normalization == NORMALIZATION_TYPES[2]:  # "none"
+    if normalization == NORMALIZATION_TYPES[4]:  # "none"
         return weights
+
+    normalized_weights: NDArray[np.floating]
 
     if normalization == NORMALIZATION_TYPES[0]:  # "minmax"
         weights = weights.astype(float, copy=False)
@@ -190,26 +242,46 @@ def normalize_weights(
         normalized_weights = (weights - w_min) / w_range
         if np.isnan(normalized_weights).any():
             return np.full_like(weights, 1.0, dtype=float)
-        if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
-            normalized_weights = np.power(normalized_weights, gamma)
-            if np.isnan(normalized_weights).any():
-                return np.full_like(weights, 1.0, dtype=float)
-        return normalized_weights
 
-    if normalization == NORMALIZATION_TYPES[1]:  # "l1"
+    elif normalization == NORMALIZATION_TYPES[1]:  # "zscore"
+        normalized_weights = zscore_normalize_weights(
+            weights, rescale_to_unit_range=True
+        )
+
+    elif normalization == NORMALIZATION_TYPES[2]:  # "l1"
         weights_sum = np.sum(np.abs(weights))
         if weights_sum <= 0 or not np.isfinite(weights_sum):
             return np.full_like(weights, 1.0, dtype=float)
         normalized_weights = weights / weights_sum
         if np.isnan(normalized_weights).any():
             return np.full_like(weights, 1.0, dtype=float)
-        if gamma != 1.0 and np.isfinite(gamma) and gamma > 0:
-            normalized_weights = np.power(normalized_weights, gamma)
-            if np.isnan(normalized_weights).any():
-                return np.full_like(weights, 1.0, dtype=float)
-        return normalized_weights
 
-    raise ValueError(f"Unknown normalization method: {normalization}")
+    elif normalization == NORMALIZATION_TYPES[3]:  # "l2"
+        weights = weights.astype(float, copy=False)
+        if np.isnan(weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+
+        l2_norm = np.linalg.norm(weights, ord=2)
+
+        if l2_norm <= 0 or not np.isfinite(l2_norm):
+            return np.full_like(weights, 1.0, dtype=float)
+
+        normalized_weights = weights / l2_norm
+
+        if np.isnan(normalized_weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+
+    else:
+        raise ValueError(f"Unknown normalization method: {normalization}")
+
+    if not np.isclose(gamma, 1.0) and np.isfinite(gamma) and gamma > 0:
+        normalized_weights = np.power(np.abs(normalized_weights), gamma) * np.sign(
+            normalized_weights
+        )
+        if np.isnan(normalized_weights).any():
+            return np.full_like(weights, 1.0, dtype=float)
+
+    return normalized_weights
 
 
 def calculate_extrema_weights(

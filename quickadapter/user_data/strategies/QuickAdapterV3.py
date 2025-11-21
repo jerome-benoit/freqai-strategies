@@ -637,7 +637,7 @@ class QuickAdapterV3(IStrategy):
         smoothing_method = str(
             extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
         )
-        if smoothing_method not in SMOOTHING_METHODS:
+        if smoothing_method not in set(SMOOTHING_METHODS):
             logger.warning(
                 f"{pair}: invalid extrema_smoothing method '{smoothing_method}', using default '{SMOOTHING_METHODS[0]}'"
             )
@@ -656,7 +656,7 @@ class QuickAdapterV3(IStrategy):
         weighting_strategy = str(
             extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
         )
-        if weighting_strategy not in WEIGHT_STRATEGIES:
+        if weighting_strategy not in set(WEIGHT_STRATEGIES):
             logger.warning(
                 f"{pair}: invalid extrema_weighting strategy '{weighting_strategy}', using default '{WEIGHT_STRATEGIES[0]}'"
             )
@@ -666,7 +666,7 @@ class QuickAdapterV3(IStrategy):
                 "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
             )
         )
-        if weighting_normalization not in NORMALIZATION_TYPES:
+        if weighting_normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
                 f"{pair}: invalid extrema_weighting normalization '{weighting_normalization}', using default '{NORMALIZATION_TYPES[0]}'"
             )
