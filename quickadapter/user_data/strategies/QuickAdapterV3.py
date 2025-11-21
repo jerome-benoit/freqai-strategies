@@ -35,6 +35,7 @@ from Utils import (
     SMOOTHING_METHODS,
     WEIGHT_STRATEGIES,
     TrendDirection,
+    WeightStrategy,
     alligator,
     bottom_change_percent,
     calculate_n_extrema,
@@ -104,7 +105,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.173"
+        return "3.3.174"
 
     timeframe = "5m"
 
@@ -732,18 +733,17 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def _get_weights(
-        strategy: str, amplitudes: list[float], amplitude_excesses: list[float]
+        strategy: WeightStrategy,
+        amplitudes: list[float],
+        amplitude_excesses: list[float],
     ) -> list[float]:
-        if not isinstance(strategy, str):
-            return []
-        strategy = strategy.lower().strip()
-        if strategy == "amplitude_excess":
+        if strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_excess"
             return (
                 amplitude_excesses
                 if len(amplitude_excesses) == len(amplitudes)
                 else amplitudes
             )
-        if strategy == "amplitude":
+        if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
             return amplitudes
         return []
 

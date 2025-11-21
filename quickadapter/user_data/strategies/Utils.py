@@ -985,13 +985,13 @@ def zigzag(
                 amplitude = np.nan
             else:
                 amplitude = abs(value - prev_value) / abs(prev_value)
-            threshold_current = thresholds[pos]
+            current_threshold = thresholds[pos]
             if (
-                np.isfinite(threshold_current)
-                and threshold_current > 0
+                np.isfinite(current_threshold)
+                and current_threshold > 0
                 and np.isfinite(amplitude)
             ):
-                amplitude_excess = amplitude / threshold_current
+                amplitude_excess = amplitude / current_threshold
             else:
                 amplitude_excess = np.nan
         else:
