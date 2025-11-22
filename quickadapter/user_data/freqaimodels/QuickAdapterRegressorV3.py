@@ -863,7 +863,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             eps = np.finfo(float).eps
 
             pred_maxima = pred_extrema[pred_extrema > eps]
-            pred_minima = pred_extrema[pred_extrema < eps]
+            pred_minima = pred_extrema[pred_extrema < -eps]
         else:
             raise ValueError(
                 f"Unsupported extrema selection method: {extrema_selection}. "
