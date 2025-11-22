@@ -715,6 +715,49 @@ class QuickAdapterV3(IStrategy):
         }
 
     @staticmethod
+    def _get_extrema_smoothing_params(
+        extrema_smoothing: dict[str, Any], pair: str
+    ) -> dict[str, Any]:
+        smoothing_method = str(
+            extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
+        )
+        if smoothing_method not in set(SMOOTHING_METHODS):
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing method '{smoothing_method}', using default '{SMOOTHING_METHODS[0]}'"
+            )
+            smoothing_method = SMOOTHING_METHODS[0]
+
+        smoothing_window = extrema_smoothing.get(
+            "window", DEFAULTS_EXTREMA_SMOOTHING["window"]
+        )
+        if not isinstance(smoothing_window, int) or smoothing_window < 3:
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing window {smoothing_window}, must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window']}"
+            )
+            smoothing_window = DEFAULTS_EXTREMA_SMOOTHING["window"]
+
+        smoothing_beta = extrema_smoothing.get(
+            "beta", DEFAULTS_EXTREMA_SMOOTHING["beta"]
+        )
+        if (
+            not isinstance(smoothing_beta, (int, float))
+            or not np.isfinite(smoothing_beta)
+            or smoothing_beta <= 0
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing beta {smoothing_beta}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']}"
+            )
+            smoothing_beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
+        else:
+            smoothing_beta = float(smoothing_beta)
+
+        return {
+            "method": smoothing_method,
+            "window": int(smoothing_window),
+            "beta": smoothing_beta,
+        }
+
+    @staticmethod
     @lru_cache(maxsize=128)
     def _td_format(
         delta: datetime.timedelta, pattern: str = "{sign}{d}:{h:02d}:{m:02d}:{s:02d}"
@@ -784,25 +827,6 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
 
-        extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
-        if not isinstance(extrema_smoothing, dict):
-            extrema_smoothing = {}
-
-        smoothing_method = str(
-            extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
-        )
-        if smoothing_method not in set(SMOOTHING_METHODS):
-            logger.warning(
-                f"{pair}: invalid extrema_smoothing method '{smoothing_method}', using default '{SMOOTHING_METHODS[0]}'"
-            )
-            smoothing_method = SMOOTHING_METHODS[0]
-        smoothing_window = int(
-            extrema_smoothing.get("window", DEFAULTS_EXTREMA_SMOOTHING["window"])
-        )
-        smoothing_beta = float(
-            extrema_smoothing.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
-        )
-
         extrema_weighting = self.freqai_info.get("extrema_weighting", {})
         if not isinstance(extrema_weighting, dict):
             extrema_weighting = {}
@@ -829,11 +853,18 @@ class QuickAdapterV3(IStrategy):
             rank_method=extrema_weighting_params["rank_method"],
         )
 
+        extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
+        if not isinstance(extrema_smoothing, dict):
+            extrema_smoothing = {}
+        extrema_smoothing_params = QuickAdapterV3._get_extrema_smoothing_params(
+            extrema_smoothing, pair
+        )
+
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
             weighted_extrema,
-            smoothing_method,
-            smoothing_window,
-            smoothing_beta,
+            extrema_smoothing_params["method"],
+            extrema_smoothing_params["window"],
+            extrema_smoothing_params["beta"],
         )
         if debug:
             extrema = dataframe[EXTREMA_COLUMN]

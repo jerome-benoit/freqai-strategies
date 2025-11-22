@@ -477,10 +477,10 @@ def get_weighted_extrema(
     ):  # "none"
         return extrema, default_weights
 
-    if strategy in (
+    if strategy in {
         WEIGHT_STRATEGIES[1],
         WEIGHT_STRATEGIES[2],
-    ):  # "amplitude" or "amplitude_excess"
+    }:  # "amplitude" or "amplitude_excess"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,
