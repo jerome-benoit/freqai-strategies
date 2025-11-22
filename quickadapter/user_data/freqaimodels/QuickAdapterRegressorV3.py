@@ -1627,7 +1627,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             [trial.values for trial in best_trials], dtype=float
         )
         normalized_matrix = QuickAdapterRegressorV3._normalize_objective_values(
-            objective_values_matrix, list(study.directions)
+            objective_values_matrix, study.directions
         )
 
         trial_distances = calculate_distances(normalized_matrix, metric=label_metric)
