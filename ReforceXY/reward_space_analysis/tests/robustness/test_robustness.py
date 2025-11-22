@@ -344,7 +344,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 self.assertFinite(br.total, name="breakdown.total")
 
     def test_exit_factor_boundary_parameters(self):
-        """Test parameter edge cases: tau extremes, plateau grace edges, slope zero."""
+        """Test parameter edge cases: tau extrema, plateau grace edges, slope zero."""
         base_factor = 50.0
         pnl = 0.02
         pnl_factor = 1.0

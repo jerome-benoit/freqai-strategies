@@ -114,7 +114,7 @@ uv run python reward_space_analysis.py \
   --out_dir debug_analysis
 ```
 
-Focus: feature importance, shaping activation, invariance drift, extremes.
+Focus: feature importance, shaping activation, invariance drift, extrema.
 
 ### 4. Real vs Synthetic
 
