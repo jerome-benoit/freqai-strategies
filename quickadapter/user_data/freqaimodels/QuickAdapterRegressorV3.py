@@ -260,7 +260,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_train_value[pair] = -1
-            self._optuna_label_values[pair] = [-1, -1]
+            self._optuna_label_values[pair] = [-1, -1, -1]
             self._optuna_hp_params[pair] = (
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
@@ -631,6 +631,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ),
                     ),
                     directions=[
+                        optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
                     ],
@@ -2081,7 +2082,7 @@ def label_objective(
     max_label_period_candles: int = 24,
     min_label_natr_ratio: float = 9.0,
     max_label_natr_ratio: float = 12.0,
-) -> tuple[float, int]:
+) -> tuple[int, float, float]:
     min_label_period_candles, max_label_period_candles, candles_step = (
         get_min_max_label_period_candles(
             fit_live_predictions_candles,
@@ -2107,15 +2108,22 @@ def label_objective(
     df = df.iloc[-(max(2, int(label_period_cycles)) * label_period_candles) :]
 
     if df.empty:
-        return -np.inf, 0
+        return 0, 0.0, 0.0
 
-    _, pivots_values, _, pivots_amplitudes, _ = zigzag(
+    _, pivots_values, _, pivots_amplitudes, pivots_amplitude_excesses = zigzag(
         df,
         natr_period=label_period_candles,
         natr_ratio=label_natr_ratio,
     )
 
-    median_amplitude = np.nanmedian(pivots_amplitudes)
+    median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
     if not np.isfinite(median_amplitude):
         median_amplitude = 0.0
-    return median_amplitude, len(pivots_values)
+
+    median_amplitude_excess = np.nanmedian(
+        np.asarray(pivots_amplitude_excesses, dtype=float)
+    )
+    if not np.isfinite(median_amplitude_excess):
+        median_amplitude_excess = 0.0
+
+    return len(pivots_values), median_amplitude, median_amplitude_excess
