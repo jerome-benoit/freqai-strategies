@@ -25,6 +25,10 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "amplitude_excess",
 )
 
+EXTREMA_COLUMN: Final = "&s-extrema"
+MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
+MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
+
 NormalizationType = Literal[
     "minmax", "zscore", "l1", "l2", "robust", "softmax", "tanh", "rank", "none"
 ]
@@ -225,19 +229,7 @@ def _normalize_zscore(
     if not rescale_to_unit_range:
         return z_scores
 
-    z_min = np.min(z_scores)
-    z_max = np.max(z_scores)
-    z_range = z_max - z_min
-
-    if np.isclose(z_range, 0.0):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    normalized_weights = (z_scores - z_min) / z_range
-
-    if np.isnan(normalized_weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    return normalized_weights
+    return _normalize_minmax(z_scores)
 
 
 def _normalize_minmax(weights: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -292,17 +284,8 @@ def _normalize_robust(
     if np.isclose(iqr, 0.0):
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
 
-    robust_scores = (weights - median) / iqr
-
-    r_min = np.min(robust_scores)
-    r_max = np.max(robust_scores)
-    r_range = r_max - r_min
-
-    if np.isclose(r_range, 0.0):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    normalized_weights = (robust_scores - r_min) / r_range
-    return normalized_weights
+    robust_weights = (weights - median) / iqr
+    return _normalize_minmax(robust_weights)
 
 
 def _normalize_softmax(

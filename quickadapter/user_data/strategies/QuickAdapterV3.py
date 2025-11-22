@@ -13,7 +13,6 @@ from typing import (
     Literal,
     Optional,
     Sequence,
-    Tuple,
 )
 
 import numpy as np
@@ -30,6 +29,9 @@ from technical.pivots_points import pivots_points
 from Utils import (
     DEFAULTS_EXTREMA_SMOOTHING,
     DEFAULTS_EXTREMA_WEIGHTING,
+    EXTREMA_COLUMN,
+    MAXIMA_THRESHOLD_COLUMN,
+    MINIMA_THRESHOLD_COLUMN,
     NORMALIZATION_TYPES,
     RANK_METHODS,
     SMOOTHING_METHODS,
@@ -62,19 +64,15 @@ InterpolationDirection = Literal["direct", "inverse"]
 OrderType = Literal["entry", "exit"]
 TradingMode = Literal["spot", "margin", "futures"]
 
-DfSignature = Tuple[int, Optional[datetime.datetime]]
-CandleDeviationCacheKey = Tuple[
+DfSignature = tuple[int, Optional[datetime.datetime]]
+CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
-CandleThresholdCacheKey = Tuple[str, DfSignature, str, int, float, float]
+CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 
 debug = False
 
 logger = logging.getLogger(__name__)
-
-EXTREMA_COLUMN: Final = "&s-extrema"
-MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
-MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
 
 class QuickAdapterV3(IStrategy):

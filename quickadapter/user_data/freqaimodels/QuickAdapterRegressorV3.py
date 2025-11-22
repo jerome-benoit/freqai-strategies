@@ -21,6 +21,9 @@ from numpy.typing import NDArray
 from sklearn_extra.cluster import KMedoids
 
 from Utils import (
+    EXTREMA_COLUMN,
+    MAXIMA_THRESHOLD_COLUMN,
+    MINIMA_THRESHOLD_COLUMN,
     REGRESSORS,
     Regressor,
     calculate_min_extrema,
@@ -46,10 +49,6 @@ ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
 debug = False
 
 TEST_SIZE: Final = 0.1
-
-EXTREMA_COLUMN: Final = "&s-extrema"
-MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
-MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
