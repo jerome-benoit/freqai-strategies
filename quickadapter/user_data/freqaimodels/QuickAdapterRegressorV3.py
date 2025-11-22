@@ -1078,6 +1078,83 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return sums
 
+    @staticmethod
+    def _normalize_objective_values(
+        objective_values_matrix: NDArray[np.floating],
+        directions: list[optuna.study.StudyDirection],
+    ) -> NDArray[np.floating]:
+        if objective_values_matrix.ndim != 2:
+            raise ValueError("objective_values_matrix must be 2-dimensional")
+
+        n_samples, n_objectives = objective_values_matrix.shape
+        if n_samples == 0 or n_objectives == 0:
+            raise ValueError(
+                "objective_values_matrix must have at least one sample and one objective"
+            )
+
+        if len(directions) != n_objectives:
+            raise ValueError(
+                f"Number of directions ({len(directions)}) must match number of objectives ({n_objectives})"
+            )
+
+        normalized_matrix = np.zeros_like(objective_values_matrix, dtype=float)
+
+        for i in range(n_objectives):
+            current_column = objective_values_matrix[:, i]
+            current_direction = directions[i]
+
+            is_neg_inf_mask = np.isneginf(current_column)
+            is_pos_inf_mask = np.isposinf(current_column)
+
+            if current_direction == optuna.study.StudyDirection.MAXIMIZE:
+                normalized_matrix[is_neg_inf_mask, i] = 0.0
+                normalized_matrix[is_pos_inf_mask, i] = 1.0
+            else:
+                normalized_matrix[is_neg_inf_mask, i] = 1.0
+                normalized_matrix[is_pos_inf_mask, i] = 0.0
+
+            is_finite_mask = np.isfinite(current_column)
+
+            if np.any(is_finite_mask):
+                finite_col = current_column[is_finite_mask]
+                finite_min_val = np.min(finite_col)
+                finite_max_val = np.max(finite_col)
+                finite_range_val = finite_max_val - finite_min_val
+
+                if np.isclose(finite_range_val, 0.0):
+                    if np.any(is_pos_inf_mask) and np.any(is_neg_inf_mask):
+                        normalized_matrix[is_finite_mask, i] = 0.5
+                    elif np.any(is_pos_inf_mask):
+                        normalized_matrix[is_finite_mask, i] = (
+                            0.0
+                            if current_direction == optuna.study.StudyDirection.MAXIMIZE
+                            else 1.0
+                        )
+                    elif np.any(is_neg_inf_mask):
+                        normalized_matrix[is_finite_mask, i] = (
+                            1.0
+                            if current_direction == optuna.study.StudyDirection.MAXIMIZE
+                            else 0.0
+                        )
+                    else:
+                        normalized_matrix[is_finite_mask, i] = 0.5
+                else:
+                    if current_direction == optuna.study.StudyDirection.MAXIMIZE:
+                        normalized_matrix[is_finite_mask, i] = (
+                            finite_col - finite_min_val
+                        ) / finite_range_val
+                    else:
+                        normalized_matrix[is_finite_mask, i] = (
+                            finite_max_val - finite_col
+                        ) / finite_range_val
+
+        if not np.all(np.isfinite(normalized_matrix)):
+            raise ValueError(
+                "normalized_matrix must contain only finite values after normalization"
+            )
+
+        return normalized_matrix
+
     def get_multi_objective_study_best_trial(
         self, namespace: str, study: optuna.study.Study
     ) -> Optional[optuna.trial.FrozenTrial]:
@@ -1546,56 +1623,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"Unsupported label metric: {metric}. Supported metrics are {', '.join(metrics)}"
                 )
 
-        objective_values_matrix = np.array([trial.values for trial in best_trials])
-        normalized_matrix = np.zeros_like(objective_values_matrix, dtype=float)
-
-        for i in range(objective_values_matrix.shape[1]):
-            current_column = objective_values_matrix[:, i]
-            current_direction = study.directions[i]
-
-            is_neg_inf_mask = np.isneginf(current_column)
-            is_pos_inf_mask = np.isposinf(current_column)
-            if current_direction == optuna.study.StudyDirection.MAXIMIZE:
-                normalized_matrix[is_neg_inf_mask, i] = 0.0
-                normalized_matrix[is_pos_inf_mask, i] = 1.0
-            else:
-                normalized_matrix[is_neg_inf_mask, i] = 1.0
-                normalized_matrix[is_pos_inf_mask, i] = 0.0
-
-            is_finite_mask = np.isfinite(current_column)
-
-            if np.any(is_finite_mask):
-                finite_col = current_column[is_finite_mask]
-                finite_min_val = np.min(finite_col)
-                finite_max_val = np.max(finite_col)
-                finite_range_val = finite_max_val - finite_min_val
-
-                if np.isclose(finite_range_val, 0.0):
-                    if np.any(is_pos_inf_mask) and np.any(is_neg_inf_mask):
-                        normalized_matrix[is_finite_mask, i] = 0.5
-                    elif np.any(is_pos_inf_mask):
-                        normalized_matrix[is_finite_mask, i] = (
-                            0.0
-                            if current_direction == optuna.study.StudyDirection.MAXIMIZE
-                            else 1.0
-                        )
-                    elif np.any(is_neg_inf_mask):
-                        normalized_matrix[is_finite_mask, i] = (
-                            1.0
-                            if current_direction == optuna.study.StudyDirection.MAXIMIZE
-                            else 0.0
-                        )
-                    else:
-                        normalized_matrix[is_finite_mask, i] = 0.5
-                else:
-                    if current_direction == optuna.study.StudyDirection.MAXIMIZE:
-                        normalized_matrix[is_finite_mask, i] = (
-                            finite_col - finite_min_val
-                        ) / finite_range_val
-                    else:
-                        normalized_matrix[is_finite_mask, i] = (
-                            finite_max_val - finite_col
-                        ) / finite_range_val
+        objective_values_matrix = np.array(
+            [trial.values for trial in best_trials], dtype=float
+        )
+        normalized_matrix = QuickAdapterRegressorV3._normalize_objective_values(
+            objective_values_matrix, list(study.directions)
+        )
 
         trial_distances = calculate_distances(normalized_matrix, metric=label_metric)
 
@@ -1620,7 +1653,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and len(directions) < 2
         ):
             raise ValueError(
-                "Multi-objective study must have at least 2 directions specified"
+                "Multi-objective study must have at least 2 objectives specified"
             )
 
         study = self.optuna_create_study(
@@ -1794,7 +1827,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not is_study_single_objective:
             if directions is None or len(directions) < 2:
                 raise ValueError(
-                    "Multi-objective study must have at least 2 directions specified"
+                    "Multi-objective study must have at least 2 objectives specified"
                 )
 
         identifier = self.freqai_info.get("identifier")
