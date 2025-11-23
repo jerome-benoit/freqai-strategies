@@ -52,7 +52,6 @@ from optuna.storages import (
 )
 from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
-from optuna.study.study import ObjectiveFuncType
 from pandas import DataFrame, merge
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.maskable.utils import is_masking_supported
@@ -1160,11 +1159,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         hyperopt_failed = False
         start_time = time.time()
         try:
-            objective: ObjectiveFuncType = lambda trial: self.objective(
-                trial, dk, total_timesteps
-            )
             study.optimize(
-                objective,
+                lambda trial: self.objective(trial, dk, total_timesteps),
                 n_trials=self.optuna_n_trials,
                 timeout=(
                     hours_to_seconds(self.optuna_timeout_hours)
