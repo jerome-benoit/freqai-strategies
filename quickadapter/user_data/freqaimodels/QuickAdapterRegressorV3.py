@@ -1885,7 +1885,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, pair: str, namespace: str, study: Optional[optuna.study.Study]
     ) -> None:
         best_params = self.get_optuna_params(pair, namespace)
-        if study and best_params and self.optuna_validate_params(pair, namespace, study):
+        if (
+            study
+            and best_params
+            and self.optuna_validate_params(pair, namespace, study)
+        ):
             study.enqueue_trial(best_params)
 
     def optuna_save_best_params(self, pair: str, namespace: str) -> None:

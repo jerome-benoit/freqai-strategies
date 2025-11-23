@@ -944,7 +944,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                     return current_virtual_trade_duration + 1
             return 0
 
-        frame_buffer = deque(maxlen=frame_stacking if frame_stacking_enabled else None)
+        frame_buffer: deque[np.float32] = deque(
+            maxlen=frame_stacking if frame_stacking_enabled else None
+        )
         zero_frame: Optional[NDArray[np.float32]] = None
         lstm_states: Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]] = None
         episode_start = np.array([True], dtype=bool)

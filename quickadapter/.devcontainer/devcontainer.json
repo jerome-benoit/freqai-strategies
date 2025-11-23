@@ -1,10 +1,13 @@
 {
   "name": "QuickAdapter Dev",
-  "dockerComposeFile": ["../docker-compose.yml", "docker-compose.dev.yml"],
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "docker-compose.dev.yml"
+  ],
   "service": "freqtrade",
-  "workspaceFolder": "/workspace/quickadapter",
+  "workspaceFolder": "${localWorkspaceFolder}",
   "mounts": [
-    "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/..,target=${localWorkspaceFolder}/..,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/opencode,target=/home/ftuser/.config/opencode,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.local/share/opencode,target=/home/ftuser/.local/share/opencode,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.local/state/opencode,target=/home/ftuser/.local/state/opencode,type=bind,consistency=cached"
@@ -21,7 +24,7 @@
       "version": "lts"
     }
   },
-  "postCreateCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r .devcontainer/requirements-dev.txt",
+  "postCreateCommand": "curl -L \"https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_$(dpkg --print-architecture).deb\" -o /tmp/git-delta.deb && sudo dpkg -i /tmp/git-delta.deb && rm /tmp/git-delta.deb && npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r .devcontainer/requirements-dev.txt",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -34,7 +37,9 @@
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
-        "python.analysis.extraPaths": ["/freqtrade"]
+        "python.analysis.extraPaths": [
+          "/freqtrade"
+        ]
       }
     }
   },
