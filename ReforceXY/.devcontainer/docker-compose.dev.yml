@@ -1,0 +1,4 @@
+version: '3'
+services:
+  freqtrade:
+    container_name: freqtrade-ReforceXY-dev

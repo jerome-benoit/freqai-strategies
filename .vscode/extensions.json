@@ -5,6 +5,7 @@
     "EditorConfig.EditorConfig",
     "streetsidesoftware.code-spell-checker",
     "ms-python.python",
-    "charliermarsh.ruff"
+    "charliermarsh.ruff",
+    "ms-vscode-remote.remote-containers"
   ]
 }
