@@ -3,14 +3,33 @@
   "dockerComposeFile": ["../docker-compose.yml", "docker-compose.dev.yml"],
   "service": "freqtrade",
   "workspaceFolder": "/workspace/ReforceXY",
-  "mounts": ["source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached"],
+  "mounts": [
+    "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/opencode,target=/home/ftuser/.config/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.local/share/opencode,target=/home/ftuser/.local/share/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.local/state/opencode,target=/home/ftuser/.local/state/opencode,type=bind,consistency=cached"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true,
+      "installOhMyZsh": true,
+      "username": "ftuser",
+      "upgradePackages": false
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "postCreateCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r .devcontainer/requirements-dev.txt",
   "customizations": {
     "vscode": {
       "extensions": [
         "EditorConfig.EditorConfig",
         "streetsidesoftware.code-spell-checker",
         "ms-python.python",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "saoudrizwan.claude-dev"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
