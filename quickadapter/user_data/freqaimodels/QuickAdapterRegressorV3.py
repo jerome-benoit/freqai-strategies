@@ -18,6 +18,7 @@ import sklearn
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
+from optuna.study.study import ObjectiveFuncType
 from sklearn_extra.cluster import KMedoids
 
 from Utils import (
@@ -560,7 +561,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         pair: str,
         namespace: str,
-        callback: Callable[[], None],
+        callback: Callable[[], Optional[optuna.study.Study]],
     ) -> None:
         if namespace not in {
             QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
@@ -1637,7 +1638,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         pair: str,
         namespace: str,
-        objective: Callable[[optuna.trial.Trial], float],
+        objective: ObjectiveFuncType,
         direction: Optional[optuna.study.StudyDirection] = None,
         directions: Optional[list[optuna.study.StudyDirection]] = None,
     ) -> Optional[optuna.study.Study]:

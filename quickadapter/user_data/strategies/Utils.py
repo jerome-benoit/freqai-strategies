@@ -1144,7 +1144,18 @@ REGRESSORS: Final[tuple[Regressor, ...]] = ("xgboost", "lightgbm")
 
 def get_optuna_callbacks(
     trial: optuna.trial.Trial, regressor: Regressor
-) -> list[Callable[[optuna.trial.Trial, str], None]]:
+) -> list[
+    Union[
+        optuna.integration.XGBoostPruningCallback,
+        optuna.integration.LightGBMPruningCallback,
+    ]
+]:
+    callbacks: list[
+        Union[
+            optuna.integration.XGBoostPruningCallback,
+            optuna.integration.LightGBMPruningCallback,
+        ]
+    ]
     if regressor == REGRESSORS[0]:  # "xgboost"
         callbacks = [
             optuna.integration.XGBoostPruningCallback(trial, "validation_0-rmse")
@@ -1167,7 +1178,14 @@ def fit_regressor(
     eval_weights: Optional[list[NDArray[np.floating]]],
     model_training_parameters: dict[str, Any],
     init_model: Any = None,
-    callbacks: Optional[list[Callable[[optuna.trial.Trial, str], None]]] = None,
+    callbacks: Optional[
+        list[
+            Union[
+                optuna.integration.XGBoostPruningCallback,
+                optuna.integration.LightGBMPruningCallback,
+            ]
+        ]
+    ] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
     if regressor == REGRESSORS[0]:  # "xgboost"

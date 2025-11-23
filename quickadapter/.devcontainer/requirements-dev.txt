@@ -1,1 +1,3 @@
+pandas-stubs
+scipy-stubs
 ruff

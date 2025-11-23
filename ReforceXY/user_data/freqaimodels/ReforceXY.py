@@ -52,6 +52,7 @@ from optuna.storages import (
 )
 from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
+from optuna.study.study import ObjectiveFuncType
 from pandas import DataFrame, merge
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.maskable.utils import is_masking_supported
@@ -1159,8 +1160,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         hyperopt_failed = False
         start_time = time.time()
         try:
+            objective: ObjectiveFuncType = lambda trial: self.objective(
+                trial, dk, total_timesteps
+            )
             study.optimize(
-                lambda trial: self.objective(trial, dk, total_timesteps),
+                objective,
                 n_trials=self.optuna_n_trials,
                 timeout=(
                     hours_to_seconds(self.optuna_timeout_hours)
@@ -1285,7 +1289,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             prices_train, prices_test = self.build_ohlc_price_dataframes(
                 dk.data_dictionary, dk.pair, dk
             )
-        seed = self.get_model_params().get("seed", 42) if seed is None else seed
+        seed: int = self.get_model_params().get("seed", 42) if seed is None else seed
         if trial is not None:
             seed += trial.number
         set_random_seed(seed)
@@ -1549,7 +1553,9 @@ class MyRLEnv(Base5ActionRLEnv):
         self._total_entry_additive: float = 0.0
         self._last_exit_additive: float = 0.0
         self._total_exit_additive: float = 0.0
-        model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
+        model_reward_parameters: Dict[str, Any] = self.rl_config.get(
+            "model_reward_parameters", {}
+        )
         self.max_trade_duration_candles: int = int(
             model_reward_parameters.get(
                 "max_trade_duration_candles",
