@@ -1,29 +1,22 @@
 {
-	"name": "QuickAdapter Dev",
-	"dockerComposeFile": [
-		"../docker-compose.yml",
-		"docker-compose.dev.yml"
-	],
-	"service": "freqtrade",
-	"workspaceFolder": "/workspace",
-	"mounts": [
-		"source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
-	],
-	"customizations": {
-		"vscode": {
-			"extensions": [
-				"EditorConfig.EditorConfig",
-				"streetsidesoftware.code-spell-checker",
-				"ms-python.python",
-				"charliermarsh.ruff"
-			],
-			"settings": {
-				"python.defaultInterpreterPath": "/usr/local/bin/python",
-				"python.analysis.extraPaths": [
-					"/freqtrade"
-				]
-			}
-		}
-	},
-	"remoteUser": "ftuser"
+  "name": "QuickAdapter Dev",
+  "dockerComposeFile": ["../docker-compose.yml", "docker-compose.dev.yml"],
+  "service": "freqtrade",
+  "workspaceFolder": "/workspace/quickadapter",
+  "mounts": ["source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached"],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "EditorConfig.EditorConfig",
+        "streetsidesoftware.code-spell-checker",
+        "ms-python.python",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.analysis.extraPaths": ["/freqtrade"]
+      }
+    }
+  },
+  "remoteUser": "ftuser"
 }
