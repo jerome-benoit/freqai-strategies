@@ -483,7 +483,7 @@ def get_weighted_extrema(
     raise ValueError(f"Unknown weight strategy: {strategy}")
 
 
-def get_callable_sha256(fn: Callable) -> str:
+def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
         raise ValueError("fn must be callable")
     code = getattr(fn, "__code__", None)
@@ -1074,10 +1074,10 @@ def zigzag(
 
         initial_move_from_high = (initial_high - current_low) / initial_high
         initial_move_from_low = (current_high - initial_low) / initial_low
-        is_initial_high_move_significant = (
+        is_initial_high_move_significant: bool = (
             initial_move_from_high >= thresholds[initial_high_pos]
         )
-        is_initial_low_move_significant = (
+        is_initial_low_move_significant: bool = (
             initial_move_from_low >= thresholds[initial_low_pos]
         )
         if is_initial_high_move_significant and is_initial_low_move_significant:
@@ -1239,7 +1239,7 @@ def get_optuna_study_model_parameters(
         raise ValueError(
             f"expansion_ratio must be a float between 0 and 1, got {expansion_ratio}"
         )
-    default_ranges = {
+    default_ranges: dict[str, tuple[float, float]] = {
         "n_estimators": (100, 2000),
         "learning_rate": (1e-3, 0.5),
         "min_child_weight": (1e-8, 100.0),

@@ -1403,7 +1403,7 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def weighted_close(series: Series, weight: float = 2.0) -> float:
-        return (
+        return float(
             series.get("high") + series.get("low") + weight * series.get("close")
         ) / (2.0 + weight)
 
