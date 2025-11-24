@@ -24,7 +24,8 @@
       "version": "lts"
     }
   },
-  "postCreateCommand": "curl -L \"https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_$(dpkg --print-architecture).deb\" -o /tmp/git-delta.deb && sudo dpkg -i /tmp/git-delta.deb && rm /tmp/git-delta.deb && npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r .devcontainer/requirements-dev.txt",
+  "postCreateCommand": "curl -L \"https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_$(dpkg --print-architecture).deb\" -o /tmp/git-delta.deb && sudo dpkg -i /tmp/git-delta.deb && rm /tmp/git-delta.deb",
+  "postStartCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r .devcontainer/requirements-dev.txt",
   "customizations": {
     "vscode": {
       "extensions": [
