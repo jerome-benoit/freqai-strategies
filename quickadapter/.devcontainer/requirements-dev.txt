@@ -1,3 +1,4 @@
 pandas-stubs
 scipy-stubs
+uv
 ruff

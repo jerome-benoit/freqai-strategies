@@ -22,6 +22,9 @@
     },
     "ghcr.io/devcontainers/features/node:1": {
       "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest"
     }
   },
   "postCreateCommand": "curl -L \"https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_$(dpkg --print-architecture).deb\" -o /tmp/git-delta.deb && sudo dpkg -i /tmp/git-delta.deb && rm /tmp/git-delta.deb",
