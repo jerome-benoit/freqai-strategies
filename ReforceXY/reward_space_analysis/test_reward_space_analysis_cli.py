@@ -387,7 +387,7 @@ def main():
     # Prepare list of (conf, strict)
     scenario_pairs: List[Tuple[ConfigTuple, bool]] = [(c, False) for c in scenarios]
     indices = {conf: idx for idx, conf in enumerate(scenarios, start=1)}
-    n_duplicated = max(0, min(args.strict_sample, len(scenarios)))
+    n_duplicated = min(max(0, args.strict_sample), len(scenarios))
     if n_duplicated > 0:
         print(f"Duplicating first {n_duplicated} scenarios with --strict_diagnostics")
     for c in scenarios[:n_duplicated]:

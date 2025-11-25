@@ -195,37 +195,50 @@ class QuickAdapterV3(IStrategy):
             self.config.get("freqai", {}).get("fit_live_predictions_candles", 100)
         )
         estimated_trade_duration_candles = int(
-            self.config.get("estimated_trade_duration_candles", 48)
+            self.config.get("estimated_trade_duration_candles", 60)
         )
-        stoploss_guard_lookback_period_candles = int(
-            round(fit_live_predictions_candles * 0.5)
+
+        lookback_period_candles = max(1, int(round(fit_live_predictions_candles * 0.5)))
+        cooldown_stop_duration_candles = 4
+        stoploss_stop_duration_candles = max(
+            cooldown_stop_duration_candles, estimated_trade_duration_candles
         )
-        stoploss_guard_trade_limit = max(
-            1,
-            int(
-                round(
-                    (
-                        stoploss_guard_lookback_period_candles
-                        / estimated_trade_duration_candles
+        drawdown_stop_duration_candles = max(
+            fit_live_predictions_candles,
+            estimated_trade_duration_candles * 2,
+            stoploss_stop_duration_candles,
+        )
+        max_open_trades = int(self.config.get("max_open_trades", 0))
+        stoploss_trade_limit = min(
+            max(
+                1,
+                int(
+                    round(
+                        lookback_period_candles
+                        / max(1, estimated_trade_duration_candles)
                     )
-                    * 0.5
-                )
+                ),
             ),
+            max(1, int(round(max_open_trades * 0.5))),
         )
+
         return [
-            {"method": "CooldownPeriod", "stop_duration_candles": 4},
+            {
+                "method": "CooldownPeriod",
+                "stop_duration_candles": cooldown_stop_duration_candles,
+            },
             {
                 "method": "MaxDrawdown",
-                "lookback_period_candles": fit_live_predictions_candles,
-                "trade_limit": 2 * self.config.get("max_open_trades"),
-                "stop_duration_candles": fit_live_predictions_candles,
+                "lookback_period_candles": lookback_period_candles,
+                "trade_limit": int(round(1.5 * max_open_trades)),
+                "stop_duration_candles": drawdown_stop_duration_candles,
                 "max_allowed_drawdown": 0.2,
             },
             {
                 "method": "StoplossGuard",
-                "lookback_period_candles": stoploss_guard_lookback_period_candles,
-                "trade_limit": stoploss_guard_trade_limit,
-                "stop_duration_candles": stoploss_guard_lookback_period_candles,
+                "lookback_period_candles": lookback_period_candles,
+                "trade_limit": stoploss_trade_limit,
+                "stop_duration_candles": stoploss_stop_duration_candles,
                 "only_per_pair": True,
             },
         ]
@@ -239,7 +252,7 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def max_open_trades_per_side(self) -> int:
-        max_open_trades = self.config.get("max_open_trades")
+        max_open_trades = self.config.get("max_open_trades", 0)
         if max_open_trades < 0:
             return -1
         if self.is_short_allowed():
@@ -1420,7 +1433,7 @@ class QuickAdapterV3(IStrategy):
             return 0
         if idx < 0:
             idx = length + idx
-        return max(0, min(idx, length - 1))
+        return min(max(0, idx), length - 1)
 
     def _calculate_candle_deviation(
         self,
@@ -2101,7 +2114,7 @@ class QuickAdapterV3(IStrategy):
         ):  # "short"
             logger.info(f"User denied short entry for {pair}: shorting not allowed")
             return False
-        if Trade.get_open_trade_count() >= self.config.get("max_open_trades"):
+        if Trade.get_open_trade_count() >= self.config.get("max_open_trades", 0):
             return False
         max_open_trades_per_side = self.max_open_trades_per_side
         if max_open_trades_per_side >= 0:

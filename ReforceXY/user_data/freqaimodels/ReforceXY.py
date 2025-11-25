@@ -1942,7 +1942,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return x / math.hypot(1.0, x)
 
         if name == ReforceXY._TRANSFORM_FUNCTIONS[5]:  # "clip"
-            return max(-1.0, min(1.0, x))
+            return min(max(-1.0, x), 1.0)
 
         logger.warning(
             "Unknown potential transform '%s'; falling back to tanh. Valid transforms: %s",

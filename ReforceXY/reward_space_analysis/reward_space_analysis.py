@@ -1256,7 +1256,7 @@ def simulate_samples(
                 pnl -= 0.005 * duration_ratio
 
             # Clip PnL to realistic range
-            pnl = max(min(pnl, 0.15), -0.15)
+            pnl = min(max(-0.15, pnl), 0.15)
 
         if position == Positions.Neutral:
             max_unrealized_profit = 0.0
