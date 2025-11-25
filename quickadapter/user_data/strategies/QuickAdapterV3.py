@@ -262,6 +262,20 @@ class QuickAdapterV3(IStrategy):
         else:
             return max_open_trades
 
+    @cached_property
+    def extrema_weighting(self) -> dict[str, Any]:
+        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
+        if not isinstance(extrema_weighting, dict):
+            extrema_weighting = {}
+        return QuickAdapterV3._get_extrema_weighting_params(extrema_weighting, {})
+
+    @cached_property
+    def extrema_smoothing(self) -> dict[str, Any]:
+        extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
+        if not isinstance(extrema_smoothing, dict):
+            extrema_smoothing = {}
+        return QuickAdapterV3._get_extrema_smoothing_params(extrema_smoothing, {})
+
     def bot_start(self, **kwargs) -> None:
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
@@ -355,15 +369,11 @@ class QuickAdapterV3(IStrategy):
                 "lookback_period"
             ]
 
-        if not isinstance(decay_ratio, (int, float)) or not (
-            0.0 < float(decay_ratio) <= 1.0
-        ):
+        if not isinstance(decay_ratio, (int, float)) or not (0.0 < decay_ratio <= 1.0):
             logger.warning(
                 f"reversal_confirmation: invalid decay_ratio {decay_ratio!r}, using default {QuickAdapterV3.default_reversal_confirmation['decay_ratio']}"
             )
             decay_ratio = QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
-        else:
-            decay_ratio = float(decay_ratio)
 
         min_natr_ratio_percent, max_natr_ratio_percent = validate_range(
             min_natr_ratio_percent,
@@ -627,14 +637,12 @@ class QuickAdapterV3(IStrategy):
         if (
             not isinstance(weighting_gamma, (int, float))
             or not np.isfinite(weighting_gamma)
-            or not (0 < float(weighting_gamma) <= 10.0)
+            or not (0 < weighting_gamma <= 10.0)
         ):
             logger.warning(
                 f"{pair}: invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']}"
             )
             weighting_gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
-        else:
-            weighting_gamma = float(weighting_gamma)
 
         weighting_softmax_temperature = extrema_weighting.get(
             "softmax_temperature", DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
@@ -647,11 +655,7 @@ class QuickAdapterV3(IStrategy):
             logger.warning(
                 f"{pair}: invalid extrema_weighting softmax_temperature {weighting_softmax_temperature}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']}"
             )
-            weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
-                "softmax_temperature"
-            ]
-        else:
-            weighting_softmax_temperature = float(weighting_softmax_temperature)
+            weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
 
         weighting_robust_quantiles = extrema_weighting.get(
             "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
@@ -698,8 +702,6 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: invalid extrema_weighting tanh_scale {weighting_tanh_scale}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['tanh_scale']}"
             )
             weighting_tanh_scale = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"]
-        else:
-            weighting_tanh_scale = float(weighting_tanh_scale)
 
         weighting_tanh_gain = extrema_weighting.get(
             "tanh_gain", DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"]
@@ -713,8 +715,6 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: invalid extrema_weighting tanh_gain {weighting_tanh_gain}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['tanh_gain']}"
             )
             weighting_tanh_gain = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"]
-        else:
-            weighting_tanh_gain = float(weighting_tanh_gain)
 
         return {
             "strategy": weighting_strategy,
@@ -761,8 +761,6 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: invalid extrema_smoothing beta {smoothing_beta}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']}"
             )
             smoothing_beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
-        else:
-            smoothing_beta = float(smoothing_beta)
 
         return {
             "method": smoothing_method,
@@ -840,15 +838,8 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
 
-        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
-        if not isinstance(extrema_weighting, dict):
-            extrema_weighting = {}
-        extrema_weighting_params = QuickAdapterV3._get_extrema_weighting_params(
-            extrema_weighting, pair
-        )
-
         pivot_weights = QuickAdapterV3._get_weights(
-            extrema_weighting_params["strategy"],
+            self.extrema_weighting["strategy"],
             pivots_amplitudes,
             pivots_amplitude_threshold_ratios,
         )
@@ -856,28 +847,21 @@ class QuickAdapterV3(IStrategy):
             extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
             weights=np.array(pivot_weights),
-            strategy=extrema_weighting_params["strategy"],
-            normalization=extrema_weighting_params["normalization"],
-            gamma=extrema_weighting_params["gamma"],
-            softmax_temperature=extrema_weighting_params["softmax_temperature"],
-            tanh_scale=extrema_weighting_params["tanh_scale"],
-            tanh_gain=extrema_weighting_params["tanh_gain"],
-            robust_quantiles=extrema_weighting_params["robust_quantiles"],
-            rank_method=extrema_weighting_params["rank_method"],
-        )
-
-        extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
-        if not isinstance(extrema_smoothing, dict):
-            extrema_smoothing = {}
-        extrema_smoothing_params = QuickAdapterV3._get_extrema_smoothing_params(
-            extrema_smoothing, pair
+            strategy=self.extrema_weighting["strategy"],
+            normalization=self.extrema_weighting["normalization"],
+            gamma=self.extrema_weighting["gamma"],
+            softmax_temperature=self.extrema_weighting["softmax_temperature"],
+            tanh_scale=self.extrema_weighting["tanh_scale"],
+            tanh_gain=self.extrema_weighting["tanh_gain"],
+            robust_quantiles=self.extrema_weighting["robust_quantiles"],
+            rank_method=self.extrema_weighting["rank_method"],
         )
 
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
             weighted_extrema,
-            extrema_smoothing_params["method"],
-            extrema_smoothing_params["window"],
-            extrema_smoothing_params["beta"],
+            self.extrema_smoothing["method"],
+            self.extrema_smoothing["window"],
+            self.extrema_smoothing["beta"],
         )
         if debug:
             extrema = dataframe[EXTREMA_COLUMN]

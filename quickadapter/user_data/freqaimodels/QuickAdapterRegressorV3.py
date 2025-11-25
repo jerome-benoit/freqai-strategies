@@ -210,6 +210,52 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return label_frequency_candles
 
+    @cached_property
+    def predictions_extrema(self) -> dict[str, Any]:
+        predictions_extrema = self.freqai_info.get("predictions_extrema", {})
+        if not isinstance(predictions_extrema, dict):
+            predictions_extrema = {}
+
+        threshold_outlier = predictions_extrema.get("threshold_outlier", 0.999)
+        if not isinstance(threshold_outlier, (int, float)) or not (
+            0 < threshold_outlier < 1
+        ):
+            threshold_outlier = 0.999
+
+        selection_method = str(
+            predictions_extrema.get(
+                "selection_method",
+                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank"
+            )
+        )
+        if (
+            selection_method
+            not in QuickAdapterRegressorV3._extrema_selection_methods_set()
+        ):
+            selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
+
+        thresholds_smoothing = str(
+            predictions_extrema.get(
+                "thresholds_smoothing",
+                QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
+            )
+        )
+        if thresholds_smoothing not in QuickAdapterRegressorV3._threshold_methods_set():
+            thresholds_smoothing = QuickAdapterRegressorV3._THRESHOLD_METHODS[
+                0
+            ]  # "mean"
+
+        thresholds_alpha = predictions_extrema.get("thresholds_alpha", 12.0)
+        if not isinstance(thresholds_alpha, (int, float)) or thresholds_alpha < 0:
+            thresholds_alpha = 12.0
+
+        return {
+            "threshold_outlier": float(threshold_outlier),
+            "selection_method": selection_method,
+            "thresholds_smoothing": thresholds_smoothing,
+            "thresholds_alpha": float(thresholds_alpha),
+        }
+
     @property
     def _optuna_label_candle_pool_full(self) -> list[int]:
         label_frequency_candles = self._label_frequency_candles
@@ -691,9 +737,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f = sp.stats.weibull_min.fit(
                 pd.to_numeric(di_values, errors="coerce").dropna()
             )
-            predictions_extrema = self.freqai_info.get("predictions_extrema", {})
             cutoff = sp.stats.weibull_min.ppf(
-                predictions_extrema.get("threshold_outlier", 0.999), *f
+                self.predictions_extrema["threshold_outlier"], *f
             )
 
         dk.data["DI_value_mean"] = di_values.mean()
@@ -762,32 +807,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
 
-        predictions_extrema = self.freqai_info.get("predictions_extrema", {})
-        extrema_selection = str(
-            predictions_extrema.get(
-                "selection_method",
-                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank"
-            )
-        )
-        if (
-            extrema_selection
-            not in QuickAdapterRegressorV3._extrema_selection_methods_set()
-        ):
-            raise ValueError(
-                f"Unsupported extrema selection method: {extrema_selection}. "
-                f"Supported methods are {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
-            )
-        thresholds_smoothing = str(
-            predictions_extrema.get(
-                "thresholds_smoothing",
-                QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
-            )
-        )
-        if thresholds_smoothing not in QuickAdapterRegressorV3._threshold_methods_set():
-            raise ValueError(
-                f"Unsupported thresholds smoothing method: {thresholds_smoothing}. "
-                f"Supported methods are {', '.join(QuickAdapterRegressorV3._THRESHOLD_METHODS)}"
-            )
+        # Use cached parameters
+        extrema_selection = self.predictions_extrema["selection_method"]
+        thresholds_smoothing = self.predictions_extrema["thresholds_smoothing"]
+
         if (
             thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
         ):  # "median"
@@ -797,9 +820,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif (
             thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
         ):  # "soft_extremum"
-            thresholds_alpha = float(predictions_extrema.get("thresholds_alpha", 12.0))
             return QuickAdapterRegressorV3.soft_extremum_min_max(
-                pred_extrema, thresholds_alpha, extrema_selection
+                pred_extrema,
+                self.predictions_extrema["thresholds_alpha"],
+                extrema_selection,
             )
         elif (
             thresholds_smoothing
@@ -1173,7 +1197,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if n_uniques <= 3:
             return min(n_uniques, upper_bound)
         n_clusters = int(round((np.log2(n_uniques) + np.sqrt(n_uniques)) / 2.0))
-        return max(lower_bound, min(n_clusters, upper_bound))
+        return min(max(lower_bound, n_clusters), upper_bound)
 
     def _calculate_distances_to_ideal(
         self,
