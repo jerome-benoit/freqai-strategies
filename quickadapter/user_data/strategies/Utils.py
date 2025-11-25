@@ -18,11 +18,11 @@ from technical import qtpylib
 T = TypeVar("T", pd.Series, float)
 
 
-WeightStrategy = Literal["none", "amplitude", "amplitude_excess"]
+WeightStrategy = Literal["none", "amplitude", "amplitude_threshold_ratio"]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
     "amplitude",
-    "amplitude_excess",
+    "amplitude_threshold_ratio",
 )
 
 EXTREMA_COLUMN: Final = "&s-extrema"
@@ -463,7 +463,7 @@ def get_weighted_extrema(
     if strategy in {
         WEIGHT_STRATEGIES[1],
         WEIGHT_STRATEGIES[2],
-    }:  # "amplitude" or "amplitude_excess"
+    }:  # "amplitude" or "amplitude_threshold_ratio"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,
@@ -912,7 +912,7 @@ def zigzag(
     pivots_values: list[float] = []
     pivots_directions: list[TrendDirection] = []
     pivots_amplitudes: list[float] = []
-    pivots_amplitude_excesses: list[float] = []
+    pivots_amplitude_threshold_ratios: list[float] = []
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -974,14 +974,14 @@ def zigzag(
                 and current_threshold > 0
                 and np.isfinite(amplitude)
             ):
-                amplitude_excess = amplitude / current_threshold
+                amplitude_threshold_ratio = amplitude / current_threshold
             else:
-                amplitude_excess = np.nan
+                amplitude_threshold_ratio = np.nan
         else:
             amplitude = np.nan
-            amplitude_excess = np.nan
+            amplitude_threshold_ratio = np.nan
         pivots_amplitudes.append(amplitude)
-        pivots_amplitude_excesses.append(amplitude_excess)
+        pivots_amplitude_threshold_ratios.append(amplitude_threshold_ratio)
         last_pivot_pos = pos
         reset_candidate_pivot()
 
@@ -1134,7 +1134,7 @@ def zigzag(
         pivots_values,
         pivots_directions,
         pivots_amplitudes,
-        pivots_amplitude_excesses,
+        pivots_amplitude_threshold_ratios,
     )
 
 

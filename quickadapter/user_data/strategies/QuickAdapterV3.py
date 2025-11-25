@@ -197,7 +197,9 @@ class QuickAdapterV3(IStrategy):
         estimated_trade_duration_candles = int(
             self.config.get("estimated_trade_duration_candles", 48)
         )
-        stoploss_guard_lookback_period_candles = int(fit_live_predictions_candles / 2)
+        stoploss_guard_lookback_period_candles = int(
+            round(fit_live_predictions_candles * 0.5)
+        )
         stoploss_guard_trade_limit = max(
             1,
             int(
@@ -776,14 +778,14 @@ class QuickAdapterV3(IStrategy):
     def _get_weights(
         strategy: WeightStrategy,
         amplitudes: list[float],
-        amplitude_excesses: list[float],
+        amplitude_threshold_ratios: list[float],
     ) -> list[float]:
         if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
             return amplitudes
-        if strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_excess"
+        if strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
             return (
-                amplitude_excesses
-                if len(amplitude_excesses) == len(amplitudes)
+                amplitude_threshold_ratios
+                if len(amplitude_threshold_ratios) == len(amplitudes)
                 else amplitudes
             )
         return []
@@ -799,7 +801,7 @@ class QuickAdapterV3(IStrategy):
             _,
             pivots_directions,
             pivots_amplitudes,
-            pivots_amplitude_excesses,
+            pivots_amplitude_threshold_ratios,
         ) = zigzag(
             dataframe,
             natr_period=label_period_candles,
@@ -835,7 +837,7 @@ class QuickAdapterV3(IStrategy):
         pivot_weights = QuickAdapterV3._get_weights(
             extrema_weighting_params["strategy"],
             pivots_amplitudes,
-            pivots_amplitude_excesses,
+            pivots_amplitude_threshold_ratios,
         )
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],

@@ -2147,7 +2147,7 @@ def label_objective(
     if df.empty:
         return 0, 0.0, 0.0
 
-    _, pivots_values, _, pivots_amplitudes, pivots_amplitude_excesses = zigzag(
+    _, pivots_values, _, pivots_amplitudes, pivots_amplitude_threshold_ratios = zigzag(
         df,
         natr_period=label_period_candles,
         natr_ratio=label_natr_ratio,
@@ -2157,10 +2157,10 @@ def label_objective(
     if not np.isfinite(median_amplitude):
         median_amplitude = 0.0
 
-    median_amplitude_excess = np.nanmedian(
-        np.asarray(pivots_amplitude_excesses, dtype=float)
+    median_amplitude_threshold_ratio = np.nanmedian(
+        np.asarray(pivots_amplitude_threshold_ratios, dtype=float)
     )
-    if not np.isfinite(median_amplitude_excess):
-        median_amplitude_excess = 0.0
+    if not np.isfinite(median_amplitude_threshold_ratio):
+        median_amplitude_threshold_ratio = 0.0
 
-    return len(pivots_values), median_amplitude, median_amplitude_excess
+    return len(pivots_values), median_amplitude, median_amplitude_threshold_ratio
