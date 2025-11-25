@@ -378,3 +378,10 @@ config.json
 **/user_data/models/**
 **/user_data/data/**
 !.gitkeep
+
+*/.serena
+*/.serena/**
+*/.clinerules
+*/.clinerules/**
+*/openspec
+*/openspec/**

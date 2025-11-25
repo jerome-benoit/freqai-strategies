@@ -15,6 +15,7 @@
   ],
   "features": {
     "ghcr.io/devcontainers/features/nix:1": {
+      "multiUser": true,
       "packages": [
         "ripgrep",
         "delta",
@@ -35,7 +36,7 @@
       "version": "latest"
     }
   },
-  "postCreateCommand": "ln -sf ${containerWorkspaceFolder}/../.serena ${containerWorkspaceFolder}/.serena && ln -sf ${containerWorkspaceFolder}/../openspec ${containerWorkspaceFolder}/openspec && ln -sf ${containerWorkspaceFolder}/../.clinerules ${containerWorkspaceFolder}/.clinerules",
+  "postCreateCommand": "PARENT=\"${containerWorkspaceFolder}/..\" && CWF=\"${containerWorkspaceFolder}\" && if [ \"${CWF}\" != \"${PARENT}\" ]; then [ ! -e \"${CWF}/.serena\" ] && ln -sf \"${PARENT}/.serena\" \"${CWF}/.serena\" || true; [ ! -e \"${CWF}/openspec\" ] && ln -sf \"${PARENT}/openspec\" \"${CWF}/openspec\" || true; [ ! -e \"${CWF}/.clinerules\" ] && ln -sf \"${PARENT}/.clinerules\" \"${CWF}/.clinerules\" || true; fi",
   "postStartCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r ${containerWorkspaceFolder}/.devcontainer/requirements-dev.txt",
   "customizations": {
     "vscode": {
