@@ -5,6 +5,7 @@
     "docker-compose.dev.yml"
   ],
   "service": "freqtrade",
+  "overrideCommand": true,
   "workspaceFolder": "${localWorkspaceFolder}",
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=${localWorkspaceFolder}/..,type=bind,consistency=cached",
@@ -13,6 +14,13 @@
     "source=${localEnv:HOME}/.local/state/opencode,target=/home/ftuser/.local/state/opencode,type=bind,consistency=cached"
   ],
   "features": {
+    "ghcr.io/devcontainers/features/nix:1": {
+      "packages": [
+        "ripgrep",
+        "delta",
+        "btop"
+      ]
+    },
     "ghcr.io/devcontainers/features/common-utils:2": {
       "installZsh": true,
       "configureZshAsDefaultShell": true,
@@ -27,8 +35,8 @@
       "version": "latest"
     }
   },
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep && sudo rm -rf /var/lib/apt/lists/* && curl -L \"https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_$(dpkg --print-architecture).deb\" -o /tmp/git-delta.deb && sudo dpkg -i /tmp/git-delta.deb && rm /tmp/git-delta.deb",
-  "postStartCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r .devcontainer/requirements-dev.txt",
+  "postCreateCommand": "ln -sf ${containerWorkspaceFolder}/../.serena ${containerWorkspaceFolder}/.serena && ln -sf ${containerWorkspaceFolder}/../openspec ${containerWorkspaceFolder}/openspec && ln -sf ${containerWorkspaceFolder}/../.clinerules ${containerWorkspaceFolder}/.clinerules",
+  "postStartCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r ${containerWorkspaceFolder}/.devcontainer/requirements-dev.txt",
   "customizations": {
     "vscode": {
       "extensions": [
