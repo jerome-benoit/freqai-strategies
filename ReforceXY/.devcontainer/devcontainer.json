@@ -20,7 +20,8 @@
         "ripgrep",
         "delta",
         "btop"
-      ]
+      ],
+      "useAttributePath": true
     },
     "ghcr.io/devcontainers/features/common-utils:2": {
       "installZsh": true,
