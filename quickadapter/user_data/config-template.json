@@ -53,7 +53,13 @@
       // "rateLimit": 60
     },
     // Spot top 5
-    "pair_whitelist": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"],
+    "pair_whitelist": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "SOL/USDT",
+      "BNB/USDT",
+      "XRP/USDT"
+    ],
     // // Spot IA
     // "pair_whitelist": [
     //     "NEAR/USDT",
@@ -115,6 +121,9 @@
     "fit_live_predictions_candles": 864,
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
+    "extrema_weighting": {
+      "strategy": "amplitude"
+    },
     "predictions_extrema": {
       "thresholds_smoothing": "isodata"
     },
@@ -140,8 +149,16 @@
       "train_rmse": -1
     },
     "feature_parameters": {
-      "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
-      "include_timeframes": ["5m", "15m", "1h", "4h"],
+      "include_corr_pairlist": [
+        "BTC/USDT",
+        "ETH/USDT"
+      ],
+      "include_timeframes": [
+        "5m",
+        "15m",
+        "1h",
+        "4h"
+      ],
       "label_period_candles": 18,
       "label_metric": "euclidean",
       "include_shifted_candles": 6,
@@ -150,7 +167,11 @@
       "principal_component_analysis": false,
       "use_SVM_to_remove_outliers": false,
       "use_DBSCAN_to_remove_outliers": false,
-      "indicator_periods_candles": [8, 16, 32],
+      "indicator_periods_candles": [
+        8,
+        16,
+        32
+      ],
       "inlier_metric_window": 0,
       "noise_standard_deviation": 0.02,
       "reverse_test_train_order": false,
