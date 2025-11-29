@@ -16,11 +16,7 @@
   "features": {
     "ghcr.io/devcontainers/features/nix:1": {
       "multiUser": true,
-      "packages": [
-        "ripgrep",
-        "delta",
-        "btop"
-      ],
+      "packages": "ripgrep,delta,btop",
       "useAttributePath": true
     },
     "ghcr.io/devcontainers/features/common-utils:2": {
