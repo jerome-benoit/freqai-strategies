@@ -103,6 +103,56 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
 
+    _SCIPY_METRICS: Final[tuple[str, ...]] = (
+        # "braycurtis",
+        # "canberra",
+        "chebyshev",
+        "cityblock",
+        # "correlation",
+        # "cosine",
+        # "dice",
+        "euclidean",
+        # "hamming",
+        # "jaccard",
+        "jensenshannon",
+        # "kulczynski1",  # Deprecated in SciPy ≥ 1.15.0; do not use.
+        "mahalanobis",
+        # "matching",
+        "minkowski",
+        # "rogerstanimoto",
+        # "russellrao",
+        "seuclidean",
+        # "sokalmichener",  # Deprecated in SciPy ≥ 1.15.0; do not use.
+        # "sokalsneath",
+        "sqeuclidean",
+        # "yule",
+    )
+
+    _CUSTOM_METRICS: Final[tuple[str, ...]] = (
+        "hellinger",
+        "shellinger",
+        "harmonic_mean",
+        "geometric_mean",
+        "arithmetic_mean",
+        "quadratic_mean",
+        "cubic_mean",
+        "power_mean",
+        "weighted_sum",
+        "kmeans",
+        "kmeans2",
+        "kmedoids",
+        "knn_power_mean",
+        "knn_percentile",
+        "knn_min",
+        "knn_max",
+        "medoid",
+    )
+
+    _METRICS: Final[tuple[str, ...]] = (
+        *_SCIPY_METRICS,
+        *_CUSTOM_METRICS,
+    )
+
     @staticmethod
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
         return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
@@ -122,6 +172,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _optuna_namespaces_set() -> set[OptunaNamespace]:
         return set(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)
+
+    @staticmethod
+    def _scipy_metrics_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._SCIPY_METRICS)
+
+    @staticmethod
+    def _custom_metrics_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._CUSTOM_METRICS)
+
+    @staticmethod
+    def _metrics_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._METRICS)
 
     @cached_property
     def _optuna_config(self) -> dict[str, Any]:
@@ -1071,7 +1133,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             if not np.all(np.isfinite(weights)) or np.any(weights < 0):
                 raise ValueError("weights must be finite and non-negative")
-            if metric in {"mahalanobis", "seuclidean", "jensenshannon"}:
+            if metric in {
+                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
+                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
+                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
+            }:
                 raise ValueError(f"weights not supported for metric '{metric}'")
 
         matrix = np.asarray(matrix, dtype=np.float64)
@@ -1087,7 +1153,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pdist_kwargs = {}
         if weights is not None:
             pdist_kwargs["w"] = weights
-        if metric == "minkowski" and p is not None and np.isfinite(p):
+        if (
+            metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            and p is not None
+            and np.isfinite(p)
+        ):
             pdist_kwargs["p"] = p
 
         pairwise_distances_vector = sp.spatial.distance.pdist(
@@ -1237,45 +1307,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return np.array([])
         if n_samples == 1:
             if metric in {
-                "medoid",
-                "kmeans",
-                "kmeans2",
-                "kmedoids",
-                "knn_power_mean",
-                "knn_percentile",
-                "knn_min",
-                "knn_max",
+                QuickAdapterRegressorV3._CUSTOM_METRICS[16],  # "medoid"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[11],  # "kmedoids"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_percentile"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
             }:
                 return np.array([0.0])
 
-        if metric in {
-            # "braycurtis",
-            # "canberra",
-            "chebyshev",
-            "cityblock",
-            # "correlation",
-            # "cosine",
-            # "dice",
-            "euclidean",
-            # "hamming",
-            # "jaccard",
-            "jensenshannon",
-            # "kulczynski1",  # Deprecated in SciPy ≥ 1.15.0; do not use.
-            "mahalanobis",
-            # "matching",
-            "minkowski",
-            # "rogerstanimoto",
-            # "russellrao",
-            "seuclidean",
-            # "sokalmichener",  # Deprecated in SciPy ≥ 1.15.0; do not use.
-            # "sokalsneath",
-            "sqeuclidean",
-            # "yule",
-        }:
+        if metric in QuickAdapterRegressorV3._scipy_metrics_set():
             cdist_kwargs: dict[str, Any] = {}
-            if metric not in {"mahalanobis", "seuclidean", "jensenshannon"}:
+            if metric not in {
+                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
+                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
+                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
+            }:
                 cdist_kwargs["w"] = np_weights
-            if metric == "minkowski":
+            if metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]:  # "minkowski"
                 cdist_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
@@ -1287,9 +1338,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 metric=metric,
                 **cdist_kwargs,
             ).flatten()
-        elif metric in {"hellinger", "shellinger"}:
+        elif metric in {
+            QuickAdapterRegressorV3._CUSTOM_METRICS[0],  # "hellinger"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[1],  # "shellinger"
+        }:
             np_sqrt_normalized_matrix = np.sqrt(normalized_matrix)
-            if metric == "shellinger":
+            if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[1]:  # "shellinger"
                 variances = np.var(np_sqrt_normalized_matrix, axis=0, ddof=1)
                 if np.any(variances <= 0):
                     raise ValueError(
@@ -1307,40 +1361,48 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 / QuickAdapterRegressorV3._SQRT_2
             )
         elif metric in {
-            "harmonic_mean",
-            "geometric_mean",
-            "arithmetic_mean",
-            "quadratic_mean",
-            "cubic_mean",
-            "power_mean",
+            QuickAdapterRegressorV3._CUSTOM_METRICS[2],  # "harmonic_mean"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[3],  # "geometric_mean"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[4],  # "arithmetic_mean"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[5],  # "quadratic_mean"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[6],  # "cubic_mean"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[7],  # "power_mean"
         }:
             p = {
-                "harmonic_mean": -1.0,
-                "geometric_mean": 0.0,
-                "arithmetic_mean": 1.0,
-                "quadratic_mean": 2.0,
-                "cubic_mean": 3.0,
-                "power_mean": label_p_order
+                QuickAdapterRegressorV3._CUSTOM_METRICS[2]: -1.0,  # "harmonic_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[3]: 0.0,  # "geometric_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[4]: 1.0,  # "arithmetic_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[5]: 2.0,  # "quadratic_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[6]: 3.0,  # "cubic_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[
+                    7
+                ]: label_p_order  # "power_mean"
                 if label_p_order is not None and np.isfinite(label_p_order)
                 else 1.0,
             }[metric]
             return sp.stats.pmean(
                 ideal_point, p=p, weights=np_weights
             ) - sp.stats.pmean(normalized_matrix, p=p, weights=np_weights, axis=1)
-        elif metric == "weighted_sum":
+        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[8]:  # "weighted_sum"
             return np.sum(np_weights * (ideal_point - normalized_matrix), axis=1)
-        elif metric == "medoid":
-            label_medoid_metric = self.ft_params.get("label_medoid_metric", "euclidean")
+        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[16]:  # "medoid"
+            label_medoid_metric = self.ft_params.get(
+                "label_medoid_metric",
+                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
+            )
             if label_medoid_metric in {
-                "mahalanobis",
-                "seuclidean",
-                "jensenshannon",
+                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
+                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
+                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
             }:
                 raise ValueError(
                     f"Unsupported label_medoid_metric: {label_medoid_metric}. Supported are euclidean/minkowski/cityblock/chebyshev/..."
                 )
             p = None
-            if label_medoid_metric == "minkowski":
+            if (
+                label_medoid_metric
+                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            ):
                 p = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
@@ -1352,29 +1414,38 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 weights=np_weights,
                 p=p,
             )
-        elif metric in {"kmeans", "kmeans2"}:
+        elif metric in {
+            QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
+        }:
             n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
-            if metric == "kmeans":
+            if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[9]:  # "kmeans"
                 kmeans = sklearn.cluster.KMeans(
                     n_clusters=n_clusters, random_state=42, n_init=10
                 )
                 cluster_labels = kmeans.fit_predict(normalized_matrix)
                 cluster_centers = kmeans.cluster_centers_
-            elif metric == "kmeans2":
+            elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[10]:  # "kmeans2"
                 cluster_centers, cluster_labels = sp.cluster.vq.kmeans2(
                     normalized_matrix, n_clusters, rng=42, minit="++"
                 )
-            label_kmeans_metric = self.ft_params.get("label_kmeans_metric", "euclidean")
+            label_kmeans_metric = self.ft_params.get(
+                "label_kmeans_metric",
+                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
+            )
             if label_kmeans_metric in {
-                "mahalanobis",
-                "seuclidean",
-                "jensenshannon",
+                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
+                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
+                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
             }:
                 raise ValueError(
                     f"Unsupported label_kmeans_metric: {label_kmeans_metric}. Supported are euclidean/minkowski/cityblock/chebyshev/..."
                 )
             cdist_kwargs: dict[str, Any] = {}
-            if label_kmeans_metric == "minkowski":
+            if (
+                label_kmeans_metric
+                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            ):
                 cdist_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
@@ -1396,9 +1467,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     break
             trial_distances = np.full(n_samples, np.inf)
             if best_cluster_indices is not None and best_cluster_indices.size > 0:
-                if label_kmeans_selection == "medoid":
+                if (
+                    label_kmeans_selection
+                    == QuickAdapterRegressorV3._CUSTOM_METRICS[16]  # "medoid"
+                ):
                     p = None
-                    if label_kmeans_metric == "minkowski":
+                    if (
+                        label_kmeans_metric
+                        == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+                    ):
                         p = (
                             label_p_order
                             if label_p_order is not None and np.isfinite(label_p_order)
@@ -1436,15 +1513,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"Unsupported label_kmeans_selection: {label_kmeans_selection}. Supported are medoid/min"
                     )
             return trial_distances
-        elif metric == "kmedoids":
+        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]:  # "kmedoids"
             n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
             label_kmedoids_metric = self.ft_params.get(
-                "label_kmedoids_metric", "euclidean"
+                "label_kmedoids_metric",
+                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
             )
             if label_kmedoids_metric in {
-                "mahalanobis",
-                "seuclidean",
-                "jensenshannon",
+                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
+                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
+                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
             }:
                 raise ValueError(
                     f"Unsupported label_kmedoids_metric: {label_kmedoids_metric}. Supported are euclidean/minkowski/cityblock/chebyshev/..."
@@ -1459,7 +1537,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             cluster_labels = kmedoids.fit_predict(normalized_matrix)
             medoid_indices = kmedoids.medoid_indices_
             cdist_kwargs: dict[str, Any] = {}
-            if label_kmedoids_metric == "minkowski":
+            if (
+                label_kmedoids_metric
+                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            ):
                 cdist_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
@@ -1480,7 +1561,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             best_cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
             trial_distances = np.full(n_samples, np.inf)
             if best_cluster_indices.size > 0:
-                if label_kmedoids_selection == "medoid":
+                if (
+                    label_kmedoids_selection
+                    == QuickAdapterRegressorV3._CUSTOM_METRICS[16]  # "medoid"
+                ):
                     trial_distances[best_medoid_index] = medoid_distances_to_ideal[
                         best_medoid_distance_position
                     ]
@@ -1507,10 +1591,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"Unsupported label_kmedoids_selection: {label_kmedoids_selection}. Supported are medoid/min"
                     )
             return trial_distances
-        elif metric in {"knn_power_mean", "knn_percentile", "knn_min", "knn_max"}:
-            label_knn_metric = self.ft_params.get("label_knn_metric", "minkowski")
+        elif metric in {
+            QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_percentile"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
+        }:
+            label_knn_metric = self.ft_params.get(
+                "label_knn_metric",
+                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
+            )
             knn_kwargs: dict[str, Any] = {}
-            if label_knn_metric == "minkowski":
+            if (
+                label_knn_metric
+                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            ):
                 knn_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
@@ -1532,23 +1627,27 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             neighbor_distances = distances[:, 1:]
             if neighbor_distances.shape[1] < 1:
                 return np.full(n_samples, np.inf)
-            if metric == "knn_power_mean":
+            if (
+                metric == QuickAdapterRegressorV3._CUSTOM_METRICS[12]
+            ):  # "knn_power_mean"
                 label_knn_p_order = (
                     label_knn_p_order
                     if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
                     else 1.0
                 )
                 return sp.stats.pmean(neighbor_distances, p=label_knn_p_order, axis=1)
-            elif metric == "knn_percentile":
+            elif (
+                metric == QuickAdapterRegressorV3._CUSTOM_METRICS[13]
+            ):  # "knn_percentile"
                 label_knn_p_order = (
                     label_knn_p_order
                     if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
                     else 50.0
                 )
                 return np.percentile(neighbor_distances, label_knn_p_order, axis=1)
-            elif metric == "knn_min":
+            elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[14]:  # "knn_min"
                 return np.min(neighbor_distances, axis=1)
-            elif metric == "knn_max":
+            elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[15]:  # "knn_max"
                 return np.max(neighbor_distances, axis=1)
         else:
             raise ValueError(
@@ -1573,48 +1672,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not QuickAdapterRegressorV3.optuna_study_has_best_trials(study):
             return None
 
-        metrics = {
-            # "braycurtis",
-            # "canberra",
-            "chebyshev",
-            "cityblock",
-            # "correlation",
-            # "cosine",
-            # "dice",
-            "euclidean",
-            # "hamming",
-            # "jaccard",
-            "jensenshannon",
-            # "kulczynski1",
-            "mahalanobis",
-            # "matching",
-            "minkowski",
-            # "rogerstanimoto",
-            # "russellrao",
-            "seuclidean",
-            # "sokalmichener",
-            # "sokalsneath",
-            "sqeuclidean",
-            # "yule",
-            "hellinger",
-            "shellinger",
-            "harmonic_mean",
-            "geometric_mean",
-            "arithmetic_mean",
-            "quadratic_mean",
-            "cubic_mean",
-            "power_mean",
-            "weighted_sum",
-            "kmeans",
-            "kmeans2",
-            "kmedoids",
-            "knn_power_mean",
-            "knn_percentile",
-            "knn_min",
-            "knn_max",
-            "medoid",
-        }
-        label_metric = self.ft_params.get("label_metric", "euclidean")
+        metrics = QuickAdapterRegressorV3._metrics_set()
+        label_metric = self.ft_params.get(
+            "label_metric", QuickAdapterRegressorV3._SCIPY_METRICS[2]
+        )  # "euclidean"
         if label_metric not in metrics:
             raise ValueError(
                 f"Unsupported label metric: {label_metric}. Supported metrics are {', '.join(metrics)}"
@@ -1743,9 +1804,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "values": self.get_optuna_values(pair, namespace),
                 **self.get_optuna_params(pair, namespace),
             }
-            metric_log_msg = (
-                f" using {self.ft_params.get('label_metric', 'euclidean')} metric"
-            )
+            metric_log_msg = f" using {self.ft_params.get('label_metric', QuickAdapterRegressorV3._SCIPY_METRICS[2])} metric"
         logger.info(
             f"Optuna {pair} {namespace} {objective_type} objective hyperopt done{metric_log_msg} ({time_spent:.2f} secs)"
         )

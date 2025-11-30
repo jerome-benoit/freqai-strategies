@@ -655,7 +655,9 @@ class QuickAdapterV3(IStrategy):
             logger.warning(
                 f"{pair}: invalid extrema_weighting softmax_temperature {weighting_softmax_temperature}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']}"
             )
-            weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
+            weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
+                "softmax_temperature"
+            ]
 
         weighting_robust_quantiles = extrema_weighting.get(
             "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
