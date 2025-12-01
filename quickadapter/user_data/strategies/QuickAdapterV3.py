@@ -194,54 +194,71 @@ class QuickAdapterV3(IStrategy):
         fit_live_predictions_candles = int(
             self.config.get("freqai", {}).get("fit_live_predictions_candles", 100)
         )
-        estimated_trade_duration_candles = int(
-            self.config.get("estimated_trade_duration_candles", 60)
+        protections = self.config.get("custom_protections", {})
+        trade_duration_candles = int(protections.get("trade_duration_candles", 72))
+        lookback_period_fraction = float(
+            protections.get("lookback_period_fraction", 0.5)
         )
 
-        lookback_period_candles = max(1, int(round(fit_live_predictions_candles * 0.5)))
-        cooldown_stop_duration_candles = 4
+        lookback_period_candles = max(
+            1, int(round(fit_live_predictions_candles * lookback_period_fraction))
+        )
+
+        cooldown = protections.get("cooldown", {})
+        cooldown_stop_duration_candles = int(cooldown.get("stop_duration_candles", 4))
         stoploss_stop_duration_candles = max(
-            cooldown_stop_duration_candles, estimated_trade_duration_candles
+            cooldown_stop_duration_candles, trade_duration_candles
         )
         drawdown_stop_duration_candles = max(
-            fit_live_predictions_candles,
-            estimated_trade_duration_candles * 2,
             stoploss_stop_duration_candles,
+            fit_live_predictions_candles,
         )
         max_open_trades = int(self.config.get("max_open_trades", 0))
         stoploss_trade_limit = min(
             max(
-                1,
-                int(
-                    round(
-                        lookback_period_candles
-                        / max(1, estimated_trade_duration_candles)
-                    )
-                ),
+                2,
+                int(round(lookback_period_candles / max(1, trade_duration_candles))),
             ),
-            max(1, int(round(max_open_trades * 0.5))),
+            max(2, int(round(max_open_trades * 0.75))),
         )
 
-        return [
-            {
-                "method": "CooldownPeriod",
-                "stop_duration_candles": cooldown_stop_duration_candles,
-            },
-            {
-                "method": "MaxDrawdown",
-                "lookback_period_candles": lookback_period_candles,
-                "trade_limit": int(round(1.5 * max_open_trades)),
-                "stop_duration_candles": drawdown_stop_duration_candles,
-                "max_allowed_drawdown": 0.2,
-            },
-            {
-                "method": "StoplossGuard",
-                "lookback_period_candles": lookback_period_candles,
-                "trade_limit": stoploss_trade_limit,
-                "stop_duration_candles": stoploss_stop_duration_candles,
-                "only_per_pair": True,
-            },
-        ]
+        protections_list = []
+
+        if cooldown.get("enabled", True):
+            protections_list.append(
+                {
+                    "method": "CooldownPeriod",
+                    "stop_duration_candles": cooldown_stop_duration_candles,
+                }
+            )
+
+        drawdown = protections.get("drawdown", {})
+        if drawdown.get("enabled", True):
+            protections_list.append(
+                {
+                    "method": "MaxDrawdown",
+                    "lookback_period_candles": lookback_period_candles,
+                    "trade_limit": 2 * max_open_trades,
+                    "stop_duration_candles": drawdown_stop_duration_candles,
+                    "max_allowed_drawdown": float(
+                        drawdown.get("max_allowed_drawdown", 0.2)
+                    ),
+                }
+            )
+
+        stoploss = protections.get("stoploss", {})
+        if stoploss.get("enabled", True):
+            protections_list.append(
+                {
+                    "method": "StoplossGuard",
+                    "lookback_period_candles": lookback_period_candles,
+                    "trade_limit": stoploss_trade_limit,
+                    "stop_duration_candles": stoploss_stop_duration_candles,
+                    "only_per_pair": True,
+                }
+            )
+
+        return protections_list
 
     use_exit_signal = True
 
