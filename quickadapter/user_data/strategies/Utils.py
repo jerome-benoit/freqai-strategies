@@ -29,19 +29,22 @@ EXTREMA_COLUMN: Final = "&s-extrema"
 MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
-NormalizationType = Literal[
-    "minmax", "zscore", "l1", "l2", "robust", "softmax", "tanh", "rank", "none"
-]
+StandardizationType = Literal["none", "zscore", "robust"]
+STANDARDIZATION_TYPES: Final[tuple[StandardizationType, ...]] = (
+    "none",  # 0 - No standardization
+    "zscore",  # 1 - (w - μ) / σ
+    "robust",  # 2 - (w - median) / IQR
+)
+
+NormalizationType = Literal["minmax", "sigmoid", "softmax", "l1", "l2", "rank", "none"]
 NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = (
-    "minmax",  # 0
-    "zscore",  # 1
-    "l1",  # 2
-    "l2",  # 3
-    "robust",  # 4
-    "softmax",  # 5
-    "tanh",  # 6
-    "rank",  # 7
-    "none",  # 8
+    "minmax",  # 0 - (w - min) / (max - min)
+    "sigmoid",  # 1 - 1 / (1 + exp(-scale × w))
+    "softmax",  # 2 - exp(w/T) / Σexp(w/T)
+    "l1",  # 3 - w / Σ|w|
+    "l2",  # 4 - w / ||w||₂
+    "rank",  # 5 - (rank(w) - 1) / (n - 1)
+    "none",  # 6 - w (identity)
 )
 
 RankMethod = Literal["average", "min", "max", "dense", "ordinal"]
@@ -71,14 +74,18 @@ DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
 }
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
-    "normalization": NORMALIZATION_TYPES[0],  # "minmax"
-    "gamma": 1.0,
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
-    "softmax_temperature": 1.0,
-    "tanh_scale": 1.0,
-    "tanh_gain": 1.0,
+    # Phase 1: Standardization
+    "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
+    # Phase 2: Normalization
+    "normalization": NORMALIZATION_TYPES[0],  # "minmax"
+    "minmax_range": (0.0, 1.0),
+    "sigmoid_scale": 1.0,
+    "softmax_temperature": 1.0,
     "rank_method": RANK_METHODS[0],  # "average"
+    # Phase 3: Post-processing
+    "gamma": 1.0,
 }
 
 DEFAULT_EXTREMA_WEIGHT: Final[float] = 1.0
@@ -200,54 +207,130 @@ def smooth_extrema(
         )
 
 
-def _normalize_zscore(
-    weights: NDArray[np.floating],
-    rescale_to_unit_range: bool = True,
-) -> NDArray[np.floating]:
+def _standardize_zscore(weights: NDArray[np.floating]) -> NDArray[np.floating]:
+    """
+    Z-score standardization: (w - μ) / σ
+    Returns: mean≈0, std≈1
+    """
     if weights.size == 0:
         return weights
 
     weights = weights.astype(float, copy=False)
 
     if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.zeros_like(weights, dtype=float)
 
     if weights.size == 1 or np.allclose(weights, weights[0]):
-        if rescale_to_unit_range:
-            return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-        else:
-            return np.zeros_like(weights, dtype=float)
+        return np.zeros_like(weights, dtype=float)
 
     try:
         z_scores = sp.stats.zscore(weights, ddof=1, nan_policy="raise")
     except Exception:
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.zeros_like(weights, dtype=float)
 
     if np.isnan(z_scores).any() or not np.isfinite(z_scores).all():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.zeros_like(weights, dtype=float)
 
-    if not rescale_to_unit_range:
-        return z_scores
-
-    return _normalize_minmax(z_scores)
+    return z_scores
 
 
-def _normalize_minmax(weights: NDArray[np.floating]) -> NDArray[np.floating]:
+def _standardize_robust(
+    weights: NDArray[np.floating],
+    quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"],
+) -> NDArray[np.floating]:
+    """
+    Robust standardization: (w - median) / IQR
+    Returns: median≈0, IQR≈1 (outlier-resistant)
+    """
+    weights = weights.astype(float, copy=False)
+    if np.isnan(weights).any():
+        return np.zeros_like(weights, dtype=float)
+
+    median = np.median(weights)
+    q_low, q_high = np.quantile(weights, quantiles)
+    iqr = q_high - q_low
+
+    if np.isclose(iqr, 0.0):
+        return np.zeros_like(weights, dtype=float)
+
+    return (weights - median) / iqr
+
+
+def standardize_weights(
+    weights: NDArray[np.floating],
+    method: StandardizationType = STANDARDIZATION_TYPES[0],
+    robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
+        "robust_quantiles"
+    ],
+) -> NDArray[np.floating]:
+    """
+    Phase 1: Standardize weights (centering/scaling, not [0,1] mapping).
+    Methods: "none", "zscore", "robust"
+    """
+    if weights.size == 0:
+        return weights
+
+    if method == STANDARDIZATION_TYPES[0]:  # "none"
+        return weights
+
+    elif method == STANDARDIZATION_TYPES[1]:  # "zscore"
+        return _standardize_zscore(weights)
+
+    elif method == STANDARDIZATION_TYPES[2]:  # "robust"
+        return _standardize_robust(weights, quantiles=robust_quantiles)
+
+    else:
+        raise ValueError(f"Unknown standardization method: {method}")
+
+
+def _normalize_sigmoid(
+    weights: NDArray[np.floating],
+    scale: float = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"],
+) -> NDArray[np.floating]:
+    """
+    Sigmoid normalization: 1 / (1 + exp(-scale × w))
+    Returns: [0, 1] with soft compression
+    """
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+
+    if scale <= 0 or not np.isfinite(scale):
+        scale = 1.0
+
+    scaled = scale * weights
+    return sp.special.expit(scaled)
+
+
+def _normalize_minmax(
+    weights: NDArray[np.floating],
+    range: tuple[float, float] = (0.0, 1.0),
+) -> NDArray[np.floating]:
+    """
+    MinMax normalization: range_min + [(w - min) / (max - min)] × (range_max - range_min)
+    Returns: [range_min, range_max]
+    """
+    weights = weights.astype(float, copy=False)
+    if np.isnan(weights).any():
+        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+
     w_min = np.min(weights)
     w_max = np.max(weights)
+
     if not (np.isfinite(w_min) and np.isfinite(w_max)):
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+
     w_range = w_max - w_min
     if np.isclose(w_range, 0.0):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-    normalized_weights = (weights - w_min) / w_range
-    return normalized_weights
+        range_midpoint = midpoint(range[0], range[1])
+        return np.full_like(weights, range_midpoint, dtype=float)
+
+    normalized = (weights - w_min) / w_range
+    return range[0] + normalized * (range[1] - range[0])
 
 
 def _normalize_l1(weights: NDArray[np.floating]) -> NDArray[np.floating]:
+    """L1 normalization: w / Σ|w|  →  Σ|w| = 1"""
     weights_sum = np.sum(np.abs(weights))
     if weights_sum <= 0 or not np.isfinite(weights_sum):
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
@@ -256,6 +339,7 @@ def _normalize_l1(weights: NDArray[np.floating]) -> NDArray[np.floating]:
 
 
 def _normalize_l2(weights: NDArray[np.floating]) -> NDArray[np.floating]:
+    """L2 normalization: w / ||w||₂  →  ||w||₂ = 1"""
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
@@ -269,29 +353,11 @@ def _normalize_l2(weights: NDArray[np.floating]) -> NDArray[np.floating]:
     return normalized_weights
 
 
-def _normalize_robust(
-    weights: NDArray[np.floating],
-    quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"],
-) -> NDArray[np.floating]:
-    weights = weights.astype(float, copy=False)
-    if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    median = np.median(weights)
-    q_low, q_high = np.quantile(weights, quantiles)
-    iqr = q_high - q_low
-
-    if np.isclose(iqr, 0.0):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    robust_weights = (weights - median) / iqr
-    return _normalize_minmax(robust_weights)
-
-
 def _normalize_softmax(
     weights: NDArray[np.floating],
     temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
 ) -> NDArray[np.floating]:
+    """Softmax normalization: exp(w/T) / Σexp(w/T)  →  Σw = 1, range [0,1]"""
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
@@ -300,24 +366,11 @@ def _normalize_softmax(
     return sp.special.softmax(weights)
 
 
-def _normalize_tanh(
-    weights: NDArray[np.floating],
-    scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
-    gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
-) -> NDArray[np.floating]:
-    weights = weights.astype(float, copy=False)
-    if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    z_scores = _normalize_zscore(weights, rescale_to_unit_range=False)
-    normalized_weights = gain * 0.5 * (np.tanh(scale * z_scores) + 1.0)
-    return normalized_weights
-
-
 def _normalize_rank(
     weights: NDArray[np.floating],
     method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
 ) -> NDArray[np.floating]:
+    """Rank normalization: [rank(w) - 1] / (n - 1)  →  [0, 1] uniformly distributed"""
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
@@ -333,52 +386,68 @@ def _normalize_rank(
 
 def normalize_weights(
     weights: NDArray[np.floating],
-    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
-    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
-    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
-    tanh_scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
-    tanh_gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
+    # Phase 1: Standardization
+    standardization: StandardizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "standardization"
+    ],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    # Phase 2: Normalization
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
+    sigmoid_scale: float = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"],
+    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
     rank_method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
+    # Phase 3: Post-processing
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> NDArray[np.floating]:
+    """
+    3-phase weight normalization:
+    1. Standardization: zscore (w-μ)/σ | robust (w-median)/IQR | none
+    2. Normalization: minmax, sigmoid, softmax, l1, l2, rank, none
+    3. Post-processing: gamma correction w^γ
+    """
     if weights.size == 0:
         return weights
-    if normalization == NORMALIZATION_TYPES[8]:  # "none"
-        return weights
 
-    normalized_weights: NDArray[np.floating]
+    # Phase 1: Standardization
+    standardized_weights = standardize_weights(
+        weights,
+        method=standardization,
+        robust_quantiles=robust_quantiles,
+    )
 
-    if normalization == NORMALIZATION_TYPES[0]:  # "minmax"
-        normalized_weights = _normalize_minmax(weights)
+    # Phase 2: Normalization
+    if normalization == NORMALIZATION_TYPES[6]:  # "none"
+        normalized_weights = standardized_weights
 
-    elif normalization == NORMALIZATION_TYPES[1]:  # "zscore"
-        normalized_weights = _normalize_zscore(weights, rescale_to_unit_range=True)
+    elif normalization == NORMALIZATION_TYPES[0]:  # "minmax"
+        normalized_weights = _normalize_minmax(standardized_weights, range=minmax_range)
 
-    elif normalization == NORMALIZATION_TYPES[2]:  # "l1"
-        normalized_weights = _normalize_l1(weights)
-
-    elif normalization == NORMALIZATION_TYPES[3]:  # "l2"
-        normalized_weights = _normalize_l2(weights)
-
-    elif normalization == NORMALIZATION_TYPES[4]:  # "robust"
-        normalized_weights = _normalize_robust(weights, quantiles=robust_quantiles)
-
-    elif normalization == NORMALIZATION_TYPES[5]:  # "softmax"
-        normalized_weights = _normalize_softmax(
-            weights, temperature=softmax_temperature
+    elif normalization == NORMALIZATION_TYPES[1]:  # "sigmoid"
+        normalized_weights = _normalize_sigmoid(
+            standardized_weights, scale=sigmoid_scale
         )
 
-    elif normalization == NORMALIZATION_TYPES[6]:  # "tanh"
-        normalized_weights = _normalize_tanh(weights, scale=tanh_scale, gain=tanh_gain)
+    elif normalization == NORMALIZATION_TYPES[2]:  # "softmax"
+        normalized_weights = _normalize_softmax(
+            standardized_weights, temperature=softmax_temperature
+        )
 
-    elif normalization == NORMALIZATION_TYPES[7]:  # "rank"
-        normalized_weights = _normalize_rank(weights, method=rank_method)
+    elif normalization == NORMALIZATION_TYPES[3]:  # "l1"
+        normalized_weights = _normalize_l1(standardized_weights)
+
+    elif normalization == NORMALIZATION_TYPES[4]:  # "l2"
+        normalized_weights = _normalize_l2(standardized_weights)
+
+    elif normalization == NORMALIZATION_TYPES[5]:  # "rank"
+        normalized_weights = _normalize_rank(standardized_weights, method=rank_method)
 
     else:
         raise ValueError(f"Unknown normalization method: {normalization}")
 
+    # Phase 3: Post-processing
     if not np.isclose(gamma, 1.0) and np.isfinite(gamma) and gamma > 0:
         normalized_weights = np.power(np.abs(normalized_weights), gamma) * np.sign(
             normalized_weights
@@ -394,16 +463,26 @@ def calculate_extrema_weights(
     series: pd.Series,
     indices: list[int],
     weights: NDArray[np.floating],
-    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
-    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
-    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
-    tanh_scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
-    tanh_gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
+    # Phase 1: Standardization
+    standardization: StandardizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "standardization"
+    ],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    # Phase 2: Normalization
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
+    sigmoid_scale: float = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"],
+    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
     rank_method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
+    # Phase 3: Post-processing
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> pd.Series:
+    """
+    Calculate normalized weights for extrema points.
+    Returns: Series with weights at extrema indices (rest filled with default).
+    """
     if len(indices) == 0 or len(weights) == 0:
         return pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
 
@@ -414,13 +493,14 @@ def calculate_extrema_weights(
 
     normalized_weights = normalize_weights(
         weights,
-        normalization,
-        gamma,
-        softmax_temperature,
-        tanh_scale,
-        tanh_gain,
-        robust_quantiles,
-        rank_method,
+        standardization=standardization,
+        robust_quantiles=robust_quantiles,
+        normalization=normalization,
+        minmax_range=minmax_range,
+        sigmoid_scale=sigmoid_scale,
+        softmax_temperature=softmax_temperature,
+        rank_method=rank_method,
+        gamma=gamma,
     )
 
     if normalized_weights.size == 0 or np.allclose(
@@ -444,16 +524,42 @@ def get_weighted_extrema(
     indices: list[int],
     weights: NDArray[np.floating],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
-    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
-    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
-    tanh_scale: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_scale"],
-    tanh_gain: float = DEFAULTS_EXTREMA_WEIGHTING["tanh_gain"],
+    # Phase 1: Standardization
+    standardization: StandardizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "standardization"
+    ],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    # Phase 2: Normalization
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
+    sigmoid_scale: float = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"],
+    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
     rank_method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
+    # Phase 3: Post-processing
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> tuple[pd.Series, pd.Series]:
+    """
+    Apply weighted normalization to extrema series.
+
+    Args:
+        extrema: Extrema series
+        indices: Indices of extrema points
+        weights: Raw weights for each extremum
+        strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio")
+        standardization: Standardization method
+        robust_quantiles: Quantiles for robust standardization
+        normalization: Normalization method
+        minmax_range: Target range for minmax
+        sigmoid_scale: Scale for sigmoid
+        softmax_temperature: Temperature for softmax
+        rank_method: Method for rank normalization
+        gamma: Gamma correction
+
+    Returns:
+        Tuple of (weighted_extrema, extrema_weights)
+    """
     default_weights = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=extrema.index)
     if (
         len(indices) == 0 or len(weights) == 0 or strategy == WEIGHT_STRATEGIES[0]
@@ -468,13 +574,14 @@ def get_weighted_extrema(
             series=extrema,
             indices=indices,
             weights=weights,
-            normalization=normalization,
-            gamma=gamma,
-            softmax_temperature=softmax_temperature,
-            tanh_scale=tanh_scale,
-            tanh_gain=tanh_gain,
+            standardization=standardization,
             robust_quantiles=robust_quantiles,
+            normalization=normalization,
+            minmax_range=minmax_range,
+            sigmoid_scale=sigmoid_scale,
+            softmax_temperature=softmax_temperature,
             rank_method=rank_method,
+            gamma=gamma,
         )
         if np.allclose(extrema_weights, DEFAULT_EXTREMA_WEIGHT):
             return extrema, default_weights
