@@ -166,13 +166,13 @@ def smooth_extrema(
     if beta <= 0 or not np.isfinite(beta):
         beta = 1.0
 
-    std = get_gaussian_std(window)
     odd_window = get_odd_window(window)
+    std = get_gaussian_std(odd_window)
 
     if method == SMOOTHING_METHODS[0]:  # "gaussian"
         return zero_phase(
             series=series,
-            window=window,
+            window=odd_window,
             win_type=SMOOTHING_METHODS[0],
             std=std,
             beta=beta,
@@ -180,7 +180,7 @@ def smooth_extrema(
     elif method == SMOOTHING_METHODS[1]:  # "kaiser"
         return zero_phase(
             series=series,
-            window=window,
+            window=odd_window,
             win_type=SMOOTHING_METHODS[1],
             std=std,
             beta=beta,
@@ -188,7 +188,7 @@ def smooth_extrema(
     elif method == SMOOTHING_METHODS[2]:  # "triang"
         return zero_phase(
             series=series,
-            window=window,
+            window=odd_window,
             win_type=SMOOTHING_METHODS[2],
             std=std,
             beta=beta,
@@ -200,7 +200,7 @@ def smooth_extrema(
     else:
         return zero_phase(
             series=series,
-            window=window,
+            window=odd_window,
             win_type=SMOOTHING_METHODS[0],
             std=std,
             beta=beta,
