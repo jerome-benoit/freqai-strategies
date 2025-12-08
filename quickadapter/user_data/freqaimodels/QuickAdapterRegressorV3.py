@@ -929,20 +929,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else 0
         )
 
-        minima = (
+        pred_minima = (
             pred_extrema.loc[
                 pred_extrema.iloc[minima_indices].nsmallest(n_minima).index
             ]
             if n_minima > 0
             else pd.Series(dtype=float)
         )
-        maxima = (
+        pred_maxima = (
             pred_extrema.loc[pred_extrema.iloc[maxima_indices].nlargest(n_maxima).index]
             if n_maxima > 0
             else pd.Series(dtype=float)
         )
 
-        return minima, maxima
+        return pred_minima, pred_maxima
 
     @staticmethod
     def _get_ranked_extrema(
