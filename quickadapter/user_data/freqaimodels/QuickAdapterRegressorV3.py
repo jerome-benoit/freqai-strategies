@@ -311,11 +311,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(thresholds_alpha, (int, float)) or thresholds_alpha < 0:
             thresholds_alpha = 12.0
 
+        extrema_fraction = predictions_extrema.get("extrema_fraction", 1.0)
+        if not isinstance(extrema_fraction, (int, float)) or not (
+            0 < extrema_fraction <= 1
+        ):
+            extrema_fraction = 1.0
+
         return {
             "threshold_outlier": float(threshold_outlier),
             "selection_method": selection_method,
             "thresholds_smoothing": thresholds_smoothing,
             "thresholds_alpha": float(thresholds_alpha),
+            "extrema_fraction": float(extrema_fraction),
         }
 
     @property
@@ -869,15 +876,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
 
-        # Use cached parameters
         extrema_selection = self.predictions_extrema["selection_method"]
         thresholds_smoothing = self.predictions_extrema["thresholds_smoothing"]
+        extrema_fraction = self.predictions_extrema["extrema_fraction"]
 
         if (
             thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
         ):  # "median"
             return QuickAdapterRegressorV3.median_min_max(
-                pred_extrema, extrema_selection
+                pred_extrema, extrema_selection, extrema_fraction
             )
         elif (
             thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
@@ -886,19 +893,82 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_extrema,
                 self.predictions_extrema["thresholds_alpha"],
                 extrema_selection,
+                extrema_fraction,
             )
         elif (
             thresholds_smoothing
             in QuickAdapterRegressorV3._skimage_threshold_methods_set()
         ):
             return QuickAdapterRegressorV3.skimage_min_max(
-                pred_extrema, thresholds_smoothing, extrema_selection
+                pred_extrema, thresholds_smoothing, extrema_selection, extrema_fraction
             )
+
+    @staticmethod
+    def _get_extrema_indices(
+        pred_extrema: pd.Series,
+    ) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+        minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
+        maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
+        return minima_indices, maxima_indices
+
+    @staticmethod
+    def _get_extrema_values(
+        pred_extrema: pd.Series,
+        minima_indices: NDArray[np.intp],
+        maxima_indices: NDArray[np.intp],
+        extrema_fraction: float = 1.0,
+    ) -> tuple[pd.Series, pd.Series]:
+        n_minima = (
+            max(1, int(round(minima_indices.size * extrema_fraction)))
+            if minima_indices.size > 0
+            else 0
+        )
+        n_maxima = (
+            max(1, int(round(maxima_indices.size * extrema_fraction)))
+            if maxima_indices.size > 0
+            else 0
+        )
+
+        minima = (
+            pred_extrema.loc[
+                pred_extrema.iloc[minima_indices].nsmallest(n_minima).index
+            ]
+            if n_minima > 0
+            else pd.Series(dtype=float)
+        )
+        maxima = (
+            pred_extrema.loc[pred_extrema.iloc[maxima_indices].nlargest(n_maxima).index]
+            if n_maxima > 0
+            else pd.Series(dtype=float)
+        )
+
+        return minima, maxima
+
+    @staticmethod
+    def _get_ranked_extrema(
+        pred_extrema: pd.Series,
+        n_minima: int,
+        n_maxima: int,
+        extrema_fraction: float = 1.0,
+    ) -> tuple[pd.Series, pd.Series]:
+        pred_minima = (
+            pred_extrema.nsmallest(max(1, int(round(n_minima * extrema_fraction))))
+            if n_minima > 0
+            else pd.Series(dtype=float)
+        )
+        pred_maxima = (
+            pred_extrema.nlargest(max(1, int(round(n_maxima * extrema_fraction))))
+            if n_maxima > 0
+            else pd.Series(dtype=float)
+        )
+
+        return pred_minima, pred_maxima
 
     @staticmethod
     def get_pred_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
+        extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         pred_extrema = (
             pd.to_numeric(pred_extrema, errors="coerce")
@@ -911,36 +981,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if (
             extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
         ):  # "rank"
-            minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
-            maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
+            minima_indices, maxima_indices = (
+                QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
+            )
+            pred_minima, pred_maxima = QuickAdapterRegressorV3._get_ranked_extrema(
+                pred_extrema,
+                minima_indices.size,
+                maxima_indices.size,
+                extrema_fraction,
+            )
 
-            n_minima = minima_indices.size
-            n_maxima = maxima_indices.size
-
-            if n_minima > 0:
-                pred_minima = pred_extrema.nsmallest(n_minima)
-            else:
-                pred_minima = pd.Series(dtype=float)
-
-            if n_maxima > 0:
-                pred_maxima = pred_extrema.nlargest(n_maxima)
-            else:
-                pred_maxima = pd.Series(dtype=float)
         elif (
             extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
         ):  # "values"
-            minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
-            maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
-
-            pred_minima = (
-                pred_extrema.iloc[minima_indices]
-                if minima_indices.size > 0
-                else pd.Series(dtype=float)
+            minima_indices, maxima_indices = (
+                QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
-            pred_maxima = (
-                pred_extrema.iloc[maxima_indices]
-                if maxima_indices.size > 0
-                else pd.Series(dtype=float)
+            pred_minima, pred_maxima = QuickAdapterRegressorV3._get_extrema_values(
+                pred_extrema, minima_indices, maxima_indices, extrema_fraction
             )
 
         elif (
@@ -991,11 +1049,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         alpha: float,
         extrema_selection: ExtremaSelectionMethod,
+        extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
             raise ValueError("alpha must be non-negative")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection
+            pred_extrema, extrema_selection, extrema_fraction
         )
         soft_minimum = soft_extremum(pred_minima, alpha=-alpha)
         if not np.isfinite(soft_minimum):
@@ -1009,9 +1068,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def median_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
+        extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection
+            pred_extrema, extrema_selection, extrema_fraction
         )
 
         if pred_minima.empty:
@@ -1035,9 +1095,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         method: str,
         extrema_selection: ExtremaSelectionMethod,
+        extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection
+            pred_extrema, extrema_selection, extrema_fraction
         )
 
         try:
@@ -1051,6 +1112,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         min_val = min_func(pred_minima, threshold_func)
         if not np.isfinite(min_val):
             min_val = QuickAdapterRegressorV3.safe_min_pred(pred_extrema)
+
         max_val = max_func(pred_maxima, threshold_func)
         if not np.isfinite(max_val):
             max_val = QuickAdapterRegressorV3.safe_max_pred(pred_extrema)

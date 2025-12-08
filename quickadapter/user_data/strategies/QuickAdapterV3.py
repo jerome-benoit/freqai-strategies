@@ -34,6 +34,7 @@ from Utils import (
     MINIMA_THRESHOLD_COLUMN,
     NORMALIZATION_TYPES,
     RANK_METHODS,
+    SMOOTHING_MODES,
     SMOOTHING_METHODS,
     STANDARDIZATION_TYPES,
     WEIGHT_STRATEGIES,
@@ -807,10 +808,44 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
 
+        smoothing_polyorder = extrema_smoothing.get(
+            "polyorder", DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
+        )
+        if not isinstance(smoothing_polyorder, int) or smoothing_polyorder < 1:
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing polyorder {smoothing_polyorder}, must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']}"
+            )
+            smoothing_polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
+
+        smoothing_mode = str(
+            extrema_smoothing.get("mode", DEFAULTS_EXTREMA_SMOOTHING["mode"])
+        )
+        if smoothing_mode not in set(SMOOTHING_MODES):
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing mode '{smoothing_mode}', using default '{SMOOTHING_MODES[0]}'"
+            )
+            smoothing_mode = SMOOTHING_MODES[0]
+
+        smoothing_bandwidth = extrema_smoothing.get(
+            "bandwidth", DEFAULTS_EXTREMA_SMOOTHING["bandwidth"]
+        )
+        if (
+            not isinstance(smoothing_bandwidth, (int, float))
+            or smoothing_bandwidth <= 0
+            or not np.isfinite(smoothing_bandwidth)
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_smoothing bandwidth {smoothing_bandwidth}, must be a positive finite number, using default {DEFAULTS_EXTREMA_SMOOTHING['bandwidth']}"
+            )
+            smoothing_bandwidth = DEFAULTS_EXTREMA_SMOOTHING["bandwidth"]
+
         return {
             "method": smoothing_method,
             "window": int(smoothing_window),
             "beta": smoothing_beta,
+            "polyorder": int(smoothing_polyorder),
+            "mode": smoothing_mode,
+            "bandwidth": float(smoothing_bandwidth),
         }
 
     @staticmethod
@@ -908,6 +943,9 @@ class QuickAdapterV3(IStrategy):
             self.extrema_smoothing["method"],
             self.extrema_smoothing["window"],
             self.extrema_smoothing["beta"],
+            self.extrema_smoothing["polyorder"],
+            self.extrema_smoothing["mode"],
+            self.extrema_smoothing["bandwidth"],
         )
         if debug:
             extrema = dataframe[EXTREMA_COLUMN]

@@ -13,6 +13,7 @@ import pandas as pd
 import scipy as sp
 import talib.abstract as ta
 from numpy.typing import NDArray
+from scipy.ndimage import gaussian_filter1d
 from technical import qtpylib
 
 T = TypeVar("T", pd.Series, float)
@@ -57,13 +58,26 @@ RANK_METHODS: Final[tuple[RankMethod, ...]] = (
 )
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
-SmoothingMethod = Union[SmoothingKernel, Literal["smm", "sma"]]
+SmoothingMethod = Union[
+    SmoothingKernel, Literal["smm", "sma", "savgol", "nadaraya_watson"]
+]
 SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
     "gaussian",
     "kaiser",
     "triang",
     "smm",
     "sma",
+    "savgol",
+    "nadaraya_watson",
+)
+
+SmoothingMode = Literal["mirror", "constant", "nearest", "wrap", "interp"]
+SMOOTHING_MODES: Final[tuple[SmoothingMode, ...]] = (
+    "mirror",
+    "constant",
+    "nearest",
+    "wrap",
+    "interp",
 )
 
 
@@ -71,6 +85,9 @@ DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
     "method": SMOOTHING_METHODS[0],  # "gaussian"
     "window": 5,
     "beta": 8.0,
+    "polyorder": 3,
+    "mode": SMOOTHING_MODES[0],  # "mirror"
+    "bandwidth": 1.0,
 }
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
@@ -115,8 +132,29 @@ def get_odd_window(window: int) -> int:
 
 @lru_cache(maxsize=8)
 def get_gaussian_std(window: int) -> float:
-    # Assuming window = 6 * std + 1 => std = (window - 1) / 6
     return (window - 1) / 6.0 if window > 1 else 0.5
+
+
+def get_smoothing_params(
+    window: int, polyorder: int, mode: SmoothingMode
+) -> tuple[int, int, str]:
+    if window <= polyorder:
+        window = polyorder + 1
+    window = get_odd_window(window)
+    return window, polyorder, mode
+
+
+def nadaraya_watson(
+    series: pd.Series, bandwidth: float, mode: SmoothingMode
+) -> pd.Series:
+    return pd.Series(
+        gaussian_filter1d(
+            series.to_numpy(),
+            sigma=bandwidth,
+            mode=mode,  # type: ignore
+        ),
+        index=series.index,
+    )
 
 
 @lru_cache(maxsize=8)
@@ -160,9 +198,17 @@ def smooth_extrema(
     method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
     window: int = DEFAULTS_EXTREMA_SMOOTHING["window"],
     beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
+    polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
+    mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
+    bandwidth: float = DEFAULTS_EXTREMA_SMOOTHING["bandwidth"],
 ) -> pd.Series:
+    n = len(series)
+    if n == 0:
+        return series
     if window < 3:
         window = 3
+    if n < window:
+        return series
     if beta <= 0 or not np.isfinite(beta):
         beta = 1.0
 
@@ -197,6 +243,21 @@ def smooth_extrema(
         return series.rolling(window=odd_window, center=True).median()
     elif method == SMOOTHING_METHODS[4]:  # "sma" (Simple Moving Average)
         return series.rolling(window=odd_window, center=True).mean()
+    elif method == SMOOTHING_METHODS[5]:  # "savgol" (Savitzky-Golay)
+        w, p, m = get_smoothing_params(odd_window, polyorder, mode)
+        if n < w:
+            return series
+        return pd.Series(
+            sp.signal.savgol_filter(
+                series.to_numpy(),
+                window_length=w,
+                polyorder=p,
+                mode=m,  # type: ignore
+            ),
+            index=series.index,
+        )
+    elif method == SMOOTHING_METHODS[6]:  # "nadaraya_watson"
+        return nadaraya_watson(series, bandwidth, mode)
     else:
         return zero_phase(
             series=series,
