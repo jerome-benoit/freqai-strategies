@@ -135,7 +135,7 @@ def get_gaussian_std(window: int) -> float:
     return (window - 1) / 6.0 if window > 1 else 0.5
 
 
-def get_smoothing_params(
+def get_savgol_params(
     window: int, polyorder: int, mode: SmoothingMode
 ) -> tuple[int, int, str]:
     if window <= polyorder:
@@ -244,7 +244,7 @@ def smooth_extrema(
     elif method == SMOOTHING_METHODS[4]:  # "sma" (Simple Moving Average)
         return series.rolling(window=odd_window, center=True).mean()
     elif method == SMOOTHING_METHODS[5]:  # "savgol" (Savitzky-Golay)
-        w, p, m = get_smoothing_params(odd_window, polyorder, mode)
+        w, p, m = get_savgol_params(odd_window, polyorder, mode)
         if n < w:
             return series
         return pd.Series(
