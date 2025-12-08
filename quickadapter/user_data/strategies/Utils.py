@@ -30,11 +30,12 @@ EXTREMA_COLUMN: Final = "&s-extrema"
 MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
-StandardizationType = Literal["none", "zscore", "robust"]
+StandardizationType = Literal["none", "zscore", "robust", "mmad"]
 STANDARDIZATION_TYPES: Final[tuple[StandardizationType, ...]] = (
     "none",  # 0 - No standardization
     "zscore",  # 1 - (w - μ) / σ
     "robust",  # 2 - (w - median) / IQR
+    "mmad",  # 3 - (w - median) / MAD
 )
 
 NormalizationType = Literal["minmax", "sigmoid", "softmax", "l1", "l2", "rank", "none"]
@@ -95,6 +96,7 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     # Phase 1: Standardization
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
+    "mmad_scaling_factor": 1.4826,
     # Phase 2: Normalization
     "normalization": NORMALIZATION_TYPES[0],  # "minmax"
     "minmax_range": (0.0, 1.0),
@@ -135,6 +137,7 @@ def get_gaussian_std(window: int) -> float:
     return (window - 1) / 6.0 if window > 1 else 0.5
 
 
+@lru_cache(maxsize=8)
 def get_savgol_params(
     window: int, polyorder: int, mode: SmoothingMode
 ) -> tuple[int, int, str]:
@@ -317,16 +320,38 @@ def _standardize_robust(
     return (weights - median) / iqr
 
 
+def _standardize_mmad(
+    weights: NDArray[np.floating],
+    scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
+) -> NDArray[np.floating]:
+    """
+    MMAD standardization: (w - median) / MAD
+    Returns: median≈0, MAD≈1 (outlier-resistant)
+    """
+    weights = weights.astype(float, copy=False)
+    if np.isnan(weights).any():
+        return np.zeros_like(weights, dtype=float)
+
+    median = np.median(weights)
+    mad = np.median(np.abs(weights - median))
+
+    if np.isclose(mad, 0.0):
+        return np.zeros_like(weights, dtype=float)
+
+    return (weights - median) / (scaling_factor * mad)
+
+
 def standardize_weights(
     weights: NDArray[np.floating],
     method: StandardizationType = STANDARDIZATION_TYPES[0],
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    mmad_scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
 ) -> NDArray[np.floating]:
     """
     Phase 1: Standardize weights (centering/scaling, not [0,1] mapping).
-    Methods: "none", "zscore", "robust"
+    Methods: "none", "zscore", "robust", "mmad"
     """
     if weights.size == 0:
         return weights
@@ -339,6 +364,9 @@ def standardize_weights(
 
     elif method == STANDARDIZATION_TYPES[2]:  # "robust"
         return _standardize_robust(weights, quantiles=robust_quantiles)
+
+    elif method == STANDARDIZATION_TYPES[3]:  # "mmad"
+        return _standardize_mmad(weights, scaling_factor=mmad_scaling_factor)
 
     else:
         raise ValueError(f"Unknown standardization method: {method}")
@@ -454,6 +482,7 @@ def normalize_weights(
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    mmad_scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
     # Phase 2: Normalization
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
@@ -465,7 +494,7 @@ def normalize_weights(
 ) -> NDArray[np.floating]:
     """
     3-phase weight normalization:
-    1. Standardization: zscore (w-μ)/σ | robust (w-median)/IQR | none
+    1. Standardization: zscore (w-μ)/σ | robust (w-median)/IQR | mmad (w-median)/MAD | none
     2. Normalization: minmax, sigmoid, softmax, l1, l2, rank, none
     3. Post-processing: gamma correction w^γ
     """
@@ -477,6 +506,7 @@ def normalize_weights(
         weights,
         method=standardization,
         robust_quantiles=robust_quantiles,
+        mmad_scaling_factor=mmad_scaling_factor,
     )
 
     # Phase 2: Normalization
@@ -531,6 +561,7 @@ def calculate_extrema_weights(
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    mmad_scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
     # Phase 2: Normalization
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
@@ -556,6 +587,7 @@ def calculate_extrema_weights(
         weights,
         standardization=standardization,
         robust_quantiles=robust_quantiles,
+        mmad_scaling_factor=mmad_scaling_factor,
         normalization=normalization,
         minmax_range=minmax_range,
         sigmoid_scale=sigmoid_scale,
@@ -592,6 +624,7 @@ def get_weighted_extrema(
     robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
         "robust_quantiles"
     ],
+    mmad_scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
     # Phase 2: Normalization
     normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
     minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
@@ -611,6 +644,7 @@ def get_weighted_extrema(
         strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio")
         standardization: Standardization method
         robust_quantiles: Quantiles for robust standardization
+        mmad_scaling_factor: Scaling factor for MMAD standardization
         normalization: Normalization method
         minmax_range: Target range for minmax
         sigmoid_scale: Scale for sigmoid
@@ -637,6 +671,7 @@ def get_weighted_extrema(
             weights=weights,
             standardization=standardization,
             robust_quantiles=robust_quantiles,
+            mmad_scaling_factor=mmad_scaling_factor,
             normalization=normalization,
             minmax_range=minmax_range,
             sigmoid_scale=sigmoid_scale,

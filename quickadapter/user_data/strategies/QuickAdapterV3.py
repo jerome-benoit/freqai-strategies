@@ -674,6 +674,21 @@ class QuickAdapterV3(IStrategy):
                 float(weighting_robust_quantiles[1]),
             )
 
+        weighting_mmad_scaling_factor = extrema_weighting.get(
+            "mmad_scaling_factor", DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
+        )
+        if (
+            not isinstance(weighting_mmad_scaling_factor, (int, float))
+            or not np.isfinite(weighting_mmad_scaling_factor)
+            or weighting_mmad_scaling_factor <= 0
+        ):
+            logger.warning(
+                f"{pair}: invalid extrema_weighting mmad_scaling_factor {weighting_mmad_scaling_factor}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']}"
+            )
+            weighting_mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING[
+                "mmad_scaling_factor"
+            ]
+
         # Phase 2: Normalization
         weighting_normalization = str(
             extrema_weighting.get(
@@ -765,6 +780,7 @@ class QuickAdapterV3(IStrategy):
             "strategy": weighting_strategy,
             "standardization": weighting_standardization,
             "robust_quantiles": weighting_robust_quantiles,
+            "mmad_scaling_factor": weighting_mmad_scaling_factor,
             "normalization": weighting_normalization,
             "minmax_range": weighting_minmax_range,
             "sigmoid_scale": weighting_sigmoid_scale,
@@ -930,6 +946,7 @@ class QuickAdapterV3(IStrategy):
             strategy=self.extrema_weighting["strategy"],
             standardization=self.extrema_weighting["standardization"],
             robust_quantiles=self.extrema_weighting["robust_quantiles"],
+            mmad_scaling_factor=self.extrema_weighting["mmad_scaling_factor"],
             normalization=self.extrema_weighting["normalization"],
             minmax_range=self.extrema_weighting["minmax_range"],
             sigmoid_scale=self.extrema_weighting["sigmoid_scale"],
