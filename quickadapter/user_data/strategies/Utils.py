@@ -311,8 +311,8 @@ def _standardize_robust(
         return np.zeros_like(weights, dtype=float)
 
     median = np.median(weights)
-    q_low, q_high = np.quantile(weights, quantiles)
-    iqr = q_high - q_low
+    q1, q3 = np.quantile(weights, quantiles)
+    iqr = q3 - q1
 
     if np.isclose(iqr, 0.0):
         return np.zeros_like(weights, dtype=float)

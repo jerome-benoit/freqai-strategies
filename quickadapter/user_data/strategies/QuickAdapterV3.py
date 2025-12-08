@@ -665,7 +665,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_robust_quantiles[0] >= weighting_robust_quantiles[1]
         ):
             logger.warning(
-                f"{pair}: invalid extrema_weighting robust_quantiles {weighting_robust_quantiles}, must be (q_low, q_high) with 0 <= q_low < q_high <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']}"
+                f"{pair}: invalid extrema_weighting robust_quantiles {weighting_robust_quantiles}, must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']}"
             )
             weighting_robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
         else:
