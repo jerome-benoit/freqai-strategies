@@ -387,8 +387,7 @@ def _normalize_sigmoid(
     if scale <= 0 or not np.isfinite(scale):
         scale = 1.0
 
-    scaled = scale * weights
-    return sp.special.expit(scaled)
+    return sp.special.expit(scale * weights)
 
 
 def _normalize_minmax(
@@ -411,11 +410,9 @@ def _normalize_minmax(
 
     w_range = w_max - w_min
     if np.isclose(w_range, 0.0):
-        range_midpoint = midpoint(range[0], range[1])
-        return np.full_like(weights, range_midpoint, dtype=float)
+        return np.full_like(weights, midpoint(range[0], range[1]), dtype=float)
 
-    normalized = (weights - w_min) / w_range
-    return range[0] + normalized * (range[1] - range[0])
+    return range[0] + ((weights - w_min) / w_range) * (range[1] - range[0])
 
 
 def _normalize_l1(weights: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -423,8 +420,7 @@ def _normalize_l1(weights: NDArray[np.floating]) -> NDArray[np.floating]:
     weights_sum = np.sum(np.abs(weights))
     if weights_sum <= 0 or not np.isfinite(weights_sum):
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-    normalized_weights = weights / weights_sum
-    return normalized_weights
+    return weights / weights_sum
 
 
 def _normalize_l2(weights: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -438,8 +434,7 @@ def _normalize_l2(weights: NDArray[np.floating]) -> NDArray[np.floating]:
     if l2_norm <= 0 or not np.isfinite(l2_norm):
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
 
-    normalized_weights = weights / l2_norm
-    return normalized_weights
+    return weights / l2_norm
 
 
 def _normalize_softmax(
@@ -469,8 +464,7 @@ def _normalize_rank(
     if n <= 1:
         return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
 
-    normalized_weights = (ranks - 1) / (n - 1)
-    return normalized_weights
+    return (ranks - 1) / (n - 1)
 
 
 def normalize_weights(
@@ -1489,9 +1483,8 @@ def get_optuna_study_model_parameters(
         for param, (default_min, default_max) in default_ranges.items():
             center_value = model_training_best_parameters.get(param)
 
-            if center_value is None:
-                center_value = midpoint(default_min, default_max)
-            elif not isinstance(center_value, (int, float)) or not np.isfinite(
+            center_value = center_value or midpoint(default_min, default_max)
+            if not isinstance(center_value, (int, float)) or not np.isfinite(
                 center_value
             ):
                 continue

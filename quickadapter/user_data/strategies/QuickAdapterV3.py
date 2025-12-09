@@ -359,8 +359,7 @@ class QuickAdapterV3(IStrategy):
         if n == 0:
             return (0, None)
         dates = df.get("date")
-        last_date = dates.iloc[-1] if dates is not None and not dates.empty else None
-        return (n, last_date)
+        return (n, dates.iloc[-1] if dates is not None and not dates.empty else None)
 
     def _init_reversal_confirmation_defaults(self) -> None:
         reversal_confirmation = self.config.get("reversal_confirmation", {})
@@ -489,8 +488,9 @@ class QuickAdapterV3(IStrategy):
             zero_lag=True,
             normalize=True,
         )
-        psar = ta.SAR(dataframe, acceleration=0.02, maximum=0.2)
-        dataframe["%-diff_to_psar"] = closes - psar
+        dataframe["%-diff_to_psar"] = closes - ta.SAR(
+            dataframe, acceleration=0.02, maximum=0.2
+        )
         kc = pta.kc(
             highs,
             lows,
@@ -1045,9 +1045,9 @@ class QuickAdapterV3(IStrategy):
         current_date = dates.iloc[-1]
         if isna(current_date):
             return None
-        trade_duration_minutes = (current_date - entry_date).total_seconds() / 60.0
         return int(
-            trade_duration_minutes / timeframe_to_minutes(self.config.get("timeframe"))
+            ((current_date - entry_date).total_seconds() / 60.0)
+            / timeframe_to_minutes(self.config.get("timeframe"))
         )
 
     @staticmethod
@@ -1094,11 +1094,10 @@ class QuickAdapterV3(IStrategy):
             max_weight: float = 1.0,
             weighting_exponent: float = 1.5,
         ) -> float:
-            normalized_distance_from_center = abs(quantile - 0.5) * 2.0
             return (
                 min_weight
                 + (max_weight - min_weight)
-                * normalized_distance_from_center**weighting_exponent
+                * (abs(quantile - 0.5) * 2.0) ** weighting_exponent
             )
 
         entry_weight = calculate_weight(entry_quantile)
@@ -1202,9 +1201,10 @@ class QuickAdapterV3(IStrategy):
     def get_trade_exit_stage(trade: Trade) -> int:
         n_open_orders = 0
         if trade.has_open_orders:
-            exit_side = "buy" if trade.is_short else "sell"
             n_open_orders = sum(
-                1 for open_order in trade.open_orders if open_order.side == exit_side
+                1
+                for open_order in trade.open_orders
+                if open_order.side == ("buy" if trade.is_short else "sell")
             )
         return trade.nr_of_successful_exits + n_open_orders
 
@@ -1271,8 +1271,9 @@ class QuickAdapterV3(IStrategy):
         timestamp = int(current_time.timestamp())
         candle_duration_secs = max(1, int(self._candle_duration_secs))
         candle_start_secs = (timestamp // candle_duration_secs) * candle_duration_secs
-        callback_hash = get_callable_sha256(callback)
-        key = hashlib.sha256(f"{pair}\x00{callback_hash}".encode()).hexdigest()
+        key = hashlib.sha256(
+            f"{pair}\x00{get_callable_sha256(callback)}".encode()
+        ).hexdigest()
         if candle_start_secs != self.last_candle_start_secs.get(key):
             self.last_candle_start_secs[key] = candle_start_secs
             try:
@@ -1947,9 +1948,7 @@ class QuickAdapterV3(IStrategy):
             sigma_total = sigma_global + sigma_recent
             if sigma_total <= 0:
                 return alpha_base
-            ratio = sigma_global / sigma_total
-            alpha_vol = alpha_base * (ratio**gamma)
-            return max(min_alpha, alpha_vol)
+            return max(min_alpha, alpha_base * ((sigma_global / sigma_total) ** gamma))
 
         alpha_v = volatility_adjusted_alpha(
             alpha_len, std_v_global, std_v_recent, min_alpha=min_alpha

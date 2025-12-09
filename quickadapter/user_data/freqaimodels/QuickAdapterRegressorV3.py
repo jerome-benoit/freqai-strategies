@@ -230,8 +230,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         Raises:
             ValueError: If no trading pairs are configured
         """
-        n_pairs = len(self.pairs)
-        default_label_frequency_candles = max(2, 2 * n_pairs)
+        default_label_frequency_candles = max(2, 2 * len(self.pairs))
 
         label_frequency_candles = self.config.get("feature_parameters", {}).get(
             "label_frequency_candles"
@@ -331,11 +330,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         cache_key = label_frequency_candles
         if cache_key not in self._optuna_label_candle_pool_full_cache:
             half_label_frequency_candles = int(label_frequency_candles / 2)
-            min_offset = -half_label_frequency_candles
-            max_offset = half_label_frequency_candles
             self._optuna_label_candle_pool_full_cache[cache_key] = [
                 max(1, label_frequency_candles + offset)
-                for offset in range(min_offset, max_offset + 1)
+                for offset in range(
+                    -half_label_frequency_candles, half_label_frequency_candles + 1
+                )
             ]
         return copy.deepcopy(self._optuna_label_candle_pool_full_cache[cache_key])
 
@@ -871,8 +870,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         fit_live_predictions_candles: int,
         label_period_candles: int,
     ) -> tuple[float, float]:
-        label_period_cycles = fit_live_predictions_candles / label_period_candles
-        thresholds_candles = max(2, int(label_period_cycles)) * label_period_candles
+        thresholds_candles = (
+            max(2, int(fit_live_predictions_candles / label_period_candles))
+            * label_period_candles
+        )
 
         pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
 
@@ -2279,8 +2280,12 @@ def label_objective(
         "label_natr_ratio", min_label_natr_ratio, max_label_natr_ratio, step=0.05
     )
 
-    label_period_cycles = fit_live_predictions_candles / label_period_candles
-    df = df.iloc[-(max(2, int(label_period_cycles)) * label_period_candles) :]
+    df = df.iloc[
+        -(
+            max(2, int(fit_live_predictions_candles / label_period_candles))
+            * label_period_candles
+        ) :
+    ]
 
     if df.empty:
         return 0, 0.0, 0.0
