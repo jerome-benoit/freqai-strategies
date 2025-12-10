@@ -38,6 +38,9 @@
     "order_book_top": 1,
     "price_last_balance": 0.0
   },
+  "reversal_confirmation": {
+    "max_natr_ratio_percent": 0.05
+  },
   "exchange": {
     "name": "binance",
     "key": "",
@@ -122,7 +125,13 @@
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
     "extrema_weighting": {
-      "strategy": "amplitude"
+      "strategy": "amplitude_threshold_ratio",
+      "gamma": 1.5
+    },
+    "extrema_smoothing": {
+      "method": "kaiser",
+      "window": 5,
+      "beta": 15.0
     },
     "predictions_extrema": {
       "thresholds_smoothing": "isodata"
@@ -160,7 +169,7 @@
         "4h"
       ],
       "label_period_candles": 18,
-      "label_metric": "euclidean",
+      "label_metric": "kmedoids",
       "include_shifted_candles": 6,
       "DI_threshold": 10,
       "weight_factor": 0.9,
