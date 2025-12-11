@@ -142,7 +142,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "kmeans2",
         "kmedoids",
         "knn_power_mean",
-        "knn_percentile",
+        "knn_quantile",
         "knn_min",
         "knn_max",
         "medoid",
@@ -1078,14 +1078,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pred_minima.empty:
             min_val = np.nan
         else:
-            min_val = np.median(pred_minima.to_numpy())
+            min_val = np.nanmedian(pred_minima.to_numpy())
         if not np.isfinite(min_val):
             min_val = QuickAdapterRegressorV3.safe_min_pred(pred_extrema)
 
         if pred_maxima.empty:
             max_val = np.nan
         else:
-            max_val = np.median(pred_maxima.to_numpy())
+            max_val = np.nanmedian(pred_maxima.to_numpy())
         if not np.isfinite(max_val):
             max_val = QuickAdapterRegressorV3.safe_max_pred(pred_extrema)
 
@@ -1133,7 +1133,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             or np.unique(values).size < 3
             or np.allclose(values, values[0])
         ):
-            return np.median(values)
+            return np.nanmedian(values)
         try:
             return threshold_func(values)
         except Exception as e:
@@ -1141,7 +1141,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Failed to apply skimage threshold function {threshold_func.__name__} on series {series.name}: {repr(e)}. Falling back to median",
                 exc_info=True,
             )
-            return np.median(values)
+            return np.nanmedian(values)
 
     @staticmethod
     def _pairwise_distance_sums(
@@ -1375,7 +1375,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
                 QuickAdapterRegressorV3._CUSTOM_METRICS[11],  # "kmedoids"
                 QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_percentile"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
                 QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
                 QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
             }:
@@ -1407,7 +1407,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }:
             np_sqrt_normalized_matrix = np.sqrt(normalized_matrix)
             if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[1]:  # "shellinger"
-                variances = np.var(np_sqrt_normalized_matrix, axis=0, ddof=1)
+                variances = np.nanvar(np_sqrt_normalized_matrix, axis=0, ddof=1)
                 if np.any(variances <= 0):
                     raise ValueError(
                         "shellinger metric requires non-zero variance for all objectives"
@@ -1656,7 +1656,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return trial_distances
         elif metric in {
             QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_percentile"
+            QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
             QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
             QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
         }:
@@ -1701,17 +1701,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 return sp.stats.pmean(neighbor_distances, p=label_knn_p_order, axis=1)
             elif (
                 metric == QuickAdapterRegressorV3._CUSTOM_METRICS[13]
-            ):  # "knn_percentile"
+            ):  # "knn_quantile"
                 label_knn_p_order = (
                     label_knn_p_order
                     if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
-                    else 50.0
+                    else 0.5
                 )
-                return np.percentile(neighbor_distances, label_knn_p_order, axis=1)
+                return np.nanquantile(neighbor_distances, label_knn_p_order, axis=1)
             elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[14]:  # "knn_min"
-                return np.min(neighbor_distances, axis=1)
+                return np.nanmin(neighbor_distances, axis=1)
             elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[15]:  # "knn_max"
-                return np.max(neighbor_distances, axis=1)
+                return np.nanmax(neighbor_distances, axis=1)
         else:
             raise ValueError(
                 f"Unsupported label metric: {metric}. Supported metrics are {', '.join(metrics)}"
@@ -2120,7 +2120,7 @@ def train_objective(
             test_length, fit_live_predictions_candles
         )
         logger.info(f"{test_length=}, {n_test_extrema=}, {min_test_extrema=}")
-    min_test_period_candles: int = fit_live_predictions_candles * 2
+    min_test_period_candles: int = fit_live_predictions_candles * 4
     if test_length < min_test_period_candles:
         logger.warning(
             f"Insufficient test data: {test_length} < {min_test_period_candles}"
@@ -2290,20 +2290,34 @@ def label_objective(
     if df.empty:
         return 0, 0.0, 0.0
 
-    _, pivots_values, _, pivots_amplitudes, pivots_amplitude_threshold_ratios = zigzag(
+    (
+        _,
+        pivots_values,
+        _,
+        _,
+        pivots_amplitude_threshold_ratios,
+        _,
+        _,
+        pivots_volume_weighted_amplitudes,
+    ) = zigzag(
         df,
         natr_period=label_period_candles,
         natr_ratio=label_natr_ratio,
     )
 
-    median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
-    if not np.isfinite(median_amplitude):
-        median_amplitude = 0.0
-
+    median_volume_weighted_amplitude = np.nanmedian(
+        np.asarray(pivots_volume_weighted_amplitudes, dtype=float)
+    )
+    if not np.isfinite(median_volume_weighted_amplitude):
+        median_volume_weighted_amplitude = 0.0
     median_amplitude_threshold_ratio = np.nanmedian(
         np.asarray(pivots_amplitude_threshold_ratios, dtype=float)
     )
     if not np.isfinite(median_amplitude_threshold_ratio):
         median_amplitude_threshold_ratio = 0.0
 
-    return len(pivots_values), median_amplitude, median_amplitude_threshold_ratio
+    return (
+        len(pivots_values),
+        median_volume_weighted_amplitude,
+        median_amplitude_threshold_ratio,
+    )

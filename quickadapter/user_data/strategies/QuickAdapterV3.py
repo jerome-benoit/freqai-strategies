@@ -22,6 +22,7 @@ from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
+from numpy.typing import NDArray
 from pandas import DataFrame, Series, isna
 from scipy.stats import t
 from technical.pivots_points import pivots_points
@@ -34,8 +35,8 @@ from Utils import (
     MINIMA_THRESHOLD_COLUMN,
     NORMALIZATION_TYPES,
     RANK_METHODS,
-    SMOOTHING_MODES,
     SMOOTHING_METHODS,
+    SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
     WEIGHT_STRATEGIES,
     TrendDirection,
@@ -885,17 +886,24 @@ class QuickAdapterV3(IStrategy):
     def _get_weights(
         strategy: WeightStrategy,
         amplitudes: list[float],
+        volume_weighted_amplitudes: list[float],
         amplitude_threshold_ratios: list[float],
-    ) -> list[float]:
+    ) -> NDArray[np.floating]:
         if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
-            return amplitudes
+            return np.array(amplitudes)
         if strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
             return (
-                amplitude_threshold_ratios
+                np.array(amplitude_threshold_ratios)
                 if len(amplitude_threshold_ratios) == len(amplitudes)
-                else amplitudes
+                else np.array(amplitudes)
             )
-        return []
+        if strategy == WEIGHT_STRATEGIES[3]:  # "volume_weighted_amplitude"
+            return (
+                np.array(volume_weighted_amplitudes)
+                if len(volume_weighted_amplitudes) == len(amplitudes)
+                else np.array(amplitudes)
+            )
+        return np.array([])
 
     def set_freqai_targets(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
@@ -909,6 +917,9 @@ class QuickAdapterV3(IStrategy):
             pivots_directions,
             pivots_amplitudes,
             pivots_amplitude_threshold_ratios,
+            _,
+            _,
+            pivots_volume_weighted_amplitude,
         ) = zigzag(
             dataframe,
             natr_period=label_period_candles,
@@ -937,12 +948,13 @@ class QuickAdapterV3(IStrategy):
         pivot_weights = QuickAdapterV3._get_weights(
             self.extrema_weighting["strategy"],
             pivots_amplitudes,
+            pivots_volume_weighted_amplitude,
             pivots_amplitude_threshold_ratios,
         )
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
-            weights=np.array(pivot_weights),
+            weights=pivot_weights,
             strategy=self.extrema_weighting["strategy"],
             standardization=self.extrema_weighting["standardization"],
             robust_quantiles=self.extrema_weighting["robust_quantiles"],
@@ -1106,7 +1118,7 @@ class QuickAdapterV3(IStrategy):
 
         total_weight = entry_weight + current_weight + median_weight
         if np.isclose(total_weight, 0.0):
-            return np.mean([entry_natr, current_natr, median_natr])
+            return np.nanmean([entry_natr, current_natr, median_natr])
         entry_weight /= total_weight
         current_weight /= total_weight
         median_weight /= total_weight
@@ -1849,14 +1861,14 @@ class QuickAdapterV3(IStrategy):
         unrealized_pnl_history = np.asarray(unrealized_pnl_history)
 
         velocity = np.diff(unrealized_pnl_history)
-        velocity_std = np.std(velocity, ddof=1) if velocity.size > 1 else 0.0
+        velocity_std = np.nanstd(velocity, ddof=1) if velocity.size > 1 else 0.0
         acceleration = np.diff(velocity)
         acceleration_std = (
-            np.std(acceleration, ddof=1) if acceleration.size > 1 else 0.0
+            np.nanstd(acceleration, ddof=1) if acceleration.size > 1 else 0.0
         )
 
-        mean_velocity = np.mean(velocity) if velocity.size > 0 else 0.0
-        mean_acceleration = np.mean(acceleration) if acceleration.size > 0 else 0.0
+        mean_velocity = np.nanmean(velocity) if velocity.size > 0 else 0.0
+        mean_acceleration = np.nanmean(acceleration) if acceleration.size > 0 else 0.0
 
         if window_size > 0 and len(unrealized_pnl_history) > window_size:
             recent_unrealized_pnl_history = unrealized_pnl_history[-window_size:]
@@ -1865,18 +1877,20 @@ class QuickAdapterV3(IStrategy):
 
         recent_velocity = np.diff(recent_unrealized_pnl_history)
         recent_velocity_std = (
-            np.std(recent_velocity, ddof=1) if recent_velocity.size > 1 else 0.0
+            np.nanstd(recent_velocity, ddof=1) if recent_velocity.size > 1 else 0.0
         )
         recent_acceleration = np.diff(recent_velocity)
         recent_acceleration_std = (
-            np.std(recent_acceleration, ddof=1) if recent_acceleration.size > 1 else 0.0
+            np.nanstd(recent_acceleration, ddof=1)
+            if recent_acceleration.size > 1
+            else 0.0
         )
 
         recent_mean_velocity = (
-            np.mean(recent_velocity) if recent_velocity.size > 0 else 0.0
+            np.nanmean(recent_velocity) if recent_velocity.size > 0 else 0.0
         )
         recent_mean_acceleration = (
-            np.mean(recent_acceleration) if recent_acceleration.size > 0 else 0.0
+            np.nanmean(recent_acceleration) if recent_acceleration.size > 0 else 0.0
         )
 
         return (
