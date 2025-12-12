@@ -106,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.176"
+        return "3.3.177"
 
     timeframe = "5m"
 
@@ -702,6 +702,24 @@ class QuickAdapterV3(IStrategy):
             )
             weighting_normalization = NORMALIZATION_TYPES[0]
 
+        if (
+            weighting_strategy != WEIGHT_STRATEGIES[0]  # "none"
+            and weighting_standardization != STANDARDIZATION_TYPES[0]  # "none"
+            and weighting_normalization
+            in {
+                NORMALIZATION_TYPES[3],  # "l1"
+                NORMALIZATION_TYPES[4],  # "l2"
+                NORMALIZATION_TYPES[6],  # "none"
+            }
+        ):
+            raise ValueError(
+                f"{pair}: invalid extrema_weighting configuration: "
+                f"standardization='{weighting_standardization}' with normalization='{weighting_normalization}' "
+                "can produce negative weights and flip ternary extrema labels. "
+                f"Use normalization in {{'{NORMALIZATION_TYPES[0]}','{NORMALIZATION_TYPES[1]}','{NORMALIZATION_TYPES[2]}','{NORMALIZATION_TYPES[5]}'}} "
+                f"or set standardization='{STANDARDIZATION_TYPES[0]}'."
+            )
+
         weighting_minmax_range = extrema_weighting.get(
             "minmax_range", DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
         )
@@ -886,7 +904,6 @@ class QuickAdapterV3(IStrategy):
     def _get_weights(
         strategy: WeightStrategy,
         amplitudes: list[float],
-        volume_weighted_amplitudes: list[float],
         amplitude_threshold_ratios: list[float],
     ) -> NDArray[np.floating]:
         if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
@@ -895,12 +912,6 @@ class QuickAdapterV3(IStrategy):
             return (
                 np.array(amplitude_threshold_ratios)
                 if len(amplitude_threshold_ratios) == len(amplitudes)
-                else np.array(amplitudes)
-            )
-        if strategy == WEIGHT_STRATEGIES[3]:  # "volume_weighted_amplitude"
-            return (
-                np.array(volume_weighted_amplitudes)
-                if len(volume_weighted_amplitudes) == len(amplitudes)
                 else np.array(amplitudes)
             )
         return np.array([])
@@ -917,9 +928,6 @@ class QuickAdapterV3(IStrategy):
             pivots_directions,
             pivots_amplitudes,
             pivots_amplitude_threshold_ratios,
-            _,
-            _,
-            pivots_volume_weighted_amplitude,
         ) = zigzag(
             dataframe,
             natr_period=label_period_candles,
@@ -948,7 +956,6 @@ class QuickAdapterV3(IStrategy):
         pivot_weights = QuickAdapterV3._get_weights(
             self.extrema_weighting["strategy"],
             pivots_amplitudes,
-            pivots_volume_weighted_amplitude,
             pivots_amplitude_threshold_ratios,
         )
         weighted_extrema, _ = get_weighted_extrema(

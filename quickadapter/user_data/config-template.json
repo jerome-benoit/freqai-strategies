@@ -125,7 +125,7 @@
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
     "extrema_weighting": {
-      "strategy": "volume_weighted_amplitude",
+      "strategy": "amplitude",
       "gamma": 1.75
     },
     "extrema_smoothing": {

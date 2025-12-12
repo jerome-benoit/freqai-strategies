@@ -23,13 +23,11 @@ WeightStrategy = Literal[
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
-    "volume_weighted_amplitude",
 ]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
-    "volume_weighted_amplitude",
 )
 
 EXTREMA_COLUMN: Final = "&s-extrema"
@@ -388,7 +386,7 @@ def _normalize_sigmoid(
     """
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     if scale <= 0 or not np.isfinite(scale):
         scale = 1.0
@@ -406,13 +404,13 @@ def _normalize_minmax(
     """
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     w_min = np.min(weights)
     w_max = np.max(weights)
 
     if not (np.isfinite(w_min) and np.isfinite(w_max)):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     w_range = w_max - w_min
     if np.isclose(w_range, 0.0):
@@ -425,7 +423,7 @@ def _normalize_l1(weights: NDArray[np.floating]) -> NDArray[np.floating]:
     """L1 normalization: w / Σ|w|  →  Σ|w| = 1"""
     weights_sum = np.sum(np.abs(weights))
     if weights_sum <= 0 or not np.isfinite(weights_sum):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
     return weights / weights_sum
 
 
@@ -433,12 +431,12 @@ def _normalize_l2(weights: NDArray[np.floating]) -> NDArray[np.floating]:
     """L2 normalization: w / ||w||₂  →  ||w||₂ = 1"""
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     l2_norm = np.linalg.norm(weights, ord=2)
 
     if l2_norm <= 0 or not np.isfinite(l2_norm):
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     return weights / l2_norm
 
@@ -450,7 +448,7 @@ def _normalize_softmax(
     """Softmax normalization: exp(w/T) / Σexp(w/T)  →  Σw = 1, range [0,1]"""
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
     if not np.isclose(temperature, 1.0) and temperature > 0:
         weights = weights / temperature
     return sp.special.softmax(weights)
@@ -463,12 +461,12 @@ def _normalize_rank(
     """Rank normalization: [rank(w) - 1] / (n - 1)  →  [0, 1] uniformly distributed"""
     weights = weights.astype(float, copy=False)
     if np.isnan(weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     ranks = sp.stats.rankdata(weights, method=method)
     n = len(weights)
     if n <= 1:
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     return (ranks - 1) / (n - 1)
 
@@ -501,9 +499,15 @@ def normalize_weights(
     if weights.size == 0:
         return weights
 
+    weights_out = np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+
+    weights_finite_mask = np.isfinite(weights)
+    if not weights_finite_mask.any():
+        return weights_out
+
     # Phase 1: Standardization
     standardized_weights = standardize_weights(
-        weights,
+        weights[weights_finite_mask],
         method=standardization,
         robust_quantiles=robust_quantiles,
         mmad_scaling_factor=mmad_scaling_factor,
@@ -512,29 +516,22 @@ def normalize_weights(
     # Phase 2: Normalization
     if normalization == NORMALIZATION_TYPES[6]:  # "none"
         normalized_weights = standardized_weights
-
     elif normalization == NORMALIZATION_TYPES[0]:  # "minmax"
         normalized_weights = _normalize_minmax(standardized_weights, range=minmax_range)
-
     elif normalization == NORMALIZATION_TYPES[1]:  # "sigmoid"
         normalized_weights = _normalize_sigmoid(
             standardized_weights, scale=sigmoid_scale
         )
-
     elif normalization == NORMALIZATION_TYPES[2]:  # "softmax"
         normalized_weights = _normalize_softmax(
             standardized_weights, temperature=softmax_temperature
         )
-
     elif normalization == NORMALIZATION_TYPES[3]:  # "l1"
         normalized_weights = _normalize_l1(standardized_weights)
-
     elif normalization == NORMALIZATION_TYPES[4]:  # "l2"
         normalized_weights = _normalize_l2(standardized_weights)
-
     elif normalization == NORMALIZATION_TYPES[5]:  # "rank"
         normalized_weights = _normalize_rank(standardized_weights, method=rank_method)
-
     else:
         raise ValueError(f"Unknown normalization method: {normalization}")
 
@@ -544,10 +541,9 @@ def normalize_weights(
             normalized_weights
         )
 
-    if np.isnan(normalized_weights).any():
-        return np.full_like(weights, float(DEFAULT_EXTREMA_WEIGHT), dtype=float)
-
-    return normalized_weights
+    weights_out[weights_finite_mask] = normalized_weights
+    weights_out[~np.isfinite(weights_out)] = DEFAULT_EXTREMA_WEIGHT
+    return weights_out
 
 
 def calculate_extrema_weights(
@@ -576,7 +572,7 @@ def calculate_extrema_weights(
     Returns: Series with weights at extrema indices (rest filled with default).
     """
     if len(indices) == 0 or len(weights) == 0:
-        return pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
 
     if len(indices) != len(weights):
         raise ValueError(
@@ -599,11 +595,9 @@ def calculate_extrema_weights(
     if normalized_weights.size == 0 or np.allclose(
         normalized_weights, normalized_weights[0]
     ):
-        normalized_weights = np.full_like(
-            normalized_weights, float(DEFAULT_EXTREMA_WEIGHT)
-        )
+        normalized_weights = np.full_like(normalized_weights, DEFAULT_EXTREMA_WEIGHT)
 
-    weights_series = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=series.index)
+    weights_series = pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
     mask = pd.Index(indices).isin(series.index)
     normalized_weights = normalized_weights[mask]
     valid_indices = [idx for idx, is_valid in zip(indices, mask) if is_valid]
@@ -655,7 +649,7 @@ def get_weighted_extrema(
     Returns:
         Tuple of (weighted_extrema, extrema_weights)
     """
-    default_weights = pd.Series(float(DEFAULT_EXTREMA_WEIGHT), index=extrema.index)
+    default_weights = pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
     if (
         len(indices) == 0 or len(weights) == 0 or strategy == WEIGHT_STRATEGIES[0]
     ):  # "none"
@@ -664,8 +658,7 @@ def get_weighted_extrema(
     if strategy in {
         WEIGHT_STRATEGIES[1],
         WEIGHT_STRATEGIES[2],
-        WEIGHT_STRATEGIES[3],
-    }:  # "amplitude" or "amplitude_threshold_ratio" or "volume_weighted_amplitude"
+    }:  # "amplitude" or "amplitude_threshold_ratio"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,
@@ -1102,16 +1095,10 @@ def zigzag(
     list[TrendDirection],
     list[float],
     list[float],
-    list[float],
-    list[float],
-    list[float],
 ]:
     n = len(df)
     if df.empty or n < natr_period:
         return (
-            [],
-            [],
-            [],
             [],
             [],
             [],
@@ -1127,7 +1114,6 @@ def zigzag(
     log_closes = np.log(closes)
     highs = df.get("high").to_numpy()
     lows = df.get("low").to_numpy()
-    volumes = df.get("volume").to_numpy()
 
     state: TrendDirection = TrendDirection.NEUTRAL
 
@@ -1136,9 +1122,6 @@ def zigzag(
     pivots_directions: list[TrendDirection] = []
     pivots_amplitudes: list[float] = []
     pivots_amplitude_threshold_ratios: list[float] = []
-    pivots_volume_spike_ratios: list[float] = []
-    pivots_volume_quantiles: list[float] = []
-    pivots_volume_weighted_amplitudes: list[float] = []
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -1159,22 +1142,6 @@ def zigzag(
                 )
 
         return volatility_quantile_cache[pos]
-
-    volume_quantile_cache: dict[int, float] = {}
-
-    def calculate_volume_quantile(pos: int) -> float:
-        if pos not in volume_quantile_cache:
-            pos_plus_1 = pos + 1
-            start_pos = max(0, pos_plus_1 - natr_period)
-            end_pos = min(pos_plus_1, n)
-            if start_pos >= end_pos:
-                volume_quantile_cache[pos] = np.nan
-            else:
-                volume_quantile_cache[pos] = calculate_quantile(
-                    volumes[start_pos:end_pos], volumes[pos]
-                )
-
-        return volume_quantile_cache[pos]
 
     def calculate_slopes_ok_threshold(
         pos: int,
@@ -1198,79 +1165,37 @@ def zigzag(
         candidate_pivot_pos = -1
         candidate_pivot_value = np.nan
 
-    def calculate_pivot_amplitude(current_value: float, previous_value: float) -> float:
+    def calculate_pivot_amplitude_and_threshold_ratio(
+        *,
+        previous_pos: int,
+        previous_value: float,
+        current_pos: int,
+        current_value: float,
+    ) -> tuple[float, float]:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan, np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan, np.nan
+
         if np.isclose(previous_value, 0.0):
-            return np.nan
-        return abs(current_value - previous_value) / abs(previous_value)
+            return np.nan, np.nan
 
-    def calculate_pivot_amplitude_threshold_ratio(
-        amplitude: float, threshold: float
-    ) -> float:
-        if np.isfinite(threshold) and threshold > 0 and np.isfinite(amplitude):
-            return amplitude / threshold
-        return np.nan
+        amplitude = abs(current_value - previous_value) / abs(previous_value)
 
-    def apply_weight_transform(weight: float, transform_type: str = "log1p") -> float:
-        if not np.isfinite(weight):
-            return np.nan
+        start_pos = min(previous_pos, current_pos)
+        end_pos = max(previous_pos, current_pos) + 1
+        median_threshold = np.nanmedian(thresholds[start_pos:end_pos])
 
-        if transform_type == "log1p":
-            if weight < 0:
-                return np.nan
-            return np.log1p(weight)
-
-        elif transform_type == "sqrt":
-            if weight < 0:
-                return np.nan
-            return np.sqrt(weight)
-
-        elif transform_type == "identity":
-            return weight
-
-        elif transform_type == "rational":
-            return weight / (1 + weight)
-
-        elif transform_type == "log10p":
-            if weight < 0:
-                return np.nan
-            return np.log10(1 + weight)
-
+        if (
+            np.isfinite(median_threshold)
+            and median_threshold > 0
+            and np.isfinite(amplitude)
+        ):
+            amplitude_threshold_ratio = amplitude / median_threshold
         else:
-            return weight
+            amplitude_threshold_ratio = np.nan
 
-    def calculate_pivot_volume_metrics(
-        pos: int, amplitude: float
-    ) -> tuple[float, float, float]:
-        if pos < 0 or pos >= n:
-            return np.nan, np.nan, np.nan
-
-        pivot_volume = volumes[pos]
-
-        start_pos = max(0, pos - natr_period)
-        if start_pos >= pos:
-            volume_spike_ratio = np.nan
-        else:
-            volumes_slice = volumes[start_pos:pos]
-            if volumes_slice.size == 0 or np.all(np.isnan(volumes_slice)):
-                volume_spike_ratio = np.nan
-            else:
-                mean_volume = np.nanmean(volumes_slice)
-                if mean_volume > 0 and np.isfinite(mean_volume):
-                    volume_spike_ratio = pivot_volume / mean_volume
-                else:
-                    volume_spike_ratio = np.nan
-
-        volume_quantile = calculate_volume_quantile(pos)
-
-        transformed_volume_spike_ratio = apply_weight_transform(
-            volume_spike_ratio, "log1p"
-        )
-        if np.isfinite(transformed_volume_spike_ratio) and np.isfinite(amplitude):
-            volume_weighted_amplitude = amplitude * transformed_volume_spike_ratio
-        else:
-            volume_weighted_amplitude = np.nan
-
-        return volume_spike_ratio, volume_quantile, volume_weighted_amplitude
+        return amplitude, amplitude_threshold_ratio
 
     def add_pivot(pos: int, value: float, direction: TrendDirection):
         nonlocal last_pivot_pos
@@ -1280,25 +1205,21 @@ def zigzag(
         pivots_values.append(value)
         pivots_directions.append(direction)
 
-        if len(pivots_values) > 1:
-            prev_pivot_value = pivots_values[-2]
-            amplitude = calculate_pivot_amplitude(value, prev_pivot_value)
-            amplitude_threshold_ratio = calculate_pivot_amplitude_threshold_ratio(
-                amplitude, thresholds[pos]
+        if len(pivots_values) > 1 and last_pivot_pos >= 0:
+            amplitude, amplitude_threshold_ratio = (
+                calculate_pivot_amplitude_and_threshold_ratio(
+                    previous_pos=last_pivot_pos,
+                    previous_value=pivots_values[-2],
+                    current_pos=pos,
+                    current_value=value,
+                )
             )
         else:
             amplitude = np.nan
             amplitude_threshold_ratio = np.nan
 
-        volume_spike_ratio, volume_quantile, volume_weighted_amplitude = (
-            calculate_pivot_volume_metrics(pos, amplitude)
-        )
-
         pivots_amplitudes.append(amplitude)
         pivots_amplitude_threshold_ratios.append(amplitude_threshold_ratio)
-        pivots_volume_spike_ratios.append(volume_spike_ratio)
-        pivots_volume_quantiles.append(volume_quantile)
-        pivots_volume_weighted_amplitudes.append(volume_weighted_amplitude)
 
         last_pivot_pos = pos
         reset_candidate_pivot()
@@ -1423,9 +1344,6 @@ def zigzag(
             [],
             [],
             [],
-            [],
-            [],
-            [],
         )
 
     for i in range(last_pivot_pos + 1, n):
@@ -1462,9 +1380,6 @@ def zigzag(
         pivots_directions,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
-        pivots_volume_spike_ratios,
-        pivots_volume_quantiles,
-        pivots_volume_weighted_amplitudes,
     )
 
 

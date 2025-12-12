@@ -73,7 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.126"
+    version = "3.7.127"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -2294,22 +2294,17 @@ def label_objective(
         _,
         pivots_values,
         _,
-        _,
+        pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
-        _,
-        _,
-        pivots_volume_weighted_amplitudes,
     ) = zigzag(
         df,
         natr_period=label_period_candles,
         natr_ratio=label_natr_ratio,
     )
 
-    median_volume_weighted_amplitude = np.nanmedian(
-        np.asarray(pivots_volume_weighted_amplitudes, dtype=float)
-    )
-    if not np.isfinite(median_volume_weighted_amplitude):
-        median_volume_weighted_amplitude = 0.0
+    median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
+    if not np.isfinite(median_amplitude):
+        median_amplitude = 0.0
     median_amplitude_threshold_ratio = np.nanmedian(
         np.asarray(pivots_amplitude_threshold_ratios, dtype=float)
     )
@@ -2318,6 +2313,6 @@ def label_objective(
 
     return (
         len(pivots_values),
-        median_volume_weighted_amplitude,
+        median_amplitude,
         median_amplitude_threshold_ratio,
     )
