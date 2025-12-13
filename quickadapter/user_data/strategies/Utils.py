@@ -768,7 +768,7 @@ def calculate_hybrid_extrema_weights(
 
 
 def calculate_extrema_weights(
-    series: pd.Series,
+    extrema: pd.Series,
     indices: list[int],
     weights: NDArray[np.floating],
     # Phase 1: Standardization
@@ -793,7 +793,7 @@ def calculate_extrema_weights(
     Returns: Series with weights at extrema indices (rest filled with default).
     """
     if len(indices) == 0 or len(weights) == 0:
-        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
     if len(indices) != len(weights):
         raise ValueError(
@@ -819,7 +819,7 @@ def calculate_extrema_weights(
         normalized_weights = np.full_like(normalized_weights, DEFAULT_EXTREMA_WEIGHT)
 
     return _weights_array_to_series(
-        index=series.index,
+        index=extrema.index,
         indices=indices,
         weights=normalized_weights,
         default_weight=np.nanmedian(normalized_weights),
@@ -887,7 +887,7 @@ def compute_extrema_weights(
             return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
         return calculate_extrema_weights(
-            series=extrema,
+            extrema=extrema,
             indices=indices,
             weights=weights,
             standardization=standardization,
