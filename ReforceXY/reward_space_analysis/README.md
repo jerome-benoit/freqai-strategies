@@ -1,12 +1,14 @@
 # Reward Space Analysis (ReforceXY)
 
-Deterministic synthetic sampling with diagnostics for reward shaping, penalties, PBRS invariance.
+Deterministic synthetic sampling with diagnostics for reward shaping, penalties,
+PBRS invariance.
 
 ## Key Capabilities
 
 - Scalable synthetic scenario generation (reproducible)
 - Reward component decomposition & bounds checks
-- PBRS modes: canonical, non_canonical, progressive_release, spike_cancel, retain_previous
+- PBRS modes: canonical, non_canonical, progressive_release, spike_cancel,
+  retain_previous
 - Feature importance & optional partial dependence
 - Statistical tests (hypothesis, bootstrap CIs, distribution diagnostics)
 - Real vs synthetic shift metrics
@@ -91,7 +93,8 @@ uv run python reward_space_analysis.py --num_samples 20000 --out_dir out
 uv run python reward_space_analysis.py --num_samples 20000 --out_dir reward_space_outputs
 ```
 
-See `statistical_analysis.md` (1–3): positive exit averages (long & short), negative invalid penalties, monotonic idle reduction, zero invariance failures.
+See `statistical_analysis.md` (1–3): positive exit averages (long & short),
+negative invalid penalties, monotonic idle reduction, zero invariance failures.
 
 ### 2. Parameter Sensitivity
 
@@ -133,22 +136,39 @@ Generates shift metrics for comparison (see Outputs section).
 
 ### Simulation & Environment
 
-- **`--num_samples`** (int, default: 20000) – Synthetic scenarios. More = better stats (slower). Recommended: 10k (quick), 50k (standard), 100k+ (deep). (Simulation-only; not overridable via `--params`).
-- **`--seed`** (int, default: 42) – Master seed (reuse for identical runs). (Simulation-only).
-- **`--trading_mode`** (spot|margin|futures, default: spot) – spot: no shorts; margin/futures: shorts enabled. (Simulation-only).
-- **`--max_duration_ratio`** (float, default: 2.5) – Upper multiple for sampled trade durations (idle derived). (Simulation-only; not in reward params; cannot be set via `--params`).
-- **`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for synthetic PnL generation (pre-scaling). (Simulation-only).
-- **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL volatility scale proportional to trade duration ratio. (Simulation-only).
-- **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic distribution shift metrics. (Simulation-only; triggers additional outputs when provided).
-- **`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL accrual during holds for potential Φ. (Simulation-only; affects PBRS components).
+- **`--num_samples`** (int, default: 20000) – Synthetic scenarios. More = better
+  stats (slower). Recommended: 10k (quick), 50k (standard), 100k+ (deep).
+  (Simulation-only; not overridable via `--params`).
+- **`--seed`** (int, default: 42) – Master seed (reuse for identical runs).
+  (Simulation-only).
+- **`--trading_mode`** (spot|margin|futures, default: spot) – spot: no shorts;
+  margin/futures: shorts enabled. (Simulation-only).
+- **`--max_duration_ratio`** (float, default: 2.5) – Upper multiple for sampled
+  trade durations (idle derived). (Simulation-only; not in reward params; cannot
+  be set via `--params`).
+- **`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for
+  synthetic PnL generation (pre-scaling). (Simulation-only).
+- **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL
+  volatility scale proportional to trade duration ratio. (Simulation-only).
+- **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic
+  distribution shift metrics. (Simulation-only; triggers additional outputs when
+  provided).
+- **`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL
+  accrual during holds for potential Φ. (Simulation-only; affects PBRS
+  components).
 
 ### Hybrid Simulation Scalars
 
-These parameters influence simulation behavior and reward computation. They can be overridden via `--params`.
+These parameters influence simulation behavior and reward computation. They can
+be overridden via `--params`.
 
-- **`--profit_target`** (float, default: 0.03) – Target profit threshold (e.g. 0.03=3%). Combined with `risk_reward_ratio` to compute effective profit target.
-- **`--risk_reward_ratio`** (float, default: 1.0) – Risk-reward multiplier. Effective profit target = `profit_target * risk_reward_ratio`.
-- **`--action_masking`** (bool, default: true) – Simulate environment action masking. Invalid actions receive penalties only if masking disabled.
+- **`--profit_target`** (float, default: 0.03) – Target profit threshold (e.g.
+  0.03=3%). Combined with `risk_reward_ratio` to compute effective profit
+  target.
+- **`--risk_reward_ratio`** (float, default: 1.0) – Risk-reward multiplier.
+  Effective profit target = `profit_target * risk_reward_ratio`.
+- **`--action_masking`** (bool, default: true) – Simulate environment action
+  masking. Invalid actions receive penalties only if masking disabled.
 
 ### Reward & Shaping
 
@@ -163,19 +183,33 @@ These parameters influence simulation behavior and reward computation. They can 
 
 ### Diagnostics & Validation
 
-- **`--check_invariants`** (bool, default: true) – Enable runtime invariant checks (diagnostics become advisory if disabled). Toggle rarely; disabling may hide reward drift or invariance violations.
-- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and finite checks; raises instead of silent clamp/discard when enabled.
-- **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate statistical diagnostics (zero-width CIs, undefined distribution metrics) instead of graceful fallbacks.
-- **`--exit_factor_threshold`** (float, default: 10000.0) – Warn if exit factor exceeds threshold.
-- **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple testing p-value adjustment method.
-- **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for confidence intervals; lower for speed (e.g. 500) during smoke tests.
-- **`--skip_feature_analysis`** / **`--skip_partial_dependence`** – Skip feature importance or PD grids (see Skipping Feature Analysis section); influence runtime only.
-- **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker counts for RandomForest and permutation importance (-1 = all cores).
+- **`--check_invariants`** (bool, default: true) – Enable runtime invariant
+  checks (diagnostics become advisory if disabled). Toggle rarely; disabling may
+  hide reward drift or invariance violations.
+- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and
+  finite checks; raises instead of silent clamp/discard when enabled.
+- **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate
+  statistical diagnostics (zero-width CIs, undefined distribution metrics)
+  instead of graceful fallbacks.
+- **`--exit_factor_threshold`** (float, default: 10000.0) – Warn if exit factor
+  exceeds threshold.
+- **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple
+  testing p-value adjustment method.
+- **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for
+  confidence intervals; lower for speed (e.g. 500) during smoke tests.
+- **`--skip_feature_analysis`** / **`--skip_partial_dependence`** – Skip feature
+  importance or PD grids (see Skipping Feature Analysis section); influence
+  runtime only.
+- **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker
+  counts for RandomForest and permutation importance (-1 = all cores).
 
 ### Overrides
 
-- **`--out_dir`** (path, default: reward_space_outputs) – Output directory (auto-created). (Simulation-only).
-- **`--params`** (k=v ...) – Bulk override reward tunables and hybrid simulation scalars (`profit_target`, `risk_reward_ratio`, `action_masking`). Conflicts: individual flags vs `--params` ⇒ `--params` wins.
+- **`--out_dir`** (path, default: reward_space_outputs) – Output directory
+  (auto-created). (Simulation-only).
+- **`--params`** (k=v ...) – Bulk override reward tunables and hybrid simulation
+  scalars (`profit_target`, `risk_reward_ratio`, `action_masking`). Conflicts:
+  individual flags vs `--params` ⇒ `--params` wins.
 
 ### Reward Parameter Cheat Sheet
 
@@ -219,13 +253,18 @@ These parameters influence simulation behavior and reward computation. They can 
 
 **Formula (unrealized profit normalization):**
 
-Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`, `range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
+Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
+`range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
 
-- If `pnl > 0`: `efficiency_factor = 1 + efficiency_weight * (ratio - efficiency_center)`
-- If `pnl < 0`: `efficiency_factor = 1 + efficiency_weight * (efficiency_center - ratio)`
+- If `pnl > 0`:
+  `efficiency_factor = 1 + efficiency_weight * (ratio - efficiency_center)`
+- If `pnl < 0`:
+  `efficiency_factor = 1 + efficiency_weight * (efficiency_center - ratio)`
 - Else: `efficiency_factor = 1`
 
-Final exit multiplier path: `exit_reward = pnl * exit_factor`, where `exit_factor = kernel(base_factor, duration_ratio_adjusted) * pnl_factor` and `pnl_factor` includes the `efficiency_factor` above.
+Final exit multiplier path: `exit_reward = pnl * exit_factor`, where
+`exit_factor = kernel(base_factor, duration_ratio_adjusted) * pnl_factor` and
+`pnl_factor` includes the `efficiency_factor` above.
 
 #### Validation
 
@@ -243,7 +282,11 @@ Final exit multiplier path: `exit_reward = pnl * exit_factor`, where `exit_facto
 | `exit_potential_decay`   | 0.5       | Decay for progressive_release     |
 | `hold_potential_enabled` | true      | Enable hold potential Φ           |
 
-PBRS invariance holds when: `exit_potential_mode=canonical` AND `entry_additive_enabled=false` AND `exit_additive_enabled=false`. Under this condition the algorithm enforces zero-sum shaping: if the summed shaping term deviates by more than 1e-6 (`PBRS_INVARIANCE_TOL`), a uniform drift correction subtracts the mean shaping offset across invariant samples.
+PBRS invariance holds when: `exit_potential_mode=canonical` AND
+`entry_additive_enabled=false` AND `exit_additive_enabled=false`. Under this
+condition the algorithm enforces zero-sum shaping: if the summed shaping term
+deviates by more than 1e-6 (`PBRS_INVARIANCE_TOL`), a uniform drift correction
+subtracts the mean shaping offset across invariant samples.
 
 #### Hold Potential Transforms
 
@@ -336,7 +379,8 @@ uv run python reward_space_analysis.py --num_samples 50000 --seed 777
 
 ### Overrides vs --params
 
-Direct flags and `--params` produce identical outcomes; conflicts resolved by bulk `--params` values.
+Direct flags and `--params` produce identical outcomes; conflicts resolved by
+bulk `--params` values.
 
 ```shell
 uv run python reward_space_analysis.py --win_reward_factor 3.0 --idle_penalty_scale 2.0 --num_samples 15000
@@ -345,11 +389,19 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 
 `--params` wins on conflicts.
 
-**Simulation-only keys** (not allowed in `--params`): `num_samples`, `seed`, `trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`, `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`, `strict_diagnostics`, `strict_validation`, `bootstrap_resamples`, `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`, `pvalue_adjust`.
+**Simulation-only keys** (not allowed in `--params`): `num_samples`, `seed`,
+`trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`,
+`pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`,
+`strict_diagnostics`, `strict_validation`, `bootstrap_resamples`,
+`skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`,
+`pvalue_adjust`.
 
-**Hybrid simulation scalars** allowed in `--params`: `profit_target`, `risk_reward_ratio`, `action_masking`.
+**Hybrid simulation scalars** allowed in `--params`: `profit_target`,
+`risk_reward_ratio`, `action_masking`.
 
-**Reward tunables** (tunable via either direct flag or `--params`) correspond to those listed under Reward Parameter Cheat Sheet: Core, Duration Penalties, Exit Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit Potential Transforms.
+**Reward tunables** (tunable via either direct flag or `--params`) correspond to
+those listed under Reward Parameter Cheat Sheet: Core, Duration Penalties, Exit
+Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit Potential Transforms.
 
 ## Examples
 
@@ -381,7 +433,9 @@ uv run python reward_space_analysis.py \
 
 ### Main Report (`statistical_analysis.md`)
 
-Includes: global stats, representativity, component + PBRS analysis, feature importance/PD, statistical validation (tests, CIs, diagnostics), optional shift metrics, summary.
+Includes: global stats, representativity, component + PBRS analysis, feature
+importance/PD, statistical validation (tests, CIs, diagnostics), optional shift
+metrics, summary.
 
 ### Data Exports
 
@@ -418,7 +472,8 @@ Two runs match iff `params_hash` identical.
 | `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence    |
 | `*_ks_pvalue`     | KS test p-value                       | High ⇒ cannot reject equality |
 
-Implementation: 50-bin hist; add ε=1e-10; constants ⇒ zero divergence & KS p=1.0.
+Implementation: 50-bin hist; add ε=1e-10; constants ⇒ zero divergence & KS
+p=1.0.
 
 ---
 
@@ -437,11 +492,15 @@ for factor in 1.5 2.0 2.5 3.0; do
 done
 ```
 
-Combine with other overrides cautiously; use distinct `out_dir` per configuration.
+Combine with other overrides cautiously; use distinct `out_dir` per
+configuration.
 
 ### PBRS Configuration
 
-Canonical mode enforces zero-sum shaping (Φ terminal ≈ 0) for theoretical invariance. Non-canonical modes or additives modify this behavior. Choose canonical for standard PBRS compliance; use non-canonical when specific shaping behavior is required.
+Canonical mode enforces zero-sum shaping (Φ terminal ≈ 0) for theoretical
+invariance. Non-canonical modes or additives modify this behavior. Choose
+canonical for standard PBRS compliance; use non-canonical when specific shaping
+behavior is required.
 
 ### Real Data Comparison
 
@@ -452,7 +511,8 @@ uv run python reward_space_analysis.py \
   --out_dir real_vs_synthetic
 ```
 
-Shift metrics: lower divergence preferred (except p-value: higher ⇒ cannot reject equality).
+Shift metrics: lower divergence preferred (except p-value: higher ⇒ cannot
+reject equality).
 
 ### Batch Analysis
 
@@ -487,7 +547,9 @@ Selective example:
 uv run pytest -m pbrs -q
 ```
 
-Coverage threshold enforced: 85% (`--cov-fail-under=85` in `pyproject.toml`). Full coverage, invariants, markers, smoke policy, and maintenance workflow: [tests/README.md](./tests/README.md).
+Coverage threshold enforced: 85% (`--cov-fail-under=85` in `pyproject.toml`).
+Full coverage, invariants, markers, smoke policy, and maintenance workflow:
+[tests/README.md](./tests/README.md).
 
 ---
 

@@ -1,19 +1,22 @@
 # Tests: Reward Space Analysis
 
-Authoritative documentation for invariant ownership, taxonomy layout, smoke policies, maintenance workflows, and full coverage mapping.
+Authoritative documentation for invariant ownership, taxonomy layout, smoke
+policies, maintenance workflows, and full coverage mapping.
 
 ## Purpose
 
 The suite enforces:
 
 - Reward component mathematics & transform correctness
-- PBRS invariance mechanics (canonical drift correction, near-zero classification)
+- PBRS invariance mechanics (canonical drift correction, near-zero
+  classification)
 - Robustness under extreme / invalid parameter settings
 - Statistical metrics integrity (bootstrap, constant distributions)
 - CLI parameter propagation & report formatting
 - Cross-component smoke scenarios
 
-Single ownership per invariant is tracked in the Coverage Mapping section of this README.
+Single ownership per invariant is tracked in the Coverage Mapping section of
+this README.
 
 ## Taxonomy Directories
 
@@ -32,15 +35,19 @@ Markers are declared in `pyproject.toml` and enforced with `--strict-markers`.
 
 ## Test Framework
 
-The test suite uses **pytest as the runner** with **unittest.TestCase as the base class** (via `RewardSpaceTestBase`).
+The test suite uses **pytest as the runner** with **unittest.TestCase as the
+base class** (via `RewardSpaceTestBase`).
 
 ### Hybrid Approach Rationale
 
 This design provides:
 
-- **pytest features**: Rich fixture system, parametrization, markers, and selective execution
-- **unittest assertions**: Familiar assertion methods (`assertAlmostEqual`, `assertFinite`, `assertLess`, etc.)
-- **Custom assertions**: Project-specific helpers (e.g., `assert_component_sum_integrity`) built on unittest base
+- **pytest features**: Rich fixture system, parametrization, markers, and
+  selective execution
+- **unittest assertions**: Familiar assertion methods (`assertAlmostEqual`,
+  `assertFinite`, `assertLess`, etc.)
+- **Custom assertions**: Project-specific helpers (e.g.,
+  `assert_component_sum_integrity`) built on unittest base
 - **Backward compatibility**: Gradual migration path from pure unittest
 
 ### Base Class
@@ -110,8 +117,10 @@ Columns:
 - ID: Stable identifier (`<category>-<shortname>-NNN`).
 - Category: Taxonomy directory marker.
 - Description: Concise invariant statement.
-- Owning File: Path:line of primary declaration (prefer comment line `# Owns invariant:` when present; otherwise docstring line).
-- Notes: Clarifications (sub-modes, extensions, non-owning references elsewhere, line clusters for multi-path coverage).
+- Owning File: Path:line of primary declaration (prefer comment line
+  `# Owns invariant:` when present; otherwise docstring line).
+- Notes: Clarifications (sub-modes, extensions, non-owning references elsewhere,
+  line clusters for multi-path coverage).
 
 | ID                                           | Category    | Description                                                                         | Owning File                               | Notes                                                                                                                       |
 | -------------------------------------------- | ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -141,7 +150,8 @@ Columns:
 
 ### Non-Owning Smoke / Reference Checks
 
-Files that reference invariant outcomes (formatting, aggregation) without owning the invariant must include a leading comment:
+Files that reference invariant outcomes (formatting, aggregation) without owning
+the invariant must include a leading comment:
 
 ```python
 # Non-owning smoke; ownership: <owning file>
@@ -172,9 +182,11 @@ Table tracks approximate line ranges and source ownership:
 
 ## Adding New Invariants
 
-1. Assign ID `<category>-<shortname>-NNN` (NNN numeric). Reserve gaps explicitly if needed (see deprecated/reserved table).
+1. Assign ID `<category>-<shortname>-NNN` (NNN numeric). Reserve gaps explicitly
+   if needed (see deprecated/reserved table).
 2. Add a row in Coverage Mapping BEFORE writing the test.
-3. Implement test in correct taxonomy directory; add marker if outside default selection.
+3. Implement test in correct taxonomy directory; add marker if outside default
+   selection.
 4. Optionally declare inline ownership:
    ```python
    # Owns invariant: <id>
@@ -201,12 +213,17 @@ grep -R "near_zero" -n .
 
 ## Coverage Parity Notes
 
-Detailed assertions reside in targeted directories (components, robustness) while integration tests focus on report formatting. Ownership IDs (e.g. 091–095, 106) reflect current scope (multi-path when noted).
+Detailed assertions reside in targeted directories (components, robustness)
+while integration tests focus on report formatting. Ownership IDs (e.g.
+091–095, 106) reflect current scope (multi-path when noted).
 
 ## When to Run Tests
 
-Run after changes to: reward component logic, PBRS mechanics, CLI parsing/output, statistical routines, dependency or Python version upgrades, or before publishing analysis reliant on invariants.
+Run after changes to: reward component logic, PBRS mechanics, CLI
+parsing/output, statistical routines, dependency or Python version upgrades, or
+before publishing analysis reliant on invariants.
 
 ---
 
-This README is the single authoritative source for test coverage, invariant ownership, smoke policies, and maintenance guidelines.
+This README is the single authoritative source for test coverage, invariant
+ownership, smoke policies, and maintenance guidelines.
