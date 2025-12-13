@@ -477,6 +477,28 @@ def _normalize_rank(
     return (ranks - 1) / (n - 1)
 
 
+def _impute_weights(
+    weights: NDArray[np.floating],
+    *,
+    finite_mask: NDArray[np.bool_] | None = None,
+    default_weight: float = DEFAULT_EXTREMA_WEIGHT,
+) -> NDArray[np.floating]:
+    weights = weights.astype(float, copy=False)
+    if finite_mask is None:
+        finite_mask = np.isfinite(weights)
+
+    if not finite_mask.any():
+        return np.full_like(weights, default_weight, dtype=float)
+
+    median_weight = np.nanmedian(weights[finite_mask])
+    if not np.isfinite(median_weight):
+        median_weight = default_weight
+
+    weights_out = weights.astype(float, copy=True)
+    weights_out[~finite_mask] = median_weight
+    return weights_out
+
+
 def normalize_weights(
     weights: NDArray[np.floating],
     # Phase 1: Standardization
@@ -505,15 +527,19 @@ def normalize_weights(
     if weights.size == 0:
         return weights
 
-    weights_out = np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
-
     weights_finite_mask = np.isfinite(weights)
     if not weights_finite_mask.any():
-        return weights_out
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+
+    weights = _impute_weights(
+        weights,
+        finite_mask=weights_finite_mask,
+        default_weight=DEFAULT_EXTREMA_WEIGHT,
+    )
 
     # Phase 1: Standardization
     standardized_weights = standardize_weights(
-        weights[weights_finite_mask],
+        weights,
         method=standardization,
         robust_quantiles=robust_quantiles,
         mmad_scaling_factor=mmad_scaling_factor,
@@ -547,9 +573,10 @@ def normalize_weights(
             normalized_weights
         )
 
-    weights_out[weights_finite_mask] = normalized_weights
-    weights_out[~np.isfinite(weights_out)] = DEFAULT_EXTREMA_WEIGHT
-    return weights_out
+    if not np.isfinite(normalized_weights).all():
+        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+
+    return normalized_weights
 
 
 def calculate_extrema_weights(

@@ -73,7 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.129"
+    version = "3.7.130"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -364,6 +364,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_train_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_candle_pool_full_cache: dict[int, list[int]] = {}
+        self._optuna_label_shuffle_rng = random.Random(self._optuna_config.get("seed"))
         self.init_optuna_label_candle_pool()
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
@@ -502,7 +503,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if len(optuna_label_candle_pool_full) == 0:
             raise RuntimeError("Failed to initialize optuna label candle pool full")
         self._optuna_label_candle_pool = optuna_label_candle_pool_full
-        random.shuffle(self._optuna_label_candle_pool)
+        self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
         if len(self._optuna_label_candle_pool) == 0:
             raise RuntimeError("Failed to initialize optuna label candle pool")
 
@@ -541,8 +542,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             - set(self._optuna_label_candle.values())
         )
         if len(optuna_label_available_candles) > 0:
-            self._optuna_label_candle_pool.extend(optuna_label_available_candles)
-            random.shuffle(self._optuna_label_candle_pool)
+            self._optuna_label_candle_pool.extend(
+                sorted(optuna_label_available_candles)
+            )
+            self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
 
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs
