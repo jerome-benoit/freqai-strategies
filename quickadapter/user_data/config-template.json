@@ -126,6 +126,11 @@
     "track_performance": false,
     "extrema_weighting": {
       "strategy": "amplitude",
+      // "strategy": "hybrid",
+      // "source_weights": {
+      //   "amplitude": 0.5,
+      //   "efficiency_ratio": 0.5
+      // },
       "gamma": 1.75
     },
     "extrema_smoothing": {
