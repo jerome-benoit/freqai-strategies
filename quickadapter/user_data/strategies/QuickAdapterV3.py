@@ -106,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.178"
+        return "3.3.179"
 
     timeframe = "5m"
 
@@ -906,6 +906,8 @@ class QuickAdapterV3(IStrategy):
         amplitudes: list[float],
         amplitude_threshold_ratios: list[float],
         volumes: list[float],
+        speeds: list[float],
+        efficiency_ratios: list[float],
     ) -> NDArray[np.floating]:
         if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
             return np.array(amplitudes)
@@ -913,6 +915,10 @@ class QuickAdapterV3(IStrategy):
             return np.array(amplitude_threshold_ratios)
         if strategy == WEIGHT_STRATEGIES[3]:  # "volume"
             return np.array(volumes)
+        if strategy == WEIGHT_STRATEGIES[4]:  # "speed"
+            return np.array(speeds)
+        if strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
+            return np.array(efficiency_ratios)
         return np.array([])
 
     def set_freqai_targets(
@@ -928,6 +934,9 @@ class QuickAdapterV3(IStrategy):
             pivots_amplitudes,
             pivots_amplitude_threshold_ratios,
             pivots_volumes,
+            _,
+            pivots_speeds,
+            pivots_efficiency_ratios,
         ) = zigzag(
             dataframe,
             natr_period=label_period_candles,
@@ -958,6 +967,8 @@ class QuickAdapterV3(IStrategy):
             pivots_amplitudes,
             pivots_amplitude_threshold_ratios,
             pivots_volumes,
+            pivots_speeds,
+            pivots_efficiency_ratios,
         )
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],

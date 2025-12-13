@@ -24,12 +24,16 @@ WeightStrategy = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
     "volume",
+    "speed",
+    "efficiency_ratio",
 ]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
     "volume",
+    "speed",
+    "efficiency_ratio",
 )
 
 EXTREMA_COLUMN: Final = "&s-extrema"
@@ -637,7 +641,7 @@ def get_weighted_extrema(
         extrema: Extrema series
         indices: Indices of extrema points
         weights: Raw weights for each extremum
-        strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio", "volume")
+        strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio", "volume", "speed", "efficiency_ratio")
         standardization: Standardization method
         robust_quantiles: Quantiles for robust standardization
         mmad_scaling_factor: Scaling factor for MMAD standardization
@@ -657,11 +661,16 @@ def get_weighted_extrema(
     ):  # "none"
         return extrema, default_weights
 
-    if strategy in {
-        WEIGHT_STRATEGIES[1],
-        WEIGHT_STRATEGIES[2],
-        WEIGHT_STRATEGIES[3],
-    }:  # "amplitude" / "amplitude_threshold_ratio" / "volume"
+    if (
+        strategy
+        in {
+            WEIGHT_STRATEGIES[1],
+            WEIGHT_STRATEGIES[2],
+            WEIGHT_STRATEGIES[3],
+            WEIGHT_STRATEGIES[4],
+            WEIGHT_STRATEGIES[5],
+        }
+    ):  # "amplitude" / "amplitude_threshold_ratio" / "volume" / "speed" / "efficiency_ratio"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,
@@ -1099,10 +1108,16 @@ def zigzag(
     list[float],
     list[float],
     list[float],
+    list[float],
+    list[float],
+    list[float],
 ]:
     n = len(df)
     if df.empty or n < natr_period:
         return (
+            [],
+            [],
+            [],
             [],
             [],
             [],
@@ -1129,6 +1144,9 @@ def zigzag(
     pivots_amplitudes: list[float] = []
     pivots_amplitude_threshold_ratios: list[float] = []
     pivots_volumes: list[float] = []
+    pivots_durations: list[float] = []
+    pivots_speeds: list[float] = []
+    pivots_efficiency_ratios: list[float] = []
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -1216,8 +1234,46 @@ def zigzag(
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
-        volume = np.nansum(volumes[start_pos:end_pos])
-        return volume
+        return np.nansum(volumes[start_pos:end_pos])
+
+    def calculate_pivot_duration(
+        *,
+        previous_pos: int,
+        current_pos: int,
+    ) -> float:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan
+
+        return abs(current_pos - previous_pos)
+
+    def calculate_pivot_efficiency_ratio(
+        *,
+        previous_pos: int,
+        current_pos: int,
+    ) -> float:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan
+
+        start_pos = min(previous_pos, current_pos)
+        end_pos = max(previous_pos, current_pos) + 1
+        if (end_pos - start_pos) < 2:
+            return np.nan
+
+        closes_slice = closes[start_pos:end_pos]
+        close_diffs = np.diff(closes_slice)
+        path_length = float(np.nansum(np.abs(close_diffs)))
+        net_move = float(abs(closes_slice[-1] - closes_slice[0]))
+
+        if not (np.isfinite(path_length) and np.isfinite(net_move)):
+            return np.nan
+        if np.isclose(path_length, 0.0):
+            return np.nan
+
+        return net_move / path_length
 
     def add_pivot(pos: int, value: float, direction: TrendDirection):
         nonlocal last_pivot_pos
@@ -1240,14 +1296,32 @@ def zigzag(
                 previous_pos=last_pivot_pos,
                 current_pos=pos,
             )
+            duration = calculate_pivot_duration(
+                previous_pos=last_pivot_pos,
+                current_pos=pos,
+            )
+            if np.isfinite(amplitude) and np.isfinite(duration) and duration > 0.0:
+                speed = amplitude / duration
+            else:
+                speed = np.nan
+            efficiency_ratio = calculate_pivot_efficiency_ratio(
+                previous_pos=last_pivot_pos,
+                current_pos=pos,
+            )
         else:
             amplitude = np.nan
             amplitude_threshold_ratio = np.nan
             volume = np.nan
+            duration = np.nan
+            speed = np.nan
+            efficiency_ratio = np.nan
 
         pivots_amplitudes.append(amplitude)
         pivots_amplitude_threshold_ratios.append(amplitude_threshold_ratio)
         pivots_volumes.append(volume)
+        pivots_durations.append(duration)
+        pivots_speeds.append(speed)
+        pivots_efficiency_ratios.append(efficiency_ratio)
 
         last_pivot_pos = pos
         reset_candidate_pivot()
@@ -1373,6 +1447,9 @@ def zigzag(
             [],
             [],
             [],
+            [],
+            [],
+            [],
         )
 
     for i in range(last_pivot_pos + 1, n):
@@ -1410,6 +1487,9 @@ def zigzag(
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
         pivots_volumes,
+        pivots_durations,
+        pivots_speeds,
+        pivots_efficiency_ratios,
     )
 
 
