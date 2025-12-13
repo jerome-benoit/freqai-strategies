@@ -860,13 +860,16 @@ def compute_extrema_weights(
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
         return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
-    if strategy in {
-        WEIGHT_STRATEGIES[1],
-        WEIGHT_STRATEGIES[2],
-        WEIGHT_STRATEGIES[3],
-        WEIGHT_STRATEGIES[4],
-        WEIGHT_STRATEGIES[5],
-    }:
+    if (
+        strategy
+        in {
+            WEIGHT_STRATEGIES[1],
+            WEIGHT_STRATEGIES[2],
+            WEIGHT_STRATEGIES[3],
+            WEIGHT_STRATEGIES[4],
+            WEIGHT_STRATEGIES[5],
+        }
+    ):  # "amplitude" / "amplitude_threshold_ratio" / "volume" / "speed" / "efficiency_ratio"
         if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
             weights = np.asarray(amplitudes, dtype=float)
         elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
