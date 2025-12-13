@@ -26,6 +26,7 @@ WeightStrategy = Literal[
     "volume",
     "speed",
     "efficiency_ratio",
+    "hybrid",
 ]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
@@ -34,6 +35,28 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "volume",
     "speed",
     "efficiency_ratio",
+    "hybrid",
+)
+
+HybridWeightSource = Literal[
+    "amplitude",
+    "amplitude_threshold_ratio",
+    "volume",
+    "speed",
+    "efficiency_ratio",
+]
+HYBRID_WEIGHT_SOURCES: Final[tuple[HybridWeightSource, ...]] = (
+    "amplitude",
+    "amplitude_threshold_ratio",
+    "volume",
+    "speed",
+    "efficiency_ratio",
+)
+
+HybridAggregation = Literal["weighted_sum", "geometric_mean"]
+HYBRID_AGGREGATIONS: Final[tuple[HybridAggregation, ...]] = (
+    "weighted_sum",
+    "geometric_mean",
 )
 
 EXTREMA_COLUMN: Final = "&s-extrema"
@@ -103,6 +126,9 @@ DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
+    "source_weights": {s: 1.0 for s in HYBRID_WEIGHT_SOURCES},
+    "aggregation": HYBRID_AGGREGATIONS[0],  # "weighted_sum"
+    "aggregation_normalization": NORMALIZATION_TYPES[6],  # "none"
     # Phase 1: Standardization
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
@@ -427,7 +453,7 @@ def _normalize_minmax(
 
 def _normalize_l1(weights: NDArray[np.floating]) -> NDArray[np.floating]:
     """L1 normalization: w / Σ|w|  →  Σ|w| = 1"""
-    weights_sum = np.sum(np.abs(weights))
+    weights_sum = np.nansum(np.abs(weights))
     if weights_sum <= 0 or not np.isfinite(weights_sum):
         return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
     return weights / weights_sum
@@ -579,6 +605,168 @@ def normalize_weights(
     return normalized_weights
 
 
+def _weights_array_to_series(
+    index: pd.Index,
+    indices: list[int],
+    weights: NDArray[np.floating],
+    default_weight: float = DEFAULT_EXTREMA_WEIGHT,
+) -> pd.Series:
+    weights_series = pd.Series(default_weight, index=index)
+
+    if len(indices) == 0 or weights.size == 0:
+        return weights_series
+
+    if len(indices) != weights.size:
+        raise ValueError(
+            f"Length mismatch: {len(indices)} indices but {weights.size} weights"
+        )
+
+    mask = pd.Index(indices).isin(index)
+    if not np.any(mask):
+        return weights_series
+
+    valid_indices = [idx for idx, is_valid in zip(indices, mask) if is_valid]
+    weights_series.loc[valid_indices] = weights[mask]
+    return weights_series
+
+
+def calculate_hybrid_extrema_weights(
+    series: pd.Series,
+    indices: list[int],
+    amplitudes: list[float],
+    amplitude_threshold_ratios: list[float],
+    volumes: list[float],
+    speeds: list[float],
+    efficiency_ratios: list[float],
+    source_weights: dict[str, float],
+    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "aggregation_normalization"
+    ],
+    # Phase 1: Standardization
+    standardization: StandardizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "standardization"
+    ],
+    robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
+        "robust_quantiles"
+    ],
+    mmad_scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
+    # Phase 2: Normalization
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
+    sigmoid_scale: float = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"],
+    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
+    rank_method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
+    # Phase 3: Post-processing
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> pd.Series:
+    n = len(indices)
+    if n == 0:
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+
+    if not isinstance(source_weights, dict):
+        source_weights = {}
+
+    weights_by_source: dict[HybridWeightSource, NDArray[np.floating]] = {
+        "amplitude": np.asarray(amplitudes, dtype=float),
+        "amplitude_threshold_ratio": np.asarray(
+            amplitude_threshold_ratios, dtype=float
+        ),
+        "volume": np.asarray(volumes, dtype=float),
+        "speed": np.asarray(speeds, dtype=float),
+        "efficiency_ratio": np.asarray(efficiency_ratios, dtype=float),
+    }
+
+    enabled_sources: list[HybridWeightSource] = []
+    source_weights_values: list[float] = []
+    for source in HYBRID_WEIGHT_SOURCES:
+        source_weight = source_weights.get(source)
+        if source_weight is None:
+            continue
+        if (
+            not isinstance(source_weight, (int, float))
+            or not np.isfinite(source_weight)
+            or source_weight < 0
+        ):
+            continue
+        enabled_sources.append(source)
+        source_weights_values.append(float(source_weight))
+
+    if len(enabled_sources) == 0:
+        enabled_sources = list(HYBRID_WEIGHT_SOURCES)
+        source_weights_values = [1.0 for _ in enabled_sources]
+
+    if any(weights_by_source[s].size != n for s in enabled_sources):
+        raise ValueError(
+            f"Length mismatch: hybrid {n} indices but inconsistent weights lengths"
+        )
+
+    np_source_weights: NDArray[np.floating] = np.asarray(
+        source_weights_values, dtype=float
+    )
+    source_weights_sum = np.nansum(np.abs(np_source_weights))
+    if not np.isfinite(source_weights_sum) or source_weights_sum <= 0:
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+    np_source_weights = np_source_weights / source_weights_sum
+
+    normalized_source_weights: list[NDArray[np.floating]] = []
+    for source in enabled_sources:
+        normalized_source_weights.append(
+            normalize_weights(
+                weights_by_source[source],
+                standardization=standardization,
+                robust_quantiles=robust_quantiles,
+                mmad_scaling_factor=mmad_scaling_factor,
+                normalization=normalization,
+                minmax_range=minmax_range,
+                sigmoid_scale=sigmoid_scale,
+                softmax_temperature=softmax_temperature,
+                rank_method=rank_method,
+                gamma=gamma,
+            )
+        )
+
+    if aggregation == HYBRID_AGGREGATIONS[0]:  # "weighted_sum"
+        combined_source_weights = np.zeros(n, dtype=float)
+        for source_weight, values in zip(np_source_weights, normalized_source_weights):
+            combined_source_weights = combined_source_weights + source_weight * values
+    elif aggregation == HYBRID_AGGREGATIONS[1]:  # "geometric_mean"
+        combined_source_weights = sp.stats.gmean(
+            np.vstack([np.abs(values) for values in normalized_source_weights]),
+            axis=0,
+            weights=np_source_weights,
+        )
+    else:
+        raise ValueError(f"Unknown hybrid aggregation method: {aggregation}")
+
+    if aggregation_normalization != NORMALIZATION_TYPES[6]:  # "none"
+        combined_source_weights = normalize_weights(
+            combined_source_weights,
+            standardization=STANDARDIZATION_TYPES[0],
+            robust_quantiles=robust_quantiles,
+            mmad_scaling_factor=mmad_scaling_factor,
+            normalization=aggregation_normalization,
+            minmax_range=minmax_range,
+            sigmoid_scale=sigmoid_scale,
+            softmax_temperature=softmax_temperature,
+            rank_method=rank_method,
+            gamma=1.0,
+        )
+
+    if (
+        combined_source_weights.size == 0
+        or not np.isfinite(combined_source_weights).all()
+    ):
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+
+    return _weights_array_to_series(
+        index=series.index,
+        indices=indices,
+        weights=combined_source_weights,
+        default_weight=np.nanmedian(combined_source_weights),
+    )
+
+
 def calculate_extrema_weights(
     series: pd.Series,
     indices: list[int],
@@ -630,20 +818,134 @@ def calculate_extrema_weights(
     ):
         normalized_weights = np.full_like(normalized_weights, DEFAULT_EXTREMA_WEIGHT)
 
-    weights_series = pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
-    mask = pd.Index(indices).isin(series.index)
-    normalized_weights = normalized_weights[mask]
-    valid_indices = [idx for idx, is_valid in zip(indices, mask) if is_valid]
-    if len(valid_indices) > 0:
-        weights_series.loc[valid_indices] = normalized_weights
-    return weights_series
+    return _weights_array_to_series(
+        index=series.index,
+        indices=indices,
+        weights=normalized_weights,
+        default_weight=np.nanmedian(normalized_weights),
+    )
+
+
+def compute_extrema_weights(
+    series: pd.Series,
+    indices: list[int],
+    amplitudes: list[float],
+    amplitude_threshold_ratios: list[float],
+    volumes: list[float],
+    speeds: list[float],
+    efficiency_ratios: list[float],
+    source_weights: dict[str, float],
+    strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
+    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "aggregation_normalization"
+    ],
+    # Phase 1: Standardization
+    standardization: StandardizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "standardization"
+    ],
+    robust_quantiles: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING[
+        "robust_quantiles"
+    ],
+    mmad_scaling_factor: float = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"],
+    # Phase 2: Normalization
+    normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING["normalization"],
+    minmax_range: tuple[float, float] = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"],
+    sigmoid_scale: float = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"],
+    softmax_temperature: float = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"],
+    rank_method: RankMethod = DEFAULTS_EXTREMA_WEIGHTING["rank_method"],
+    # Phase 3: Post-processing
+    gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
+) -> pd.Series:
+    if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+
+    if strategy in {
+        WEIGHT_STRATEGIES[1],
+        WEIGHT_STRATEGIES[2],
+        WEIGHT_STRATEGIES[3],
+        WEIGHT_STRATEGIES[4],
+        WEIGHT_STRATEGIES[5],
+    }:
+        if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
+            weights = np.asarray(amplitudes, dtype=float)
+        elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
+            weights = np.asarray(amplitude_threshold_ratios, dtype=float)
+        elif strategy == WEIGHT_STRATEGIES[3]:  # "volume"
+            weights = np.asarray(volumes, dtype=float)
+        elif strategy == WEIGHT_STRATEGIES[4]:  # "speed"
+            weights = np.asarray(speeds, dtype=float)
+        elif strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
+            weights = np.asarray(efficiency_ratios, dtype=float)
+        else:
+            weights = np.asarray([], dtype=float)
+
+        if weights.size == 0:
+            return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+
+        return calculate_extrema_weights(
+            series=series,
+            indices=indices,
+            weights=weights,
+            standardization=standardization,
+            robust_quantiles=robust_quantiles,
+            mmad_scaling_factor=mmad_scaling_factor,
+            normalization=normalization,
+            minmax_range=minmax_range,
+            sigmoid_scale=sigmoid_scale,
+            softmax_temperature=softmax_temperature,
+            rank_method=rank_method,
+            gamma=gamma,
+        )
+
+    if strategy == WEIGHT_STRATEGIES[6]:  # "hybrid"
+        return calculate_hybrid_extrema_weights(
+            series=series,
+            indices=indices,
+            amplitudes=amplitudes,
+            amplitude_threshold_ratios=amplitude_threshold_ratios,
+            volumes=volumes,
+            speeds=speeds,
+            efficiency_ratios=efficiency_ratios,
+            source_weights=source_weights,
+            aggregation=aggregation,
+            aggregation_normalization=aggregation_normalization,
+            standardization=standardization,
+            robust_quantiles=robust_quantiles,
+            mmad_scaling_factor=mmad_scaling_factor,
+            normalization=normalization,
+            minmax_range=minmax_range,
+            sigmoid_scale=sigmoid_scale,
+            softmax_temperature=softmax_temperature,
+            rank_method=rank_method,
+            gamma=gamma,
+        )
+
+    raise ValueError(f"Unknown extrema weighting strategy: {strategy}")
+
+
+def apply_weights(series: pd.Series, weights: pd.Series) -> pd.Series:
+    if weights.empty:
+        return series
+    if np.allclose(weights.to_numpy(dtype=float), DEFAULT_EXTREMA_WEIGHT):
+        return series
+    return series * weights
 
 
 def get_weighted_extrema(
-    extrema: pd.Series,
+    series: pd.Series,
     indices: list[int],
-    weights: NDArray[np.floating],
+    amplitudes: list[float],
+    amplitude_threshold_ratios: list[float],
+    volumes: list[float],
+    speeds: list[float],
+    efficiency_ratios: list[float],
+    source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
+    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
+        "aggregation_normalization"
+    ],
     # Phase 1: Standardization
     standardization: StandardizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "standardization"
@@ -661,62 +963,33 @@ def get_weighted_extrema(
     # Phase 3: Post-processing
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> tuple[pd.Series, pd.Series]:
-    """
-    Apply weighted normalization to extrema series.
+    """Apply extrema weighting and return (weighted_extrema, extrema_weights)."""
 
-    Args:
-        extrema: Extrema series
-        indices: Indices of extrema points
-        weights: Raw weights for each extremum
-        strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio", "volume", "speed", "efficiency_ratio")
-        standardization: Standardization method
-        robust_quantiles: Quantiles for robust standardization
-        mmad_scaling_factor: Scaling factor for MMAD standardization
-        normalization: Normalization method
-        minmax_range: Target range for minmax
-        sigmoid_scale: Scale for sigmoid
-        softmax_temperature: Temperature for softmax
-        rank_method: Method for rank normalization
-        gamma: Gamma correction
+    weights = compute_extrema_weights(
+        series=series,
+        indices=indices,
+        amplitudes=amplitudes,
+        amplitude_threshold_ratios=amplitude_threshold_ratios,
+        volumes=volumes,
+        speeds=speeds,
+        efficiency_ratios=efficiency_ratios,
+        source_weights=source_weights,
+        strategy=strategy,
+        aggregation=aggregation,
+        aggregation_normalization=aggregation_normalization,
+        standardization=standardization,
+        robust_quantiles=robust_quantiles,
+        mmad_scaling_factor=mmad_scaling_factor,
+        normalization=normalization,
+        minmax_range=minmax_range,
+        sigmoid_scale=sigmoid_scale,
+        softmax_temperature=softmax_temperature,
+        rank_method=rank_method,
+        gamma=gamma,
+    )
 
-    Returns:
-        Tuple of (weighted_extrema, extrema_weights)
-    """
-    default_weights = pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
-    if (
-        len(indices) == 0 or len(weights) == 0 or strategy == WEIGHT_STRATEGIES[0]
-    ):  # "none"
-        return extrema, default_weights
-
-    if (
-        strategy
-        in {
-            WEIGHT_STRATEGIES[1],
-            WEIGHT_STRATEGIES[2],
-            WEIGHT_STRATEGIES[3],
-            WEIGHT_STRATEGIES[4],
-            WEIGHT_STRATEGIES[5],
-        }
-    ):  # "amplitude" / "amplitude_threshold_ratio" / "volume" / "speed" / "efficiency_ratio"
-        extrema_weights = calculate_extrema_weights(
-            series=extrema,
-            indices=indices,
-            weights=weights,
-            standardization=standardization,
-            robust_quantiles=robust_quantiles,
-            mmad_scaling_factor=mmad_scaling_factor,
-            normalization=normalization,
-            minmax_range=minmax_range,
-            sigmoid_scale=sigmoid_scale,
-            softmax_temperature=softmax_temperature,
-            rank_method=rank_method,
-            gamma=gamma,
-        )
-        if np.allclose(extrema_weights, DEFAULT_EXTREMA_WEIGHT):
-            return extrema, default_weights
-        return extrema * extrema_weights, extrema_weights
-
-    raise ValueError(f"Unknown weight strategy: {strategy}")
+    weighted_extrema = apply_weights(series, weights)
+    return weighted_extrema, weights
 
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
