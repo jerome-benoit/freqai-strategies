@@ -928,6 +928,7 @@ class QuickAdapterV3(IStrategy):
             pivots_directions,
             pivots_amplitudes,
             pivots_amplitude_threshold_ratios,
+            _,
         ) = zigzag(
             dataframe,
             natr_period=label_period_candles,

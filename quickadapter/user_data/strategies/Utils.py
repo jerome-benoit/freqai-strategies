@@ -1095,10 +1095,12 @@ def zigzag(
     list[TrendDirection],
     list[float],
     list[float],
+    list[float],
 ]:
     n = len(df)
     if df.empty or n < natr_period:
         return (
+            [],
             [],
             [],
             [],
@@ -1114,6 +1116,7 @@ def zigzag(
     log_closes = np.log(closes)
     highs = df.get("high").to_numpy()
     lows = df.get("low").to_numpy()
+    volumes = df.get("volume").to_numpy()
 
     state: TrendDirection = TrendDirection.NEUTRAL
 
@@ -1122,6 +1125,7 @@ def zigzag(
     pivots_directions: list[TrendDirection] = []
     pivots_amplitudes: list[float] = []
     pivots_amplitude_threshold_ratios: list[float] = []
+    pivots_volumes: list[float] = []
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -1197,6 +1201,21 @@ def zigzag(
 
         return amplitude, amplitude_threshold_ratio
 
+    def calculate_pivot_volume(
+        *,
+        previous_pos: int,
+        current_pos: int,
+    ) -> float:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan
+
+        start_pos = min(previous_pos, current_pos)
+        end_pos = max(previous_pos, current_pos) + 1
+        volume = np.nansum(volumes[start_pos:end_pos])
+        return volume
+
     def add_pivot(pos: int, value: float, direction: TrendDirection):
         nonlocal last_pivot_pos
         if pivots_indices and indices[pos] == pivots_indices[-1]:
@@ -1214,12 +1233,18 @@ def zigzag(
                     current_value=value,
                 )
             )
+            volume = calculate_pivot_volume(
+                previous_pos=last_pivot_pos,
+                current_pos=pos,
+            )
         else:
             amplitude = np.nan
             amplitude_threshold_ratio = np.nan
+            volume = np.nan
 
         pivots_amplitudes.append(amplitude)
         pivots_amplitude_threshold_ratios.append(amplitude_threshold_ratio)
+        pivots_volumes.append(volume)
 
         last_pivot_pos = pos
         reset_candidate_pivot()
@@ -1344,6 +1369,7 @@ def zigzag(
             [],
             [],
             [],
+            [],
         )
 
     for i in range(last_pivot_pos + 1, n):
@@ -1380,6 +1406,7 @@ def zigzag(
         pivots_directions,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
+        pivots_volumes,
     )
 
 

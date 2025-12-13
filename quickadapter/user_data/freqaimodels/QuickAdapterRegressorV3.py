@@ -2296,6 +2296,7 @@ def label_objective(
         _,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
+        _,
     ) = zigzag(
         df,
         natr_period=label_period_candles,
