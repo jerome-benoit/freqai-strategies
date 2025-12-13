@@ -16,7 +16,8 @@
 
 ### Quick start
 
-Change the timezone according to your location in [`docker-compose.yml`](./quickadapter/docker-compose.yml).
+Change the timezone according to your location in
+[`docker-compose.yml`](./quickadapter/docker-compose.yml).
 
 From the repository root, configure, build and start the QuickAdapter container:
 
@@ -25,7 +26,8 @@ cd quickadapter
 cp user_data/config-template.json user_data/config.json
 ```
 
-Adapt the configuration to your needs: edit `user_data/config.json` to set your exchange API keys and tune the `freqai` section.
+Adapt the configuration to your needs: edit `user_data/config.json` to set your
+exchange API keys and tune the `freqai` section.
 
 Then build and start the container:
 
@@ -63,12 +65,12 @@ docker compose up -d --build
 | freqai.extrema_smoothing.beta                        | 8.0                       | float > 0                                                                                                                        | Shape parameter for `kaiser` kernel.                                                                                                                                                                                                                                                              |
 | freqai.extrema_smoothing.polyorder                   | 3                         | int >= 1                                                                                                                         | Polynomial order for `savgol` smoothing.                                                                                                                                                                                                                                                          |
 | freqai.extrema_smoothing.mode                        | `mirror`                  | enum {`mirror`,`constant`,`nearest`,`wrap`,`interp`}                                                                             | Boundary mode for `savgol` and `nadaraya_watson`.                                                                                                                                                                                                                                                 |
-| freqai.extrema_smoothing.bandwidth                   | 1.0                       | float > 0                                                                                                                        | Gaussian bandwidth for `nadaraya_watson`.                                                                                                                                                                                                                                                         |
+| freqai.extrema_smoothing.bandwidth                   | 1.0                       | float > 0                                                                                                                        | Gaussian bandwidth for `nadaraya_watson` smoothing.                                                                                                                                                                                                                                               |
 | _Extrema weighting_                                  |                           |                                                                                                                                  |                                                                                                                                                                                                                                                                                                   |
-| freqai.extrema_weighting.strategy                    | `none`                    | enum {`none`,`amplitude`,`amplitude_threshold_ratio`,`volume`,`speed`,`efficiency_ratio`,`hybrid`}                               | Extrema weighting source: unweighted (`none`), single-source (`amplitude`,`amplitude_threshold_ratio`,`volume`,`speed`,`efficiency_ratio`), or `hybrid` (combine multiple sources via `freqai.extrema_weighting.source_weights`).                                                          |
-| freqai.extrema_weighting.source_weights              | all sources = 1.0         | object with keys in {`amplitude`,`amplitude_threshold_ratio`,`volume`,`speed`,`efficiency_ratio`} and float >= 0                 | Hybrid-only: per-source coefficients. If not set (or invalid/empty), defaults to equal weights. Coefficients are L1-normalized (sum to 1.0) before aggregation; zero/NaN/Inf entries are ignored.                                                                                             |
-| freqai.extrema_weighting.aggregation                 | `weighted_sum`            | enum {`weighted_sum`,`geometric_mean`}                                                                                          | Hybrid-only: how normalized per-source weights are combined into a single per-extremum weight. `geometric_mean` uses abs(values) for numerical stability.                                                                                                                                          |
-| freqai.extrema_weighting.aggregation_normalization   | `none`                    | enum {`minmax`,`sigmoid`,`softmax`,`l1`,`l2`,`rank`,`none`}                                                                      | Hybrid-only: optional post-aggregation normalization. Applies after aggregation without re-standardization and without a second gamma correction.                                                                                                                                                  |
+| freqai.extrema_weighting.strategy                    | `none`                    | enum {`none`,`amplitude`,`amplitude_threshold_ratio`,`volume`,`speed`,`efficiency_ratio`,`hybrid`}                               | Extrema weighting source: unweighted (`none`), swing amplitude (`amplitude`), swing amplitude / median volatility-threshold ratio (`amplitude_threshold_ratio`), swing volume (`volume`), swing speed (`speed`), swing efficiency ratio (`efficiency_ratio`), or `hybrid`.                        |
+| freqai.extrema_weighting.source_weights              | `{}`                      | dict[str, float]                                                                                                                 | Weights on extrema extrema weighting sources for `hybrid`.                                                                                                                                                                                                                                        |
+| freqai.extrema_weighting.aggregation                 | `weighted_sum`            | enum {`weighted_sum`,`geometric_mean`}                                                                                           | Aggregation method applied to weighted extrema weighting sources for `hybrid`.                                                                                                                                                                                                                    |
+| freqai.extrema_weighting.aggregation_normalization   | `none`                    | enum {`minmax`,`sigmoid`,`softmax`,`l1`,`l2`,`rank`,`none`}                                                                      | Normalization method applied to the aggregated extrema weighting source for `hybrid`.                                                                                                                                                                                                             |
 | freqai.extrema_weighting.standardization             | `none`                    | enum {`none`,`zscore`,`robust`,`mmad`}                                                                                           | Standardization method applied before normalization. `none`=no standardization, `zscore`=(w-μ)/σ, `robust`=(w-median)/IQR, `mmad`=(w-median)/MAD.                                                                                                                                                 |
 | freqai.extrema_weighting.robust_quantiles            | [0.25, 0.75]              | list[float] where 0 <= Q1 < Q3 <= 1                                                                                              | Quantile range for robust standardization, Q1 and Q3.                                                                                                                                                                                                                                             |
 | freqai.extrema_weighting.mmad_scaling_factor         | 1.4826                    | float > 0                                                                                                                        | Scaling factor for MMAD standardization.                                                                                                                                                                                                                                                          |
@@ -100,7 +102,7 @@ docker compose up -d --build
 | _Predictions extrema_                                |                           |                                                                                                                                  |                                                                                                                                                                                                                                                                                                   |
 | freqai.predictions_extrema.selection_method          | `rank`                    | enum {`rank`,`values`,`partition`}                                                                                               | Extrema selection method. `rank` uses ranked extrema values, `values` uses reversal values, `partition` uses sign-based partitioning.                                                                                                                                                             |
 | freqai.predictions_extrema.thresholds_smoothing      | `mean`                    | enum {`mean`,`isodata`,`li`,`minimum`,`otsu`,`triangle`,`yen`,`median`,`soft_extremum`}                                          | Thresholding method for prediction thresholds smoothing.                                                                                                                                                                                                                                          |
-| freqai.predictions_extrema.thresholds_alpha          | 12.0                      | float > 0                                                                                                                        | Alpha for `soft_extremum`.                                                                                                                                                                                                                                                                        |
+| freqai.predictions_extrema.thresholds_alpha          | 12.0                      | float > 0                                                                                                                        | Alpha for `soft_extremum` for thesholds smoothing.                                                                                                                                                                                                                                                |
 | freqai.predictions_extrema.threshold_outlier         | 0.999                     | float (0,1)                                                                                                                      | Quantile threshold for predictions outlier filtering.                                                                                                                                                                                                                                             |
 | freqai.predictions_extrema.extrema_fraction          | 1.0                       | float (0,1]                                                                                                                      | Fraction of extrema used for thresholds. `1.0` uses all, lower values keep only most significant. Applies to `rank` and `values`; ignored for `partition`.                                                                                                                                        |
 | _Optuna / HPO_                                       |                           |                                                                                                                                  |                                                                                                                                                                                                                                                                                                   |
@@ -124,7 +126,8 @@ docker compose up -d --build
 
 ### Quick start
 
-Change the timezone according to your location in [`docker-compose.yml`](./ReforceXY/docker-compose.yml).
+Change the timezone according to your location in
+[`docker-compose.yml`](./ReforceXY/docker-compose.yml).
 
 From the repository root, configure, build and start the ReforceXY container:
 
@@ -133,7 +136,8 @@ cd ReforceXY
 cp user_data/config-template.json user_data/config.json
 ```
 
-Adapt the configuration to your needs: edit `user_data/config.json` to set your exchange API keys and tune the `freqai` section.
+Adapt the configuration to your needs: edit `user_data/config.json` to set your
+exchange API keys and tune the `freqai` section.
 
 Then build and start the container:
 
@@ -147,9 +151,11 @@ PPO, MaskablePPO, RecurrentPPO, DQN, QRDQN
 
 ### Configuration tunables
 
-The documented list of model tunables is at the top of the [ReforceXY.py](./ReforceXY/user_data/freqaimodels/ReforceXY.py) file.
+The documented list of model tunables is at the top of the
+[ReforceXY.py](./ReforceXY/user_data/freqaimodels/ReforceXY.py) file.
 
-The rewarding logic and tunables are documented in the [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
+The rewarding logic and tunables are documented in the
+[reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
 ## Common workflows
 
@@ -190,7 +196,9 @@ cp ../scripts/docker-upgrade.sh .
 ./docker-upgrade.sh
 ```
 
-The script checks for new Freqtrade image versions on Docker Hub, rebuilds and restarts containers if updates are found, sends Telegram notifications (if configured), and cleans up unused images.
+The script checks for new Freqtrade image versions on Docker Hub, rebuilds and
+restarts containers if updates are found, sends Telegram notifications (if
+configured), and cleans up unused images.
 
 _Configuration and environment variables:_
 
@@ -210,4 +218,6 @@ _Cronjob setup (daily check at 3:00 AM):_
 
 ## Note
 
-> Do not expect any support of any kind on the Internet. Nevertheless, PRs implementing documentation, bug fixes, cleanups or sensible features will be discussed and might get merged.
+> Do not expect any support of any kind on the Internet. Nevertheless, PRs
+> implementing documentation, bug fixes, cleanups or sensible features will be
+> discussed and might get merged.

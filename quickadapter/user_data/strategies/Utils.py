@@ -631,7 +631,7 @@ def _weights_array_to_series(
 
 
 def calculate_hybrid_extrema_weights(
-    series: pd.Series,
+    extrema: pd.Series,
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
@@ -662,7 +662,7 @@ def calculate_hybrid_extrema_weights(
 ) -> pd.Series:
     n = len(indices)
     if n == 0:
-        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
     if not isinstance(source_weights, dict):
         source_weights = {}
@@ -706,7 +706,7 @@ def calculate_hybrid_extrema_weights(
     )
     source_weights_sum = np.nansum(np.abs(np_source_weights))
     if not np.isfinite(source_weights_sum) or source_weights_sum <= 0:
-        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
     np_source_weights = np_source_weights / source_weights_sum
 
     normalized_source_weights: list[NDArray[np.floating]] = []
@@ -757,10 +757,10 @@ def calculate_hybrid_extrema_weights(
         combined_source_weights.size == 0
         or not np.isfinite(combined_source_weights).all()
     ):
-        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
     return _weights_array_to_series(
-        index=series.index,
+        index=extrema.index,
         indices=indices,
         weights=combined_source_weights,
         default_weight=np.nanmedian(combined_source_weights),
@@ -827,7 +827,7 @@ def calculate_extrema_weights(
 
 
 def compute_extrema_weights(
-    series: pd.Series,
+    extrema: pd.Series,
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
@@ -858,7 +858,7 @@ def compute_extrema_weights(
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> pd.Series:
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
-        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
     if strategy in {
         WEIGHT_STRATEGIES[1],
@@ -881,10 +881,10 @@ def compute_extrema_weights(
             weights = np.asarray([], dtype=float)
 
         if weights.size == 0:
-            return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=series.index)
+            return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
         return calculate_extrema_weights(
-            series=series,
+            series=extrema,
             indices=indices,
             weights=weights,
             standardization=standardization,
@@ -900,7 +900,7 @@ def compute_extrema_weights(
 
     if strategy == WEIGHT_STRATEGIES[6]:  # "hybrid"
         return calculate_hybrid_extrema_weights(
-            series=series,
+            extrema=extrema,
             indices=indices,
             amplitudes=amplitudes,
             amplitude_threshold_ratios=amplitude_threshold_ratios,
@@ -924,16 +924,16 @@ def compute_extrema_weights(
     raise ValueError(f"Unknown extrema weighting strategy: {strategy}")
 
 
-def apply_weights(series: pd.Series, weights: pd.Series) -> pd.Series:
+def _apply_weights(extrema: pd.Series, weights: pd.Series) -> pd.Series:
     if weights.empty:
-        return series
+        return extrema
     if np.allclose(weights.to_numpy(dtype=float), DEFAULT_EXTREMA_WEIGHT):
-        return series
-    return series * weights
+        return extrema
+    return extrema * weights
 
 
 def get_weighted_extrema(
-    series: pd.Series,
+    extrema: pd.Series,
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
@@ -963,10 +963,8 @@ def get_weighted_extrema(
     # Phase 3: Post-processing
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> tuple[pd.Series, pd.Series]:
-    """Apply extrema weighting and return (weighted_extrema, extrema_weights)."""
-
     weights = compute_extrema_weights(
-        series=series,
+        extrema=extrema,
         indices=indices,
         amplitudes=amplitudes,
         amplitude_threshold_ratios=amplitude_threshold_ratios,
@@ -988,7 +986,7 @@ def get_weighted_extrema(
         gamma=gamma,
     )
 
-    weighted_extrema = apply_weights(series, weights)
+    weighted_extrema = _apply_weights(extrema, weights)
     return weighted_extrema, weights
 
 

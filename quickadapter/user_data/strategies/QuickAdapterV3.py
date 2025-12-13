@@ -106,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.180"
+        return "3.3.181"
 
     timeframe = "5m"
 
@@ -1000,7 +1000,7 @@ class QuickAdapterV3(IStrategy):
             )
 
         weighted_extrema, _ = get_weighted_extrema(
-            series=dataframe[EXTREMA_COLUMN],
+            extrema=dataframe[EXTREMA_COLUMN],
             indices=pivots_indices,
             amplitudes=pivots_amplitudes,
             amplitude_threshold_ratios=pivots_amplitude_threshold_ratios,
