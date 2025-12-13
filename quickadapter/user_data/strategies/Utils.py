@@ -23,11 +23,13 @@ WeightStrategy = Literal[
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
+    "volume",
 ]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
+    "volume",
 )
 
 EXTREMA_COLUMN: Final = "&s-extrema"
@@ -635,7 +637,7 @@ def get_weighted_extrema(
         extrema: Extrema series
         indices: Indices of extrema points
         weights: Raw weights for each extremum
-        strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio")
+        strategy: Weight strategy ("none", "amplitude", "amplitude_threshold_ratio", "volume")
         standardization: Standardization method
         robust_quantiles: Quantiles for robust standardization
         mmad_scaling_factor: Scaling factor for MMAD standardization
@@ -658,7 +660,8 @@ def get_weighted_extrema(
     if strategy in {
         WEIGHT_STRATEGIES[1],
         WEIGHT_STRATEGIES[2],
-    }:  # "amplitude" or "amplitude_threshold_ratio"
+        WEIGHT_STRATEGIES[3],
+    }:  # "amplitude" / "amplitude_threshold_ratio" / "volume"
         extrema_weights = calculate_extrema_weights(
             series=extrema,
             indices=indices,

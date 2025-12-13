@@ -73,7 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.127"
+    version = "3.7.128"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -374,7 +374,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_train_value[pair] = -1
-            self._optuna_label_values[pair] = [-1, -1, -1]
+            self._optuna_label_values[pair] = [-1, -1, -1, -1]
             self._optuna_hp_params[pair] = (
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
@@ -745,6 +745,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ),
                     ),
                     directions=[
+                        optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
@@ -2258,7 +2259,7 @@ def label_objective(
     max_label_period_candles: int = 24,
     min_label_natr_ratio: float = 9.0,
     max_label_natr_ratio: float = 12.0,
-) -> tuple[int, float, float]:
+) -> tuple[int, float, float, float]:
     min_label_period_candles, max_label_period_candles, candles_step = (
         get_min_max_label_period_candles(
             fit_live_predictions_candles,
@@ -2288,7 +2289,7 @@ def label_objective(
     ]
 
     if df.empty:
-        return 0, 0.0, 0.0
+        return 0, 0.0, 0.0, 0.0
 
     (
         _,
@@ -2296,7 +2297,7 @@ def label_objective(
         _,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
-        _,
+        pivots_volumes,
     ) = zigzag(
         df,
         natr_period=label_period_candles,
@@ -2311,9 +2312,13 @@ def label_objective(
     )
     if not np.isfinite(median_amplitude_threshold_ratio):
         median_amplitude_threshold_ratio = 0.0
+    median_volume = np.nanmedian(np.asarray(pivots_volumes, dtype=float))
+    if not np.isfinite(median_volume):
+        median_volume = 0.0
 
     return (
         len(pivots_values),
         median_amplitude,
         median_amplitude_threshold_ratio,
+        median_volume,
     )
