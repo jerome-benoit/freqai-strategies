@@ -628,16 +628,15 @@ def _weights_array_to_series(
     weights: NDArray[np.floating],
     default_weight: float = DEFAULT_EXTREMA_WEIGHT,
 ) -> pd.Series:
-    weights_series = pd.Series(default_weight, index=index)
-
     if len(indices) == 0 or weights.size == 0:
-        return weights_series
+        return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=index)
 
     if len(indices) != weights.size:
         raise ValueError(
             f"Length mismatch: {len(indices)} indices but {weights.size} weights"
         )
 
+    weights_series = pd.Series(default_weight, index=index)
     mask = pd.Index(indices).isin(index)
     if not np.any(mask):
         return weights_series
