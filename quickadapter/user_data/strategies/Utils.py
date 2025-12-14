@@ -702,7 +702,7 @@ def calculate_hybrid_extrema_weights(
         if (
             not isinstance(source_weight, (int, float))
             or not np.isfinite(source_weight)
-            or source_weight < 0
+            or source_weight <= 0
         ):
             continue
         enabled_sources.append(source)
