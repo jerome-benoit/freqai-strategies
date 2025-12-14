@@ -73,7 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.131"
+    version = "3.7.132"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -1364,7 +1364,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise ValueError("label_weights must contain only finite values")
         if np.any(np_weights < 0):
             raise ValueError("label_weights values must be non-negative")
-        label_weights_sum = np.sum(np.abs(np_weights))
+        label_weights_sum = np.nansum(np.abs(np_weights))
         if np.isclose(label_weights_sum, 0.0):
             raise ValueError("label_weights sum cannot be zero")
         np_weights = np_weights / label_weights_sum
@@ -1421,7 +1421,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 np_weights = 1 / variances
             return (
                 np.sqrt(
-                    np.sum(
+                    np.nansum(
                         np_weights
                         * (np_sqrt_normalized_matrix - np.sqrt(ideal_point)) ** 2,
                         axis=1,
@@ -1453,7 +1453,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ideal_point, p=p, weights=np_weights
             ) - sp.stats.pmean(normalized_matrix, p=p, weights=np_weights, axis=1)
         elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[8]:  # "weighted_sum"
-            return np.sum(np_weights * (ideal_point - normalized_matrix), axis=1)
+            return (ideal_point - normalized_matrix) @ np_weights
         elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[16]:  # "medoid"
             label_medoid_metric = self.ft_params.get(
                 "label_medoid_metric",
@@ -1550,7 +1550,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             if label_p_order is not None and np.isfinite(label_p_order)
                             else 2.0
                         )
-                    best_medoid_position = np.argmin(
+                    best_medoid_position = np.nanargmin(
                         self._pairwise_distance_sums(
                             normalized_matrix[best_cluster_indices],
                             label_kmeans_metric,
@@ -1572,7 +1572,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         metric=label_kmeans_metric,
                         **cdist_kwargs,
                     ).flatten()
-                    min_distance_position = np.argmin(best_cluster_distances)
+                    min_distance_position = np.nanargmin(best_cluster_distances)
                     best_trial_index = best_cluster_indices[min_distance_position]
                     trial_distances[best_trial_index] = best_cluster_distances[
                         min_distance_position
@@ -1624,7 +1624,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_kmedoids_selection = self.ft_params.get(
                 "label_kmedoids_selection", "min"
             )
-            best_medoid_distance_position = np.argmin(medoid_distances_to_ideal)
+            best_medoid_distance_position = np.nanargmin(medoid_distances_to_ideal)
             best_medoid_index = medoid_indices[best_medoid_distance_position]
             cluster_index = cluster_labels[best_medoid_index]
             best_cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
@@ -1650,7 +1650,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             metric=label_kmedoids_metric,
                             **cdist_kwargs,
                         ).flatten()
-                        min_distance_position = np.argmin(best_cluster_distances)
+                        min_distance_position = np.nanargmin(best_cluster_distances)
                         best_trial_index = best_cluster_indices[min_distance_position]
                         trial_distances[best_trial_index] = best_cluster_distances[
                             min_distance_position
@@ -1777,7 +1777,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             normalized_matrix, metric=label_metric, metrics=metrics
         )
 
-        return best_trials[np.argmin(trial_distances)]
+        return best_trials[np.nanargmin(trial_distances)]
 
     def optuna_optimize(
         self,

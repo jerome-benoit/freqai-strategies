@@ -14,6 +14,7 @@ import scipy as sp
 import talib.abstract as ta
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
+from scipy.stats import gmean
 from technical import qtpylib
 
 T = TypeVar("T", pd.Series, float)
@@ -153,6 +154,25 @@ def get_distance(p1: T, p2: T) -> T:
 def midpoint(value1: T, value2: T) -> T:
     """Calculate the midpoint (geometric center) between two values."""
     return (value1 + value2) / 2
+
+
+def nan_average(
+    values: NDArray[np.floating],
+    weights: NDArray[np.floating] | None = None,
+) -> float:
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return np.nan
+
+    if weights is None:
+        return np.nanmean(values)
+
+    weights = np.asarray(weights, dtype=float)
+    mask = np.isfinite(values) & np.isfinite(weights)
+    if not mask.any():
+        return np.nan
+
+    return np.average(values[mask], weights=weights[mask])
 
 
 def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
@@ -545,7 +565,7 @@ def normalize_weights(
     gamma: float = DEFAULTS_EXTREMA_WEIGHTING["gamma"],
 ) -> NDArray[np.floating]:
     """
-    3-phase weight normalization:
+    3-phase weights normalization:
     1. Standardization: zscore (w-μ)/σ | robust (w-median)/IQR | mmad (w-median)/MAD | none
     2. Normalization: minmax, sigmoid, softmax, l1, l2, rank, none
     3. Post-processing: gamma correction w^γ
@@ -554,9 +574,6 @@ def normalize_weights(
         return weights
 
     weights_finite_mask = np.isfinite(weights)
-    if not weights_finite_mask.any():
-        return np.full_like(weights, DEFAULT_EXTREMA_WEIGHT, dtype=float)
-
     weights = _impute_weights(
         weights,
         finite_mask=weights_finite_mask,
@@ -727,14 +744,14 @@ def calculate_hybrid_extrema_weights(
         )
 
     if aggregation == HYBRID_AGGREGATIONS[0]:  # "weighted_sum"
-        combined_source_weights = np.zeros(n, dtype=float)
-        for source_weight, values in zip(np_source_weights, normalized_source_weights):
-            combined_source_weights = combined_source_weights + source_weight * values
+        combined_source_weights = np.average(
+            np.vstack(normalized_source_weights), axis=0, weights=np_source_weights
+        )
     elif aggregation == HYBRID_AGGREGATIONS[1]:  # "geometric_mean"
-        combined_source_weights = sp.stats.gmean(
+        combined_source_weights = gmean(
             np.vstack([np.abs(values) for values in normalized_source_weights]),
             axis=0,
-            weights=np_source_weights,
+            weights=np_source_weights[:, np.newaxis],
         )
     else:
         raise ValueError(f"Unknown hybrid aggregation method: {aggregation}")
@@ -795,11 +812,6 @@ def calculate_extrema_weights(
     if len(indices) == 0 or len(weights) == 0:
         return pd.Series(DEFAULT_EXTREMA_WEIGHT, index=extrema.index)
 
-    if len(indices) != len(weights):
-        raise ValueError(
-            f"Length mismatch: {len(indices)} indices but {len(weights)} weights"
-        )
-
     normalized_weights = normalize_weights(
         weights,
         standardization=standardization,
@@ -812,11 +824,6 @@ def calculate_extrema_weights(
         rank_method=rank_method,
         gamma=gamma,
     )
-
-    if normalized_weights.size == 0 or np.allclose(
-        normalized_weights, normalized_weights[0]
-    ):
-        normalized_weights = np.full_like(normalized_weights, DEFAULT_EXTREMA_WEIGHT)
 
     return _weights_array_to_series(
         index=extrema.index,
@@ -928,10 +935,18 @@ def compute_extrema_weights(
 
 
 def _apply_weights(extrema: pd.Series, weights: pd.Series) -> pd.Series:
-    if weights.empty:
+    weights_values = weights.to_numpy(dtype=float)
+    if weights_values.size == 0:
         return extrema
-    if np.allclose(weights.to_numpy(dtype=float), DEFAULT_EXTREMA_WEIGHT):
+
+    if not np.isfinite(weights_values).all() or np.allclose(
+        weights_values, weights_values[0]
+    ):
         return extrema
+
+    if np.allclose(weights_values, DEFAULT_EXTREMA_WEIGHT):
+        return extrema
+
     return extrema * weights
 
 
@@ -2060,18 +2075,20 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
     np_array = series.to_numpy()
     if np_array.size == 0:
         return np.nan
+    finite_mask = np.isfinite(np_array)
+    if not finite_mask.any():
+        return np.nan
     if np.isclose(alpha, 0.0):
         return np.nanmean(np_array)
     scaled_np_array = alpha * np_array
-    max_scaled_np_array = np.max(scaled_np_array)
-    if np.isinf(max_scaled_np_array):
-        return np_array[np.argmax(scaled_np_array)]
+    max_scaled_np_array = np.nanmax(scaled_np_array)
+    if np.isinf(max_scaled_np_array) or np.isnan(max_scaled_np_array):
+        return np_array[np.nanargmax(scaled_np_array)]
     shifted_exponentials = np.exp(scaled_np_array - max_scaled_np_array)
-    numerator = np.sum(np_array * shifted_exponentials)
-    denominator = np.sum(shifted_exponentials)
-    if denominator == 0:
-        return np.max(np_array)
-    return numerator / denominator
+    sum_exponentials = np.nansum(shifted_exponentials)
+    if sum_exponentials == 0:
+        return np.nanmax(np_array)
+    return nan_average(np_array, weights=shifted_exponentials)
 
 
 @lru_cache(maxsize=8)

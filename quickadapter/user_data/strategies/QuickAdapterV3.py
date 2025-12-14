@@ -52,6 +52,7 @@ from Utils import (
     get_label_defaults,
     get_weighted_extrema,
     get_zl_ma_fn,
+    nan_average,
     non_zero_diff,
     price_retracement_percent,
     smooth_extrema,
@@ -106,7 +107,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.181"
+        return "3.3.182"
 
     timeframe = "5m"
 
@@ -847,6 +848,18 @@ class QuickAdapterV3(IStrategy):
                 "aggregation_normalization"
             ]
 
+        if weighting_aggregation == HYBRID_AGGREGATIONS[
+            1
+        ] and weighting_normalization in {
+            NORMALIZATION_TYPES[0],  # "minmax"
+            NORMALIZATION_TYPES[5],  # "rank"
+        }:
+            logger.warning(
+                f"extrema_weighting aggregation='{weighting_aggregation}' with normalization='{weighting_normalization}' "
+                "can produce zero weights (gmean collapses to 0 when any source has min value). "
+                f"Consider using normalization='{NORMALIZATION_TYPES[1]}' (sigmoid) or aggregation='{HYBRID_AGGREGATIONS[0]}' (weighted_sum)."
+            )
+
         return {
             "strategy": weighting_strategy,
             "source_weights": weighting_source_weights,
@@ -1176,14 +1189,9 @@ class QuickAdapterV3(IStrategy):
         total_weight = entry_weight + current_weight + median_weight
         if np.isclose(total_weight, 0.0):
             return np.nanmean([entry_natr, current_natr, median_natr])
-        entry_weight /= total_weight
-        current_weight /= total_weight
-        median_weight /= total_weight
-
-        return (
-            entry_natr * entry_weight
-            + current_natr * current_weight
-            + median_natr * median_weight
+        return nan_average(
+            np.array([entry_natr, current_natr, median_natr]),
+            weights=np.array([entry_weight, current_weight, median_weight]),
         )
 
     def get_trade_interpolation_natr(
