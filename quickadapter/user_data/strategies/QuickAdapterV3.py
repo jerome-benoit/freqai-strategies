@@ -995,19 +995,15 @@ class QuickAdapterV3(IStrategy):
         label_period = datetime.timedelta(
             minutes=len(dataframe) * timeframe_to_minutes(self.config.get("timeframe"))
         )
-        dataframe[EXTREMA_COLUMN] = 0
+        dataframe[EXTREMA_COLUMN] = 0.0
+        dataframe["minima"] = 0.0
+        dataframe["maxima"] = 0.0
         if len(pivots_indices) == 0:
             logger.warning(
                 f"{pair}: no extrema to label (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
         else:
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
-            dataframe["minima"] = np.where(
-                dataframe[EXTREMA_COLUMN] == TrendDirection.DOWN, -1, 0
-            )
-            dataframe["maxima"] = np.where(
-                dataframe[EXTREMA_COLUMN] == TrendDirection.UP, 1, 0
-            )
             logger.info(
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
@@ -1036,6 +1032,9 @@ class QuickAdapterV3(IStrategy):
             rank_method=self.extrema_weighting["rank_method"],
             gamma=self.extrema_weighting["gamma"],
         )
+
+        dataframe["minima"] = weighted_extrema.clip(upper=0.0)
+        dataframe["maxima"] = weighted_extrema.clip(lower=0.0)
 
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
             weighted_extrema,
