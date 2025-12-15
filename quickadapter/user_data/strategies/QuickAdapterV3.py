@@ -1003,10 +1003,10 @@ class QuickAdapterV3(IStrategy):
                 f"{pair}: no extrema to label (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
         else:
-            dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
             logger.info(
                 f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
             )
+            dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
 
         weighted_extrema, _ = get_weighted_extrema(
             extrema=dataframe[EXTREMA_COLUMN],
