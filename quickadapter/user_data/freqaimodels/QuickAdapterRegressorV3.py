@@ -73,7 +73,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.132"
+    version = "3.7.133"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
