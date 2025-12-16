@@ -180,17 +180,17 @@ class QuickAdapterV3(IStrategy):
             "main_plot": {},
             "subplots": {
                 "accuracy": {
-                    "hp_rmse": {"color": "#c28ce3", "type": "line"},
-                    "train_rmse": {"color": "#a3087a", "type": "line"},
+                    "hp_rmse": {"color": "violet", "type": "line"},
+                    "train_rmse": {"color": "purple", "type": "line"},
                 },
                 "extrema": {
-                    MAXIMA_THRESHOLD_COLUMN: {"color": "#e6be0b", "type": "line"},
-                    EXTREMA_COLUMN: {"color": "#f53580", "type": "line"},
-                    MINIMA_THRESHOLD_COLUMN: {"color": "#4ae747", "type": "line"},
+                    MAXIMA_THRESHOLD_COLUMN: {"color": "blue", "type": "line"},
+                    MINIMA_THRESHOLD_COLUMN: {"color": "cyan", "type": "line"},
+                    EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
                 "min_max": {
-                    "maxima": {"color": "#0dd6de", "type": "bar"},
-                    "minima": {"color": "#e3970b", "type": "bar"},
+                    "maxima": {"color": "red", "type": "bar"},
+                    "minima": {"color": "green", "type": "bar"},
                 },
             },
         }
@@ -442,7 +442,9 @@ class QuickAdapterV3(IStrategy):
                 logger.info(f"  {method}:")
                 for key, value in protection.items():
                     if key != "method":
-                        if isinstance(value, (int, float)):
+                        if isinstance(value, bool):
+                            logger.info(f"    {key}: {value}")
+                        elif isinstance(value, (int, float)):
                             logger.info(f"    {key}: {format_number(value)}")
                         else:
                             logger.info(f"    {key}: {value}")
@@ -1086,6 +1088,7 @@ class QuickAdapterV3(IStrategy):
         dataframe[EXTREMA_COLUMN] = 0.0
         dataframe["minima"] = 0.0
         dataframe["maxima"] = 0.0
+
         if len(pivots_indices) == 0:
             logger.warning(
                 f"{pair}: no extrema to label (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
@@ -1133,6 +1136,7 @@ class QuickAdapterV3(IStrategy):
             self.extrema_smoothing["mode"],
             self.extrema_smoothing["bandwidth"],
         )
+
         if debug:
             extrema = dataframe[EXTREMA_COLUMN]
             logger.info(f"{extrema.to_numpy()=}")
