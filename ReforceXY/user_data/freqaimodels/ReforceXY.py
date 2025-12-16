@@ -149,11 +149,40 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     _LOG_2: Final[float] = math.log(2.0)
 
-    DEFAULT_IDLE_DURATION_MULTIPLIER: Final[int] = 4
-    DEFAULT_BASE_FACTOR: Final[float] = 100.0
-    DEFAULT_HOLD_POTENTIAL_SCALE: Final[float] = 1.0
-    DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
     DEFAULT_MAX_TRADE_DURATION_CANDLES: Final[int] = 128
+    DEFAULT_IDLE_DURATION_MULTIPLIER: Final[int] = 4
+
+    DEFAULT_BASE_FACTOR: Final[float] = 100.0
+    DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
+
+    DEFAULT_EXIT_POTENTIAL_DECAY: Final[float] = 0.5
+    DEFAULT_ENTRY_ADDITIVE_ENABLED: Final[bool] = False
+    DEFAULT_ENTRY_ADDITIVE_SCALE: Final[float] = 1.0
+    DEFAULT_ENTRY_ADDITIVE_GAIN: Final[float] = 1.0
+    DEFAULT_HOLD_POTENTIAL_ENABLED: Final[bool] = True
+    DEFAULT_HOLD_POTENTIAL_SCALE: Final[float] = 1.0
+    DEFAULT_HOLD_POTENTIAL_GAIN: Final[float] = 1.0
+    DEFAULT_EXIT_ADDITIVE_ENABLED: Final[bool] = False
+    DEFAULT_EXIT_ADDITIVE_SCALE: Final[float] = 1.0
+    DEFAULT_EXIT_ADDITIVE_GAIN: Final[float] = 1.0
+
+    DEFAULT_EXIT_PLATEAU: Final[bool] = True
+    DEFAULT_EXIT_PLATEAU_GRACE: Final[float] = 1.0
+    DEFAULT_EXIT_LINEAR_SLOPE: Final[float] = 1.0
+    DEFAULT_EXIT_HALF_LIFE: Final[float] = 0.5
+
+    DEFAULT_PNL_FACTOR_BETA: Final[float] = 0.5
+    DEFAULT_WIN_REWARD_FACTOR: Final[float] = 2.0
+    DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
+
+    DEFAULT_INVALID_ACTION: Final[float] = -2.0
+    DEFAULT_IDLE_PENALTY_SCALE: Final[float] = 0.5
+    DEFAULT_IDLE_PENALTY_POWER: Final[float] = 1.025
+    DEFAULT_HOLD_PENALTY_SCALE: Final[float] = 0.25
+    DEFAULT_HOLD_PENALTY_POWER: Final[float] = 1.025
+
+    DEFAULT_CHECK_INVARIANTS: Final[bool] = True
+    DEFAULT_EXIT_FACTOR_THRESHOLD: Final[float] = 10_000.0
 
     _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
         "PPO",
@@ -1610,17 +1639,25 @@ class MyRLEnv(Base5ActionRLEnv):
                 0
             ]  # "canonical"
         self._exit_potential_decay: float = float(
-            model_reward_parameters.get("exit_potential_decay", 0.5)
+            model_reward_parameters.get(
+                "exit_potential_decay", ReforceXY.DEFAULT_EXIT_POTENTIAL_DECAY
+            )
         )
         # === ENTRY ADDITIVE (non-PBRS additive term) ===
         self._entry_additive_enabled: bool = bool(
-            model_reward_parameters.get("entry_additive_enabled", False)
+            model_reward_parameters.get(
+                "entry_additive_enabled", ReforceXY.DEFAULT_ENTRY_ADDITIVE_ENABLED
+            )
         )
         self._entry_additive_scale: float = float(
-            model_reward_parameters.get("entry_additive_scale", 1.0)
+            model_reward_parameters.get(
+                "entry_additive_scale", ReforceXY.DEFAULT_ENTRY_ADDITIVE_SCALE
+            )
         )
         self._entry_additive_gain: float = float(
-            model_reward_parameters.get("entry_additive_gain", 1.0)
+            model_reward_parameters.get(
+                "entry_additive_gain", ReforceXY.DEFAULT_ENTRY_ADDITIVE_GAIN
+            )
         )
         self._entry_additive_transform_pnl: TransformFunction = cast(
             TransformFunction,
@@ -1636,7 +1673,9 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         # === HOLD POTENTIAL (PBRS function Φ) ===
         self._hold_potential_enabled: bool = bool(
-            model_reward_parameters.get("hold_potential_enabled", True)
+            model_reward_parameters.get(
+                "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
+            )
         )
         self._hold_potential_scale: float = float(
             model_reward_parameters.get(
@@ -1644,7 +1683,9 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._hold_potential_gain: float = float(
-            model_reward_parameters.get("hold_potential_gain", 1.0)
+            model_reward_parameters.get(
+                "hold_potential_gain", ReforceXY.DEFAULT_HOLD_POTENTIAL_GAIN
+            )
         )
         self._hold_potential_transform_pnl: TransformFunction = cast(
             TransformFunction,
@@ -1660,13 +1701,19 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         # === EXIT ADDITIVE (non-PBRS additive term) ===
         self._exit_additive_enabled: bool = bool(
-            model_reward_parameters.get("exit_additive_enabled", False)
+            model_reward_parameters.get(
+                "exit_additive_enabled", ReforceXY.DEFAULT_EXIT_ADDITIVE_ENABLED
+            )
         )
         self._exit_additive_scale: float = float(
-            model_reward_parameters.get("exit_additive_scale", 1.0)
+            model_reward_parameters.get(
+                "exit_additive_scale", ReforceXY.DEFAULT_EXIT_ADDITIVE_SCALE
+            )
         )
         self._exit_additive_gain: float = float(
-            model_reward_parameters.get("exit_additive_gain", 1.0)
+            model_reward_parameters.get(
+                "exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN
+            )
         )
         self._exit_additive_transform_pnl: TransformFunction = cast(
             TransformFunction,
@@ -2335,9 +2382,13 @@ class MyRLEnv(Base5ActionRLEnv):
                 "exit_attenuation_mode", ReforceXY._EXIT_ATTENUATION_MODES[2]
             )  # "linear"
         )
-        exit_plateau = bool(model_reward_parameters.get("exit_plateau", True))
+        exit_plateau = bool(
+            model_reward_parameters.get("exit_plateau", ReforceXY.DEFAULT_EXIT_PLATEAU)
+        )
         exit_plateau_grace = float(
-            model_reward_parameters.get("exit_plateau_grace", 1.0)
+            model_reward_parameters.get(
+                "exit_plateau_grace", ReforceXY.DEFAULT_EXIT_PLATEAU_GRACE
+            )
         )
         if exit_plateau_grace < 0.0:
             exit_plateau_grace = 0.0
@@ -2349,7 +2400,9 @@ class MyRLEnv(Base5ActionRLEnv):
             return f / math.sqrt(1.0 + dr)
 
         def _linear(f: float, dr: float, p: Mapping[str, Any]) -> float:
-            slope = float(p.get("exit_linear_slope", 1.0))
+            slope = float(
+                p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE)
+            )
             if slope < 0.0:
                 slope = 1.0
             return f / (1.0 + slope * dr)
@@ -2367,7 +2420,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return f / math.pow(1.0 + dr, alpha)
 
         def _half_life(f: float, dr: float, p: Mapping[str, Any]) -> float:
-            hl = float(p.get("exit_half_life", 0.5))
+            hl = float(p.get("exit_half_life", ReforceXY.DEFAULT_EXIT_HALF_LIFE))
             if np.isclose(hl, 0.0) or hl < 0.0:
                 return 1.0
             return f * math.pow(2.0, -dr / hl)
@@ -2436,7 +2489,9 @@ class MyRLEnv(Base5ActionRLEnv):
             pnl, self._pnl_target, model_reward_parameters
         )
 
-        check_invariants = model_reward_parameters.get("check_invariants", True)
+        check_invariants = model_reward_parameters.get(
+            "check_invariants", ReforceXY.DEFAULT_CHECK_INVARIANTS
+        )
         check_invariants = (
             check_invariants if isinstance(check_invariants, bool) else True
         )
@@ -2454,7 +2509,9 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
                 factor = 0.0
             exit_factor_threshold = float(
-                model_reward_parameters.get("exit_factor_threshold", 10_000.0)
+                model_reward_parameters.get(
+                    "exit_factor_threshold", ReforceXY.DEFAULT_EXIT_FACTOR_THRESHOLD
+                )
             )
             if exit_factor_threshold > 0 and abs(factor) > exit_factor_threshold:
                 logger.warning(
@@ -2474,7 +2531,11 @@ class MyRLEnv(Base5ActionRLEnv):
         pnl_target_factor = 1.0
 
         if pnl_target > 0.0:
-            pnl_factor_beta = float(model_reward_parameters.get("pnl_factor_beta", 0.5))
+            pnl_factor_beta = float(
+                model_reward_parameters.get(
+                    "pnl_factor_beta", ReforceXY.DEFAULT_PNL_FACTOR_BETA
+                )
+            )
             pnl_ratio = pnl / pnl_target
 
             if abs(pnl_ratio) > 1.0:
@@ -2482,7 +2543,9 @@ class MyRLEnv(Base5ActionRLEnv):
                     pnl_factor_beta * (abs(pnl_ratio) - 1.0)
                 )
                 win_reward_factor = float(
-                    model_reward_parameters.get("win_reward_factor", 2.0)
+                    model_reward_parameters.get(
+                        "win_reward_factor", ReforceXY.DEFAULT_WIN_REWARD_FACTOR
+                    )
                 )
 
                 if pnl_ratio > 1.0:
@@ -2506,7 +2569,11 @@ class MyRLEnv(Base5ActionRLEnv):
                 "efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT
             )
         )
-        efficiency_center = float(model_reward_parameters.get("efficiency_center", 0.5))
+        efficiency_center = float(
+            model_reward_parameters.get(
+                "efficiency_center", ReforceXY.DEFAULT_EFFICIENCY_CENTER
+            )
+        )
 
         efficiency_factor = 1.0
         if efficiency_weight != 0.0 and not np.isclose(pnl, 0.0):
@@ -2532,9 +2599,6 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         Combine PnL target and efficiency factors (>= 0.0)
         """
-        if not np.isfinite(pnl):
-            return 0.0
-
         pnl_target_factor = self._compute_pnl_target_factor(
             pnl, pnl_target, model_reward_parameters
         )
@@ -2580,13 +2644,19 @@ class MyRLEnv(Base5ActionRLEnv):
         # 1. Invalid action
         if not self.action_masking and not self._is_valid(action):
             self.tensorboard_log("invalid", category="actions")
-            base_reward = float(model_reward_parameters.get("invalid_action", -2.0))
+            base_reward = float(
+                model_reward_parameters.get(
+                    "invalid_action", ReforceXY.DEFAULT_INVALID_ACTION
+                )
+            )
             self._last_invalid_penalty = float(base_reward)
 
         max_trade_duration = max(1, self.max_trade_duration_candles)
         trade_duration = self.get_trade_duration()
         duration_ratio = trade_duration / max_trade_duration
-        base_factor = float(model_reward_parameters.get("base_factor", 100.0))
+        base_factor = float(
+            model_reward_parameters.get("base_factor", ReforceXY.DEFAULT_BASE_FACTOR)
+        )
         idle_factor = base_factor * self._pnl_target / 4.0
         hold_factor = idle_factor
 
@@ -2598,10 +2668,14 @@ class MyRLEnv(Base5ActionRLEnv):
         ):
             max_idle_duration = max(1, self.max_idle_duration_candles)
             idle_penalty_scale = float(
-                model_reward_parameters.get("idle_penalty_scale", 0.5)
+                model_reward_parameters.get(
+                    "idle_penalty_scale", ReforceXY.DEFAULT_IDLE_PENALTY_SCALE
+                )
             )
             idle_penalty_power = float(
-                model_reward_parameters.get("idle_penalty_power", 1.025)
+                model_reward_parameters.get(
+                    "idle_penalty_power", ReforceXY.DEFAULT_IDLE_PENALTY_POWER
+                )
             )
             idle_duration = self.get_idle_duration()
             idle_duration_ratio = idle_duration / max(1, max_idle_duration)
@@ -2619,10 +2693,14 @@ class MyRLEnv(Base5ActionRLEnv):
             and action == Actions.Neutral.value
         ):
             hold_penalty_scale = float(
-                model_reward_parameters.get("hold_penalty_scale", 0.25)
+                model_reward_parameters.get(
+                    "hold_penalty_scale", ReforceXY.DEFAULT_HOLD_PENALTY_SCALE
+                )
             )
             hold_penalty_power = float(
-                model_reward_parameters.get("hold_penalty_power", 1.025)
+                model_reward_parameters.get(
+                    "hold_penalty_power", ReforceXY.DEFAULT_HOLD_PENALTY_POWER
+                )
             )
             if duration_ratio < 1.0:
                 base_reward = 0.0

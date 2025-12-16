@@ -163,6 +163,7 @@ class RewardSpaceTestBase(unittest.TestCase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=current_pnl,
+                    pnl_target=self.TEST_PROFIT_TARGET,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,

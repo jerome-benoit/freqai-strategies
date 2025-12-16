@@ -39,6 +39,7 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
         ctx = {
             "base_reward": 0.05,
             "current_pnl": 0.01,
+            "pnl_target": self.TEST_PROFIT_TARGET,
             "current_duration_ratio": 0.2,
             "next_pnl": 0.012,
             "next_duration_ratio": 0.25,

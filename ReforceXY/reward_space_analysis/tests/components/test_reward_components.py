@@ -43,7 +43,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             "hold_potential_transform_pnl": "tanh",
             "hold_potential_transform_duration": "tanh",
         }
-        val = _compute_hold_potential(0.5, 0.3, params)
+        val = _compute_hold_potential(0.5, self.TEST_PROFIT_TARGET, 0.3, params)
         self.assertFinite(val, name="hold_potential")
 
     def test_hold_penalty_basic_calculation(self):

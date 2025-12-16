@@ -707,11 +707,11 @@ def _get_exit_factor(
     )
     if exit_linear_slope < 0.0:
         warnings.warn(
-            "exit_linear_slope < 0; falling back to 0.0",
+            "exit_linear_slope < 0; falling back to 1.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
-        exit_linear_slope = 0.0
+        exit_linear_slope = 1.0
 
     def _legacy_kernel(f: float, dr: float) -> float:
         return f * (1.5 if dr <= 1.0 else 0.5)
@@ -996,12 +996,13 @@ def calculate_reward(
     if "risk_reward_ratio" in params:
         risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
 
-    profit_target_final = profit_target * risk_reward_ratio
-    idle_factor = factor * profit_target_final / 4.0
+    pnl_target = float(profit_target * risk_reward_ratio)
+
+    idle_factor = factor * pnl_target / 4.0
     pnl_factor = _get_pnl_factor(
         params,
         context,
-        profit_target_final,
+        pnl_target,
         risk_reward_ratio,
     )
     hold_factor = idle_factor
@@ -1098,7 +1099,9 @@ def calculate_reward(
 
     if pbrs_enabled and not is_neutral:
         # Compute Φ(s) for the current state to preserve telescoping semantics Δ = γ·Φ(s') − Φ(s)
-        current_potential = _compute_hold_potential(current_pnl, current_duration_ratio, params)
+        current_potential = _compute_hold_potential(
+            current_pnl, pnl_target, current_duration_ratio, params
+        )
         if not np.isfinite(current_potential):
             current_potential = 0.0
 
@@ -1112,6 +1115,7 @@ def calculate_reward(
             apply_potential_shaping(
                 base_reward=base_reward,
                 current_pnl=current_pnl,
+                pnl_target=pnl_target,
                 current_duration_ratio=current_duration_ratio,
                 next_pnl=next_pnl,
                 next_duration_ratio=next_duration_ratio,
@@ -2648,7 +2652,12 @@ def _get_potential_gamma(params: RewardParams) -> float:
 # === PBRS IMPLEMENTATION ===
 
 
-def _compute_hold_potential(pnl: float, duration_ratio: float, params: RewardParams) -> float:
+def _compute_hold_potential(
+    pnl: float,
+    pnl_target: float,
+    duration_ratio: float,
+    params: RewardParams,
+) -> float:
     """Compute PBRS hold potential Φ(s)."""
     if not _get_bool_param(
         params,
@@ -2659,6 +2668,7 @@ def _compute_hold_potential(pnl: float, duration_ratio: float, params: RewardPar
     return _compute_bi_component(
         kind="hold_potential",
         pnl=pnl,
+        pnl_target=pnl_target,
         duration_ratio=duration_ratio,
         params=params,
         scale_key="hold_potential_scale",
@@ -2669,7 +2679,12 @@ def _compute_hold_potential(pnl: float, duration_ratio: float, params: RewardPar
     )
 
 
-def _compute_entry_additive(pnl: float, duration_ratio: float, params: RewardParams) -> float:
+def _compute_entry_additive(
+    pnl: float,
+    pnl_target: float,
+    duration_ratio: float,
+    params: RewardParams,
+) -> float:
     if not _get_bool_param(
         params,
         "entry_additive_enabled",
@@ -2679,6 +2694,7 @@ def _compute_entry_additive(pnl: float, duration_ratio: float, params: RewardPar
     return _compute_bi_component(
         kind="entry_additive",
         pnl=pnl,
+        pnl_target=pnl_target,
         duration_ratio=duration_ratio,
         params=params,
         scale_key="entry_additive_scale",
@@ -2689,7 +2705,12 @@ def _compute_entry_additive(pnl: float, duration_ratio: float, params: RewardPar
     )
 
 
-def _compute_exit_additive(pnl: float, duration_ratio: float, params: RewardParams) -> float:
+def _compute_exit_additive(
+    pnl: float,
+    pnl_target: float,
+    duration_ratio: float,
+    params: RewardParams,
+) -> float:
     if not _get_bool_param(
         params,
         "exit_additive_enabled",
@@ -2699,6 +2720,7 @@ def _compute_exit_additive(pnl: float, duration_ratio: float, params: RewardPara
     return _compute_bi_component(
         kind="exit_additive",
         pnl=pnl,
+        pnl_target=pnl_target,
         duration_ratio=duration_ratio,
         params=params,
         scale_key="exit_additive_scale",
@@ -2766,6 +2788,7 @@ def _compute_exit_potential(last_potential: float, params: RewardParams) -> floa
 def apply_potential_shaping(
     base_reward: float,
     current_pnl: float,
+    pnl_target: float,
     current_duration_ratio: float,
     next_pnl: float,
     next_duration_ratio: float,
@@ -2785,7 +2808,7 @@ def apply_potential_shaping(
 
     Notes
     -----
-    - Shaping Δ = γ·Φ(next) − Φ(prev) with prev = Φ(current_pnl, current_duration_ratio).
+    - Shaping Δ = γ·Φ(next) − Φ(prev).
     - previous_potential:
         Previously computed Φ(s) for the prior transition. When provided and finite, it
         is used as Φ(prev) in Δ; otherwise Φ(prev) is derived from the current state.
@@ -2805,7 +2828,7 @@ def apply_potential_shaping(
     prev_term = (
         float(previous_potential)
         if np.isfinite(previous_potential)
-        else _compute_hold_potential(current_pnl, current_duration_ratio, params)
+        else _compute_hold_potential(current_pnl, pnl_target, current_duration_ratio, params)
     )
     if not np.isfinite(prev_term):
         prev_term = 0.0
@@ -2818,16 +2841,15 @@ def apply_potential_shaping(
         )
         next_potential = _compute_exit_potential(last_potential, params)
     else:
-        next_potential = _compute_hold_potential(next_pnl, next_duration_ratio, params)
+        next_potential = _compute_hold_potential(next_pnl, pnl_target, next_duration_ratio, params)
 
     # PBRS shaping Δ = γ·Φ(next) − Φ(prev)
     pbrs_delta = gamma * next_potential - float(prev_term)
     reward_shaping = pbrs_delta
 
     # Non-PBRS additives
-    # Pre-compute candidate additives (return 0.0 if corresponding feature disabled)
-    cand_entry_add = _compute_entry_additive(next_pnl, next_duration_ratio, params)
-    cand_exit_add = _compute_exit_additive(current_pnl, current_duration_ratio, params)
+    cand_entry_add = _compute_entry_additive(next_pnl, pnl_target, next_duration_ratio, params)
+    cand_exit_add = _compute_exit_additive(current_pnl, pnl_target, current_duration_ratio, params)
 
     entry_additive = cand_entry_add if is_entry else 0.0
     exit_additive = cand_exit_add if is_exit else 0.0
@@ -2891,6 +2913,7 @@ def _enforce_pbrs_invariance(params: RewardParams) -> RewardParams:
 def _compute_bi_component(
     kind: str,
     pnl: float,
+    pnl_target: float,
     duration_ratio: float,
     params: RewardParams,
     scale_key: str,
@@ -2900,11 +2923,20 @@ def _compute_bi_component(
     non_finite_key: str,
 ) -> float:
     """Generic helper for (pnl, duration) bi-component transforms."""
+    if not (np.isfinite(pnl) and np.isfinite(pnl_target) and np.isfinite(duration_ratio)):
+        return _fail_safely(non_finite_key)
+    if pnl_target <= 0.0:
+        return _fail_safely(f"{kind}_invalid_pnl_target")
+
+    pnl_ratio = float(pnl / pnl_target)
+    duration_ratio = float(np.clip(duration_ratio, 0.0, 1.0))
+
     scale = _get_float_param(params, scale_key, 1.0)
     gain = _get_float_param(params, gain_key, 1.0)
     transform_pnl = _get_str_param(params, transform_pnl_key, "tanh")
     transform_duration = _get_str_param(params, transform_dur_key, "tanh")
-    t_pnl = apply_transform(transform_pnl, gain * pnl)
+
+    t_pnl = apply_transform(transform_pnl, gain * pnl_ratio)
     t_dur = apply_transform(transform_duration, gain * duration_ratio)
     value = scale * 0.5 * (t_pnl + t_dur)
     if not np.isfinite(value):
