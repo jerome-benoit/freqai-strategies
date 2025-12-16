@@ -729,20 +729,20 @@ def calculate_hybrid_extrema_weights(
 
     normalized_source_weights_array: list[NDArray[np.floating]] = []
     for source in enabled_sources:
-        normalized_source_weights_array.append(
-            normalize_weights(
-                weights_array_by_source[source],
-                standardization=standardization,
-                robust_quantiles=robust_quantiles,
-                mmad_scaling_factor=mmad_scaling_factor,
-                normalization=normalization,
-                minmax_range=minmax_range,
-                sigmoid_scale=sigmoid_scale,
-                softmax_temperature=softmax_temperature,
-                rank_method=rank_method,
-                gamma=gamma,
-            )
+        source_weights_arr = weights_array_by_source[source]
+        normalized_source_weights = normalize_weights(
+            source_weights_arr,
+            standardization=standardization,
+            robust_quantiles=robust_quantiles,
+            mmad_scaling_factor=mmad_scaling_factor,
+            normalization=normalization,
+            minmax_range=minmax_range,
+            sigmoid_scale=sigmoid_scale,
+            softmax_temperature=softmax_temperature,
+            rank_method=rank_method,
+            gamma=gamma,
         )
+        normalized_source_weights_array.append(normalized_source_weights)
 
     if aggregation == HYBRID_AGGREGATIONS[0]:  # "weighted_sum"
         combined_source_weights_array: NDArray[np.floating] = np.average(
@@ -939,7 +939,10 @@ def _apply_weights(
     if weights.size == 0:
         return extrema
 
-    if not np.isfinite(weights).all() or np.allclose(weights, weights[0]):
+    if not np.isfinite(weights).all():
+        return extrema
+
+    if np.allclose(weights, weights[0]):
         return extrema
 
     if np.allclose(weights, DEFAULT_EXTREMA_WEIGHT):
