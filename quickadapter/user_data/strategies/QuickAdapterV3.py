@@ -27,6 +27,7 @@ from scipy.stats import t
 from technical.pivots_points import pivots_points
 
 from Utils import (
+    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_EXTREMA_SMOOTHING,
     DEFAULTS_EXTREMA_WEIGHTING,
     EXTREMA_COLUMN,
@@ -40,7 +41,6 @@ from Utils import (
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
     WEIGHT_STRATEGIES,
-    TrendDirection,
     alligator,
     bottom_change_percent,
     calculate_n_extrema,
@@ -107,7 +107,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.183"
+        return "3.3.184"
 
     timeframe = "5m"
 
@@ -139,6 +139,8 @@ class QuickAdapterV3(IStrategy):
         2: (0.7640, 0.2),
     }
 
+    CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
+
     timeframe_minutes = timeframe_to_minutes(timeframe)
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -147,7 +149,7 @@ class QuickAdapterV3(IStrategy):
     # def minimal_roi(self) -> dict[str, Any]:
     #     timeframe_minutes = timeframe_to_minutes(self.config.get("timeframe", "5m"))
     #     fit_live_predictions_candles = int(
-    #         self.config.get("freqai", {}).get("fit_live_predictions_candles", 100)
+    #         self.config.get("freqai", {}).get("fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES)
     #     )
     #     return {str(timeframe_minutes * fit_live_predictions_candles): -1}
 
@@ -196,7 +198,9 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def protections(self) -> list[dict[str, Any]]:
         fit_live_predictions_candles = int(
-            self.config.get("freqai", {}).get("fit_live_predictions_candles", 100)
+            self.config.get("freqai", {}).get(
+                "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
+            )
         )
         protections = self.config.get("custom_protections", {})
         trade_duration_candles = int(protections.get("trade_duration_candles", 72))
@@ -269,7 +273,9 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
-        return self.config.get("freqai", {}).get("fit_live_predictions_candles", 100)
+        return self.config.get("freqai", {}).get(
+            "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
+        )
 
     @cached_property
     def max_open_trades_per_side(self) -> int:
@@ -355,6 +361,96 @@ class QuickAdapterV3(IStrategy):
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
         self._cached_df_signature: dict[str, DfSignature] = {}
 
+        self._log_strategy_configuration()
+
+    def _log_strategy_configuration(self) -> None:
+        logger.info("=" * 60)
+        logger.info("QuickAdapter Strategy Configuration")
+        logger.info("=" * 60)
+
+        logger.info("Extrema Weighting:")
+        logger.info(f"  strategy: {self.extrema_weighting['strategy']}")
+        logger.info(f"  source_weights: {self.extrema_weighting['source_weights']}")
+        logger.info(f"  aggregation: {self.extrema_weighting['aggregation']}")
+        logger.info(
+            f"  aggregation_normalization: {self.extrema_weighting['aggregation_normalization']}"
+        )
+        logger.info(f"  standardization: {self.extrema_weighting['standardization']}")
+        logger.info(
+            f"  robust_quantiles: ({format_number(self.extrema_weighting['robust_quantiles'][0])}, {format_number(self.extrema_weighting['robust_quantiles'][1])})"
+        )
+        logger.info(
+            f"  mmad_scaling_factor: {format_number(self.extrema_weighting['mmad_scaling_factor'])}"
+        )
+        logger.info(f"  normalization: {self.extrema_weighting['normalization']}")
+        logger.info(
+            f"  minmax_range: ({format_number(self.extrema_weighting['minmax_range'][0])}, {format_number(self.extrema_weighting['minmax_range'][1])})"
+        )
+        logger.info(
+            f"  sigmoid_scale: {format_number(self.extrema_weighting['sigmoid_scale'])}"
+        )
+        logger.info(
+            f"  softmax_temperature: {format_number(self.extrema_weighting['softmax_temperature'])}"
+        )
+        logger.info(f"  rank_method: {self.extrema_weighting['rank_method']}")
+        logger.info(f"  gamma: {format_number(self.extrema_weighting['gamma'])}")
+
+        logger.info("Extrema Smoothing:")
+        logger.info(f"  method: {self.extrema_smoothing['method']}")
+        logger.info(f"  window: {self.extrema_smoothing['window']}")
+        logger.info(f"  beta: {format_number(self.extrema_smoothing['beta'])}")
+        logger.info(f"  polyorder: {self.extrema_smoothing['polyorder']}")
+        logger.info(f"  mode: {self.extrema_smoothing['mode']}")
+        logger.info(
+            f"  bandwidth: {format_number(self.extrema_smoothing['bandwidth'])}"
+        )
+
+        logger.info("Reversal Confirmation:")
+        logger.info(f"  lookback_period: {self._reversal_lookback_period}")
+        logger.info(f"  decay_ratio: {format_number(self._reversal_decay_ratio)}")
+        logger.info(
+            f"  min_natr_ratio_percent: {format_number(self._reversal_min_natr_ratio_percent)}"
+        )
+        logger.info(
+            f"  max_natr_ratio_percent: {format_number(self._reversal_max_natr_ratio_percent)}"
+        )
+
+        exit_pricing = self.config.get("exit_pricing", {})
+        trade_price_target = exit_pricing.get("trade_price_target", "moving_average")
+        logger.info("Exit Pricing:")
+        logger.info(f"  trade_price_target: {trade_price_target}")
+        logger.info(f"  thresholds_calibration: {self._exit_thresholds_calibration}")
+
+        logger.info("Custom Stoploss:")
+        logger.info(
+            f"  natr_ratio_percent: {format_number(QuickAdapterV3.CUSTOM_STOPLOSS_NATR_RATIO_PERCENT)}"
+        )
+
+        logger.info("Partial Exit Stages:")
+        for stage, (
+            natr_ratio_percent,
+            stake_percent,
+        ) in QuickAdapterV3.partial_exit_stages.items():
+            logger.info(
+                f"  stage {stage}: natr_ratio_percent={format_number(natr_ratio_percent)}, stake_percent={format_number(stake_percent)}"
+            )
+
+        logger.info("Protections:")
+        if self.protections:
+            for protection in self.protections:
+                method = protection.get("method", "Unknown")
+                logger.info(f"  {method}:")
+                for key, value in protection.items():
+                    if key != "method":
+                        if isinstance(value, (int, float)):
+                            logger.info(f"    {key}: {format_number(value)}")
+                        else:
+                            logger.info(f"    {key}: {value}")
+        else:
+            logger.info("  No protections enabled")
+
+        logger.info("=" * 60)
+
     @staticmethod
     def _df_signature(df: DataFrame) -> DfSignature:
         n = len(df)
@@ -415,14 +511,6 @@ class QuickAdapterV3(IStrategy):
         self._reversal_decay_ratio = float(decay_ratio)
         self._reversal_min_natr_ratio_percent = float(min_natr_ratio_percent)
         self._reversal_max_natr_ratio_percent = float(max_natr_ratio_percent)
-
-        logger.debug(
-            "reversal_confirmation: lookback_period=%s, decay_ratio=%s, natr_ratio_percent_range=(%s, %s)",
-            self._reversal_lookback_period,
-            format_number(self._reversal_decay_ratio),
-            format_number(self._reversal_min_natr_ratio_percent),
-            format_number(self._reversal_max_natr_ratio_percent),
-        )
 
     def feature_engineering_expand_all(
         self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs
@@ -1384,7 +1472,9 @@ class QuickAdapterV3(IStrategy):
         if df.empty:
             return None
 
-        stoploss_distance = self.get_stoploss_distance(df, trade, current_rate, 0.7860)
+        stoploss_distance = self.get_stoploss_distance(
+            df, trade, current_rate, QuickAdapterV3.CUSTOM_STOPLOSS_NATR_RATIO_PERCENT
+        )
         if isna(stoploss_distance) or stoploss_distance <= 0:
             return None
         return stoploss_from_absolute(

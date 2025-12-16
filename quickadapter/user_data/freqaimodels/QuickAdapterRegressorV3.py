@@ -22,6 +22,7 @@ from optuna.study.study import ObjectiveFuncType
 from sklearn_extra.cluster import KMedoids
 
 from Utils import (
+    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
@@ -49,8 +50,6 @@ ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
 
 debug = False
 
-TEST_SIZE: Final = 0.1
-
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
@@ -73,7 +72,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.133"
+    version = "3.7.134"
+
+    _TEST_SIZE: Final[float] = 0.1
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -153,6 +154,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_CUSTOM_METRICS,
     )
 
+    PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT: Final[float] = 0.999
+    PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT: Final[float] = 12.0
+    PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
+
+    FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
+        DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
+    )
+    MIN_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 12
+    MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 24
+    MIN_LABEL_NATR_RATIO_DEFAULT: Final[float] = 9.0
+    MAX_LABEL_NATR_RATIO_DEFAULT: Final[float] = 12.0
+    LABEL_KNN_N_NEIGHBORS_DEFAULT: Final[int] = 5
+
     @staticmethod
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
         return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
@@ -184,6 +198,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._METRICS)
+
+    @staticmethod
+    def _get_label_p_order_default(metric: str) -> Optional[float]:
+        if metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]:  # "minkowski"
+            return 2.0
+        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[7]:  # "power_mean"
+            return 1.0
+        return None
+
+    @staticmethod
+    def _get_label_knn_p_order_default(metric: str) -> Optional[float]:
+        if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[12]:  # "knn_power_mean"
+            return 1.0
+        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[13]:  # "knn_quantile"
+            return 0.5
+        return None
 
     @cached_property
     def _optuna_config(self) -> dict[str, Any]:
@@ -238,36 +268,30 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if label_frequency_candles is None:
             label_frequency_candles = default_label_frequency_candles
-            logger.info(f"{label_frequency_candles=} (default)")
         elif isinstance(label_frequency_candles, str):
             if label_frequency_candles == "auto":
                 label_frequency_candles = default_label_frequency_candles
-                logger.info(f"{label_frequency_candles=} (auto)")
             else:
                 logger.warning(
                     f"Invalid string value for label_frequency_candles: '{label_frequency_candles}'. "
                     f"Only 'auto' is supported. Using fallback"
                 )
                 label_frequency_candles = default_label_frequency_candles
-                logger.info(f"{label_frequency_candles=} (fallback)")
         elif isinstance(label_frequency_candles, (int, float)):
             if label_frequency_candles >= 2 and label_frequency_candles <= 10000:
                 label_frequency_candles = int(label_frequency_candles)
-                logger.info(f"{label_frequency_candles=} (configuration)")
             else:
                 logger.warning(
                     f"Invalid numeric value for label_frequency_candles: {label_frequency_candles}. "
                     f"Must be between 2 and 10000. Using fallback"
                 )
                 label_frequency_candles = default_label_frequency_candles
-                logger.info(f"{label_frequency_candles=} (fallback)")
         else:
             logger.warning(
                 f"Invalid type for label_frequency_candles: {type(label_frequency_candles).__name__}. "
                 f"Expected int, float, or 'auto'. Using fallback"
             )
             label_frequency_candles = default_label_frequency_candles
-            logger.info(f"{label_frequency_candles=} (fallback)")
 
         return label_frequency_candles
 
@@ -277,11 +301,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(predictions_extrema, dict):
             predictions_extrema = {}
 
-        threshold_outlier = predictions_extrema.get("threshold_outlier", 0.999)
+        threshold_outlier = predictions_extrema.get(
+            "threshold_outlier",
+            QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT,
+        )
         if not isinstance(threshold_outlier, (int, float)) or not (
             0 < threshold_outlier < 1
         ):
-            threshold_outlier = 0.999
+            threshold_outlier = (
+                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT
+            )
 
         selection_method = str(
             predictions_extrema.get(
@@ -306,15 +335,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 0
             ]  # "mean"
 
-        thresholds_alpha = predictions_extrema.get("thresholds_alpha", 12.0)
+        thresholds_alpha = predictions_extrema.get(
+            "thresholds_alpha",
+            QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT,
+        )
         if not isinstance(thresholds_alpha, (int, float)) or thresholds_alpha < 0:
-            thresholds_alpha = 12.0
+            thresholds_alpha = (
+                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT
+            )
 
-        extrema_fraction = predictions_extrema.get("extrema_fraction", 1.0)
+        extrema_fraction = predictions_extrema.get(
+            "extrema_fraction",
+            QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT,
+        )
         if not isinstance(extrema_fraction, (int, float)) or not (
             0 < extrema_fraction <= 1
         ):
-            extrema_fraction = 1.0
+            extrema_fraction = (
+                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT
+            )
 
         return {
             "threshold_outlier": float(threshold_outlier),
@@ -355,7 +394,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hyperopt: Optional[bool] = (
             self.freqai_info.get("enabled", False)
             and self._optuna_config.get("enabled")
-            and self.data_split_parameters.get("test_size", TEST_SIZE) > 0
+            and self.data_split_parameters.get(
+                "test_size", QuickAdapterRegressorV3._TEST_SIZE
+            )
+            > 0
         )
         self._optuna_hp_value: dict[str, float] = {}
         self._optuna_train_value: dict[str, float] = {}
@@ -421,9 +463,298 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if self.regressor not in set(REGRESSORS):
             self.regressor = REGRESSORS[0]
             self.freqai_info["regressor"] = self.regressor
+        self._log_model_configuration()
+
+    def _log_model_configuration(self) -> None:
+        logger.info("=" * 60)
+        logger.info("QuickAdapterRegressor Configuration")
+        logger.info("=" * 60)
+
+        logger.info(f"Model Version: {self.version}")
+        logger.info(f"Regressor: {self.regressor}")
+
+        logger.info("Optuna Hyperopt Configuration:")
+        optuna_config = self._optuna_config
+        logger.info(f"  enabled: {optuna_config.get('enabled')}")
+        if optuna_config.get("enabled"):
+            logger.info(f"  n_jobs: {optuna_config.get('n_jobs')}")
+            logger.info(f"  sampler: {optuna_config.get('sampler')}")
+            logger.info(f"  storage: {optuna_config.get('storage')}")
+            logger.info(f"  continuous: {optuna_config.get('continuous')}")
+            logger.info(f"  warm_start: {optuna_config.get('warm_start')}")
+            logger.info(f"  n_startup_trials: {optuna_config.get('n_startup_trials')}")
+            logger.info(f"  n_trials: {optuna_config.get('n_trials')}")
+            logger.info(f"  timeout: {optuna_config.get('timeout')}")
+            logger.info(
+                f"  label_candles_step: {optuna_config.get('label_candles_step')}"
+            )
+            logger.info(
+                f"  train_candles_step: {optuna_config.get('train_candles_step')}"
+            )
+            logger.info(f"  space_reduction: {optuna_config.get('space_reduction')}")
+            logger.info(
+                f"  expansion_ratio: {format_number(optuna_config.get('expansion_ratio'))}"
+            )
+            logger.info(f"  min_resource: {optuna_config.get('min_resource')}")
+            logger.info(f"  seed: {optuna_config.get('seed')}")
+            logger.info(
+                f"  label_metric: {self.ft_params.get('label_metric', QuickAdapterRegressorV3._SCIPY_METRICS[2])}"
+            )
+
+            label_weights = self.ft_params.get("label_weights")
+            if label_weights is not None:
+                logger.info(f"  label_weights: {label_weights}")
+            else:
+                logger.info(
+                    "  label_weights: [1.0, ...] * n_objectives, normalized (default)"
+                )
+
+            label_p_order_config = self.ft_params.get("label_p_order")
+            label_metric = self.ft_params.get(
+                "label_metric", QuickAdapterRegressorV3._SCIPY_METRICS[2]
+            )
+
+            label_p_order_is_used = False
+            label_p_order_reason = None
+
+            if label_metric in {
+                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[7],  # "power_mean"
+            }:
+                label_p_order_is_used = True
+                label_p_order_reason = label_metric
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[16]
+            ):  # "medoid"
+                label_medoid_metric = self.ft_params.get(
+                    "label_medoid_metric",
+                    QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean" default
+                )
+                if (
+                    label_medoid_metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]
+                ):  # "minkowski"
+                    label_p_order_is_used = True
+                    label_p_order_reason = f"{label_metric} (via label_medoid_metric={label_medoid_metric})"
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
+            }:
+                label_kmeans_metric = self.ft_params.get(
+                    "label_kmeans_metric",
+                    QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean" default
+                )
+                if (
+                    label_kmeans_metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]
+                ):  # "minkowski"
+                    label_p_order_is_used = True
+                    label_p_order_reason = f"{label_metric} (via label_kmeans_metric={label_kmeans_metric})"
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]
+            ):  # "kmedoids"
+                label_kmedoids_metric = self.ft_params.get(
+                    "label_kmedoids_metric",
+                    QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean" default
+                )
+                if (
+                    label_kmedoids_metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]
+                ):  # "minkowski"
+                    label_p_order_is_used = True
+                    label_p_order_reason = f"{label_metric} (via label_kmedoids_metric={label_kmedoids_metric})"
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
+            }:
+                label_knn_metric = self.ft_params.get(
+                    "label_knn_metric",
+                    QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski" default
+                )
+                if (
+                    label_knn_metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]
+                ):  # "minkowski"
+                    label_p_order_is_used = True
+                    label_p_order_reason = (
+                        f"{label_metric} (via label_knn_metric={label_knn_metric})"
+                    )
+
+            if label_p_order_config is not None:
+                logger.info(
+                    f"  label_p_order: {format_number(float(label_p_order_config))}"
+                )
+            elif label_p_order_is_used:
+                if label_metric in {
+                    QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
+                    QuickAdapterRegressorV3._CUSTOM_METRICS[7],  # "power_mean"
+                }:
+                    label_p_order_default = (
+                        QuickAdapterRegressorV3._get_label_p_order_default(label_metric)
+                    )
+                else:
+                    label_p_order_default = (
+                        QuickAdapterRegressorV3._get_label_p_order_default(
+                            QuickAdapterRegressorV3._SCIPY_METRICS[
+                                5
+                            ]  # "minkowski" default
+                        )
+                    )
+                logger.info(
+                    f"  label_p_order: {format_number(label_p_order_default)} (default for {label_p_order_reason})"
+                )
+
+            label_medoid_metric_config = self.ft_params.get("label_medoid_metric")
+            if label_medoid_metric_config is not None:
+                logger.info(f"  label_medoid_metric: {label_medoid_metric_config}")
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[16]
+            ):  # "medoid"
+                logger.info(
+                    f"  label_medoid_metric: {QuickAdapterRegressorV3._SCIPY_METRICS[2]} (default for {label_metric})"
+                )
+            label_kmeans_metric_config = self.ft_params.get("label_kmeans_metric")
+            if label_kmeans_metric_config is not None:
+                logger.info(f"  label_kmeans_metric: {label_kmeans_metric_config}")
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
+            }:
+                logger.info(
+                    f"  label_kmeans_metric: {QuickAdapterRegressorV3._SCIPY_METRICS[2]} (default for {label_metric})"
+                )
+
+            label_kmeans_selection_config = self.ft_params.get("label_kmeans_selection")
+            if label_kmeans_selection_config is not None:
+                logger.info(
+                    f"  label_kmeans_selection: {label_kmeans_selection_config}"
+                )
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
+            }:
+                logger.info(
+                    f"  label_kmeans_selection: min (default for {label_metric})"
+                )
+            label_kmedoids_metric_config = self.ft_params.get("label_kmedoids_metric")
+            if label_kmedoids_metric_config is not None:
+                logger.info(f"  label_kmedoids_metric: {label_kmedoids_metric_config}")
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]
+            ):  # "kmedoids"
+                logger.info(
+                    f"  label_kmedoids_metric: {QuickAdapterRegressorV3._SCIPY_METRICS[2]} (default for {label_metric})"
+                )
+
+            label_kmedoids_selection_config = self.ft_params.get(
+                "label_kmedoids_selection"
+            )
+            if label_kmedoids_selection_config is not None:
+                logger.info(
+                    f"  label_kmedoids_selection: {label_kmedoids_selection_config}"
+                )
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]
+            ):  # "kmedoids"
+                logger.info(
+                    f"  label_kmedoids_selection: min (default for {label_metric})"
+                )
+
+            label_knn_metric_config = self.ft_params.get("label_knn_metric")
+            if label_knn_metric_config is not None:
+                logger.info(f"  label_knn_metric: {label_knn_metric_config}")
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
+            }:
+                logger.info(
+                    f"  label_knn_metric: {QuickAdapterRegressorV3._SCIPY_METRICS[5]} (default for {label_metric})"
+                )
+
+            label_knn_n_neighbors = self.ft_params.get("label_knn_n_neighbors")
+            if label_knn_n_neighbors is not None:
+                logger.info(f"  label_knn_n_neighbors: {label_knn_n_neighbors}")
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
+            }:
+                logger.info(
+                    f"  label_knn_n_neighbors: {QuickAdapterRegressorV3.LABEL_KNN_N_NEIGHBORS_DEFAULT} (default for {label_metric})"
+                )
+
+            label_knn_p_order_config = self.ft_params.get("label_knn_p_order")
+            if label_knn_p_order_config is not None:
+                logger.info(
+                    f"  label_knn_p_order: {format_number(float(label_knn_p_order_config))}"
+                )
+            elif label_metric in {
+                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
+                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
+            }:
+                label_knn_p_order_default = (
+                    QuickAdapterRegressorV3._get_label_knn_p_order_default(label_metric)
+                )
+                logger.info(
+                    f"  label_knn_p_order: {format_number(label_knn_p_order_default)} (default for {label_metric})"
+                )
+
+        logger.info("Predictions Extrema Configuration:")
+        predictions_extrema = self.predictions_extrema
         logger.info(
-            f"Initialized {self.__class__.__name__} {self.regressor} regressor model version {self.version}"
+            f"  selection_method: {predictions_extrema.get('selection_method')}"
         )
+        logger.info(
+            f"  thresholds_smoothing: {predictions_extrema.get('thresholds_smoothing')}"
+        )
+        logger.info(
+            f"  threshold_outlier: {format_number(predictions_extrema.get('threshold_outlier'))}"
+        )
+        logger.info(
+            f"  thresholds_alpha: {format_number(predictions_extrema.get('thresholds_alpha'))}"
+        )
+        logger.info(
+            f"  extrema_fraction: {format_number(predictions_extrema.get('extrema_fraction'))}"
+        )
+
+        logger.info("Label Configuration:")
+        logger.info(
+            f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
+        )
+        logger.info(f"  label_frequency_candles: {self._label_frequency_candles}")
+        logger.info(
+            f"  min_label_period_candles: {self.ft_params.get('min_label_period_candles', QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT)}"
+        )
+        logger.info(
+            f"  max_label_period_candles: {self.ft_params.get('max_label_period_candles', QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT)}"
+        )
+        logger.info(
+            f"  min_label_natr_ratio: {format_number(self.ft_params.get('min_label_natr_ratio', QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT))}"
+        )
+        logger.info(
+            f"  max_label_natr_ratio: {format_number(self.ft_params.get('max_label_natr_ratio', QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT))}"
+        )
+
+        if self._optuna_hyperopt:
+            logger.info("Label Parameters:")
+            for pair in self.pairs:
+                params = self._optuna_label_params.get(pair, {})
+                if params:
+                    logger.info(
+                        f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
+                        f"label_natr_ratio={format_number(params.get('label_natr_ratio'))}"
+                    )
+        else:
+            logger.info("Label Parameters:")
+            logger.info(
+                f"  label_period_candles: {self.ft_params.get('label_period_candles', self._default_label_period_candles)}"
+            )
+            logger.info(
+                f"  label_natr_ratio: {format_number(float(self.ft_params.get('label_natr_ratio', self._default_label_natr_ratio)))}"
+            )
+
+        logger.info("=" * 60)
 
     def get_optuna_params(self, pair: str, namespace: str) -> dict[str, Any]:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
@@ -612,8 +943,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     X_test,
                     y_test,
                     test_weights,
-                    self.data_split_parameters.get("test_size", TEST_SIZE),
-                    self.freqai_info.get("fit_live_predictions_candles", 100),
+                    self.data_split_parameters.get(
+                        "test_size", QuickAdapterRegressorV3._TEST_SIZE
+                    ),
+                    self.freqai_info.get(
+                        "fit_live_predictions_candles",
+                        QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT,
+                    ),
                     self._optuna_config.get("train_candles_step"),
                     model_training_parameters,
                 ),
@@ -656,7 +992,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             X_test,
             y_test,
             test_weights,
-            self.data_split_parameters.get("test_size", TEST_SIZE),
+            self.data_split_parameters.get(
+                "test_size", QuickAdapterRegressorV3._TEST_SIZE
+            ),
         )
 
         model = fit_regressor(
@@ -717,7 +1055,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         warmed_up = True
 
         fit_live_predictions_candles = self.freqai_info.get(
-            "fit_live_predictions_candles", 100
+            "fit_live_predictions_candles",
+            QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT,
         )
 
         if self._optuna_hyperopt:
@@ -735,16 +1074,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         fit_live_predictions_candles,
                         self._optuna_config.get("label_candles_step"),
                         min_label_period_candles=self.ft_params.get(
-                            "min_label_period_candles", 12
+                            "min_label_period_candles",
+                            QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
                         ),
                         max_label_period_candles=self.ft_params.get(
-                            "max_label_period_candles", 24
+                            "max_label_period_candles",
+                            QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
                         ),
                         min_label_natr_ratio=self.ft_params.get(
-                            "min_label_natr_ratio", 9.0
+                            "min_label_natr_ratio",
+                            QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT,
                         ),
                         max_label_natr_ratio=self.ft_params.get(
-                            "max_label_natr_ratio", 12.0
+                            "max_label_natr_ratio",
+                            QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT,
                         ),
                     ),
                     directions=[
@@ -1399,7 +1742,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 cdist_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
-                    else 2.0
+                    else self._get_label_p_order_default(metric)
                 )
             return sp.spatial.distance.cdist(
                 normalized_matrix,
@@ -1447,7 +1790,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     7
                 ]: label_p_order  # "power_mean"
                 if label_p_order is not None and np.isfinite(label_p_order)
-                else 1.0,
+                else self._get_label_p_order_default(metric),
             }[metric]
             return sp.stats.pmean(
                 ideal_point, p=p, weights=np_weights
@@ -1475,7 +1818,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 p = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
-                    else 2.0
+                    else self._get_label_p_order_default(label_medoid_metric)
                 )
             return self._pairwise_distance_sums(
                 normalized_matrix,
@@ -1518,7 +1861,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 cdist_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
-                    else 2.0
+                    else self._get_label_p_order_default(label_kmeans_metric)
                 )
             cluster_center_distances_to_ideal = sp.spatial.distance.cdist(
                 cluster_centers,
@@ -1548,7 +1891,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         p = (
                             label_p_order
                             if label_p_order is not None and np.isfinite(label_p_order)
-                            else 2.0
+                            else self._get_label_p_order_default(label_kmeans_metric)
                         )
                     best_medoid_position = np.nanargmin(
                         self._pairwise_distance_sums(
@@ -1613,7 +1956,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 cdist_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
-                    else 2.0
+                    else self._get_label_p_order_default(label_kmedoids_metric)
                 )
             medoid_distances_to_ideal = sp.spatial.distance.cdist(
                 normalized_matrix[medoid_indices],
@@ -1678,13 +2021,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 knn_kwargs["p"] = (
                     label_p_order
                     if label_p_order is not None and np.isfinite(label_p_order)
-                    else 2.0
+                    else self._get_label_p_order_default(label_knn_metric)
                 )
                 knn_kwargs["metric_params"] = {"w": np_weights}
             label_knn_p_order = self.ft_params.get("label_knn_p_order")
             n_neighbors = (
                 min(
-                    int(self.ft_params.get("label_knn_n_neighbors", 5)),
+                    int(
+                        self.ft_params.get(
+                            "label_knn_n_neighbors",
+                            QuickAdapterRegressorV3.LABEL_KNN_N_NEIGHBORS_DEFAULT,
+                        )
+                    ),
                     n_samples - 1,
                 )
                 + 1
@@ -1702,7 +2050,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_knn_p_order = (
                     label_knn_p_order
                     if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
-                    else 1.0
+                    else self._get_label_knn_p_order_default(metric)
                 )
                 return sp.stats.pmean(neighbor_distances, p=label_knn_p_order, axis=1)
             elif (
@@ -1711,7 +2059,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_knn_p_order = (
                     label_knn_p_order
                     if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
-                    else 0.5
+                    else self._get_label_knn_p_order_default(metric)
                 )
                 return np.nanquantile(neighbor_distances, label_knn_p_order, axis=1)
             elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[14]:  # "knn_min"
@@ -2260,10 +2608,10 @@ def label_objective(
     df: pd.DataFrame,
     fit_live_predictions_candles: int,
     candles_step: int,
-    min_label_period_candles: int = 12,
-    max_label_period_candles: int = 24,
-    min_label_natr_ratio: float = 9.0,
-    max_label_natr_ratio: float = 12.0,
+    min_label_period_candles: int = QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
+    max_label_period_candles: int = QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
+    min_label_natr_ratio: float = QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT,
+    max_label_natr_ratio: float = QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT,
 ) -> tuple[int, float, float, float, float, float]:
     min_label_period_candles, max_label_period_candles, candles_step = (
         get_min_max_label_period_candles(

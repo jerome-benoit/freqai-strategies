@@ -146,6 +146,8 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
 
 DEFAULT_EXTREMA_WEIGHT: Final[float] = 1.0
 
+DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
+
 
 def get_distance(p1: T, p2: T) -> T:
     return abs(p1 - p2)
