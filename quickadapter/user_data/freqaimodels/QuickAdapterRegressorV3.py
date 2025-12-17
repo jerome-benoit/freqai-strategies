@@ -1097,6 +1097,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
                         optuna.study.StudyDirection.MAXIMIZE,
+                        optuna.study.StudyDirection.MAXIMIZE,
                     ],
                 ),
             )
@@ -2612,7 +2613,7 @@ def label_objective(
     max_label_period_candles: int = QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
     min_label_natr_ratio: float = QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT,
     max_label_natr_ratio: float = QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT,
-) -> tuple[int, float, float, float, float, float]:
+) -> tuple[int, float, float, float, float, float, float]:
     min_label_period_candles, max_label_period_candles, candles_step = (
         get_min_max_label_period_candles(
             fit_live_predictions_candles,
@@ -2642,7 +2643,7 @@ def label_objective(
     ]
 
     if df.empty:
-        return 0, 0.0, 0.0, 0.0, 0.0, 0.0
+        return 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     (
         _,
@@ -2650,10 +2651,10 @@ def label_objective(
         _,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
-        pivots_volumes,
-        _,
+        pivots_volume_rates,
         pivots_speeds,
         pivots_efficiency_ratios,
+        pivots_volume_weighted_efficiency_ratios,
     ) = zigzag(
         df,
         natr_period=label_period_candles,
@@ -2670,9 +2671,9 @@ def label_objective(
     if not np.isfinite(median_amplitude_threshold_ratio):
         median_amplitude_threshold_ratio = 0.0
 
-    median_volume = np.nanmedian(np.asarray(pivots_volumes, dtype=float))
-    if not np.isfinite(median_volume):
-        median_volume = 0.0
+    median_volume_rate = np.nanmedian(np.asarray(pivots_volume_rates, dtype=float))
+    if not np.isfinite(median_volume_rate):
+        median_volume_rate = 0.0
 
     median_speed = np.nanmedian(np.asarray(pivots_speeds, dtype=float))
     if not np.isfinite(median_speed):
@@ -2684,11 +2685,18 @@ def label_objective(
     if not np.isfinite(median_efficiency_ratio):
         median_efficiency_ratio = 0.0
 
+    median_volume_weighted_efficiency_ratio = np.nanmedian(
+        np.asarray(pivots_volume_weighted_efficiency_ratios, dtype=float)
+    )
+    if not np.isfinite(median_volume_weighted_efficiency_ratio):
+        median_volume_weighted_efficiency_ratio = 0.0
+
     return (
         len(pivots_values),
         median_amplitude,
         median_amplitude_threshold_ratio,
-        median_volume,
+        median_volume_rate,
         median_speed,
         median_efficiency_ratio,
+        median_volume_weighted_efficiency_ratio,
     )

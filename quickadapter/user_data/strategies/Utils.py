@@ -24,34 +24,38 @@ WeightStrategy = Literal[
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
-    "volume",
+    "volume_rate",
     "speed",
     "efficiency_ratio",
+    "volume_weighted_efficiency_ratio",
     "hybrid",
 ]
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
     "amplitude",
     "amplitude_threshold_ratio",
-    "volume",
+    "volume_rate",
     "speed",
     "efficiency_ratio",
+    "volume_weighted_efficiency_ratio",
     "hybrid",
 )
 
 HybridWeightSource = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
-    "volume",
+    "volume_rate",
     "speed",
     "efficiency_ratio",
+    "volume_weighted_efficiency_ratio",
 ]
 HYBRID_WEIGHT_SOURCES: Final[tuple[HybridWeightSource, ...]] = (
     "amplitude",
     "amplitude_threshold_ratio",
-    "volume",
+    "volume_rate",
     "speed",
     "efficiency_ratio",
+    "volume_weighted_efficiency_ratio",
 )
 
 HybridAggregation = Literal["weighted_sum", "geometric_mean"]
@@ -655,9 +659,10 @@ def calculate_hybrid_extrema_weights(
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
-    volumes: list[float],
+    volume_rates: list[float],
     speeds: list[float],
     efficiency_ratios: list[float],
+    volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
@@ -692,9 +697,12 @@ def calculate_hybrid_extrema_weights(
         "amplitude_threshold_ratio": np.asarray(
             amplitude_threshold_ratios, dtype=float
         ),
-        "volume": np.asarray(volumes, dtype=float),
+        "volume_rate": np.asarray(volume_rates, dtype=float),
         "speed": np.asarray(speeds, dtype=float),
         "efficiency_ratio": np.asarray(efficiency_ratios, dtype=float),
+        "volume_weighted_efficiency_ratio": np.asarray(
+            volume_weighted_efficiency_ratios, dtype=float
+        ),
     }
 
     enabled_sources: list[HybridWeightSource] = []
@@ -828,9 +836,10 @@ def compute_extrema_weights(
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
-    volumes: list[float],
+    volume_rates: list[float],
     speeds: list[float],
     efficiency_ratios: list[float],
+    volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
     aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
@@ -867,18 +876,21 @@ def compute_extrema_weights(
             WEIGHT_STRATEGIES[3],
             WEIGHT_STRATEGIES[4],
             WEIGHT_STRATEGIES[5],
+            WEIGHT_STRATEGIES[6],
         }
-    ):  # "amplitude" / "amplitude_threshold_ratio" / "volume" / "speed" / "efficiency_ratio"
+    ):  # "amplitude" / "amplitude_threshold_ratio" / "volume_rate" / "speed" / "efficiency_ratio" / "volume_weighted_efficiency_ratio"
         if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
             weights = np.asarray(amplitudes, dtype=float)
         elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
             weights = np.asarray(amplitude_threshold_ratios, dtype=float)
-        elif strategy == WEIGHT_STRATEGIES[3]:  # "volume"
-            weights = np.asarray(volumes, dtype=float)
+        elif strategy == WEIGHT_STRATEGIES[3]:  # "volume_rate"
+            weights = np.asarray(volume_rates, dtype=float)
         elif strategy == WEIGHT_STRATEGIES[4]:  # "speed"
             weights = np.asarray(speeds, dtype=float)
         elif strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
             weights = np.asarray(efficiency_ratios, dtype=float)
+        elif strategy == WEIGHT_STRATEGIES[6]:  # "volume_weighted_efficiency_ratio"
+            weights = np.asarray(volume_weighted_efficiency_ratios, dtype=float)
         else:
             weights = np.asarray([], dtype=float)
 
@@ -899,14 +911,15 @@ def compute_extrema_weights(
             gamma=gamma,
         )
 
-    if strategy == WEIGHT_STRATEGIES[6]:  # "hybrid"
+    if strategy == WEIGHT_STRATEGIES[7]:  # "hybrid"
         normalized_weights = calculate_hybrid_extrema_weights(
             indices=indices,
             amplitudes=amplitudes,
             amplitude_threshold_ratios=amplitude_threshold_ratios,
-            volumes=volumes,
+            volume_rates=volume_rates,
             speeds=speeds,
             efficiency_ratios=efficiency_ratios,
+            volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
             source_weights=source_weights,
             aggregation=aggregation,
             aggregation_normalization=aggregation_normalization,
@@ -958,9 +971,10 @@ def get_weighted_extrema(
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
-    volumes: list[float],
+    volume_rates: list[float],
     speeds: list[float],
     efficiency_ratios: list[float],
+    volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
     aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
@@ -993,9 +1007,10 @@ def get_weighted_extrema(
         indices=indices,
         amplitudes=amplitudes,
         amplitude_threshold_ratios=amplitude_threshold_ratios,
-        volumes=volumes,
+        volume_rates=volume_rates,
         speeds=speeds,
         efficiency_ratios=efficiency_ratios,
+        volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
         source_weights=source_weights,
         strategy=strategy,
         aggregation=aggregation,
@@ -1467,10 +1482,10 @@ def zigzag(
     pivots_directions: list[TrendDirection] = []
     pivots_amplitudes: list[float] = []
     pivots_amplitude_threshold_ratios: list[float] = []
-    pivots_volumes: list[float] = []
-    pivots_durations: list[float] = []
+    pivots_volume_rates: list[float] = []
     pivots_speeds: list[float] = []
     pivots_efficiency_ratios: list[float] = []
+    pivots_volume_weighted_efficiency_ratios: list[float] = []
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -1546,20 +1561,6 @@ def zigzag(
 
         return amplitude, amplitude_threshold_ratio
 
-    def calculate_pivot_volume(
-        *,
-        previous_pos: int,
-        current_pos: int,
-    ) -> float:
-        if previous_pos < 0 or current_pos < 0:
-            return np.nan
-        if previous_pos >= n or current_pos >= n:
-            return np.nan
-
-        start_pos = min(previous_pos, current_pos)
-        end_pos = max(previous_pos, current_pos) + 1
-        return np.nansum(volumes[start_pos:end_pos])
-
     def calculate_pivot_duration(
         *,
         previous_pos: int,
@@ -1570,7 +1571,53 @@ def zigzag(
         if previous_pos >= n or current_pos >= n:
             return np.nan
 
-        return abs(current_pos - previous_pos)
+        return float(abs(current_pos - previous_pos))
+
+    def calculate_pivot_volume_rate(
+        *,
+        previous_pos: int,
+        current_pos: int,
+    ) -> float:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan
+
+        duration = calculate_pivot_duration(
+            previous_pos=previous_pos,
+            current_pos=current_pos,
+        )
+
+        if not np.isfinite(duration) or duration == 0:
+            return np.nan
+
+        start_pos = min(previous_pos, current_pos)
+        end_pos = max(previous_pos, current_pos) + 1
+        total_volume = np.nansum(volumes[start_pos:end_pos])
+        return total_volume / duration
+
+    def calculate_pivot_speed(
+        *,
+        previous_pos: int,
+        current_pos: int,
+        amplitude: float,
+    ) -> float:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan
+        if not np.isfinite(amplitude):
+            return np.nan
+
+        duration = calculate_pivot_duration(
+            previous_pos=previous_pos,
+            current_pos=current_pos,
+        )
+
+        if not np.isfinite(duration) or duration == 0:
+            return np.nan
+
+        return amplitude / duration
 
     def calculate_pivot_efficiency_ratio(
         *,
@@ -1599,6 +1646,41 @@ def zigzag(
 
         return net_move / path_length
 
+    def calculate_pivot_volume_weighted_efficiency_ratio(
+        *,
+        previous_pos: int,
+        current_pos: int,
+    ) -> float:
+        if previous_pos < 0 or current_pos < 0:
+            return np.nan
+        if previous_pos >= n or current_pos >= n:
+            return np.nan
+
+        start_pos = min(previous_pos, current_pos)
+        end_pos = max(previous_pos, current_pos) + 1
+        if (end_pos - start_pos) < 2:
+            return np.nan
+
+        closes_slice = closes[start_pos:end_pos]
+        close_diffs = np.diff(closes_slice)
+        net_move = float(abs(closes_slice[-1] - closes_slice[0]))
+
+        volumes_slice = volumes[start_pos + 1 : end_pos]
+        total_volume = np.nansum(volumes_slice)
+        if not np.isfinite(total_volume) or np.isclose(total_volume, 0.0):
+            return np.nan
+
+        volume_weights = volumes_slice / total_volume
+
+        vw_path_length = float(np.nansum(np.abs(close_diffs) * volume_weights))
+
+        if not (np.isfinite(vw_path_length) and np.isfinite(net_move)):
+            return np.nan
+        if np.isclose(vw_path_length, 0.0):
+            return np.nan
+
+        return net_move / vw_path_length
+
     def add_pivot(pos: int, value: float, direction: TrendDirection):
         nonlocal last_pivot_pos
         if pivots_indices and indices[pos] == pivots_indices[-1]:
@@ -1616,36 +1698,41 @@ def zigzag(
                     current_value=value,
                 )
             )
-            volume = calculate_pivot_volume(
+            volume_rate = calculate_pivot_volume_rate(
                 previous_pos=last_pivot_pos,
                 current_pos=pos,
             )
-            duration = calculate_pivot_duration(
+            speed = calculate_pivot_speed(
                 previous_pos=last_pivot_pos,
                 current_pos=pos,
+                amplitude=amplitude,
             )
-            if np.isfinite(amplitude) and np.isfinite(duration) and duration > 0.0:
-                speed = amplitude / duration
-            else:
-                speed = np.nan
             efficiency_ratio = calculate_pivot_efficiency_ratio(
                 previous_pos=last_pivot_pos,
                 current_pos=pos,
             )
+            volume_weighted_efficiency_ratio = (
+                calculate_pivot_volume_weighted_efficiency_ratio(
+                    previous_pos=last_pivot_pos,
+                    current_pos=pos,
+                )
+            )
         else:
             amplitude = np.nan
             amplitude_threshold_ratio = np.nan
-            volume = np.nan
-            duration = np.nan
+            volume_rate = np.nan
             speed = np.nan
             efficiency_ratio = np.nan
+            volume_weighted_efficiency_ratio = np.nan
 
         pivots_amplitudes.append(amplitude)
         pivots_amplitude_threshold_ratios.append(amplitude_threshold_ratio)
-        pivots_volumes.append(volume)
-        pivots_durations.append(duration)
+        pivots_volume_rates.append(volume_rate)
         pivots_speeds.append(speed)
         pivots_efficiency_ratios.append(efficiency_ratio)
+        pivots_volume_weighted_efficiency_ratios.append(
+            volume_weighted_efficiency_ratio
+        )
 
         last_pivot_pos = pos
         reset_candidate_pivot()
@@ -1810,10 +1897,10 @@ def zigzag(
         pivots_directions,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
-        pivots_volumes,
-        pivots_durations,
+        pivots_volume_rates,
         pivots_speeds,
         pivots_efficiency_ratios,
+        pivots_volume_weighted_efficiency_ratios,
     )
 
 
