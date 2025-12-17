@@ -20,7 +20,7 @@ import pandas_ta as pta
 import talib.abstract as ta
 from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
-from freqtrade.strategy import stoploss_from_absolute
+from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
 from pandas import DataFrame, Series, isna
 from scipy.stats import t
@@ -2442,6 +2442,97 @@ class QuickAdapterV3(IStrategy):
         :return: A leverage amount, which will be between 1.0 and max_leverage.
         """
         return min(self.config.get("leverage", proposed_leverage), max_leverage)
+
+    def plot_annotations(
+        self,
+        pair: str,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        dataframe: DataFrame,
+        **kwargs: Any,
+    ) -> list[AnnotationType]:
+        """
+        Plot annotations.
+
+        :param pair: Pair that's currently being plotted
+        :param start_date: Start date of the chart range
+        :param end_date: End date of the chart range
+        :param dataframe: DataFrame with analyzed data for this pair
+        :param **kwargs: Additional arguments
+        :return: List of annotations to display on the chart
+        """
+        annotations: list[AnnotationType] = []
+
+        open_trades = Trade.get_trades_proxy(pair=pair, is_open=True)
+
+        take_profit_phase_colors = {
+            0: "lime",
+            1: "yellow",
+            2: "coral",
+            3: "deepskyblue",
+        }
+
+        for trade in open_trades:
+            if trade.open_date_utc > end_date:
+                continue
+
+            for take_profit_stage, (
+                natr_ratio_percent,
+                _,
+            ) in self.partial_exit_stages.items():
+                take_profit_distance = self.get_take_profit_distance(
+                    dataframe, trade, natr_ratio_percent
+                )
+
+                if take_profit_distance is None or take_profit_distance <= 0:
+                    continue
+
+                take_profit_price = (
+                    trade.open_rate
+                    + (-1 if trade.is_short else 1) * take_profit_distance
+                )
+
+                take_profit_line_annotation: AnnotationType = {
+                    "type": "line",
+                    "start": max(trade.open_date_utc, start_date),
+                    "end": end_date,
+                    "y_start": take_profit_price,
+                    "y_end": take_profit_price,
+                    "color": take_profit_phase_colors.get(take_profit_stage, "silver"),
+                    "line_style": "solid",
+                    "width": 1,
+                    "label": f"TP Phase {take_profit_stage} ({trade.trade_direction})",
+                    "z_level": 10 + take_profit_stage,
+                }
+                annotations.append(take_profit_line_annotation)
+
+            final_stage = 3
+            final_natr_ratio_percent = 1.0
+            take_profit_distance = self.get_take_profit_distance(
+                dataframe, trade, final_natr_ratio_percent
+            )
+
+            if take_profit_distance is not None and take_profit_distance > 0:
+                take_profit_price = (
+                    trade.open_rate
+                    + (-1 if trade.is_short else 1) * take_profit_distance
+                )
+
+                take_profit_line_annotation: AnnotationType = {
+                    "type": "line",
+                    "start": max(trade.open_date_utc, start_date),
+                    "end": end_date,
+                    "y_start": take_profit_price,
+                    "y_end": take_profit_price,
+                    "color": take_profit_phase_colors.get(final_stage, "silver"),
+                    "line_style": "solid",
+                    "width": 1,
+                    "label": f"TP Phase {final_stage} ({trade.trade_direction})",
+                    "z_level": 10 + final_stage,
+                }
+                annotations.append(take_profit_line_annotation)
+
+        return annotations
 
     def optuna_load_best_params(
         self, pair: str, namespace: str
