@@ -119,7 +119,7 @@ class ExitFactorConfig:
     Attributes:
         base_factor: Base scaling factor
         pnl: Profit/loss value
-        pnl_factor: PnL amplification factor
+        pnl_coefficient: PnL amplification coefficient
         duration_ratio: Ratio of current to maximum duration
         attenuation_mode: Mode of attenuation ("linear", "power", etc.)
         plateau_enabled: Whether plateau behavior is active
@@ -129,7 +129,7 @@ class ExitFactorConfig:
 
     base_factor: float
     pnl: float
-    pnl_factor: float
+    pnl_coefficient: float
     duration_ratio: float
     attenuation_mode: str
     plateau_enabled: bool = False

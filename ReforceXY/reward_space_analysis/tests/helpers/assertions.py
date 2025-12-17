@@ -10,7 +10,7 @@ import numpy as np
 
 from reward_space_analysis import (
     _get_exit_factor,
-    _get_pnl_factor,
+    _get_pnl_coefficient,
     calculate_reward,
 )
 
@@ -518,7 +518,7 @@ def assert_exit_factor_attenuation_modes(
     test_case,
     base_factor: float,
     pnl: float,
-    pnl_factor: float,
+    pnl_coefficient: float,
     attenuation_modes: Sequence[str],
     base_params_fn,
     tolerance_relaxed: float,
@@ -532,7 +532,7 @@ def assert_exit_factor_attenuation_modes(
         test_case: Test case instance with assertion methods
         base_factor: Base scaling factor
         pnl: Profit/loss value
-        pnl_factor: PnL amplification factor
+        pnl_coefficient: PnL amplification coefficient
         attenuation_modes: List of mode names to test
         base_params_fn: Factory function for creating parameter dicts
         tolerance_relaxed: Numerical tolerance for monotonicity checks
@@ -572,7 +572,7 @@ def assert_exit_factor_attenuation_modes(
                 mode_params = base_params_fn(exit_attenuation_mode="sqrt")
             ratios = np.linspace(0, 2, 15)
             values = [
-                _get_exit_factor(base_factor, pnl, pnl_factor, r, mode_params) for r in ratios
+                _get_exit_factor(base_factor, pnl, pnl_coefficient, r, mode_params) for r in ratios
             ]
             if mode == "plateau_linear":
                 grace = float(mode_params["exit_plateau_grace"])
@@ -649,12 +649,12 @@ def assert_exit_mode_mathematical_validation(
         short_allowed=True,
         action_masking=True,
     )
-    pnl_factor_hl = _get_pnl_factor(params, context, profit_target, risk_reward_ratio)
+    pnl_coefficient_hl = _get_pnl_coefficient(params, context, profit_target, risk_reward_ratio)
     observed_exit_factor = _get_exit_factor(
-        base_factor, context.pnl, pnl_factor_hl, duration_ratio, params
+        base_factor, context.pnl, pnl_coefficient_hl, duration_ratio, params
     )
     observed_half_life_factor = observed_exit_factor / (
-        base_factor * max(pnl_factor_hl, np.finfo(float).eps)
+        base_factor * max(pnl_coefficient_hl, np.finfo(float).eps)
     )
     expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
     test_case.assertAlmostEqual(
@@ -1008,7 +1008,7 @@ def assert_exit_factor_invariant_suite(
         suite_cases: List of scenario dicts with keys:
             - base_factor: Base scaling factor
             - pnl: Profit/loss value
-            - pnl_factor: PnL amplification factor
+            - pnl_coefficient: PnL amplification coefficient
             - duration_ratio: Duration ratio (0-2)
             - params: Parameter dictionary
             - expectation: Expected invariant ("non_negative", "safe_zero", "clamped")
@@ -1018,12 +1018,12 @@ def assert_exit_factor_invariant_suite(
     Example:
         cases = [
             {
-                "base_factor": 90.0, "pnl": 0.08, "pnl_factor": 1.5,
+                "base_factor": 90.0, "pnl": 0.08, "pnl_coefficient": 1.5,
                 "duration_ratio": 0.5, "params": {...},
                 "expectation": "non_negative", "tolerance": 1e-09
             },
             {
-                "base_factor": 90.0, "pnl": 0.0, "pnl_factor": 0.0,
+                "base_factor": 90.0, "pnl": 0.0, "pnl_coefficient": 0.0,
                 "duration_ratio": 0.5, "params": {...},
                 "expectation": "safe_zero"
             },
@@ -1035,7 +1035,7 @@ def assert_exit_factor_invariant_suite(
             f_val = exit_factor_fn(
                 case["base_factor"],
                 case["pnl"],
-                case["pnl_factor"],
+                case["pnl_coefficient"],
                 case["duration_ratio"],
                 case["params"],
             )
@@ -1055,7 +1055,7 @@ def assert_exit_factor_kernel_fallback(
     exit_factor_fn,
     base_factor: float,
     pnl: float,
-    pnl_factor: float,
+    pnl_coefficient: float,
     duration_ratio: float,
     bad_params: Dict[str, Any],
     reference_params: Dict[str, Any],
@@ -1071,7 +1071,7 @@ def assert_exit_factor_kernel_fallback(
         exit_factor_fn: Exit factor calculation function
         base_factor: Base scaling factor
         pnl: Profit/loss value
-        pnl_factor: PnL amplification factor
+        pnl_coefficient: PnL amplification coefficient
         duration_ratio: Duration ratio
         bad_params: Parameters that trigger kernel failure
         reference_params: Reference linear mode parameters for comparison
@@ -1092,8 +1092,8 @@ def assert_exit_factor_kernel_fallback(
         )
     """
 
-    f_bad = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, bad_params)
-    f_ref = exit_factor_fn(base_factor, pnl, pnl_factor, duration_ratio, reference_params)
+    f_bad = exit_factor_fn(base_factor, pnl, pnl_coefficient, duration_ratio, bad_params)
+    f_ref = exit_factor_fn(base_factor, pnl, pnl_coefficient, duration_ratio, reference_params)
     test_case.assertAlmostEqual(f_bad, f_ref, delta=TOLERANCE.IDENTITY_STRICT)
     test_case.assertGreaterEqual(f_bad, 0.0)
 
@@ -1212,7 +1212,7 @@ def assert_exit_factor_plateau_behavior(
     exit_factor_fn,
     base_factor: float,
     pnl: float,
-    pnl_factor: float,
+    pnl_coefficient: float,
     plateau_params: dict,
     grace: float,
     tolerance_strict: float,
@@ -1224,7 +1224,7 @@ def assert_exit_factor_plateau_behavior(
         exit_factor_fn: Exit factor calculation function (_get_exit_factor)
         base_factor: Base factor for exit calculation
         pnl: PnL value
-        pnl_factor: PnL factor multiplier
+        pnl_coefficient: PnL coefficient multiplier
         plateau_params: Parameters dict with plateau configuration
         grace: Grace period threshold (exit_plateau_grace value)
         tolerance_strict: Tolerance for numerical comparisons
@@ -1236,14 +1236,14 @@ def assert_exit_factor_plateau_behavior(
     plateau_factor_pre = exit_factor_fn(
         base_factor=base_factor,
         pnl=pnl,
-        pnl_factor=pnl_factor,
+        pnl_coefficient=pnl_coefficient,
         duration_ratio=duration_ratio_pre,
         params=plateau_params,
     )
     plateau_factor_post = exit_factor_fn(
         base_factor=base_factor,
         pnl=pnl,
-        pnl_factor=pnl_factor,
+        pnl_coefficient=pnl_coefficient,
         duration_ratio=duration_ratio_post,
         params=plateau_params,
     )

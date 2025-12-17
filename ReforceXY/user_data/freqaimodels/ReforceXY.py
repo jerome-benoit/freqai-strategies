@@ -182,7 +182,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_HOLD_PENALTY_POWER: Final[float] = 1.025
 
     DEFAULT_CHECK_INVARIANTS: Final[bool] = True
-    DEFAULT_EXIT_FACTOR_THRESHOLD: Final[float] = 10_000.0
+    DEFAULT_EXIT_FACTOR_THRESHOLD: Final[float] = 1_000.0
 
     _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
         "PPO",
@@ -2364,14 +2364,13 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_exit_reward = 0.0
         return observation, history
 
-    def _compute_time_attenuation_factor(
+    def _compute_time_attenuation_coefficient(
         self,
-        factor: float,
         duration_ratio: float,
         model_reward_parameters: Mapping[str, Any],
     ) -> float:
         """
-        Apply time-based decay to reward factor using configurable strategy
+        Calculate time-based attenuation coefficient using configurable strategy
         (legacy/sqrt/linear/power/half_life). Optionally apply plateau grace period.
         """
         if duration_ratio < 0.0:
@@ -2391,23 +2390,25 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         if exit_plateau_grace < 0.0:
+            logger.warning("exit_plateau_grace < 0; falling back to 0.0")
             exit_plateau_grace = 0.0
 
-        def _legacy(f: float, dr: float, p: Mapping[str, Any]) -> float:
-            return f * (1.5 if dr <= 1.0 else 0.5)
+        def _legacy(dr: float, p: Mapping[str, Any]) -> float:
+            return 1.5 if dr <= 1.0 else 0.5
 
-        def _sqrt(f: float, dr: float, p: Mapping[str, Any]) -> float:
-            return f / math.sqrt(1.0 + dr)
+        def _sqrt(dr: float, p: Mapping[str, Any]) -> float:
+            return 1.0 / math.sqrt(1.0 + dr)
 
-        def _linear(f: float, dr: float, p: Mapping[str, Any]) -> float:
+        def _linear(dr: float, p: Mapping[str, Any]) -> float:
             slope = float(
                 p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE)
             )
             if slope < 0.0:
+                logger.warning("exit_linear_slope < 0; falling back to 1.0")
                 slope = 1.0
-            return f / (1.0 + slope * dr)
+            return 1.0 / (1.0 + slope * dr)
 
-        def _power(f: float, dr: float, p: Mapping[str, Any]) -> float:
+        def _power(dr: float, p: Mapping[str, Any]) -> float:
             tau = p.get("exit_power_tau")
             if isinstance(tau, (int, float)):
                 tau = float(tau)
@@ -2417,15 +2418,15 @@ class MyRLEnv(Base5ActionRLEnv):
                     alpha = 1.0
             else:
                 alpha = 1.0
-            return f / math.pow(1.0 + dr, alpha)
+            return 1.0 / math.pow(1.0 + dr, alpha)
 
-        def _half_life(f: float, dr: float, p: Mapping[str, Any]) -> float:
+        def _half_life(dr: float, p: Mapping[str, Any]) -> float:
             hl = float(p.get("exit_half_life", ReforceXY.DEFAULT_EXIT_HALF_LIFE))
             if np.isclose(hl, 0.0) or hl < 0.0:
                 return 1.0
-            return f * math.pow(2.0, -dr / hl)
+            return math.pow(2.0, -dr / hl)
 
-        strategies: Dict[str, Callable[[float, float, Mapping[str, Any]], float]] = {
+        strategies: Dict[str, Callable[[float, Mapping[str, Any]], float]] = {
             ReforceXY._EXIT_ATTENUATION_MODES[0]: _legacy,
             ReforceXY._EXIT_ATTENUATION_MODES[1]: _sqrt,
             ReforceXY._EXIT_ATTENUATION_MODES[2]: _linear,
@@ -2452,7 +2453,9 @@ class MyRLEnv(Base5ActionRLEnv):
             strategy_fn = _linear
 
         try:
-            factor = strategy_fn(factor, effective_dr, model_reward_parameters)
+            time_attenuation_coefficient = strategy_fn(
+                effective_dr, model_reward_parameters
+            )
         except Exception as e:
             logger.warning(
                 "exit_attenuation_mode '%s' failed (%r); fallback to %s (effective_dr=%.5f)",
@@ -2461,33 +2464,38 @@ class MyRLEnv(Base5ActionRLEnv):
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
                 effective_dr,
             )
-            factor = _linear(factor, effective_dr, model_reward_parameters)
+            time_attenuation_coefficient = _linear(
+                effective_dr, model_reward_parameters
+            )
 
-        return factor
+        return time_attenuation_coefficient
 
     def _get_exit_factor(
         self,
-        factor: float,
+        base_factor: float,
         pnl: float,
         duration_ratio: float,
         model_reward_parameters: Mapping[str, Any],
     ) -> float:
         """
-        Compute exit reward factor combining time attenuation and PnL factors
+        Compute exit factor: base_factor × time_attenuation_coefficient × pnl_coefficient.
         """
         if not (
-            np.isfinite(factor) and np.isfinite(pnl) and np.isfinite(duration_ratio)
+            np.isfinite(base_factor)
+            and np.isfinite(pnl)
+            and np.isfinite(duration_ratio)
         ):
             return 0.0
-        time_attenuation_factor = self._compute_time_attenuation_factor(
-            factor,
+
+        time_attenuation_coefficient = self._compute_time_attenuation_coefficient(
             duration_ratio,
             model_reward_parameters,
         )
-
-        factor *= time_attenuation_factor * self._get_pnl_factor(
+        pnl_coefficient = self._get_pnl_coefficient(
             pnl, self._pnl_target, model_reward_parameters
         )
+
+        exit_factor = base_factor * time_attenuation_coefficient * pnl_coefficient
 
         check_invariants = model_reward_parameters.get(
             "check_invariants", ReforceXY.DEFAULT_CHECK_INVARIANTS
@@ -2496,39 +2504,39 @@ class MyRLEnv(Base5ActionRLEnv):
             check_invariants if isinstance(check_invariants, bool) else True
         )
         if check_invariants:
-            if not np.isfinite(factor):
+            if not np.isfinite(exit_factor):
                 logger.debug(
                     "_get_exit_factor produced non-finite factor; resetting to 0.0"
                 )
                 return 0.0
-            if factor < 0.0 and pnl >= 0.0:
+            if exit_factor < 0.0 and pnl >= 0.0:
                 logger.debug(
-                    "_get_exit_factor negative with positive pnl (factor=%.5f, pnl=%.5f); clamping to 0.0",
-                    factor,
+                    "_get_exit_factor negative with positive pnl (exit_factor=%.5f, pnl=%.5f); clamping to 0.0",
+                    exit_factor,
                     pnl,
                 )
-                factor = 0.0
+                exit_factor = 0.0
             exit_factor_threshold = float(
                 model_reward_parameters.get(
                     "exit_factor_threshold", ReforceXY.DEFAULT_EXIT_FACTOR_THRESHOLD
                 )
             )
-            if exit_factor_threshold > 0 and abs(factor) > exit_factor_threshold:
+            if exit_factor_threshold > 0 and abs(exit_factor) > exit_factor_threshold:
                 logger.warning(
-                    "_get_exit_factor |factor|=%.2f exceeds threshold %.2f",
-                    factor,
+                    "_get_exit_factor |exit_factor|=%.2f exceeds threshold %.2f",
+                    exit_factor,
                     exit_factor_threshold,
                 )
 
-        return factor
+        return exit_factor
 
-    def _compute_pnl_target_factor(
+    def _compute_pnl_target_coefficient(
         self, pnl: float, pnl_target: float, model_reward_parameters: Mapping[str, Any]
     ) -> float:
         """
-        Scale reward based on PnL/target ratio using tanh (≥ 1.0 for good trades).
+        Compute PnL target coefficient (typically 0.5-2.0) using tanh on PnL/target ratio.
         """
-        pnl_target_factor = 1.0
+        pnl_target_coefficient = 1.0
 
         if pnl_target > 0.0:
             pnl_factor_beta = float(
@@ -2539,7 +2547,7 @@ class MyRLEnv(Base5ActionRLEnv):
             pnl_ratio = pnl / pnl_target
 
             if abs(pnl_ratio) > 1.0:
-                base_pnl_target_factor = math.tanh(
+                base_pnl_target_coefficient = math.tanh(
                     pnl_factor_beta * (abs(pnl_ratio) - 1.0)
                 )
                 win_reward_factor = float(
@@ -2549,20 +2557,22 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
 
                 if pnl_ratio > 1.0:
-                    pnl_target_factor = 1.0 + win_reward_factor * base_pnl_target_factor
+                    pnl_target_coefficient = (
+                        1.0 + win_reward_factor * base_pnl_target_coefficient
+                    )
                 elif pnl_ratio < -(1.0 / self.rr):
                     loss_penalty_factor = win_reward_factor * self.rr
-                    pnl_target_factor = (
-                        1.0 + loss_penalty_factor * base_pnl_target_factor
+                    pnl_target_coefficient = (
+                        1.0 + loss_penalty_factor * base_pnl_target_coefficient
                     )
 
-        return pnl_target_factor
+        return pnl_target_coefficient
 
-    def _compute_efficiency_factor(
+    def _compute_efficiency_coefficient(
         self, pnl: float, model_reward_parameters: Mapping[str, Any]
     ) -> float:
         """
-        Scale reward based on exit efficiency (distance from max unrealized PnL).
+        Compute exit efficiency coefficient (typically 0.5-1.5) based on exit timing quality.
         """
         efficiency_weight = float(
             model_reward_parameters.get(
@@ -2575,7 +2585,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
 
-        efficiency_factor = 1.0
+        efficiency_coefficient = 1.0
         if efficiency_weight != 0.0 and not np.isclose(pnl, 0.0):
             max_pnl = max(self.get_max_unrealized_profit(), pnl)
             min_pnl = min(self.get_min_unrealized_profit(), pnl)
@@ -2583,30 +2593,30 @@ class MyRLEnv(Base5ActionRLEnv):
             if np.isfinite(range_pnl) and not np.isclose(range_pnl, 0.0):
                 efficiency_ratio = (pnl - min_pnl) / range_pnl
                 if pnl > 0.0:
-                    efficiency_factor = 1.0 + efficiency_weight * (
+                    efficiency_coefficient = 1.0 + efficiency_weight * (
                         efficiency_ratio - efficiency_center
                     )
                 elif pnl < 0.0:
-                    efficiency_factor = 1.0 + efficiency_weight * (
+                    efficiency_coefficient = 1.0 + efficiency_weight * (
                         efficiency_center - efficiency_ratio
                     )
 
-        return efficiency_factor
+        return efficiency_coefficient
 
-    def _get_pnl_factor(
+    def _get_pnl_coefficient(
         self, pnl: float, pnl_target: float, model_reward_parameters: Mapping[str, Any]
     ) -> float:
         """
-        Combine PnL target and efficiency factors (>= 0.0)
+        Combine PnL target and efficiency coefficients (typically 0.25-4.0).
         """
-        pnl_target_factor = self._compute_pnl_target_factor(
+        pnl_target_coefficient = self._compute_pnl_target_coefficient(
             pnl, pnl_target, model_reward_parameters
         )
-        efficiency_factor = self._compute_efficiency_factor(
+        efficiency_coefficient = self._compute_efficiency_coefficient(
             pnl, model_reward_parameters
         )
 
-        return max(0.0, pnl_target_factor * efficiency_factor)
+        return max(0.0, pnl_target_coefficient * efficiency_coefficient)
 
     def calculate_reward(self, action: int) -> float:
         """Compute per-step reward and apply potential-based reward shaping (PBRS).

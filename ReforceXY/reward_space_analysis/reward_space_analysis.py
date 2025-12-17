@@ -133,7 +133,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "pnl_factor_beta": 0.5,
     # Invariant / safety (env defaults)
     "check_invariants": True,
-    "exit_factor_threshold": 10000.0,
+    "exit_factor_threshold": 1000.0,
     # === PBRS PARAMETERS ===
     # Potential-based reward shaping core parameters
     # Discount factor γ for potential term (0 ≤ γ ≤ 1)
@@ -663,17 +663,15 @@ class RewardBreakdown:
     invariance_correction: float = 0.0
 
 
-def _get_exit_factor(
-    base_factor: float,
-    pnl: float,
-    pnl_factor: float,
+def _compute_time_attenuation_coefficient(
     duration_ratio: float,
     params: RewardParams,
 ) -> float:
-    """Exit factor (kernel + optional plateau) * pnl_factor with invariants."""
-    if not np.isfinite(base_factor) or not np.isfinite(pnl) or not np.isfinite(duration_ratio):
-        return _fail_safely("non_finite_exit_factor_inputs")
+    """
+    Calculate time-based attenuation coefficient using configurable strategy.
 
+    Returns a coefficient (typically in range [0.5, 2.0]) to multiply with base_factor.
+    """
     if duration_ratio < 0.0:
         duration_ratio = 0.0
 
@@ -713,16 +711,16 @@ def _get_exit_factor(
         )
         exit_linear_slope = 1.0
 
-    def _legacy_kernel(f: float, dr: float) -> float:
-        return f * (1.5 if dr <= 1.0 else 0.5)
+    def _legacy_kernel(dr: float) -> float:
+        return 1.5 if dr <= 1.0 else 0.5
 
-    def _sqrt_kernel(f: float, dr: float) -> float:
-        return f / math.sqrt(1.0 + dr)
+    def _sqrt_kernel(dr: float) -> float:
+        return 1.0 / math.sqrt(1.0 + dr)
 
-    def _linear_kernel(f: float, dr: float) -> float:
-        return f / (1.0 + exit_linear_slope * dr)
+    def _linear_kernel(dr: float) -> float:
+        return 1.0 / (1.0 + exit_linear_slope * dr)
 
-    def _power_kernel(f: float, dr: float) -> float:
+    def _power_kernel(dr: float) -> float:
         tau = _get_float_param(
             params,
             "exit_power_tau",
@@ -739,9 +737,9 @@ def _get_exit_factor(
                 stacklevel=2,
             )
             alpha = 1.0
-        return f / math.pow(1.0 + dr, alpha)
+        return 1.0 / math.pow(1.0 + dr, alpha)
 
-    def _half_life_kernel(f: float, dr: float) -> float:
+    def _half_life_kernel(dr: float) -> float:
         hl = _get_float_param(
             params,
             "exit_half_life",
@@ -756,7 +754,7 @@ def _get_exit_factor(
                 stacklevel=2,
             )
             return 1.0
-        return f * math.pow(2.0, -dr / hl)
+        return math.pow(2.0, -dr / hl)
 
     kernels = {
         "legacy": _legacy_kernel,
@@ -785,16 +783,49 @@ def _get_exit_factor(
         kernel = _linear_kernel
 
     try:
-        attenuation_factor = kernel(base_factor, effective_dr)
+        time_attenuation_coefficient = kernel(effective_dr)
     except Exception as e:
         warnings.warn(
             f"exit_attenuation_mode '{exit_attenuation_mode}' failed ({e!r}); fallback linear (effective_dr={effective_dr:.5f})",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
-        attenuation_factor = _linear_kernel(base_factor, effective_dr)
+        time_attenuation_coefficient = _linear_kernel(effective_dr)
 
-    exit_factor = attenuation_factor * pnl_factor
+    return time_attenuation_coefficient
+
+
+def _get_exit_factor(
+    base_factor: float,
+    pnl: float,
+    pnl_coefficient: float,
+    duration_ratio: float,
+    params: RewardParams,
+) -> float:
+    """
+    Compute exit reward factor by applying multiplicative coefficients to base_factor.
+
+    Formula: exit_factor = base_factor × time_attenuation_coefficient × pnl_coefficient
+
+    The time_attenuation_coefficient reduces rewards for longer trades, and the
+    pnl_coefficient adjusts rewards based on profit/target ratio and exit timing efficiency.
+
+    Args:
+        base_factor: Base reward value before coefficient adjustments
+        pnl: Realized profit/loss
+        pnl_coefficient: PnL scaling coefficient (already calculated)
+        duration_ratio: Trade duration relative to target duration
+        params: Reward configuration parameters
+
+    Returns:
+        float: Final exit factor (can be negative for losses)
+    """
+    if not np.isfinite(base_factor) or not np.isfinite(pnl) or not np.isfinite(duration_ratio):
+        return _fail_safely("non_finite_exit_factor_inputs")
+
+    time_attenuation_coefficient = _compute_time_attenuation_coefficient(duration_ratio, params)
+
+    exit_factor = base_factor * time_attenuation_coefficient * pnl_coefficient
 
     if _get_bool_param(
         params,
@@ -808,7 +839,7 @@ def _get_exit_factor(
         exit_factor_threshold = _get_float_param(
             params,
             "exit_factor_threshold",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_factor_threshold", 10000.0),
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_factor_threshold", 1000.0),
         )
         if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):
             if abs(exit_factor) > exit_factor_threshold:
@@ -823,42 +854,78 @@ def _get_exit_factor(
     return exit_factor
 
 
-def _get_pnl_factor(
+def _compute_pnl_target_coefficient(
     params: RewardParams,
-    context: RewardContext,
+    pnl: float,
     profit_target: float,
     risk_reward_ratio: float,
 ) -> float:
-    """PnL factor: tanh overshoot/loss modulation + efficiency tilt (non-negative)."""
-    pnl = context.pnl
-    if not np.isfinite(pnl) or not np.isfinite(profit_target) or not np.isfinite(risk_reward_ratio):
-        return _fail_safely("non_finite_inputs_pnl_factor")
-    if profit_target <= 0.0:
-        return 0.0
+    """
+    Compute PnL target coefficient based on PnL/target ratio using tanh.
 
-    win_reward_factor = _get_float_param(
-        params,
-        "win_reward_factor",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("win_reward_factor", 2.0),
-    )
-    pnl_factor_beta = _get_float_param(
-        params,
-        "pnl_factor_beta",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("pnl_factor_beta", 0.5),
-    )
-    rr = risk_reward_ratio if risk_reward_ratio > 0 else 1.0
+    Returns a coefficient (typically 0.5-2.0) to be multiplied with base_factor.
+    The coefficient rewards trades that exceed profit targets and penalizes losses
+    beyond the risk/reward threshold.
 
-    pnl_ratio = pnl / profit_target
-    pnl_target_factor = 1.0
-    if abs(pnl_ratio) > 1.0:
-        base_pnl_target_factor = math.tanh(pnl_factor_beta * (abs(pnl_ratio) - 1.0))
-        if pnl_ratio > 1.0:
-            pnl_target_factor = 1.0 + win_reward_factor * base_pnl_target_factor
-        elif pnl_ratio < -(1.0 / rr):
-            loss_penalty_factor = win_reward_factor * rr
-            pnl_target_factor = 1.0 + loss_penalty_factor * base_pnl_target_factor
+    Args:
+        params: Reward configuration parameters
+        pnl: Realized profit/loss
+        profit_target: Target profit threshold
+        risk_reward_ratio: Risk/reward ratio for loss penalty calculation
 
-    efficiency_factor = 1.0
+    Returns:
+        float: Coefficient ≥ 0.0 (typically 0.5-2.0 range)
+    """
+    pnl_target_coefficient = 1.0
+
+    if profit_target > 0.0:
+        win_reward_factor = _get_float_param(
+            params,
+            "win_reward_factor",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("win_reward_factor", 2.0),
+        )
+        pnl_factor_beta = _get_float_param(
+            params,
+            "pnl_factor_beta",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("pnl_factor_beta", 0.5),
+        )
+        rr = risk_reward_ratio if risk_reward_ratio > 0 else 1.0
+
+        pnl_ratio = pnl / profit_target
+        if abs(pnl_ratio) > 1.0:
+            base_pnl_target_coefficient = math.tanh(pnl_factor_beta * (abs(pnl_ratio) - 1.0))
+            if pnl_ratio > 1.0:
+                pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
+            elif pnl_ratio < -(1.0 / rr):
+                loss_penalty_factor = win_reward_factor * rr
+                pnl_target_coefficient = 1.0 + loss_penalty_factor * base_pnl_target_coefficient
+
+    return pnl_target_coefficient
+
+
+def _compute_efficiency_coefficient(
+    params: RewardParams,
+    context: RewardContext,
+    pnl: float,
+) -> float:
+    """
+    Compute exit efficiency coefficient based on PnL position relative to unrealized extremes.
+
+    Returns a coefficient (typically 0.5-1.5) that rewards exits closer to optimal timing.
+    For profitable trades, higher coefficient when exiting near max unrealized profit.
+    For losing trades, higher coefficient when exiting near min unrealized loss.
+
+    Args:
+        params: Reward configuration parameters containing:
+            - efficiency_weight: Amplification factor for efficiency adjustment
+            - efficiency_center: Target efficiency ratio (0.0-1.0)
+        context: Trade context with unrealized profit/loss extremes
+        pnl: Realized profit/loss
+
+    Returns:
+        float: Coefficient ≥ 0.0 (typically 0.5-1.5 range)
+    """
+    efficiency_coefficient = 1.0
     efficiency_weight = _get_float_param(
         params,
         "efficiency_weight",
@@ -876,11 +943,51 @@ def _get_pnl_factor(
         if np.isfinite(range_pnl) and not np.isclose(range_pnl, 0.0):
             efficiency_ratio = (pnl - min_pnl) / range_pnl
             if pnl > 0.0:
-                efficiency_factor = 1.0 + efficiency_weight * (efficiency_ratio - efficiency_center)
+                efficiency_coefficient = 1.0 + efficiency_weight * (
+                    efficiency_ratio - efficiency_center
+                )
             elif pnl < 0.0:
-                efficiency_factor = 1.0 + efficiency_weight * (efficiency_center - efficiency_ratio)
+                efficiency_coefficient = 1.0 + efficiency_weight * (
+                    efficiency_center - efficiency_ratio
+                )
 
-    return max(0.0, pnl_target_factor * efficiency_factor)
+    return efficiency_coefficient
+
+
+def _get_pnl_coefficient(
+    params: RewardParams,
+    context: RewardContext,
+    profit_target: float,
+    risk_reward_ratio: float,
+) -> float:
+    """
+    Compute combined PnL coefficient from target and efficiency components.
+
+    Multiplies the PnL target coefficient (based on profit/target ratio) with
+    the efficiency coefficient (based on exit timing quality) to produce a
+    single composite coefficient applied to the base reward factor.
+
+    Args:
+        params: Reward configuration parameters
+        context: Trade context with PnL and unrealized extremes
+        profit_target: Target profit threshold
+        risk_reward_ratio: Risk/reward ratio for loss penalty calculation
+
+    Returns:
+        float: Composite coefficient ≥ 0.0 (typically 0.25-4.0 range)
+    """
+    pnl = context.pnl
+    if not np.isfinite(pnl) or not np.isfinite(profit_target) or not np.isfinite(risk_reward_ratio):
+        return _fail_safely("non_finite_inputs_pnl_coefficient")
+    if profit_target <= 0.0:
+        return 0.0
+
+    pnl_target_coefficient = _compute_pnl_target_coefficient(
+        params, pnl, profit_target, risk_reward_ratio
+    )
+    efficiency_coefficient = _compute_efficiency_coefficient(params, context, pnl)
+
+    return max(0.0, pnl_target_coefficient * efficiency_coefficient)
 
 
 def _is_valid_action(
@@ -946,7 +1053,7 @@ def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardPara
 
 def _compute_exit_reward(
     base_factor: float,
-    pnl_factor: float,
+    pnl_coefficient: float,
     context: RewardContext,
     params: RewardParams,
 ) -> float:
@@ -957,7 +1064,9 @@ def _compute_exit_reward(
         DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
     )
     duration_ratio = _compute_duration_ratio(context.trade_duration, max_trade_duration_candles)
-    exit_factor = _get_exit_factor(base_factor, context.pnl, pnl_factor, duration_ratio, params)
+    exit_factor = _get_exit_factor(
+        base_factor, context.pnl, pnl_coefficient, duration_ratio, params
+    )
     return context.pnl * exit_factor
 
 
@@ -999,7 +1108,7 @@ def calculate_reward(
     pnl_target = float(profit_target * risk_reward_ratio)
 
     idle_factor = factor * pnl_target / 4.0
-    pnl_factor = _get_pnl_factor(
+    pnl_coefficient = _get_pnl_coefficient(
         params,
         context,
         pnl_target,
@@ -1019,10 +1128,10 @@ def calculate_reward(
         base_reward = _hold_penalty(context, hold_factor, params)
         breakdown.hold_penalty = base_reward
     elif context.action == Actions.Long_exit and context.position == Positions.Long:
-        base_reward = _compute_exit_reward(factor, pnl_factor, context, params)
+        base_reward = _compute_exit_reward(factor, pnl_coefficient, context, params)
         breakdown.exit_component = base_reward
     elif context.action == Actions.Short_exit and context.position == Positions.Short:
-        base_reward = _compute_exit_reward(factor, pnl_factor, context, params)
+        base_reward = _compute_exit_reward(factor, pnl_coefficient, context, params)
         breakdown.exit_component = base_reward
     else:
         base_reward = 0.0

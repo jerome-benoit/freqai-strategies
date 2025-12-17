@@ -189,7 +189,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             self,
             base_factor=self.TEST_BASE_FACTOR,
             pnl=0.05,
-            pnl_factor=1.0,
+            pnl_coefficient=1.0,
             attenuation_modes=modes,
             base_params_fn=self.base_params,
             tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
@@ -249,7 +249,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Negative exit_linear_slope is sanitized to 1.0; resulting exit factors must match slope=1.0 within tolerance."""
         base_factor = 100.0
         pnl = 0.03
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         duration_ratios = [0.0, 0.2, 0.5, 1.0, 1.5]
         params_bad = self.base_params(
             exit_attenuation_mode="linear", exit_linear_slope=-5.0, exit_plateau=False
@@ -258,8 +258,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_attenuation_mode="linear", exit_linear_slope=1.0, exit_plateau=False
         )
         for dr in duration_ratios:
-            f_bad = _get_exit_factor(base_factor, pnl, pnl_factor, dr, params_bad)
-            f_ref = _get_exit_factor(base_factor, pnl, pnl_factor, dr, params_ref)
+            f_bad = _get_exit_factor(base_factor, pnl, pnl_coefficient, dr, params_bad)
+            f_ref = _get_exit_factor(base_factor, pnl, pnl_coefficient, dr, params_ref)
             self.assertAlmostEqualFloat(
                 f_bad,
                 f_ref,
@@ -271,15 +271,15 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Power mode attenuation: ratio f(dr=1)/f(dr=0) must equal 1/(1+1)^alpha with alpha=-log(tau)/log(2)."""
         base_factor = 200.0
         pnl = 0.04
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         duration_ratio = 1.0
         taus = [0.9, 0.5, 0.25, 1.0]
         for tau in taus:
             params = self.base_params(
                 exit_attenuation_mode="power", exit_power_tau=tau, exit_plateau=False
             )
-            f0 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.0, params)
-            f1 = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
+            f0 = _get_exit_factor(base_factor, pnl, pnl_coefficient, 0.0, params)
+            f1 = _get_exit_factor(base_factor, pnl, pnl_coefficient, duration_ratio, params)
             if 0.0 < tau <= 1.0:
                 alpha = -math.log(tau) / math.log(2.0)
             else:
@@ -347,14 +347,14 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Test parameter edge cases: tau extrema, plateau grace edges, slope zero."""
         base_factor = 50.0
         pnl = 0.02
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         params_hi = self.base_params(exit_attenuation_mode="power", exit_power_tau=0.999999)
         params_lo = self.base_params(
             exit_attenuation_mode="power", exit_power_tau=self.MIN_EXIT_POWER_TAU
         )
         r = 1.5
-        hi_val = _get_exit_factor(base_factor, pnl, pnl_factor, r, params_hi)
-        lo_val = _get_exit_factor(base_factor, pnl, pnl_factor, r, params_lo)
+        hi_val = _get_exit_factor(base_factor, pnl, pnl_coefficient, r, params_hi)
+        lo_val = _get_exit_factor(base_factor, pnl, pnl_coefficient, r, params_lo)
         self.assertGreater(
             hi_val, lo_val, "Power mode: higher tau (≈1) should attenuate less than tiny tau"
         )
@@ -370,8 +370,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_plateau_grace=1.0,
             exit_linear_slope=1.0,
         )
-        val_g0 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.5, params_g0)
-        val_g1 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.5, params_g1)
+        val_g0 = _get_exit_factor(base_factor, pnl, pnl_coefficient, 0.5, params_g0)
+        val_g1 = _get_exit_factor(base_factor, pnl, pnl_coefficient, 0.5, params_g1)
         self.assertGreater(
             val_g1, val_g0, "Plateau grace=1.0 should delay attenuation vs grace=0.0"
         )
@@ -381,8 +381,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         params_lin1 = self.base_params(
             exit_attenuation_mode="linear", exit_linear_slope=2.0, exit_plateau=False
         )
-        val_lin0 = _get_exit_factor(base_factor, pnl, pnl_factor, 1.0, params_lin0)
-        val_lin1 = _get_exit_factor(base_factor, pnl, pnl_factor, 1.0, params_lin1)
+        val_lin0 = _get_exit_factor(base_factor, pnl, pnl_coefficient, 1.0, params_lin0)
+        val_lin1 = _get_exit_factor(base_factor, pnl, pnl_coefficient, 1.0, params_lin1)
         self.assertGreater(
             val_lin0, val_lin1, "Linear slope=0 should yield no attenuation vs slope>0"
         )
@@ -397,9 +397,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = self.TEST_BASE_FACTOR
         pnl = 0.04
-        pnl_factor = 1.2
+        pnl_coefficient = 1.2
         ratios = [0.3, 0.6, 1.0, 1.4]
-        values = [_get_exit_factor(base_factor, pnl, pnl_factor, r, params) for r in ratios]
+        values = [_get_exit_factor(base_factor, pnl, pnl_coefficient, r, params) for r in ratios]
         first = values[0]
         for v in values[1:]:
             self.assertAlmostEqualFloat(
@@ -422,9 +422,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = 80.0
         pnl = self.TEST_PROFIT_TARGET
-        pnl_factor = 1.1
+        pnl_coefficient = 1.1
         ratios = [0.8, 1.0, 1.2, 1.4, 1.6]
-        vals = [_get_exit_factor(base_factor, pnl, pnl_factor, r, params) for r in ratios]
+        vals = [_get_exit_factor(base_factor, pnl, pnl_coefficient, r, params) for r in ratios]
         ref = vals[0]
         for i, r in enumerate(ratios[:-1]):
             self.assertAlmostEqualFloat(
@@ -442,7 +442,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         eps = self.CONTINUITY_EPS_SMALL
         base_factor = self.TEST_BASE_FACTOR
         pnl = 0.01
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         tau = 0.5
         half_life = 0.5
         slope = 1.3
@@ -459,9 +459,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                         "exit_half_life": half_life,
                     }
                 )
-                left = _get_exit_factor(base_factor, pnl, pnl_factor, grace - eps, params)
-                boundary = _get_exit_factor(base_factor, pnl, pnl_factor, grace, params)
-                right = _get_exit_factor(base_factor, pnl, pnl_factor, grace + eps, params)
+                left = _get_exit_factor(base_factor, pnl, pnl_coefficient, grace - eps, params)
+                boundary = _get_exit_factor(base_factor, pnl, pnl_coefficient, grace, params)
+                right = _get_exit_factor(base_factor, pnl, pnl_coefficient, grace + eps, params)
                 self.assertAlmostEqualFloat(
                     left,
                     boundary,
@@ -532,12 +532,14 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = 75.0
         pnl = 0.05
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         duration_ratio = 0.8
         with assert_diagnostic_warning(["Unknown exit_attenuation_mode"]):
-            f_unknown = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
+            f_unknown = _get_exit_factor(base_factor, pnl, pnl_coefficient, duration_ratio, params)
         linear_params = self.base_params(exit_attenuation_mode="linear", exit_plateau=False)
-        f_linear = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, linear_params)
+        f_linear = _get_exit_factor(
+            base_factor, pnl, pnl_coefficient, duration_ratio, linear_params
+        )
         self.assertAlmostEqualFloat(
             f_unknown,
             f_linear,
@@ -556,10 +558,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = PARAMS.BASE_FACTOR
         pnl = 0.03
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         duration_ratio = 0.5
         with assert_diagnostic_warning(["exit_plateau_grace < 0"]):
-            f_neg = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
+            f_neg = _get_exit_factor(base_factor, pnl, pnl_coefficient, duration_ratio, params)
         # Reference with grace=0.0 (since negative should clamp)
         ref_params = self.base_params(
             exit_attenuation_mode="linear",
@@ -567,7 +569,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_plateau_grace=0.0,
             exit_linear_slope=1.2,
         )
-        f_ref = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, ref_params)
+        f_ref = _get_exit_factor(base_factor, pnl, pnl_coefficient, duration_ratio, ref_params)
         self.assertAlmostEqualFloat(
             f_neg,
             f_ref,
@@ -581,7 +583,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         invalid_taus = [0.0, -0.5, 2.0, float("nan")]
         base_factor = 120.0
         pnl = 0.04
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         duration_ratio = 1.0
         # Explicit alpha=1 expected ratio: f(dr)/f(0)=1/(1+dr)^1 with plateau disabled to observe attenuation.
         expected_ratio_alpha1 = 1.0 / (1.0 + duration_ratio)
@@ -590,8 +592,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 exit_attenuation_mode="power", exit_power_tau=tau, exit_plateau=False
             )
             with assert_diagnostic_warning(["exit_power_tau"]):
-                f0 = _get_exit_factor(base_factor, pnl, pnl_factor, 0.0, params)
-                f1 = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
+                f0 = _get_exit_factor(base_factor, pnl, pnl_coefficient, 0.0, params)
+                f1 = _get_exit_factor(base_factor, pnl, pnl_coefficient, duration_ratio, params)
             ratio = f1 / max(f0, self.TOL_NUMERIC_GUARD)
             self.assertAlmostEqual(
                 ratio,
@@ -605,17 +607,19 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Invariant 105: Near-zero exit_half_life warns and returns factor≈base_factor (no attenuation)."""
         base_factor = 60.0
         pnl = 0.02
-        pnl_factor = 1.0
+        pnl_coefficient = 1.0
         duration_ratio = 0.7
         near_zero_values = [1e-15, 1e-12, 5e-14]
         for hl in near_zero_values:
             params = self.base_params(exit_attenuation_mode="half_life", exit_half_life=hl)
             with assert_diagnostic_warning(["exit_half_life", "close to 0"]):
-                _ = _get_exit_factor(base_factor, pnl, pnl_factor, 0.0, params)
-                fdr = _get_exit_factor(base_factor, pnl, pnl_factor, duration_ratio, params)
+                _ = _get_exit_factor(base_factor, pnl, pnl_coefficient, 0.0, params)
+                fdr = _get_exit_factor(base_factor, pnl, pnl_coefficient, duration_ratio, params)
             self.assertAlmostEqualFloat(
                 fdr,
-                1.0 * pnl_factor,  # Kernel returns 1.0 then * pnl_factor
+                base_factor
+                * 1.0
+                * pnl_coefficient,  # base_factor * time_coefficient (1.0) * pnl_coefficient
                 tolerance=self.TOL_IDENTITY_RELAXED,
                 msg=f"Near-zero half-life attenuation mismatch hl={hl} fdr={fdr}",
             )

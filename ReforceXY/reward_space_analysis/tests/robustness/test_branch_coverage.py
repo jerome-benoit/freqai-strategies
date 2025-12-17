@@ -65,7 +65,7 @@ def test_get_exit_factor_negative_plateau_grace_warning():
         factor = _get_exit_factor(
             base_factor=10.0,
             pnl=0.01,
-            pnl_factor=1.0,
+            pnl_coefficient=1.0,
             duration_ratio=0.5,
             params=params,
         )
@@ -79,7 +79,7 @@ def test_get_exit_factor_negative_linear_slope_warning():
         factor = _get_exit_factor(
             base_factor=10.0,
             pnl=0.01,
-            pnl_factor=1.0,
+            pnl_coefficient=1.0,
             duration_ratio=2.0,
             params=params,
         )
@@ -93,7 +93,7 @@ def test_get_exit_factor_invalid_power_tau_relaxed():
         factor = _get_exit_factor(
             base_factor=5.0,
             pnl=0.02,
-            pnl_factor=1.0,
+            pnl_coefficient=1.0,
             duration_ratio=1.5,
             params=params,
         )
@@ -111,7 +111,7 @@ def test_get_exit_factor_half_life_near_zero_relaxed():
         factor = _get_exit_factor(
             base_factor=5.0,
             pnl=0.02,
-            pnl_factor=1.0,
+            pnl_coefficient=1.0,
             duration_ratio=2.0,
             params=params,
         )
@@ -141,7 +141,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 15.0,
             "pnl": 0.02,
-            "pnl_factor": 1.0,
+            "pnl_coefficient": 1.0,
             "duration_ratio": -5.0,
             "params": {
                 "exit_attenuation_mode": "linear",
@@ -153,7 +153,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 15.0,
             "pnl": 0.02,
-            "pnl_factor": 1.0,
+            "pnl_coefficient": 1.0,
             "duration_ratio": 0.0,
             "params": {
                 "exit_attenuation_mode": "linear",
@@ -165,7 +165,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": float("nan"),
             "pnl": 0.01,
-            "pnl_factor": 1.0,
+            "pnl_coefficient": 1.0,
             "duration_ratio": 0.2,
             "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
             "expectation": "safe_zero",
@@ -173,7 +173,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": float("nan"),
-            "pnl_factor": 1.0,
+            "pnl_coefficient": 1.0,
             "duration_ratio": 0.2,
             "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
             "expectation": "safe_zero",
@@ -181,7 +181,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": 0.01,
-            "pnl_factor": 1.0,
+            "pnl_coefficient": 1.0,
             "duration_ratio": float("nan"),
             "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
             "expectation": "safe_zero",
@@ -189,7 +189,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": 0.02,
-            "pnl_factor": float("inf"),
+            "pnl_coefficient": float("inf"),
             "duration_ratio": 0.5,
             "params": {
                 "exit_attenuation_mode": "linear",
@@ -201,7 +201,7 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": 0.015,
-            "pnl_factor": -2.5,
+            "pnl_coefficient": -2.5,
             "duration_ratio": 2.0,
             "params": {
                 "exit_attenuation_mode": "legacy",

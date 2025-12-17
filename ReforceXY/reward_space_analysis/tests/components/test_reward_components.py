@@ -12,7 +12,7 @@ from reward_space_analysis import (
     _compute_hold_potential,
     _get_exit_factor,
     _get_float_param,
-    _get_pnl_factor,
+    _get_pnl_coefficient,
     calculate_reward,
 )
 
@@ -194,11 +194,11 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
 
     def test_efficiency_zero_policy(self):
-        """Test efficiency zero policy produces expected PnL factor.
+        """Test efficiency zero policy produces expected PnL coefficient.
 
         Verifies:
-        - efficiency_weight = 0 → pnl_factor ≈ 1.0
-        - Factor is finite and positive
+        - efficiency_weight = 0 → pnl_coefficient ≈ 1.0
+        - Coefficient is finite and positive
         """
         ctx = self.make_ctx(
             pnl=0.0,
@@ -210,9 +210,9 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         params = self.base_params()
         profit_target = self.TEST_PROFIT_TARGET * self.TEST_RR
-        pnl_factor = _get_pnl_factor(params, ctx, profit_target, self.TEST_RR)
-        self.assertFinite(pnl_factor, name="pnl_factor")
-        self.assertAlmostEqualFloat(pnl_factor, 1.0, tolerance=self.TOL_GENERIC_EQ)
+        pnl_coefficient = _get_pnl_coefficient(params, ctx, profit_target, self.TEST_RR)
+        self.assertFinite(pnl_coefficient, name="pnl_coefficient")
+        self.assertAlmostEqualFloat(pnl_coefficient, 1.0, tolerance=self.TOL_GENERIC_EQ)
 
     def test_max_idle_duration_candles_logic(self):
         """Test max idle duration candles parameter affects penalty magnitude.
@@ -267,7 +267,11 @@ class TestRewardComponents(RewardSpaceTestBase):
         for mode in modes_to_test:
             test_params = self.base_params(exit_attenuation_mode=mode)
             factor = _get_exit_factor(
-                base_factor=1.0, pnl=0.02, pnl_factor=1.5, duration_ratio=0.3, params=test_params
+                base_factor=1.0,
+                pnl=0.02,
+                pnl_coefficient=1.5,
+                duration_ratio=0.3,
+                params=test_params,
             )
             self.assertFinite(factor, name=f"exit_factor[{mode}]")
             self.assertGreater(factor, 0, f"Exit factor for {mode} should be positive")
@@ -282,7 +286,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             _get_exit_factor,
             base_factor=1.0,
             pnl=0.02,
-            pnl_factor=1.5,
+            pnl_coefficient=1.5,
             plateau_params=plateau_params,
             grace=0.5,
             tolerance_strict=self.TOL_IDENTITY_STRICT,
@@ -507,6 +511,48 @@ class TestRewardComponents(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
             msg="invariance_correction should be ~0 in canonical mode",
         )
+
+    def test_efficiency_center_extremes(self):
+        """Efficiency center extremes affect pnl_coefficient as expected when pnl_target_coefficient=1."""
+        context = self.make_ctx(
+            pnl=0.05,
+            trade_duration=10,
+            idle_duration=0,
+            max_unrealized_profit=0.10,
+            min_unrealized_profit=0.00,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        profit_target = 0.20
+        base_params = self.base_params(efficiency_weight=2.0)
+        params_center0 = dict(base_params, efficiency_center=0.0)
+        params_center1 = dict(base_params, efficiency_center=1.0)
+        coef_c0 = _get_pnl_coefficient(params_center0, context, profit_target, self.TEST_RR)
+        coef_c1 = _get_pnl_coefficient(params_center1, context, profit_target, self.TEST_RR)
+        self.assertFinite(coef_c0, name="coef_center0")
+        self.assertFinite(coef_c1, name="coef_center1")
+        self.assertGreater(coef_c0, coef_c1)
+
+    def test_efficiency_weight_zero_vs_two(self):
+        """Efficiency weight 0 yields ~1; weight 2 amplifies pnl_coefficient when center < ratio."""
+        context = self.make_ctx(
+            pnl=0.05,
+            trade_duration=10,
+            idle_duration=0,
+            max_unrealized_profit=0.10,
+            min_unrealized_profit=0.00,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        profit_target = 0.20
+        params_w0 = self.base_params(efficiency_weight=0.0, efficiency_center=0.2)
+        params_w2 = self.base_params(efficiency_weight=2.0, efficiency_center=0.2)
+        c0 = _get_pnl_coefficient(params_w0, context, profit_target, self.TEST_RR)
+        c2 = _get_pnl_coefficient(params_w2, context, profit_target, self.TEST_RR)
+        self.assertFinite(c0, name="coef_w0")
+        self.assertFinite(c2, name="coef_w2")
+        self.assertAlmostEqualFloat(c0, 1.0, tolerance=self.TOL_GENERIC_EQ)
+        self.assertGreater(c2, c0)
 
 
 if __name__ == "__main__":

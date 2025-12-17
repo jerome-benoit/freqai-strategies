@@ -42,6 +42,10 @@ Full test documentation: [tests/README.md](./tests/README.md).
 - [Quick Start](#quick-start)
 - [Prerequisites](#prerequisites)
 - [Common Use Cases](#common-use-cases)
+  - [1. Validate Reward Logic](#1-validate-reward-logic)
+  - [2. Parameter Sensitivity](#2-parameter-sensitivity)
+  - [3. Debug Anomalies](#3-debug-anomalies)
+  - [4. Real vs Synthetic](#4-real-vs-synthetic)
 - [CLI Parameters](#cli-parameters)
   - [Simulation & Environment](#simulation--environment)
   - [Hybrid Simulation Scalars](#hybrid-simulation-scalars)
@@ -56,13 +60,21 @@ Full test documentation: [tests/README.md](./tests/README.md).
   - [Overrides vs --params](#overrides-vs--params)
 - [Examples](#examples)
 - [Outputs](#outputs)
+  - [Main Report (`statistical_analysis.md`)](#main-report-statistical_analysismd)
+  - [Data Exports](#data-exports)
+  - [Manifest (`manifest.json`)](#manifest-manifestjson)
+  - [Distribution Shift Metrics](#distribution-shift-metrics)
 - [Advanced Usage](#advanced-usage)
   - [Parameter Sweeps](#parameter-sweeps)
-  - [PBRS Rationale](#pbrs-rationale)
+  - [PBRS Configuration](#pbrs-configuration)
   - [Real Data Comparison](#real-data-comparison)
   - [Batch Analysis](#batch-analysis)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
+  - [No Output Files](#no-output-files)
+  - [Unexpected Reward Values](#unexpected-reward-values)
+  - [Slow Execution](#slow-execution)
+  - [Memory Errors](#memory-errors)
 
 ## Prerequisites
 
@@ -191,8 +203,7 @@ be overridden via `--params`.
 - **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate
   statistical diagnostics (zero-width CIs, undefined distribution metrics)
   instead of graceful fallbacks.
-- **`--exit_factor_threshold`** (float, default: 10000.0) – Warn if exit factor
-  exceeds threshold.
+- **`--exit_factor_threshold`** (float, default: 1000.0) – Emits a warning if the absolute value of the exit factor exceeds the threshold.
 - **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple
   testing p-value adjustment method.
 - **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for
@@ -215,12 +226,75 @@ be overridden via `--params`.
 
 #### Core
 
-| Parameter           | Default | Description                 |
-| ------------------- | ------- | --------------------------- |
-| `base_factor`       | 100.0   | Base reward scale           |
-| `invalid_action`    | -2.0    | Penalty for invalid actions |
-| `win_reward_factor` | 2.0     | Profit overshoot multiplier |
-| `pnl_factor_beta`   | 0.5     | PnL amplification beta      |
+| Parameter        | Default | Description                 |
+| ---------------- | ------- | --------------------------- |
+| `base_factor`    | 100.0   | Base reward scale           |
+| `invalid_action` | -2.0    | Penalty for invalid actions |
+
+#### Exit Factor
+
+The exit factor is computed as:
+
+`exit_factor` = `base_factor `× `time_attenuation_coefficient` × `pnl_coefficient`
+where:
+`pnl_coefficient` = `pnl_target_coefficient` × `efficiency_coefficient`
+
+##### PnL Target
+
+| Parameter           | Default | Description                   |
+| ------------------- | ------- | ----------------------------- |
+| `profit_target`     | 0.03    | Target profit threshold       |
+| `risk_reward_ratio` | 1.0     | Risk/reward multiplier        |
+| `win_reward_factor` | 2.0     | Profit overshoot bonus factor |
+| `pnl_factor_beta`   | 0.5     | PnL amplification sensitivity |
+
+**Note:** In ReforceXY, `profit_target` maps to `profit_aim` and `risk_reward_ratio` maps to `rr`.
+
+**Formula:**
+
+Let `pnl_target = profit_target × risk_reward_ratio`, `pnl_ratio = pnl / pnl_target`.
+
+- If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
+- If `pnl_ratio > 1.0`:
+  `pnl_target_coefficient = 1.0 + win_reward_factor × tanh(pnl_factor_beta × (pnl_ratio − 1.0))`
+- If `pnl_ratio < −(1.0 / risk_reward_ratio)`:
+  `pnl_target_coefficient = 1.0 + (win_reward_factor × risk_reward_ratio) × tanh(pnl_factor_beta × (|pnl_ratio| − 1.0))`
+- Else: `pnl_target_coefficient = 1.0`
+
+##### Efficiency
+
+| Parameter           | Default | Description                    |
+| ------------------- | ------- | ------------------------------ |
+| `efficiency_weight` | 1.0     | Efficiency contribution weight |
+| `efficiency_center` | 0.5     | Efficiency pivot in [0,1]      |
+
+**Formula:**
+
+Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
+`range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
+
+- If `pnl > 0`:
+  `efficiency_coefficient = 1 + efficiency_weight * (ratio - efficiency_center)`
+- If `pnl < 0`:
+  `efficiency_coefficient = 1 + efficiency_weight * (efficiency_center - ratio)`
+- Else: `efficiency_coefficient = 1`
+
+##### Exit Attenuation
+
+| Parameter               | Default | Description                    |
+| ----------------------- | ------- | ------------------------------ |
+| `exit_attenuation_mode` | linear  | Kernel mode                    |
+| `exit_plateau`          | true    | Flat region before attenuation |
+| `exit_plateau_grace`    | 1.0     | Plateau grace ratio            |
+| `exit_linear_slope`     | 1.0     | Linear slope                   |
+| `exit_power_tau`        | 0.5     | Power kernel tau (0,1]         |
+| `exit_half_life`        | 0.5     | Half-life for half_life kernel |
+
+**Formula:**
+
+`time_attenuation_coefficient = kernel_function(duration_ratio)`
+
+where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuation Kernels](#exit-attenuation-kernels) for detailed formulas.
 
 #### Duration Penalties
 
@@ -233,45 +307,12 @@ be overridden via `--params`.
 | `hold_penalty_scale`         | 0.25    | Hold penalty scale         |
 | `hold_penalty_power`         | 1.025   | Hold penalty exponent      |
 
-#### Exit Attenuation
-
-| Parameter               | Default | Description                    |
-| ----------------------- | ------- | ------------------------------ |
-| `exit_attenuation_mode` | linear  | Kernel mode                    |
-| `exit_plateau`          | true    | Flat region before attenuation |
-| `exit_plateau_grace`    | 1.0     | Plateau grace ratio            |
-| `exit_linear_slope`     | 1.0     | Linear slope                   |
-| `exit_power_tau`        | 0.5     | Power kernel tau (0,1]         |
-| `exit_half_life`        | 0.5     | Half-life for half_life kernel |
-
-#### Efficiency
-
-| Parameter           | Default | Description                    |
-| ------------------- | ------- | ------------------------------ |
-| `efficiency_weight` | 1.0     | Efficiency contribution weight |
-| `efficiency_center` | 0.5     | Efficiency pivot in [0,1]      |
-
-**Formula (unrealized profit normalization):**
-
-Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
-`range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
-
-- If `pnl > 0`:
-  `efficiency_factor = 1 + efficiency_weight * (ratio - efficiency_center)`
-- If `pnl < 0`:
-  `efficiency_factor = 1 + efficiency_weight * (efficiency_center - ratio)`
-- Else: `efficiency_factor = 1`
-
-Final exit multiplier path: `exit_reward = pnl * exit_factor`, where
-`exit_factor = kernel(base_factor, duration_ratio_adjusted) * pnl_factor` and
-`pnl_factor` includes the `efficiency_factor` above.
-
 #### Validation
 
 | Parameter               | Default | Description                       |
 | ----------------------- | ------- | --------------------------------- |
 | `check_invariants`      | true    | Invariant enforcement (see above) |
-| `exit_factor_threshold` | 10000.0 | Warn on excessive factor          |
+| `exit_factor_threshold` | 1000.0  | Warn on excessive factor          |
 
 #### PBRS (Potential-Based Reward Shaping)
 
@@ -327,13 +368,13 @@ r* = r - grace    if exit_plateau and r >  grace
 r* = r            if not exit_plateau
 ```
 
-| Mode      | Multiplier applied to base_factor \* pnl \* pnl_factor \* efficiency_factor | Monotonic | Notes                                       | Use Case                             |
-| --------- | --------------------------------------------------------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
-| legacy    | step: ×1.5 if r\* ≤ 1 else ×0.5                                             | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
-| sqrt      | 1 / sqrt(1 + r\*)                                                           | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
-| linear    | 1 / (1 + slope \* r\*)                                                      | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
-| power     | (1 + r\*)^(-alpha)                                                          | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
-| half_life | 2^(- r\* / hl)                                                              | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor ×0.5 | Time-based exponential discount      |
+| Mode      | Formula                         | Monotonic | Notes                                       | Use Case                             |
+| --------- | ------------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
+| legacy    | step: ×1.5 if r\* ≤ 1 else ×0.5 | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
+| sqrt      | 1 / sqrt(1 + r\*)               | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
+| linear    | 1 / (1 + slope \* r\*)          | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
+| power     | (1 + r\*)^(-alpha)              | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
+| half_life | 2^(- r\* / hl)                  | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor ×0.5 | Time-based exponential discount      |
 
 ### Transform Functions
 
