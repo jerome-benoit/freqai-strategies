@@ -2476,10 +2476,15 @@ class QuickAdapterV3(IStrategy):
             if trade.open_date_utc > end_date:
                 continue
 
+            trade_exit_stage = self.get_trade_exit_stage(trade)
+
             for take_profit_stage, (
                 natr_ratio_percent,
                 _,
             ) in self.partial_exit_stages.items():
+                if take_profit_stage < trade_exit_stage:
+                    continue
+
                 take_profit_distance = self.get_take_profit_distance(
                     dataframe, trade, natr_ratio_percent
                 )
@@ -2501,7 +2506,7 @@ class QuickAdapterV3(IStrategy):
                     "color": take_profit_phase_colors.get(take_profit_stage, "silver"),
                     "line_style": "solid",
                     "width": 1,
-                    "label": f"TP Phase {take_profit_stage} ({trade.trade_direction})",
+                    "label": f"Take Profit {take_profit_stage}",
                     "z_level": 10 + take_profit_stage,
                 }
                 annotations.append(take_profit_line_annotation)
@@ -2527,7 +2532,7 @@ class QuickAdapterV3(IStrategy):
                     "color": take_profit_phase_colors.get(final_stage, "silver"),
                     "line_style": "solid",
                     "width": 1,
-                    "label": f"TP Phase {final_stage} ({trade.trade_direction})",
+                    "label": f"Take Profit {final_stage}",
                     "z_level": 10 + final_stage,
                 }
                 annotations.append(take_profit_line_annotation)
