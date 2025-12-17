@@ -2465,7 +2465,7 @@ class QuickAdapterV3(IStrategy):
 
         open_trades = Trade.get_trades_proxy(pair=pair, is_open=True)
 
-        take_profit_phase_colors = {
+        take_profit_stage_colors = {
             0: "lime",
             1: "yellow",
             2: "coral",
@@ -2503,7 +2503,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": take_profit_price,
                     "y_end": take_profit_price,
-                    "color": take_profit_phase_colors.get(take_profit_stage, "silver"),
+                    "color": take_profit_stage_colors.get(take_profit_stage, "silver"),
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Take Profit {take_profit_stage}",
@@ -2529,7 +2529,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": take_profit_price,
                     "y_end": take_profit_price,
-                    "color": take_profit_phase_colors.get(final_stage, "silver"),
+                    "color": take_profit_stage_colors.get(final_stage, "silver"),
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Take Profit {final_stage}",
