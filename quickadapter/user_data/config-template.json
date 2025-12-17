@@ -129,9 +129,9 @@
       // "strategy": "hybrid",
       // "source_weights": {
       //   "amplitude": 0.5,
-      //   "efficiency_ratio": 0.5
+      //   "volume_weighted_efficiency_ratio": 0.5
       // },
-      "gamma": 1.75
+      "gamma": 1.5
     },
     "extrema_smoothing": {
       "method": "kaiser",
