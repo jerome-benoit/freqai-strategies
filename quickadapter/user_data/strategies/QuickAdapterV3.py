@@ -132,14 +132,17 @@ class QuickAdapterV3(IStrategy):
 
     position_adjustment_enable = True
 
-    # {stage: (natr_ratio_percent, stake_percent)}
-    partial_exit_stages: ClassVar[dict[int, tuple[float, float]]] = {
-        0: (0.4858, 0.4),
-        1: (0.6180, 0.3),
-        2: (0.7640, 0.2),
+    # {stage: (natr_ratio_percent, stake_percent, color)}
+    partial_exit_stages: ClassVar[dict[int, tuple[float, float, str]]] = {
+        0: (0.4858, 0.4, "lime"),
+        1: (0.6180, 0.3, "yellow"),
+        2: (0.7640, 0.2, "coral"),
     }
 
-    CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
+    # (natr_ratio_percent, stake_percent, color)
+    _FINAL_EXIT_STAGE: Final[tuple[float, float, str]] = (1.0, 1.0, "deepskyblue")
+
+    _CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
 
     timeframe_minutes = timeframe_to_minutes(timeframe)
     minimal_roi = {str(timeframe_minutes * 864): -1}
@@ -423,17 +426,23 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Custom Stoploss:")
         logger.info(
-            f"  natr_ratio_percent: {format_number(QuickAdapterV3.CUSTOM_STOPLOSS_NATR_RATIO_PERCENT)}"
+            f"  natr_ratio_percent: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_RATIO_PERCENT)}"
         )
 
         logger.info("Partial Exit Stages:")
         for stage, (
             natr_ratio_percent,
             stake_percent,
+            color,
         ) in QuickAdapterV3.partial_exit_stages.items():
             logger.info(
-                f"  stage {stage}: natr_ratio_percent={format_number(natr_ratio_percent)}, stake_percent={format_number(stake_percent)}"
+                f"  stage {stage}: natr_ratio_percent={format_number(natr_ratio_percent)}, stake_percent={format_number(stake_percent)}, color={color}"
             )
+
+        final_stage = max(QuickAdapterV3.partial_exit_stages.keys(), default=-1) + 1
+        logger.info(
+            f"Final Exit Stage: stage {final_stage}: natr_ratio_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE[2]}"
+        )
 
         logger.info("Protections:")
         if self.protections:
@@ -1478,7 +1487,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
         stoploss_distance = self.get_stoploss_distance(
-            df, trade, current_rate, QuickAdapterV3.CUSTOM_STOPLOSS_NATR_RATIO_PERCENT
+            df, trade, current_rate, QuickAdapterV3._CUSTOM_STOPLOSS_NATR_RATIO_PERCENT
         )
         if isna(stoploss_distance) or stoploss_distance <= 0:
             return None
@@ -1503,7 +1512,7 @@ class QuickAdapterV3(IStrategy):
         natr_ratio_percent = (
             QuickAdapterV3.partial_exit_stages[exit_stage][0]
             if exit_stage in QuickAdapterV3.partial_exit_stages
-            else 1.0
+            else QuickAdapterV3._FINAL_EXIT_STAGE[0]
         )
         take_profit_distance = self.get_take_profit_distance(
             df, trade, natr_ratio_percent
@@ -1514,7 +1523,6 @@ class QuickAdapterV3(IStrategy):
         take_profit_price = (
             trade.open_rate + (-1 if trade.is_short else 1) * take_profit_distance
         )
-        self.safe_append_trade_take_profit_price(trade, take_profit_price, exit_stage)
 
         return take_profit_price
 
@@ -1636,6 +1644,10 @@ class QuickAdapterV3(IStrategy):
         )
         if isna(trade_take_profit_price):
             return None
+
+        self.safe_append_trade_take_profit_price(
+            trade, trade_take_profit_price, trade_exit_stage
+        )
 
         trade_partial_exit = QuickAdapterV3.can_take_profit(
             trade, current_rate, trade_take_profit_price
@@ -2274,6 +2286,11 @@ class QuickAdapterV3(IStrategy):
         )
         if isna(trade_take_profit_price):
             return None
+
+        self.safe_append_trade_take_profit_price(
+            trade, trade_take_profit_price, trade_exit_stage
+        )
+
         trade_take_profit_exit = QuickAdapterV3.can_take_profit(
             trade, current_rate, trade_take_profit_price
         )
@@ -2466,45 +2483,30 @@ class QuickAdapterV3(IStrategy):
 
         open_trades = Trade.get_trades_proxy(pair=pair, is_open=True)
 
-        take_profit_stage_colors = {
-            0: "lime",
-            1: "yellow",
-            2: "coral",
-            3: "deepskyblue",
-        }
-
         for trade in open_trades:
             if trade.open_date_utc > end_date:
                 continue
 
             trade_exit_stage = self.get_trade_exit_stage(trade)
 
-            for take_profit_stage, (
-                natr_ratio_percent,
-                _,
-            ) in self.partial_exit_stages.items():
+            for take_profit_stage, (_, _, color) in self.partial_exit_stages.items():
                 if take_profit_stage < trade_exit_stage:
                     continue
 
-                take_profit_distance = self.get_take_profit_distance(
-                    dataframe, trade, natr_ratio_percent
+                partial_take_profit_price = self.get_take_profit_price(
+                    dataframe, trade, take_profit_stage
                 )
 
-                if take_profit_distance is None or take_profit_distance <= 0:
+                if isna(partial_take_profit_price):
                     continue
-
-                take_profit_price = (
-                    trade.open_rate
-                    + (-1 if trade.is_short else 1) * take_profit_distance
-                )
 
                 take_profit_line_annotation: AnnotationType = {
                     "type": "line",
                     "start": max(trade.open_date_utc, start_date),
                     "end": end_date,
-                    "y_start": take_profit_price,
-                    "y_end": take_profit_price,
-                    "color": take_profit_stage_colors.get(take_profit_stage, "silver"),
+                    "y_start": partial_take_profit_price,
+                    "y_end": partial_take_profit_price,
+                    "color": color,
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Take Profit {take_profit_stage}",
@@ -2512,25 +2514,19 @@ class QuickAdapterV3(IStrategy):
                 }
                 annotations.append(take_profit_line_annotation)
 
-            final_stage = 3
-            final_natr_ratio_percent = 1.0
-            take_profit_distance = self.get_take_profit_distance(
-                dataframe, trade, final_natr_ratio_percent
+            final_stage = max(self.partial_exit_stages.keys(), default=-1) + 1
+            final_take_profit_price = self.get_take_profit_price(
+                dataframe, trade, final_stage
             )
 
-            if take_profit_distance is not None and take_profit_distance > 0:
-                take_profit_price = (
-                    trade.open_rate
-                    + (-1 if trade.is_short else 1) * take_profit_distance
-                )
-
+            if not isna(final_take_profit_price):
                 take_profit_line_annotation: AnnotationType = {
                     "type": "line",
                     "start": max(trade.open_date_utc, start_date),
                     "end": end_date,
-                    "y_start": take_profit_price,
-                    "y_end": take_profit_price,
-                    "color": take_profit_stage_colors.get(final_stage, "silver"),
+                    "y_start": final_take_profit_price,
+                    "y_end": final_take_profit_price,
+                    "color": QuickAdapterV3._FINAL_EXIT_STAGE[2],
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Take Profit {final_stage}",

@@ -40,7 +40,7 @@ from Utils import (
     zigzag,
 )
 
-ExtremaSelectionMethod = Literal["rank", "values", "partition"]
+ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
@@ -79,8 +79,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
-        "rank",
-        "values",
+        "rank_extrema",
+        "rank_peaks",
         "partition",
     )
     _CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
@@ -315,7 +315,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         selection_method = str(
             predictions_extrema.get(
                 "selection_method",
-                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank"
+                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank_extrema"
             )
         )
         if (
@@ -506,7 +506,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 logger.info(f"  label_weights: {label_weights}")
             else:
                 logger.info(
-                    "  label_weights: [1.0, ...] * n_objectives, normalized (default)"
+                    "  label_weights: [1.0, ...] * n_objectives, l1 normalized (default)"
                 )
 
             label_p_order_config = self.ft_params.get("label_p_order")
@@ -1263,7 +1263,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return minima_indices, maxima_indices
 
     @staticmethod
-    def _get_extrema_values(
+    def _get_ranked_peaks(
         pred_extrema: pd.Series,
         minima_indices: NDArray[np.intp],
         maxima_indices: NDArray[np.intp],
@@ -1331,7 +1331,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if (
             extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
-        ):  # "rank"
+        ):  # "rank_extrema"
             minima_indices, maxima_indices = (
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
@@ -1344,11 +1344,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         elif (
             extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
-        ):  # "values"
+        ):  # "rank_peaks"
             minima_indices, maxima_indices = (
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
-            pred_minima, pred_maxima = QuickAdapterRegressorV3._get_extrema_values(
+            pred_minima, pred_maxima = QuickAdapterRegressorV3._get_ranked_peaks(
                 pred_extrema, minima_indices, maxima_indices, extrema_fraction
             )
 
