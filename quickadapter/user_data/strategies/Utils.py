@@ -535,7 +535,12 @@ def _impute_weights(
     finite_mask: NDArray[np.bool_] | None = None,
     default_weight: float = DEFAULT_EXTREMA_WEIGHT,
 ) -> NDArray[np.floating]:
-    weights = weights.astype(float, copy=False)
+    weights = weights.astype(float, copy=True)
+
+    # weights computed by zigzag have NaN on first element if it cannot be computed correctly
+    if len(weights) > 0 and not np.isfinite(weights[0]):
+        weights[0] = 0.0
+
     if finite_mask is None:
         finite_mask = np.isfinite(weights)
 
@@ -546,9 +551,9 @@ def _impute_weights(
     if not np.isfinite(median_weight):
         median_weight = default_weight
 
-    weights_out = weights.astype(float, copy=True)
-    weights_out[~finite_mask] = median_weight
-    return weights_out
+    weights[~finite_mask] = median_weight
+
+    return weights
 
 
 def normalize_weights(
