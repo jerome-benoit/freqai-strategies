@@ -144,6 +144,8 @@ class QuickAdapterV3(IStrategy):
 
     _CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
 
+    _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 8
+
     timeframe_minutes = timeframe_to_minutes(timeframe)
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -1232,6 +1234,27 @@ class QuickAdapterV3(IStrategy):
             ((current_date - entry_date).total_seconds() / 60.0)
             / timeframe_to_minutes(self.config.get("timeframe"))
         )
+
+    def get_trade_annotation_line_start_date(
+        self, dataframe: DataFrame, trade: Trade, offset_candles: Optional[int] = None
+    ) -> datetime.datetime:
+        if offset_candles is None:
+            offset_candles = QuickAdapterV3._ANNOTATION_LINE_OFFSET_CANDLES
+
+        trade_duration_candles = self.get_trade_duration_candles(dataframe, trade)
+
+        offset_candles_remaining = max(
+            0,
+            offset_candles
+            - (trade_duration_candles if trade_duration_candles is not None else 0),
+        )
+
+        timeframe_minutes = timeframe_to_minutes(self.config.get("timeframe"))
+        offset_timedelta = datetime.timedelta(
+            minutes=offset_candles_remaining * timeframe_minutes
+        )
+
+        return trade.open_date_utc - offset_timedelta
 
     @staticmethod
     @lru_cache(maxsize=128)
@@ -2487,6 +2510,10 @@ class QuickAdapterV3(IStrategy):
             if trade.open_date_utc > end_date:
                 continue
 
+            trade_annotation_line_start_date = (
+                self.get_trade_annotation_line_start_date(dataframe, trade)
+            )
+
             trade_exit_stage = self.get_trade_exit_stage(trade)
 
             for take_profit_stage, (_, _, color) in self.partial_exit_stages.items():
@@ -2502,7 +2529,7 @@ class QuickAdapterV3(IStrategy):
 
                 take_profit_line_annotation: AnnotationType = {
                     "type": "line",
-                    "start": max(trade.open_date_utc, start_date),
+                    "start": max(trade_annotation_line_start_date, start_date),
                     "end": end_date,
                     "y_start": partial_take_profit_price,
                     "y_end": partial_take_profit_price,
@@ -2522,7 +2549,7 @@ class QuickAdapterV3(IStrategy):
             if not isna(final_take_profit_price):
                 take_profit_line_annotation: AnnotationType = {
                     "type": "line",
-                    "start": max(trade.open_date_utc, start_date),
+                    "start": max(trade_annotation_line_start_date, start_date),
                     "end": end_date,
                     "y_start": final_take_profit_price,
                     "y_end": final_take_profit_price,
