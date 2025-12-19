@@ -144,7 +144,7 @@ class QuickAdapterV3(IStrategy):
 
     _CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
 
-    _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 8
+    _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 11
 
     timeframe_minutes = timeframe_to_minutes(timeframe)
     minimal_roi = {str(timeframe_minutes * 864): -1}
