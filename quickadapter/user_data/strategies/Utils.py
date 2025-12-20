@@ -1641,8 +1641,8 @@ def zigzag(
 
         closes_slice = closes[start_pos:end_pos]
         close_diffs = np.diff(closes_slice)
-        path_length = float(np.nansum(np.abs(close_diffs)))
-        net_move = float(abs(closes_slice[-1] - closes_slice[0]))
+        path_length = np.nansum(np.abs(close_diffs))
+        net_move = abs(closes_slice[-1] - closes_slice[0])
 
         if not (np.isfinite(path_length) and np.isfinite(net_move)):
             return np.nan
@@ -1666,25 +1666,23 @@ def zigzag(
         if (end_pos - start_pos) < 2:
             return np.nan
 
-        closes_slice = closes[start_pos:end_pos]
-        close_diffs = np.diff(closes_slice)
-        net_move = float(abs(closes_slice[-1] - closes_slice[0]))
-
         volumes_slice = volumes[start_pos + 1 : end_pos]
         total_volume = np.nansum(volumes_slice)
         if not np.isfinite(total_volume) or np.isclose(total_volume, 0.0):
             return np.nan
-
         volume_weights = volumes_slice / total_volume
 
-        vw_path_length = float(np.nansum(np.abs(close_diffs) * volume_weights))
+        closes_slice = closes[start_pos:end_pos]
+        vw_close_diffs = np.diff(closes_slice) * volume_weights
+        vw_path_length = float(np.nansum(np.abs(vw_close_diffs)))
+        vw_net_move = abs(np.nansum(vw_close_diffs))
 
-        if not (np.isfinite(vw_path_length) and np.isfinite(net_move)):
+        if not (np.isfinite(vw_path_length) and np.isfinite(vw_net_move)):
             return np.nan
         if np.isclose(vw_path_length, 0.0):
             return np.nan
 
-        return net_move / vw_path_length
+        return vw_net_move / vw_path_length
 
     def add_pivot(pos: int, value: float, direction: TrendDirection):
         nonlocal last_pivot_pos

@@ -1627,8 +1627,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 "exit_potential_mode", ReforceXY._EXIT_POTENTIAL_MODES[0]
             )  # "canonical"
         )
-        _allowed_exit_modes = set(ReforceXY._EXIT_POTENTIAL_MODES)
-        if self._exit_potential_mode not in _allowed_exit_modes:
+        if self._exit_potential_mode not in set(ReforceXY._EXIT_POTENTIAL_MODES):
             logger.warning(
                 "Unknown exit_potential_mode %r; defaulting to %r. Valid modes: %s",
                 self._exit_potential_mode,
@@ -2055,10 +2054,9 @@ class MyRLEnv(Base5ActionRLEnv):
         bool
             True if configuration preserves theoretical PBRS invariance
         """
-        # "canonical"
         return self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0] and not (
             self._entry_additive_enabled or self._exit_additive_enabled
-        )
+        )  # "canonical"
 
     @staticmethod
     def is_unsupported_pbrs_config(
