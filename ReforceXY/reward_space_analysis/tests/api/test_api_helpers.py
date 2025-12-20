@@ -51,7 +51,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=40),
             num_samples=20,
-            seed=self.SEED_SMOKE_TEST,
+            seed=SEEDS.SMOKE_TEST,
             base_factor=PARAMS.BASE_FACTOR,
             profit_aim=PARAMS.PROFIT_AIM,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,

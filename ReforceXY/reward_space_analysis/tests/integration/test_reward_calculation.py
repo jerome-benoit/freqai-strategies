@@ -138,7 +138,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
         params.pop("base_factor", None)
         base_factor = 100.0
         profit_aim = 0.04
-        rr = self.TEST_RR
+        rr = PARAMS.RISK_REWARD_RATIO
 
         for pnl, label in [(0.02, "profit"), (-0.02, "loss")]:
             with self.subTest(pnl=pnl, label=label):

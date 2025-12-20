@@ -33,6 +33,7 @@ from ..constants import (
     SEEDS,
     TOLERANCE,
 )
+from ..constants import PARAMS
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.robustness
@@ -271,7 +272,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Negative exit_linear_slope is sanitized to 1.0; resulting exit factors must match slope=1.0 within tolerance."""
         base_factor = 100.0
         pnl = 0.03
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.04, min_unrealized_profit=0.0
         )
@@ -284,10 +285,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         for dr in duration_ratios:
             f_bad = _get_exit_factor(
-                base_factor, pnl, pnl_target, dr, test_context, params_bad, self.TEST_RR
+                base_factor, pnl, pnl_target, dr, test_context, params_bad, PARAMS.RISK_REWARD_RATIO
             )
             f_ref = _get_exit_factor(
-                base_factor, pnl, pnl_target, dr, test_context, params_ref, self.TEST_RR
+                base_factor, pnl, pnl_target, dr, test_context, params_ref, PARAMS.RISK_REWARD_RATIO
             )
             # Relaxed tolerance: Comparing exit factors computed with different slope values
             # after sanitization; minor numerical differences expected
@@ -302,7 +303,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Power mode attenuation: ratio f(dr=1)/f(dr=0) must equal 1/(1+1)^alpha with alpha=-log(tau)/log(2)."""
         base_factor = 200.0
         pnl = 0.04
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.05, min_unrealized_profit=0.0
         )
@@ -313,10 +314,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 exit_attenuation_mode="power", exit_power_tau=tau, exit_plateau=False
             )
             f0 = _get_exit_factor(
-                base_factor, pnl, pnl_target, 0.0, test_context, params, self.TEST_RR
+                base_factor, pnl, pnl_target, 0.0, test_context, params, PARAMS.RISK_REWARD_RATIO
             )
             f1 = _get_exit_factor(
-                base_factor, pnl, pnl_target, duration_ratio, test_context, params, self.TEST_RR
+                base_factor, pnl, pnl_target, duration_ratio, test_context, params, PARAMS.RISK_REWARD_RATIO
             )
             if 0.0 < tau <= 1.0:
                 alpha = -math.log(tau) / math.log(2.0)
@@ -385,7 +386,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Test parameter edge cases: tau extrema, plateau grace edges, slope zero."""
         base_factor = 50.0
         pnl = 0.02
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.03, min_unrealized_profit=0.0
         )
@@ -395,10 +396,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         r = 1.5
         hi_val = _get_exit_factor(
-            base_factor, pnl, pnl_target, r, test_context, params_hi, self.TEST_RR
+            base_factor, pnl, pnl_target, r, test_context, params_hi, PARAMS.RISK_REWARD_RATIO
         )
         lo_val = _get_exit_factor(
-            base_factor, pnl, pnl_target, r, test_context, params_lo, self.TEST_RR
+            base_factor, pnl, pnl_target, r, test_context, params_lo, PARAMS.RISK_REWARD_RATIO
         )
         self.assertGreater(
             hi_val, lo_val, "Power mode: higher tau (≈1) should attenuate less than tiny tau"
@@ -416,10 +417,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_linear_slope=1.0,
         )
         val_g0 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 0.5, test_context, params_g0, self.TEST_RR
+            base_factor, pnl, pnl_target, 0.5, test_context, params_g0, PARAMS.RISK_REWARD_RATIO
         )
         val_g1 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 0.5, test_context, params_g1, self.TEST_RR
+            base_factor, pnl, pnl_target, 0.5, test_context, params_g1, PARAMS.RISK_REWARD_RATIO
         )
         self.assertGreater(
             val_g1, val_g0, "Plateau grace=1.0 should delay attenuation vs grace=0.0"
@@ -431,10 +432,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_attenuation_mode="linear", exit_linear_slope=2.0, exit_plateau=False
         )
         val_lin0 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 1.0, test_context, params_lin0, self.TEST_RR
+            base_factor, pnl, pnl_target, 1.0, test_context, params_lin0, PARAMS.RISK_REWARD_RATIO
         )
         val_lin1 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 1.0, test_context, params_lin1, self.TEST_RR
+            base_factor, pnl, pnl_target, 1.0, test_context, params_lin1, PARAMS.RISK_REWARD_RATIO
         )
         self.assertGreater(
             val_lin0, val_lin1, "Linear slope=0 should yield no attenuation vs slope>0"
@@ -450,7 +451,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = PARAMS.BASE_FACTOR
         pnl = 0.04
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.05, min_unrealized_profit=0.0
         )
@@ -485,14 +486,14 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = 80.0
         profit_aim = PARAMS.PROFIT_AIM
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=profit_aim, trade_duration=50, max_unrealized_profit=0.04, min_unrealized_profit=0.0
         )
         ratios = [0.8, 1.0, 1.2, 1.4, 1.6]
         vals = [
             _get_exit_factor(
-                base_factor, profit_aim, pnl_target, r, test_context, params, self.TEST_RR
+                base_factor, profit_aim, pnl_target, r, test_context, params, PARAMS.RISK_REWARD_RATIO
             )
             for r in ratios
         ]
@@ -515,7 +516,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         eps = CONTINUITY.EPS_SMALL
         base_factor = PARAMS.BASE_FACTOR
         pnl = 0.01
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.02, min_unrealized_profit=0.0
         )
@@ -536,13 +537,13 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     }
                 )
                 left = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace - eps, test_context, params, self.TEST_RR
+                    base_factor, pnl, pnl_target, grace - eps, test_context, params, PARAMS.RISK_REWARD_RATIO
                 )
                 boundary = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace, test_context, params, self.TEST_RR
+                    base_factor, pnl, pnl_target, grace, test_context, params, PARAMS.RISK_REWARD_RATIO
                 )
                 right = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace + eps, test_context, params, self.TEST_RR
+                    base_factor, pnl, pnl_target, grace + eps, test_context, params, PARAMS.RISK_REWARD_RATIO
                 )
                 # Relaxed tolerance: Continuity check at plateau grace boundary;
                 # left and boundary values should be nearly identical
@@ -639,7 +640,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = 75.0
         pnl = 0.05
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.06, min_unrealized_profit=0.0
         )
@@ -730,7 +731,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         invalid_taus = [0.0, -0.5, 2.0, float("nan")]
         base_factor = 120.0
         pnl = 0.04
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.05, min_unrealized_profit=0.0
         )
@@ -743,10 +744,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             )
             with assert_diagnostic_warning(["exit_power_tau"]):
                 f0 = _get_exit_factor(
-                    base_factor, pnl, pnl_target, 0.0, test_context, params, self.TEST_RR
+                    base_factor, pnl, pnl_target, 0.0, test_context, params, PARAMS.RISK_REWARD_RATIO
                 )
                 f1 = _get_exit_factor(
-                    base_factor, pnl, pnl_target, duration_ratio, test_context, params, self.TEST_RR
+                    base_factor, pnl, pnl_target, duration_ratio, test_context, params, PARAMS.RISK_REWARD_RATIO
                 )
             # NUMERIC_GUARD: Prevent division by zero when computing power mode ratio
             ratio = f1 / max(f0, TOLERANCE.NUMERIC_GUARD)

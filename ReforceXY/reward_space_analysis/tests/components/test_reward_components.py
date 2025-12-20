@@ -211,9 +211,9 @@ class TestRewardComponents(RewardSpaceTestBase):
             action=Actions.Long_exit,
         )
         params = self.base_params()
-        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         pnl_target_coefficient = _compute_pnl_target_coefficient(
-            params, ctx.pnl, pnl_target, self.TEST_RR
+            params, ctx.pnl, pnl_target, PARAMS.RISK_REWARD_RATIO
         )
         efficiency_coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
         pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
