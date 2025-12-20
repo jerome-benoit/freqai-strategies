@@ -13,7 +13,12 @@ import pytest
 
 from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
 
-from ..constants import SCENARIOS, SEEDS
+from ..constants import (
+    PARAMS,
+    SCENARIOS,
+    SEEDS,
+    TOLERANCE,
+)
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.integration
@@ -73,9 +78,9 @@ class TestReportFormatting(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df=df,
             output_dir=out_dir,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
-            seed=self.SEED,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
             real_df=real_df,
             adjust_method="none",
             strict_diagnostics=False,
@@ -92,7 +97,7 @@ class TestReportFormatting(RewardSpaceTestBase):
         """Abs Σ Shaping Reward line present, formatted, uses constant not literal."""
         df = pd.DataFrame(
             {
-                "reward_shaping": [self.TOL_IDENTITY_STRICT, -self.TOL_IDENTITY_STRICT],
+                "reward_shaping": [TOLERANCE.IDENTITY_STRICT, -TOLERANCE.IDENTITY_STRICT],
                 "reward_entry_additive": [0.0, 0.0],
                 "reward_exit_additive": [0.0, 0.0],
             }
@@ -105,9 +110,9 @@ class TestReportFormatting(RewardSpaceTestBase):
         self.assertIsNotNone(m, "Abs Σ Shaping Reward line missing or misformatted")
         val = float(m.group(1)) if m else None
         if val is not None:
-            self.assertLess(val, self.TOL_NEGLIGIBLE + self.TOL_IDENTITY_STRICT)
+            self.assertLess(val, TOLERANCE.NEGLIGIBLE + TOLERANCE.IDENTITY_STRICT)
         self.assertNotIn(
-            str(self.TOL_GENERIC_EQ),
+            str(TOLERANCE.GENERIC_EQ),
             content,
             "Tolerance constant value should appear, not raw literal",
         )

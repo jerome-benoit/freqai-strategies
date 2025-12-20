@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from ..test_base import RewardSpaceTestBase
+from ..constants import SCENARIOS, SEEDS
+
 
 pytestmark = pytest.mark.integration
 
@@ -25,9 +27,9 @@ class TestIntegration(RewardSpaceTestBase):
             sys.executable,
             str(Path(__file__).parent.parent.parent / "reward_space_analysis.py"),
             "--num_samples",
-            str(self.TEST_SAMPLES),
+            str(SCENARIOS.SAMPLE_SIZE_SMALL),
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(self.output_path),
         ]
@@ -56,9 +58,9 @@ class TestIntegration(RewardSpaceTestBase):
             sys.executable,
             str(Path(__file__).parent.parent.parent / "reward_space_analysis.py"),
             "--num_samples",
-            str(self.TEST_SAMPLES),
+            str(SCENARIOS.SAMPLE_SIZE_SMALL),
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(self.output_path / "run1"),
         ]
@@ -68,9 +70,9 @@ class TestIntegration(RewardSpaceTestBase):
             sys.executable,
             str(Path(__file__).parent.parent.parent / "reward_space_analysis.py"),
             "--num_samples",
-            str(self.TEST_SAMPLES),
+            str(SCENARIOS.SAMPLE_SIZE_SMALL),
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(self.output_path / "run2"),
         ]
@@ -102,8 +104,8 @@ class TestIntegration(RewardSpaceTestBase):
             self.assertNotIn("top_features", manifest)
             self.assertNotIn("reward_param_overrides", manifest)
             self.assertNotIn("params", manifest)
-            self.assertEqual(manifest["num_samples"], self.TEST_SAMPLES)
-            self.assertEqual(manifest["seed"], self.SEED)
+            self.assertEqual(manifest["num_samples"], SCENARIOS.SAMPLE_SIZE_SMALL)
+            self.assertEqual(manifest["seed"], SEEDS.BASE)
         with open(self.output_path / "run1" / "manifest.json", "r") as f:
             manifest1 = json.load(f)
         with open(self.output_path / "run2" / "manifest.json", "r") as f:

@@ -18,6 +18,8 @@ from reward_space_analysis import (
 )
 
 from ..test_base import RewardSpaceTestBase
+from ..constants import PARAMS, TOLERANCE
+
 
 pytestmark = pytest.mark.integration
 
@@ -96,9 +98,9 @@ class TestRewardCalculation(RewardSpaceTestBase):
                 breakdown = calculate_reward(
                     ctx,
                     self.DEFAULT_PARAMS,
-                    base_factor=self.TEST_BASE_FACTOR,
-                    profit_aim=self.TEST_PROFIT_AIM,
-                    risk_reward_ratio=self.TEST_RR,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     short_allowed=True,
                     action_masking=expected_component != "invalid_penalty",
                 )
@@ -123,7 +125,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                 self.assertAlmostEqualFloat(
                     breakdown.total,
                     comp_sum,
-                    tolerance=self.TOL_IDENTITY_RELAXED,
+                    tolerance=TOLERANCE.IDENTITY_RELAXED,
                     msg=f"Total != sum components in {name}",
                 )
 

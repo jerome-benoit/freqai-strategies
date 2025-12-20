@@ -11,6 +11,8 @@ import pytest
 from reward_space_analysis import apply_potential_shaping
 
 from ..test_base import RewardSpaceTestBase
+from ..constants import PARAMS
+
 
 pytestmark = pytest.mark.components
 
@@ -39,7 +41,7 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
         ctx = {
             "base_reward": 0.05,
             "current_pnl": 0.01,
-            "pnl_target": self.TEST_PROFIT_AIM * self.TEST_RR,
+            "pnl_target": PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             "current_duration_ratio": 0.2,
             "next_pnl": 0.012,
             "next_duration_ratio": 0.25,

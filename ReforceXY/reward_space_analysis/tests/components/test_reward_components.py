@@ -18,7 +18,7 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
-from ..constants import PARAMS
+from ..constants import PARAMS, SCENARIOS, TOLERANCE
 from ..helpers import (
     RewardScenarioConfig,
     ThresholdTestConfig,
@@ -45,7 +45,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             "hold_potential_transform_pnl": "tanh",
             "hold_potential_transform_duration": "tanh",
         }
-        val = _compute_hold_potential(0.5, self.TEST_PROFIT_AIM * self.TEST_RR, 0.3, params)
+        val = _compute_hold_potential(0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params)
         self.assertFinite(val, name="hold_potential")
 
     def test_hold_penalty_basic_calculation(self):
@@ -67,16 +67,16 @@ class TestRewardComponents(RewardSpaceTestBase):
         breakdown = calculate_reward(
             context,
             self.DEFAULT_PARAMS,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=True,
         )
         self.assertLess(breakdown.hold_penalty, 0, "Hold penalty should be negative")
         config = ValidationConfig(
-            tolerance_strict=self.TOL_IDENTITY_STRICT,
-            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
+            tolerance_strict=TOLERANCE.IDENTITY_STRICT,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
             exclude_components=["idle_penalty", "exit_component", "invalid_penalty"],
             component_description="hold + shaping/additives",
         )
@@ -109,14 +109,14 @@ class TestRewardComponents(RewardSpaceTestBase):
         config = ThresholdTestConfig(
             max_duration=max_duration,
             test_cases=threshold_test_cases,
-            tolerance=self.TOL_IDENTITY_RELAXED,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
         )
         assert_hold_penalty_threshold_behavior(
             self,
             context_factory,
             self.DEFAULT_PARAMS,
-            self.TEST_BASE_FACTOR,
-            self.TEST_PROFIT_AIM,
+            PARAMS.BASE_FACTOR,
+            PARAMS.PROFIT_AIM,
             1.0,
             config,
         )
@@ -144,9 +144,9 @@ class TestRewardComponents(RewardSpaceTestBase):
             breakdown = calculate_reward(
                 context,
                 params,
-                base_factor=self.TEST_BASE_FACTOR,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 short_allowed=True,
                 action_masking=True,
             )
@@ -183,10 +183,10 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         scenarios = [(context, self.DEFAULT_PARAMS, "idle_penalty_basic")]
         config = RewardScenarioConfig(
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
             risk_reward_ratio=1.0,
-            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
         )
         assert_reward_calculation_scenarios(
             self,
@@ -211,14 +211,14 @@ class TestRewardComponents(RewardSpaceTestBase):
             action=Actions.Long_exit,
         )
         params = self.base_params()
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * self.TEST_RR
         pnl_target_coefficient = _compute_pnl_target_coefficient(
             params, ctx.pnl, pnl_target, self.TEST_RR
         )
         efficiency_coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
         pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
         self.assertFinite(pnl_coefficient, name="pnl_coefficient")
-        self.assertAlmostEqualFloat(pnl_coefficient, 1.0, tolerance=self.TOL_GENERIC_EQ)
+        self.assertAlmostEqualFloat(pnl_coefficient, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
 
     def test_max_idle_duration_candles_logic(self):
         """Test max idle duration candles parameter affects penalty magnitude.
@@ -229,7 +229,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         params_small = self.base_params(max_idle_duration_candles=50)
         params_large = self.base_params(max_idle_duration_candles=200)
-        base_factor = self.TEST_BASE_FACTOR
+        base_factor = PARAMS.BASE_FACTOR
         context = self.make_ctx(
             pnl=0.0,
             trade_duration=0,
@@ -241,17 +241,17 @@ class TestRewardComponents(RewardSpaceTestBase):
             context,
             params_small,
             base_factor,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=True,
         )
         large = calculate_reward(
             context,
             params_large,
-            base_factor=self.TEST_BASE_FACTOR,
+            base_factor=PARAMS.BASE_FACTOR,
             profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=True,
         )
@@ -290,7 +290,7 @@ class TestRewardComponents(RewardSpaceTestBase):
                 duration_ratio=0.3,
                 context=context,
                 params=test_params,
-                risk_reward_ratio=self.TEST_RR_HIGH,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH,
             )
             self.assertFinite(factor, name=f"exit_factor[{mode}]")
             self.assertGreater(factor, 0, f"Exit factor for {mode} should be positive")
@@ -309,8 +309,8 @@ class TestRewardComponents(RewardSpaceTestBase):
             context=context,
             plateau_params=plateau_params,
             grace=0.5,
-            tolerance_strict=self.TOL_IDENTITY_STRICT,
-            risk_reward_ratio=self.TEST_RR_HIGH,
+            tolerance_strict=TOLERANCE.IDENTITY_STRICT,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH,
         )
 
     def test_idle_penalty_zero_when_pnl_target_zero(self):
@@ -338,10 +338,10 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         scenarios = [(context, self.DEFAULT_PARAMS, "pnl_target_zero")]
         config = RewardScenarioConfig(
-            base_factor=self.TEST_BASE_FACTOR,
+            base_factor=PARAMS.BASE_FACTOR,
             profit_aim=0.0,
-            risk_reward_ratio=self.TEST_RR,
-            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
         )
         assert_reward_calculation_scenarios(
             self,
@@ -360,7 +360,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         win_reward_factor = 3.0
         beta = 0.5
-        profit_aim = self.TEST_PROFIT_AIM
+        profit_aim = PARAMS.PROFIT_AIM
         params = self.base_params(
             win_reward_factor=win_reward_factor,
             pnl_factor_beta=beta,
@@ -370,7 +370,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             exit_linear_slope=0.0,
         )
         params.pop("base_factor", None)
-        pnl_values = [profit_aim * m for m in (1.05, self.TEST_RR_HIGH, 5.0, 10.0)]
+        pnl_values = [profit_aim * m for m in (1.05, PARAMS.RISK_REWARD_RATIO_HIGH, 5.0, 10.0)]
         ratios_observed: list[float] = []
         for pnl in pnl_values:
             context = self.make_ctx(
@@ -387,7 +387,7 @@ class TestRewardComponents(RewardSpaceTestBase):
                 params,
                 base_factor=1.0,
                 profit_aim=profit_aim,
-                risk_reward_ratio=self.TEST_RR,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 short_allowed=True,
                 action_masking=True,
             )
@@ -396,7 +396,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         self.assertMonotonic(
             ratios_observed,
             non_decreasing=True,
-            tolerance=self.TOL_IDENTITY_STRICT,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
             name="pnl_amplification_ratio",
         )
         asymptote = 1.0 + win_reward_factor
@@ -431,7 +431,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         params = self.base_params(max_idle_duration_candles=None, max_trade_duration_candles=100)
         base_factor = PARAMS.BASE_FACTOR
-        profit_aim = self.TEST_PROFIT_AIM
+        profit_aim = PARAMS.PROFIT_AIM
         risk_reward_ratio = 1.0
 
         base_context_kwargs = {
@@ -504,9 +504,9 @@ class TestRewardComponents(RewardSpaceTestBase):
         breakdown = calculate_reward(
             context,
             canonical_params,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=True,
         )
@@ -521,7 +521,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(
             breakdown.reward_shaping,
             expected_shaping,
-            tolerance=self.TOL_IDENTITY_STRICT,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
             msg="reward_shaping should equal pbrs_delta + invariance_correction",
         )
 
@@ -529,7 +529,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(
             breakdown.invariance_correction,
             0.0,
-            tolerance=self.TOL_IDENTITY_STRICT,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
             msg="invariance_correction should be ~0 in canonical mode",
         )
 
