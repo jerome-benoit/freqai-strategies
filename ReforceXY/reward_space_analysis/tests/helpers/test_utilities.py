@@ -16,6 +16,7 @@ import pandas as pd
 
 from reward_space_analysis import load_real_episodes
 
+from ..constants import TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 
@@ -72,6 +73,7 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
             pickle.dump(obj, f)
 
     def test_top_level_dict_transitions(self):
+        """Load episodes from pickle with top-level dict containing transitions key."""
         df = pd.DataFrame(
             {
                 "pnl": [0.01],
@@ -90,6 +92,7 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         self.assertEqual(len(loaded), 1)
 
     def test_mixed_episode_list_warns_and_flattens(self):
+        """Load episodes from list with mixed structure (some with transitions, some without)."""
         ep1 = {"episode_id": 1}
         ep2 = {
             "episode_id": 2,
@@ -111,9 +114,12 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
             loaded = load_real_episodes(p)
             _ = w
         self.assertEqual(len(loaded), 1)
-        self.assertPlacesEqual(float(loaded.iloc[0]["pnl"]), 0.02, places=7)
+        self.assertPlacesEqual(
+            float(loaded.iloc[0]["pnl"]), 0.02, places=TOLERANCE.DECIMAL_PLACES_DATA_LOADING
+        )
 
     def test_non_iterable_transitions_raises(self):
+        """Verify ValueError raised when transitions value is not iterable."""
         bad = {"transitions": 123}
         p = Path(self.temp_dir) / "bad.pkl"
         self.write_pickle(bad, p)
@@ -121,6 +127,7 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
             load_real_episodes(p)
 
     def test_enforce_columns_false_fills_na(self):
+        """Verify enforce_columns=False fills missing required columns with NaN."""
         trans = [
             {"pnl": 0.03, "trade_duration": 10, "idle_duration": 0, "position": 1.0, "action": 2.0}
         ]
@@ -131,6 +138,7 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         self.assertTrue(loaded["reward"].isna().all())
 
     def test_casting_numeric_strings(self):
+        """Verify numeric strings are correctly cast to numeric types during loading."""
         trans = [
             {
                 "pnl": "0.04",
@@ -146,9 +154,12 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         loaded = load_real_episodes(p)
         self.assertIn("pnl", loaded.columns)
         self.assertIn(loaded["pnl"].dtype.kind, ("f", "i"))
-        self.assertPlacesEqual(float(loaded.iloc[0]["pnl"]), 0.04, places=7)
+        self.assertPlacesEqual(
+            float(loaded.iloc[0]["pnl"]), 0.04, places=TOLERANCE.DECIMAL_PLACES_DATA_LOADING
+        )
 
     def test_pickled_dataframe_loads(self):
+        """Verify pickled DataFrame loads correctly with all required columns."""
         test_episodes = pd.DataFrame(
             {
                 "pnl": [0.01, -0.02, 0.03],

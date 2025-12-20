@@ -40,6 +40,18 @@ def _minimal_df(n: int = 30) -> pd.DataFrame:
 
 
 def test_feature_analysis_missing_reward_column():
+    """Verify feature analysis handles missing reward column gracefully.
+
+    **Setup:**
+    - DataFrame with reward column removed
+    - skip_partial_dependence: True
+
+    **Assertions:**
+    - importance_df is empty
+    - model_fitted is False
+    - n_features is 0
+    - model is None
+    """
     df = _minimal_df().drop(columns=["reward"])  # remove reward
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_EMPTY, skip_partial_dependence=True
@@ -52,6 +64,17 @@ def test_feature_analysis_missing_reward_column():
 
 
 def test_feature_analysis_empty_frame():
+    """Verify feature analysis handles empty DataFrame gracefully.
+
+    **Setup:**
+    - DataFrame with 0 rows
+    - skip_partial_dependence: True
+
+    **Assertions:**
+    - importance_df is empty
+    - n_features is 0
+    - model is None
+    """
     df = _minimal_df(0)  # empty
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_EMPTY, skip_partial_dependence=True
@@ -62,6 +85,17 @@ def test_feature_analysis_empty_frame():
 
 
 def test_feature_analysis_single_feature_path():
+    """Verify feature analysis handles single feature DataFrame (stub path).
+
+    **Setup:**
+    - DataFrame with only 1 feature (pnl)
+    - skip_partial_dependence: True
+
+    **Assertions:**
+    - n_features is 1
+    - importance_mean is all NaN (stub path for single feature)
+    - model is None
+    """
     df = pd.DataFrame({"pnl": np.random.normal(0, 1, 25), "reward": np.random.normal(0, 1, 25)})
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_PRIME_11, skip_partial_dependence=True
@@ -73,6 +107,18 @@ def test_feature_analysis_single_feature_path():
 
 
 def test_feature_analysis_nans_present_path():
+    """Verify feature analysis handles NaN values in features (stub path).
+
+    **Setup:**
+    - DataFrame with NaN values in trade_duration column
+    - 40 rows with alternating NaN values
+    - skip_partial_dependence: True
+
+    **Assertions:**
+    - model_fitted is False (NaN stub path)
+    - importance_mean is all NaN
+    - model is None
+    """
     rng = np.random.default_rng(9)
     df = pd.DataFrame(
         {
@@ -91,6 +137,21 @@ def test_feature_analysis_nans_present_path():
 
 
 def test_feature_analysis_model_fitting_failure(monkeypatch):
+    """Verify feature analysis handles model fitting failure gracefully.
+
+    Uses monkeypatch to force RandomForestRegressor.fit() to raise RuntimeError,
+    simulating model fitting failure.
+
+    **Setup:**
+    - Monkeypatch RandomForestRegressor.fit to raise RuntimeError
+    - DataFrame with 50 rows
+    - skip_partial_dependence: True
+
+    **Assertions:**
+    - model_fitted is False
+    - model is None
+    - importance_mean is all NaN
+    """
     # Monkeypatch model fit to raise
     from reward_space_analysis import RandomForestRegressor  # type: ignore
 
@@ -111,6 +172,23 @@ def test_feature_analysis_model_fitting_failure(monkeypatch):
 
 
 def test_feature_analysis_permutation_failure_partial_dependence(monkeypatch):
+    """Verify feature analysis handles permutation_importance failure with partial dependence enabled.
+
+    Uses monkeypatch to force permutation_importance to raise RuntimeError,
+    while allowing partial dependence calculation to proceed.
+
+    **Setup:**
+    - Monkeypatch permutation_importance to raise RuntimeError
+    - DataFrame with 60 rows
+    - skip_partial_dependence: False
+
+    **Assertions:**
+    - model_fitted is True (model fits successfully)
+    - importance_mean is all NaN (permutation failed)
+    - partial_deps has at least 1 entry (PD still computed)
+    - model is not None
+    """
+
     # Monkeypatch permutation_importance to raise while allowing partial dependence
     def perm_boom(*a, **kw):  # noqa: D401
         raise RuntimeError("forced permutation failure")
@@ -129,6 +207,20 @@ def test_feature_analysis_permutation_failure_partial_dependence(monkeypatch):
 
 
 def test_feature_analysis_success_partial_dependence():
+    """Verify feature analysis succeeds with partial dependence enabled.
+
+    Happy path test with sufficient data and all components working.
+
+    **Setup:**
+    - DataFrame with 70 rows
+    - skip_partial_dependence: False
+
+    **Assertions:**
+    - At least one non-NaN importance value
+    - model_fitted is True
+    - partial_deps has at least 1 entry
+    - model is not None
+    """
     df = _minimal_df(70)
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_PRIME_47, skip_partial_dependence=False
