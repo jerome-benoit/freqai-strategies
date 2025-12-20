@@ -20,13 +20,22 @@ class ToleranceConfig:
     comparisons, ensuring consistent precision requirements across all tests.
 
     Attributes:
-        IDENTITY_STRICT: Machine-precision tolerance for identity checks (1e-12)
-        IDENTITY_RELAXED: Relaxed tolerance for approximate identity (1e-09)
-        GENERIC_EQ: Generic equality tolerance for float comparisons (1e-08)
+        IDENTITY_STRICT: Tolerance for strict identity checks (1e-12)
+        IDENTITY_RELAXED: Tolerance for relaxed identity checks (1e-09)
+        GENERIC_EQ: General-purpose equality tolerance (1e-08)
         NUMERIC_GUARD: Minimum threshold to prevent division by zero (1e-18)
         NEGLIGIBLE: Threshold below which values are considered negligible (1e-15)
         RELATIVE: Relative tolerance for ratio/percentage comparisons (1e-06)
         DISTRIB_SHAPE: Tolerance for distribution shape metrics (skew, kurtosis) (0.15)
+        DECIMAL_PLACES_STRICT: Decimal places for exact formula validation (12)
+        DECIMAL_PLACES_STANDARD: Decimal places for general calculations (9)
+        DECIMAL_PLACES_RELAXED: Decimal places for accumulated operations (6)
+        DECIMAL_PLACES_DATA_LOADING: Decimal places for data loading/casting tests (7)
+
+        # Additional tolerances for specific test scenarios
+        ALPHA_ATTENUATION_STRICT: Strict tolerance for alpha attenuation tests (5e-12)
+        ALPHA_ATTENUATION_RELAXED: Relaxed tolerance for alpha attenuation with tau != 1.0 (5e-09)
+        SHAPING_BOUND_TOLERANCE: Tolerance for bounded shaping checks (0.2)
     """
 
     IDENTITY_STRICT: float = 1e-12
@@ -36,6 +45,15 @@ class ToleranceConfig:
     NEGLIGIBLE: float = 1e-15
     RELATIVE: float = 1e-06
     DISTRIB_SHAPE: float = 0.15
+    DECIMAL_PLACES_STRICT: int = 12
+    DECIMAL_PLACES_STANDARD: int = 9
+    DECIMAL_PLACES_RELAXED: int = 6
+    DECIMAL_PLACES_DATA_LOADING: int = 7
+
+    # Additional tolerances
+    ALPHA_ATTENUATION_STRICT: float = 5e-12
+    ALPHA_ATTENUATION_RELAXED: float = 5e-09
+    SHAPING_BOUND_TOLERANCE: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -48,10 +66,18 @@ class ContinuityConfig:
     Attributes:
         EPS_SMALL: Small epsilon for tight continuity checks (1e-06)
         EPS_LARGE: Larger epsilon for coarser continuity tests (1e-05)
+        BOUND_MULTIPLIER_LINEAR: Linear mode derivative bound multiplier (2.0)
+        BOUND_MULTIPLIER_SQRT: Sqrt mode derivative bound multiplier (2.0)
+        BOUND_MULTIPLIER_POWER: Power mode derivative bound multiplier (2.0)
+        BOUND_MULTIPLIER_HALF_LIFE: Half-life mode derivative bound multiplier (2.5)
     """
 
     EPS_SMALL: float = 1e-06
     EPS_LARGE: float = 1e-05
+    BOUND_MULTIPLIER_LINEAR: float = 2.0
+    BOUND_MULTIPLIER_SQRT: float = 2.0
+    BOUND_MULTIPLIER_POWER: float = 2.0
+    BOUND_MULTIPLIER_HALF_LIFE: float = 2.5
 
 
 @dataclass(frozen=True)
@@ -149,6 +175,10 @@ class TestSeeds:
         # Report formatting seeds
         REPORT_FORMAT_1: Seed for report formatting test 1 (234)
         REPORT_FORMAT_2: Seed for report formatting test 2 (321)
+
+        # Additional seeds for various test scenarios
+        ALTERNATE_1: Alternate seed for robustness tests (555)
+        ALTERNATE_2: Alternate seed for variance tests (808)
     """
 
     BASE: int = 42
@@ -177,6 +207,10 @@ class TestSeeds:
     REPORT_FORMAT_1: int = 234
     REPORT_FORMAT_2: int = 321
 
+    # Additional seeds
+    ALTERNATE_1: int = 555
+    ALTERNATE_2: int = 808
+
 
 @dataclass(frozen=True)
 class TestParameters:
@@ -192,6 +226,20 @@ class TestParameters:
         RISK_REWARD_RATIO_HIGH: High risk/reward ratio for stress tests (2.0)
         PNL_STD: Standard deviation for PnL generation (0.02)
         PNL_DUR_VOL_SCALE: Duration-based volatility scaling factor (0.001)
+
+        # Common test PnL values
+        PNL_SMALL: Small profit/loss value (0.02)
+        PNL_MEDIUM: Medium profit/loss value (0.05)
+        PNL_LARGE: Large profit/loss value (0.10)
+
+        # Common duration values
+        TRADE_DURATION_SHORT: Short trade duration in steps (50)
+        TRADE_DURATION_MEDIUM: Medium trade duration in steps (100)
+        TRADE_DURATION_LONG: Long trade duration in steps (200)
+
+        # Common additive parameters
+        ADDITIVE_SCALE_DEFAULT: Default additive scale factor (0.4)
+        ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
     """
 
     BASE_FACTOR: float = 90.0
@@ -200,6 +248,20 @@ class TestParameters:
     RISK_REWARD_RATIO_HIGH: float = 2.0
     PNL_STD: float = 0.02
     PNL_DUR_VOL_SCALE: float = 0.001
+
+    # Common PnL values
+    PNL_SMALL: float = 0.02
+    PNL_MEDIUM: float = 0.05
+    PNL_LARGE: float = 0.10
+
+    # Common duration values
+    TRADE_DURATION_SHORT: int = 50
+    TRADE_DURATION_MEDIUM: int = 100
+    TRADE_DURATION_LONG: int = 200
+
+    # Additive parameters
+    ADDITIVE_SCALE_DEFAULT: float = 0.4
+    ADDITIVE_GAIN_DEFAULT: float = 1.0
 
 
 @dataclass(frozen=True)

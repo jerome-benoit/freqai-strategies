@@ -97,12 +97,18 @@ class TestStatistics(RewardSpaceTestBase):
                 key = f"{feature}_{suffix}"
                 if key in metrics:
                     self.assertPlacesEqual(
-                        float(metrics[key]), 0.0, places=12, msg=f"Expected 0 for {key}"
+                        float(metrics[key]),
+                        0.0,
+                        places=TOLERANCE.DECIMAL_PLACES_STRICT,
+                        msg=f"Expected 0 for {key}",
                     )
             p_key = f"{feature}_ks_pvalue"
             if p_key in metrics:
                 self.assertPlacesEqual(
-                    float(metrics[p_key]), 1.0, places=12, msg=f"Expected 1.0 for {p_key}"
+                    float(metrics[p_key]),
+                    1.0,
+                    places=TOLERANCE.DECIMAL_PLACES_STRICT,
+                    msg=f"Expected 1.0 for {p_key}",
                 )
 
     def test_statistics_distribution_shift_metrics(self):
@@ -256,8 +262,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_variance_vs_duration_spearman_sign(self):
         """trade_duration up => pnl variance up (rank corr >0)."""
-        from ..constants import STAT_TOL
-
         rng = np.random.default_rng(99)
         n = 250
         trade_duration = np.linspace(1, SCENARIOS.DURATION_LONG, n)
@@ -270,8 +274,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_scaling_invariance_distribution_metrics(self):
         """Equal scaling keeps KL/JS ≈0."""
-        from ..constants import STAT_TOL
-
         df1 = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_MEDIUM)
         scale = 3.5
         df2 = df1.copy()
@@ -436,8 +438,6 @@ class TestStatistics(RewardSpaceTestBase):
         )
         variance_by_bin = exit_data.groupby("duration_bin")["pnl"].var().dropna()
         if "Q1" in variance_by_bin.index and "Q4" in variance_by_bin.index:
-            from ..constants import STAT_TOL
-
             self.assertGreater(
                 variance_by_bin["Q4"],
                 variance_by_bin["Q1"] * STAT_TOL.VARIANCE_RATIO_THRESHOLD,
@@ -559,8 +559,6 @@ class TestStatistics(RewardSpaceTestBase):
             )
             width = hi - lo
             self.assertGreater(width, 0.0)
-            from ..constants import STAT_TOL
-
             self.assertLessEqual(
                 width, STAT_TOL.CI_WIDTH_EPSILON, "Width should be small epsilon range"
             )

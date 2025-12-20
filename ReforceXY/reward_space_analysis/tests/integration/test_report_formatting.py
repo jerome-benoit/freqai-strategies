@@ -58,7 +58,6 @@ class TestReportFormatting(RewardSpaceTestBase):
         """Helper: invoke write_complete_statistical_analysis into temp dir and return content."""
         out_dir = self.output_path / "report_tmp"
         # Ensure required columns present (action required for summary stats)
-        # Ensure required columns present (action required for summary stats)
         required_cols = [
             "action",
             "reward_invalid",
@@ -135,9 +134,7 @@ class TestReportFormatting(RewardSpaceTestBase):
         # Ensure placeholder text absent
         self.assertNotIn("_Not performed (no real episodes provided)._", content)
         # Basic regex to find a feature row (pnl)
-        import re as _re
-
-        m = _re.search(r"\| pnl \| ([0-9]+\.[0-9]{4}) \| ([0-9]+\.[0-9]{4}) \|", content)
+        m = re.search(r"\| pnl \| ([0-9]+\.[0-9]{4}) \| ([0-9]+\.[0-9]{4}) \|", content)
         self.assertIsNotNone(
             m, "pnl feature row missing or misformatted in distribution shift table"
         )
@@ -218,10 +215,8 @@ class TestReportFormatting(RewardSpaceTestBase):
             self.assertIn(metric, content, f"Missing metric in PBRS Metrics section: {metric}")
 
         # Verify proper formatting (values should be formatted with proper precision)
-        import re as _re
-
         # Check for at least one properly formatted metric line
-        m = _re.search(r"\| Mean Base Reward \| (-?[0-9]+\.[0-9]{6}) \|", content)
+        m = re.search(r"\| Mean Base Reward \| (-?[0-9]+\.[0-9]{6}) \|", content)
         self.assertIsNotNone(m, "Mean Base Reward metric missing or misformatted")
 
 

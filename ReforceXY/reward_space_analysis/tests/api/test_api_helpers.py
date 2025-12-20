@@ -203,7 +203,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertAlmostEqual(
             _get_float_param({"k": " 17.5 "}, "k", 0.0),
             17.5,
-            places=6,
+            places=TOLERANCE.DECIMAL_PLACES_RELAXED,
             msg="Whitespace trimmed numeric string should parse",
         )
         self.assertEqual(_get_float_param({"k": "1e2"}, "k", 0.0), 100.0)

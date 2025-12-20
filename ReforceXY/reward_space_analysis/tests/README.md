@@ -77,7 +77,7 @@ seed_all(SEEDS.FIXED_UNIT)
 
 **Key constant groups:**
 
-- `TOLERANCE.*` - Numerical tolerances (see `TOLERANCE_GUIDE.md`)
+- `TOLERANCE.*` - Numerical tolerances (documented in dataclass docstring)
 - `SEEDS.*` - Fixed random seeds for reproducibility
 - `PARAMS.*` - Standard test parameters (PnL, durations, ratios)
 - `EXIT_FACTOR.*` - Exit factor scenarios
@@ -88,24 +88,15 @@ seed_all(SEEDS.FIXED_UNIT)
 
 ### Tolerance Selection
 
-Choosing appropriate numerical tolerances is critical for preventing flaky tests.
+Choose appropriate numerical tolerances to prevent flaky tests. All tolerance constants are defined and documented in `tests/constants.py` with their rationale.
 
-**Authoritative guide:** See **`TOLERANCE_GUIDE.md`** for complete documentation:
-- Decision matrix for tolerance selection
-- Mathematical justification for each magnitude
-- When to use each tolerance based on error accumulation models
-- Usage examples and anti-patterns
+**Common tolerances:**
 
-**Quick reference**:
-- `IDENTITY_STRICT` (1e-12) - Machine-precision identity checks
-- `IDENTITY_RELAXED` (1e-09) - Multi-step accumulated errors
-- `GENERIC_EQ` (1e-08) - General floating-point equality
-- `NUMERIC_GUARD` (1e-18) - Division-by-zero prevention
-- `NEGLIGIBLE` (1e-15) - "Effectively zero" threshold
-- `RELATIVE` (1e-06) - Relative tolerance for ratios
+- `IDENTITY_STRICT` (1e-12) - Machine-precision checks
+- `IDENTITY_RELAXED` (1e-09) - Multi-step operations with accumulated errors
+- `GENERIC_EQ` (1e-08) - General floating-point equality (default)
 
-**Always document non-default tolerance choices** with inline comments explaining
-the error accumulation model.
+Always document non-default tolerance choices with inline comments explaining the error accumulation model.
 
 ### Test Documentation
 
@@ -250,7 +241,7 @@ Table tracks approximate line ranges and source ownership:
    selection.
 4. Follow the docstring template in `.docstring_template.md`.
 5. Use constants from `tests/constants.py` - never use magic numbers.
-6. Document tolerance choices (see `TOLERANCE_GUIDE.md` for guidance).
+6. Document tolerance choices with inline comments explaining error accumulation.
 7. Optionally declare inline ownership:
    ```python
    # Owns invariant: <id>
@@ -273,14 +264,12 @@ All test constants live in `tests/constants.py`:
 ### Tolerance Documentation
 
 When using non-default tolerances (anything other than `GENERIC_EQ`), add an
-inline comment:
+inline comment explaining the error accumulation:
 
 ```python
 # IDENTITY_RELAXED: Exit factor involves normalization + kernel + transform
 assert abs(exit_factor - expected) < TOLERANCE.IDENTITY_RELAXED
 ```
-
-See `TOLERANCE_GUIDE.md` for full decision matrix and justification patterns.
 
 ### Test Documentation Standards
 
@@ -320,12 +309,10 @@ before publishing analysis reliant on invariants.
 
 ## Additional Resources
 
-- **`TOLERANCE_GUIDE.md`** - Comprehensive guide to numerical tolerance selection
-  with mathematical justification and decision matrix
 - **`.docstring_template.md`** - Standardized test documentation template with
   examples for minimal, standard, and complex tests
 - **`constants.py`** - Single source of truth for all test constants (frozen
-  dataclasses)
+  dataclasses with comprehensive documentation)
 - **`helpers/assertions.py`** - 20+ custom assertion functions for invariant
   validation
 - **`test_base.py`** - Base class with common utilities (`make_ctx`,

@@ -436,8 +436,6 @@ def assert_parameter_sensitivity_behavior(
             self, variations, ctx, params, "exit_component", "increasing", config
         )
     """
-    from reward_space_analysis import calculate_reward
-
     results = []
     for param_variation in parameter_variations:
         params = base_params.copy()
@@ -556,8 +554,6 @@ def assert_exit_factor_attenuation_modes(
             make_params, 1e-09
         )
     """
-    import numpy as np
-
     for mode in attenuation_modes:
         with test_case.subTest(mode=mode):
             if mode == "plateau_linear":

@@ -20,6 +20,30 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
     """Additives enabled increase total reward; shaping impact limited."""
 
     def test_additive_activation_deterministic_contribution(self):
+        """Enabling additives increases total reward while limiting shaping impact.
+
+        **Invariant:** report-additives-deterministic-092
+
+        Validates that when entry/exit additives are enabled, the total reward
+        increases deterministically, but the shaping component remains bounded.
+        This ensures additives provide meaningful reward contribution without
+        destabilizing PBRS shaping dynamics.
+
+        **Setup:**
+        - Base configuration: hold_potential enabled, additives disabled
+        - Test configuration: entry_additive and exit_additive enabled
+        - Additive parameters: scale=0.4, gain=1.0 for both entry/exit
+        - Context: base_reward=0.05, pnl=0.01, duration_ratio=0.2
+
+        **Assertions:**
+        - Total reward with additives > total reward without additives
+        - Shaping difference remains bounded: |s1 - s0| < 0.2
+        - Both total and shaping rewards are finite
+
+        **Tolerance rationale:**
+        - Custom bound 0.2 for shaping delta: Additives should not cause
+          large shifts in shaping component, which maintains PBRS properties
+        """
         base = self.base_params(
             hold_potential_enabled=True,
             entry_additive_enabled=False,

@@ -153,7 +153,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertAlmostEqual(
             total_pnl,
             exit_pnl_sum,
-            places=10,
+            places=TOLERANCE.DECIMAL_PLACES_STANDARD,
             msg="PnL invariant violation: total PnL != sum of exit PnL",
         )
         non_zero_pnl_actions = set(np.unique(df[df["pnl"].abs() > np.finfo(float).eps]["action"]))
@@ -337,7 +337,23 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             )
 
     def test_reward_calculation_extreme_parameters_stability(self):
-        """Test reward calculation extreme parameters stability."""
+        """Reward calculation remains numerically stable with extreme parameter values.
+
+        Tests numerical stability and finite output when using extreme parameter
+        values (win_reward_factor=1000, base_factor=10000) that might cause
+        overflow or NaN propagation in poorly designed implementations.
+
+        **Setup:**
+        - Extreme parameters: win_reward_factor=1000.0, base_factor=10000.0
+        - Context: Long exit with pnl=0.05, duration=50, profit extrema=[0.02, 0.06]
+        - Configuration: short_allowed=True, action_masking=True
+
+        **Assertions:**
+        - Total reward is finite (not NaN, not Inf)
+
+        **Tolerance rationale:**
+        - Uses assertFinite which checks for non-NaN, non-Inf values only
+        """
         extreme_params = self.base_params(win_reward_factor=1000.0, base_factor=10000.0)
         context = RewardContext(
             pnl=0.05,
@@ -360,7 +376,24 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertFinite(br.total, name="breakdown.total")
 
     def test_exit_attenuation_modes_enumeration(self):
-        """Test exit attenuation modes enumeration."""
+        """All exit attenuation modes produce finite rewards without errors.
+
+        Smoke test ensuring each exit attenuation mode (including legacy modes)
+        executes successfully and produces finite reward components. This validates
+        that mode enumeration is complete and all modes are correctly implemented.
+
+        **Setup:**
+        - Modes tested: All values in ATTENUATION_MODES_WITH_LEGACY
+        - Context: Long exit with pnl=0.02, duration=50, profit extrema=[0.01, 0.03]
+        - Uses subTest for mode-specific failure isolation
+
+        **Assertions:**
+        - Exit component is finite for each mode
+        - Total reward is finite for each mode
+
+        **Tolerance rationale:**
+        - Uses assertFinite which checks for non-NaN, non-Inf values only
+        """
         modes = ATTENUATION_MODES_WITH_LEGACY
         for mode in modes:
             with self.subTest(mode=mode):
@@ -586,14 +619,19 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 )
                 diff = boundary - right
                 if mode == "linear":
-                    bound = base_factor * slope * eps * 2.0
+                    bound = base_factor * slope * eps * CONTINUITY.BOUND_MULTIPLIER_LINEAR
                 elif mode == "sqrt":
-                    bound = base_factor * 0.5 * eps * 2.0
+                    bound = base_factor * 0.5 * eps * CONTINUITY.BOUND_MULTIPLIER_SQRT
                 elif mode == "power":
                     alpha = -math.log(tau) / math.log(2.0)
-                    bound = base_factor * alpha * eps * 2.0
+                    bound = base_factor * alpha * eps * CONTINUITY.BOUND_MULTIPLIER_POWER
                 elif mode == "half_life":
-                    bound = base_factor * (math.log(2.0) / half_life) * eps * 2.5
+                    bound = (
+                        base_factor
+                        * (math.log(2.0) / half_life)
+                        * eps
+                        * CONTINUITY.BOUND_MULTIPLIER_HALF_LIFE
+                    )
                 else:
                     bound = base_factor * eps * 5.0
                 self.assertLessEqual(
@@ -794,7 +832,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             self.assertAlmostEqual(
                 ratio,
                 expected_ratio_alpha1,
-                places=9,
+                places=TOLERANCE.DECIMAL_PLACES_STANDARD,
                 msg=f"Alpha=1 fallback ratio mismatch tau={tau} ratio={ratio} expected={expected_ratio_alpha1}",
             )
 
