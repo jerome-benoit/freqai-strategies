@@ -22,8 +22,8 @@ from ..constants import (
     PARAMS,
     SCENARIOS,
     SEEDS,
-    STATISTICAL,
     STAT_TOL,
+    STATISTICAL,
     TOLERANCE,
 )
 from ..helpers import assert_diagnostic_warning
@@ -256,7 +256,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_variance_vs_duration_spearman_sign(self):
         """trade_duration up => pnl variance up (rank corr >0)."""
-        from ..constants import SCENARIOS, STAT_TOL
+        from ..constants import STAT_TOL
 
         rng = np.random.default_rng(99)
         n = 250
@@ -270,7 +270,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_scaling_invariance_distribution_metrics(self):
         """Equal scaling keeps KL/JS ≈0."""
-        from ..constants import SCENARIOS, STAT_TOL
+        from ..constants import STAT_TOL
 
         df1 = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_MEDIUM)
         scale = 3.5
@@ -302,7 +302,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_bh_correction_null_false_positive_rate(self):
         """Null: low BH discovery rate."""
-        from ..constants import SCENARIOS
 
         rng = np.random.default_rng(1234)
         n = SCENARIOS.SAMPLE_SIZE_MEDIUM
@@ -361,10 +360,10 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertEqual(v1, v2, f"Mismatch for {k}:{field}")
         metrics = ["reward", "pnl"]
         ci_a = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=SCENARIOS.BOOTSTRAP_ITERATIONS, seed=SEEDS.BOOTSTRAP
+            df, metrics, n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS, seed=SEEDS.BOOTSTRAP
         )
         ci_b = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=SCENARIOS.BOOTSTRAP_ITERATIONS, seed=SEEDS.BOOTSTRAP
+            df, metrics, n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS, seed=SEEDS.BOOTSTRAP
         )
         for metric in metrics:
             m_a, lo_a, hi_a = ci_a[metric]
@@ -416,7 +415,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_heteroscedasticity_pnl_validation(self):
         """PnL variance increases with trade duration (heteroscedasticity)."""
-        from ..constants import SCENARIOS
 
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
@@ -478,7 +476,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_benjamini_hochberg_adjustment(self):
         """BH adjustment adds p_value_adj & significant_adj with valid bounds."""
-        from ..constants import SCENARIOS
 
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
@@ -524,7 +521,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_bootstrap_shrinkage_with_sample_size(self):
         """Bootstrap CI half-width decreases with larger sample (~1/sqrt(n) heuristic)."""
-        from ..constants import SCENARIOS
 
         small = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_SMALL - 20)
         large = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_LARGE)
