@@ -26,6 +26,7 @@ from reward_space_analysis import (
     write_complete_statistical_analysis,
 )
 
+from ..constants import PARAMS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.api
@@ -49,14 +50,14 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=40),
             num_samples=20,
-            seed=self.SEED_SMOKE_TEST,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.SMOKE_TEST,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=1.5,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         self.assertGreater(len(df), 0)
         any_exit = df[df["reward_exit"] != 0].head(1)
@@ -74,9 +75,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             breakdown = calculate_reward(
                 ctx,
                 self.DEFAULT_PARAMS,
-                base_factor=self.TEST_BASE_FACTOR,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 short_allowed=True,
                 action_masking=True,
             )
@@ -87,28 +88,28 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         df_spot = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
             num_samples=80,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="spot",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         short_positions_spot = (df_spot["position"] == float(Positions.Short.value)).sum()
         self.assertEqual(short_positions_spot, 0, "Spot mode must not contain short positions")
         df_margin = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
             num_samples=80,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         for col in [
             "pnl",
@@ -129,27 +130,27 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         df1 = simulate_samples(
             params=self.base_params(action_masking="true", max_trade_duration_candles=50),
             num_samples=10,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="spot",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         self.assertIsInstance(df1, pd.DataFrame)
         df2 = simulate_samples(
             params=self.base_params(action_masking="false", max_trade_duration_candles=50),
             num_samples=10,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="spot",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         self.assertIsInstance(df2, pd.DataFrame)
 
@@ -158,14 +159,14 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         df_futures = simulate_samples(
             params=self.base_params(max_trade_duration_candles=50),
             num_samples=100,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="futures",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         short_positions = (df_futures["position"] == float(Positions.Short.value)).sum()
         self.assertGreater(short_positions, 0, "Futures mode should allow short positions")
@@ -202,7 +203,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertAlmostEqual(
             _get_float_param({"k": " 17.5 "}, "k", 0.0),
             17.5,
-            places=6,
+            places=TOLERANCE.DECIMAL_PLACES_RELAXED,
             msg="Whitespace trimmed numeric string should parse",
         )
         self.assertEqual(_get_float_param({"k": "1e2"}, "k", 0.0), 100.0)
@@ -275,23 +276,23 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         test_data = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
             num_samples=200,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = Path(tmp_dir)
             write_complete_statistical_analysis(
                 test_data,
                 output_path,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR,
-                seed=self.SEED,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                seed=SEEDS.BASE,
                 real_df=None,
             )
             main_report = output_path / "statistical_analysis.md"
@@ -325,9 +326,9 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                 breakdown = calculate_reward(
                     context,
                     self.DEFAULT_PARAMS,
-                    base_factor=self.TEST_BASE_FACTOR,
-                    profit_aim=self.TEST_PROFIT_AIM,
-                    risk_reward_ratio=self.TEST_RR,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     short_allowed=True,
                     action_masking=True,
                 )
@@ -354,9 +355,9 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         breakdown = calculate_reward(
             context,
             self.DEFAULT_PARAMS,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=False,
         )
@@ -367,7 +368,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             + breakdown.reward_shaping
             + breakdown.entry_additive
             + breakdown.exit_additive,
-            tolerance=self.TOL_IDENTITY_RELAXED,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg="Total should equal invalid penalty plus shaping/additives",
         )
 
@@ -392,8 +393,8 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             context,
             params,
             base_factor=10000000.0,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=True,
         )

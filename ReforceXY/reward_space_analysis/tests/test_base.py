@@ -21,12 +21,10 @@ from reward_space_analysis import (
 )
 
 from .constants import (
-    CONTINUITY,
-    EXIT_FACTOR,
+    PARAMS,
     PBRS,
     SCENARIOS,
     SEEDS,
-    STATISTICAL,
     TOLERANCE,
 )
 
@@ -47,64 +45,21 @@ class RewardSpaceTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up class-level constants."""
-        cls.SEED = SEEDS.BASE
         cls.DEFAULT_PARAMS = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
-        cls.TEST_SAMPLES = SCENARIOS.SAMPLE_SIZE_TINY
-        cls.TEST_BASE_FACTOR = 100.0
-        cls.TEST_PROFIT_AIM = 0.03
-        cls.TEST_RR = 1.0
-        cls.TEST_RR_HIGH = 2.0
-        cls.TEST_PNL_STD = 0.02
-        cls.TEST_PNL_DUR_VOL_SCALE = 0.5
-        # Seeds for different test contexts
-        cls.SEED_SMOKE_TEST = SEEDS.SMOKE_TEST
-        cls.SEED_REPRODUCIBILITY = SEEDS.REPRODUCIBILITY
-        cls.SEED_BOOTSTRAP = SEEDS.BOOTSTRAP
-        cls.SEED_HETEROSCEDASTICITY = SEEDS.HETEROSCEDASTICITY
-        # Statistical test thresholds
-        cls.BOOTSTRAP_DEFAULT_ITERATIONS = SCENARIOS.BOOTSTRAP_EXTENDED_ITERATIONS
-        cls.BH_FP_RATE_THRESHOLD = STATISTICAL.BH_FP_RATE_THRESHOLD
-        cls.EXIT_FACTOR_SCALING_RATIO_MIN = EXIT_FACTOR.SCALING_RATIO_MIN
-        cls.EXIT_FACTOR_SCALING_RATIO_MAX = EXIT_FACTOR.SCALING_RATIO_MAX
+        # Constants used in helper methods
+        cls.PBRS_TERMINAL_PROB = PBRS.TERMINAL_PROBABILITY
+        cls.PBRS_SWEEP_ITER = SCENARIOS.PBRS_SWEEP_ITERATIONS
+        cls.JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def setUp(self):
         """Set up test fixtures with reproducible random seed."""
-        self.seed_all(self.SEED)
+        self.seed_all(SEEDS.BASE)
         self.temp_dir = tempfile.mkdtemp()
         self.output_path = Path(self.temp_dir)
 
     def tearDown(self):
         """Clean up temporary files."""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    # ===============================================
-    # Constants imported from tests.constants module
-    # ===============================================
-
-    # Tolerance constants
-    TOL_IDENTITY_STRICT = TOLERANCE.IDENTITY_STRICT
-    TOL_IDENTITY_RELAXED = TOLERANCE.IDENTITY_RELAXED
-    TOL_GENERIC_EQ = TOLERANCE.GENERIC_EQ
-    TOL_NUMERIC_GUARD = TOLERANCE.NUMERIC_GUARD
-    TOL_NEGLIGIBLE = TOLERANCE.NEGLIGIBLE
-    TOL_RELATIVE = TOLERANCE.RELATIVE
-    TOL_DISTRIB_SHAPE = TOLERANCE.DISTRIB_SHAPE
-
-    # PBRS constants
-    PBRS_TERMINAL_TOL = PBRS.TERMINAL_TOL
-    PBRS_MAX_ABS_SHAPING = PBRS.MAX_ABS_SHAPING
-
-    # Continuity constants
-    CONTINUITY_EPS_SMALL = CONTINUITY.EPS_SMALL
-    CONTINUITY_EPS_LARGE = CONTINUITY.EPS_LARGE
-
-    # Exit factor constants
-    MIN_EXIT_POWER_TAU = EXIT_FACTOR.MIN_POWER_TAU
-
-    # Test-specific constants
-    PBRS_TERMINAL_PROB = PBRS.TERMINAL_PROBABILITY
-    PBRS_SWEEP_ITER = SCENARIOS.PBRS_SWEEP_ITERATIONS
-    JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def make_ctx(
         self,
@@ -163,7 +118,7 @@ class RewardSpaceTestBase(unittest.TestCase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=current_pnl,
-                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
@@ -223,7 +178,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         """
         if seed is not None:
             self.seed_all(seed)
-        pnl_std_eff = self.TEST_PNL_STD if pnl_std is None else pnl_std
+        pnl_std_eff = PARAMS.PNL_STD if pnl_std is None else pnl_std
         reward = np.random.normal(reward_mean, reward_std, n)
         pnl = np.random.normal(pnl_mean, pnl_std_eff, n)
         if trade_duration_dist == "exponential":
@@ -272,12 +227,12 @@ class RewardSpaceTestBase(unittest.TestCase):
         self.assertFinite(first, name="a")
         self.assertFinite(second, name="b")
         if tolerance is None:
-            tolerance = self.TOL_GENERIC_EQ
+            tolerance = TOLERANCE.GENERIC_EQ
         diff = abs(first - second)
         if diff <= tolerance:
             return
         if rtol is not None:
-            scale = max(abs(first), abs(second), self.TOL_NEGLIGIBLE)
+            scale = max(abs(first), abs(second), TOLERANCE.NEGLIGIBLE)
             if diff <= rtol * scale:
                 return
         self.fail(
@@ -388,7 +343,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         Uses strict identity tolerance by default for PBRS invariance style checks.
         """
         self.assertFinite(value, name="value")
-        tol = atol if atol is not None else self.TOL_IDENTITY_RELAXED
+        tol = atol if atol is not None else TOLERANCE.IDENTITY_RELAXED
         if abs(float(value)) > tol:
             self.fail(msg or f"Value {value} not near zero (tol={tol})")
 
@@ -442,7 +397,7 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def _make_idle_variance_df(self, n: int = 100) -> pd.DataFrame:
         """Synthetic dataframe focusing on idle_duration ↔ reward_idle correlation."""
-        self.seed_all(self.SEED)
+        self.seed_all(SEEDS.BASE)
         idle_duration = np.random.exponential(10, n)
         reward_idle = -0.01 * idle_duration + np.random.normal(0, 0.001, n)
         return pd.DataFrame(
@@ -451,7 +406,7 @@ class RewardSpaceTestBase(unittest.TestCase):
                 "reward_idle": reward_idle,
                 "position": np.random.choice([0.0, 0.5, 1.0], n),
                 "reward": np.random.normal(0, 1, n),
-                "pnl": np.random.normal(0, self.TEST_PNL_STD, n),
+                "pnl": np.random.normal(0, PARAMS.PNL_STD, n),
                 "trade_duration": np.random.exponential(20, n),
             }
         )

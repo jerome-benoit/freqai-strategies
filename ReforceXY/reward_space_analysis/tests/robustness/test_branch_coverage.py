@@ -61,6 +61,17 @@ def test_validate_reward_parameters_relaxed_adjustment_batch():
 
 @pytest.mark.robustness
 def test_get_exit_factor_negative_plateau_grace_warning():
+    """Verify negative exit_plateau_grace triggers warning but returns valid factor.
+
+    **Setup:**
+    - Attenuation mode: linear with plateau
+    - exit_plateau_grace: -1.0 (invalid, should be non-negative)
+    - Duration ratio: 0.5
+
+    **Assertions:**
+    - Warning emitted (RewardDiagnosticsWarning)
+    - Factor is non-negative despite invalid parameter
+    """
     params = {"exit_attenuation_mode": "linear", "exit_plateau": True, "exit_plateau_grace": -1.0}
     pnl = 0.01
     pnl_target = 0.03
@@ -88,6 +99,17 @@ def test_get_exit_factor_negative_plateau_grace_warning():
 
 @pytest.mark.robustness
 def test_get_exit_factor_negative_linear_slope_warning():
+    """Verify negative exit_linear_slope triggers warning but returns valid factor.
+
+    **Setup:**
+    - Attenuation mode: linear
+    - exit_linear_slope: -5.0 (invalid, should be non-negative)
+    - Duration ratio: 2.0
+
+    **Assertions:**
+    - Warning emitted (RewardDiagnosticsWarning)
+    - Factor is non-negative despite invalid parameter
+    """
     params = {"exit_attenuation_mode": "linear", "exit_linear_slope": -5.0}
     pnl = 0.01
     pnl_target = 0.03
@@ -115,6 +137,18 @@ def test_get_exit_factor_negative_linear_slope_warning():
 
 @pytest.mark.robustness
 def test_get_exit_factor_invalid_power_tau_relaxed():
+    """Verify invalid exit_power_tau (0.0) triggers warning in relaxed mode.
+
+    **Setup:**
+    - Attenuation mode: power
+    - exit_power_tau: 0.0 (invalid, should be positive)
+    - strict_validation: False (relaxed mode)
+    - Duration ratio: 1.5
+
+    **Assertions:**
+    - Warning emitted (RewardDiagnosticsWarning)
+    - Factor is positive (fallback to default tau)
+    """
     params = {"exit_attenuation_mode": "power", "exit_power_tau": 0.0, "strict_validation": False}
     pnl = 0.02
     pnl_target = 0.03
@@ -142,6 +176,18 @@ def test_get_exit_factor_invalid_power_tau_relaxed():
 
 @pytest.mark.robustness
 def test_get_exit_factor_half_life_near_zero_relaxed():
+    """Verify near-zero exit_half_life triggers warning in relaxed mode.
+
+    **Setup:**
+    - Attenuation mode: half_life
+    - exit_half_life: 1e-12 (near zero, impractical)
+    - strict_validation: False (relaxed mode)
+    - Duration ratio: 2.0
+
+    **Assertions:**
+    - Warning emitted (RewardDiagnosticsWarning)
+    - Factor is non-zero (fallback to sensible value)
+    """
     params = {
         "exit_attenuation_mode": "half_life",
         "exit_half_life": 1e-12,
@@ -173,6 +219,16 @@ def test_get_exit_factor_half_life_near_zero_relaxed():
 
 @pytest.mark.robustness
 def test_hold_penalty_short_duration_returns_zero():
+    """Verify hold penalty is zero when trade_duration is below max threshold.
+
+    **Setup:**
+    - Trade duration: 1 candle (short)
+    - Max trade duration: 128 candles
+    - Position: Long, Action: Neutral (hold)
+
+    **Assertions:**
+    - Penalty equals 0.0 (no penalty for short duration holds)
+    """
     context = RewardContext(
         pnl=0.0,
         trade_duration=1,  # shorter than default max trade duration (128)

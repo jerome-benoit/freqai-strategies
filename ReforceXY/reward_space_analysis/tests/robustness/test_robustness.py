@@ -18,6 +18,13 @@ from reward_space_analysis import (
     simulate_samples,
 )
 
+from ..constants import (
+    CONTINUITY,
+    EXIT_FACTOR,
+    PARAMS,
+    SEEDS,
+    TOLERANCE,
+)
 from ..helpers import (
     assert_diagnostic_warning,
     assert_exit_factor_attenuation_modes,
@@ -63,7 +70,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             ),
             dict(
                 ctx=self.make_ctx(
-                    pnl=self.TEST_PROFIT_AIM,
+                    pnl=PARAMS.PROFIT_AIM,
                     trade_duration=60,
                     idle_duration=0,
                     max_unrealized_profit=0.05,
@@ -104,17 +111,19 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 br = calculate_reward(
                     ctx_obj,
                     params,
-                    base_factor=self.TEST_BASE_FACTOR,
-                    profit_aim=self.TEST_PROFIT_AIM,
-                    risk_reward_ratio=self.TEST_RR,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     short_allowed=True,
                     action_masking=True,
                 )
+                # Relaxed tolerance: Accumulated floating-point errors across multiple
+                # reward component calculations (entry, hold, exit additives, and penalties)
                 assert_single_active_component_with_additives(
                     self,
                     br,
                     active_label,
-                    self.TOL_IDENTITY_RELAXED,
+                    TOLERANCE.IDENTITY_RELAXED,
                     inactive_core=[
                         "exit_component",
                         "idle_penalty",
@@ -129,14 +138,14 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=50),
             num_samples=200,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         total_pnl = df["pnl"].sum()
         exit_mask = df["reward_exit"] != 0
@@ -144,7 +153,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertAlmostEqual(
             total_pnl,
             exit_pnl_sum,
-            places=10,
+            places=TOLERANCE.DECIMAL_PLACES_STANDARD,
             msg="PnL invariant violation: total PnL != sum of exit PnL",
         )
         non_zero_pnl_actions = set(np.unique(df[df["pnl"].abs() > np.finfo(float).eps]["action"]))
@@ -172,14 +181,16 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         params = self.DEFAULT_PARAMS.copy()
 
+        # Relaxed tolerance: Exit factor calculations involve multiple steps
+        # (normalization, kernel application, potential transforms)
         assert_exit_mode_mathematical_validation(
             self,
             context,
             params,
-            self.TEST_BASE_FACTOR,
-            self.TEST_PROFIT_AIM,
-            self.TEST_RR,
-            self.TOL_IDENTITY_RELAXED,
+            PARAMS.BASE_FACTOR,
+            PARAMS.PROFIT_AIM,
+            PARAMS.RISK_REWARD_RATIO,
+            TOLERANCE.IDENTITY_RELAXED,
         )
 
         # Part 2: Monotonic attenuation validation
@@ -191,16 +202,18 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             max_unrealized_profit=0.06,
             min_unrealized_profit=0.0,
         )
+        # Relaxed tolerance: Testing across multiple attenuation modes with different
+        # numerical characteristics (exponential, polynomial, rational functions)
         assert_exit_factor_attenuation_modes(
             self,
-            base_factor=self.TEST_BASE_FACTOR,
+            base_factor=PARAMS.BASE_FACTOR,
             pnl=test_pnl,
-            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             context=test_context,
             attenuation_modes=modes,
             base_params_fn=self.base_params,
-            tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
-            risk_reward_ratio=self.TEST_RR,
+            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         )
 
     def test_exit_factor_threshold_warning_and_non_capping(self):
@@ -220,19 +233,19 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             baseline = calculate_reward(
                 context,
                 params,
-                base_factor=self.TEST_BASE_FACTOR,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR_HIGH,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH,
                 short_allowed=True,
                 action_masking=True,
             )
-            amplified_base_factor = self.TEST_BASE_FACTOR * 200.0
+            amplified_base_factor = PARAMS.BASE_FACTOR * 200.0
             amplified = calculate_reward(
                 context,
                 params,
                 base_factor=amplified_base_factor,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR_HIGH,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH,
                 short_allowed=True,
                 action_masking=True,
             )
@@ -257,7 +270,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Negative exit_linear_slope is sanitized to 1.0; resulting exit factors must match slope=1.0 within tolerance."""
         base_factor = 100.0
         pnl = 0.03
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.04, min_unrealized_profit=0.0
         )
@@ -270,15 +283,17 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         for dr in duration_ratios:
             f_bad = _get_exit_factor(
-                base_factor, pnl, pnl_target, dr, test_context, params_bad, self.TEST_RR
+                base_factor, pnl, pnl_target, dr, test_context, params_bad, PARAMS.RISK_REWARD_RATIO
             )
             f_ref = _get_exit_factor(
-                base_factor, pnl, pnl_target, dr, test_context, params_ref, self.TEST_RR
+                base_factor, pnl, pnl_target, dr, test_context, params_ref, PARAMS.RISK_REWARD_RATIO
             )
+            # Relaxed tolerance: Comparing exit factors computed with different slope values
+            # after sanitization; minor numerical differences expected
             self.assertAlmostEqualFloat(
                 f_bad,
                 f_ref,
-                tolerance=self.TOL_IDENTITY_RELAXED,
+                tolerance=TOLERANCE.IDENTITY_RELAXED,
                 msg=f"Sanitized slope mismatch at dr={dr} f_bad={f_bad} f_ref={f_ref}",
             )
 
@@ -286,7 +301,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Power mode attenuation: ratio f(dr=1)/f(dr=0) must equal 1/(1+1)^alpha with alpha=-log(tau)/log(2)."""
         base_factor = 200.0
         pnl = 0.04
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.05, min_unrealized_profit=0.0
         )
@@ -297,10 +312,16 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 exit_attenuation_mode="power", exit_power_tau=tau, exit_plateau=False
             )
             f0 = _get_exit_factor(
-                base_factor, pnl, pnl_target, 0.0, test_context, params, self.TEST_RR
+                base_factor, pnl, pnl_target, 0.0, test_context, params, PARAMS.RISK_REWARD_RATIO
             )
             f1 = _get_exit_factor(
-                base_factor, pnl, pnl_target, duration_ratio, test_context, params, self.TEST_RR
+                base_factor,
+                pnl,
+                pnl_target,
+                duration_ratio,
+                test_context,
+                params,
+                PARAMS.RISK_REWARD_RATIO,
             )
             if 0.0 < tau <= 1.0:
                 alpha = -math.log(tau) / math.log(2.0)
@@ -316,7 +337,23 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             )
 
     def test_reward_calculation_extreme_parameters_stability(self):
-        """Test reward calculation extreme parameters stability."""
+        """Reward calculation remains numerically stable with extreme parameter values.
+
+        Tests numerical stability and finite output when using extreme parameter
+        values (win_reward_factor=1000, base_factor=10000) that might cause
+        overflow or NaN propagation in poorly designed implementations.
+
+        **Setup:**
+        - Extreme parameters: win_reward_factor=1000.0, base_factor=10000.0
+        - Context: Long exit with pnl=0.05, duration=50, profit extrema=[0.02, 0.06]
+        - Configuration: short_allowed=True, action_masking=True
+
+        **Assertions:**
+        - Total reward is finite (not NaN, not Inf)
+
+        **Tolerance rationale:**
+        - Uses assertFinite which checks for non-NaN, non-Inf values only
+        """
         extreme_params = self.base_params(win_reward_factor=1000.0, base_factor=10000.0)
         context = RewardContext(
             pnl=0.05,
@@ -331,15 +368,32 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             context,
             extreme_params,
             base_factor=10000.0,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             short_allowed=True,
             action_masking=True,
         )
         self.assertFinite(br.total, name="breakdown.total")
 
     def test_exit_attenuation_modes_enumeration(self):
-        """Test exit attenuation modes enumeration."""
+        """All exit attenuation modes produce finite rewards without errors.
+
+        Smoke test ensuring each exit attenuation mode (including legacy modes)
+        executes successfully and produces finite reward components. This validates
+        that mode enumeration is complete and all modes are correctly implemented.
+
+        **Setup:**
+        - Modes tested: All values in ATTENUATION_MODES_WITH_LEGACY
+        - Context: Long exit with pnl=0.02, duration=50, profit extrema=[0.01, 0.03]
+        - Uses subTest for mode-specific failure isolation
+
+        **Assertions:**
+        - Exit component is finite for each mode
+        - Total reward is finite for each mode
+
+        **Tolerance rationale:**
+        - Uses assertFinite which checks for non-NaN, non-Inf values only
+        """
         modes = ATTENUATION_MODES_WITH_LEGACY
         for mode in modes:
             with self.subTest(mode=mode):
@@ -356,9 +410,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 br = calculate_reward(
                     ctx,
                     test_params,
-                    base_factor=self.TEST_BASE_FACTOR,
-                    profit_aim=self.TEST_PROFIT_AIM,
-                    risk_reward_ratio=self.TEST_RR,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     short_allowed=True,
                     action_masking=True,
                 )
@@ -369,20 +423,20 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Test parameter edge cases: tau extrema, plateau grace edges, slope zero."""
         base_factor = 50.0
         pnl = 0.02
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.03, min_unrealized_profit=0.0
         )
         params_hi = self.base_params(exit_attenuation_mode="power", exit_power_tau=0.999999)
         params_lo = self.base_params(
-            exit_attenuation_mode="power", exit_power_tau=self.MIN_EXIT_POWER_TAU
+            exit_attenuation_mode="power", exit_power_tau=EXIT_FACTOR.MIN_POWER_TAU
         )
         r = 1.5
         hi_val = _get_exit_factor(
-            base_factor, pnl, pnl_target, r, test_context, params_hi, self.TEST_RR
+            base_factor, pnl, pnl_target, r, test_context, params_hi, PARAMS.RISK_REWARD_RATIO
         )
         lo_val = _get_exit_factor(
-            base_factor, pnl, pnl_target, r, test_context, params_lo, self.TEST_RR
+            base_factor, pnl, pnl_target, r, test_context, params_lo, PARAMS.RISK_REWARD_RATIO
         )
         self.assertGreater(
             hi_val, lo_val, "Power mode: higher tau (≈1) should attenuate less than tiny tau"
@@ -400,10 +454,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_linear_slope=1.0,
         )
         val_g0 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 0.5, test_context, params_g0, self.TEST_RR
+            base_factor, pnl, pnl_target, 0.5, test_context, params_g0, PARAMS.RISK_REWARD_RATIO
         )
         val_g1 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 0.5, test_context, params_g1, self.TEST_RR
+            base_factor, pnl, pnl_target, 0.5, test_context, params_g1, PARAMS.RISK_REWARD_RATIO
         )
         self.assertGreater(
             val_g1, val_g0, "Plateau grace=1.0 should delay attenuation vs grace=0.0"
@@ -415,10 +469,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_attenuation_mode="linear", exit_linear_slope=2.0, exit_plateau=False
         )
         val_lin0 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 1.0, test_context, params_lin0, self.TEST_RR
+            base_factor, pnl, pnl_target, 1.0, test_context, params_lin0, PARAMS.RISK_REWARD_RATIO
         )
         val_lin1 = _get_exit_factor(
-            base_factor, pnl, pnl_target, 1.0, test_context, params_lin1, self.TEST_RR
+            base_factor, pnl, pnl_target, 1.0, test_context, params_lin1, PARAMS.RISK_REWARD_RATIO
         )
         self.assertGreater(
             val_lin0, val_lin1, "Linear slope=0 should yield no attenuation vs slope>0"
@@ -432,23 +486,27 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_plateau_grace=0.3,
             exit_linear_slope=0.0,
         )
-        base_factor = self.TEST_BASE_FACTOR
+        base_factor = PARAMS.BASE_FACTOR
         pnl = 0.04
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.05, min_unrealized_profit=0.0
         )
         ratios = [0.3, 0.6, 1.0, 1.4]
         values = [
-            _get_exit_factor(base_factor, pnl, pnl_target, r, test_context, params, self.TEST_RR)
+            _get_exit_factor(
+                base_factor, pnl, pnl_target, r, test_context, params, PARAMS.RISK_REWARD_RATIO
+            )
             for r in ratios
         ]
         first = values[0]
         for v in values[1:]:
+            # Relaxed tolerance: Exit factor should remain constant across all duration
+            # ratios when slope=0; accumulated errors from multiple calculations
             self.assertAlmostEqualFloat(
                 v,
                 first,
-                tolerance=self.TOL_IDENTITY_RELAXED,
+                tolerance=TOLERANCE.IDENTITY_RELAXED,
                 msg=f"Plateau+linear slope=0 factor drift at ratio set {ratios} => {values}",
             )
 
@@ -464,24 +522,32 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             }
         )
         base_factor = 80.0
-        profit_aim = self.TEST_PROFIT_AIM
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        profit_aim = PARAMS.PROFIT_AIM
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=profit_aim, trade_duration=50, max_unrealized_profit=0.04, min_unrealized_profit=0.0
         )
         ratios = [0.8, 1.0, 1.2, 1.4, 1.6]
         vals = [
             _get_exit_factor(
-                base_factor, profit_aim, pnl_target, r, test_context, params, self.TEST_RR
+                base_factor,
+                profit_aim,
+                pnl_target,
+                r,
+                test_context,
+                params,
+                PARAMS.RISK_REWARD_RATIO,
             )
             for r in ratios
         ]
         ref = vals[0]
         for i, r in enumerate(ratios[:-1]):
+            # Relaxed tolerance: All values before grace boundary should match;
+            # minor differences from repeated exit factor computations expected
             self.assertAlmostEqualFloat(
                 vals[i],
                 ref,
-                tolerance=self.TOL_IDENTITY_RELAXED,
+                tolerance=TOLERANCE.IDENTITY_RELAXED,
                 msg=f"Unexpected attenuation before grace end at ratio {r}",
             )
         self.assertLess(vals[-1], ref, "Attenuation should begin after grace boundary")
@@ -490,10 +556,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Test plateau continuity at grace boundary."""
         modes = list(ATTENUATION_MODES)
         grace = 0.8
-        eps = self.CONTINUITY_EPS_SMALL
-        base_factor = self.TEST_BASE_FACTOR
+        eps = CONTINUITY.EPS_SMALL
+        base_factor = PARAMS.BASE_FACTOR
         pnl = 0.01
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.02, min_unrealized_profit=0.0
         )
@@ -514,18 +580,38 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     }
                 )
                 left = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace - eps, test_context, params, self.TEST_RR
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    grace - eps,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 boundary = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace, test_context, params, self.TEST_RR
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    grace,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 right = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace + eps, test_context, params, self.TEST_RR
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    grace + eps,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
+                # Relaxed tolerance: Continuity check at plateau grace boundary;
+                # left and boundary values should be nearly identical
                 self.assertAlmostEqualFloat(
                     left,
                     boundary,
-                    tolerance=self.TOL_IDENTITY_RELAXED,
+                    tolerance=TOLERANCE.IDENTITY_RELAXED,
                     msg=f"Left/boundary mismatch for mode {mode}",
                 )
                 self.assertLess(
@@ -533,14 +619,19 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 )
                 diff = boundary - right
                 if mode == "linear":
-                    bound = base_factor * slope * eps * 2.0
+                    bound = base_factor * slope * eps * CONTINUITY.BOUND_MULTIPLIER_LINEAR
                 elif mode == "sqrt":
-                    bound = base_factor * 0.5 * eps * 2.0
+                    bound = base_factor * 0.5 * eps * CONTINUITY.BOUND_MULTIPLIER_SQRT
                 elif mode == "power":
                     alpha = -math.log(tau) / math.log(2.0)
-                    bound = base_factor * alpha * eps * 2.0
+                    bound = base_factor * alpha * eps * CONTINUITY.BOUND_MULTIPLIER_POWER
                 elif mode == "half_life":
-                    bound = base_factor * (math.log(2.0) / half_life) * eps * 2.5
+                    bound = (
+                        base_factor
+                        * (math.log(2.0) / half_life)
+                        * eps
+                        * CONTINUITY.BOUND_MULTIPLIER_HALF_LIFE
+                    )
                 else:
                     bound = base_factor * eps * 5.0
                 self.assertLessEqual(
@@ -553,11 +644,11 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Verify attenuation difference scales approximately linearly with epsilon (first-order continuity heuristic)."""
         mode = "linear"
         grace = 0.6
-        eps1 = self.CONTINUITY_EPS_LARGE
-        eps2 = self.CONTINUITY_EPS_SMALL
+        eps1 = CONTINUITY.EPS_LARGE
+        eps2 = CONTINUITY.EPS_SMALL
         base_factor = 80.0
         pnl = 0.02
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR_HIGH
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO_HIGH
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.03, min_unrealized_profit=0.0
         )
@@ -571,25 +662,38 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             }
         )
         f_boundary = _get_exit_factor(
-            base_factor, pnl, pnl_target, grace, test_context, params, self.TEST_RR_HIGH
+            base_factor, pnl, pnl_target, grace, test_context, params, PARAMS.RISK_REWARD_RATIO_HIGH
         )
         f1 = _get_exit_factor(
-            base_factor, pnl, pnl_target, grace + eps1, test_context, params, self.TEST_RR_HIGH
+            base_factor,
+            pnl,
+            pnl_target,
+            grace + eps1,
+            test_context,
+            params,
+            PARAMS.RISK_REWARD_RATIO_HIGH,
         )
         f2 = _get_exit_factor(
-            base_factor, pnl, pnl_target, grace + eps2, test_context, params, self.TEST_RR_HIGH
+            base_factor,
+            pnl,
+            pnl_target,
+            grace + eps2,
+            test_context,
+            params,
+            PARAMS.RISK_REWARD_RATIO_HIGH,
         )
         diff1 = f_boundary - f1
         diff2 = f_boundary - f2
-        ratio = diff1 / max(diff2, self.TOL_NUMERIC_GUARD)
+        # NUMERIC_GUARD: Prevent division by zero when computing scaling ratio
+        ratio = diff1 / max(diff2, TOLERANCE.NUMERIC_GUARD)
         self.assertGreater(
             ratio,
-            self.EXIT_FACTOR_SCALING_RATIO_MIN,
+            EXIT_FACTOR.SCALING_RATIO_MIN,
             f"Scaling ratio too small (ratio={ratio:.2f})",
         )
         self.assertLess(
             ratio,
-            self.EXIT_FACTOR_SCALING_RATIO_MAX,
+            EXIT_FACTOR.SCALING_RATIO_MAX,
             f"Scaling ratio too large (ratio={ratio:.2f})",
         )
 
@@ -602,7 +706,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         base_factor = 75.0
         pnl = 0.05
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.06, min_unrealized_profit=0.0
         )
@@ -615,7 +719,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 duration_ratio,
                 test_context,
                 params,
-                self.TEST_RR_HIGH,
+                PARAMS.RISK_REWARD_RATIO_HIGH,
             )
         linear_params = self.base_params(exit_attenuation_mode="linear", exit_plateau=False)
         f_linear = _get_exit_factor(
@@ -625,12 +729,14 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             duration_ratio,
             test_context,
             linear_params,
-            self.TEST_RR_HIGH,
+            PARAMS.RISK_REWARD_RATIO_HIGH,
         )
+        # Relaxed tolerance: Unknown exit mode should fall back to linear mode;
+        # verifying identical behavior between fallback and explicit linear
         self.assertAlmostEqualFloat(
             f_unknown,
             f_linear,
-            tolerance=self.TOL_IDENTITY_RELAXED,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg=f"Fallback linear mismatch unknown={f_unknown} linear={f_linear}",
         )
 
@@ -643,9 +749,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             exit_plateau_grace=-2.0,
             exit_linear_slope=1.2,
         )
-        base_factor = self.TEST_BASE_FACTOR
+        base_factor = PARAMS.BASE_FACTOR
         pnl = 0.03
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR_HIGH
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO_HIGH
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.04, min_unrealized_profit=0.0
         )
@@ -658,7 +764,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 duration_ratio,
                 test_context,
                 params,
-                self.TEST_RR_HIGH,
+                PARAMS.RISK_REWARD_RATIO_HIGH,
             )
         # Reference with grace=0.0 (since negative should clamp)
         ref_params = self.base_params(
@@ -674,12 +780,14 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             duration_ratio,
             test_context,
             ref_params,
-            self.TEST_RR_HIGH,
+            PARAMS.RISK_REWARD_RATIO_HIGH,
         )
+        # Relaxed tolerance: Negative grace parameter should clamp to 0.0;
+        # verifying clamped behavior matches explicit grace=0.0 configuration
         self.assertAlmostEqualFloat(
             f_neg,
             f_ref,
-            tolerance=self.TOL_IDENTITY_RELAXED,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg=f"Negative grace clamp mismatch f_neg={f_neg} f_ref={f_ref}",
         )
 
@@ -689,7 +797,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         invalid_taus = [0.0, -0.5, 2.0, float("nan")]
         base_factor = 120.0
         pnl = 0.04
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.05, min_unrealized_profit=0.0
         )
@@ -702,16 +810,29 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             )
             with assert_diagnostic_warning(["exit_power_tau"]):
                 f0 = _get_exit_factor(
-                    base_factor, pnl, pnl_target, 0.0, test_context, params, self.TEST_RR
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    0.0,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 f1 = _get_exit_factor(
-                    base_factor, pnl, pnl_target, duration_ratio, test_context, params, self.TEST_RR
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    duration_ratio,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
-            ratio = f1 / max(f0, self.TOL_NUMERIC_GUARD)
+            # NUMERIC_GUARD: Prevent division by zero when computing power mode ratio
+            ratio = f1 / max(f0, TOLERANCE.NUMERIC_GUARD)
             self.assertAlmostEqual(
                 ratio,
                 expected_ratio_alpha1,
-                places=9,
+                places=TOLERANCE.DECIMAL_PLACES_STANDARD,
                 msg=f"Alpha=1 fallback ratio mismatch tau={tau} ratio={ratio} expected={expected_ratio_alpha1}",
             )
 
@@ -720,7 +841,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         """Invariant 105: Near-zero exit_half_life warns and returns factor≈base_factor (no attenuation)."""
         base_factor = 60.0
         pnl = 0.02
-        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR_HIGH
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO_HIGH
         test_context = self.make_ctx(
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.03, min_unrealized_profit=0.0
         )
@@ -730,7 +851,13 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             params = self.base_params(exit_attenuation_mode="half_life", exit_half_life=hl)
             with assert_diagnostic_warning(["exit_half_life", "close to 0"]):
                 _ = _get_exit_factor(
-                    base_factor, pnl, pnl_target, 0.0, test_context, params, self.TEST_RR_HIGH
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    0.0,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO_HIGH,
                 )
                 fdr = _get_exit_factor(
                     base_factor,
@@ -739,7 +866,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     duration_ratio,
                     test_context,
                     params,
-                    self.TEST_RR_HIGH,
+                    PARAMS.RISK_REWARD_RATIO_HIGH,
                 )
             # Note: The expected value calculation needs adjustment since _get_exit_factor now computes
             # pnl_target_coefficient and efficiency_coefficient internally

@@ -10,9 +10,10 @@ import pytest
 
 from reward_space_analysis import ALLOWED_TRANSFORMS, apply_transform
 
+from ..constants import TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
-pytestmark = pytest.mark.transforms
+pytestmark = pytest.mark.components
 
 
 class TestTransforms(RewardSpaceTestBase):
@@ -88,7 +89,7 @@ class TestTransforms(RewardSpaceTestBase):
                     next_val = transform_values[i + 1]
                     self.assertLessEqual(
                         current_val,
-                        next_val + self.TOL_IDENTITY_STRICT,
+                        next_val + TOLERANCE.IDENTITY_STRICT,
                         f"{transform_name} not monotonic: values[{i}]={current_val:.6f} > values[{i + 1}]={next_val:.6f}",
                     )
 
@@ -104,7 +105,7 @@ class TestTransforms(RewardSpaceTestBase):
                 next_val = transform_values[i + 1]
                 self.assertLessEqual(
                     current_val,
-                    next_val + self.TOL_IDENTITY_STRICT,
+                    next_val + TOLERANCE.IDENTITY_STRICT,
                     f"clip not monotonic: values[{i}]={current_val:.6f} > values[{i + 1}]={next_val:.6f}",
                 )
 
@@ -116,7 +117,7 @@ class TestTransforms(RewardSpaceTestBase):
                 self.assertAlmostEqualFloat(
                     result,
                     0.0,
-                    tolerance=self.TOL_IDENTITY_STRICT,
+                    tolerance=TOLERANCE.IDENTITY_STRICT,
                     msg=f"{transform_name}(0.0) should equal 0.0",
                 )
 
@@ -131,7 +132,7 @@ class TestTransforms(RewardSpaceTestBase):
                 self.assertAlmostEqualFloat(
                     pos_result,
                     -neg_result,
-                    tolerance=self.TOL_IDENTITY_STRICT,
+                    tolerance=TOLERANCE.IDENTITY_STRICT,
                     msg=f"asinh({test_val}) should equal -asinh({-test_val})",
                 )
 
@@ -176,7 +177,7 @@ class TestTransforms(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(
             invalid_result,
             expected_result,
-            tolerance=self.TOL_IDENTITY_RELAXED,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg="Invalid transform should fall back to tanh",
         )
 
@@ -243,6 +244,6 @@ class TestTransforms(RewardSpaceTestBase):
                     self.assertFinite(approx_derivative, name=f"d/dx {transform_name}({x})")
                     self.assertGreaterEqual(
                         approx_derivative,
-                        -self.TOL_IDENTITY_STRICT,  # Allow small numerical errors
+                        -TOLERANCE.IDENTITY_STRICT,  # Allow small numerical errors
                         f"Derivative of {transform_name} at x={x} should be non-negative",
                     )

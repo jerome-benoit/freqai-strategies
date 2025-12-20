@@ -18,6 +18,14 @@ from reward_space_analysis import (
     statistical_hypothesis_tests,
 )
 
+from ..constants import (
+    PARAMS,
+    SCENARIOS,
+    SEEDS,
+    STAT_TOL,
+    STATISTICAL,
+    TOLERANCE,
+)
 from ..helpers import assert_diagnostic_warning
 from ..test_base import RewardSpaceTestBase
 
@@ -34,9 +42,9 @@ class TestStatistics(RewardSpaceTestBase):
         except ImportError:
             self.skipTest("sklearn not available; skipping feature analysis invariance test")
         # Use existing helper to get synthetic stats df (small for speed)
-        df = self.make_stats_df(n=120, seed=self.SEED, idle_pattern="mixed")
+        df = self.make_stats_df(n=120, seed=SEEDS.BASE, idle_pattern="mixed")
         importance_df, analysis_stats, partial_deps, model = _perform_feature_analysis(
-            df, seed=self.SEED, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
+            df, seed=SEEDS.BASE, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
         )
         self.assertIsInstance(importance_df, pd.DataFrame)
         self.assertIsInstance(analysis_stats, dict)
@@ -47,7 +55,7 @@ class TestStatistics(RewardSpaceTestBase):
     def test_statistics_binned_stats_invalid_bins_raises(self):
         """Invariant 110: _binned_stats must raise ValueError for <2 bin edges."""
 
-        df = self.make_stats_df(n=50, seed=self.SEED)
+        df = self.make_stats_df(n=50, seed=SEEDS.BASE)
         with self.assertRaises(ValueError):
             _binned_stats(df, "idle_duration", "reward_idle", [0.0])  # single edge invalid
         # Control: valid case should not raise and produce frame
@@ -58,7 +66,7 @@ class TestStatistics(RewardSpaceTestBase):
     def test_statistics_correlation_dropped_constant_columns(self):
         """Invariant 111: constant columns are listed in correlation_dropped and excluded."""
 
-        df = self.make_stats_df(n=90, seed=self.SEED)
+        df = self.make_stats_df(n=90, seed=SEEDS.BASE)
         # Force some columns constant
         df.loc[:, "reward_hold"] = 0.0
         df.loc[:, "idle_duration"] = 5.0
@@ -89,12 +97,18 @@ class TestStatistics(RewardSpaceTestBase):
                 key = f"{feature}_{suffix}"
                 if key in metrics:
                     self.assertPlacesEqual(
-                        float(metrics[key]), 0.0, places=12, msg=f"Expected 0 for {key}"
+                        float(metrics[key]),
+                        0.0,
+                        places=TOLERANCE.DECIMAL_PLACES_STRICT,
+                        msg=f"Expected 0 for {key}",
                     )
             p_key = f"{feature}_ks_pvalue"
             if p_key in metrics:
                 self.assertPlacesEqual(
-                    float(metrics[p_key]), 1.0, places=12, msg=f"Expected 1.0 for {p_key}"
+                    float(metrics[p_key]),
+                    1.0,
+                    places=TOLERANCE.DECIMAL_PLACES_STRICT,
+                    msg=f"Expected 1.0 for {p_key}",
                 )
 
     def test_statistics_distribution_shift_metrics(self):
@@ -139,12 +153,10 @@ class TestStatistics(RewardSpaceTestBase):
             if name.endswith(("_kl_divergence", "_js_distance", "_wasserstein")):
                 self.assertLess(
                     abs(val),
-                    self.TOL_GENERIC_EQ,
+                    TOLERANCE.GENERIC_EQ,
                     f"Metric {name} expected ≈ 0 on identical distributions (got {val})",
                 )
             elif name.endswith("_ks_statistic"):
-                from ..constants import STAT_TOL
-
                 self.assertLess(
                     abs(val),
                     STAT_TOL.KS_STATISTIC_IDENTITY,
@@ -191,19 +203,19 @@ class TestStatistics(RewardSpaceTestBase):
         for key in ["reward_mean", "reward_std", "pnl_mean", "pnl_std"]:
             if key in diagnostics:
                 self.assertAlmostEqualFloat(
-                    float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED
+                    float(diagnostics[key]), 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED
                 )
         # Skewness & kurtosis fallback to INTERNAL_GUARDS['distribution_constant_fallback_moment'] (0.0)
         for key in ["reward_skewness", "reward_kurtosis", "pnl_skewness", "pnl_kurtosis"]:
             if key in diagnostics:
                 self.assertAlmostEqualFloat(
-                    float(diagnostics[key]), 0.0, tolerance=self.TOL_IDENTITY_RELAXED
+                    float(diagnostics[key]), 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED
                 )
         # Q-Q plot r2 fallback value
         qq_key = next((k for k in diagnostics if k.endswith("_qq_r2")), None)
         if qq_key is not None:
             self.assertAlmostEqualFloat(
-                float(diagnostics[qq_key]), 1.0, tolerance=self.TOL_IDENTITY_RELAXED
+                float(diagnostics[qq_key]), 1.0, tolerance=TOLERANCE.IDENTITY_RELAXED
             )
         # All diagnostic values finite
         for k, v in diagnostics.items():
@@ -225,7 +237,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_statistical_hypothesis_tests_api_integration(self):
         """Test statistical_hypothesis_tests API integration with synthetic data."""
-        base = self.make_stats_df(n=200, seed=self.SEED, idle_pattern="mixed")
+        base = self.make_stats_df(n=200, seed=SEEDS.BASE, idle_pattern="mixed")
         base.loc[:149, ["reward_idle", "reward_hold", "reward_exit"]] = 0.0
         results = statistical_hypothesis_tests(base)
         self.assertIsInstance(results, dict)
@@ -244,14 +256,12 @@ class TestStatistics(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(
             metrics[js_key],
             metrics_swapped[js_key_swapped],
-            tolerance=self.TOL_IDENTITY_STRICT,
-            rtol=self.TOL_RELATIVE,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            rtol=TOLERANCE.RELATIVE,
         )
 
     def test_stats_variance_vs_duration_spearman_sign(self):
         """trade_duration up => pnl variance up (rank corr >0)."""
-        from ..constants import SCENARIOS, STAT_TOL
-
         rng = np.random.default_rng(99)
         n = 250
         trade_duration = np.linspace(1, SCENARIOS.DURATION_LONG, n)
@@ -264,8 +274,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_scaling_invariance_distribution_metrics(self):
         """Equal scaling keeps KL/JS ≈0."""
-        from ..constants import SCENARIOS, STAT_TOL
-
         df1 = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_MEDIUM)
         scale = 3.5
         df2 = df1.copy()
@@ -291,12 +299,11 @@ class TestStatistics(RewardSpaceTestBase):
             len(df_a) + len(df_b)
         )
         self.assertAlmostEqualFloat(
-            m_concat, m_weighted, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+            m_concat, m_weighted, tolerance=TOLERANCE.IDENTITY_STRICT, rtol=TOLERANCE.RELATIVE
         )
 
     def test_stats_bh_correction_null_false_positive_rate(self):
         """Null: low BH discovery rate."""
-        from ..constants import SCENARIOS
 
         rng = np.random.default_rng(1234)
         n = SCENARIOS.SAMPLE_SIZE_MEDIUM
@@ -321,7 +328,9 @@ class TestStatistics(RewardSpaceTestBase):
         if flags:
             rate = sum(flags) / len(flags)
             self.assertLess(
-                rate, self.BH_FP_RATE_THRESHOLD, f"BH null FP rate too high under null: {rate:.3f}"
+                rate,
+                STATISTICAL.BH_FP_RATE_THRESHOLD,
+                f"BH null FP rate too high under null: {rate:.3f}",
             )
 
     def test_stats_half_life_monotonic_series(self):
@@ -336,9 +345,9 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_hypothesis_seed_reproducibility(self):
         """Seed reproducibility for statistical_hypothesis_tests + bootstrap."""
-        df = self.make_stats_df(n=300, seed=self.SEED, idle_pattern="mixed")
-        r1 = statistical_hypothesis_tests(df, seed=self.SEED_REPRODUCIBILITY)
-        r2 = statistical_hypothesis_tests(df, seed=self.SEED_REPRODUCIBILITY)
+        df = self.make_stats_df(n=300, seed=SEEDS.BASE, idle_pattern="mixed")
+        r1 = statistical_hypothesis_tests(df, seed=SEEDS.REPRODUCIBILITY)
+        r2 = statistical_hypothesis_tests(df, seed=SEEDS.REPRODUCIBILITY)
         self.assertEqual(set(r1.keys()), set(r2.keys()))
         for k in r1:
             for field in ("p_value", "significant"):
@@ -353,30 +362,30 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertEqual(v1, v2, f"Mismatch for {k}:{field}")
         metrics = ["reward", "pnl"]
         ci_a = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=self.BOOTSTRAP_DEFAULT_ITERATIONS, seed=self.SEED_BOOTSTRAP
+            df, metrics, n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS, seed=SEEDS.BOOTSTRAP
         )
         ci_b = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=self.BOOTSTRAP_DEFAULT_ITERATIONS, seed=self.SEED_BOOTSTRAP
+            df, metrics, n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS, seed=SEEDS.BOOTSTRAP
         )
         for metric in metrics:
             m_a, lo_a, hi_a = ci_a[metric]
             m_b, lo_b, hi_b = ci_b[metric]
             self.assertAlmostEqualFloat(
-                m_a, m_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+                m_a, m_b, tolerance=TOLERANCE.IDENTITY_STRICT, rtol=TOLERANCE.RELATIVE
             )
             self.assertAlmostEqualFloat(
-                lo_a, lo_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+                lo_a, lo_b, tolerance=TOLERANCE.IDENTITY_STRICT, rtol=TOLERANCE.RELATIVE
             )
             self.assertAlmostEqualFloat(
-                hi_a, hi_b, tolerance=self.TOL_IDENTITY_STRICT, rtol=self.TOL_RELATIVE
+                hi_a, hi_b, tolerance=TOLERANCE.IDENTITY_STRICT, rtol=TOLERANCE.RELATIVE
             )
 
     def test_stats_distribution_metrics_mathematical_bounds(self):
         """Mathematical bounds and validity of distribution shift metrics."""
-        self.seed_all(self.SEED)
+        self.seed_all(SEEDS.BASE)
         df1 = pd.DataFrame(
             {
-                "pnl": np.random.normal(0, self.TEST_PNL_STD, 500),
+                "pnl": np.random.normal(0, PARAMS.PNL_STD, 500),
                 "trade_duration": np.random.exponential(30, 500),
                 "idle_duration": np.random.gamma(2, 5, 500),
             }
@@ -408,19 +417,18 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_heteroscedasticity_pnl_validation(self):
         """PnL variance increases with trade duration (heteroscedasticity)."""
-        from ..constants import SCENARIOS
 
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
             num_samples=SCENARIOS.SAMPLE_SIZE_LARGE + 200,
-            seed=self.SEED_HETEROSCEDASTICITY,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.HETEROSCEDASTICITY,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         exit_data = df[df["reward_exit"] != 0].copy()
         if len(exit_data) < SCENARIOS.SAMPLE_SIZE_TINY:
@@ -430,8 +438,6 @@ class TestStatistics(RewardSpaceTestBase):
         )
         variance_by_bin = exit_data.groupby("duration_bin")["pnl"].var().dropna()
         if "Q1" in variance_by_bin.index and "Q4" in variance_by_bin.index:
-            from ..constants import STAT_TOL
-
             self.assertGreater(
                 variance_by_bin["Q4"],
                 variance_by_bin["Q1"] * STAT_TOL.VARIANCE_RATIO_THRESHOLD,
@@ -440,7 +446,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_statistical_functions_bounds_validation(self):
         """All statistical functions respect bounds."""
-        df = self.make_stats_df(n=300, seed=self.SEED, idle_pattern="all_nonzero")
+        df = self.make_stats_df(n=300, seed=SEEDS.BASE, idle_pattern="all_nonzero")
         diagnostics = distribution_diagnostics(df)
         for col in ["reward", "pnl", "trade_duration", "idle_duration"]:
             if f"{col}_skewness" in diagnostics:
@@ -451,7 +457,7 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertPValue(
                     diagnostics[f"{col}_shapiro_pval"], msg=f"Shapiro p-value bounds for {col}"
                 )
-        hypothesis_results = statistical_hypothesis_tests(df, seed=self.SEED)
+        hypothesis_results = statistical_hypothesis_tests(df, seed=SEEDS.BASE)
         for test_name, result in hypothesis_results.items():
             if "p_value" in result:
                 self.assertPValue(result["p_value"], msg=f"p-value bounds for {test_name}")
@@ -470,22 +476,21 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_benjamini_hochberg_adjustment(self):
         """BH adjustment adds p_value_adj & significant_adj with valid bounds."""
-        from ..constants import SCENARIOS
 
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=100),
             num_samples=SCENARIOS.SAMPLE_SIZE_LARGE - 200,
-            seed=self.SEED_HETEROSCEDASTICITY,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.HETEROSCEDASTICITY,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         results_adj = statistical_hypothesis_tests(
-            df, adjust_method="benjamini_hochberg", seed=self.SEED_REPRODUCIBILITY
+            df, adjust_method="benjamini_hochberg", seed=SEEDS.REPRODUCIBILITY
         )
         self.assertGreater(len(results_adj), 0)
         for name, res in results_adj.items():
@@ -496,7 +501,7 @@ class TestStatistics(RewardSpaceTestBase):
             p_adj = res["p_value_adj"]
             self.assertPValue(p_raw)
             self.assertPValue(p_adj)
-            self.assertGreaterEqual(p_adj, p_raw - self.TOL_IDENTITY_STRICT)
+            self.assertGreaterEqual(p_adj, p_raw - TOLERANCE.IDENTITY_STRICT)
             alpha = 0.05
             self.assertEqual(res["significant_adj"], bool(p_adj < alpha))
             if "effect_size_epsilon_sq" in res:
@@ -506,7 +511,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_bootstrap_confidence_intervals_bounds_ordering(self):
         """Test bootstrap confidence intervals return ordered finite bounds."""
-        test_data = self.make_stats_df(n=100, seed=self.SEED)
+        test_data = self.make_stats_df(n=100, seed=SEEDS.BASE)
         results = bootstrap_confidence_intervals(test_data, ["reward", "pnl"], n_bootstrap=100)
         for metric, (mean, ci_low, ci_high) in results.items():
             self.assertFinite(mean, name=f"mean[{metric}]")
@@ -516,7 +521,6 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_stats_bootstrap_shrinkage_with_sample_size(self):
         """Bootstrap CI half-width decreases with larger sample (~1/sqrt(n) heuristic)."""
-        from ..constants import SCENARIOS
 
         small = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_SMALL - 20)
         large = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_LARGE)
@@ -555,8 +559,6 @@ class TestStatistics(RewardSpaceTestBase):
             )
             width = hi - lo
             self.assertGreater(width, 0.0)
-            from ..constants import STAT_TOL
-
             self.assertLessEqual(
                 width, STAT_TOL.CI_WIDTH_EPSILON, "Width should be small epsilon range"
             )

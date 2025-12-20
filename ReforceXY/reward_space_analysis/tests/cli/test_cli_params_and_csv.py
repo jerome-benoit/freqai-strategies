@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from ..constants import SEEDS
 from ..test_base import RewardSpaceTestBase
 
 # Pytest marker for taxonomy classification
@@ -32,7 +33,7 @@ class TestCsvEncoding(RewardSpaceTestBase):
             "--num_samples",
             "200",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
         ]
@@ -74,7 +75,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "200",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
             "--skip_feature_analysis",
@@ -101,7 +102,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "150",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
             "--risk_reward_ratio",
@@ -130,7 +131,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "180",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
         ]
@@ -155,7 +156,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "120",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
             "--strict_diagnostics",
@@ -185,7 +186,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "120",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
             "--params",
@@ -216,7 +217,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "120",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
             "--max_trade_duration_candles",
@@ -254,7 +255,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             "--num_samples",
             "150",
             "--seed",
-            str(self.SEED),
+            str(SEEDS.BASE),
             "--out_dir",
             str(out_dir),
             # Enable PBRS shaping explicitly

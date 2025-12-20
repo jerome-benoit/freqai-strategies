@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Tests for Potential-Based Reward Shaping (PBRS) mechanics."""
 
+import re
 import unittest
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from reward_space_analysis import (
@@ -22,7 +24,14 @@ from reward_space_analysis import (
     write_complete_statistical_analysis,
 )
 
-from ..constants import SEEDS
+from ..constants import (
+    PARAMS,
+    PBRS,
+    SCENARIOS,
+    SEEDS,
+    STATISTICAL,
+    TOLERANCE,
+)
 from ..helpers import (
     assert_non_canonical_shaping_exceeds,
     assert_pbrs_canonical_sum_within_tolerance,
@@ -42,7 +51,11 @@ class TestPBRS(RewardSpaceTestBase):
     # ---------------- Potential transform mechanics ---------------- #
 
     def test_pbrs_progressive_release_decay_clamped(self):
-        """Verifies progressive_release mode with decay>1 clamps potential to zero."""
+        """Verifies progressive_release mode decay clamps at terminal.
+
+        Tolerance rationale: IDENTITY_RELAXED used for PBRS terminal state checks
+        due to accumulated errors from gamma discounting and potential calculations.
+        """
         params = self.DEFAULT_PARAMS.copy()
         params.update(
             {
@@ -56,9 +69,9 @@ class TestPBRS(RewardSpaceTestBase):
         )
         current_pnl = 0.02
         current_dur = 0.5
-        profit_aim = self.TEST_PROFIT_AIM
+        profit_aim = PARAMS.PROFIT_AIM
         prev_potential = _compute_hold_potential(
-            current_pnl, profit_aim * self.TEST_RR, current_dur, params
+            current_pnl, profit_aim * PARAMS.RISK_REWARD_RATIO, current_dur, params
         )
         (
             _total_reward,
@@ -70,7 +83,7 @@ class TestPBRS(RewardSpaceTestBase):
         ) = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
-            pnl_target=profit_aim * self.TEST_RR,
+            pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -79,9 +92,9 @@ class TestPBRS(RewardSpaceTestBase):
             last_potential=0.789,
             params=params,
         )
-        self.assertAlmostEqualFloat(next_potential, 0.0, tolerance=self.TOL_IDENTITY_RELAXED)
+        self.assertAlmostEqualFloat(next_potential, 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED)
         self.assertAlmostEqualFloat(
-            reward_shaping, -prev_potential, tolerance=self.TOL_IDENTITY_RELAXED
+            reward_shaping, -prev_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
         )
 
     def test_pbrs_spike_cancel_invariance(self):
@@ -98,9 +111,9 @@ class TestPBRS(RewardSpaceTestBase):
         )
         current_pnl = 0.015
         current_dur = 0.4
-        profit_aim = self.TEST_PROFIT_AIM
+        profit_aim = PARAMS.PROFIT_AIM
         prev_potential = _compute_hold_potential(
-            current_pnl, profit_aim * self.TEST_RR, current_dur, params
+            current_pnl, profit_aim * PARAMS.RISK_REWARD_RATIO, current_dur, params
         )
         gamma = _get_float_param(
             params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
@@ -118,7 +131,7 @@ class TestPBRS(RewardSpaceTestBase):
         ) = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
-            pnl_target=profit_aim * self.TEST_RR,
+            pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -128,15 +141,14 @@ class TestPBRS(RewardSpaceTestBase):
             params=params,
         )
         self.assertAlmostEqualFloat(
-            next_potential, expected_next_potential, tolerance=self.TOL_IDENTITY_RELAXED
+            next_potential, expected_next_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
         )
-        self.assertNearZero(reward_shaping, atol=self.TOL_IDENTITY_RELAXED)
+        self.assertNearZero(reward_shaping, atol=TOLERANCE.IDENTITY_RELAXED)
 
     # ---------------- Invariance sum checks (simulate_samples) ---------------- #
 
     def test_canonical_invariance_flag_and_sum(self):
         """Canonical mode + no additives -> invariant flags True and Σ shaping ≈ 0."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             exit_potential_mode="canonical",
@@ -147,14 +159,14 @@ class TestPBRS(RewardSpaceTestBase):
         df = simulate_samples(
             params={**params, "max_trade_duration_candles": 100},
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {True}, f"Unexpected invariant flags: {unique_flags}")
@@ -163,7 +175,6 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_non_canonical_flag_false_and_sum_nonzero(self):
         """Non-canonical mode -> invariant flags False and Σ shaping significantly non-zero."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             exit_potential_mode="progressive_release",
@@ -175,14 +186,14 @@ class TestPBRS(RewardSpaceTestBase):
         df = simulate_samples(
             params={**params, "max_trade_duration_candles": 100},
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {False}, f"Unexpected invariant flags: {unique_flags}")
@@ -195,12 +206,12 @@ class TestPBRS(RewardSpaceTestBase):
         """Verifies entry/exit additives return zero when disabled."""
         params_entry = {"entry_additive_enabled": False, "entry_additive_scale": 1.0}
         val_entry = _compute_entry_additive(
-            0.5, self.TEST_PROFIT_AIM * self.TEST_RR, 0.3, params_entry
+            0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params_entry
         )
         self.assertEqual(float(val_entry), 0.0)
         params_exit = {"exit_additive_enabled": False, "exit_additive_scale": 1.0}
         val_exit = _compute_exit_additive(
-            0.5, self.TEST_PROFIT_AIM * self.TEST_RR, 0.3, params_exit
+            0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params_exit
         )
         self.assertEqual(float(val_exit), 0.0)
 
@@ -221,7 +232,7 @@ class TestPBRS(RewardSpaceTestBase):
             apply_potential_shaping(
                 base_reward=base_reward,
                 current_pnl=current_pnl,
-                pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+                pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                 current_duration_ratio=current_duration_ratio,
                 next_pnl=next_pnl,
                 next_duration_ratio=next_duration_ratio,
@@ -240,16 +251,16 @@ class TestPBRS(RewardSpaceTestBase):
             params["exit_additive_enabled"],
             "Exit additive should be auto-disabled in canonical mode",
         )
-        self.assertPlacesEqual(next_potential, 0.0, places=12)
+        self.assertPlacesEqual(next_potential, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
         current_potential = _compute_hold_potential(
             current_pnl,
-            self.TEST_PROFIT_AIM * self.TEST_RR,
+            PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio,
             {"hold_potential_enabled": True, "hold_potential_scale": 1.0},
         )
-        self.assertAlmostEqual(shaping, -current_potential, delta=self.TOL_IDENTITY_RELAXED)
+        self.assertAlmostEqual(shaping, -current_potential, delta=TOLERANCE.IDENTITY_RELAXED)
         residual = total - base_reward - shaping
-        self.assertAlmostEqual(residual, 0.0, delta=self.TOL_IDENTITY_RELAXED)
+        self.assertAlmostEqual(residual, 0.0, delta=TOLERANCE.IDENTITY_RELAXED)
         self.assertTrue(np.isfinite(total))
 
     def test_pbrs_invariance_internal_flag_set(self):
@@ -264,7 +275,7 @@ class TestPBRS(RewardSpaceTestBase):
         _t1, _s1, _n1, _pbrs_delta, _entry_additive, _exit_additive = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=0.05,
-            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.3,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -277,16 +288,14 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertFalse(params["entry_additive_enabled"])
         self.assertFalse(params["exit_additive_enabled"])
         if terminal_next_potentials:
-            self.assertTrue(
-                all((abs(p) < self.PBRS_TERMINAL_TOL for p in terminal_next_potentials))
-            )
+            self.assertTrue(all((abs(p) < PBRS.TERMINAL_TOL for p in terminal_next_potentials)))
         max_abs = max((abs(v) for v in shaping_values)) if shaping_values else 0.0
-        self.assertLessEqual(max_abs, self.PBRS_MAX_ABS_SHAPING)
+        self.assertLessEqual(max_abs, PBRS.MAX_ABS_SHAPING)
         state_after = (params["entry_additive_enabled"], params["exit_additive_enabled"])
         _t2, _s2, _n2, _pbrs_delta2, _entry_additive2, _exit_additive2 = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=0.02,
-            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.1,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -311,7 +320,7 @@ class TestPBRS(RewardSpaceTestBase):
             apply_potential_shaping(
                 base_reward=0.0,
                 current_pnl=0.0,
-                pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+                pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                 current_duration_ratio=0.0,
                 next_pnl=0.0,
                 next_duration_ratio=0.0,
@@ -320,15 +329,17 @@ class TestPBRS(RewardSpaceTestBase):
                 params=params,
             )
         )
-        self.assertPlacesEqual(next_potential, last_potential, places=12)
+        self.assertPlacesEqual(
+            next_potential, last_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
+        )
         gamma_raw = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
         gamma_fallback = 0.95 if gamma_raw is None else gamma_raw
         try:
             gamma = float(gamma_fallback)
         except Exception:
             gamma = 0.95
-        self.assertLessEqual(abs(shaping - gamma * last_potential), self.TOL_GENERIC_EQ)
-        self.assertPlacesEqual(total, shaping, places=12)
+        self.assertLessEqual(abs(shaping - gamma * last_potential), TOLERANCE.GENERIC_EQ)
+        self.assertPlacesEqual(total, shaping, places=TOLERANCE.DECIMAL_PLACES_STRICT)
 
     def test_potential_gamma_nan_fallback(self):
         """Verifies potential_gamma=NaN fallback to default value."""
@@ -338,7 +349,7 @@ class TestPBRS(RewardSpaceTestBase):
         res_nan = apply_potential_shaping(
             base_reward=0.1,
             current_pnl=0.03,
-            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
@@ -350,7 +361,7 @@ class TestPBRS(RewardSpaceTestBase):
         res_ref = apply_potential_shaping(
             base_reward=0.1,
             current_pnl=0.03,
-            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
@@ -360,12 +371,12 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertLess(
             abs(res_nan[1] - res_ref[1]),
-            self.TOL_IDENTITY_RELAXED,
+            TOLERANCE.IDENTITY_RELAXED,
             "Unexpected shaping difference under gamma NaN fallback",
         )
         self.assertLess(
             abs(res_nan[0] - res_ref[0]),
-            self.TOL_IDENTITY_RELAXED,
+            TOLERANCE.IDENTITY_RELAXED,
             "Unexpected total difference under gamma NaN fallback",
         )
 
@@ -433,21 +444,21 @@ class TestPBRS(RewardSpaceTestBase):
         ctx_dur_ratio = 0.3
         params_can = self.base_params(exit_potential_mode="canonical", **base_common)
         prev_phi = _compute_hold_potential(
-            ctx_pnl, self.TEST_PROFIT_AIM * self.TEST_RR, ctx_dur_ratio, params_can
+            ctx_pnl, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, ctx_dur_ratio, params_can
         )
         self.assertFinite(prev_phi, name="prev_phi")
         next_phi_can = _compute_exit_potential(prev_phi, params_can)
         self.assertAlmostEqualFloat(
             next_phi_can,
             0.0,
-            tolerance=self.TOL_IDENTITY_STRICT,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
             msg="Canonical exit must zero potential",
         )
         canonical_delta = -prev_phi
         self.assertAlmostEqualFloat(
             canonical_delta,
             -prev_phi,
-            tolerance=self.TOL_IDENTITY_RELAXED,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg="Canonical delta mismatch",
         )
         params_spike = self.base_params(exit_potential_mode="spike_cancel", **base_common)
@@ -455,11 +466,11 @@ class TestPBRS(RewardSpaceTestBase):
         shaping_spike = gamma * next_phi_spike - prev_phi
         self.assertNearZero(
             shaping_spike,
-            atol=self.TOL_IDENTITY_RELAXED,
+            atol=TOLERANCE.IDENTITY_RELAXED,
             msg="Spike cancel should nullify shaping delta",
         )
         self.assertGreaterEqual(
-            abs(canonical_delta) + self.TOL_IDENTITY_STRICT,
+            abs(canonical_delta) + TOLERANCE.IDENTITY_STRICT,
             abs(shaping_spike),
             "Canonical shaping magnitude should exceed spike_cancel",
         )
@@ -480,15 +491,14 @@ class TestPBRS(RewardSpaceTestBase):
         potentials = rng.uniform(0.05, 0.85, size=220)
         deltas = [gamma * p - p for p in potentials]
         cumulative = float(np.sum(deltas))
-        self.assertLess(cumulative, -self.TOL_NEGLIGIBLE)
-        self.assertGreater(abs(cumulative), 10 * self.TOL_IDENTITY_RELAXED)
+        self.assertLess(cumulative, -TOLERANCE.NEGLIGIBLE)
+        self.assertGreater(abs(cumulative), 10 * TOLERANCE.IDENTITY_RELAXED)
 
     # ---------------- Drift correction invariants (simulate_samples) ---------------- #
 
     # Owns invariant: pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_zero_sum(self):
         """Invariant 106: canonical mode enforces near zero-sum shaping (drift correction)."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             exit_potential_mode="canonical",
@@ -500,14 +510,14 @@ class TestPBRS(RewardSpaceTestBase):
         df = simulate_samples(
             params={**params, "max_trade_duration_candles": 100},
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=self.SEED,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         total_shaping = float(df["reward_shaping"].sum())
         assert_pbrs_canonical_sum_within_tolerance(self, total_shaping, PBRS_INVARIANCE_TOL)
@@ -524,8 +534,6 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=False,
             potential_gamma=0.91,
         )
-        import pandas as pd
-
         original_sum = pd.DataFrame.sum
 
         def boom(self, *args, **kwargs):  # noqa: D401
@@ -539,13 +547,13 @@ class TestPBRS(RewardSpaceTestBase):
                 params={**params, "max_trade_duration_candles": 120},
                 num_samples=250,
                 seed=SEEDS.PBRS_INVARIANCE_2,
-                base_factor=self.TEST_BASE_FACTOR,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 max_duration_ratio=2.0,
                 trading_mode="margin",
-                pnl_base_std=self.TEST_PNL_STD,
-                pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+                pnl_base_std=PARAMS.PNL_STD,
+                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
             )
         finally:
             pd.DataFrame.sum = original_sum
@@ -558,7 +566,6 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant (comparison path): pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_uniform_offset(self):
         """Canonical drift correction reduces Σ shaping below tolerance vs non-canonical."""
-        from ..constants import SCENARIOS
 
         params_can = self.base_params(
             exit_potential_mode="canonical",
@@ -571,13 +578,13 @@ class TestPBRS(RewardSpaceTestBase):
             params={**params_can, "max_trade_duration_candles": 120},
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=SEEDS.PBRS_TERMINAL,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         params_non = self.base_params(
             exit_potential_mode="retain_previous",
@@ -590,25 +597,25 @@ class TestPBRS(RewardSpaceTestBase):
             params={**params_non, "max_trade_duration_candles": 120},
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=SEEDS.PBRS_TERMINAL,
-            base_factor=self.TEST_BASE_FACTOR,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=2.0,
             trading_mode="margin",
-            pnl_base_std=self.TEST_PNL_STD,
-            pnl_duration_vol_scale=self.TEST_PNL_DUR_VOL_SCALE,
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         total_can = float(df_can["reward_shaping"].sum())
         total_non = float(df_non["reward_shaping"].sum())
-        self.assertLess(abs(total_can), abs(total_non) + self.TOL_IDENTITY_RELAXED)
+        self.assertLess(abs(total_can), abs(total_non) + TOLERANCE.IDENTITY_RELAXED)
         assert_pbrs_canonical_sum_within_tolerance(self, total_can, PBRS_INVARIANCE_TOL)
         invariant_mask = df_can["pbrs_invariant"]
         if bool(getattr(invariant_mask, "any", lambda: False)()):
             corrected_values = df_can.loc[invariant_mask, "reward_shaping"].to_numpy()
             mean_corrected = float(np.mean(corrected_values))
-            self.assertLess(abs(mean_corrected), self.TOL_IDENTITY_RELAXED)
+            self.assertLess(abs(mean_corrected), TOLERANCE.IDENTITY_RELAXED)
             spread = float(np.max(corrected_values) - np.min(corrected_values))
-            self.assertLess(spread, self.PBRS_MAX_ABS_SHAPING)
+            self.assertLess(spread, PBRS.MAX_ABS_SHAPING)
 
     # ---------------- Statistical shape invariance ---------------- #
 
@@ -624,14 +631,14 @@ class TestPBRS(RewardSpaceTestBase):
             m2 = np.mean(c**2)
             m3 = np.mean(c**3)
             m4 = np.mean(c**4)
-            skew = m3 / (m2**1.5 + self.TOL_NUMERIC_GUARD)
-            kurt = m4 / (m2**2 + self.TOL_NUMERIC_GUARD) - 3.0
+            skew = m3 / (m2**1.5 + TOLERANCE.NUMERIC_GUARD)
+            kurt = m4 / (m2**2 + TOLERANCE.NUMERIC_GUARD) - 3.0
             return (float(skew), float(kurt))
 
         s_base, k_base = _skew_kurt(base)
         s_scaled, k_scaled = _skew_kurt(scaled)
-        self.assertAlmostEqualFloat(s_base, s_scaled, tolerance=self.TOL_DISTRIB_SHAPE)
-        self.assertAlmostEqualFloat(k_base, k_scaled, tolerance=self.TOL_DISTRIB_SHAPE)
+        self.assertAlmostEqualFloat(s_base, s_scaled, tolerance=TOLERANCE.DISTRIB_SHAPE)
+        self.assertAlmostEqualFloat(k_base, k_scaled, tolerance=TOLERANCE.DISTRIB_SHAPE)
 
     # ---------------- Report classification / formatting ---------------- #
 
@@ -639,11 +646,6 @@ class TestPBRS(RewardSpaceTestBase):
     @pytest.mark.smoke
     def test_pbrs_non_canonical_report_generation(self):
         """Synthetic invariance section: Non-canonical classification formatting."""
-        import re
-
-        import pandas as pd
-
-        from reward_space_analysis import PBRS_INVARIANCE_TOL
 
         df = pd.DataFrame(
             {
@@ -674,7 +676,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIsNotNone(m_abs)
         if m_abs:
             val = float(m_abs.group(1))
-            self.assertAlmostEqual(abs(total_shaping), val, places=12)
+            self.assertAlmostEqual(abs(total_shaping), val, places=TOLERANCE.DECIMAL_PLACES_STRICT)
 
     def test_potential_gamma_boundary_values_stability(self):
         """Potential gamma boundary values (0 and ≈1) produce bounded shaping."""
@@ -690,7 +692,7 @@ class TestPBRS(RewardSpaceTestBase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=0.02,
-                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=0.3,
                     next_pnl=0.025,
                     next_duration_ratio=0.35,
@@ -701,11 +703,10 @@ class TestPBRS(RewardSpaceTestBase):
             )
             self.assertTrue(np.isfinite(shap))
             self.assertTrue(np.isfinite(next_pot))
-            self.assertLessEqual(abs(shap), self.PBRS_MAX_ABS_SHAPING)
+            self.assertLessEqual(abs(shap), PBRS.MAX_ABS_SHAPING)
 
     def test_report_cumulative_invariance_aggregation(self):
         """Canonical telescoping term: small per-step mean drift, bounded increments."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             hold_potential_enabled=True,
@@ -731,7 +732,7 @@ class TestPBRS(RewardSpaceTestBase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=current_pnl,
-                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
@@ -757,13 +758,12 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertLessEqual(
             max_abs_step,
-            self.PBRS_MAX_ABS_SHAPING,
+            PBRS.MAX_ABS_SHAPING,
             f"Unexpected large telescoping increment (max={max_abs_step})",
         )
 
     def test_report_explicit_non_invariance_progressive_release(self):
         """progressive_release cumulative shaping non-zero (release leak)."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             hold_potential_enabled=True,
@@ -775,7 +775,6 @@ class TestPBRS(RewardSpaceTestBase):
         rng = np.random.default_rng(321)
         last_potential = 0.0
         shaping_sum = 0.0
-        from ..constants import STATISTICAL
 
         for _ in range(SCENARIOS.MONTE_CARLO_ITERATIONS):
             is_exit = rng.uniform() < STATISTICAL.EXIT_PROBABILITY_THRESHOLD
@@ -785,7 +784,7 @@ class TestPBRS(RewardSpaceTestBase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=float(rng.normal(0, 0.07)),
-                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
+                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=float(rng.uniform(0, 1)),
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
@@ -807,14 +806,6 @@ class TestPBRS(RewardSpaceTestBase):
     @pytest.mark.smoke
     def test_pbrs_canonical_near_zero_report(self):
         """Invariant 116: canonical near-zero cumulative shaping classified in full report."""
-        import re
-
-        import numpy as np
-        import pandas as pd
-
-        from reward_space_analysis import PBRS_INVARIANCE_TOL
-
-        from ..constants import SCENARIOS
 
         small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
         total_shaping = float(sum(small_vals))
@@ -852,9 +843,9 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
-            seed=self.SEED,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
             bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
@@ -870,17 +861,14 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIsNotNone(m_abs)
         if m_abs:
             val_abs = float(m_abs.group(1))
-            self.assertAlmostEqual(abs(total_shaping), val_abs, places=12)
+            self.assertAlmostEqual(
+                abs(total_shaping), val_abs, places=TOLERANCE.DECIMAL_PLACES_STRICT
+            )
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_canonical_warning_report(self):
         """Canonical mode + no additives but |Σ shaping| > tolerance -> warning classification."""
-        import pandas as pd
-
-        from reward_space_analysis import PBRS_INVARIANCE_TOL
-
-        from ..constants import SCENARIOS
 
         shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # sum = 4.5e-4 (> tol)
         total_shaping = sum(shaping_vals)
@@ -914,9 +902,9 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
-            seed=self.SEED,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
             bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
@@ -934,9 +922,6 @@ class TestPBRS(RewardSpaceTestBase):
     @pytest.mark.smoke
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
         """Full report: Non-canonical classification aggregates mode + additives reasons."""
-        import pandas as pd
-
-        from ..constants import SCENARIOS
 
         shaping_vals = [0.02, -0.005, 0.007]
         entry_add_vals = [0.003, 0.0, 0.004]
@@ -970,9 +955,9 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
-            seed=self.SEED,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
             bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
@@ -991,11 +976,6 @@ class TestPBRS(RewardSpaceTestBase):
     @pytest.mark.smoke
     def test_pbrs_non_canonical_mode_only_reason(self):
         """Non-canonical exit mode with additives disabled -> reason excludes additive list."""
-        import pandas as pd
-
-        from reward_space_analysis import PBRS_INVARIANCE_TOL
-
-        from ..constants import SCENARIOS
 
         shaping_vals = [0.002, -0.0005, 0.0012]
         total_shaping = sum(shaping_vals)
@@ -1029,9 +1009,9 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_aim=self.TEST_PROFIT_AIM,
-            risk_reward_ratio=self.TEST_RR,
-            seed=self.SEED,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
             bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
@@ -1049,9 +1029,6 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant: pbrs-absence-shift-placeholder-118
     def test_pbrs_absence_and_distribution_shift_placeholder(self):
         """Report generation without PBRS columns triggers absence + shift placeholder."""
-        import pandas as pd
-
-        from ..constants import SEEDS
 
         n = 90
         rng = np.random.default_rng(SEEDS.CANONICAL_SWEEP)
@@ -1077,13 +1054,13 @@ class TestPBRS(RewardSpaceTestBase):
             }
         )
         out_dir = self.output_path / "pbrs_absence_and_shift_placeholder"
+        # Import here to mock _compute_summary_stats function
         import reward_space_analysis as rsa
-
-        from ..constants import SCENARIOS
 
         original_compute_summary_stats = rsa._compute_summary_stats
 
         def _minimal_summary_stats(_df):
+            # Use _pd alias to avoid conflicts with global pd
             import pandas as _pd
 
             comp_share = _pd.Series([], dtype=float)
@@ -1108,9 +1085,9 @@ class TestPBRS(RewardSpaceTestBase):
             write_complete_statistical_analysis(
                 df,
                 output_dir=out_dir,
-                profit_aim=self.TEST_PROFIT_AIM,
-                risk_reward_ratio=self.TEST_RR,
-                seed=self.SEED,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                seed=SEEDS.BASE,
                 skip_feature_analysis=True,
                 skip_partial_dependence=True,
                 bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS // 2,
@@ -1125,10 +1102,6 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_get_max_idle_duration_candles_negative_or_zero_fallback(self):
         """Explicit mid<=0 fallback path returns derived default multiplier."""
-        from reward_space_analysis import (
-            DEFAULT_MODEL_REWARD_PARAMETERS,
-        )
-
         base = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
         base["max_trade_duration_candles"] = 64
         base["max_idle_duration_candles"] = 0
