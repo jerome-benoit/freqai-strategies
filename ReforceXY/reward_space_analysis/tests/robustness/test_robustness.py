@@ -118,6 +118,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     short_allowed=True,
                     action_masking=True,
                 )
+                # Relaxed tolerance: Accumulated floating-point errors across multiple
+                # reward component calculations (entry, hold, exit additives, and penalties)
                 assert_single_active_component_with_additives(
                     self,
                     br,
@@ -180,6 +182,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         params = self.DEFAULT_PARAMS.copy()
 
+        # Relaxed tolerance: Exit factor calculations involve multiple steps
+        # (normalization, kernel application, potential transforms)
         assert_exit_mode_mathematical_validation(
             self,
             context,
@@ -199,6 +203,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             max_unrealized_profit=0.06,
             min_unrealized_profit=0.0,
         )
+        # Relaxed tolerance: Testing across multiple attenuation modes with different
+        # numerical characteristics (exponential, polynomial, rational functions)
         assert_exit_factor_attenuation_modes(
             self,
             base_factor=PARAMS.BASE_FACTOR,
@@ -283,6 +289,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             f_ref = _get_exit_factor(
                 base_factor, pnl, pnl_target, dr, test_context, params_ref, self.TEST_RR
             )
+            # Relaxed tolerance: Comparing exit factors computed with different slope values
+            # after sanitization; minor numerical differences expected
             self.assertAlmostEqualFloat(
                 f_bad,
                 f_ref,
@@ -455,6 +463,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         ]
         first = values[0]
         for v in values[1:]:
+            # Relaxed tolerance: Exit factor should remain constant across all duration
+            # ratios when slope=0; accumulated errors from multiple calculations
             self.assertAlmostEqualFloat(
                 v,
                 first,
@@ -488,6 +498,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         ]
         ref = vals[0]
         for i, r in enumerate(ratios[:-1]):
+            # Relaxed tolerance: All values before grace boundary should match;
+            # minor differences from repeated exit factor computations expected
             self.assertAlmostEqualFloat(
                 vals[i],
                 ref,
@@ -532,6 +544,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 right = _get_exit_factor(
                     base_factor, pnl, pnl_target, grace + eps, test_context, params, self.TEST_RR
                 )
+                # Relaxed tolerance: Continuity check at plateau grace boundary;
+                # left and boundary values should be nearly identical
                 self.assertAlmostEqualFloat(
                     left,
                     boundary,
@@ -603,6 +617,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         diff1 = f_boundary - f1
         diff2 = f_boundary - f2
+        # NUMERIC_GUARD: Prevent division by zero when computing scaling ratio
         ratio = diff1 / max(diff2, TOLERANCE.NUMERIC_GUARD)
         self.assertGreater(
             ratio,
@@ -649,6 +664,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             linear_params,
             PARAMS.RISK_REWARD_RATIO_HIGH,
         )
+        # Relaxed tolerance: Unknown exit mode should fall back to linear mode;
+        # verifying identical behavior between fallback and explicit linear
         self.assertAlmostEqualFloat(
             f_unknown,
             f_linear,
@@ -698,6 +715,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             ref_params,
             PARAMS.RISK_REWARD_RATIO_HIGH,
         )
+        # Relaxed tolerance: Negative grace parameter should clamp to 0.0;
+        # verifying clamped behavior matches explicit grace=0.0 configuration
         self.assertAlmostEqualFloat(
             f_neg,
             f_ref,
@@ -729,6 +748,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 f1 = _get_exit_factor(
                     base_factor, pnl, pnl_target, duration_ratio, test_context, params, self.TEST_RR
                 )
+            # NUMERIC_GUARD: Prevent division by zero when computing power mode ratio
             ratio = f1 / max(f0, TOLERANCE.NUMERIC_GUARD)
             self.assertAlmostEqual(
                 ratio,

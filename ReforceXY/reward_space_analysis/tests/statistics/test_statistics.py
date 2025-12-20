@@ -18,6 +18,14 @@ from reward_space_analysis import (
     statistical_hypothesis_tests,
 )
 
+from ..constants import (
+    PARAMS,
+    SCENARIOS,
+    SEEDS,
+    STATISTICAL,
+    STAT_TOL,
+    TOLERANCE,
+)
 from ..helpers import assert_diagnostic_warning
 from ..test_base import RewardSpaceTestBase
 
@@ -143,15 +151,6 @@ class TestStatistics(RewardSpaceTestBase):
                     f"Metric {name} expected ≈ 0 on identical distributions (got {val})",
                 )
             elif name.endswith("_ks_statistic"):
-                from ..constants import (
-    PARAMS,
-    SCENARIOS,
-    SEEDS,
-    STATISTICAL,
-    STAT_TOL,
-    TOLERANCE,
-)
-
                 self.assertLess(
                     abs(val),
                     STAT_TOL.KS_STATISTIC_IDENTITY,
@@ -328,7 +327,9 @@ class TestStatistics(RewardSpaceTestBase):
         if flags:
             rate = sum(flags) / len(flags)
             self.assertLess(
-                rate, STATISTICAL.BH_FP_RATE_THRESHOLD, f"BH null FP rate too high under null: {rate:.3f}"
+                rate,
+                STATISTICAL.BH_FP_RATE_THRESHOLD,
+                f"BH null FP rate too high under null: {rate:.3f}",
             )
 
     def test_stats_half_life_monotonic_series(self):

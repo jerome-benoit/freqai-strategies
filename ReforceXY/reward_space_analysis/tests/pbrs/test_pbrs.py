@@ -48,7 +48,11 @@ class TestPBRS(RewardSpaceTestBase):
     # ---------------- Potential transform mechanics ---------------- #
 
     def test_pbrs_progressive_release_decay_clamped(self):
-        """Verifies progressive_release mode with decay>1 clamps potential to zero."""
+        """Verifies progressive_release mode decay clamps at terminal.
+
+        Tolerance rationale: IDENTITY_RELAXED used for PBRS terminal state checks
+        due to accumulated errors from gamma discounting and potential calculations.
+        """
         params = self.DEFAULT_PARAMS.copy()
         params.update(
             {
