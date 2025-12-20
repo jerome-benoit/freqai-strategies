@@ -62,6 +62,68 @@ class TestMyFeature(RewardSpaceTestBase):
         self.assertFinite(value)  # unittest-style assertion
 ```
 
+### Constants & Configuration
+
+All test constants are centralized in `tests/constants.py` using frozen
+dataclasses as a single source of truth:
+
+```python
+from tests.constants import TOLERANCE, SEEDS, PARAMS, EXIT_FACTOR
+
+# Use directly in tests
+assert abs(result - expected) < TOLERANCE.IDENTITY_RELAXED
+seed_all(SEEDS.FIXED_UNIT)
+```
+
+**Key constant groups:**
+
+- `TOLERANCE.*` - Numerical tolerances (see `TOLERANCE_GUIDE.md`)
+- `SEEDS.*` - Fixed random seeds for reproducibility
+- `PARAMS.*` - Standard test parameters (PnL, durations, ratios)
+- `EXIT_FACTOR.*` - Exit factor scenarios
+- `CONTINUITY.*` - Continuity check parameters
+- `STATISTICAL.*` - Statistical test thresholds
+
+**Never use magic numbers** - add new constants to `constants.py` instead.
+
+### Tolerance Selection
+
+Choosing appropriate numerical tolerances is critical for preventing flaky tests.
+See **`TOLERANCE_GUIDE.md`** for:
+
+- Decision matrix for tolerance selection
+- Mathematical justification for each magnitude
+- When to use each tolerance based on error accumulation models
+- Usage examples and anti-patterns
+
+**Quick reference:**
+
+- `IDENTITY_STRICT` (1e-12) - Machine-precision identity checks
+- `IDENTITY_RELAXED` (1e-09) - Multi-step accumulated errors
+- `GENERIC_EQ` (1e-08) - General floating-point equality
+- `NUMERIC_GUARD` (1e-18) - Division-by-zero prevention
+- `NEGLIGIBLE` (1e-15) - "Effectively zero" threshold
+- `RELATIVE` (1e-06) - Relative tolerance for ratios
+
+**Always document non-default tolerance choices** with inline comments explaining
+the error accumulation model.
+
+### Test Documentation
+
+All tests should follow the standardized docstring format in
+**`.docstring_template.md`**:
+
+- One-line summary (imperative mood)
+- Invariant reference (if applicable)
+- Extended description (what and why)
+- Setup (parameters, scenarios, sample sizes)
+- Assertions (what each validates)
+- Tolerance rationale (required for non-default tolerances)
+- See also (related tests/docs)
+
+**Template provides three complexity levels** (minimal, standard, complex) with
+examples for property-based tests, regression tests, and integration tests.
+
 ### Markers
 
 Module-level markers are declared via `pytestmark`:
@@ -187,13 +249,47 @@ Table tracks approximate line ranges and source ownership:
 2. Add a row in Coverage Mapping BEFORE writing the test.
 3. Implement test in correct taxonomy directory; add marker if outside default
    selection.
-4. Optionally declare inline ownership:
+4. Follow the docstring template in `.docstring_template.md`.
+5. Use constants from `tests/constants.py` - never use magic numbers.
+6. Document tolerance choices (see `TOLERANCE_GUIDE.md` for guidance).
+7. Optionally declare inline ownership:
    ```python
    # Owns invariant: <id>
    def test_<short_description>(...):
        ...
    ```
-5. Run duplication audit and coverage before committing.
+8. Run duplication audit and coverage before committing.
+
+## Maintenance Guidelines
+
+### Constant Management
+
+All test constants live in `tests/constants.py`:
+
+- Import constants directly: `from tests.constants import TOLERANCE, SEEDS`
+- Never use class attributes for constants (e.g., `self.TEST_*`)
+- Add new constants to appropriate dataclass in `constants.py`
+- Frozen dataclasses prevent accidental modification
+
+### Tolerance Documentation
+
+When using non-default tolerances (anything other than `GENERIC_EQ`), add an
+inline comment:
+
+```python
+# IDENTITY_RELAXED: Exit factor involves normalization + kernel + transform
+assert abs(exit_factor - expected) < TOLERANCE.IDENTITY_RELAXED
+```
+
+See `TOLERANCE_GUIDE.md` for full decision matrix and justification patterns.
+
+### Test Documentation Standards
+
+- Follow `.docstring_template.md` for all new tests
+- Include invariant IDs in docstrings when applicable
+- Document Setup section with parameter choices and sample sizes
+- Explain non-obvious assertions in Assertions section
+- Always include tolerance rationale for non-default choices
 
 ## Duplication Audit
 
@@ -222,6 +318,19 @@ while integration tests focus on report formatting. Ownership IDs (e.g.
 Run after changes to: reward component logic, PBRS mechanics, CLI
 parsing/output, statistical routines, dependency or Python version upgrades, or
 before publishing analysis reliant on invariants.
+
+## Additional Resources
+
+- **`TOLERANCE_GUIDE.md`** - Comprehensive guide to numerical tolerance selection
+  with mathematical justification and decision matrix
+- **`.docstring_template.md`** - Standardized test documentation template with
+  examples for minimal, standard, and complex tests
+- **`constants.py`** - Single source of truth for all test constants (frozen
+  dataclasses)
+- **`helpers/assertions.py`** - 20+ custom assertion functions for invariant
+  validation
+- **`test_base.py`** - Base class with common utilities (`make_ctx`,
+  `seed_all`, etc.)
 
 ---
 
