@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 
 from reward_space_analysis import (
+    RewardContext,
+    _compute_efficiency_coefficient,
+    _compute_pnl_target_coefficient,
     _get_exit_factor,
-    _get_pnl_coefficient,
     calculate_reward,
 )
 
@@ -368,7 +370,7 @@ def assert_reward_calculation_scenarios(
     Example:
         config = RewardScenarioConfig(
             base_factor=PARAMS.BASE_FACTOR,
-            profit_target=PARAMS.PROFIT_TARGET,
+            profit_aim=PARAMS.PROFIT_AIM,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
         )
@@ -386,7 +388,7 @@ def assert_reward_calculation_scenarios(
                 context,
                 params,
                 base_factor=config.base_factor,
-                profit_target=config.profit_target,
+                profit_aim=config.profit_aim,
                 risk_reward_ratio=config.risk_reward_ratio,
                 short_allowed=config.short_allowed,
                 action_masking=config.action_masking,
@@ -421,7 +423,7 @@ def assert_parameter_sensitivity_behavior(
     Example:
         config = RewardScenarioConfig(
             base_factor=PARAMS.BASE_FACTOR,
-            profit_target=PARAMS.PROFIT_TARGET,
+            profit_aim=PARAMS.PROFIT_AIM,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
         )
@@ -444,7 +446,7 @@ def assert_parameter_sensitivity_behavior(
             base_context,
             params,
             base_factor=config.base_factor,
-            profit_target=config.profit_target,
+            profit_aim=config.profit_aim,
             risk_reward_ratio=config.risk_reward_ratio,
             short_allowed=config.short_allowed,
             action_masking=config.action_masking,
@@ -518,10 +520,12 @@ def assert_exit_factor_attenuation_modes(
     test_case,
     base_factor: float,
     pnl: float,
-    pnl_coefficient: float,
+    pnl_target: float,
+    context,
     attenuation_modes: Sequence[str],
     base_params_fn,
     tolerance_relaxed: float,
+    risk_reward_ratio: float = 1.0,
 ):
     """Validate exit factor attenuation across multiple modes.
 
@@ -531,8 +535,9 @@ def assert_exit_factor_attenuation_modes(
     Args:
         test_case: Test case instance with assertion methods
         base_factor: Base scaling factor
-        pnl: Profit/loss value
-        pnl_coefficient: PnL amplification coefficient
+        pnl: Realized profit/loss
+        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        context: RewardContext for efficiency coefficient calculation
         attenuation_modes: List of mode names to test
         base_params_fn: Factory function for creating parameter dicts
         tolerance_relaxed: Numerical tolerance for monotonicity checks
@@ -546,7 +551,7 @@ def assert_exit_factor_attenuation_modes(
 
     Example:
         assert_exit_factor_attenuation_modes(
-            self, 90.0, 0.08, 1.5,
+            self, 90.0, 0.08, 0.03, context,
             ["linear", "power", "half_life"],
             make_params, 1e-09
         )
@@ -572,7 +577,10 @@ def assert_exit_factor_attenuation_modes(
                 mode_params = base_params_fn(exit_attenuation_mode="sqrt")
             ratios = np.linspace(0, 2, 15)
             values = [
-                _get_exit_factor(base_factor, pnl, pnl_coefficient, r, mode_params) for r in ratios
+                _get_exit_factor(
+                    base_factor, pnl, pnl_target, r, context, mode_params, risk_reward_ratio
+                )
+                for r in ratios
             ]
             if mode == "plateau_linear":
                 grace = float(mode_params["exit_plateau_grace"])
@@ -593,7 +601,7 @@ def assert_exit_mode_mathematical_validation(
     context,
     params: Dict[str, Any],
     base_factor: float,
-    profit_target: float,
+    profit_aim: float,
     risk_reward_ratio: float,
     tolerance_relaxed: float,
 ):
@@ -608,7 +616,7 @@ def assert_exit_mode_mathematical_validation(
         context: Context object with trade_duration and pnl attributes
         params: Parameter dictionary (will be modified in-place for testing)
         base_factor: Base scaling factor
-        profit_target: Target profit threshold
+        profit_aim: Base profit target
         risk_reward_ratio: Risk/reward ratio
         tolerance_relaxed: Numerical tolerance for formula validation
 
@@ -620,7 +628,7 @@ def assert_exit_mode_mathematical_validation(
 
     Example:
         assert_exit_mode_mathematical_validation(
-            self, context, params, PARAMS.BASE_FACTOR, PARAMS.PROFIT_TARGET,
+            self, context, params, PARAMS.BASE_FACTOR, PARAMS.PROFIT_AIM,
             PARAMS.RISK_REWARD_RATIO, TOLERANCE.IDENTITY_RELAXED
         )
     """
@@ -632,7 +640,7 @@ def assert_exit_mode_mathematical_validation(
         context,
         params,
         base_factor=base_factor,
-        profit_target=profit_target,
+        profit_aim=profit_aim,
         risk_reward_ratio=risk_reward_ratio,
         short_allowed=True,
         action_masking=True,
@@ -644,17 +652,22 @@ def assert_exit_mode_mathematical_validation(
         context,
         params,
         base_factor=base_factor,
-        profit_target=profit_target,
+        profit_aim=profit_aim,
         risk_reward_ratio=risk_reward_ratio,
         short_allowed=True,
         action_masking=True,
     )
-    pnl_coefficient_hl = _get_pnl_coefficient(params, context, profit_target, risk_reward_ratio)
+    pnl_target = profit_aim * risk_reward_ratio
+    pnl_target_coefficient = _compute_pnl_target_coefficient(
+        params, context.pnl, pnl_target, risk_reward_ratio
+    )
+    efficiency_coefficient = _compute_efficiency_coefficient(params, context, context.pnl)
+    pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
     observed_exit_factor = _get_exit_factor(
-        base_factor, context.pnl, pnl_coefficient_hl, duration_ratio, params
+        base_factor, context.pnl, pnl_target, duration_ratio, context, params, risk_reward_ratio
     )
     observed_half_life_factor = observed_exit_factor / (
-        base_factor * max(pnl_coefficient_hl, np.finfo(float).eps)
+        base_factor * max(pnl_coefficient, np.finfo(float).eps)
     )
     expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
     test_case.assertAlmostEqual(
@@ -669,7 +682,7 @@ def assert_exit_mode_mathematical_validation(
         context,
         params,
         base_factor=base_factor,
-        profit_target=profit_target,
+        profit_aim=profit_aim,
         risk_reward_ratio=risk_reward_ratio,
         short_allowed=True,
         action_masking=True,
@@ -693,13 +706,13 @@ def assert_multi_parameter_sensitivity(
 ):
     """Validate reward behavior across multiple parameter combinations.
 
-    Tests reward calculation with various profit_target and risk_reward_ratio
+    Tests reward calculation with various profit_aim and risk_reward_ratio
     combinations, ensuring consistent behavior including edge cases like
-    zero profit_target. Uses RewardScenarioConfig to simplify parameter passing.
+    zero profit_aim. Uses RewardScenarioConfig to simplify parameter passing.
 
     Args:
         test_case: Test case instance with assertion methods
-        parameter_test_cases: List of (profit_target, risk_reward_ratio, description) tuples
+        parameter_test_cases: List of (profit_aim, risk_reward_ratio, description) tuples
         context_factory_fn: Factory function for creating context objects
         base_params: Base parameter dictionary
         config: RewardScenarioConfig with base calculation parameters
@@ -707,45 +720,45 @@ def assert_multi_parameter_sensitivity(
     Example:
         config = RewardScenarioConfig(
             base_factor=PARAMS.BASE_FACTOR,
-            profit_target=PARAMS.PROFIT_TARGET,
+            profit_aim=PARAMS.PROFIT_AIM,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
         )
         test_cases = [
             (0.0, PARAMS.RISK_REWARD_RATIO, "zero profit target"),
-            (PARAMS.PROFIT_TARGET, PARAMS.RISK_REWARD_RATIO, "standard parameters"),
-            (0.06, 2.0, "high risk/reward ratio"),
+            (PARAMS.PROFIT_AIM, PARAMS.RISK_REWARD_RATIO, "standard parameters"),
+            (0.03, 2.0, "high risk/reward ratio"),
         ]
         assert_multi_parameter_sensitivity(
             self, test_cases, make_context, params, config
         )
     """
-    for profit_target, risk_reward_ratio, description in parameter_test_cases:
+    for profit_aim, risk_reward_ratio, description in parameter_test_cases:
         with test_case.subTest(
-            profit_target=profit_target, risk_reward_ratio=risk_reward_ratio, desc=description
+            profit_aim=profit_aim, risk_reward_ratio=risk_reward_ratio, desc=description
         ):
             idle_context = context_factory_fn(context_type="idle")
             breakdown = calculate_reward(
                 idle_context,
                 base_params,
                 base_factor=config.base_factor,
-                profit_target=profit_target,
+                profit_aim=profit_aim,
                 risk_reward_ratio=risk_reward_ratio,
                 short_allowed=config.short_allowed,
                 action_masking=config.action_masking,
             )
-            if profit_target == 0.0:
+            if profit_aim == 0.0:
                 test_case.assertEqual(breakdown.idle_penalty, 0.0)
                 test_case.assertEqual(breakdown.total, 0.0)
             else:
                 test_case.assertLess(breakdown.idle_penalty, 0.0)
-            if profit_target > 0:
-                exit_context = context_factory_fn(context_type="exit", profit_target=profit_target)
+            if profit_aim > 0:
+                exit_context = context_factory_fn(context_type="exit", profit_aim=profit_aim)
                 exit_breakdown = calculate_reward(
                     exit_context,
                     base_params,
                     base_factor=config.base_factor,
-                    profit_target=profit_target,
+                    profit_aim=profit_aim,
                     risk_reward_ratio=risk_reward_ratio,
                     short_allowed=config.short_allowed,
                     action_masking=config.action_masking,
@@ -758,7 +771,7 @@ def assert_hold_penalty_threshold_behavior(
     context_factory_fn,
     params: Dict[str, Any],
     base_factor: float,
-    profit_target: float,
+    profit_aim: float,
     risk_reward_ratio: float,
     config: ThresholdTestConfig,
 ):
@@ -773,7 +786,7 @@ def assert_hold_penalty_threshold_behavior(
         context_factory_fn: Factory function for creating context objects
         params: Parameter dictionary
         base_factor: Base scaling factor
-        profit_target: Target profit threshold
+        profit_aim: Base profit target
         risk_reward_ratio: Risk/reward ratio
         config: ThresholdTestConfig with threshold settings
 
@@ -788,7 +801,7 @@ def assert_hold_penalty_threshold_behavior(
             tolerance=TOLERANCE.IDENTITY_RELAXED
         )
         assert_hold_penalty_threshold_behavior(
-            self, make_context, params, PARAMS.BASE_FACTOR, PARAMS.PROFIT_TARGET,
+            self, make_context, params, PARAMS.BASE_FACTOR, PARAMS.PROFIT_AIM,
             PARAMS.RISK_REWARD_RATIO, config
         )
     """
@@ -799,7 +812,7 @@ def assert_hold_penalty_threshold_behavior(
                 context,
                 params,
                 base_factor=base_factor,
-                profit_target=profit_target,
+                profit_aim=profit_aim,
                 risk_reward_ratio=risk_reward_ratio,
                 short_allowed=True,
                 action_masking=True,
@@ -1007,8 +1020,9 @@ def assert_exit_factor_invariant_suite(
         test_case: Test case instance with assertion methods
         suite_cases: List of scenario dicts with keys:
             - base_factor: Base scaling factor
-            - pnl: Profit/loss value
-            - pnl_coefficient: PnL amplification coefficient
+            - pnl: Realized profit/loss
+            - pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio) for coefficient calculation
+            - context: RewardContext for efficiency coefficient
             - duration_ratio: Duration ratio (0-2)
             - params: Parameter dictionary
             - expectation: Expected invariant ("non_negative", "safe_zero", "clamped")
@@ -1018,12 +1032,14 @@ def assert_exit_factor_invariant_suite(
     Example:
         cases = [
             {
-                "base_factor": 90.0, "pnl": 0.08, "pnl_coefficient": 1.5,
+                "base_factor": 90.0, "pnl": 0.08, "pnl_target": 0.03,
+                "context": RewardContext(...),
                 "duration_ratio": 0.5, "params": {...},
                 "expectation": "non_negative", "tolerance": 1e-09
             },
             {
-                "base_factor": 90.0, "pnl": 0.0, "pnl_coefficient": 0.0,
+                "base_factor": 90.0, "pnl": 0.0, "pnl_target": 0.03,
+                "context": RewardContext(...),
                 "duration_ratio": 0.5, "params": {...},
                 "expectation": "safe_zero"
             },
@@ -1033,11 +1049,13 @@ def assert_exit_factor_invariant_suite(
     for i, case in enumerate(suite_cases):
         with test_case.subTest(exit_case=i, expectation=case.get("expectation")):
             f_val = exit_factor_fn(
-                case["base_factor"],
-                case["pnl"],
-                case["pnl_coefficient"],
-                case["duration_ratio"],
-                case["params"],
+                base_factor=case["base_factor"],
+                pnl=case["pnl"],
+                pnl_target=case["pnl_target"],
+                duration_ratio=case["duration_ratio"],
+                context=case["context"],
+                params=case["params"],
+                risk_reward_ratio=2.0,
             )
             exp = case.get("expectation")
             if exp == "safe_zero":
@@ -1055,10 +1073,12 @@ def assert_exit_factor_kernel_fallback(
     exit_factor_fn,
     base_factor: float,
     pnl: float,
-    pnl_coefficient: float,
+    pnl_target: float,
     duration_ratio: float,
+    context,
     bad_params: Dict[str, Any],
     reference_params: Dict[str, Any],
+    risk_reward_ratio: float,
 ):
     """Validate exit factor fallback behavior on kernel failure.
 
@@ -1068,13 +1088,15 @@ def assert_exit_factor_kernel_fallback(
 
     Args:
         test_case: Test case instance with assertion methods
-        exit_factor_fn: Exit factor calculation function
+        exit_factor_fn: Exit factor calculation function (e.g., _get_exit_factor)
         base_factor: Base scaling factor
-        pnl: Profit/loss value
-        pnl_coefficient: PnL amplification coefficient
+        pnl: Realized profit/loss
+        pnl_target: Target PnL (profit_aim * risk_reward_ratio)
         duration_ratio: Duration ratio
+        context: RewardContext instance
         bad_params: Parameters that trigger kernel failure
         reference_params: Reference linear mode parameters for comparison
+        risk_reward_ratio: Risk/reward ratio
 
     Validates:
         1. Fallback produces non-negative result
@@ -1085,15 +1107,21 @@ def assert_exit_factor_kernel_fallback(
 
     Example:
         # After monkeypatching kernel to fail:
+        test_context = RewardContext(pnl=0.08, ...)
         assert_exit_factor_kernel_fallback(
-            self, _get_exit_factor, 90.0, 0.08, 1.5, 0.5,
+            self, _get_exit_factor, 90.0, 0.08, 0.03, 0.5, test_context,
             bad_params={"exit_attenuation_mode": "power", "exit_power_tau": -1.0},
-            reference_params={"exit_attenuation_mode": "linear"}
+            reference_params={"exit_attenuation_mode": "linear"},
+            risk_reward_ratio=1.0
         )
     """
 
-    f_bad = exit_factor_fn(base_factor, pnl, pnl_coefficient, duration_ratio, bad_params)
-    f_ref = exit_factor_fn(base_factor, pnl, pnl_coefficient, duration_ratio, reference_params)
+    f_bad = exit_factor_fn(
+        base_factor, pnl, pnl_target, duration_ratio, context, bad_params, risk_reward_ratio
+    )
+    f_ref = exit_factor_fn(
+        base_factor, pnl, pnl_target, duration_ratio, context, reference_params, risk_reward_ratio
+    )
     test_case.assertAlmostEqual(f_bad, f_ref, delta=TOLERANCE.IDENTITY_STRICT)
     test_case.assertGreaterEqual(f_bad, 0.0)
 
@@ -1212,10 +1240,12 @@ def assert_exit_factor_plateau_behavior(
     exit_factor_fn,
     base_factor: float,
     pnl: float,
-    pnl_coefficient: float,
+    pnl_target: float,
+    context: RewardContext,
     plateau_params: dict,
     grace: float,
     tolerance_strict: float,
+    risk_reward_ratio: float,
 ):
     """Assert plateau behavior: factor before grace >= factor after grace (attenuation begins after grace boundary).
 
@@ -1224,7 +1254,8 @@ def assert_exit_factor_plateau_behavior(
         exit_factor_fn: Exit factor calculation function (_get_exit_factor)
         base_factor: Base factor for exit calculation
         pnl: PnL value
-        pnl_coefficient: PnL coefficient multiplier
+        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio) for coefficient calculation
+        context: RewardContext for efficiency coefficient
         plateau_params: Parameters dict with plateau configuration
         grace: Grace period threshold (exit_plateau_grace value)
         tolerance_strict: Tolerance for numerical comparisons
@@ -1236,16 +1267,20 @@ def assert_exit_factor_plateau_behavior(
     plateau_factor_pre = exit_factor_fn(
         base_factor=base_factor,
         pnl=pnl,
-        pnl_coefficient=pnl_coefficient,
+        pnl_target=pnl_target,
         duration_ratio=duration_ratio_pre,
+        context=context,
         params=plateau_params,
+        risk_reward_ratio=risk_reward_ratio,
     )
     plateau_factor_post = exit_factor_fn(
         base_factor=base_factor,
         pnl=pnl,
-        pnl_coefficient=pnl_coefficient,
+        pnl_target=pnl_target,
         duration_ratio=duration_ratio_post,
+        context=context,
         params=plateau_params,
+        risk_reward_ratio=risk_reward_ratio,
     )
 
     # Both factors should be positive

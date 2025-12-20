@@ -51,7 +51,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         cls.DEFAULT_PARAMS = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
         cls.TEST_SAMPLES = SCENARIOS.SAMPLE_SIZE_TINY
         cls.TEST_BASE_FACTOR = 100.0
-        cls.TEST_PROFIT_TARGET = 0.03
+        cls.TEST_PROFIT_AIM = 0.03
         cls.TEST_RR = 1.0
         cls.TEST_RR_HIGH = 2.0
         cls.TEST_PNL_STD = 0.02
@@ -163,7 +163,7 @@ class RewardSpaceTestBase(unittest.TestCase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=current_pnl,
-                    pnl_target=self.TEST_PROFIT_TARGET,
+                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,

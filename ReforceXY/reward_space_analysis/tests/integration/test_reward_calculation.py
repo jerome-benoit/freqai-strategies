@@ -97,7 +97,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     ctx,
                     self.DEFAULT_PARAMS,
                     base_factor=self.TEST_BASE_FACTOR,
-                    profit_target=self.TEST_PROFIT_TARGET,
+                    profit_aim=self.TEST_PROFIT_AIM,
                     risk_reward_ratio=self.TEST_RR,
                     short_allowed=True,
                     action_masking=expected_component != "invalid_penalty",
@@ -135,7 +135,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
         params = self.base_params()
         params.pop("base_factor", None)
         base_factor = 100.0
-        profit_target = 0.04
+        profit_aim = 0.04
         rr = self.TEST_RR
 
         for pnl, label in [(0.02, "profit"), (-0.02, "loss")]:
@@ -163,7 +163,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     ctx_long,
                     params,
                     base_factor=base_factor,
-                    profit_target=profit_target,
+                    profit_aim=profit_aim,
                     risk_reward_ratio=rr,
                     short_allowed=True,
                     action_masking=True,
@@ -172,7 +172,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     ctx_short,
                     params,
                     base_factor=base_factor,
-                    profit_target=profit_target,
+                    profit_aim=profit_aim,
                     risk_reward_ratio=rr,
                     short_allowed=True,
                     action_masking=True,

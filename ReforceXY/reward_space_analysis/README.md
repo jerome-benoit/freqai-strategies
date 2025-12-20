@@ -174,11 +174,9 @@ Generates shift metrics for comparison (see Outputs section).
 These parameters influence simulation behavior and reward computation. They can
 be overridden via `--params`.
 
-- **`--profit_target`** (float, default: 0.03) – Target profit threshold (e.g.
-  0.03=3%). Combined with `risk_reward_ratio` to compute effective profit
-  target.
+- **`--profit_aim`** (float, default: 0.03) – Profit target threshold (e.g.
+  0.03=3%).
 - **`--risk_reward_ratio`** (float, default: 1.0) – Risk-reward multiplier.
-  Effective profit target = `profit_target * risk_reward_ratio`.
 - **`--action_masking`** (bool, default: true) – Simulate environment action
   masking. Invalid actions receive penalties only if masking disabled.
 
@@ -219,7 +217,7 @@ be overridden via `--params`.
 - **`--out_dir`** (path, default: reward_space_outputs) – Output directory
   (auto-created). (Simulation-only).
 - **`--params`** (k=v ...) – Bulk override reward tunables and hybrid simulation
-  scalars (`profit_target`, `risk_reward_ratio`, `action_masking`). Conflicts:
+  scalars (`profit_aim`, `risk_reward_ratio`, `action_masking`). Conflicts:
   individual flags vs `--params` ⇒ `--params` wins.
 
 ### Reward Parameter Cheat Sheet
@@ -243,16 +241,16 @@ where:
 
 | Parameter           | Default | Description                   |
 | ------------------- | ------- | ----------------------------- |
-| `profit_target`     | 0.03    | Target profit threshold       |
+| `profit_aim`        | 0.03    | Profit target threshold       |
 | `risk_reward_ratio` | 1.0     | Risk/reward multiplier        |
 | `win_reward_factor` | 2.0     | Profit overshoot bonus factor |
 | `pnl_factor_beta`   | 0.5     | PnL amplification sensitivity |
 
-**Note:** In ReforceXY, `profit_target` maps to `profit_aim` and `risk_reward_ratio` maps to `rr`.
+**Note:** In ReforceXY, `risk_reward_ratio` maps to `rr`.
 
 **Formula:**
 
-Let `pnl_target = profit_target × risk_reward_ratio`, `pnl_ratio = pnl / pnl_target`.
+Let `pnl_target = profit_aim × risk_reward_ratio`, `pnl_ratio = pnl / pnl_target`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
@@ -437,7 +435,7 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`,
 `pvalue_adjust`.
 
-**Hybrid simulation scalars** allowed in `--params`: `profit_target`,
+**Hybrid simulation scalars** allowed in `--params`: `profit_aim`,
 `risk_reward_ratio`, `action_masking`.
 
 **Reward tunables** (tunable via either direct flag or `--params`) correspond to
@@ -452,7 +450,7 @@ uv run python reward_space_analysis.py --num_samples 10000
 # Full analysis with custom profit target
 uv run python reward_space_analysis.py \
   --num_samples 50000 \
-  --profit_target 0.05 \
+  --profit_aim 0.05 \
   --trading_mode futures \
   --bootstrap_resamples 5000 \
   --out_dir custom_analysis
@@ -489,17 +487,17 @@ metrics, summary.
 
 ### Manifest (`manifest.json`)
 
-| Field                     | Type              | Description                           |
-| ------------------------- | ----------------- | ------------------------------------- |
-| `generated_at`            | string (ISO 8601) | Generation timestamp (not hashed)     |
-| `num_samples`             | int               | Synthetic samples count               |
-| `seed`                    | int               | Master random seed                    |
-| `profit_target_effective` | float             | Effective profit target after scaling |
-| `pvalue_adjust_method`    | string            | Multiple testing correction mode      |
-| `parameter_adjustments`   | object            | Bound clamp adjustments (if any)      |
-| `reward_params`           | object            | Final reward params                   |
-| `simulation_params`       | object            | All simulation inputs                 |
-| `params_hash`             | string (sha256)   | Deterministic run hash                |
+| Field                   | Type              | Description                       |
+| ----------------------- | ----------------- | --------------------------------- |
+| `generated_at`          | string (ISO 8601) | Generation timestamp (not hashed) |
+| `num_samples`           | int               | Synthetic samples count           |
+| `seed`                  | int               | Master random seed                |
+| `pnl_target`            | float             | Profit target                     |
+| `pvalue_adjust_method`  | string            | Multiple testing correction mode  |
+| `parameter_adjustments` | object            | Bound clamp adjustments (if any)  |
+| `reward_params`         | object            | Final reward params               |
+| `simulation_params`     | object            | All simulation inputs             |
+| `params_hash`           | string (sha256)   | Deterministic run hash            |
 
 Two runs match iff `params_hash` identical.
 
@@ -563,7 +561,7 @@ reject equality).
 while read target; do
   uv run python reward_space_analysis.py \
     --num_samples 30000 \
-    --params profit_target=$target \
+    --params profit_aim=$target \
     --out_dir pt_${target}
 done <<EOF
 0.02

@@ -187,7 +187,7 @@ class TestParameters:
 
     Attributes:
         BASE_FACTOR: Default base factor for reward scaling (90.0)
-        PROFIT_TARGET: Target profit threshold (0.06)
+        PROFIT_AIM: Target profit threshold (0.06)
         RISK_REWARD_RATIO: Standard risk/reward ratio (1.0)
         RISK_REWARD_RATIO_HIGH: High risk/reward ratio for stress tests (2.0)
         PNL_STD: Standard deviation for PnL generation (0.02)
@@ -195,7 +195,7 @@ class TestParameters:
     """
 
     BASE_FACTOR: float = 90.0
-    PROFIT_TARGET: float = 0.06
+    PROFIT_AIM: float = 0.06
     RISK_REWARD_RATIO: float = 1.0
     RISK_REWARD_RATIO_HIGH: float = 2.0
     PNL_STD: float = 0.02

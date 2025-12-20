@@ -9,10 +9,12 @@ import pytest
 from reward_space_analysis import (
     Actions,
     Positions,
+    RewardContext,
+    _compute_efficiency_coefficient,
     _compute_hold_potential,
+    _compute_pnl_target_coefficient,
     _get_exit_factor,
     _get_float_param,
-    _get_pnl_coefficient,
     calculate_reward,
 )
 
@@ -43,7 +45,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             "hold_potential_transform_pnl": "tanh",
             "hold_potential_transform_duration": "tanh",
         }
-        val = _compute_hold_potential(0.5, self.TEST_PROFIT_TARGET, 0.3, params)
+        val = _compute_hold_potential(0.5, self.TEST_PROFIT_AIM * self.TEST_RR, 0.3, params)
         self.assertFinite(val, name="hold_potential")
 
     def test_hold_penalty_basic_calculation(self):
@@ -66,7 +68,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             context,
             self.DEFAULT_PARAMS,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             short_allowed=True,
             action_masking=True,
@@ -114,7 +116,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             context_factory,
             self.DEFAULT_PARAMS,
             self.TEST_BASE_FACTOR,
-            self.TEST_PROFIT_TARGET,
+            self.TEST_PROFIT_AIM,
             1.0,
             config,
         )
@@ -143,7 +145,7 @@ class TestRewardComponents(RewardSpaceTestBase):
                 context,
                 params,
                 base_factor=self.TEST_BASE_FACTOR,
-                profit_target=self.TEST_PROFIT_TARGET,
+                profit_aim=self.TEST_PROFIT_AIM,
                 risk_reward_ratio=self.TEST_RR,
                 short_allowed=True,
                 action_masking=True,
@@ -182,7 +184,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         scenarios = [(context, self.DEFAULT_PARAMS, "idle_penalty_basic")]
         config = RewardScenarioConfig(
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=1.0,
             tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
         )
@@ -209,8 +211,12 @@ class TestRewardComponents(RewardSpaceTestBase):
             action=Actions.Long_exit,
         )
         params = self.base_params()
-        profit_target = self.TEST_PROFIT_TARGET * self.TEST_RR
-        pnl_coefficient = _get_pnl_coefficient(params, ctx, profit_target, self.TEST_RR)
+        pnl_target = self.TEST_PROFIT_AIM * self.TEST_RR
+        pnl_target_coefficient = _compute_pnl_target_coefficient(
+            params, ctx.pnl, pnl_target, self.TEST_RR
+        )
+        efficiency_coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
+        pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
         self.assertFinite(pnl_coefficient, name="pnl_coefficient")
         self.assertAlmostEqualFloat(pnl_coefficient, 1.0, tolerance=self.TOL_GENERIC_EQ)
 
@@ -235,7 +241,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             context,
             params_small,
             base_factor,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             short_allowed=True,
             action_masking=True,
@@ -244,7 +250,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             context,
             params_large,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=PARAMS.PROFIT_TARGET,
+            profit_aim=PARAMS.PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             short_allowed=True,
             action_masking=True,
@@ -264,14 +270,27 @@ class TestRewardComponents(RewardSpaceTestBase):
         - Plateau mode attenuates after grace period
         """
         modes_to_test = ["linear", "power"]
+        pnl = 0.02
+        pnl_target = 0.045  # 0.03 * 1.5 coefficient
+        context = RewardContext(
+            pnl=pnl,
+            trade_duration=50,
+            idle_duration=0,
+            max_unrealized_profit=0.045,
+            min_unrealized_profit=0.0,
+            position=Positions.Neutral,
+            action=Actions.Neutral,
+        )
         for mode in modes_to_test:
             test_params = self.base_params(exit_attenuation_mode=mode)
             factor = _get_exit_factor(
                 base_factor=1.0,
-                pnl=0.02,
-                pnl_coefficient=1.5,
+                pnl=pnl,
+                pnl_target=pnl_target,
                 duration_ratio=0.3,
+                context=context,
                 params=test_params,
+                risk_reward_ratio=self.TEST_RR_HIGH,
             )
             self.assertFinite(factor, name=f"exit_factor[{mode}]")
             self.assertGreater(factor, 0, f"Exit factor for {mode} should be positive")
@@ -285,18 +304,20 @@ class TestRewardComponents(RewardSpaceTestBase):
             self,
             _get_exit_factor,
             base_factor=1.0,
-            pnl=0.02,
-            pnl_coefficient=1.5,
+            pnl=pnl,
+            pnl_target=pnl_target,
+            context=context,
             plateau_params=plateau_params,
             grace=0.5,
             tolerance_strict=self.TOL_IDENTITY_STRICT,
+            risk_reward_ratio=self.TEST_RR_HIGH,
         )
 
-    def test_idle_penalty_zero_when_profit_target_zero(self):
-        """Test idle penalty is zero when profit_target is zero.
+    def test_idle_penalty_zero_when_pnl_target_zero(self):
+        """Test idle penalty is zero when pnl_target is zero.
 
         Verifies:
-        - profit_target = 0 → idle_penalty = 0
+        - pnl_target = 0 → idle_penalty = 0
         - Total reward is zero in this configuration
         """
         context = self.make_ctx(
@@ -309,16 +330,16 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         def validate_zero_penalty(test_case, breakdown, description, tolerance_relaxed):
             test_case.assertEqual(
-                breakdown.idle_penalty, 0.0, "Idle penalty should be zero when profit_target=0"
+                breakdown.idle_penalty, 0.0, "Idle penalty should be zero when profit_aim=0"
             )
             test_case.assertEqual(
                 breakdown.total, 0.0, "Total reward should be zero in this configuration"
             )
 
-        scenarios = [(context, self.DEFAULT_PARAMS, "profit_target_zero")]
+        scenarios = [(context, self.DEFAULT_PARAMS, "pnl_target_zero")]
         config = RewardScenarioConfig(
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=0.0,
+            profit_aim=0.0,
             risk_reward_ratio=self.TEST_RR,
             tolerance_relaxed=self.TOL_IDENTITY_RELAXED,
         )
@@ -339,7 +360,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         win_reward_factor = 3.0
         beta = 0.5
-        profit_target = self.TEST_PROFIT_TARGET
+        profit_aim = self.TEST_PROFIT_AIM
         params = self.base_params(
             win_reward_factor=win_reward_factor,
             pnl_factor_beta=beta,
@@ -349,7 +370,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             exit_linear_slope=0.0,
         )
         params.pop("base_factor", None)
-        pnl_values = [profit_target * m for m in (1.05, self.TEST_RR_HIGH, 5.0, 10.0)]
+        pnl_values = [profit_aim * m for m in (1.05, self.TEST_RR_HIGH, 5.0, 10.0)]
         ratios_observed: list[float] = []
         for pnl in pnl_values:
             context = self.make_ctx(
@@ -365,8 +386,8 @@ class TestRewardComponents(RewardSpaceTestBase):
                 context,
                 params,
                 base_factor=1.0,
-                profit_target=profit_target,
-                risk_reward_ratio=1.0,
+                profit_aim=profit_aim,
+                risk_reward_ratio=self.TEST_RR,
                 short_allowed=True,
                 action_masking=True,
             )
@@ -388,7 +409,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         expected_ratios: list[float] = []
         for pnl in pnl_values:
-            pnl_ratio = pnl / profit_target
+            pnl_ratio = pnl / profit_aim
             expected = 1.0 + win_reward_factor * math.tanh(beta * (pnl_ratio - 1.0))
             expected_ratios.append(expected)
         for obs, exp in zip(ratios_observed, expected_ratios):
@@ -410,7 +431,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         params = self.base_params(max_idle_duration_candles=None, max_trade_duration_candles=100)
         base_factor = PARAMS.BASE_FACTOR
-        profit_target = self.TEST_PROFIT_TARGET
+        profit_aim = self.TEST_PROFIT_AIM
         risk_reward_ratio = 1.0
 
         base_context_kwargs = {
@@ -430,7 +451,7 @@ class TestRewardComponents(RewardSpaceTestBase):
                 context,
                 params,
                 base_factor=base_factor,
-                profit_target=profit_target,
+                profit_aim=profit_aim,
                 risk_reward_ratio=risk_reward_ratio,
                 short_allowed=True,
                 action_masking=True,
@@ -450,7 +471,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 0.5)
         idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
         factor = _get_float_param(params, "base_factor", float(base_factor))
-        idle_factor = factor * (profit_target * risk_reward_ratio) / 4.0
+        idle_factor = factor * (profit_aim * risk_reward_ratio) / 4.0
         observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_scale)
         if observed_ratio > 0:
             implied_D = 120 / observed_ratio ** (1 / idle_penalty_power)
@@ -484,7 +505,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             context,
             canonical_params,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             short_allowed=True,
             action_masking=True,
@@ -511,48 +532,6 @@ class TestRewardComponents(RewardSpaceTestBase):
             tolerance=self.TOL_IDENTITY_STRICT,
             msg="invariance_correction should be ~0 in canonical mode",
         )
-
-    def test_efficiency_center_extremes(self):
-        """Efficiency center extremes affect pnl_coefficient as expected when pnl_target_coefficient=1."""
-        context = self.make_ctx(
-            pnl=0.05,
-            trade_duration=10,
-            idle_duration=0,
-            max_unrealized_profit=0.10,
-            min_unrealized_profit=0.00,
-            position=Positions.Long,
-            action=Actions.Long_exit,
-        )
-        profit_target = 0.20
-        base_params = self.base_params(efficiency_weight=2.0)
-        params_center0 = dict(base_params, efficiency_center=0.0)
-        params_center1 = dict(base_params, efficiency_center=1.0)
-        coef_c0 = _get_pnl_coefficient(params_center0, context, profit_target, self.TEST_RR)
-        coef_c1 = _get_pnl_coefficient(params_center1, context, profit_target, self.TEST_RR)
-        self.assertFinite(coef_c0, name="coef_center0")
-        self.assertFinite(coef_c1, name="coef_center1")
-        self.assertGreater(coef_c0, coef_c1)
-
-    def test_efficiency_weight_zero_vs_two(self):
-        """Efficiency weight 0 yields ~1; weight 2 amplifies pnl_coefficient when center < ratio."""
-        context = self.make_ctx(
-            pnl=0.05,
-            trade_duration=10,
-            idle_duration=0,
-            max_unrealized_profit=0.10,
-            min_unrealized_profit=0.00,
-            position=Positions.Long,
-            action=Actions.Long_exit,
-        )
-        profit_target = 0.20
-        params_w0 = self.base_params(efficiency_weight=0.0, efficiency_center=0.2)
-        params_w2 = self.base_params(efficiency_weight=2.0, efficiency_center=0.2)
-        c0 = _get_pnl_coefficient(params_w0, context, profit_target, self.TEST_RR)
-        c2 = _get_pnl_coefficient(params_w2, context, profit_target, self.TEST_RR)
-        self.assertFinite(c0, name="coef_w0")
-        self.assertFinite(c2, name="coef_w2")
-        self.assertAlmostEqualFloat(c0, 1.0, tolerance=self.TOL_GENERIC_EQ)
-        self.assertGreater(c2, c0)
 
 
 if __name__ == "__main__":

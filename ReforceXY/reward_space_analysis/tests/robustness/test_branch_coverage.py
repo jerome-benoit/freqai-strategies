@@ -12,6 +12,7 @@ from reward_space_analysis import (
     validate_reward_parameters,
 )
 
+from ..constants import PARAMS
 from ..helpers import (
     assert_exit_factor_invariant_suite,
     run_relaxed_validation_adjustment_cases,
@@ -61,13 +62,26 @@ def test_validate_reward_parameters_relaxed_adjustment_batch():
 @pytest.mark.robustness
 def test_get_exit_factor_negative_plateau_grace_warning():
     params = {"exit_attenuation_mode": "linear", "exit_plateau": True, "exit_plateau_grace": -1.0}
+    pnl = 0.01
+    pnl_target = 0.03
+    context = RewardContext(
+        pnl=pnl,
+        trade_duration=50,
+        idle_duration=0,
+        max_unrealized_profit=0.02,
+        min_unrealized_profit=0.0,
+        position=Positions.Neutral,
+        action=Actions.Neutral,
+    )
     with pytest.warns(RewardDiagnosticsWarning):
         factor = _get_exit_factor(
             base_factor=10.0,
-            pnl=0.01,
-            pnl_coefficient=1.0,
+            pnl=pnl,
+            pnl_target=pnl_target,
             duration_ratio=0.5,
+            context=context,
             params=params,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         )
     assert factor >= 0.0
 
@@ -75,13 +89,26 @@ def test_get_exit_factor_negative_plateau_grace_warning():
 @pytest.mark.robustness
 def test_get_exit_factor_negative_linear_slope_warning():
     params = {"exit_attenuation_mode": "linear", "exit_linear_slope": -5.0}
+    pnl = 0.01
+    pnl_target = 0.03
+    context = RewardContext(
+        pnl=pnl,
+        trade_duration=50,
+        idle_duration=0,
+        max_unrealized_profit=0.02,
+        min_unrealized_profit=0.0,
+        position=Positions.Neutral,
+        action=Actions.Neutral,
+    )
     with pytest.warns(RewardDiagnosticsWarning):
         factor = _get_exit_factor(
             base_factor=10.0,
-            pnl=0.01,
-            pnl_coefficient=1.0,
+            pnl=pnl,
+            pnl_target=pnl_target,
             duration_ratio=2.0,
+            context=context,
             params=params,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         )
     assert factor >= 0.0
 
@@ -89,13 +116,26 @@ def test_get_exit_factor_negative_linear_slope_warning():
 @pytest.mark.robustness
 def test_get_exit_factor_invalid_power_tau_relaxed():
     params = {"exit_attenuation_mode": "power", "exit_power_tau": 0.0, "strict_validation": False}
+    pnl = 0.02
+    pnl_target = 0.03
+    context = RewardContext(
+        pnl=pnl,
+        trade_duration=50,
+        idle_duration=0,
+        max_unrealized_profit=0.03,
+        min_unrealized_profit=0.0,
+        position=Positions.Neutral,
+        action=Actions.Neutral,
+    )
     with pytest.warns(RewardDiagnosticsWarning):
         factor = _get_exit_factor(
             base_factor=5.0,
-            pnl=0.02,
-            pnl_coefficient=1.0,
+            pnl=pnl,
+            pnl_target=pnl_target,
             duration_ratio=1.5,
+            context=context,
             params=params,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         )
     assert factor > 0.0
 
@@ -107,13 +147,26 @@ def test_get_exit_factor_half_life_near_zero_relaxed():
         "exit_half_life": 1e-12,
         "strict_validation": False,
     }
+    pnl = 0.02
+    pnl_target = 0.03
+    context = RewardContext(
+        pnl=pnl,
+        trade_duration=50,
+        idle_duration=0,
+        max_unrealized_profit=0.03,
+        min_unrealized_profit=0.0,
+        position=Positions.Neutral,
+        action=Actions.Neutral,
+    )
     with pytest.warns(RewardDiagnosticsWarning):
         factor = _get_exit_factor(
             base_factor=5.0,
-            pnl=0.02,
-            pnl_coefficient=1.0,
+            pnl=pnl,
+            pnl_target=pnl_target,
             duration_ratio=2.0,
+            context=context,
             params=params,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         )
     assert factor != 0.0
 
@@ -137,11 +190,29 @@ def test_hold_penalty_short_duration_returns_zero():
 @pytest.mark.robustness
 def test_exit_factor_invariant_suite_grouped():
     """Grouped exit factor invariant scenarios using shared helper."""
+
+    def make_context(pnl: float) -> RewardContext:
+        """Helper to create context for test cases."""
+        return RewardContext(
+            pnl=pnl,
+            trade_duration=50,
+            idle_duration=0,
+            max_unrealized_profit=max(pnl * 1.2, 0.03)
+            if not (isinstance(pnl, float) and (pnl != pnl or pnl == float("inf")))
+            else 0.03,
+            min_unrealized_profit=0.0,
+            position=Positions.Neutral,
+            action=Actions.Neutral,
+        )
+
+    pnl_target = 0.03
+
     suite = [
         {
             "base_factor": 15.0,
             "pnl": 0.02,
-            "pnl_coefficient": 1.0,
+            "pnl_target": pnl_target,
+            "context": make_context(0.02),
             "duration_ratio": -5.0,
             "params": {
                 "exit_attenuation_mode": "linear",
@@ -153,7 +224,8 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 15.0,
             "pnl": 0.02,
-            "pnl_coefficient": 1.0,
+            "pnl_target": pnl_target,
+            "context": make_context(0.02),
             "duration_ratio": 0.0,
             "params": {
                 "exit_attenuation_mode": "linear",
@@ -165,7 +237,8 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": float("nan"),
             "pnl": 0.01,
-            "pnl_coefficient": 1.0,
+            "pnl_target": pnl_target,
+            "context": make_context(0.01),
             "duration_ratio": 0.2,
             "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
             "expectation": "safe_zero",
@@ -173,7 +246,8 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": float("nan"),
-            "pnl_coefficient": 1.0,
+            "pnl_target": pnl_target,
+            "context": make_context(float("nan")),
             "duration_ratio": 0.2,
             "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
             "expectation": "safe_zero",
@@ -181,7 +255,8 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": 0.01,
-            "pnl_coefficient": 1.0,
+            "pnl_target": pnl_target,
+            "context": make_context(0.01),
             "duration_ratio": float("nan"),
             "params": {"exit_attenuation_mode": "linear", "exit_linear_slope": 0.5},
             "expectation": "safe_zero",
@@ -189,7 +264,8 @@ def test_exit_factor_invariant_suite_grouped():
         {
             "base_factor": 10.0,
             "pnl": 0.02,
-            "pnl_coefficient": float("inf"),
+            "pnl_target": float("inf"),
+            "context": make_context(0.02),
             "duration_ratio": 0.5,
             "params": {
                 "exit_attenuation_mode": "linear",
@@ -200,8 +276,9 @@ def test_exit_factor_invariant_suite_grouped():
         },
         {
             "base_factor": 10.0,
-            "pnl": 0.015,
-            "pnl_coefficient": -2.5,
+            "pnl": -0.02,
+            "pnl_target": 0.03,
+            "context": make_context(-0.02),
             "duration_ratio": 2.0,
             "params": {
                 "exit_attenuation_mode": "legacy",

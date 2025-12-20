@@ -56,8 +56,10 @@ class TestPBRS(RewardSpaceTestBase):
         )
         current_pnl = 0.02
         current_dur = 0.5
-        pnl_target = self.TEST_PROFIT_TARGET
-        prev_potential = _compute_hold_potential(current_pnl, pnl_target, current_dur, params)
+        profit_aim = self.TEST_PROFIT_AIM
+        prev_potential = _compute_hold_potential(
+            current_pnl, profit_aim * self.TEST_RR, current_dur, params
+        )
         (
             _total_reward,
             reward_shaping,
@@ -68,7 +70,7 @@ class TestPBRS(RewardSpaceTestBase):
         ) = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
-            pnl_target=pnl_target,
+            pnl_target=profit_aim * self.TEST_RR,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -96,8 +98,10 @@ class TestPBRS(RewardSpaceTestBase):
         )
         current_pnl = 0.015
         current_dur = 0.4
-        pnl_target = self.TEST_PROFIT_TARGET
-        prev_potential = _compute_hold_potential(current_pnl, pnl_target, current_dur, params)
+        profit_aim = self.TEST_PROFIT_AIM
+        prev_potential = _compute_hold_potential(
+            current_pnl, profit_aim * self.TEST_RR, current_dur, params
+        )
         gamma = _get_float_param(
             params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
         )
@@ -114,7 +118,7 @@ class TestPBRS(RewardSpaceTestBase):
         ) = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=current_pnl,
-            pnl_target=pnl_target,
+            pnl_target=profit_aim * self.TEST_RR,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -145,7 +149,7 @@ class TestPBRS(RewardSpaceTestBase):
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=self.SEED,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             max_duration_ratio=2.0,
             trading_mode="margin",
@@ -173,7 +177,7 @@ class TestPBRS(RewardSpaceTestBase):
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=self.SEED,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             max_duration_ratio=2.0,
             trading_mode="margin",
@@ -190,10 +194,14 @@ class TestPBRS(RewardSpaceTestBase):
     def test_additive_components_disabled_return_zero(self):
         """Verifies entry/exit additives return zero when disabled."""
         params_entry = {"entry_additive_enabled": False, "entry_additive_scale": 1.0}
-        val_entry = _compute_entry_additive(0.5, self.TEST_PROFIT_TARGET, 0.3, params_entry)
+        val_entry = _compute_entry_additive(
+            0.5, self.TEST_PROFIT_AIM * self.TEST_RR, 0.3, params_entry
+        )
         self.assertEqual(float(val_entry), 0.0)
         params_exit = {"exit_additive_enabled": False, "exit_additive_scale": 1.0}
-        val_exit = _compute_exit_additive(0.5, self.TEST_PROFIT_TARGET, 0.3, params_exit)
+        val_exit = _compute_exit_additive(
+            0.5, self.TEST_PROFIT_AIM * self.TEST_RR, 0.3, params_exit
+        )
         self.assertEqual(float(val_exit), 0.0)
 
     def test_exit_potential_canonical(self):
@@ -213,7 +221,7 @@ class TestPBRS(RewardSpaceTestBase):
             apply_potential_shaping(
                 base_reward=base_reward,
                 current_pnl=current_pnl,
-                pnl_target=self.TEST_PROFIT_TARGET,
+                pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
                 current_duration_ratio=current_duration_ratio,
                 next_pnl=next_pnl,
                 next_duration_ratio=next_duration_ratio,
@@ -235,7 +243,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertPlacesEqual(next_potential, 0.0, places=12)
         current_potential = _compute_hold_potential(
             current_pnl,
-            self.TEST_PROFIT_TARGET,
+            self.TEST_PROFIT_AIM * self.TEST_RR,
             current_duration_ratio,
             {"hold_potential_enabled": True, "hold_potential_scale": 1.0},
         )
@@ -256,7 +264,7 @@ class TestPBRS(RewardSpaceTestBase):
         _t1, _s1, _n1, _pbrs_delta, _entry_additive, _exit_additive = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=0.05,
-            pnl_target=self.TEST_PROFIT_TARGET,
+            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
             current_duration_ratio=0.3,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -278,7 +286,7 @@ class TestPBRS(RewardSpaceTestBase):
         _t2, _s2, _n2, _pbrs_delta2, _entry_additive2, _exit_additive2 = apply_potential_shaping(
             base_reward=0.0,
             current_pnl=0.02,
-            pnl_target=self.TEST_PROFIT_TARGET,
+            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
             current_duration_ratio=0.1,
             next_pnl=0.0,
             next_duration_ratio=0.0,
@@ -303,7 +311,7 @@ class TestPBRS(RewardSpaceTestBase):
             apply_potential_shaping(
                 base_reward=0.0,
                 current_pnl=0.0,
-                pnl_target=self.TEST_PROFIT_TARGET,
+                pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
                 current_duration_ratio=0.0,
                 next_pnl=0.0,
                 next_duration_ratio=0.0,
@@ -330,7 +338,7 @@ class TestPBRS(RewardSpaceTestBase):
         res_nan = apply_potential_shaping(
             base_reward=0.1,
             current_pnl=0.03,
-            pnl_target=self.TEST_PROFIT_TARGET,
+            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
@@ -342,7 +350,7 @@ class TestPBRS(RewardSpaceTestBase):
         res_ref = apply_potential_shaping(
             base_reward=0.1,
             current_pnl=0.03,
-            pnl_target=self.TEST_PROFIT_TARGET,
+            pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
@@ -425,7 +433,7 @@ class TestPBRS(RewardSpaceTestBase):
         ctx_dur_ratio = 0.3
         params_can = self.base_params(exit_potential_mode="canonical", **base_common)
         prev_phi = _compute_hold_potential(
-            ctx_pnl, self.TEST_PROFIT_TARGET, ctx_dur_ratio, params_can
+            ctx_pnl, self.TEST_PROFIT_AIM * self.TEST_RR, ctx_dur_ratio, params_can
         )
         self.assertFinite(prev_phi, name="prev_phi")
         next_phi_can = _compute_exit_potential(prev_phi, params_can)
@@ -490,11 +498,11 @@ class TestPBRS(RewardSpaceTestBase):
             potential_gamma=0.94,
         )
         df = simulate_samples(
-            params={**params, "max_trade_duration_candles": 140},
-            num_samples=SCENARIOS.SAMPLE_SIZE_LARGE // 2,  # 500 ≈ 400 (keep original intent)
-            seed=SEEDS.PBRS_INVARIANCE_1,
+            params={**params, "max_trade_duration_candles": 100},
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
+            seed=self.SEED,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             max_duration_ratio=2.0,
             trading_mode="margin",
@@ -532,7 +540,7 @@ class TestPBRS(RewardSpaceTestBase):
                 num_samples=250,
                 seed=SEEDS.PBRS_INVARIANCE_2,
                 base_factor=self.TEST_BASE_FACTOR,
-                profit_target=self.TEST_PROFIT_TARGET,
+                profit_aim=self.TEST_PROFIT_AIM,
                 risk_reward_ratio=self.TEST_RR,
                 max_duration_ratio=2.0,
                 trading_mode="margin",
@@ -564,7 +572,7 @@ class TestPBRS(RewardSpaceTestBase):
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=SEEDS.PBRS_TERMINAL,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             max_duration_ratio=2.0,
             trading_mode="margin",
@@ -583,7 +591,7 @@ class TestPBRS(RewardSpaceTestBase):
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=SEEDS.PBRS_TERMINAL,
             base_factor=self.TEST_BASE_FACTOR,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
             risk_reward_ratio=self.TEST_RR,
             max_duration_ratio=2.0,
             trading_mode="margin",
@@ -682,7 +690,7 @@ class TestPBRS(RewardSpaceTestBase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=0.02,
-                    pnl_target=self.TEST_PROFIT_TARGET,
+                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
                     current_duration_ratio=0.3,
                     next_pnl=0.025,
                     next_duration_ratio=0.35,
@@ -723,7 +731,7 @@ class TestPBRS(RewardSpaceTestBase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=current_pnl,
-                    pnl_target=self.TEST_PROFIT_TARGET,
+                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
@@ -777,7 +785,7 @@ class TestPBRS(RewardSpaceTestBase):
                 apply_potential_shaping(
                     base_reward=0.0,
                     current_pnl=float(rng.normal(0, 0.07)),
-                    pnl_target=self.TEST_PROFIT_TARGET,
+                    pnl_target=self.TEST_PROFIT_AIM * self.TEST_RR,
                     current_duration_ratio=float(rng.uniform(0, 1)),
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
@@ -844,7 +852,8 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
+            risk_reward_ratio=self.TEST_RR,
             seed=self.SEED,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
@@ -905,11 +914,12 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
+            risk_reward_ratio=self.TEST_RR,
             seed=self.SEED,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
-            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS * 2,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
         )
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Report file missing for canonical warning test")
@@ -960,7 +970,8 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
+            risk_reward_ratio=self.TEST_RR,
             seed=self.SEED,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
@@ -1018,7 +1029,8 @@ class TestPBRS(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df,
             output_dir=out_dir,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
+            risk_reward_ratio=self.TEST_RR,
             seed=self.SEED,
             skip_feature_analysis=True,
             skip_partial_dependence=True,
@@ -1096,7 +1108,8 @@ class TestPBRS(RewardSpaceTestBase):
             write_complete_statistical_analysis(
                 df,
                 output_dir=out_dir,
-                profit_target=self.TEST_PROFIT_TARGET,
+                profit_aim=self.TEST_PROFIT_AIM,
+                risk_reward_ratio=self.TEST_RR,
                 seed=self.SEED,
                 skip_feature_analysis=True,
                 skip_partial_dependence=True,

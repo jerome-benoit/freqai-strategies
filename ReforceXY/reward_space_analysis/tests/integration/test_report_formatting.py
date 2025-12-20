@@ -73,7 +73,8 @@ class TestReportFormatting(RewardSpaceTestBase):
         write_complete_statistical_analysis(
             df=df,
             output_dir=out_dir,
-            profit_target=self.TEST_PROFIT_TARGET,
+            profit_aim=self.TEST_PROFIT_AIM,
+            risk_reward_ratio=self.TEST_RR,
             seed=self.SEED,
             real_df=real_df,
             adjust_method="none",

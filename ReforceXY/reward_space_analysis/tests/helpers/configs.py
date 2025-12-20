@@ -11,7 +11,7 @@ Usage:
 
     config = RewardScenarioConfig(
         base_factor=PARAMS.BASE_FACTOR,
-        profit_target=PARAMS.PROFIT_TARGET,
+        profit_aim=PARAMS.PROFIT_AIM,
         risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
     )
@@ -36,7 +36,7 @@ class RewardScenarioConfig:
 
     Attributes:
         base_factor: Base scaling factor for reward calculations
-        profit_target: Target profit threshold
+        profit_aim: Base profit target
         risk_reward_ratio: Risk/reward ratio for position sizing
         tolerance_relaxed: Numerical tolerance for assertions
         short_allowed: Whether short positions are permitted
@@ -44,7 +44,7 @@ class RewardScenarioConfig:
     """
 
     base_factor: float
-    profit_target: float
+    profit_aim: float
     risk_reward_ratio: float
     tolerance_relaxed: float
     short_allowed: bool = True
@@ -118,7 +118,7 @@ class ExitFactorConfig:
 
     Attributes:
         base_factor: Base scaling factor
-        pnl: Profit/loss value
+        pnl: Realized profit/loss
         pnl_coefficient: PnL amplification coefficient
         duration_ratio: Ratio of current to maximum duration
         attenuation_mode: Mode of attenuation ("linear", "power", etc.)

@@ -798,34 +798,48 @@ def _compute_time_attenuation_coefficient(
 def _get_exit_factor(
     base_factor: float,
     pnl: float,
-    pnl_coefficient: float,
+    pnl_target: float,
     duration_ratio: float,
+    context: RewardContext,
     params: RewardParams,
+    risk_reward_ratio: float,
 ) -> float:
     """
     Compute exit reward factor by applying multiplicative coefficients to base_factor.
 
-    Formula: exit_factor = base_factor × time_attenuation_coefficient × pnl_coefficient
-
-    The time_attenuation_coefficient reduces rewards for longer trades, and the
-    pnl_coefficient adjusts rewards based on profit/target ratio and exit timing efficiency.
+    Formula: exit_factor = base_factor × time_attenuation_coefficient × pnl_target_coefficient × efficiency_coefficient
 
     Args:
         base_factor: Base reward value before coefficient adjustments
         pnl: Realized profit/loss
-        pnl_coefficient: PnL scaling coefficient (already calculated)
+        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
         duration_ratio: Trade duration relative to target duration
+        context: Trade context with unrealized profit/loss extremes
         params: Reward configuration parameters
+        risk_reward_ratio: Risk/reward ratio (must match the value used to calculate pnl_target)
 
     Returns:
         float: Final exit factor (can be negative for losses)
     """
-    if not np.isfinite(base_factor) or not np.isfinite(pnl) or not np.isfinite(duration_ratio):
+    if (
+        not np.isfinite(base_factor)
+        or not np.isfinite(pnl)
+        or not np.isfinite(pnl_target)
+        or not np.isfinite(duration_ratio)
+    ):
         return _fail_safely("non_finite_exit_factor_inputs")
 
-    time_attenuation_coefficient = _compute_time_attenuation_coefficient(duration_ratio, params)
-
-    exit_factor = base_factor * time_attenuation_coefficient * pnl_coefficient
+    exit_factor = (
+        base_factor
+        * _compute_time_attenuation_coefficient(duration_ratio, params)
+        * _compute_pnl_target_coefficient(
+            params,
+            pnl,
+            pnl_target,
+            risk_reward_ratio,
+        )
+        * _compute_efficiency_coefficient(params, context, pnl)
+    )
 
     if _get_bool_param(
         params,
@@ -845,7 +859,7 @@ def _get_exit_factor(
             if abs(exit_factor) > exit_factor_threshold:
                 warnings.warn(
                     (
-                        f"_get_exit_factor |factor|={abs(exit_factor):.2f} exceeds threshold {exit_factor_threshold:.2f}"
+                        f"_get_exit_factor |exit_factor|={abs(exit_factor):.2f} exceeds threshold {exit_factor_threshold:.2f}"
                     ),
                     RewardDiagnosticsWarning,
                     stacklevel=2,
@@ -857,20 +871,20 @@ def _get_exit_factor(
 def _compute_pnl_target_coefficient(
     params: RewardParams,
     pnl: float,
-    profit_target: float,
+    pnl_target: float,
     risk_reward_ratio: float,
 ) -> float:
     """
     Compute PnL target coefficient based on PnL/target ratio using tanh.
 
     Returns a coefficient (typically 0.5-2.0) to be multiplied with base_factor.
-    The coefficient rewards trades that exceed profit targets and penalizes losses
+    The coefficient rewards trades that exceed pnl_target and penalizes losses
     beyond the risk/reward threshold.
 
     Args:
         params: Reward configuration parameters
         pnl: Realized profit/loss
-        profit_target: Target profit threshold
+        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
         risk_reward_ratio: Risk/reward ratio for loss penalty calculation
 
     Returns:
@@ -878,7 +892,7 @@ def _compute_pnl_target_coefficient(
     """
     pnl_target_coefficient = 1.0
 
-    if profit_target > 0.0:
+    if pnl_target > 0.0:
         win_reward_factor = _get_float_param(
             params,
             "win_reward_factor",
@@ -891,7 +905,7 @@ def _compute_pnl_target_coefficient(
         )
         rr = risk_reward_ratio if risk_reward_ratio > 0 else 1.0
 
-        pnl_ratio = pnl / profit_target
+        pnl_ratio = pnl / pnl_target
         if abs(pnl_ratio) > 1.0:
             base_pnl_target_coefficient = math.tanh(pnl_factor_beta * (abs(pnl_ratio) - 1.0))
             if pnl_ratio > 1.0:
@@ -952,42 +966,6 @@ def _compute_efficiency_coefficient(
                 )
 
     return efficiency_coefficient
-
-
-def _get_pnl_coefficient(
-    params: RewardParams,
-    context: RewardContext,
-    profit_target: float,
-    risk_reward_ratio: float,
-) -> float:
-    """
-    Compute combined PnL coefficient from target and efficiency components.
-
-    Multiplies the PnL target coefficient (based on profit/target ratio) with
-    the efficiency coefficient (based on exit timing quality) to produce a
-    single composite coefficient applied to the base reward factor.
-
-    Args:
-        params: Reward configuration parameters
-        context: Trade context with PnL and unrealized extremes
-        profit_target: Target profit threshold
-        risk_reward_ratio: Risk/reward ratio for loss penalty calculation
-
-    Returns:
-        float: Composite coefficient ≥ 0.0 (typically 0.25-4.0 range)
-    """
-    pnl = context.pnl
-    if not np.isfinite(pnl) or not np.isfinite(profit_target) or not np.isfinite(risk_reward_ratio):
-        return _fail_safely("non_finite_inputs_pnl_coefficient")
-    if profit_target <= 0.0:
-        return 0.0
-
-    pnl_target_coefficient = _compute_pnl_target_coefficient(
-        params, pnl, profit_target, risk_reward_ratio
-    )
-    efficiency_coefficient = _compute_efficiency_coefficient(params, context, pnl)
-
-    return max(0.0, pnl_target_coefficient * efficiency_coefficient)
 
 
 def _is_valid_action(
@@ -1053,19 +1031,27 @@ def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardPara
 
 def _compute_exit_reward(
     base_factor: float,
-    pnl_coefficient: float,
+    pnl_target: float,
+    duration_ratio: float,
     context: RewardContext,
     params: RewardParams,
+    risk_reward_ratio: float,
 ) -> float:
-    """Compose the exit reward: pnl * exit_factor."""
-    max_trade_duration_candles = _get_int_param(
-        params,
-        "max_trade_duration_candles",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-    )
-    duration_ratio = _compute_duration_ratio(context.trade_duration, max_trade_duration_candles)
+    """Compose the exit reward: pnl * exit_factor.
+
+    Args:
+        base_factor: Base reward value before coefficient adjustments
+        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        duration_ratio: Trade duration relative to target duration
+        context: Trade context with PnL and unrealized profit/loss extremes
+        params: Reward configuration parameters
+        risk_reward_ratio: Risk/reward ratio (must match the value used to calculate pnl_target)
+
+    Returns:
+        float: Exit reward (pnl × exit_factor)
+    """
     exit_factor = _get_exit_factor(
-        base_factor, context.pnl, pnl_coefficient, duration_ratio, params
+        base_factor, context.pnl, pnl_target, duration_ratio, context, params, risk_reward_ratio
     )
     return context.pnl * exit_factor
 
@@ -1074,7 +1060,7 @@ def calculate_reward(
     context: RewardContext,
     params: RewardParams,
     base_factor: float,
-    profit_target: float,
+    profit_aim: float,
     risk_reward_ratio: float,
     *,
     short_allowed: bool,
@@ -1099,22 +1085,25 @@ def calculate_reward(
 
     factor = _get_float_param(params, "base_factor", base_factor)
 
-    if "profit_target" in params:
-        profit_target = _get_float_param(params, "profit_target", float(profit_target))
+    if "profit_aim" in params:
+        profit_aim = _get_float_param(params, "profit_aim", float(profit_aim))
 
     if "risk_reward_ratio" in params:
         risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
 
-    pnl_target = float(profit_target * risk_reward_ratio)
+    pnl_target = float(profit_aim * risk_reward_ratio)
 
     idle_factor = factor * pnl_target / 4.0
-    pnl_coefficient = _get_pnl_coefficient(
-        params,
-        context,
-        pnl_target,
-        risk_reward_ratio,
-    )
     hold_factor = idle_factor
+
+    max_trade_duration_candles = _get_int_param(
+        params,
+        "max_trade_duration_candles",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
+    )
+    current_duration_ratio = _compute_duration_ratio(
+        context.trade_duration, max_trade_duration_candles
+    )
 
     # Base reward calculation
     base_reward = 0.0
@@ -1128,24 +1117,20 @@ def calculate_reward(
         base_reward = _hold_penalty(context, hold_factor, params)
         breakdown.hold_penalty = base_reward
     elif context.action == Actions.Long_exit and context.position == Positions.Long:
-        base_reward = _compute_exit_reward(factor, pnl_coefficient, context, params)
+        base_reward = _compute_exit_reward(
+            factor, pnl_target, current_duration_ratio, context, params, risk_reward_ratio
+        )
         breakdown.exit_component = base_reward
     elif context.action == Actions.Short_exit and context.position == Positions.Short:
-        base_reward = _compute_exit_reward(factor, pnl_coefficient, context, params)
+        base_reward = _compute_exit_reward(
+            factor, pnl_target, current_duration_ratio, context, params, risk_reward_ratio
+        )
         breakdown.exit_component = base_reward
     else:
         base_reward = 0.0
 
     # === PBRS INTEGRATION ===
     current_pnl = context.pnl if context.position != Positions.Neutral else 0.0
-    max_trade_duration_candles = _get_int_param(
-        params,
-        "max_trade_duration_candles",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128),
-    )
-    current_duration_ratio = _compute_duration_ratio(
-        context.trade_duration, max_trade_duration_candles
-    )
 
     is_entry = context.position == Positions.Neutral and context.action in (
         Actions.Long_enter,
@@ -1292,7 +1277,7 @@ def simulate_samples(
     seed: int,
     params: RewardParams,
     base_factor: float,
-    profit_target: float,
+    profit_aim: float,
     risk_reward_ratio: float,
     max_duration_ratio: float,
     trading_mode: str,
@@ -1395,7 +1380,7 @@ def simulate_samples(
             context,
             params,
             base_factor,
-            profit_target,
+            profit_aim,
             risk_reward_ratio,
             short_allowed=short_allowed,
             action_masking=action_masking,
@@ -1692,9 +1677,11 @@ def _compute_relationship_stats(df: pd.DataFrame) -> Dict[str, Any]:
 
 def _compute_representativity_stats(
     df: pd.DataFrame,
-    profit_target: float,
+    profit_aim: float,
+    risk_reward_ratio: float,
 ) -> Dict[str, Any]:
     """Compute representativity statistics for the reward space."""
+    pnl_target = float(profit_aim * risk_reward_ratio)
     total = len(df)
     # Map numeric position codes to readable labels to avoid casting Neutral (0.5) to 0
     pos_label_map = {0.0: "Short", 0.5: "Neutral", 1.0: "Long"}
@@ -1705,9 +1692,9 @@ def _compute_representativity_stats(
     # Actions are encoded as float enum values, casting to int is safe here
     act_counts = df["action"].astype(int).value_counts().sort_index()
 
-    pnl_above_target = float((df["pnl"] > profit_target).mean())
+    pnl_above_target = float((df["pnl"] > pnl_target).mean())
     pnl_near_target = float(
-        ((df["pnl"] >= 0.8 * profit_target) & (df["pnl"] <= 1.2 * profit_target)).mean()
+        ((df["pnl"] >= 0.8 * pnl_target) & (df["pnl"] <= 1.2 * pnl_target)).mean()
     )
     pnl_extreme = float((df["pnl"].abs() >= 0.14).mean())
 
@@ -2767,7 +2754,17 @@ def _compute_hold_potential(
     duration_ratio: float,
     params: RewardParams,
 ) -> float:
-    """Compute PBRS hold potential Φ(s)."""
+    """Compute PBRS hold potential Φ(s) = scale · 0.5 · [T_pnl(g · pnl_ratio) + sign(pnl_ratio) · T_dur(g · duration_ratio)].
+
+    Args:
+        pnl: Current unrealized profit/loss
+        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        duration_ratio: Trade duration relative to target duration
+        params: Reward configuration parameters
+
+    Returns:
+        float: Hold potential value (0.0 if disabled or invalid)
+    """
     if not _get_bool_param(
         params,
         "hold_potential_enabled",
@@ -3047,7 +3044,7 @@ def _compute_bi_component(
 
     t_pnl = apply_transform(transform_pnl, gain * pnl_ratio)
     t_dur = apply_transform(transform_duration, gain * duration_ratio)
-    value = scale * 0.5 * (t_pnl + t_dur)
+    value = scale * 0.5 * (t_pnl + np.sign(pnl_ratio) * t_dur)
     if not np.isfinite(value):
         return _fail_safely(non_finite_key)
     return float(value)
@@ -3104,7 +3101,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Base reward factor used inside the environment (default: 100).",
     )
     parser.add_argument(
-        "--profit_target",
+        "--profit_aim",
         type=float,
         default=0.03,
         help="Target profit threshold (default: 0.03).",
@@ -3211,7 +3208,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def write_complete_statistical_analysis(
     df: pd.DataFrame,
     output_dir: Path,
-    profit_target: float,
+    profit_aim: float,
+    risk_reward_ratio: float,
     seed: int,
     real_df: Optional[pd.DataFrame] = None,
     *,
@@ -3279,7 +3277,7 @@ def write_complete_statistical_analysis(
     # Compute all statistics
     summary_stats = _compute_summary_stats(df)
     relationship_stats = _compute_relationship_stats(df)
-    representativity_stats = _compute_representativity_stats(df, profit_target)
+    representativity_stats = _compute_representativity_stats(df, profit_aim, risk_reward_ratio)
 
     # Model analysis: skip if requested or not enough samples
     importance_df = None
@@ -3947,7 +3945,7 @@ def main() -> None:
         print("Parameter adjustments applied:\n" + "\n".join(adj_lines))
 
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
-    profit_target = _get_float_param(params, "profit_target", float(args.profit_target))
+    profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
     risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
 
     cli_action_masking = _to_bool(args.action_masking)
@@ -3968,7 +3966,7 @@ def main() -> None:
         seed=args.seed,
         params=params,
         base_factor=base_factor,
-        profit_target=profit_target,
+        profit_aim=profit_aim,
         risk_reward_ratio=risk_reward_ratio,
         max_duration_ratio=args.max_duration_ratio,
         trading_mode=args.trading_mode,
@@ -4011,7 +4009,7 @@ def main() -> None:
         "out_dir",
         "trading_mode",
         "risk_reward_ratio",
-        "profit_target",
+        "profit_aim",
         "max_duration_ratio",
         "pnl_base_std",
         "pnl_duration_vol_scale",
@@ -4063,7 +4061,8 @@ def main() -> None:
     write_complete_statistical_analysis(
         df,
         args.out_dir,
-        profit_target=float(profit_target * risk_reward_ratio),
+        profit_aim=profit_aim,
+        risk_reward_ratio=risk_reward_ratio,
         seed=args.seed,
         real_df=real_df,
         adjust_method=args.pvalue_adjust,
@@ -4086,7 +4085,7 @@ def main() -> None:
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": int(len(df)),
             "seed": int(args.seed),
-            "profit_target_effective": float(profit_target * risk_reward_ratio),
+            "pnl_target": float(profit_aim * risk_reward_ratio),
             "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,

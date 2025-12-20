@@ -1843,9 +1843,9 @@ class MyRLEnv(Base5ActionRLEnv):
         position : Positions
             Current position
         pnl : float
-            PnL used for normalization
+            Current position PnL
         pnl_target : float
-            Target PnL normalizer (>0)
+            Target PnL for normalization
         duration_ratio : float
             Raw duration ratio
         scale : float
@@ -1878,7 +1878,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         pnl_term = self._potential_transform(transform_pnl, gain * pnl_ratio)
         dur_term = self._potential_transform(transform_duration, gain * duration_ratio)
-        value = scale * 0.5 * (pnl_term + dur_term)
+        value = scale * 0.5 * (pnl_term + np.sign(pnl_ratio) * dur_term)
         return float(value) if np.isfinite(value) else 0.0
 
     def _compute_hold_potential(
@@ -2117,7 +2117,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         Potential Function Φ(s)
         -----------------------
-        Φ(s) = scale * 0.5 * [T_pnl(g * pnl_ratio) + T_dur(g * duration_ratio)]
+        Φ(s) = scale * 0.5 * [T_pnl(g * pnl_ratio) + sign(pnl_ratio) * T_dur(g * duration_ratio)]
         Transforms (bounded in [-1,1]): tanh, softsign, arctan, sigmoid (≈ tanh(0.5x)), asinh, clip.
         Parameters: gain g (sharpens/softens), scale.
 
@@ -2491,11 +2491,19 @@ class MyRLEnv(Base5ActionRLEnv):
             duration_ratio,
             model_reward_parameters,
         )
-        pnl_coefficient = self._get_pnl_coefficient(
+        pnl_target_coefficient = self._compute_pnl_target_coefficient(
             pnl, self._pnl_target, model_reward_parameters
         )
+        efficiency_coefficient = self._compute_efficiency_coefficient(
+            pnl, model_reward_parameters
+        )
 
-        exit_factor = base_factor * time_attenuation_coefficient * pnl_coefficient
+        exit_factor = (
+            base_factor
+            * time_attenuation_coefficient
+            * pnl_target_coefficient
+            * efficiency_coefficient
+        )
 
         check_invariants = model_reward_parameters.get(
             "check_invariants", ReforceXY.DEFAULT_CHECK_INVARIANTS
@@ -2602,21 +2610,6 @@ class MyRLEnv(Base5ActionRLEnv):
                     )
 
         return efficiency_coefficient
-
-    def _get_pnl_coefficient(
-        self, pnl: float, pnl_target: float, model_reward_parameters: Mapping[str, Any]
-    ) -> float:
-        """
-        Combine PnL target and efficiency coefficients (typically 0.25-4.0).
-        """
-        pnl_target_coefficient = self._compute_pnl_target_coefficient(
-            pnl, pnl_target, model_reward_parameters
-        )
-        efficiency_coefficient = self._compute_efficiency_coefficient(
-            pnl, model_reward_parameters
-        )
-
-        return max(0.0, pnl_target_coefficient * efficiency_coefficient)
 
     def calculate_reward(self, action: int) -> float:
         """Compute per-step reward and apply potential-based reward shaping (PBRS).

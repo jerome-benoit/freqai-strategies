@@ -48,7 +48,7 @@ def test_calculate_reward_unrealized_pnl_hold_path():
         context,
         params,
         base_factor=100.0,
-        profit_target=0.05,
+        profit_aim=0.05,
         risk_reward_ratio=1.0,
         short_allowed=True,
         action_masking=True,
