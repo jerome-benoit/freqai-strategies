@@ -89,15 +89,14 @@ seed_all(SEEDS.FIXED_UNIT)
 ### Tolerance Selection
 
 Choosing appropriate numerical tolerances is critical for preventing flaky tests.
-See **`TOLERANCE_GUIDE.md`** for:
 
+**Authoritative guide:** See **`TOLERANCE_GUIDE.md`** for complete documentation:
 - Decision matrix for tolerance selection
 - Mathematical justification for each magnitude
 - When to use each tolerance based on error accumulation models
 - Usage examples and anti-patterns
 
-**Quick reference:**
-
+**Quick reference**:
 - `IDENTITY_STRICT` (1e-12) - Machine-precision identity checks
 - `IDENTITY_RELAXED` (1e-09) - Multi-step accumulated errors
 - `GENERIC_EQ` (1e-08) - General floating-point equality
