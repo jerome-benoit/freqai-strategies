@@ -10,9 +10,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ..test_base import RewardSpaceTestBase
 from ..constants import SEEDS
-
+from ..test_base import RewardSpaceTestBase
 
 # Pytest marker for taxonomy classification
 pytestmark = pytest.mark.cli

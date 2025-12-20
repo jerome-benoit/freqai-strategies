@@ -26,9 +26,8 @@ from reward_space_analysis import (
     write_complete_statistical_analysis,
 )
 
-from ..test_base import RewardSpaceTestBase
 from ..constants import PARAMS, SEEDS, TOLERANCE
-
+from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.api
 

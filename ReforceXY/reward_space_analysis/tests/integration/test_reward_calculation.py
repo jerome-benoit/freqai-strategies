@@ -17,9 +17,8 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
-from ..test_base import RewardSpaceTestBase
 from ..constants import PARAMS, TOLERANCE
-
+from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.integration
 

@@ -10,9 +10,8 @@ import pytest
 
 from reward_space_analysis import ALLOWED_TRANSFORMS, apply_transform
 
-from ..test_base import RewardSpaceTestBase
 from ..constants import TOLERANCE
-
+from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.transforms
 

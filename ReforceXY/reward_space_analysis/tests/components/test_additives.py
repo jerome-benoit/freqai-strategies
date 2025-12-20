@@ -10,9 +10,8 @@ import pytest
 
 from reward_space_analysis import apply_potential_shaping
 
-from ..test_base import RewardSpaceTestBase
 from ..constants import PARAMS
-
+from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.components
 

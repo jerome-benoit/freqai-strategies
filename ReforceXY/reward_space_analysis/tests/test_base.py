@@ -21,13 +21,10 @@ from reward_space_analysis import (
 )
 
 from .constants import (
-    CONTINUITY,
-    EXIT_FACTOR,
     PARAMS,
     PBRS,
     SCENARIOS,
     SEEDS,
-    STATISTICAL,
     TOLERANCE,
 )
 
@@ -48,25 +45,11 @@ class RewardSpaceTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up class-level constants."""
-        cls.SEED = SEEDS.BASE
         cls.DEFAULT_PARAMS = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
-        cls.TEST_SAMPLES = SCENARIOS.SAMPLE_SIZE_TINY
-        cls.TEST_BASE_FACTOR = 100.0
-        cls.TEST_PROFIT_AIM = 0.03
-        cls.TEST_RR = 1.0
-        cls.TEST_RR_HIGH = 2.0
-        cls.TEST_PNL_STD = 0.02
-        cls.TEST_PNL_DUR_VOL_SCALE = 0.5
-        # Seeds for different test contexts
-        cls.SEED_SMOKE_TEST = SEEDS.SMOKE_TEST
-        cls.SEED_REPRODUCIBILITY = SEEDS.REPRODUCIBILITY
-        cls.SEED_BOOTSTRAP = SEEDS.BOOTSTRAP
-        cls.SEED_HETEROSCEDASTICITY = SEEDS.HETEROSCEDASTICITY
-        # Statistical test thresholds
-        cls.BOOTSTRAP_DEFAULT_ITERATIONS = SCENARIOS.BOOTSTRAP_EXTENDED_ITERATIONS
-        cls.BH_FP_RATE_THRESHOLD = STATISTICAL.BH_FP_RATE_THRESHOLD
-        cls.EXIT_FACTOR_SCALING_RATIO_MIN = EXIT_FACTOR.SCALING_RATIO_MIN
-        cls.EXIT_FACTOR_SCALING_RATIO_MAX = EXIT_FACTOR.SCALING_RATIO_MAX
+        # Constants used in helper methods
+        cls.PBRS_TERMINAL_PROB = PBRS.TERMINAL_PROBABILITY
+        cls.PBRS_SWEEP_ITER = SCENARIOS.PBRS_SWEEP_ITERATIONS
+        cls.JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def setUp(self):
         """Set up test fixtures with reproducible random seed."""
@@ -77,35 +60,6 @@ class RewardSpaceTestBase(unittest.TestCase):
     def tearDown(self):
         """Clean up temporary files."""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    # ===============================================
-    # Constants imported from tests.constants module
-    # ===============================================
-
-    # Tolerance constants
-    TOL_IDENTITY_STRICT = TOLERANCE.IDENTITY_STRICT
-    TOL_IDENTITY_RELAXED = TOLERANCE.IDENTITY_RELAXED
-    TOL_GENERIC_EQ = TOLERANCE.GENERIC_EQ
-    TOL_NUMERIC_GUARD = TOLERANCE.NUMERIC_GUARD
-    TOL_NEGLIGIBLE = TOLERANCE.NEGLIGIBLE
-    TOL_RELATIVE = TOLERANCE.RELATIVE
-    TOL_DISTRIB_SHAPE = TOLERANCE.DISTRIB_SHAPE
-
-    # PBRS constants
-    PBRS_TERMINAL_TOL = PBRS.TERMINAL_TOL
-    PBRS_MAX_ABS_SHAPING = PBRS.MAX_ABS_SHAPING
-
-    # Continuity constants
-    CONTINUITY_EPS_SMALL = CONTINUITY.EPS_SMALL
-    CONTINUITY_EPS_LARGE = CONTINUITY.EPS_LARGE
-
-    # Exit factor constants
-    MIN_EXIT_POWER_TAU = EXIT_FACTOR.MIN_POWER_TAU
-
-    # Test-specific constants
-    PBRS_TERMINAL_PROB = PBRS.TERMINAL_PROBABILITY
-    PBRS_SWEEP_ITER = SCENARIOS.PBRS_SWEEP_ITERATIONS
-    JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def make_ctx(
         self,

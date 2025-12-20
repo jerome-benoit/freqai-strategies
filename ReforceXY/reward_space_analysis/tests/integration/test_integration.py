@@ -9,9 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from ..test_base import RewardSpaceTestBase
 from ..constants import SCENARIOS, SEEDS
-
+from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.integration
 

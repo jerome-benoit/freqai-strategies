@@ -18,14 +18,6 @@ from reward_space_analysis import (
     simulate_samples,
 )
 
-from ..helpers import (
-    assert_diagnostic_warning,
-    assert_exit_factor_attenuation_modes,
-    assert_exit_mode_mathematical_validation,
-    assert_single_active_component_with_additives,
-    capture_warnings,
-)
-
 from ..constants import (
     CONTINUITY,
     EXIT_FACTOR,
@@ -33,7 +25,13 @@ from ..constants import (
     SEEDS,
     TOLERANCE,
 )
-from ..constants import PARAMS
+from ..helpers import (
+    assert_diagnostic_warning,
+    assert_exit_factor_attenuation_modes,
+    assert_exit_mode_mathematical_validation,
+    assert_single_active_component_with_additives,
+    capture_warnings,
+)
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.robustness
@@ -317,7 +315,13 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 base_factor, pnl, pnl_target, 0.0, test_context, params, PARAMS.RISK_REWARD_RATIO
             )
             f1 = _get_exit_factor(
-                base_factor, pnl, pnl_target, duration_ratio, test_context, params, PARAMS.RISK_REWARD_RATIO
+                base_factor,
+                pnl,
+                pnl_target,
+                duration_ratio,
+                test_context,
+                params,
+                PARAMS.RISK_REWARD_RATIO,
             )
             if 0.0 < tau <= 1.0:
                 alpha = -math.log(tau) / math.log(2.0)
@@ -493,7 +497,13 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         ratios = [0.8, 1.0, 1.2, 1.4, 1.6]
         vals = [
             _get_exit_factor(
-                base_factor, profit_aim, pnl_target, r, test_context, params, PARAMS.RISK_REWARD_RATIO
+                base_factor,
+                profit_aim,
+                pnl_target,
+                r,
+                test_context,
+                params,
+                PARAMS.RISK_REWARD_RATIO,
             )
             for r in ratios
         ]
@@ -537,13 +547,31 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     }
                 )
                 left = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace - eps, test_context, params, PARAMS.RISK_REWARD_RATIO
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    grace - eps,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 boundary = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace, test_context, params, PARAMS.RISK_REWARD_RATIO
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    grace,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 right = _get_exit_factor(
-                    base_factor, pnl, pnl_target, grace + eps, test_context, params, PARAMS.RISK_REWARD_RATIO
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    grace + eps,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 # Relaxed tolerance: Continuity check at plateau grace boundary;
                 # left and boundary values should be nearly identical
@@ -744,10 +772,22 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             )
             with assert_diagnostic_warning(["exit_power_tau"]):
                 f0 = _get_exit_factor(
-                    base_factor, pnl, pnl_target, 0.0, test_context, params, PARAMS.RISK_REWARD_RATIO
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    0.0,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
                 f1 = _get_exit_factor(
-                    base_factor, pnl, pnl_target, duration_ratio, test_context, params, PARAMS.RISK_REWARD_RATIO
+                    base_factor,
+                    pnl,
+                    pnl_target,
+                    duration_ratio,
+                    test_context,
+                    params,
+                    PARAMS.RISK_REWARD_RATIO,
                 )
             # NUMERIC_GUARD: Prevent division by zero when computing power mode ratio
             ratio = f1 / max(f0, TOLERANCE.NUMERIC_GUARD)

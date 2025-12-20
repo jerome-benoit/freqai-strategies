@@ -45,7 +45,9 @@ class TestRewardComponents(RewardSpaceTestBase):
             "hold_potential_transform_pnl": "tanh",
             "hold_potential_transform_duration": "tanh",
         }
-        val = _compute_hold_potential(0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params)
+        val = _compute_hold_potential(
+            0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params
+        )
         self.assertFinite(val, name="hold_potential")
 
     def test_hold_penalty_basic_calculation(self):
@@ -128,7 +130,6 @@ class TestRewardComponents(RewardSpaceTestBase):
         - For d1 < d2 < d3: penalty(d1) >= penalty(d2) >= penalty(d3)
         - Progressive scaling beyond max_duration threshold
         """
-        from ..constants import SCENARIOS
 
         params = self.base_params(max_trade_duration_candles=100)
         durations = list(SCENARIOS.DURATION_SCENARIOS)
@@ -174,7 +175,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         def validate_idle_penalty(test_case, breakdown, description, tolerance):
             test_case.assertLess(breakdown.idle_penalty, 0, "Idle penalty should be negative")
             config = ValidationConfig(
-                tolerance_strict=test_case.TOL_IDENTITY_STRICT,
+                tolerance_strict=TOLERANCE.IDENTITY_STRICT,
                 tolerance_relaxed=tolerance,
                 exclude_components=["hold_penalty", "exit_component", "invalid_penalty"],
                 component_description="idle + shaping/additives",

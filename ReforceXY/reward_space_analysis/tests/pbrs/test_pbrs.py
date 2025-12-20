@@ -24,6 +24,7 @@ from reward_space_analysis import (
 
 from ..constants import (
     PARAMS,
+    PBRS,
     SCENARIOS,
     SEEDS,
     STATISTICAL,
@@ -146,7 +147,6 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_canonical_invariance_flag_and_sum(self):
         """Canonical mode + no additives -> invariant flags True and Σ shaping ≈ 0."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             exit_potential_mode="canonical",
@@ -173,7 +173,6 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_non_canonical_flag_false_and_sum_nonzero(self):
         """Non-canonical mode -> invariant flags False and Σ shaping significantly non-zero."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             exit_potential_mode="progressive_release",
@@ -287,11 +286,9 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertFalse(params["entry_additive_enabled"])
         self.assertFalse(params["exit_additive_enabled"])
         if terminal_next_potentials:
-            self.assertTrue(
-                all((abs(p) < self.PBRS_TERMINAL_TOL for p in terminal_next_potentials))
-            )
+            self.assertTrue(all((abs(p) < PBRS.TERMINAL_TOL for p in terminal_next_potentials)))
         max_abs = max((abs(v) for v in shaping_values)) if shaping_values else 0.0
-        self.assertLessEqual(max_abs, self.PBRS_MAX_ABS_SHAPING)
+        self.assertLessEqual(max_abs, PBRS.MAX_ABS_SHAPING)
         state_after = (params["entry_additive_enabled"], params["exit_additive_enabled"])
         _t2, _s2, _n2, _pbrs_delta2, _entry_additive2, _exit_additive2 = apply_potential_shaping(
             base_reward=0.0,
@@ -498,7 +495,6 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant: pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_zero_sum(self):
         """Invariant 106: canonical mode enforces near zero-sum shaping (drift correction)."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             exit_potential_mode="canonical",
@@ -568,7 +564,6 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant (comparison path): pbrs-canonical-drift-correction-106
     def test_pbrs_106_canonical_drift_correction_uniform_offset(self):
         """Canonical drift correction reduces Σ shaping below tolerance vs non-canonical."""
-        from ..constants import SCENARIOS
 
         params_can = self.base_params(
             exit_potential_mode="canonical",
@@ -618,7 +613,7 @@ class TestPBRS(RewardSpaceTestBase):
             mean_corrected = float(np.mean(corrected_values))
             self.assertLess(abs(mean_corrected), TOLERANCE.IDENTITY_RELAXED)
             spread = float(np.max(corrected_values) - np.min(corrected_values))
-            self.assertLess(spread, self.PBRS_MAX_ABS_SHAPING)
+            self.assertLess(spread, PBRS.MAX_ABS_SHAPING)
 
     # ---------------- Statistical shape invariance ---------------- #
 
@@ -711,11 +706,10 @@ class TestPBRS(RewardSpaceTestBase):
             )
             self.assertTrue(np.isfinite(shap))
             self.assertTrue(np.isfinite(next_pot))
-            self.assertLessEqual(abs(shap), self.PBRS_MAX_ABS_SHAPING)
+            self.assertLessEqual(abs(shap), PBRS.MAX_ABS_SHAPING)
 
     def test_report_cumulative_invariance_aggregation(self):
         """Canonical telescoping term: small per-step mean drift, bounded increments."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             hold_potential_enabled=True,
@@ -767,13 +761,12 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertLessEqual(
             max_abs_step,
-            self.PBRS_MAX_ABS_SHAPING,
+            PBRS.MAX_ABS_SHAPING,
             f"Unexpected large telescoping increment (max={max_abs_step})",
         )
 
     def test_report_explicit_non_invariance_progressive_release(self):
         """progressive_release cumulative shaping non-zero (release leak)."""
-        from ..constants import SCENARIOS
 
         params = self.base_params(
             hold_potential_enabled=True,
@@ -785,7 +778,6 @@ class TestPBRS(RewardSpaceTestBase):
         rng = np.random.default_rng(321)
         last_potential = 0.0
         shaping_sum = 0.0
-        from ..constants import STATISTICAL
 
         for _ in range(SCENARIOS.MONTE_CARLO_ITERATIONS):
             is_exit = rng.uniform() < STATISTICAL.EXIT_PROBABILITY_THRESHOLD
@@ -824,7 +816,6 @@ class TestPBRS(RewardSpaceTestBase):
 
         from reward_space_analysis import PBRS_INVARIANCE_TOL
 
-        from ..constants import SCENARIOS
 
         small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
         total_shaping = float(sum(small_vals))
@@ -890,7 +881,6 @@ class TestPBRS(RewardSpaceTestBase):
 
         from reward_space_analysis import PBRS_INVARIANCE_TOL
 
-        from ..constants import SCENARIOS
 
         shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # sum = 4.5e-4 (> tol)
         total_shaping = sum(shaping_vals)
@@ -946,7 +936,6 @@ class TestPBRS(RewardSpaceTestBase):
         """Full report: Non-canonical classification aggregates mode + additives reasons."""
         import pandas as pd
 
-        from ..constants import SCENARIOS
 
         shaping_vals = [0.02, -0.005, 0.007]
         entry_add_vals = [0.003, 0.0, 0.004]
@@ -1005,7 +994,6 @@ class TestPBRS(RewardSpaceTestBase):
 
         from reward_space_analysis import PBRS_INVARIANCE_TOL
 
-        from ..constants import SCENARIOS
 
         shaping_vals = [0.002, -0.0005, 0.0012]
         total_shaping = sum(shaping_vals)
@@ -1089,7 +1077,6 @@ class TestPBRS(RewardSpaceTestBase):
         out_dir = self.output_path / "pbrs_absence_and_shift_placeholder"
         import reward_space_analysis as rsa
 
-        from ..constants import SCENARIOS
 
         original_compute_summary_stats = rsa._compute_summary_stats
 
