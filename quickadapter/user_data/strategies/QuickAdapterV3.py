@@ -120,7 +120,7 @@ class QuickAdapterV3(IStrategy):
     }
 
     default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
-        "decline_quantile": 0.90,
+        "decline_quantile": 0.75,
     }
 
     default_reversal_confirmation: ClassVar[dict[str, int | float]] = {
