@@ -251,9 +251,14 @@ def zero_phase_filter(
         return series
     if len(series) < window:
         return series
-    values = series.to_numpy()
+
+    values = series.to_numpy(dtype=float)
+    if values.size <= 1:
+        return series
+
     b = _calculate_coeffs(window=window, win_type=win_type, std=std, beta=beta)
-    a = 1.0
+    a = np.array([1.0], dtype=float)
+
     filtered_values = sp.signal.filtfilt(b, a, values)
     return pd.Series(filtered_values, index=series.index)
 
@@ -305,9 +310,9 @@ def smooth_extrema(
             beta=beta,
         )
     elif method == SMOOTHING_METHODS[3]:  # "smm" (Simple Moving Median)
-        return series.rolling(window=odd_window, center=True).median()
+        return series.rolling(window=odd_window, center=True, min_periods=1).median()
     elif method == SMOOTHING_METHODS[4]:  # "sma" (Simple Moving Average)
-        return series.rolling(window=odd_window, center=True).mean()
+        return series.rolling(window=odd_window, center=True, min_periods=1).mean()
     elif method == SMOOTHING_METHODS[5]:  # "savgol" (Savitzky-Golay)
         w, p, m = get_savgol_params(odd_window, polyorder, mode)
         if n < w:
@@ -2184,8 +2189,8 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
         return values[np.nanargmax(scaled_values)]
     shifted_exponentials = np.exp(scaled_values - max_scaled_values)
     sum_exponentials = np.nansum(shifted_exponentials)
-    if sum_exponentials == 0:
-        return np.nanmax(values)
+    if sum_exponentials <= 0 or not np.isfinite(sum_exponentials):
+        return values[np.nanargmax(scaled_values)]
     return nan_average(values, weights=shifted_exponentials)
 
 
