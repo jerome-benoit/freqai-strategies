@@ -2185,11 +2185,11 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
         return np.nanmean(values)
     scaled_values = alpha * values
     max_scaled_values = np.nanmax(scaled_values)
-    if np.isinf(max_scaled_values) or np.isnan(max_scaled_values):
+    if not np.isfinite(max_scaled_values):
         return values[np.nanargmax(scaled_values)]
     shifted_exponentials = np.exp(scaled_values - max_scaled_values)
     sum_exponentials = np.nansum(shifted_exponentials)
-    if sum_exponentials <= 0 or not np.isfinite(sum_exponentials):
+    if not np.isfinite(sum_exponentials) or sum_exponentials <= 0.0:
         return values[np.nanargmax(scaled_values)]
     return nan_average(values, weights=shifted_exponentials)
 
