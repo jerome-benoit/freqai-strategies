@@ -33,8 +33,6 @@ from ..constants import (
     TOLERANCE,
 )
 from ..helpers import (
-    assert_non_canonical_shaping_exceeds,
-    assert_pbrs_canonical_sum_within_tolerance,
     assert_pbrs_invariance_report_classification,
     assert_relaxed_multi_reason_aggregation,
     build_validation_case,
@@ -89,7 +87,7 @@ class TestPBRS(RewardSpaceTestBase):
             next_duration_ratio=0.0,
             is_exit=True,
             is_entry=False,
-            last_potential=0.789,
+            prev_potential=prev_potential,
             params=params,
         )
         self.assertAlmostEqualFloat(next_potential, 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED)
@@ -137,7 +135,7 @@ class TestPBRS(RewardSpaceTestBase):
             next_duration_ratio=0.0,
             is_exit=True,
             is_entry=False,
-            last_potential=prev_potential,
+            prev_potential=prev_potential,
             params=params,
         )
         self.assertAlmostEqualFloat(
@@ -145,10 +143,15 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertNearZero(reward_shaping, atol=TOLERANCE.IDENTITY_RELAXED)
 
-    # ---------------- Invariance sum checks (simulate_samples) ---------------- #
+    # ---------------- Invariance flags (simulate_samples) ---------------- #
 
-    def test_canonical_invariance_flag_and_sum(self):
-        """Canonical mode + no additives -> invariant flags True and Σ shaping ≈ 0."""
+    def test_canonical_invariance_flag(self):
+        """Canonical mode + no additives -> invariant flag True per-sample.
+
+        Note: `simulate_samples()` generates synthetic trajectories (coherent episodes).
+        This test only verifies the per-sample invariance flag and numeric stability; it does not
+        assert any telescoping/zero-sum property for the shaping term.
+        """
 
         params = self.base_params(
             exit_potential_mode="canonical",
@@ -170,11 +173,11 @@ class TestPBRS(RewardSpaceTestBase):
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {True}, f"Unexpected invariant flags: {unique_flags}")
-        total_shaping = float(df["reward_shaping"].sum())
-        assert_pbrs_canonical_sum_within_tolerance(self, total_shaping, PBRS_INVARIANCE_TOL)
+        self.assertTrue(np.isfinite(df["reward_shaping"]).all())
+        self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
 
     def test_non_canonical_flag_false_and_sum_nonzero(self):
-        """Non-canonical mode -> invariant flags False and Σ shaping significantly non-zero."""
+        """Non-canonical mode -> invariant flags False and Σ shaping non-zero."""
 
         params = self.base_params(
             exit_potential_mode="progressive_release",
@@ -197,8 +200,12 @@ class TestPBRS(RewardSpaceTestBase):
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {False}, f"Unexpected invariant flags: {unique_flags}")
-        total_shaping = float(df["reward_shaping"].sum())
-        assert_non_canonical_shaping_exceeds(self, total_shaping, PBRS_INVARIANCE_TOL * 10)
+        abs_sum = float(df["reward_shaping"].abs().sum())
+        self.assertGreater(
+            abs_sum,
+            PBRS_INVARIANCE_TOL * 2,
+            f"Expected non-trivial shaping magnitude (got {abs_sum})",
+        )
 
     # ---------------- Additives and canonical path mechanics ---------------- #
 
@@ -215,14 +222,94 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertEqual(float(val_exit), 0.0)
 
+    def test_hold_potential_disabled_forces_zero_potential_on_entry(self):
+        """hold_potential_enabled=False: entry sets Φ(next)=0 and no shaping."""
+        params = self.base_params(
+            hold_potential_enabled=False,
+            exit_potential_mode="canonical",
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            potential_gamma=0.93,
+        )
+        (
+            total,
+            reward_shaping,
+            next_potential,
+            pbrs_delta,
+            entry_additive,
+            exit_additive,
+        ) = apply_potential_shaping(
+            base_reward=0.25,
+            current_pnl=0.0,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            current_duration_ratio=0.0,
+            next_pnl=0.01,
+            next_duration_ratio=0.0,
+            is_exit=False,
+            is_entry=True,
+            prev_potential=0.42,
+            params=params,
+        )
+        self.assertPlacesEqual(next_potential, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
+        self.assertNearZero(reward_shaping, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(pbrs_delta, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(entry_additive, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(exit_additive, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertAlmostEqualFloat(
+            total,
+            0.25,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Entry shaping must be suppressed when hold potential disabled",
+        )
+
+    def test_hold_potential_disabled_forces_zero_potential_on_hold(self):
+        """hold_potential_enabled=False: hold sets Φ(next)=0 and no shaping."""
+        params = self.base_params(
+            hold_potential_enabled=False,
+            exit_potential_mode="canonical",
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            potential_gamma=0.93,
+        )
+        (
+            total,
+            reward_shaping,
+            next_potential,
+            pbrs_delta,
+            _entry_additive,
+            _exit_additive,
+        ) = apply_potential_shaping(
+            base_reward=-0.1,
+            current_pnl=0.02,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            current_duration_ratio=0.4,
+            next_pnl=0.02,
+            next_duration_ratio=0.41,
+            is_exit=False,
+            is_entry=False,
+            prev_potential=0.5,
+            params=params,
+        )
+        self.assertPlacesEqual(next_potential, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
+        self.assertNearZero(reward_shaping, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(pbrs_delta, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertAlmostEqualFloat(
+            total,
+            -0.1,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Hold shaping must be suppressed when hold potential disabled",
+        )
+
     def test_exit_potential_canonical(self):
-        """Verifies canonical exit resets potential and auto-disables additives."""
+        """Verifies canonical exit resets potential (no params mutation)."""
         params = self.base_params(
             exit_potential_mode="canonical",
             hold_potential_enabled=True,
-            entry_additive_enabled=True,
-            exit_additive_enabled=True,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
         )
+        params_before = dict(params)
+
         base_reward = 0.25
         current_pnl = 0.05
         current_duration_ratio = 0.4
@@ -238,75 +325,88 @@ class TestPBRS(RewardSpaceTestBase):
                 next_duration_ratio=next_duration_ratio,
                 is_exit=True,
                 is_entry=False,
-                last_potential=0.789,
+                prev_potential=0.789,
                 params=params,
             )
         )
-        self.assertIn("_pbrs_invariance_applied", params)
-        self.assertFalse(
-            params["entry_additive_enabled"],
-            "Entry additive should be auto-disabled in canonical mode",
-        )
-        self.assertFalse(
-            params["exit_additive_enabled"],
-            "Exit additive should be auto-disabled in canonical mode",
-        )
+
+        self.assertEqual(params, params_before, "apply_potential_shaping must not mutate params")
         self.assertPlacesEqual(next_potential, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
-        current_potential = _compute_hold_potential(
-            current_pnl,
-            PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-            current_duration_ratio,
-            {"hold_potential_enabled": True, "hold_potential_scale": 1.0},
-        )
-        self.assertAlmostEqual(shaping, -current_potential, delta=TOLERANCE.IDENTITY_RELAXED)
+        self.assertAlmostEqual(shaping, -0.789, delta=TOLERANCE.IDENTITY_RELAXED)
         residual = total - base_reward - shaping
         self.assertAlmostEqual(residual, 0.0, delta=TOLERANCE.IDENTITY_RELAXED)
         self.assertTrue(np.isfinite(total))
 
-    def test_pbrs_invariance_internal_flag_set(self):
-        """Verifies canonical path sets _pbrs_invariance_applied flag (idempotent)."""
+    def test_canonical_mode_suppresses_additives_even_if_enabled(self):
+        """Verifies canonical mode forces entry/exit additive terms to zero."""
         params = self.base_params(
             exit_potential_mode="canonical",
             hold_potential_enabled=True,
             entry_additive_enabled=True,
             exit_additive_enabled=True,
+            entry_additive_scale=10.0,
+            exit_additive_scale=10.0,
         )
-        terminal_next_potentials, shaping_values = self._canonical_sweep(params)
-        _t1, _s1, _n1, _pbrs_delta, _entry_additive, _exit_additive = apply_potential_shaping(
+
+        (
+            _total_entry,
+            _shaping_entry,
+            _next_potential_entry,
+            _pbrs_delta_entry,
+            entry_additive,
+            exit_additive_entry,
+        ) = apply_potential_shaping(
             base_reward=0.0,
-            current_pnl=0.05,
+            current_pnl=0.0,
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-            current_duration_ratio=0.3,
+            current_duration_ratio=0.0,
+            next_pnl=0.02,
+            next_duration_ratio=0.0,
+            is_exit=False,
+            is_entry=True,
+            prev_potential=0.0,
+            params=params,
+        )
+        self.assertNearZero(entry_additive, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(exit_additive_entry, atol=TOLERANCE.IDENTITY_STRICT)
+
+        (
+            _total_exit,
+            _shaping_exit,
+            _next_potential_exit,
+            _pbrs_delta_exit,
+            entry_additive_exit,
+            exit_additive,
+        ) = apply_potential_shaping(
+            base_reward=0.0,
+            current_pnl=0.02,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            current_duration_ratio=0.5,
             next_pnl=0.0,
             next_duration_ratio=0.0,
             is_exit=True,
             is_entry=False,
-            last_potential=0.4,
+            prev_potential=0.4,
             params=params,
         )
-        self.assertIn("_pbrs_invariance_applied", params)
-        self.assertFalse(params["entry_additive_enabled"])
-        self.assertFalse(params["exit_additive_enabled"])
+        self.assertNearZero(entry_additive_exit, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(exit_additive, atol=TOLERANCE.IDENTITY_STRICT)
+
+    def test_canonical_sweep_does_not_require_param_enforcement(self):
+        """Verifies canonical sweep runs without mutating params."""
+        params = self.base_params(
+            exit_potential_mode="canonical",
+            hold_potential_enabled=True,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        params_before = dict(params)
+        terminal_next_potentials, shaping_values = self._canonical_sweep(params)
+        self.assertEqual(params, params_before)
         if terminal_next_potentials:
             self.assertTrue(all((abs(p) < PBRS.TERMINAL_TOL for p in terminal_next_potentials)))
         max_abs = max((abs(v) for v in shaping_values)) if shaping_values else 0.0
         self.assertLessEqual(max_abs, PBRS.MAX_ABS_SHAPING)
-        state_after = (params["entry_additive_enabled"], params["exit_additive_enabled"])
-        _t2, _s2, _n2, _pbrs_delta2, _entry_additive2, _exit_additive2 = apply_potential_shaping(
-            base_reward=0.0,
-            current_pnl=0.02,
-            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-            current_duration_ratio=0.1,
-            next_pnl=0.0,
-            next_duration_ratio=0.0,
-            is_exit=True,
-            is_entry=False,
-            last_potential=0.1,
-            params=params,
-        )
-        self.assertEqual(
-            state_after, (params["entry_additive_enabled"], params["exit_additive_enabled"])
-        )
 
     def test_progressive_release_negative_decay_clamped(self):
         """Verifies negative decay clamping: next potential equals last potential."""
@@ -315,7 +415,7 @@ class TestPBRS(RewardSpaceTestBase):
             exit_potential_decay=-0.75,
             hold_potential_enabled=True,
         )
-        last_potential = 0.42
+        prev_potential = 0.42
         total, shaping, next_potential, _pbrs_delta, _entry_additive, _exit_additive = (
             apply_potential_shaping(
                 base_reward=0.0,
@@ -325,12 +425,12 @@ class TestPBRS(RewardSpaceTestBase):
                 next_pnl=0.0,
                 next_duration_ratio=0.0,
                 is_exit=True,
-                last_potential=last_potential,
+                prev_potential=prev_potential,
                 params=params,
             )
         )
         self.assertPlacesEqual(
-            next_potential, last_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
+            next_potential, prev_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
         )
         gamma_raw = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
         gamma_fallback = 0.95 if gamma_raw is None else gamma_raw
@@ -338,7 +438,11 @@ class TestPBRS(RewardSpaceTestBase):
             gamma = float(gamma_fallback)
         except Exception:
             gamma = 0.95
-        self.assertLessEqual(abs(shaping - gamma * last_potential), TOLERANCE.GENERIC_EQ)
+        # PBRS shaping Δ = γ·Φ(next) − Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.
+        self.assertLessEqual(
+            abs(shaping - ((gamma - 1.0) * prev_potential)),
+            TOLERANCE.GENERIC_EQ,
+        )
         self.assertPlacesEqual(total, shaping, places=TOLERANCE.DECIMAL_PLACES_STRICT)
 
     def test_potential_gamma_nan_fallback(self):
@@ -354,7 +458,7 @@ class TestPBRS(RewardSpaceTestBase):
             next_pnl=0.035,
             next_duration_ratio=0.25,
             is_exit=False,
-            last_potential=0.0,
+            prev_potential=0.0,
             params=params_nan,
         )
         params_ref = self.base_params(potential_gamma=default_gamma, hold_potential_enabled=True)
@@ -366,7 +470,7 @@ class TestPBRS(RewardSpaceTestBase):
             next_pnl=0.035,
             next_duration_ratio=0.25,
             is_exit=False,
-            last_potential=0.0,
+            prev_potential=0.0,
             params=params_ref,
         )
         self.assertLess(
@@ -494,11 +598,11 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertLess(cumulative, -TOLERANCE.NEGLIGIBLE)
         self.assertGreater(abs(cumulative), 10 * TOLERANCE.IDENTITY_RELAXED)
 
-    # ---------------- Drift correction invariants (simulate_samples) ---------------- #
+    def test_exit_step_shaping_matches_exit_step_rules(self):
+        """Exit step: shaping uses stored prev_potential.
 
-    # Owns invariant: pbrs-canonical-drift-correction-106
-    def test_pbrs_106_canonical_drift_correction_zero_sum(self):
-        """Invariant 106: canonical mode enforces near zero-sum shaping (drift correction)."""
+        For canonical mode, next_potential must be 0 and shaping_delta = -prev_potential.
+        """
 
         params = self.base_params(
             exit_potential_mode="canonical",
@@ -507,75 +611,52 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=False,
             potential_gamma=0.94,
         )
-        df = simulate_samples(
-            params={**params, "max_trade_duration_candles": 100},
-            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        prev_potential = 0.42
+        (
+            _total_reward,
+            reward_shaping,
+            next_potential,
+            pbrs_delta,
+            _entry_additive,
+            _exit_additive,
+        ) = apply_potential_shaping(
+            base_reward=0.0,
+            current_pnl=0.012,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            current_duration_ratio=0.3,
+            next_pnl=0.0,
+            next_duration_ratio=0.0,
+            is_exit=True,
+            is_entry=False,
+            prev_potential=prev_potential,
+            params=params,
         )
-        total_shaping = float(df["reward_shaping"].sum())
-        assert_pbrs_canonical_sum_within_tolerance(self, total_shaping, PBRS_INVARIANCE_TOL)
-        flags = set(df["pbrs_invariant"].unique().tolist())
-        self.assertEqual(flags, {True}, f"Unexpected invariance flags canonical: {flags}")
+        self.assertPlacesEqual(next_potential, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
+        self.assertAlmostEqualFloat(
+            reward_shaping,
+            -prev_potential,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            msg="Canonical exit shaping should be -prev_potential",
+        )
+        self.assertAlmostEqualFloat(
+            pbrs_delta,
+            -prev_potential,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            msg="Canonical exit PBRS delta should be -prev_potential",
+        )
 
-    # Owns invariant (extension path): pbrs-canonical-drift-correction-106
-    def test_pbrs_106_canonical_drift_correction_exception_fallback(self):
-        """Invariant 106 (extension): exception path graceful fallback."""
+    def test_simulate_samples_retains_signals_in_canonical_mode(self):
+        """simulate_samples() is not drift-corrected; it must not force Σ shaping ~ 0."""
+
         params = self.base_params(
             exit_potential_mode="canonical",
             hold_potential_enabled=True,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
-            potential_gamma=0.91,
-        )
-        original_sum = pd.DataFrame.sum
-
-        def boom(self, *args, **kwargs):  # noqa: D401
-            if isinstance(self, pd.DataFrame) and "reward_shaping" in self.columns:
-                raise RuntimeError("forced drift correction failure")
-            return original_sum(self, *args, **kwargs)
-
-        pd.DataFrame.sum = boom
-        try:
-            df_exc = simulate_samples(
-                params={**params, "max_trade_duration_candles": 120},
-                num_samples=250,
-                seed=SEEDS.PBRS_INVARIANCE_2,
-                base_factor=PARAMS.BASE_FACTOR,
-                profit_aim=PARAMS.PROFIT_AIM,
-                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                max_duration_ratio=2.0,
-                trading_mode="margin",
-                pnl_base_std=PARAMS.PNL_STD,
-                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
-            )
-        finally:
-            pd.DataFrame.sum = original_sum
-        flags_exc = set(df_exc["pbrs_invariant"].unique().tolist())
-        self.assertEqual(flags_exc, {True})
-        # Column presence and successful completion are primary guarantees under fallback.
-        self.assertTrue("reward_shaping" in df_exc.columns)
-        self.assertIn("reward_shaping", df_exc.columns)
-
-    # Owns invariant (comparison path): pbrs-canonical-drift-correction-106
-    def test_pbrs_106_canonical_drift_correction_uniform_offset(self):
-        """Canonical drift correction reduces Σ shaping below tolerance vs non-canonical."""
-
-        params_can = self.base_params(
-            exit_potential_mode="canonical",
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
             potential_gamma=0.92,
         )
-        df_can = simulate_samples(
-            params={**params_can, "max_trade_duration_candles": 120},
+        df = simulate_samples(
+            params={**params, "max_trade_duration_candles": 120},
             num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             seed=SEEDS.PBRS_TERMINAL,
             base_factor=PARAMS.BASE_FACTOR,
@@ -586,36 +667,15 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_base_std=PARAMS.PNL_STD,
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
-        params_non = self.base_params(
-            exit_potential_mode="retain_previous",
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            potential_gamma=0.92,
+        abs_sum = float(df["reward_shaping"].abs().sum())
+        self.assertTrue(np.isfinite(abs_sum))
+        self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
+        # Even with trajectories, Σ can partially cancel; use L1 magnitude instead.
+        self.assertGreater(
+            abs_sum,
+            PBRS_INVARIANCE_TOL,
+            "Expected non-trivial shaping magnitudes for canonical mode",
         )
-        df_non = simulate_samples(
-            params={**params_non, "max_trade_duration_candles": 120},
-            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=SEEDS.PBRS_TERMINAL,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
-        )
-        total_can = float(df_can["reward_shaping"].sum())
-        total_non = float(df_non["reward_shaping"].sum())
-        self.assertLess(abs(total_can), abs(total_non) + TOLERANCE.IDENTITY_RELAXED)
-        assert_pbrs_canonical_sum_within_tolerance(self, total_can, PBRS_INVARIANCE_TOL)
-        invariant_mask = df_can["pbrs_invariant"]
-        if bool(getattr(invariant_mask, "any", lambda: False)()):
-            corrected_values = df_can.loc[invariant_mask, "reward_shaping"].to_numpy()
-            mean_corrected = float(np.mean(corrected_values))
-            self.assertLess(abs(mean_corrected), TOLERANCE.IDENTITY_RELAXED)
-            spread = float(np.max(corrected_values) - np.min(corrected_values))
-            self.assertLess(spread, PBRS.MAX_ABS_SHAPING)
 
     # ---------------- Statistical shape invariance ---------------- #
 
@@ -697,7 +757,7 @@ class TestPBRS(RewardSpaceTestBase):
                     next_pnl=0.025,
                     next_duration_ratio=0.35,
                     is_exit=False,
-                    last_potential=0.0,
+                    prev_potential=0.0,
                     params=params,
                 )
             )
@@ -718,7 +778,7 @@ class TestPBRS(RewardSpaceTestBase):
             params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
         )
         rng = np.random.default_rng(321)
-        last_potential = 0.0
+        prev_potential = 0.0
         telescoping_sum = 0.0
         max_abs_step = 0.0
         steps = 0
@@ -737,19 +797,19 @@ class TestPBRS(RewardSpaceTestBase):
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
                     is_exit=is_exit,
-                    last_potential=last_potential,
+                    prev_potential=prev_potential,
                     params=params,
                 )
             )
-            inc = gamma * next_potential - last_potential
+            inc = gamma * next_potential - prev_potential
             telescoping_sum += inc
             if abs(inc) > max_abs_step:
                 max_abs_step = abs(inc)
             steps += 1
             if is_exit:
-                last_potential = 0.0
+                prev_potential = 0.0
             else:
-                last_potential = next_potential
+                prev_potential = next_potential
         mean_drift = telescoping_sum / max(1, steps)
         self.assertLess(
             abs(mean_drift),
@@ -773,7 +833,7 @@ class TestPBRS(RewardSpaceTestBase):
             exit_potential_decay=0.25,
         )
         rng = np.random.default_rng(321)
-        last_potential = 0.0
+        prev_potential = 0.0
         shaping_sum = 0.0
 
         for _ in range(SCENARIOS.MONTE_CARLO_ITERATIONS):
@@ -789,12 +849,12 @@ class TestPBRS(RewardSpaceTestBase):
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
                     is_exit=is_exit,
-                    last_potential=last_potential,
+                    prev_potential=prev_potential,
                     params=params,
                 )
             )
             shaping_sum += shap
-            last_potential = 0.0 if is_exit else next_pot
+            prev_potential = 0.0 if is_exit else next_pot
         self.assertGreater(
             abs(shaping_sum),
             PBRS_INVARIANCE_TOL * 50,

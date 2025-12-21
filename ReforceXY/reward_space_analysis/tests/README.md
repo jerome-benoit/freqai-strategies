@@ -8,7 +8,7 @@ policies, maintenance workflows, and full coverage mapping.
 The suite enforces:
 
 - Reward component mathematics & transform correctness
-- PBRS invariance mechanics (canonical drift correction, near-zero
+- PBRS shaping mechanics (canonical exit semantics, near-zero
   classification)
 - Robustness under extreme / invalid parameter settings
 - Statistical metrics integrity (bootstrap, constant distributions)
@@ -183,7 +183,7 @@ Columns:
 | robustness-negative-grace-clamp-103          | robustness  | Negative exit_plateau_grace clamps to 0.0 w/ warning                                | robustness/test_robustness.py:555         |                                                                                                                             |
 | robustness-invalid-power-tau-104             | robustness  | Invalid power tau falls back alpha=1.0 w/ warning                                   | robustness/test_robustness.py:592         |                                                                                                                             |
 | robustness-near-zero-half-life-105           | robustness  | Near-zero half life yields no attenuation (factor≈base)                             | robustness/test_robustness.py:621         |                                                                                                                             |
-| pbrs-canonical-drift-correction-106          | pbrs        | Canonical drift correction enforces near zero-sum shaping                           | pbrs/test_pbrs.py:449                     | Multi-path: extension fallback (475), comparison path (517)                                                                 |
+| pbrs-canonical-exit-semantic-106            | pbrs        | Canonical exit uses shaping=-prev_potential and next_potential=0.0                  | pbrs/test_pbrs.py:449                     | Uses stored potential across steps; no drift correction applied                                                               |
 | pbrs-canonical-near-zero-report-116          | pbrs        | Canonical near-zero cumulative shaping classification                               | pbrs/test_pbrs.py:748                     | Full report classification                                                                                                  |
 | statistics-partial-deps-skip-107             | statistics  | skip_partial_dependence => empty PD structures                                      | statistics/test_statistics.py:28          | Docstring line                                                                                                              |
 | helpers-duplicate-rows-drop-108              | helpers     | Duplicate rows dropped w/ warning counting removals                                 | helpers/test_utilities.py:26              | Docstring line                                                                                                              |
@@ -291,8 +291,8 @@ grep -R "<shortname>" -n .
 Expect a single directory path. Examples:
 
 ```shell
-grep -R "drift_correction" -n .
 grep -R "near_zero" -n .
+grep -R "pbrs_delta" -n .
 ```
 
 ## Coverage Parity Notes

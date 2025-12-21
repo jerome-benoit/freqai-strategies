@@ -321,11 +321,14 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 | `exit_potential_decay`   | 0.5       | Decay for progressive_release     |
 | `hold_potential_enabled` | true      | Enable hold potential Φ           |
 
-PBRS invariance holds when: `exit_potential_mode=canonical` AND
-`entry_additive_enabled=false` AND `exit_additive_enabled=false`. Under this
-condition the algorithm enforces zero-sum shaping: if the summed shaping term
-deviates by more than 1e-6 (`PBRS_INVARIANCE_TOL`), a uniform drift correction
-subtracts the mean shaping offset across invariant samples.
+PBRS invariance holds when: `exit_potential_mode=canonical`.
+
+In canonical mode, the entry/exit additive terms are suppressed even if the
+corresponding `*_additive_enabled` flags are set.
+
+Note: PBRS telescoping/zero-sum shaping is a property of coherent trajectories
+(episodes). `simulate_samples()` generates synthetic trajectories (state carried
+across samples) and does not apply any drift correction in post-processing.
 
 #### Hold Potential Transforms
 
@@ -536,10 +539,11 @@ configuration.
 
 ### PBRS Configuration
 
-Canonical mode enforces zero-sum shaping (Φ terminal ≈ 0) for theoretical
-invariance. Non-canonical modes or additives modify this behavior. Choose
-canonical for standard PBRS compliance; use non-canonical when specific shaping
-behavior is required.
+Canonical mode enforces terminal release (Φ terminal ≈ 0) and suppresses
+entry/exit additive terms.
+
+Non-canonical exit modes can introduce non-zero terminal shaping; enable
+additives only when you want those extra terms to contribute.
 
 ### Real Data Comparison
 

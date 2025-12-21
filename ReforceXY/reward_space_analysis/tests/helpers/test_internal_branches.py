@@ -95,7 +95,7 @@ def test_calculate_reward_unrealized_pnl_hold_path():
         risk_reward_ratio=1.0,
         short_allowed=True,
         action_masking=True,
-        previous_potential=np.nan,
+        prev_potential=np.nan,
     )
     assert math.isfinite(breakdown.prev_potential)
     assert math.isfinite(breakdown.next_potential)

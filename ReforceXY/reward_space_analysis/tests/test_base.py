@@ -104,7 +104,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         iters = iterations or self.PBRS_SWEEP_ITER
         term_p = terminal_prob or self.PBRS_TERMINAL_PROB
         rng = np.random.default_rng(seed)
-        last_potential = 0.0
+        prev_potential = 0.0
         terminal_next: list[float] = []
         shaping_vals: list[float] = []
         current_pnl = 0.0
@@ -124,18 +124,18 @@ class RewardSpaceTestBase(unittest.TestCase):
                     next_duration_ratio=next_dur,
                     is_exit=is_exit,
                     is_entry=False,
-                    last_potential=last_potential,
+                    prev_potential=prev_potential,
                     params=params,
                 )
             )
             shaping_vals.append(shap_val)
             if is_exit:
                 terminal_next.append(next_pot)
-                last_potential = 0.0
+                prev_potential = 0.0
                 current_pnl = 0.0
                 current_dur = 0.0
             else:
-                last_potential = next_pot
+                prev_potential = next_pot
                 current_pnl = next_pnl
                 current_dur = next_dur
         return (terminal_next, shaping_vals)

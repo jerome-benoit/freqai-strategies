@@ -134,7 +134,11 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
 
     # Owns invariant: robustness-exit-pnl-only-117 (robustness category)
     def test_pnl_invariant_exit_only(self):
-        """Invariant: only exit actions have non-zero PnL (robustness category)."""
+        """Invariant: PnL only non-zero while in position.
+
+        The simulator uses coherent trajectories, so PnL is a state variable during
+        holds and entries; however Neutral samples must have pnl == 0.
+        """
         df = simulate_samples(
             params=self.base_params(max_trade_duration_candles=50),
             num_samples=200,
@@ -147,25 +151,13 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl_base_std=PARAMS.PNL_STD,
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
-        total_pnl = df["pnl"].sum()
-        exit_mask = df["reward_exit"] != 0
-        exit_pnl_sum = df.loc[exit_mask, "pnl"].sum()
-        self.assertAlmostEqual(
-            total_pnl,
-            exit_pnl_sum,
-            places=TOLERANCE.DECIMAL_PLACES_STANDARD,
-            msg="PnL invariant violation: total PnL != sum of exit PnL",
+        neutral_mask = df["position"] == float(Positions.Neutral.value)
+        non_zero_neutral_pnl = df.loc[neutral_mask, "pnl"].abs().max()
+        self.assertLessEqual(
+            float(non_zero_neutral_pnl),
+            np.finfo(float).eps,
+            msg="PnL invariant violation: neutral states must have pnl == 0",
         )
-        non_zero_pnl_actions = set(np.unique(df[df["pnl"].abs() > np.finfo(float).eps]["action"]))
-        expected_exit_actions = {2.0, 4.0}
-        self.assertTrue(
-            non_zero_pnl_actions.issubset(expected_exit_actions),
-            f"Non-exit actions have PnL: {non_zero_pnl_actions - expected_exit_actions}",
-        )
-        invalid_combinations = df[
-            (df["pnl"].abs() <= np.finfo(float).eps) & (df["reward_exit"] != 0)
-        ]
-        self.assertEqual(len(invalid_combinations), 0)
 
     def test_exit_factor_comprehensive(self):
         """Comprehensive exit factor test: mathematical correctness and monotonic attenuation."""

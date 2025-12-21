@@ -109,29 +109,29 @@ ALLOWED_EXIT_POTENTIAL_MODES = {
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
     "base_factor": 100.0,
-    # Idle penalty (env defaults)
+    # Idle penalty defaults
     "idle_penalty_scale": 0.5,
     "idle_penalty_power": 1.025,
     "max_trade_duration_candles": 128,
     # Fallback: DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
     "max_idle_duration_candles": None,
-    # Hold penalty (env defaults)
+    # Hold penalty defaults
     "hold_penalty_scale": 0.25,
     "hold_penalty_power": 1.025,
-    # Exit attenuation (env default)
+    # Exit attenuation defaults
     "exit_attenuation_mode": "linear",
     "exit_plateau": True,
     "exit_plateau_grace": 1.0,
     "exit_linear_slope": 1.0,
     "exit_power_tau": 0.5,
     "exit_half_life": 0.5,
-    # Efficiency factor (env defaults)
+    # Efficiency factor defaults
     "efficiency_weight": 1.0,
     "efficiency_center": 0.5,
-    # Profit factor (env defaults)
+    # Profit factor defaults
     "win_reward_factor": 2.0,
     "pnl_factor_beta": 0.5,
-    # Invariant / safety (env defaults)
+    # Invariant / safety defaults
     "check_invariants": True,
     "exit_factor_threshold": 1000.0,
     # === PBRS PARAMETERS ===
@@ -988,7 +988,7 @@ def _is_valid_action(
 
 
 def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardParams) -> float:
-    """Mirror the environment's idle penalty behavior."""
+    """Compute idle penalty."""
     idle_penalty_scale = _get_float_param(
         params,
         "idle_penalty_scale",
@@ -1005,7 +1005,7 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
 
 
 def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardParams) -> float:
-    """Mirror the environment's hold penalty behavior."""
+    """Compute hold penalty."""
     hold_penalty_scale = _get_float_param(
         params,
         "hold_penalty_scale",
@@ -1065,7 +1065,7 @@ def calculate_reward(
     *,
     short_allowed: bool,
     action_masking: bool,
-    previous_potential: float = np.nan,
+    prev_potential: float = np.nan,
 ) -> RewardBreakdown:
     breakdown = RewardBreakdown()
 
@@ -1129,6 +1129,8 @@ def calculate_reward(
     else:
         base_reward = 0.0
 
+    breakdown.base_reward = base_reward
+
     # === PBRS INTEGRATION ===
     current_pnl = context.pnl if context.position != Positions.Neutral else 0.0
 
@@ -1173,37 +1175,48 @@ def calculate_reward(
         next_duration_ratio = current_duration_ratio
 
     # Apply PBRS only if enabled and not neutral self-loop
-    pbrs_enabled = (
-        _get_bool_param(
-            params,
-            "hold_potential_enabled",
-            bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_potential_enabled", True)),
-        )
-        or _get_bool_param(
+    exit_mode = _get_str_param(
+        params,
+        "exit_potential_mode",
+        str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
+    )
+
+    hold_potential_enabled = _get_bool_param(
+        params,
+        "hold_potential_enabled",
+        bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_potential_enabled", True)),
+    )
+    entry_additive_enabled = (
+        False
+        if exit_mode == "canonical"
+        else _get_bool_param(
             params,
             "entry_additive_enabled",
             bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("entry_additive_enabled", False)),
         )
-        or _get_bool_param(
+    )
+    exit_additive_enabled = (
+        False
+        if exit_mode == "canonical"
+        else _get_bool_param(
             params,
             "exit_additive_enabled",
             bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_additive_enabled", False)),
         )
     )
 
-    if pbrs_enabled and not is_neutral:
-        # Compute Φ(s) for the current state to preserve telescoping semantics Δ = γ·Φ(s') − Φ(s)
-        current_potential = _compute_hold_potential(
-            current_pnl, pnl_target, current_duration_ratio, params
-        )
-        if not np.isfinite(current_potential):
-            current_potential = 0.0
+    pbrs_enabled = bool(hold_potential_enabled or entry_additive_enabled or exit_additive_enabled)
 
-        last_potential = (
-            float(previous_potential)
-            if np.isfinite(previous_potential)
-            else float(current_potential)
-        )
+    if pbrs_enabled:
+        # Stored potential carried across steps.
+        prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
+
+        if is_neutral:
+            # Neutral self-loop keeps stored potential unchanged.
+            breakdown.prev_potential = prev_potential
+            breakdown.next_potential = prev_potential
+            breakdown.total = base_reward
+            return breakdown
 
         total_reward, reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive = (
             apply_potential_shaping(
@@ -1215,24 +1228,22 @@ def calculate_reward(
                 next_duration_ratio=next_duration_ratio,
                 is_exit=is_exit,
                 is_entry=is_entry,
-                previous_potential=current_potential,
-                last_potential=last_potential,
+                prev_potential=prev_potential,
                 params=params,
             )
         )
 
         breakdown.reward_shaping = reward_shaping
-        breakdown.prev_potential = current_potential
+        breakdown.prev_potential = prev_potential
         breakdown.next_potential = next_potential
         breakdown.entry_additive = entry_additive
         breakdown.exit_additive = exit_additive
-        breakdown.base_reward = base_reward
         breakdown.pbrs_delta = pbrs_delta
-        # In canonical mode with additives disabled, this should be ~0
         breakdown.invariance_correction = reward_shaping - pbrs_delta
         breakdown.total = total_reward
-    else:
-        breakdown.total = base_reward
+        return breakdown
+
+    breakdown.total = base_reward
 
     return breakdown
 
@@ -1284,7 +1295,18 @@ def simulate_samples(
     pnl_base_std: float,
     pnl_duration_vol_scale: float,
 ) -> pd.DataFrame:
-    """Simulate synthetic samples for reward analysis."""
+    """Simulate synthetic samples for reward analysis.
+
+    The synthetic generator produces a *coherent trajectory* (state carried across samples)
+    so PJRS/PBRS stored-potential mechanics can be exercised realistically.
+
+    Notes
+    -----
+    - PnL is a state variable while in position (may be non-zero on holds).
+    - Neutral states always have pnl=0.
+    - Realized PnL appears on the exit step (position still Long/Short).
+    """
+
     rng = random.Random(seed)
     max_trade_duration_candles = _get_int_param(
         params,
@@ -1293,78 +1315,67 @@ def simulate_samples(
     )
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
+
     # Theoretical PBRS invariance flag
     exit_mode = _get_str_param(
         params,
         "exit_potential_mode",
         str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
     )
-    entry_enabled = _get_bool_param(
+    entry_enabled_raw = _get_bool_param(
         params,
         "entry_additive_enabled",
         bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("entry_additive_enabled", False)),
     )
-    exit_enabled = _get_bool_param(
+    exit_enabled_raw = _get_bool_param(
         params,
         "exit_additive_enabled",
         bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_additive_enabled", False)),
     )
+
+    entry_enabled = bool(entry_enabled_raw) if exit_mode != "canonical" else False
+    exit_enabled = bool(exit_enabled_raw) if exit_mode != "canonical" else False
     pbrs_invariant = bool(exit_mode == "canonical" and not (entry_enabled or exit_enabled))
+
+    max_idle_duration_candles = get_max_idle_duration_candles(
+        params, max_trade_duration_candles=max_trade_duration_candles
+    )
+    max_trade_duration_cap = int(max_trade_duration_candles * max_duration_ratio)
+
     samples: list[Dict[str, float]] = []
-    last_potential: float = 0.0
+    prev_potential: float = 0.0
+
+    # Stateful trajectory variables
+    position = Positions.Neutral
+    trade_duration = 0
+    idle_duration = 0
+    pnl = 0.0
+    max_unrealized_profit = 0.0
+    min_unrealized_profit = 0.0
+
     for _ in range(num_samples):
-        if short_allowed:
-            position_choices = [
-                Positions.Neutral,
-                Positions.Long,
-                Positions.Short,
-            ]
-            position_weights = [0.45, 0.3, 0.25]
-        else:
-            position_choices = [Positions.Neutral, Positions.Long]
-            position_weights = [0.6, 0.4]
-
-        position = rng.choices(position_choices, weights=position_weights, k=1)[0]
-        action = _sample_action(position, rng, short_allowed=short_allowed)
-
-        if position == Positions.Neutral:
-            trade_duration = 0
-            max_idle_duration_candles = get_max_idle_duration_candles(
-                params, max_trade_duration_candles=max_trade_duration_candles
-            )
-            idle_duration = int(rng.uniform(0, max_idle_duration_candles))
-        else:
-            trade_duration = int(rng.uniform(1, max_trade_duration_candles * max_duration_ratio))
-            trade_duration = max(1, trade_duration)
-            idle_duration = 0
-
-        # Only exit actions should have non-zero PnL
-        pnl = 0.0  # Initialize as zero for all actions
-
-        # Generate PnL only for exit actions (Long_exit=2, Short_exit=4)
-        if action in (Actions.Long_exit, Actions.Short_exit):
+        # Simulate market movement while in position (PnL as a state variable)
+        if position in (Positions.Long, Positions.Short):
             duration_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
-
-            # PnL variance scales with duration for more realistic heteroscedasticity
             pnl_std = pnl_base_std * (1.0 + pnl_duration_vol_scale * duration_ratio)
-            pnl = rng.gauss(0.0, pnl_std)
+            step_delta = rng.gauss(0.0, pnl_std)
+
+            # Small directional drift so signals aren't perfectly symmetric.
+            drift = 0.001 * duration_ratio
             if position == Positions.Long:
-                pnl += 0.005 * duration_ratio
-            elif position == Positions.Short:
-                pnl -= 0.005 * duration_ratio
+                step_delta += drift
+            else:
+                step_delta -= drift
 
-            # Clip PnL to realistic range
-            pnl = min(max(-0.15, pnl), 0.15)
-
-        if position == Positions.Neutral:
+            pnl = min(max(-0.15, pnl + step_delta), 0.15)
+            max_unrealized_profit = max(max_unrealized_profit, pnl)
+            min_unrealized_profit = min(min_unrealized_profit, pnl)
+        else:
+            pnl = 0.0
             max_unrealized_profit = 0.0
             min_unrealized_profit = 0.0
-        else:
-            # Unrealized profit bounds
-            span = abs(rng.gauss(0.0, 0.015))
-            # max >= pnl >= min by construction
-            max_unrealized_profit = pnl + abs(rng.gauss(0.0, span))
-            min_unrealized_profit = pnl - abs(rng.gauss(0.0, span))
+
+        action = _sample_action(position, rng, short_allowed=short_allowed)
 
         context = RewardContext(
             pnl=pnl,
@@ -1384,14 +1395,11 @@ def simulate_samples(
             risk_reward_ratio,
             short_allowed=short_allowed,
             action_masking=action_masking,
-            previous_potential=last_potential,
+            prev_potential=prev_potential,
         )
+        prev_potential = breakdown.next_potential
 
-        last_potential = breakdown.next_potential
-
-        max_idle_duration_candles = get_max_idle_duration_candles(params)
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
-
         samples.append(
             {
                 "pnl": context.pnl,
@@ -1423,41 +1431,29 @@ def simulate_samples(
             }
         )
 
-    df = pd.DataFrame(samples)
+        # Transition state
+        if position == Positions.Neutral:
+            if action == Actions.Neutral:
+                idle_duration = min(idle_duration + 1, max_idle_duration_candles)
+            elif action == Actions.Long_enter:
+                position = Positions.Long
+                trade_duration = 0
+                idle_duration = 0
+            elif action == Actions.Short_enter and short_allowed:
+                position = Positions.Short
+                trade_duration = 0
+                idle_duration = 0
+        else:
+            idle_duration = 0
+            if action == Actions.Neutral:
+                trade_duration = min(trade_duration + 1, max_trade_duration_cap)
+            elif action in (Actions.Long_exit, Actions.Short_exit):
+                position = Positions.Neutral
+                trade_duration = 0
+                idle_duration = 0
 
-    # Enforce PBRS invariance: zero-sum shaping under canonical mode and no additives
-    try:
-        exit_mode = _get_str_param(
-            params,
-            "exit_potential_mode",
-            str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
-        )
-        entry_enabled = _get_bool_param(
-            params,
-            "entry_additive_enabled",
-            bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("entry_additive_enabled", False)),
-        )
-        exit_enabled = _get_bool_param(
-            params,
-            "exit_additive_enabled",
-            bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_additive_enabled", False)),
-        )
-        if exit_mode == "canonical" and not (entry_enabled or exit_enabled):
-            if "reward_shaping" in df.columns:
-                total_shaping = float(df["reward_shaping"].sum())
-                if abs(total_shaping) > PBRS_INVARIANCE_TOL:
-                    # Drift correction distributes a constant offset across invariant samples
-                    n_invariant = (
-                        int(df["pbrs_invariant"].sum())
-                        if "pbrs_invariant" in df.columns
-                        else int(len(df))
-                    )
-                    drift = total_shaping / max(1, n_invariant)
-                    df.loc[:, "reward_shaping"] = df["reward_shaping"] - drift
-        df.attrs["reward_params"] = dict(params)
-    except Exception:
-        # Graceful fallback (no invariance enforcement on failure)
-        pass
+    df = pd.DataFrame(samples)
+    df.attrs["reward_params"] = dict(params)
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
@@ -1466,64 +1462,40 @@ def simulate_samples(
 
 
 def _validate_simulation_invariants(df: pd.DataFrame) -> None:
-    """Fail fast if simulation violates PnL or action invariants."""
-    # INVARIANT 1: PnL Conservation - Total PnL must equal sum of exit PnL
-    total_pnl = df["pnl"].sum()
-    exit_action_mask = df["action"].isin([2.0, 4.0])
-    exit_pnl_sum = df.loc[exit_action_mask, "pnl"].sum()
+    """Fail fast if simulation violates action/state invariants."""
 
-    # Tolerances from INTERNAL_GUARDS to handle backend/OS numeric epsilons
-    tol_pnl = float(INTERNAL_GUARDS.get("sim_pnl_conservation_tol", 1e-10))
     eps_pnl = float(INTERNAL_GUARDS.get("sim_zero_pnl_epsilon", 1e-12))
     eps_reward = float(INTERNAL_GUARDS.get("sim_zero_reward_epsilon", 1e-12))
     thr_extreme = float(INTERNAL_GUARDS.get("sim_extreme_pnl_threshold", 0.2))
 
-    pnl_diff = abs(total_pnl - exit_pnl_sum)
-    if pnl_diff > tol_pnl:
-        raise AssertionError(
-            f"PnL INVARIANT VIOLATION: Total PnL ({total_pnl:.6f}) != "
-            f"Exit PnL sum ({exit_pnl_sum:.6f}), difference = {pnl_diff:.2e}"
-        )
-
-    # INVARIANT 2: PnL Exclusivity - Only exit actions should have non-zero PnL
-    non_zero_pnl_actions = set(df[df["pnl"].abs() > eps_pnl]["action"].unique())
-    valid_exit_actions = {2.0, 4.0}
-    invalid_actions = non_zero_pnl_actions - valid_exit_actions
-    if invalid_actions:
-        raise AssertionError(
-            f"PnL EXCLUSIVITY VIOLATION: Non-exit actions {invalid_actions} have non-zero PnL"
-        )
-
-    # INVARIANT 3: Exit Reward Consistency - Non-zero exit rewards require non-zero PnL
-    inconsistent_exits = df[(df["pnl"].abs() <= eps_pnl) & (df["reward_exit"].abs() > eps_reward)]
-    if len(inconsistent_exits) > 0:
-        raise AssertionError(
-            f"EXIT REWARD INCONSISTENCY: {len(inconsistent_exits)} actions have "
-            f"zero PnL but non-zero exit reward"
-        )
-
-    # INVARIANT 4: Action-Position Compatibility
-    # Validate that exit actions match positions
-    long_exits = df[
-        (df["action"] == 2.0) & (df["position"] != 1.0)
-    ]  # Long_exit but not Long position
-    short_exits = df[
-        (df["action"] == 4.0) & (df["position"] != 0.0)
-    ]  # Short_exit but not Short position
-
+    # INVARIANT 1: Action-position compatibility
+    long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
+    short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
     if len(long_exits) > 0:
         raise AssertionError(
             f"ACTION-POSITION INCONSISTENCY: {len(long_exits)} Long_exit actions "
             f"without Long position"
         )
-
     if len(short_exits) > 0:
         raise AssertionError(
             f"ACTION-POSITION INCONSISTENCY: {len(short_exits)} Short_exit actions "
             f"without Short position"
         )
 
-    # INVARIANT 5: Duration Logic - Neutral positions should have trade_duration = 0
+    long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
+    short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
+    if len(long_entries) > 0:
+        raise AssertionError(
+            f"ACTION-POSITION INCONSISTENCY: {len(long_entries)} Long_enter actions "
+            f"without Neutral position"
+        )
+    if len(short_entries) > 0:
+        raise AssertionError(
+            f"ACTION-POSITION INCONSISTENCY: {len(short_entries)} Short_enter actions "
+            f"without Neutral position"
+        )
+
+    # INVARIANT 2: Duration logic
     neutral_with_trade = df[(df["position"] == 0.5) & (df["trade_duration"] > 0)]
     if len(neutral_with_trade) > 0:
         raise AssertionError(
@@ -1531,10 +1503,34 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
             f"with non-zero trade_duration"
         )
 
-    # INVARIANT 6: Bounded Values - Check realistic bounds
-    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]  # Beyond reasonable range
+    inpos_with_idle = df[(df["position"] != 0.5) & (df["idle_duration"] > 0)]
+    if len(inpos_with_idle) > 0:
+        raise AssertionError(
+            f"DURATION LOGIC VIOLATION: {len(inpos_with_idle)} In-position samples "
+            f"with idle_duration > 0"
+        )
+
+    # INVARIANT 3: Neutral states have zero PnL (simulation design)
+    neutral_with_pnl = df[(df["position"] == 0.5) & (df["pnl"].abs() > eps_pnl)]
+    if len(neutral_with_pnl) > 0:
+        raise AssertionError(
+            f"PNL LOGIC VIOLATION: {len(neutral_with_pnl)} Neutral positions with non-zero pnl"
+        )
+
+    # INVARIANT 4: Exit rewards only appear on exit actions
+    non_exit_with_exit_reward = df[
+        (~df["action"].isin([2.0, 4.0])) & (df["reward_exit"].abs() > eps_reward)
+    ]
+    if len(non_exit_with_exit_reward) > 0:
+        raise AssertionError(
+            f"EXIT REWARD INCONSISTENCY: {len(non_exit_with_exit_reward)} non-exit actions "
+            f"have non-zero exit reward"
+        )
+
+    # INVARIANT 5: Bounded values
+    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]
     if len(extreme_pnl) > 0:
-        max_abs_pnl = df["pnl"].abs().max()
+        max_abs_pnl = float(df["pnl"].abs().max())
         raise AssertionError(
             f"BOUNDS VIOLATION: {len(extreme_pnl)} samples with extreme PnL, "
             f"max |PnL| = {max_abs_pnl:.6f}"
@@ -2837,8 +2833,8 @@ def _compute_exit_additive(
     )
 
 
-def _compute_exit_potential(last_potential: float, params: RewardParams) -> float:
-    """Exit potential per mode (canonical/non_canonical -> 0; others transform Φ)."""
+def _compute_exit_potential(prev_potential: float, params: RewardParams) -> float:
+    """Exit potential per mode (canonical/non_canonical -> 0; others transform Φ(prev))."""
     mode = _get_str_param(
         params,
         "exit_potential_mode",
@@ -2867,15 +2863,15 @@ def _compute_exit_potential(last_potential: float, params: RewardParams) -> floa
                 stacklevel=2,
             )
             decay = 1.0
-        next_potential = last_potential * (1.0 - decay)
+        next_potential = prev_potential * (1.0 - decay)
     elif mode == "spike_cancel":
         gamma = _get_potential_gamma(params)
         if gamma <= 0.0 or not np.isfinite(gamma):
-            next_potential = last_potential
+            next_potential = prev_potential
         else:
-            next_potential = last_potential / gamma
+            next_potential = prev_potential / gamma
     elif mode == "retain_previous":
-        next_potential = last_potential
+        next_potential = prev_potential
     else:
         _warn_unknown_mode(
             "exit_potential_mode",
@@ -2899,73 +2895,86 @@ def apply_potential_shaping(
     next_pnl: float,
     next_duration_ratio: float,
     params: RewardParams,
+    *,
     is_exit: bool = False,
     is_entry: bool = False,
-    previous_potential: float = np.nan,
-    last_potential: Optional[float] = None,
+    prev_potential: float,
 ) -> tuple[float, float, float, float, float, float]:
-    """Compute shaped reward with explicit PBRS semantics.
+    """Compute shaped reward using PBRS.
 
     Returns
     -------
     tuple[float, float, float, float, float, float]
         (reward, reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive)
-        where pbrs_delta = gamma * next_potential - prev_term is the pure PBRS component.
+        where pbrs_delta = gamma * next_potential - prev_potential is the pure PBRS component.
 
     Notes
     -----
     - Shaping Δ = γ·Φ(next) − Φ(prev).
-    - previous_potential:
-        Previously computed Φ(s) for the prior transition. When provided and finite, it
-        is used as Φ(prev) in Δ; otherwise Φ(prev) is derived from the current state.
-    - last_potential:
-        Potential used to compute terminal Φ′ at exit via _compute_exit_potential().
-        Fallback logic: if last_potential is None or non-finite, then last_potential := previous_potential
-        (or the derived prev term) to preserve telescoping semantics.
+    - Φ(prev) must be provided explicitly as the stored potential carried across steps.
+      This uses an explicit stored-potential value across steps.
+    - Exit potential modes compute Φ(next) from Φ(prev).
     - Entry additive is applied only on entry transitions (based on next_* metrics).
     - Exit additive is applied only on exit transitions (based on current_* metrics).
-    - Canonical invariance: when exit_potential_mode == 'canonical' and additives are disabled,
-      the telescoping sum ensures Σ reward_shaping ≈ 0 across a complete episode.
+
+    Note
+    ----------------------
+    Canonical mode is typically evaluated with additives disabled externally.
+    This helper intentionally does not mutate `params`.
     """
-    params = _enforce_pbrs_invariance(params)
     gamma = _get_potential_gamma(params)
 
-    # Use provided previous_potential when finite; otherwise derive from current state
-    prev_term = (
-        float(previous_potential)
-        if np.isfinite(previous_potential)
-        else _compute_hold_potential(current_pnl, pnl_target, current_duration_ratio, params)
+    prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
+
+    exit_mode = _get_str_param(
+        params,
+        "exit_potential_mode",
+        str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
     )
-    if not np.isfinite(prev_term):
-        prev_term = 0.0
+    canonical_mode = exit_mode == "canonical"
+
+    hold_potential_enabled = _get_bool_param(
+        params,
+        "hold_potential_enabled",
+        bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_potential_enabled", True)),
+    )
 
     if is_exit:
-        last_potential = (
-            float(last_potential)
-            if (last_potential is not None and np.isfinite(last_potential))
-            else float(prev_term)
-        )
-        next_potential = _compute_exit_potential(last_potential, params)
+        next_potential = _compute_exit_potential(prev_potential, params)
+        # PBRS shaping Δ = γ·Φ(next) − Φ(prev)
+        pbrs_delta = gamma * next_potential - prev_potential
+        reward_shaping = pbrs_delta
     else:
-        next_potential = _compute_hold_potential(next_pnl, pnl_target, next_duration_ratio, params)
-
-    # PBRS shaping Δ = γ·Φ(next) − Φ(prev)
-    pbrs_delta = gamma * next_potential - float(prev_term)
-    reward_shaping = pbrs_delta
+        # When hold potential is disabled, force Φ(next)=0 and emit no PBRS shaping on entry/hold.
+        if not hold_potential_enabled:
+            next_potential = 0.0
+            pbrs_delta = 0.0
+            reward_shaping = 0.0
+        else:
+            next_potential = _compute_hold_potential(
+                next_pnl, pnl_target, next_duration_ratio, params
+            )
+            # PBRS shaping Δ = γ·Φ(next) − Φ(prev)
+            pbrs_delta = gamma * next_potential - prev_potential
+            reward_shaping = pbrs_delta
 
     # Non-PBRS additives
-    cand_entry_add = _compute_entry_additive(next_pnl, pnl_target, next_duration_ratio, params)
-    cand_exit_add = _compute_exit_additive(current_pnl, pnl_target, current_duration_ratio, params)
+    if canonical_mode:
+        entry_additive = 0.0
+        exit_additive = 0.0
+    else:
+        cand_entry_add = _compute_entry_additive(next_pnl, pnl_target, next_duration_ratio, params)
+        cand_exit_add = _compute_exit_additive(
+            current_pnl, pnl_target, current_duration_ratio, params
+        )
 
-    entry_additive = cand_entry_add if is_entry else 0.0
-    exit_additive = cand_exit_add if is_exit else 0.0
+        entry_additive = cand_entry_add if is_entry else 0.0
+        exit_additive = cand_exit_add if is_exit else 0.0
 
     reward = base_reward + reward_shaping + entry_additive + exit_additive
     if not np.isfinite(reward):
         return float(base_reward), 0.0, 0.0, 0.0, 0.0, 0.0
-    if np.isclose(reward_shaping, 0.0):
-        reward_shaping = 0.0
-        pbrs_delta = 0.0
+
     return (
         float(reward),
         float(reward_shaping),
@@ -2974,46 +2983,6 @@ def apply_potential_shaping(
         float(entry_additive),
         float(exit_additive),
     )
-
-
-def _enforce_pbrs_invariance(params: RewardParams) -> RewardParams:
-    """Disable entry/exit additives once in canonical PBRS to preserve invariance."""
-    mode = _get_str_param(
-        params,
-        "exit_potential_mode",
-        str(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_potential_mode", "canonical")),
-    )
-    if mode != "canonical":
-        return params
-    if params.get("_pbrs_invariance_applied"):
-        return params
-    entry_enabled = _get_bool_param(
-        params,
-        "entry_additive_enabled",
-        bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("entry_additive_enabled", False)),
-    )
-    exit_enabled = _get_bool_param(
-        params,
-        "exit_additive_enabled",
-        bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_additive_enabled", False)),
-    )
-    # Strict canonical enforcement
-    if entry_enabled:
-        warnings.warn(
-            "Disabling entry additive to preserve PBRS invariance (canonical mode).",
-            RewardDiagnosticsWarning,
-            stacklevel=2,
-        )
-        params["entry_additive_enabled"] = False
-    if exit_enabled:
-        warnings.warn(
-            "Disabling exit additive to preserve PBRS invariance (canonical mode).",
-            RewardDiagnosticsWarning,
-            stacklevel=2,
-        )
-        params["exit_additive_enabled"] = False
-    params["_pbrs_invariance_applied"] = True
-    return params
 
 
 def _compute_bi_component(
@@ -3098,7 +3067,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--base_factor",
         type=float,
         default=100.0,
-        help="Base reward factor used inside the environment (default: 100).",
+        help="Base reward scaling factor (default: 100).",
     )
     parser.add_argument(
         "--profit_aim",

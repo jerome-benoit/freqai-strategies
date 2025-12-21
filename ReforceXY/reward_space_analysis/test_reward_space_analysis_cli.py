@@ -466,7 +466,7 @@ def main():
                 fp = " ".join(line.strip().split())[:160]
                 warnings_breakdown[fp] = warnings_breakdown.get(fp, 0) + 1
 
-    # Collect environment + reproducibility metadata
+    # Collect reproducibility metadata
     def _git_hash() -> Optional[str]:
         try:
             proc = subprocess.run(
