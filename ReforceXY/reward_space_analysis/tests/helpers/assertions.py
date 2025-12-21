@@ -1029,13 +1029,13 @@ def assert_exit_factor_invariant_suite(
         cases = [
             {
                 "base_factor": 90.0, "pnl": 0.08, "pnl_target": 0.03,
-                "context": RewardContext(...),
+                "context": make_ctx(...),
                 "duration_ratio": 0.5, "params": {...},
                 "expectation": "non_negative", "tolerance": 1e-09
             },
             {
                 "base_factor": 90.0, "pnl": 0.0, "pnl_target": 0.03,
-                "context": RewardContext(...),
+                "context": make_ctx(...),
                 "duration_ratio": 0.5, "params": {...},
                 "expectation": "safe_zero"
             },
@@ -1103,7 +1103,7 @@ def assert_exit_factor_kernel_fallback(
 
     Example:
         # After monkeypatching kernel to fail:
-        test_context = RewardContext(pnl=0.08, ...)
+        test_context = make_ctx(pnl=0.08, ...)
         assert_exit_factor_kernel_fallback(
             self, _get_exit_factor, 90.0, 0.08, 0.03, 0.5, test_context,
             bad_params={"exit_attenuation_mode": "power", "exit_power_tau": -1.0},

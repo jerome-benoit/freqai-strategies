@@ -28,6 +28,31 @@ from .constants import (
     TOLERANCE,
 )
 
+# Helper functions
+
+
+def make_ctx(
+    *,
+    pnl: float = 0.0,
+    trade_duration: int = 0,
+    idle_duration: int = 0,
+    max_unrealized_profit: float = 0.0,
+    min_unrealized_profit: float = 0.0,
+    position: Positions = Positions.Neutral,
+    action: Actions = Actions.Neutral,
+) -> RewardContext:
+    """Create a RewardContext with neutral defaults."""
+    return RewardContext(
+        pnl=pnl,
+        trade_duration=trade_duration,
+        idle_duration=idle_duration,
+        max_unrealized_profit=max_unrealized_profit,
+        min_unrealized_profit=min_unrealized_profit,
+        position=position,
+        action=action,
+    )
+
+
 # Global constants
 PBRS_INTEGRATION_PARAMS = [
     "potential_gamma",
@@ -46,9 +71,6 @@ class RewardSpaceTestBase(unittest.TestCase):
     def setUpClass(cls):
         """Set up class-level constants."""
         cls.DEFAULT_PARAMS = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
-        # Constants used in helper methods
-        cls.PBRS_TERMINAL_PROB = PBRS.TERMINAL_PROBABILITY
-        cls.PBRS_SWEEP_ITER = SCENARIOS.PBRS_SWEEP_ITERATIONS
         cls.JS_DISTANCE_UPPER_BOUND = math.sqrt(math.log(2.0))
 
     def setUp(self):
@@ -73,7 +95,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         action: Actions = Actions.Neutral,
     ) -> RewardContext:
         """Create a RewardContext with neutral defaults."""
-        return RewardContext(
+        return make_ctx(
             pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
@@ -101,8 +123,8 @@ class RewardSpaceTestBase(unittest.TestCase):
 
         Returns (terminal_next_potentials, shaping_values).
         """
-        iters = iterations or self.PBRS_SWEEP_ITER
-        term_p = terminal_prob or self.PBRS_TERMINAL_PROB
+        iters = iterations or SCENARIOS.PBRS_SWEEP_ITERATIONS
+        term_p = terminal_prob or PBRS.TERMINAL_PROBABILITY
         rng = np.random.default_rng(seed)
         prev_potential = 0.0
         terminal_next: list[float] = []

@@ -5,11 +5,13 @@ import numpy as np
 from reward_space_analysis import (
     Actions,
     Positions,
-    RewardContext,
+    RewardParams,
     _get_bool_param,
     _get_float_param,
     calculate_reward,
 )
+
+from ..test_base import make_ctx
 
 
 def test_get_bool_param_none_and_invalid_literal():
@@ -27,11 +29,11 @@ def test_get_bool_param_none_and_invalid_literal():
     - None coerces to False (covers _to_bool None path)
     - Invalid literal returns default (ValueError fallback path)
     """
-    params_none = {"check_invariants": None}
+    params_none: RewardParams = {"check_invariants": None}
     # None should coerce to False (coverage for _to_bool None path)
     assert _get_bool_param(params_none, "check_invariants", True) is False
 
-    params_invalid = {"check_invariants": "not_a_bool"}
+    params_invalid: RewardParams = {"check_invariants": "not_a_bool"}
     # Invalid literal triggers ValueError in _to_bool; fallback returns default (True)
     assert _get_bool_param(params_invalid, "check_invariants", True) is True
 
@@ -50,7 +52,7 @@ def test_get_float_param_invalid_string_returns_nan():
     **Assertions:**
     - Result is NaN (covers float conversion ValueError path)
     """
-    params = {"idle_penalty_scale": "abc"}
+    params: RewardParams = {"idle_penalty_scale": "abc"}
     val = _get_float_param(params, "idle_penalty_scale", 0.5)
     assert math.isnan(val)
 
@@ -73,7 +75,7 @@ def test_calculate_reward_unrealized_pnl_hold_path():
     - At least one potential is non-zero (shaping should activate)
     """
     # Exercise unrealized_pnl branch during hold to cover next_pnl tanh path
-    context = RewardContext(
+    context = make_ctx(
         pnl=0.01,
         trade_duration=5,
         idle_duration=0,

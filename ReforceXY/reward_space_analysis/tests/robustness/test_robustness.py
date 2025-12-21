@@ -347,7 +347,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         - Uses assertFinite which checks for non-NaN, non-Inf values only
         """
         extreme_params = self.base_params(win_reward_factor=1000.0, base_factor=10000.0)
-        context = RewardContext(
+        context = self.make_ctx(
             pnl=0.05,
             trade_duration=50,
             idle_duration=0,

@@ -301,6 +301,32 @@ def _get_bool_param(params: RewardParams, key: str, default: bool) -> bool:
         return bool(default)
 
 
+def _resolve_additive_enablement(
+    exit_potential_mode: str,
+    entry_additive_enabled_raw: bool,
+    exit_additive_enabled_raw: bool,
+) -> tuple[bool, bool, bool]:
+    """Resolve effective additive enablement.
+
+    Canonical exit mode suppresses additive terms at runtime, even if they were
+    requested/enabled in configuration.
+
+    Returns:
+        (entry_additive_effective, exit_additive_effective, additives_suppressed)
+    """
+
+    entry_additive_effective = (
+        bool(entry_additive_enabled_raw) if exit_potential_mode != "canonical" else False
+    )
+    exit_additive_effective = (
+        bool(exit_additive_enabled_raw) if exit_potential_mode != "canonical" else False
+    )
+    additives_suppressed = exit_potential_mode == "canonical" and bool(
+        entry_additive_enabled_raw or exit_additive_enabled_raw
+    )
+    return entry_additive_effective, exit_additive_effective, additives_suppressed
+
+
 def _is_strict_validation(params: RewardParams) -> bool:
     """Return strict validation flag from params (default True)."""
     return _get_bool_param(params, "strict_validation", True)
@@ -1333,8 +1359,11 @@ def simulate_samples(
         bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_additive_enabled", False)),
     )
 
-    entry_enabled = bool(entry_enabled_raw) if exit_mode != "canonical" else False
-    exit_enabled = bool(exit_enabled_raw) if exit_mode != "canonical" else False
+    entry_enabled, exit_enabled, _additives_suppressed = _resolve_additive_enablement(
+        exit_mode,
+        entry_enabled_raw,
+        exit_enabled_raw,
+    )
     pbrs_invariant = bool(exit_mode == "canonical" and not (entry_enabled or exit_enabled))
 
     max_idle_duration_candles = get_max_idle_duration_candles(
@@ -3608,41 +3637,64 @@ def write_complete_statistical_analysis(
             # Get configuration for proper invariance assessment
             reward_params = df.attrs.get("reward_params", {}) if hasattr(df, "attrs") else {}
             exit_potential_mode = _get_str_param(reward_params, "exit_potential_mode", "canonical")
-            entry_additive_enabled = _get_bool_param(reward_params, "entry_additive_enabled", False)
-            exit_additive_enabled = _get_bool_param(reward_params, "exit_additive_enabled", False)
+            entry_additive_enabled_raw = _get_bool_param(
+                reward_params, "entry_additive_enabled", False
+            )
+            exit_additive_enabled_raw = _get_bool_param(
+                reward_params, "exit_additive_enabled", False
+            )
 
-            # True invariance requires canonical mode AND no additives
+            (
+                entry_additive_effective,
+                exit_additive_effective,
+                additives_suppressed,
+            ) = _resolve_additive_enablement(
+                exit_potential_mode,
+                entry_additive_enabled_raw,
+                exit_additive_enabled_raw,
+            )
+
+            # True invariance requires canonical mode AND no effective additives.
             is_theoretically_invariant = exit_potential_mode == "canonical" and not (
-                entry_additive_enabled or exit_additive_enabled
+                entry_additive_effective or exit_additive_effective
             )
             shaping_near_zero = abs(total_shaping) < PBRS_INVARIANCE_TOL
+
+            suppression_note = ""
+            if additives_suppressed:
+                suppression_note = (
+                    " Additives are suppressed in canonical mode"
+                    f" (requested entry_additive_enabled={bool(entry_additive_enabled_raw)},"
+                    f" exit_additive_enabled={bool(exit_additive_enabled_raw)})."
+                )
 
             # Prepare invariance summary markdown block
             if is_theoretically_invariant:
                 if shaping_near_zero:
                     invariance_status = "✅ Canonical"
                     invariance_note = (
-                        "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)"
+                        "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)."
+                        + suppression_note
                     )
                 else:
                     invariance_status = "⚠️ Canonical (with warning)"
                     invariance_note = (
-                        f"Canonical mode but unexpected shaping sum = {total_shaping:.6f}"
+                        f"Canonical mode but unexpected shaping sum = {total_shaping:.6f}."
+                        + suppression_note
                     )
             else:
                 invariance_status = "❌ Non-canonical"
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
-                if entry_additive_enabled or exit_additive_enabled:
+                if entry_additive_effective or exit_additive_effective:
                     additive_types = []
-                    if entry_additive_enabled:
+                    if entry_additive_effective:
                         additive_types.append("entry")
-                    if exit_additive_enabled:
+                    if exit_additive_effective:
                         additive_types.append("exit")
                     reasons.append(f"additives={additive_types}")
                 invariance_note = f"Modified for flexibility: {', '.join(reasons)}"
-
             # Summarize PBRS invariance
             f.write("**PBRS Invariance Summary:**\n\n")
             f.write("| Field | Value |\n")
@@ -3650,8 +3702,10 @@ def write_complete_statistical_analysis(
             f.write(f"| Invariance Status | {invariance_status} |\n")
             f.write(f"| Analysis Note | {invariance_note} |\n")
             f.write(f"| Exit Potential Mode | {exit_potential_mode} |\n")
-            f.write(f"| Entry Additive Enabled | {entry_additive_enabled} |\n")
-            f.write(f"| Exit Additive Enabled | {exit_additive_enabled} |\n")
+            f.write(f"| Entry Additive Enabled | {bool(entry_additive_enabled_raw)} |\n")
+            f.write(f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw)} |\n")
+            f.write(f"| Entry Additive Effective | {bool(entry_additive_effective)} |\n")
+            f.write(f"| Exit Additive Effective | {bool(exit_additive_effective)} |\n")
             f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
             f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
             f.write(f"| Σ Entry Additive | {entry_add_total:.6f} |\n")

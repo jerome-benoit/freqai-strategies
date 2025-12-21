@@ -12,11 +12,15 @@ Covers early stub returns and guarded exception branches to raise coverage:
 - scikit-learn import fallback (RandomForestRegressor/train_test_split/permutation_importance/r2_score unavailable)
 """
 
+import builtins
+import importlib
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from reward_space_analysis import _perform_feature_analysis  # type: ignore
+from reward_space_analysis import RandomForestRegressor, _perform_feature_analysis  # type: ignore
 from tests.constants import SEEDS
 
 pytestmark = pytest.mark.statistics
@@ -102,7 +106,7 @@ def test_feature_analysis_single_feature_path():
     )
     assert stats["n_features"] == 1
     # Importance stub path returns NaNs
-    assert importance_df["importance_mean"].isna().all()
+    assert bool(importance_df["importance_mean"].isna().all())
     assert model is None
 
 
@@ -132,7 +136,7 @@ def test_feature_analysis_nans_present_path():
     )
     # Should hit NaN stub path (model_fitted False)
     assert stats["model_fitted"] is False
-    assert importance_df["importance_mean"].isna().all()
+    assert bool(importance_df["importance_mean"].isna().all())
     assert model is None
 
 
@@ -153,7 +157,8 @@ def test_feature_analysis_model_fitting_failure(monkeypatch):
     - importance_mean is all NaN
     """
     # Monkeypatch model fit to raise
-    from reward_space_analysis import RandomForestRegressor  # type: ignore
+    if RandomForestRegressor is None:  # type: ignore[comparison-overlap]
+        pytest.skip("sklearn components unavailable; skipping model fitting failure test")
 
     _ = RandomForestRegressor.fit  # preserve reference for clarity (unused)
 
@@ -167,7 +172,7 @@ def test_feature_analysis_model_fitting_failure(monkeypatch):
     )
     assert stats["model_fitted"] is False
     assert model is None
-    assert importance_df["importance_mean"].isna().all()
+    assert bool(importance_df["importance_mean"].isna().all())
     # Restore (pytest monkeypatch will revert automatically at teardown)
 
 
@@ -200,7 +205,7 @@ def test_feature_analysis_permutation_failure_partial_dependence(monkeypatch):
     )
     assert stats["model_fitted"] is True
     # Importance should be NaNs due to failure
-    assert importance_df["importance_mean"].isna().all()
+    assert bool(importance_df["importance_mean"].isna().all())
     # Partial dependencies should still attempt and produce entries for available features listed in function
     assert len(partial_deps) >= 1  # at least one PD computed
     assert model is not None
@@ -226,7 +231,7 @@ def test_feature_analysis_success_partial_dependence():
         df, seed=SEEDS.FEATURE_PRIME_47, skip_partial_dependence=False
     )
     # Expect at least one non-NaN importance (model fitted path)
-    assert importance_df["importance_mean"].notna().any()
+    assert bool(importance_df["importance_mean"].notna().any())
     assert stats["model_fitted"] is True
     assert len(partial_deps) >= 1
     assert model is not None
@@ -254,10 +259,6 @@ def test_module_level_sklearn_import_failure_reload():
     - Call its _perform_feature_analysis to confirm ImportError path surfaces.
     - Restore original importer and original module to avoid side-effects on other tests.
     """
-    import builtins
-    import importlib
-    import sys
-
     orig_mod = sys.modules.get("reward_space_analysis")
     orig_import = builtins.__import__
 
@@ -271,17 +272,17 @@ def test_module_level_sklearn_import_failure_reload():
         # Drop existing module to force fresh execution of top-level imports
         if "reward_space_analysis" in sys.modules:
             del sys.modules["reward_space_analysis"]
-        import reward_space_analysis as rsa_fallback  # noqa: F401
+        reloaded_module = importlib.import_module("reward_space_analysis")
 
         # Fallback assigns sklearn symbols to None
-        assert getattr(rsa_fallback, "RandomForestRegressor") is None
-        assert getattr(rsa_fallback, "train_test_split") is None
-        assert getattr(rsa_fallback, "permutation_importance") is None
-        assert getattr(rsa_fallback, "r2_score") is None
+        assert getattr(reloaded_module, "RandomForestRegressor") is None
+        assert getattr(reloaded_module, "train_test_split") is None
+        assert getattr(reloaded_module, "permutation_importance") is None
+        assert getattr(reloaded_module, "r2_score") is None
         # Perform feature analysis should raise ImportError under missing components
         df = _minimal_df(15)
         with pytest.raises(ImportError):
-            rsa_fallback._perform_feature_analysis(
+            reloaded_module._perform_feature_analysis(
                 df, seed=SEEDS.FEATURE_SMALL_3, skip_partial_dependence=True
             )  # type: ignore[attr-defined]
     finally:

@@ -6,10 +6,10 @@ capturing and validating warnings in tests, reducing boilerplate code
 and ensuring consistent warning handling patterns.
 
 Usage:
-    from tests.helpers.warnings import assert_diagnostic_warning
+    >>> from tests.helpers.warnings import assert_diagnostic_warning
 
-    with assert_diagnostic_warning(["exit_factor", "threshold"]) as caught:
-        result = calculate_something_that_warns()
+    >>> with assert_diagnostic_warning(["exit_factor", "threshold"]) as caught:
+    ...     result = calculate_something_that_warns()
 
     # Assertions are automatic; caught warnings available for inspection
 """
@@ -18,10 +18,11 @@ import warnings
 from contextlib import contextmanager
 from typing import Any, Optional
 
-try:
-    from reward_space_analysis import RewardDiagnosticsWarning
-except ImportError:
-    RewardDiagnosticsWarning = RuntimeWarning
+import reward_space_analysis
+
+RewardDiagnosticsWarning = getattr(
+    reward_space_analysis, "RewardDiagnosticsWarning", RuntimeWarning
+)
 
 
 @contextmanager

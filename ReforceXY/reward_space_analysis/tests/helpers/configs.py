@@ -6,19 +6,19 @@ function signatures in test helpers, following the DRY principle and
 reducing parameter proliferation.
 
 Usage:
-    from tests.helpers.configs import RewardScenarioConfig
-    from tests.constants import PARAMS, TOLERANCE
+    >>> from tests.helpers.configs import RewardScenarioConfig
+    >>> from tests.constants import PARAMS, TOLERANCE
 
-    config = RewardScenarioConfig(
-        base_factor=PARAMS.BASE_FACTOR,
-        profit_aim=PARAMS.PROFIT_AIM,
-        risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-        tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
-    )
+    >>> config = RewardScenarioConfig(
+    ...     base_factor=PARAMS.BASE_FACTOR,
+    ...     profit_aim=PARAMS.PROFIT_AIM,
+    ...     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+    ...     tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED
+    ... )
 
-    assert_reward_calculation_scenarios(
-        test_case, scenarios, config, validation_fn
-    )
+    >>> assert_reward_calculation_scenarios(
+    ...     test_case, scenarios, config, validation_fn
+    ... )
 """
 
 from dataclasses import dataclass

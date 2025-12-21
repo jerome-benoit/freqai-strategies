@@ -9,7 +9,6 @@ import pytest
 from reward_space_analysis import (
     Actions,
     Positions,
-    RewardContext,
     _compute_efficiency_coefficient,
     _compute_hold_potential,
     _compute_pnl_target_coefficient,
@@ -273,7 +272,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         modes_to_test = ["linear", "power"]
         pnl = 0.02
         pnl_target = 0.045  # 0.03 * 1.5 coefficient
-        context = RewardContext(
+        context = self.make_ctx(
             pnl=pnl,
             trade_duration=50,
             idle_duration=0,
@@ -282,6 +281,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             position=Positions.Neutral,
             action=Actions.Neutral,
         )
+
         for mode in modes_to_test:
             test_params = self.base_params(exit_attenuation_mode=mode)
             factor = _get_exit_factor(

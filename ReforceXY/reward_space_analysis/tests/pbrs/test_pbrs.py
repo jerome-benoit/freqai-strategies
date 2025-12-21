@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import reward_space_analysis
 from reward_space_analysis import (
     DEFAULT_IDLE_DURATION_MULTIPLIER,
     DEFAULT_MODEL_REWARD_PARAMETERS,
@@ -927,6 +928,65 @@ class TestPBRS(RewardSpaceTestBase):
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
+    def test_pbrs_canonical_suppresses_additives_in_report(self):
+        """Canonical exit mode suppresses additives for classification.
+
+        The reward engine suppresses additive terms when exit_potential_mode is "canonical".
+        The report should align: classification stays canonical and should not claim
+        non-canonical additives involvement.
+        """
+
+        small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
+        total_shaping = float(sum(small_vals))
+        self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
+        n = len(small_vals)
+        df = pd.DataFrame(
+            {
+                "reward": np.random.normal(0, 1, n),
+                "reward_idle": np.zeros(n),
+                "reward_hold": np.random.normal(-0.2, 0.05, n),
+                "reward_exit": np.random.normal(0.4, 0.15, n),
+                "pnl": np.random.normal(0.01, 0.02, n),
+                "trade_duration": np.random.uniform(5, 30, n),
+                "idle_duration": np.zeros(n),
+                "position": np.random.choice([0.0, 0.5, 1.0], n),
+                "action": np.random.randint(0, 3, n),
+                "reward_shaping": small_vals,
+                "reward_entry_additive": [0.0] * n,
+                "reward_exit_additive": [0.0] * n,
+                "reward_invalid": np.zeros(n),
+                "duration_ratio": np.random.uniform(0.2, 1.0, n),
+                "idle_ratio": np.zeros(n),
+            }
+        )
+        df.attrs["reward_params"] = {
+            "exit_potential_mode": "canonical",
+            "entry_additive_enabled": True,
+            "exit_additive_enabled": True,
+        }
+        out_dir = self.output_path / "canonical_additives_suppressed"
+        write_complete_statistical_analysis(
+            df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        report_path = out_dir / "statistical_analysis.md"
+        self.assertTrue(report_path.exists(), "Report file missing for canonical additives test")
+        content = report_path.read_text(encoding="utf-8")
+        assert_pbrs_invariance_report_classification(
+            self, content, "Canonical", expect_additives=False
+        )
+        self.assertIn("Additives are suppressed in canonical mode", content)
+        self.assertIn("| Entry Additive Enabled | True |", content)
+        self.assertIn("| Exit Additive Enabled | True |", content)
+        self.assertIn("| Entry Additive Effective | False |", content)
+        self.assertIn("| Exit Additive Effective | False |", content)
+
     def test_pbrs_canonical_warning_report(self):
         """Canonical mode + no additives but |Σ shaping| > tolerance -> warning classification."""
 
@@ -1114,25 +1174,19 @@ class TestPBRS(RewardSpaceTestBase):
             }
         )
         out_dir = self.output_path / "pbrs_absence_and_shift_placeholder"
-        # Import here to mock _compute_summary_stats function
-        import reward_space_analysis as rsa
-
-        original_compute_summary_stats = rsa._compute_summary_stats
+        original_compute_summary_stats = reward_space_analysis._compute_summary_stats
 
         def _minimal_summary_stats(_df):
-            # Use _pd alias to avoid conflicts with global pd
-            import pandas as _pd
-
-            comp_share = _pd.Series([], dtype=float)
-            action_summary = _pd.DataFrame(
-                columns=_pd.Index(["count", "mean", "std", "min", "max"]),
-                index=_pd.Index([], name="action"),
+            comp_share = pd.Series([], dtype=float)
+            action_summary = pd.DataFrame(
+                columns=pd.Index(["count", "mean", "std", "min", "max"]),
+                index=pd.Index([], name="action"),
             )
-            component_bounds = _pd.DataFrame(
-                columns=_pd.Index(["component_min", "component_mean", "component_max"]),
-                index=_pd.Index([], name="component"),
+            component_bounds = pd.DataFrame(
+                columns=pd.Index(["component_min", "component_mean", "component_max"]),
+                index=pd.Index([], name="component"),
             )
-            global_stats = _pd.Series([], dtype=float)
+            global_stats = pd.Series([], dtype=float)
             return {
                 "global_stats": global_stats,
                 "action_summary": action_summary,
@@ -1140,7 +1194,7 @@ class TestPBRS(RewardSpaceTestBase):
                 "component_bounds": component_bounds,
             }
 
-        rsa._compute_summary_stats = _minimal_summary_stats
+        reward_space_analysis._compute_summary_stats = _minimal_summary_stats
         try:
             write_complete_statistical_analysis(
                 df,
@@ -1153,7 +1207,7 @@ class TestPBRS(RewardSpaceTestBase):
                 bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS // 2,
             )
         finally:
-            rsa._compute_summary_stats = original_compute_summary_stats
+            reward_space_analysis._compute_summary_stats = original_compute_summary_stats
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Report file missing for PBRS absence test")
         content = report_path.read_text(encoding="utf-8")

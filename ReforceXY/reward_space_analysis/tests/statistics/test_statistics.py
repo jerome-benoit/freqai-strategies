@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import reward_space_analysis
 from reward_space_analysis import (
     RewardDiagnosticsWarning,
     _binned_stats,
@@ -29,6 +30,8 @@ from ..constants import (
 from ..helpers import assert_diagnostic_warning
 from ..test_base import RewardSpaceTestBase
 
+_perform_feature_analysis = getattr(reward_space_analysis, "_perform_feature_analysis", None)
+
 pytestmark = pytest.mark.statistics
 
 
@@ -37,9 +40,7 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_statistics_feature_analysis_skip_partial_dependence(self):
         """Invariant 107: skip_partial_dependence=True yields empty partial_deps."""
-        try:
-            from reward_space_analysis import _perform_feature_analysis  # type: ignore
-        except ImportError:
+        if _perform_feature_analysis is None:
             self.skipTest("sklearn not available; skipping feature analysis invariance test")
         # Use existing helper to get synthetic stats df (small for speed)
         df = self.make_stats_df(n=120, seed=SEEDS.BASE, idle_pattern="mixed")
@@ -250,12 +251,16 @@ class TestStatistics(RewardSpaceTestBase):
         js_key = next((k for k in metrics if k.endswith("pnl_js_distance")), None)
         if js_key is None:
             self.skipTest("JS distance key not present in metrics output")
+        assert js_key is not None
+
         metrics_swapped = compute_distribution_shift_metrics(df2, df1)
         js_key_swapped = next((k for k in metrics_swapped if k.endswith("pnl_js_distance")), None)
         self.assertIsNotNone(js_key_swapped)
+        assert js_key_swapped is not None
+
         self.assertAlmostEqualFloat(
-            metrics[js_key],
-            metrics_swapped[js_key_swapped],
+            float(metrics[js_key]),
+            float(metrics_swapped[js_key_swapped]),
             tolerance=TOLERANCE.IDENTITY_STRICT,
             rtol=TOLERANCE.RELATIVE,
         )
@@ -294,9 +299,10 @@ class TestStatistics(RewardSpaceTestBase):
         """Batch mean additivity."""
         df_a = self._shift_scale_df(120)
         df_b = self._shift_scale_df(180, shift=0.2)
-        m_concat = pd.concat([df_a["pnl"], df_b["pnl"]]).mean()
-        m_weighted = (df_a["pnl"].mean() * len(df_a) + df_b["pnl"].mean() * len(df_b)) / (
-            len(df_a) + len(df_b)
+        m_concat = float(pd.concat([df_a["pnl"], df_b["pnl"]]).mean())
+        m_weighted = float(
+            (df_a["pnl"].mean() * len(df_a) + df_b["pnl"].mean() * len(df_b))
+            / (len(df_a) + len(df_b))
         )
         self.assertAlmostEqualFloat(
             m_concat, m_weighted, tolerance=TOLERANCE.IDENTITY_STRICT, rtol=TOLERANCE.RELATIVE
