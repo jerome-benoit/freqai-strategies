@@ -1679,7 +1679,7 @@ def zigzag(
 
         closes_slice = closes[start_pos:end_pos]
         vw_close_diffs = np.diff(closes_slice) * volume_weights
-        vw_path_length = float(np.nansum(np.abs(vw_close_diffs)))
+        vw_path_length = np.nansum(np.abs(vw_close_diffs))
         vw_net_move = abs(np.nansum(vw_close_diffs))
 
         if not (np.isfinite(vw_path_length) and np.isfinite(vw_net_move)):
