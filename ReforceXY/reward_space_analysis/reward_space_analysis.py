@@ -1368,9 +1368,9 @@ def calculate_reward(
         breakdown.total = total_reward
         return breakdown
 
-    prev_potential_safe = float(prev_potential) if np.isfinite(prev_potential) else 0.0
-    breakdown.prev_potential = prev_potential_safe
-    breakdown.next_potential = prev_potential_safe
+    prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
+    breakdown.prev_potential = prev_potential
+    breakdown.next_potential = prev_potential
     breakdown.total = base_reward
 
     return breakdown
