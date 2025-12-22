@@ -320,6 +320,8 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 | `exit_potential_mode`    | canonical | Potential release mode            |
 | `exit_potential_decay`   | 0.5       | Decay for progressive_release     |
 | `hold_potential_enabled` | true      | Enable hold potential Φ           |
+| `entry_fee_rate`         | 0.0       | Entry fee rate                    |
+| `exit_fee_rate`          | 0.0       | Exit fee rate                     |
 
 PBRS invariance holds when: `exit_potential_mode=canonical`.
 

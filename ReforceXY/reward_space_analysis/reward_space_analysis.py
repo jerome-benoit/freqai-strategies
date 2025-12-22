@@ -153,6 +153,8 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "entry_additive_gain": 1.0,
     "entry_additive_transform_pnl": "tanh",
     "entry_additive_transform_duration": "tanh",
+    "entry_fee_rate": 0.0,
+    "exit_fee_rate": 0.0,
     # Exit additive (non-PBRS additive term)
     "exit_additive_enabled": False,
     "exit_additive_scale": 1.0,
@@ -196,6 +198,8 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "entry_additive_gain": "Entry additive gain",
     "entry_additive_transform_pnl": "Entry PnL transform",
     "entry_additive_transform_duration": "Entry duration transform",
+    "entry_fee_rate": "Entry fee rate",
+    "exit_fee_rate": "Exit fee rate",
     "exit_additive_enabled": "Enable exit additive",
     "exit_additive_scale": "Exit additive scale",
     "exit_additive_gain": "Exit additive gain",
@@ -233,6 +237,8 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "hold_potential_gain": {"min": 0.0},
     "entry_additive_scale": {"min": 0.0},
     "entry_additive_gain": {"min": 0.0},
+    "entry_fee_rate": {"min": 0.0, "max": 0.1},
+    "exit_fee_rate": {"min": 0.0, "max": 0.1},
     "exit_additive_scale": {"min": 0.0},
     "exit_additive_gain": {"min": 0.0},
 }
@@ -1174,11 +1180,16 @@ def calculate_reward(
     is_neutral = context.position == Positions.Neutral and context.action == Actions.Neutral
 
     if is_entry:
-        next_pnl = current_pnl
         next_duration_ratio = 0.0
+        if context.action == Actions.Long_enter:
+            next_pnl = _compute_entry_unrealized_pnl_estimate(Positions.Long, params)
+        elif context.action == Actions.Short_enter:
+            next_pnl = _compute_entry_unrealized_pnl_estimate(Positions.Short, params)
+        else:
+            next_pnl = current_pnl
     elif is_hold:
         next_duration_ratio = _compute_duration_ratio(
-            context.trade_duration + 1, max_trade_duration_candles
+            context.trade_duration, max_trade_duration_candles
         )
         # Optionally simulate unrealized PnL during holds to feed Φ(s)
         if _get_bool_param(params, "unrealized_pnl", False):
@@ -1468,10 +1479,16 @@ def simulate_samples(
                 position = Positions.Long
                 trade_duration = 0
                 idle_duration = 0
+                pnl = _compute_entry_unrealized_pnl_estimate(Positions.Long, params)
+                max_unrealized_profit = pnl
+                min_unrealized_profit = pnl
             elif action == Actions.Short_enter and short_allowed:
                 position = Positions.Short
                 trade_duration = 0
                 idle_duration = 0
+                pnl = _compute_entry_unrealized_pnl_estimate(Positions.Short, params)
+                max_unrealized_profit = pnl
+                min_unrealized_profit = pnl
         else:
             idle_duration = 0
             if action == Actions.Neutral:
@@ -2771,6 +2788,66 @@ def _get_potential_gamma(params: RewardParams) -> float:
 
 
 # === PBRS IMPLEMENTATION ===
+
+
+def _compute_entry_unrealized_pnl_estimate(next_position: Positions, params: RewardParams) -> float:
+    """Estimate immediate unrealized PnL after entry fees.
+
+    For Long entry:
+        current_price = open * (1 - exit_fee_rate)
+        last_trade_price = open * (1 + entry_fee_rate)
+        pnl = (current_price - last_trade_price) / last_trade_price
+
+    For Short entry:
+        current_price = open * (1 + entry_fee_rate)
+        last_trade_price = open * (1 - exit_fee_rate)
+        pnl = (last_trade_price - current_price) / last_trade_price
+    """
+
+    entry_fee_rate = _get_float_param(
+        params,
+        "entry_fee_rate",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("entry_fee_rate", 0.0),
+    )
+    exit_fee_rate = _get_float_param(
+        params,
+        "exit_fee_rate",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_fee_rate", 0.0),
+    )
+
+    if not np.isfinite(entry_fee_rate):
+        entry_fee_rate = 0.0
+    if not np.isfinite(exit_fee_rate):
+        exit_fee_rate = 0.0
+
+    entry_fee_bounds = _PARAMETER_BOUNDS.get("entry_fee_rate", {"min": 0.0, "max": 1.0})
+    exit_fee_bounds = _PARAMETER_BOUNDS.get("exit_fee_rate", {"min": 0.0, "max": 1.0})
+
+    entry_fee_min = float(entry_fee_bounds.get("min", 0.0))
+    entry_fee_max = float(entry_fee_bounds.get("max", 1.0))
+    exit_fee_min = float(exit_fee_bounds.get("min", 0.0))
+    exit_fee_max = float(exit_fee_bounds.get("max", 1.0))
+
+    entry_fee_rate = float(np.clip(entry_fee_rate, entry_fee_min, entry_fee_max))
+    exit_fee_rate = float(np.clip(exit_fee_rate, exit_fee_min, exit_fee_max))
+
+    current_open = 1.0
+    next_pnl = 0.0
+
+    if next_position == Positions.Long:
+        current_price = current_open * (1.0 - exit_fee_rate)
+        last_trade_price = current_open * (1.0 + entry_fee_rate)
+        if last_trade_price != 0.0 and np.isfinite(last_trade_price):
+            next_pnl = (current_price - last_trade_price) / last_trade_price
+    elif next_position == Positions.Short:
+        current_price = current_open * (1.0 + entry_fee_rate)
+        last_trade_price = current_open * (1.0 - exit_fee_rate)
+        if last_trade_price != 0.0 and np.isfinite(last_trade_price):
+            next_pnl = (last_trade_price - current_price) / last_trade_price
+
+    if not np.isfinite(next_pnl):
+        return 0.0
+    return float(next_pnl)
 
 
 def _compute_hold_potential(

@@ -1793,6 +1793,29 @@ class MyRLEnv(Base5ActionRLEnv):
             return Positions.Neutral
         return self._position
 
+    def _get_entry_unrealized_profit(self, next_position: Positions) -> float:
+        current_open = self.prices.iloc[self._current_tick].open
+        if not isinstance(current_open, (int, float, np.floating)) or not np.isfinite(
+            current_open
+        ):
+            return 0.0
+
+        next_pnl = 0.0
+        if next_position == Positions.Long:
+            current_price = self.add_exit_fee(current_open)
+            last_trade_price = self.add_entry_fee(current_open)
+            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
+                next_pnl = (current_price - last_trade_price) / last_trade_price
+        elif next_position == Positions.Short:
+            current_price = self.add_entry_fee(current_open)
+            last_trade_price = self.add_exit_fee(current_open)
+            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
+                next_pnl = (last_trade_price - current_price) / last_trade_price
+
+        if not np.isfinite(next_pnl):
+            return 0.0
+        return float(next_pnl)
+
     def _get_next_transition_state(
         self,
         action: int,
@@ -1801,24 +1824,28 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> Tuple[Positions, int, float]:
         """Compute next transition state tuple."""
         next_position = self._get_next_position(action)
+
         # Entry
         if self._position == Positions.Neutral and next_position in (
             Positions.Long,
             Positions.Short,
         ):
-            return next_position, 0, pnl
+            return next_position, 0, self._get_entry_unrealized_profit(next_position)
+
         # Exit
         if (
             self._position in (Positions.Long, Positions.Short)
             and next_position == Positions.Neutral
         ):
             return next_position, 0, 0.0
+
         # Hold
         if self._position in (Positions.Long, Positions.Short) and next_position in (
             Positions.Long,
             Positions.Short,
         ):
-            return next_position, int(trade_duration) + 1, pnl
+            return next_position, int(trade_duration), pnl
+
         # Neutral self-loop
         return next_position, 0, 0.0
 

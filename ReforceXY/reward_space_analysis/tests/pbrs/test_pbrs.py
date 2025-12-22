@@ -13,12 +13,16 @@ from reward_space_analysis import (
     DEFAULT_IDLE_DURATION_MULTIPLIER,
     DEFAULT_MODEL_REWARD_PARAMETERS,
     PBRS_INVARIANCE_TOL,
+    Actions,
+    Positions,
     _compute_entry_additive,
+    _compute_entry_unrealized_pnl_estimate,
     _compute_exit_additive,
     _compute_exit_potential,
     _compute_hold_potential,
     _get_float_param,
     apply_potential_shaping,
+    calculate_reward,
     get_max_idle_duration_candles,
     simulate_samples,
     validate_reward_parameters,
@@ -483,6 +487,153 @@ class TestPBRS(RewardSpaceTestBase):
             abs(res_nan[0] - res_ref[0]),
             TOLERANCE.IDENTITY_RELAXED,
             "Unexpected total difference under gamma NaN fallback",
+        )
+
+    def test_calculate_reward_entry_next_pnl_fee_aware(self):
+        """calculate_reward() entry PBRS uses fee-aware next_pnl estimate."""
+        params = self.base_params(
+            exit_potential_mode="non_canonical",
+            hold_potential_enabled=True,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            potential_gamma=0.9,
+            entry_fee_rate=0.001,
+            exit_fee_rate=0.001,
+        )
+
+        for action in (Actions.Long_enter, Actions.Short_enter):
+            ctx = self.make_ctx(
+                position=Positions.Neutral, action=action, pnl=0.0, trade_duration=0
+            )
+            breakdown = calculate_reward(
+                ctx,
+                params,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                short_allowed=True,
+                action_masking=True,
+                prev_potential=0.0,
+            )
+            self.assertTrue(np.isfinite(breakdown.next_potential))
+            # With any nonzero fees, immediate unrealized pnl should be negative.
+            self.assertLess(
+                breakdown.next_potential,
+                0.0,
+                f"Expected negative next_potential on entry for action={action}",
+            )
+
+    def test_fee_rates_are_clamped_to_parameter_bounds(self):
+        """Fee clamping uses _PARAMETER_BOUNDS (max 0.1)."""
+        cases = [
+            ("entry_fee_rate", self.base_params(entry_fee_rate=999.0, exit_fee_rate=0.0)),
+            ("exit_fee_rate", self.base_params(entry_fee_rate=0.0, exit_fee_rate=999.0)),
+        ]
+
+        for key, params in cases:
+            pnl_clamped = _compute_entry_unrealized_pnl_estimate(Positions.Long, params)
+            pnl_expected = _compute_entry_unrealized_pnl_estimate(
+                Positions.Long,
+                {**params, key: 0.1},
+            )
+            self.assertAlmostEqualFloat(
+                pnl_clamped,
+                pnl_expected,
+                tolerance=TOLERANCE.IDENTITY_STRICT,
+                msg=f"Expected {key} values above max to clamp to 0.1",
+            )
+
+    def test_simulate_samples_initializes_pnl_on_entry(self):
+        """simulate_samples() sets in-position pnl to entry fee estimate."""
+        params = self.base_params(
+            exit_potential_mode="non_canonical",
+            hold_potential_enabled=True,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            entry_fee_rate=0.001,
+            exit_fee_rate=0.001,
+        )
+
+        df = simulate_samples(
+            num_samples=50,
+            seed=1,
+            params=params,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=1.0,
+            trading_mode="futures",
+            pnl_base_std=0.0,
+            pnl_duration_vol_scale=0.0,
+        )
+
+        enter_rows = df[df["action"] == float(Actions.Long_enter.value)]
+        self.assertGreater(len(enter_rows), 0, "Expected at least one Long_enter in sample")
+
+        enter_pos = df.reset_index(drop=True)
+        enter_mask = enter_pos["action"].to_numpy() == float(Actions.Long_enter.value)
+        enter_positions = np.flatnonzero(enter_mask)
+        first_enter_pos = int(enter_positions[0])
+        next_pos = first_enter_pos + 1
+
+        self.assertLess(next_pos, len(enter_pos), "Sample must include post-entry step")
+        self.assertEqual(
+            float(enter_pos.iloc[next_pos]["position"]),
+            float(Positions.Long.value),
+            "Expected Long position immediately after Long_enter",
+        )
+
+        expected_pnl = _compute_entry_unrealized_pnl_estimate(Positions.Long, params)
+        post_entry_pnl = float(enter_pos.iloc[next_pos]["pnl"])
+        self.assertAlmostEqualFloat(
+            post_entry_pnl,
+            expected_pnl,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Expected pnl after entry to match entry fee estimate",
+        )
+
+    def test_calculate_reward_hold_uses_current_duration_ratio(self):
+        """calculate_reward() hold next_duration_ratio uses trade_duration."""
+        params = self.base_params(
+            exit_potential_mode="non_canonical",
+            hold_potential_enabled=True,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            potential_gamma=0.9,
+        )
+
+        trade_duration = 5
+        max_trade_duration_candles = 10
+
+        ctx = self.make_ctx(
+            position=Positions.Long,
+            action=Actions.Neutral,
+            pnl=0.01,
+            trade_duration=trade_duration,
+        )
+
+        breakdown = calculate_reward(
+            ctx,
+            {**params, "max_trade_duration_candles": max_trade_duration_candles},
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            short_allowed=True,
+            action_masking=True,
+            prev_potential=0.0,
+        )
+
+        expected_next_potential = _compute_hold_potential(
+            pnl=ctx.pnl,
+            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            duration_ratio=(trade_duration / max_trade_duration_candles),
+            params=params,
+        )
+        self.assertAlmostEqualFloat(
+            breakdown.next_potential,
+            expected_next_potential,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            msg="Hold next_potential mismatch (duration ratio mismatch)",
         )
 
     # ---------------- Validation parameter batch & relaxed aggregation ---------------- #
