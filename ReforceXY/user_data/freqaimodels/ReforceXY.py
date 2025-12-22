@@ -2565,9 +2565,14 @@ class MyRLEnv(Base5ActionRLEnv):
                     "_get_exit_factor produced non-finite factor; resetting to 0.0"
                 )
                 return 0.0
+            if efficiency_coefficient < 0.0:
+                logger.debug(
+                    "_compute_efficiency_coefficient produced negative coefficient %.5f",
+                    efficiency_coefficient,
+                )
             if exit_factor < 0.0 and pnl >= 0.0:
                 logger.debug(
-                    "_get_exit_factor negative with positive pnl (exit_factor=%.5f, pnl=%.5f); clamping to 0.0",
+                    "_get_exit_factor produced negative factor with positive pnl (exit_factor=%.5f, pnl=%.5f); clamping to 0.0",
                     exit_factor,
                     pnl,
                 )

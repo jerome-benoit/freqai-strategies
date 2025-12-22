@@ -199,7 +199,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """Test efficiency zero policy produces expected PnL coefficient.
 
         Verifies:
-        - efficiency_weight = 0 → pnl_coefficient ≈ 1.0
+        - efficiency_weight = 0 -> pnl_coefficient ~= 1.0
         - Coefficient is finite and positive
         """
         ctx = self.make_ctx(
@@ -210,7 +210,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        params = self.base_params()
+        params = self.base_params(efficiency_weight=0.0)
         pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         pnl_target_coefficient = _compute_pnl_target_coefficient(
             params, ctx.pnl, pnl_target, PARAMS.RISK_REWARD_RATIO
@@ -219,6 +219,49 @@ class TestRewardComponents(RewardSpaceTestBase):
         pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
         self.assertFinite(pnl_coefficient, name="pnl_coefficient")
         self.assertAlmostEqualFloat(pnl_coefficient, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
+
+    def test_exit_reward_never_positive_for_loss_due_to_efficiency(self):
+        """Exit reward should not become positive for a loss trade.
+
+        This guards against a configuration where the efficiency coefficient becomes
+        negative (e.g., extreme efficiency_weight/efficiency_center), which would
+        otherwise flip the sign of pnl * exit_factor.
+        """
+        params = self.base_params(
+            efficiency_weight=2.0,
+            efficiency_center=0.0,
+            exit_attenuation_mode="linear",
+            exit_plateau=False,
+            exit_linear_slope=0.0,
+            hold_potential_enabled=False,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        params.pop("base_factor", None)
+
+        context = self.make_ctx(
+            pnl=-0.01,
+            trade_duration=10,
+            idle_duration=0,
+            max_unrealized_profit=0.0,
+            min_unrealized_profit=-0.05,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        breakdown = calculate_reward(
+            context,
+            params,
+            base_factor=1.0,
+            profit_aim=0.03,
+            risk_reward_ratio=1.0,
+            short_allowed=True,
+            action_masking=True,
+        )
+        self.assertLessEqual(
+            breakdown.exit_component,
+            0.0,
+            "Exit component must not be positive when pnl < 0",
+        )
 
     def test_max_idle_duration_candles_logic(self):
         """Test max idle duration candles parameter affects penalty magnitude.

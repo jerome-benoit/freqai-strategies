@@ -1031,6 +1031,22 @@ def _compute_efficiency_coefficient(
                     efficiency_center - efficiency_ratio
                 )
 
+    if not np.isfinite(efficiency_coefficient):
+        efficiency_coefficient = 0.0
+
+    if efficiency_coefficient < 0.0:
+        if _get_bool_param(
+            params,
+            "check_invariants",
+            bool(DEFAULT_MODEL_REWARD_PARAMETERS.get("check_invariants", True)),
+        ):
+            warnings.warn(
+                f"efficiency_coefficient={efficiency_coefficient:.6f} < 0; clamping to 0.0",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+        efficiency_coefficient = 0.0
+
     return efficiency_coefficient
 
 
