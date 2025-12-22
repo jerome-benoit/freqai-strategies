@@ -2418,8 +2418,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> None:
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to delete study %s: %r", study_name, e)
 
     @staticmethod
     def optuna_load_study(

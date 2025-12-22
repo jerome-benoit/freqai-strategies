@@ -180,7 +180,6 @@
     },
     "rl_config_optuna": {
       "enabled": true, // Enable optuna hyperopt
-      "per_pair": true, // Enable per pair hyperopt
       "n_trials": 100,
       "n_startup_trials": 15,
       "timeout_hours": 0
