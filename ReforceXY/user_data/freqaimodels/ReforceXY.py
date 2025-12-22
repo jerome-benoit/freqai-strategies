@@ -2351,6 +2351,7 @@ class MyRLEnv(Base5ActionRLEnv):
             self._last_next_potential = float(self._last_potential)
             self._last_entry_additive = 0.0
             self._last_exit_additive = 0.0
+            self._last_reward_shaping = 0.0
             return base_reward
 
     def _set_observation_space(self) -> None:
