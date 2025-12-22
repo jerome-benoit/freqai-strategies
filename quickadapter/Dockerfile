@@ -2,7 +2,7 @@ FROM freqtradeorg/freqtrade:stable_freqai
 
 ARG optuna_version=4.6.0
 ARG scikit_learn_extra_version=0.3.0
-ARG scikit_image_version=0.25.2
+ARG scikit_image_version=0.26.0
 
 USER root
 RUN apt-get update \
