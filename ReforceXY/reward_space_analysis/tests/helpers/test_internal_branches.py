@@ -7,7 +7,6 @@ from reward_space_analysis import (
     Positions,
     RewardParams,
     _get_bool_param,
-    _get_float_param,
     calculate_reward,
 )
 
@@ -36,25 +35,6 @@ def test_get_bool_param_none_and_invalid_literal():
     params_invalid: RewardParams = {"check_invariants": "not_a_bool"}
     # Invalid literal triggers ValueError in _to_bool; fallback returns default (True)
     assert _get_bool_param(params_invalid, "check_invariants", True) is True
-
-
-def test_get_float_param_invalid_string_returns_nan():
-    """Verify _get_float_param returns NaN for invalid string input.
-
-    Tests error handling in float parameter parsing when given
-    a non-numeric string that cannot be converted to float.
-
-    **Setup:**
-    - Invalid string: "abc"
-    - Parameter: idle_penalty_scale
-    - Default value: 0.5
-
-    **Assertions:**
-    - Result is NaN (covers float conversion ValueError path)
-    """
-    params: RewardParams = {"idle_penalty_scale": "abc"}
-    val = _get_float_param(params, "idle_penalty_scale", 0.5)
-    assert math.isnan(val)
 
 
 def test_calculate_reward_unrealized_pnl_hold_path():

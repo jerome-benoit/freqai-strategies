@@ -1769,6 +1769,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 "PBRS: hold_potential_enabled=True and add_state_info=False is unsupported. Automatically enabling add_state_info=True."
             )
             self.add_state_info = True
+            self._set_observation_space()
 
         # === PNL TARGET VALIDATION ===
         pnl_target = self.profit_aim * self.rr
@@ -2870,6 +2871,36 @@ class MyRLEnv(Base5ActionRLEnv):
 
         return None
 
+    def _apply_terminal_pbrs_correction(self, reward: float) -> float:
+        if not (
+            self._hold_potential_enabled
+            or self._entry_additive_enabled
+            or self._exit_additive_enabled
+        ):
+            self._last_potential = 0.0
+            self._last_next_potential = 0.0
+            self._last_reward_shaping = 0.0
+            return reward
+
+        prev_potential = self._last_prev_potential
+        computed_reward_shaping = self._last_reward_shaping
+        terminal_reward_shaping = -prev_potential
+        reward_shaping_delta = terminal_reward_shaping - computed_reward_shaping
+        last_next_potential = self._last_next_potential
+
+        if np.isclose(computed_reward_shaping, terminal_reward_shaping) and np.isclose(
+            last_next_potential, 0.0
+        ):
+            self._last_potential = 0.0
+            self._last_next_potential = 0.0
+            return reward
+
+        self._last_potential = 0.0
+        self._last_next_potential = 0.0
+        self._last_reward_shaping = terminal_reward_shaping
+        self._total_reward_shaping += reward_shaping_delta
+        return reward + reward_shaping_delta
+
     def step(
         self, action: int
     ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
@@ -2881,11 +2912,15 @@ class MyRLEnv(Base5ActionRLEnv):
         pre_pnl = self.get_unrealized_profit()
         self._update_portfolio_log_returns()
         reward = self.calculate_reward(action)
-        self.total_reward += reward
         trade_type = self.execute_trade(action)
         if trade_type is not None:
             self.append_trade_history(trade_type, self.current_price(), pre_pnl)
         self._position_history.append(self._position)
+        terminated = self.is_terminated()
+        if terminated:
+            reward = self._apply_terminal_pbrs_correction(reward)
+            self._last_potential = 0.0
+        self.total_reward += reward
         pnl = self.get_unrealized_profit()
         self._update_max_unrealized_profit(pnl)
         self._update_min_unrealized_profit(pnl)
@@ -2927,18 +2962,6 @@ class MyRLEnv(Base5ActionRLEnv):
             "trade_count": len(self.trade_history) // 2,
         }
         self._update_history(info)
-        terminated = self.is_terminated()
-        if terminated:
-            # Enforce Φ(terminal)=0 for PBRS invariance (Wiewiora et al. 2003)
-            self._last_potential = 0.0
-            # eps = np.finfo(float).eps
-            # if self.is_pbrs_invariant_mode() and abs(self._total_reward_shaping) > eps:
-            #     logger.warning(
-            #         "PBRS mode %s invariance deviation: |sum Δ|=%.6f > eps=%.6f",
-            #         self._exit_potential_mode,
-            #         abs(self._total_reward_shaping),
-            #         eps,
-            #     )
         return (
             self._get_observation(),
             reward,

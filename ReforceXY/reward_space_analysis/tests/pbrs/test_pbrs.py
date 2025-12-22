@@ -16,10 +16,10 @@ from reward_space_analysis import (
     Actions,
     Positions,
     _compute_entry_additive,
-    _compute_entry_unrealized_pnl_estimate,
     _compute_exit_additive,
     _compute_exit_potential,
     _compute_hold_potential,
+    _compute_unrealized_pnl_estimate,
     _get_float_param,
     apply_potential_shaping,
     calculate_reward,
@@ -305,6 +305,51 @@ class TestPBRS(RewardSpaceTestBase):
             msg="Hold shaping must be suppressed when hold potential disabled",
         )
 
+    def test_calculate_reward_preserves_potential_when_pbrs_disabled(self):
+        """calculate_reward() preserves stored potential when PBRS is disabled."""
+        params = self.base_params(
+            hold_potential_enabled=False,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            exit_potential_mode="non_canonical",
+        )
+        ctx = self.make_ctx(position=Positions.Neutral, action=Actions.Neutral)
+
+        prev_potential = 0.37
+        breakdown = calculate_reward(
+            ctx,
+            params,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            short_allowed=True,
+            action_masking=True,
+            prev_potential=prev_potential,
+        )
+
+        self.assertAlmostEqualFloat(
+            breakdown.prev_potential,
+            prev_potential,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="prev_potential must be preserved when PBRS disabled",
+        )
+        self.assertAlmostEqualFloat(
+            breakdown.next_potential,
+            prev_potential,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="next_potential must equal prev_potential when PBRS disabled",
+        )
+        self.assertPlacesEqual(
+            breakdown.reward_shaping, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT
+        )
+        self.assertPlacesEqual(breakdown.pbrs_delta, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
+        self.assertAlmostEqualFloat(
+            breakdown.total,
+            breakdown.base_reward,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="PBRS disabled total must equal base_reward",
+        )
+
     def test_exit_potential_canonical(self):
         """Verifies canonical exit resets potential (no params mutation)."""
         params = self.base_params(
@@ -437,8 +482,8 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertPlacesEqual(
             next_potential, prev_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
         )
-        gamma_raw = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
-        gamma_fallback = 0.95 if gamma_raw is None else gamma_raw
+        raw_gamma = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
+        gamma_fallback = 0.95 if raw_gamma is None else raw_gamma
         try:
             gamma = float(gamma_fallback)
         except Exception:
@@ -531,10 +576,17 @@ class TestPBRS(RewardSpaceTestBase):
         ]
 
         for key, params in cases:
-            pnl_clamped = _compute_entry_unrealized_pnl_estimate(Positions.Long, params)
-            pnl_expected = _compute_entry_unrealized_pnl_estimate(
+            pnl_clamped = _compute_unrealized_pnl_estimate(
                 Positions.Long,
-                {**params, key: 0.1},
+                entry_open=1.0,
+                current_open=1.0,
+                params=params,
+            )
+            pnl_expected = _compute_unrealized_pnl_estimate(
+                Positions.Long,
+                entry_open=1.0,
+                current_open=1.0,
+                params={**params, key: 0.1},
             )
             self.assertAlmostEqualFloat(
                 pnl_clamped,
@@ -543,8 +595,40 @@ class TestPBRS(RewardSpaceTestBase):
                 msg=f"Expected {key} values above max to clamp to 0.1",
             )
 
+    def test_unrealized_pnl_estimate_uses_division_for_exit_fee(self):
+        """Exit fee uses division `open/(1+fee)`."""
+        params = self.base_params(entry_fee_rate=0.0, exit_fee_rate=0.1)
+
+        pnl_long = _compute_unrealized_pnl_estimate(
+            Positions.Long,
+            entry_open=1.0,
+            current_open=1.0,
+            params=params,
+        )
+        expected_pnl_long = (1.0 / 1.1 - 1.0) / 1.0
+        self.assertAlmostEqualFloat(
+            float(pnl_long),
+            float(expected_pnl_long),
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Long entry PnL mismatch for division-based exit fee",
+        )
+
+        pnl_short = _compute_unrealized_pnl_estimate(
+            Positions.Short,
+            entry_open=1.0,
+            current_open=1.0,
+            params=params,
+        )
+        expected_pnl_short = (1.0 / 1.1 - 1.0) / (1.0 / 1.1)
+        self.assertAlmostEqualFloat(
+            float(pnl_short),
+            float(expected_pnl_short),
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Short entry PnL mismatch for division-based exit fee",
+        )
+
     def test_simulate_samples_initializes_pnl_on_entry(self):
-        """simulate_samples() sets in-position pnl to entry fee estimate."""
+        """simulate_samples() sets in-position pnl to fee-aware entry estimate."""
         params = self.base_params(
             exit_potential_mode="non_canonical",
             hold_potential_enabled=True,
@@ -555,7 +639,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
 
         df = simulate_samples(
-            num_samples=50,
+            num_samples=80,
             seed=1,
             params=params,
             base_factor=PARAMS.BASE_FACTOR,
@@ -567,15 +651,19 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_duration_vol_scale=0.0,
         )
 
-        enter_rows = df[df["action"] == float(Actions.Long_enter.value)]
-        self.assertGreater(len(enter_rows), 0, "Expected at least one Long_enter in sample")
-
         enter_pos = df.reset_index(drop=True)
         enter_mask = enter_pos["action"].to_numpy() == float(Actions.Long_enter.value)
         enter_positions = np.flatnonzero(enter_mask)
-        first_enter_pos = int(enter_positions[0])
-        next_pos = first_enter_pos + 1
+        self.assertGreater(len(enter_positions), 0, "Expected at least one Long_enter in sample")
 
+        first_enter_pos = int(enter_positions[0])
+        self.assertEqual(
+            float(enter_pos.iloc[first_enter_pos]["position"]),
+            float(Positions.Neutral.value),
+            "Expected Neutral position on Long_enter row",
+        )
+
+        next_pos = first_enter_pos + 1
         self.assertLess(next_pos, len(enter_pos), "Sample must include post-entry step")
         self.assertEqual(
             float(enter_pos.iloc[next_pos]["position"]),
@@ -583,7 +671,12 @@ class TestPBRS(RewardSpaceTestBase):
             "Expected Long position immediately after Long_enter",
         )
 
-        expected_pnl = _compute_entry_unrealized_pnl_estimate(Positions.Long, params)
+        expected_pnl = _compute_unrealized_pnl_estimate(
+            Positions.Long,
+            entry_open=1.0,
+            current_open=1.0,
+            params=params,
+        )
         post_entry_pnl = float(enter_pos.iloc[next_pos]["pnl"])
         self.assertAlmostEqualFloat(
             post_entry_pnl,
@@ -795,6 +888,62 @@ class TestPBRS(RewardSpaceTestBase):
             -prev_potential,
             tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg="Canonical exit PBRS delta should be -prev_potential",
+        )
+
+    def test_invalid_action_still_applies_pbrs_shaping(self):
+        """Invalid action penalties still flow through PBRS shaping."""
+
+        params = self.base_params(
+            max_trade_duration_candles=100,
+            exit_potential_mode="canonical",
+            hold_potential_enabled=True,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+            potential_gamma=0.9,
+        )
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
+        ctx = self.make_ctx(
+            pnl=0.02,
+            trade_duration=10,
+            idle_duration=0,
+            max_unrealized_profit=0.03,
+            min_unrealized_profit=0.01,
+            position=Positions.Long,
+            action=Actions.Short_exit,  # invalid for long
+        )
+
+        current_duration_ratio = ctx.trade_duration / params["max_trade_duration_candles"]
+        prev_potential = _compute_hold_potential(
+            ctx.pnl, pnl_target, current_duration_ratio, params
+        )
+        self.assertNotEqual(prev_potential, 0.0)
+
+        breakdown = calculate_reward(
+            ctx,
+            params,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            short_allowed=True,
+            action_masking=False,
+            prev_potential=prev_potential,
+        )
+
+        expected_shaping = params["potential_gamma"] * prev_potential - prev_potential
+        self.assertAlmostEqualFloat(
+            breakdown.reward_shaping,
+            expected_shaping,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            msg="Invalid actions should still produce PBRS shaping",
+        )
+        self.assertAlmostEqualFloat(
+            breakdown.total,
+            breakdown.invalid_penalty
+            + breakdown.reward_shaping
+            + breakdown.entry_additive
+            + breakdown.exit_additive,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            msg="Total should decompose for invalid actions",
         )
 
     def test_simulate_samples_retains_signals_in_canonical_mode(self):

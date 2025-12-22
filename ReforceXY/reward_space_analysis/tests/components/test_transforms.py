@@ -41,14 +41,16 @@ class TestTransforms(RewardSpaceTestBase):
         ]
 
         for transform_name, test_values, expected_values in test_cases:
-            for test_val, expected_val in zip(test_values, expected_values):
-                with self.subTest(transform=transform_name, input=test_val, expected=expected_val):
+            for test_val, expected_value in zip(test_values, expected_values):
+                with self.subTest(
+                    transform=transform_name, input=test_val, expected=expected_value
+                ):
                     result = apply_transform(transform_name, test_val)
                     self.assertAlmostEqualFloat(
                         result,
-                        expected_val,
+                        expected_value,
                         tolerance=1e-10,
-                        msg=f"{transform_name}({test_val}) should equal {expected_val}",
+                        msg=f"{transform_name}({test_val}) should equal {expected_value}",
                     )
 
     def test_transform_bounds_smooth(self):

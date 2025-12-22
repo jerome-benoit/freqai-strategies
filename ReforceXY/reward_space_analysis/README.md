@@ -314,14 +314,14 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 
 #### PBRS (Potential-Based Reward Shaping)
 
-| Parameter                | Default   | Description                       |
-| ------------------------ | --------- | --------------------------------- |
-| `potential_gamma`        | 0.95      | Discount factor γ for potential Φ |
-| `exit_potential_mode`    | canonical | Potential release mode            |
-| `exit_potential_decay`   | 0.5       | Decay for progressive_release     |
-| `hold_potential_enabled` | true      | Enable hold potential Φ           |
-| `entry_fee_rate`         | 0.0       | Entry fee rate                    |
-| `exit_fee_rate`          | 0.0       | Exit fee rate                     |
+| Parameter                | Default   | Description                          |
+| ------------------------ | --------- | ------------------------------------ |
+| `potential_gamma`        | 0.95      | Discount factor γ for potential Φ    |
+| `exit_potential_mode`    | canonical | Potential release mode               |
+| `exit_potential_decay`   | 0.5       | Decay for progressive_release        |
+| `hold_potential_enabled` | true      | Enable hold potential Φ              |
+| `entry_fee_rate`         | 0.0       | Entry fee rate (`price * (1 + fee)`) |
+| `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
 PBRS invariance holds when: `exit_potential_mode=canonical`.
 
