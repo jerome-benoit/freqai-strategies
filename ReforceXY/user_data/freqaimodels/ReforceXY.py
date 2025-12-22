@@ -1156,15 +1156,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         return ((value + multiple - 1) // multiple) * multiple
 
     @staticmethod
-    def _ppo_resources(total_timesteps: int, n_envs: int) -> Tuple[int, int]:
+    def _ppo_resources(
+        total_timesteps: int, n_envs: int, reduction_factor: int
+    ) -> Tuple[int, int]:
         min_n_steps = ReforceXY._PPO_N_STEPS_MIN
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
-        min_resource = (
-            max(
-                1,
-                round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR),
-            )
-            * n_envs
+        min_resource = max(
+            2 * reduction_factor,
+            round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR)
+            * n_envs,
         )
         rollout = max_n_steps * n_envs
         return (
@@ -1189,10 +1189,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         n_envs = self.n_envs
         if ReforceXY._MODEL_TYPES[0] in self.model_type:  # "PPO"
             min_resource, max_resource = ReforceXY._ppo_resources(
-                total_timesteps, n_envs
+                total_timesteps, n_envs, reduction_factor
             )
         else:
-            min_resource = self.get_eval_freq(total_timesteps, hyperopt=True) * n_envs
+            min_resource = max(
+                2 * reduction_factor,
+                self.get_eval_freq(total_timesteps, hyperopt=True) * n_envs,
+            )
             max_resource = max(min_resource, total_timesteps + (n_envs - 1))
 
         study: Study = create_study(
