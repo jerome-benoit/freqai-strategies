@@ -22,7 +22,8 @@ this README.
 
 | Directory      | Marker      | Scope                                       |
 | -------------- | ----------- | ------------------------------------------- |
-| `components/`  | components  | Component math & transforms                 |
+| `components/`  | components  | Component math                              |
+| `transforms/`  | transforms  | Mathematical transform functions            |
 | `robustness/`  | robustness  | Edge cases, stability, progression          |
 | `api/`         | api         | Public API helpers & parsing                |
 | `cli/`         | cli         | CLI parameter propagation & artifacts       |

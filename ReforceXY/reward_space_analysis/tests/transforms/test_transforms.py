@@ -13,7 +13,7 @@ from reward_space_analysis import ALLOWED_TRANSFORMS, apply_transform
 from ..constants import TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
-pytestmark = pytest.mark.components
+pytestmark = pytest.mark.transforms
 
 
 class TestTransforms(RewardSpaceTestBase):
