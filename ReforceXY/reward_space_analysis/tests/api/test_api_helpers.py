@@ -2,6 +2,7 @@
 """Tests for public API and helper functions."""
 
 import math
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,7 @@ from reward_space_analysis import (
     _get_float_param,
     _get_int_param,
     _get_str_param,
+    _sample_action,
     build_argument_parser,
     calculate_reward,
     parse_overrides,
@@ -34,6 +36,47 @@ pytestmark = pytest.mark.api
 
 class TestAPIAndHelpers(RewardSpaceTestBase):
     """Public API + helper utility tests."""
+
+    def test_sample_action_idle_hazard_increases_entry_rate(self):
+        """_sample_action() increases entry probability past idle cap.
+
+        This guards the synthetic simulator against unrealistically long neutral streaks.
+        The test is statistical but deterministic via fixed RNG seeds.
+        """
+
+        max_idle_duration_candles = 20
+        max_trade_duration_candles = 100
+
+        def sample_entry_rate(*, idle_duration: int, short_allowed: bool) -> float:
+            rng = random.Random(SEEDS.REPRODUCIBILITY)
+            draws = 2000
+            entries = 0
+            for _ in range(draws):
+                action = _sample_action(
+                    Positions.Neutral,
+                    rng,
+                    short_allowed=short_allowed,
+                    trade_duration=0,
+                    max_trade_duration_candles=max_trade_duration_candles,
+                    idle_duration=idle_duration,
+                    max_idle_duration_candles=max_idle_duration_candles,
+                )
+                if action in (Actions.Long_enter, Actions.Short_enter):
+                    entries += 1
+            return entries / draws
+
+        low_idle_rate = sample_entry_rate(idle_duration=0, short_allowed=True)
+        high_idle_rate = sample_entry_rate(idle_duration=60, short_allowed=True)
+
+        self.assertGreater(
+            high_idle_rate,
+            low_idle_rate,
+            "Entry rate should increase after exceeding max idle duration",
+        )
+
+        low_idle_rate_spot = sample_entry_rate(idle_duration=0, short_allowed=False)
+        high_idle_rate_spot = sample_entry_rate(idle_duration=60, short_allowed=False)
+        self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
 
     def test_parse_overrides(self):
         """Test parse overrides."""
@@ -117,6 +160,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             "idle_duration",
             "position",
             "action",
+            "sample_entry_prob",
+            "sample_exit_prob",
+            "sample_neutral_prob",
             "reward",
             "reward_invalid",
             "reward_idle",
@@ -124,6 +170,30 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             "reward_exit",
         ]:
             self.assertIn(col, df_margin.columns)
+
+    def test_simulate_samples_sampling_probabilities_are_bounded(self):
+        """simulate_samples() exposes bounded sampling probabilities."""
+
+        df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=40),
+            num_samples=200,
+            seed=SEEDS.SMOKE_TEST,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=1.5,
+            trading_mode="margin",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+
+        for col in ["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]:
+            self.assertIn(col, df.columns)
+
+        values = (
+            df[["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]].stack().dropna()
+        )
+        self.assertTrue(((values >= 0.0) & (values <= 0.9)).all())
 
     def test_to_bool(self):
         """Test _to_bool with various inputs."""

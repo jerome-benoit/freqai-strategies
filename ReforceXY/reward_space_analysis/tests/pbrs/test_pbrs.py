@@ -1175,6 +1175,10 @@ class TestPBRS(RewardSpaceTestBase):
             PBRS_INVARIANCE_TOL,
             f"Total shaping {total_shaping} exceeds invariance tolerance",
         )
+        inv_corr_vals = [1.0e-7, -1.0e-7, 2.0e-7]
+        max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
+        self.assertLess(max_abs_corr, PBRS_INVARIANCE_TOL)
+
         n = len(small_vals)
         df = pd.DataFrame(
             {
@@ -1190,6 +1194,7 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_shaping": small_vals,
                 "reward_entry_additive": [0.0] * n,
                 "reward_exit_additive": [0.0] * n,
+                "reward_invariance_correction": inv_corr_vals,
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
@@ -1225,6 +1230,7 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertAlmostEqual(
                 abs(total_shaping), val_abs, places=TOLERANCE.DECIMAL_PLACES_STRICT
             )
+        self.assertIn("max|correction|≈0", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
@@ -1239,6 +1245,10 @@ class TestPBRS(RewardSpaceTestBase):
         small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
         total_shaping = float(sum(small_vals))
         self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
+        inv_corr_vals = [1.0e-7, -1.0e-7, 2.0e-7]
+        max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
+        self.assertLess(max_abs_corr, PBRS_INVARIANCE_TOL)
+
         n = len(small_vals)
         df = pd.DataFrame(
             {
@@ -1254,6 +1264,7 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_shaping": small_vals,
                 "reward_entry_additive": [0.0] * n,
                 "reward_exit_additive": [0.0] * n,
+                "reward_invariance_correction": inv_corr_vals,
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
@@ -1288,11 +1299,16 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("| Exit Additive Effective | False |", content)
 
     def test_pbrs_canonical_warning_report(self):
-        """Canonical mode + no additives but |Σ shaping| > tolerance -> warning classification."""
+        """Canonical mode + no additives but max|invariance_correction| > tolerance -> warning."""
 
-        shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # sum = 4.5e-4 (> tol)
-        total_shaping = sum(shaping_vals)
+        shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # Σ not near 0
+        total_shaping = float(sum(shaping_vals))
         self.assertGreater(abs(total_shaping), PBRS_INVARIANCE_TOL)
+
+        inv_corr_vals = [1.0e-4, -2.0e-4, 1.5e-4, -1.2e-4, 7.0e-5]
+        max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
+        self.assertGreater(max_abs_corr, PBRS_INVARIANCE_TOL)
+
         n = len(shaping_vals)
         df = pd.DataFrame(
             {
@@ -1308,6 +1324,7 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_shaping": shaping_vals,
                 "reward_entry_additive": [0.0] * n,
                 "reward_exit_additive": [0.0] * n,
+                "reward_invariance_correction": inv_corr_vals,
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.2, n),
                 "idle_ratio": np.zeros(n),
@@ -1335,8 +1352,8 @@ class TestPBRS(RewardSpaceTestBase):
         assert_pbrs_invariance_report_classification(
             self, content, "Canonical (with warning)", expect_additives=False
         )
-        expected_sum_fragment = f"{total_shaping:.6f}"
-        self.assertIn(expected_sum_fragment, content)
+        expected_corr_fragment = f"{max_abs_corr:.6e}"
+        self.assertIn(expected_corr_fragment, content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke

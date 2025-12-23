@@ -1194,18 +1194,22 @@ def assert_pbrs_invariance_report_classification(
 
 
 def assert_pbrs_canonical_sum_within_tolerance(test_case, total_shaping: float, tolerance: float):
-    """Validate cumulative PBRS shaping satisfies canonical bound.
+    """Validate cumulative shaping is small.
 
-    For canonical PBRS, the cumulative reward shaping across a trajectory
-    must be near zero (within tolerance). This is a core PBRS invariant.
+    In canonical PBRS, the per-step shaping corresponds to a telescoping term.
+    Over a full, closed episode it may cancel, but across many partial trajectories
+    or with resets/discounting it does not need to be exactly zero.
+
+    This helper remains as a *diagnostic* check for constructed test cases that
+    intentionally enforce small cumulative shaping.
 
     Args:
-        test_case: Test case instance with assertion methods
-        total_shaping: Total cumulative reward shaping value
-        tolerance: Maximum allowed absolute deviation from zero
+        test_case: Test case instance with assertion methods.
+        total_shaping: Total cumulative shaping value.
+        tolerance: Maximum allowed absolute deviation from zero.
 
     Example:
-        assert_pbrs_canonical_sum_within_tolerance(self, 5e-10, 1e-09)
+        assert_pbrs_canonical_sum_within_tolerance(self, 5e-10, 1e-9)
     """
     test_case.assertLess(abs(total_shaping), tolerance)
 
@@ -1213,20 +1217,18 @@ def assert_pbrs_canonical_sum_within_tolerance(test_case, total_shaping: float, 
 def assert_non_canonical_shaping_exceeds(
     test_case, total_shaping: float, tolerance_multiple: float
 ):
-    """Validate non-canonical PBRS shaping exceeds threshold.
+    """Validate non-trivial shaping magnitude.
 
-    For non-canonical PBRS (e.g., with additives), the cumulative shaping
-    should exceed a scaled tolerance threshold, indicating violation of
-    the canonical PBRS invariant.
+    In non-canonical PBRS modes or when additives are effective, the shaping
+    trajectory is expected to deviate from the pure telescoping term more often.
+
+    Note: cumulative shaping being large is not a strict correctness proof; it is
+    a useful smoke-signal for test fixtures that intentionally construct such cases.
 
     Args:
-        test_case: Test case instance with assertion methods
-        total_shaping: Total cumulative reward shaping value
-        tolerance_multiple: Threshold value (typically scaled tolerance)
-
-    Example:
-        # Expect shaping to exceed 10x tolerance for non-canonical case
-        assert_non_canonical_shaping_exceeds(self, 0.05, 1e-08)
+        test_case: Test case instance with assertion methods.
+        total_shaping: Total cumulative shaping value.
+        tolerance_multiple: Threshold value for the given test fixture.
     """
     test_case.assertGreater(abs(total_shaping), tolerance_multiple)
 

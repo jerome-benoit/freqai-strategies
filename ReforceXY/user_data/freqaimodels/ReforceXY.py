@@ -2795,7 +2795,7 @@ class MyRLEnv(Base5ActionRLEnv):
         base_factor = float(
             model_reward_parameters.get("base_factor", ReforceXY.DEFAULT_BASE_FACTOR)
         )
-        idle_factor = base_factor * self._pnl_target / 4.0
+        idle_factor = base_factor * (self.profit_aim / 4.0)
         hold_factor = idle_factor
 
         # 2. Idle penalty

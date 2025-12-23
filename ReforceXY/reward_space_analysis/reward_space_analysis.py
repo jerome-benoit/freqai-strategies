@@ -62,9 +62,16 @@ class Positions(Enum):
 
 # Mathematical constants pre-computed for performance
 _LOG_2 = math.log(2.0)
+
 DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 
-# Tolerance for PBRS invariance classification (canonical if |Σ shaping| < PBRS_INVARIANCE_TOL)
+# Tolerance for PBRS invariance classification.
+#
+# When `reward_invariance_correction` is available (reward_shaping - reward_pbrs_delta),
+# canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL.
+#
+# When that diagnostic column is not available (e.g., reporting from partial datasets),
+# we fall back to the weaker heuristic |Σ shaping| < PBRS_INVARIANCE_TOL.
 PBRS_INVARIANCE_TOL: float = 1e-6
 # Default discount factor γ for potential-based reward shaping
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
@@ -1195,7 +1202,7 @@ def calculate_reward(
 
     pnl_target = float(profit_aim * risk_reward_ratio)
 
-    idle_factor = factor * pnl_target / 4.0
+    idle_factor = factor * (profit_aim / 4.0)
     hold_factor = idle_factor
 
     max_trade_duration_candles = _get_int_param(
@@ -1380,26 +1387,118 @@ def calculate_reward(
     return breakdown
 
 
+def _duration_hazard_probability(
+    *,
+    duration_ratio: float,
+    base_probability: float,
+    overtime_multiplier: float,
+    max_probability: float,
+) -> float:
+    """Compute a bounded hazard probability keyed on a duration ratio.
+
+    Behavior:
+    - duration_ratio <= 1 -> returns base_probability
+    - duration_ratio > 1 -> increases linearly with overtime
+
+    Notes
+    -----
+    This is used for:
+    - exit probability when holding past max trade duration
+    - entry probability when idling past max idle duration
+    """
+
+    if not np.isfinite(duration_ratio):
+        return float(np.clip(base_probability, 0.0, max_probability))
+
+    overtime = max(0.0, float(duration_ratio - 1.0))
+    probability = base_probability * (1.0 + overtime_multiplier * overtime)
+    return float(np.clip(probability, 0.0, max_probability))
+
+
+_SAMPLE_ENTRY_PROBABILITY_MARGIN = 0.4
+_SAMPLE_ENTRY_PROBABILITY_SPOT = 0.3
+_SAMPLE_DURATION_HAZARD_OVERTIME_MULTIPLIER = 4.0
+_SAMPLE_DURATION_HAZARD_MAX_PROBABILITY = 0.9
+_SAMPLE_EXIT_PROBABILITY_MIN = 0.002
+_SAMPLE_EXIT_PROBABILITY_MAX = 0.2
+
+
+def _sampling_probabilities(
+    position: Positions,
+    *,
+    short_allowed: bool,
+    trade_duration: int,
+    max_trade_duration_candles: int,
+    idle_duration: int,
+    max_idle_duration_candles: int,
+) -> tuple[float, float, float]:
+    if position == Positions.Neutral:
+        base_entry_prob = (
+            _SAMPLE_ENTRY_PROBABILITY_MARGIN if short_allowed else _SAMPLE_ENTRY_PROBABILITY_SPOT
+        )
+        idle_ratio = idle_duration / max(1, int(max_idle_duration_candles))
+        entry_prob = _duration_hazard_probability(
+            duration_ratio=idle_ratio,
+            base_probability=base_entry_prob,
+            overtime_multiplier=_SAMPLE_DURATION_HAZARD_OVERTIME_MULTIPLIER,
+            max_probability=_SAMPLE_DURATION_HAZARD_MAX_PROBABILITY,
+        )
+        neutral_prob = max(0.0, 1.0 - entry_prob)
+        return float(entry_prob), float("nan"), float(neutral_prob)
+
+    duration_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
+
+    base_exit_prob = 1.0 / max(1, int(max_trade_duration_candles))
+    base_exit_prob = float(
+        np.clip(base_exit_prob, _SAMPLE_EXIT_PROBABILITY_MIN, _SAMPLE_EXIT_PROBABILITY_MAX)
+    )
+
+    exit_prob = _duration_hazard_probability(
+        duration_ratio=duration_ratio,
+        base_probability=base_exit_prob,
+        overtime_multiplier=_SAMPLE_DURATION_HAZARD_OVERTIME_MULTIPLIER,
+        max_probability=_SAMPLE_DURATION_HAZARD_MAX_PROBABILITY,
+    )
+    return float("nan"), float(exit_prob), float("nan")
+
+
 def _sample_action(
     position: Positions,
     rng: random.Random,
     *,
     short_allowed: bool,
-) -> Actions:
+    trade_duration: int,
+    max_trade_duration_candles: int,
+    idle_duration: int,
+    max_idle_duration_candles: int,
+) -> tuple[Actions, float, float, float]:
+    entry_prob, exit_prob, neutral_prob = _sampling_probabilities(
+        position,
+        short_allowed=short_allowed,
+        trade_duration=trade_duration,
+        max_trade_duration_candles=max_trade_duration_candles,
+        idle_duration=idle_duration,
+        max_idle_duration_candles=max_idle_duration_candles,
+    )
+
     if position == Positions.Neutral:
         if short_allowed:
             choices = [Actions.Neutral, Actions.Long_enter, Actions.Short_enter]
-            weights = [0.6, 0.2, 0.2]
+            weights = [neutral_prob, entry_prob * 0.5, entry_prob * 0.5]
         else:
             choices = [Actions.Neutral, Actions.Long_enter]
-            weights = [0.7, 0.3]
-    elif position == Positions.Long:
+            weights = [neutral_prob, entry_prob]
+        action = rng.choices(choices, weights=weights, k=1)[0]
+        return action, entry_prob, exit_prob, neutral_prob
+
+    if position == Positions.Long:
         choices = [Actions.Neutral, Actions.Long_exit]
-        weights = [0.55, 0.45]
     else:  # Positions.Short
         choices = [Actions.Neutral, Actions.Short_exit]
-        weights = [0.55, 0.45]
-    return rng.choices(choices, weights=weights, k=1)[0]
+
+    weights = [1.0 - exit_prob, exit_prob]
+    action = rng.choices(choices, weights=weights, k=1)[0]
+    return action, entry_prob, exit_prob, neutral_prob
 
 
 def parse_overrides(overrides: Iterable[str]) -> RewardParams:
@@ -1531,7 +1630,15 @@ def simulate_samples(
             max_unrealized_profit = 0.0
             min_unrealized_profit = 0.0
 
-        action = _sample_action(position, rng, short_allowed=short_allowed)
+        action, sample_entry_prob, sample_exit_prob, sample_neutral_prob = _sample_action(
+            position,
+            rng,
+            short_allowed=short_allowed,
+            trade_duration=trade_duration,
+            max_trade_duration_candles=max_trade_duration_candles,
+            idle_duration=idle_duration,
+            max_idle_duration_candles=max_idle_duration_candles,
+        )
 
         context = RewardContext(
             pnl=pnl,
@@ -1567,6 +1674,10 @@ def simulate_samples(
                 "idle_ratio": idle_ratio,
                 "position": float(context.position.value),
                 "action": int(context.action.value),
+                # Sampling diagnostics
+                "sample_entry_prob": sample_entry_prob,
+                "sample_exit_prob": sample_exit_prob,
+                "sample_neutral_prob": sample_neutral_prob,
                 "reward": breakdown.total,
                 "reward_invalid": breakdown.invalid_penalty,
                 "reward_idle": breakdown.idle_penalty,
@@ -3887,10 +3998,23 @@ def write_complete_statistical_analysis(
                 exit_additive_enabled_raw,
             )
 
-            # True invariance requires canonical mode AND no effective additives.
+            # True PBRS invariance classification:
+            # - Canonical requires canonical mode AND no effective additives.
+            # - When `reward_invariance_correction` is present, we use it as the primary
+            #   diagnostic (reward_shaping - reward_pbrs_delta).
+            # - Otherwise, we fall back to the weaker heuristic |Σ shaping| ≈ 0.
             is_theoretically_invariant = exit_potential_mode == "canonical" and not (
                 entry_additive_effective or exit_additive_effective
             )
+
+            has_inv_correction = "reward_invariance_correction" in df.columns
+            max_abs_inv_correction: float | None
+            if has_inv_correction:
+                max_abs_inv_correction = float(df["reward_invariance_correction"].abs().max())
+                correction_near_zero = max_abs_inv_correction < PBRS_INVARIANCE_TOL
+            else:
+                max_abs_inv_correction = None
+                correction_near_zero = None
             shaping_near_zero = abs(total_shaping) < PBRS_INVARIANCE_TOL
 
             suppression_note = ""
@@ -3903,18 +4027,33 @@ def write_complete_statistical_analysis(
 
             # Prepare invariance summary markdown block
             if is_theoretically_invariant:
-                if shaping_near_zero:
+                if correction_near_zero is True:
                     invariance_status = "✅ Canonical"
                     invariance_note = (
-                        "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)."
+                        "Theoretical invariance preserved (canonical mode, no additives, max|correction|≈0)."
                         + suppression_note
                     )
-                else:
+                elif correction_near_zero is False:
                     invariance_status = "⚠️ Canonical (with warning)"
                     invariance_note = (
-                        f"Canonical mode but unexpected shaping sum = {total_shaping:.6f}."
-                        + suppression_note
+                        "Canonical mode but invariance correction is non-zero"
+                        f" (max|correction|={max_abs_inv_correction:.6e})." + suppression_note
                     )
+                else:
+                    # Fallback: without invariance correction, use Σ shaping as a heuristic.
+                    if shaping_near_zero:
+                        invariance_status = "✅ Canonical"
+                        invariance_note = (
+                            "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)."
+                            + suppression_note
+                        )
+                    else:
+                        invariance_status = "⚠️ Canonical (with warning)"
+                        invariance_note = (
+                            "Canonical mode but Σ shaping is non-zero"
+                            f" (Σ={total_shaping:.6f}; correction column unavailable)."
+                            + suppression_note
+                        )
             else:
                 invariance_status = "❌ Non-canonical"
                 reasons = []
@@ -4156,17 +4295,24 @@ def write_complete_statistical_analysis(
         else:
             f.write("6. **Distribution Shift** - Not performed (no real episodes provided)\n")
         if "reward_shaping" in df.columns:
-            _total_shaping = df["reward_shaping"].sum()
-            _canonical = abs(_total_shaping) < PBRS_INVARIANCE_TOL
-            f.write(
-                "7. **PBRS Invariance** - "
-                + (
+            _total_shaping = float(df["reward_shaping"].sum())
+            if "reward_invariance_correction" in df.columns:
+                _max_abs_corr = float(df["reward_invariance_correction"].abs().max())
+                _canonical = _max_abs_corr < PBRS_INVARIANCE_TOL
+                _pbrs_summary = (
+                    "Canonical (max|correction| ≈ 0)"
+                    if _canonical
+                    else f"Canonical (with warning; max|correction|={_max_abs_corr:.6e})"
+                )
+            else:
+                _canonical = abs(_total_shaping) < PBRS_INVARIANCE_TOL
+                _pbrs_summary = (
                     "Canonical (Σ shaping ≈ 0)"
                     if _canonical
-                    else f"Non-canonical (Σ shaping = {_total_shaping:.6f})"
+                    else f"Canonical (with warning; Σ shaping={_total_shaping:.6f})"
                 )
-                + "\n"
-            )
+
+            f.write("7. **PBRS Invariance** - " + _pbrs_summary + "\n")
         f.write("\n")
         f.write("**Generated Files:**\n")
         f.write("- `reward_samples.csv` - Raw synthetic samples\n")

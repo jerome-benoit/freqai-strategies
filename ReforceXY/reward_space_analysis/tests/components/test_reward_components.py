@@ -515,11 +515,11 @@ class TestRewardComponents(RewardSpaceTestBase):
         idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 0.5)
         idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
         factor = _get_float_param(params, "base_factor", float(base_factor))
-        idle_factor = factor * (profit_aim * risk_reward_ratio) / 4.0
+        idle_factor = factor * (profit_aim / 4.0)
         observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_scale)
         if observed_ratio > 0:
-            implied_D = 120 / observed_ratio ** (1 / idle_penalty_power)
-            self.assertAlmostEqualFloat(implied_D, 400.0, tolerance=20.0)
+            implied_max_idle_duration_candles = 120 / observed_ratio ** (1 / idle_penalty_power)
+            self.assertAlmostEqualFloat(implied_max_idle_duration_candles, 400.0, tolerance=20.0)
 
     # Owns invariant: components-pbrs-breakdown-fields-119
     def test_pbrs_breakdown_fields_finite_and_aligned(self):
