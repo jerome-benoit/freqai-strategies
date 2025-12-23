@@ -315,6 +315,30 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._model_params_cache: Optional[Dict[str, Any]] = None
         self.unset_unsupported()
 
+        model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
+        profit_aim = float(model_reward_parameters.get("profit_aim", np.nan))
+        rr = float(model_reward_parameters.get("rr", np.nan))
+        if (
+            (not np.isfinite(profit_aim))
+            or (profit_aim <= 0.0)
+            or np.isclose(profit_aim, 0.0)
+        ):
+            raise ValueError(
+                f"Invalid profit_aim={profit_aim:.12g}; expected a finite value > 0"
+            )
+        if (not np.isfinite(rr)) or (rr <= 0.0) or np.isclose(rr, 0.0):
+            raise ValueError(f"Invalid rr={rr:.12g}; expected a finite value > 0")
+
+        pnl_target = profit_aim * rr
+        if (
+            (not np.isfinite(pnl_target))
+            or (pnl_target <= 0.0)
+            or np.isclose(pnl_target, 0.0)
+        ):
+            raise ValueError(
+                f"Invalid pnl_target={pnl_target:.12g} computed from profit_aim={profit_aim:.12g} and rr={rr:.12g}"
+            )
+
     @staticmethod
     def _normalize_position(position: Any) -> Positions:
         if isinstance(position, Positions):
@@ -1855,13 +1879,8 @@ class MyRLEnv(Base5ActionRLEnv):
             self.add_state_info = True
             self._set_observation_space()
 
-        # === PNL TARGET VALIDATION ===
-        pnl_target = self.profit_aim * self.rr
-        if MyRLEnv._is_invalid_pnl_target(pnl_target):
-            raise ValueError(
-                f"Invalid pnl_target={pnl_target:.12g} computed from profit_aim={self.profit_aim:.12g} and rr={self.rr:.12g}"
-            )
-        self._pnl_target = pnl_target
+        # === PNL TARGET ===
+        self._pnl_target = float(self.profit_aim * self.rr)
 
     def _get_next_position(self, action: int) -> Positions:
         if action == Actions.Long_enter.value and self._position == Positions.Neutral:
@@ -1935,13 +1954,12 @@ class MyRLEnv(Base5ActionRLEnv):
         return next_position, 0, 0.0
 
     @staticmethod
-    def _is_invalid_pnl_target(pnl_target: float) -> bool:
-        """Return True when pnl_target is non-finite, <= 0, or effectively zero within tolerance."""
-        return (
-            (not np.isfinite(pnl_target))
-            or (pnl_target <= 0.0)
-            or np.isclose(pnl_target, 0.0)
-        )
+    def _loss_duration_multiplier(pnl_ratio: float, risk_reward_ratio: float) -> float:
+        if not np.isfinite(pnl_ratio) or pnl_ratio >= 0.0:
+            return 1.0
+        if not np.isfinite(risk_reward_ratio) or risk_reward_ratio <= 0.0:
+            return 1.0
+        return float(risk_reward_ratio)
 
     def _compute_pnl_duration_signal(
         self,
@@ -1956,42 +1974,9 @@ class MyRLEnv(Base5ActionRLEnv):
         gain: float,
         transform_pnl: TransformFunction,
         transform_duration: TransformFunction,
+        risk_reward_ratio: Optional[float] = None,
     ) -> float:
-        """Generic bounded bi-component signal combining PnL and duration.
-
-        Shared logic for:
-        - Hold potential Φ(s)
-        - Entry additive
-        - Exit additive
-
-        Parameters
-        ----------
-        enabled : bool
-            Whether this signal is active
-        require_position : bool
-            If True, only compute when position in (Long, Short)
-        position : Positions
-            Current position
-        pnl : float
-            Current position PnL
-        pnl_target : float
-            Target PnL for normalization
-        duration_ratio : float
-            Raw duration ratio
-        scale : float
-            Output scaling factor
-        gain : float
-            Gain multiplier before transform
-        transform_pnl : TransformFunction
-            Transform name for PnL component
-        transform_duration : TransformFunction
-            Transform name for duration component
-
-        Returns
-        -------
-        float
-            Bounded signal in [-scale, scale]
-        """
+        """Generic bounded bi-component signal combining PnL and duration."""
         if not enabled:
             return 0.0
         if require_position and position not in (Positions.Long, Positions.Short):
@@ -2006,9 +1991,22 @@ class MyRLEnv(Base5ActionRLEnv):
         except Exception:
             return 0.0
 
+        duration_multiplier = 1.0
+        if risk_reward_ratio is not None:
+            duration_multiplier = self._loss_duration_multiplier(
+                pnl_ratio,
+                risk_reward_ratio,
+            )
+        if not np.isfinite(duration_multiplier) or duration_multiplier < 0.0:
+            duration_multiplier = 1.0
+
         pnl_term = self._potential_transform(transform_pnl, gain * pnl_ratio)
         dur_term = self._potential_transform(transform_duration, gain * duration_ratio)
-        value = scale * 0.5 * (pnl_term + np.sign(pnl_ratio) * dur_term)
+        value = (
+            scale
+            * 0.5
+            * (pnl_term + np.sign(pnl_ratio) * duration_multiplier * dur_term)
+        )
         return float(value) if np.isfinite(value) else 0.0
 
     def _compute_hold_potential(
@@ -2033,6 +2031,7 @@ class MyRLEnv(Base5ActionRLEnv):
             gain=self._hold_potential_gain,
             transform_pnl=self._hold_potential_transform_pnl,
             transform_duration=self._hold_potential_transform_duration,
+            risk_reward_ratio=self.rr,
         )
 
     def _compute_exit_additive(
@@ -2217,7 +2216,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         Canonical PBRS Formula
         ----------------------
-        R'(s,a,s') = R(s,a,s') + γ·Φ(s') - Φ(s)
+        R'(s,a,s') = R(s,a,s') + γ·Φ(s') - Δ(s,a,s')
 
         where:
             Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
@@ -2244,8 +2243,9 @@ class MyRLEnv(Base5ActionRLEnv):
             g             : gain parameter
             T_x           : transform function (tanh, softsign, etc.)
 
-        **Potential Formula:**
-            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sgn(r_pnl)·T_dur(g·r_dur)]
+        **Hold Potential Formula:**
+            m_dur = 1.0 if r_pnl >= 0 else loss_duration_multiplier(r_pnl, rr)
+            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sgn(r_pnl)·m_dur·T_dur(g·r_dur)]
 
         PBRS Theory & Compliance
         ------------------------
@@ -2374,10 +2374,6 @@ class MyRLEnv(Base5ActionRLEnv):
         - Use canonical mode for policy-invariant shaping
         - Monitor Σ_t γ^t·Δ_t ≈ 0 per episode in canonical mode
         - Disable additives to preserve theoretical PBRS guarantees
-
-        See Also
-        --------
-        reward_space_analysis.compute_pbrs_components : Stateless version for analysis
         """
         prev_potential = float(self._last_potential)
 
@@ -2650,7 +2646,7 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters: Mapping[str, Any],
     ) -> float:
         """
-        Compute exit factor: base_factor × time_attenuation_coefficient × pnl_coefficient.
+        Compute exit factor: base_factor × time_attenuation_coefficient x pnl_target_coefficient x efficiency_coefficient.
         """
         if not (
             np.isfinite(base_factor)

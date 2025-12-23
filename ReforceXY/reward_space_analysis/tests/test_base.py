@@ -144,6 +144,7 @@ class RewardSpaceTestBase(unittest.TestCase):
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     is_exit=is_exit,
                     is_entry=False,
                     prev_potential=prev_potential,

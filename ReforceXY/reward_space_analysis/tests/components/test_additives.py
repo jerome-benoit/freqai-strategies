@@ -68,6 +68,7 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "current_duration_ratio": 0.2,
             "next_pnl": 0.012,
             "next_duration_ratio": 0.25,
+            "risk_reward_ratio": PARAMS.RISK_REWARD_RATIO,
             "is_entry": True,
             "is_exit": False,
         }

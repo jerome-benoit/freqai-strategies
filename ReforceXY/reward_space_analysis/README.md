@@ -233,9 +233,7 @@ be overridden via `--params`.
 
 The exit factor is computed as:
 
-`exit_factor` = `base_factor `× `time_attenuation_coefficient` × `pnl_coefficient`
-where:
-`pnl_coefficient` = `pnl_target_coefficient` × `efficiency_coefficient`
+`exit_factor` = `base_factor ` × `pnl_target_coefficient` × `efficiency_coefficient` × `time_attenuation_coefficient`
 
 ##### PnL Target
 
@@ -341,6 +339,28 @@ across samples) and does not apply any drift correction in post-processing.
 | `hold_potential_transform_pnl`      | tanh    | PnL transform        |
 | `hold_potential_transform_duration` | tanh    | Duration transform   |
 
+**Hold Potential Formula:**
+
+The hold potential combines PnL and duration signals with an asymmetric duration
+multiplier for loss-side holds:
+
+```
+Φ_hold(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
+```
+
+where:
+
+- `r_pnl = pnl / pnl_target`
+- `r_dur = clamp(duration_ratio, 0, 1)`
+- `g = hold_potential_gain`
+- `T_pnl`, `T_dur` = configured transforms
+- `m_dur = 1.0` if `r_pnl >= 0` (profit side)
+- `m_dur = risk_reward_ratio` if `r_pnl < 0` (loss side)
+
+The loss-side duration multiplier (`m_dur = risk_reward_ratio`) scales the
+duration penalty when holding losing positions, encouraging faster exits from
+losses compared to symmetric treatment.
+
 #### Entry Additive (Optional)
 
 | Parameter                           | Default | Description           |
@@ -433,14 +453,14 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 
 `--params` wins on conflicts.
 
-**Simulation-only keys** (not allowed in `--params`): `num_samples`, `seed`,
+**Simulation** (not allowed in `--params`): `num_samples`, `seed`,
 `trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`,
 `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`,
 `strict_diagnostics`, `strict_validation`, `bootstrap_resamples`,
 `skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`,
 `pvalue_adjust`.
 
-**Hybrid simulation scalars** allowed in `--params`: `profit_aim`,
+**Hybrid simulation/params** allowed in `--params`: `profit_aim`,
 `risk_reward_ratio`, `action_masking`.
 
 **Reward tunables** (tunable via either direct flag or `--params`) correspond to

@@ -45,7 +45,11 @@ class TestRewardComponents(RewardSpaceTestBase):
             "hold_potential_transform_duration": "tanh",
         }
         val = _compute_hold_potential(
-            0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params
+            0.5,
+            PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            0.3,
+            PARAMS.RISK_REWARD_RATIO,
+            params,
         )
         self.assertFinite(val, name="hold_potential")
 

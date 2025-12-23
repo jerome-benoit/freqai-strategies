@@ -74,7 +74,11 @@ class TestPBRS(RewardSpaceTestBase):
         current_dur = 0.5
         profit_aim = PARAMS.PROFIT_AIM
         prev_potential = _compute_hold_potential(
-            current_pnl, profit_aim * PARAMS.RISK_REWARD_RATIO, current_dur, params
+            current_pnl,
+            profit_aim * PARAMS.RISK_REWARD_RATIO,
+            current_dur,
+            PARAMS.RISK_REWARD_RATIO,
+            params,
         )
         (
             _total_reward,
@@ -90,6 +94,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
             prev_potential=prev_potential,
@@ -116,7 +121,11 @@ class TestPBRS(RewardSpaceTestBase):
         current_dur = 0.4
         profit_aim = PARAMS.PROFIT_AIM
         prev_potential = _compute_hold_potential(
-            current_pnl, profit_aim * PARAMS.RISK_REWARD_RATIO, current_dur, params
+            current_pnl,
+            profit_aim * PARAMS.RISK_REWARD_RATIO,
+            current_dur,
+            PARAMS.RISK_REWARD_RATIO,
+            params,
         )
         gamma = _get_float_param(
             params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
@@ -138,6 +147,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
             prev_potential=prev_potential,
@@ -250,6 +260,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.0,
             next_pnl=0.01,
             next_duration_ratio=0.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             is_entry=True,
             prev_potential=0.42,
@@ -290,6 +301,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.4,
             next_pnl=0.02,
             next_duration_ratio=0.41,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             is_entry=False,
             prev_potential=0.5,
@@ -373,6 +385,7 @@ class TestPBRS(RewardSpaceTestBase):
                 current_duration_ratio=current_duration_ratio,
                 next_pnl=next_pnl,
                 next_duration_ratio=next_duration_ratio,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 is_exit=True,
                 is_entry=False,
                 prev_potential=0.789,
@@ -412,6 +425,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.0,
             next_pnl=0.02,
             next_duration_ratio=0.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             is_entry=True,
             prev_potential=0.0,
@@ -419,6 +433,17 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertNearZero(entry_additive, atol=TOLERANCE.IDENTITY_STRICT)
         self.assertNearZero(exit_additive_entry, atol=TOLERANCE.IDENTITY_STRICT)
+
+        current_pnl = 0.02
+        current_dur = 0.5
+        profit_aim = PARAMS.PROFIT_AIM
+        prev_potential = _compute_hold_potential(
+            current_pnl,
+            profit_aim * PARAMS.RISK_REWARD_RATIO,
+            current_dur,
+            PARAMS.RISK_REWARD_RATIO,
+            params,
+        )
 
         (
             _total_exit,
@@ -429,16 +454,18 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive,
         ) = apply_potential_shaping(
             base_reward=0.0,
-            current_pnl=0.02,
-            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-            current_duration_ratio=0.5,
+            current_pnl=current_pnl,
+            pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
+            current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
-            prev_potential=0.4,
+            prev_potential=prev_potential,
             params=params,
         )
+
         self.assertNearZero(entry_additive_exit, atol=TOLERANCE.IDENTITY_STRICT)
         self.assertNearZero(exit_additive, atol=TOLERANCE.IDENTITY_STRICT)
 
@@ -474,6 +501,7 @@ class TestPBRS(RewardSpaceTestBase):
                 current_duration_ratio=0.0,
                 next_pnl=0.0,
                 next_duration_ratio=0.0,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 is_exit=True,
                 prev_potential=prev_potential,
                 params=params,
@@ -507,6 +535,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             prev_potential=0.0,
             params=params_nan,
@@ -519,6 +548,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             prev_potential=0.0,
             params=params_ref,
@@ -720,6 +750,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl=ctx.pnl,
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             duration_ratio=(trade_duration / max_trade_duration_candles),
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             params=params,
         )
         self.assertAlmostEqualFloat(
@@ -793,7 +824,11 @@ class TestPBRS(RewardSpaceTestBase):
         ctx_dur_ratio = 0.3
         params_can = self.base_params(exit_potential_mode="canonical", **base_common)
         prev_phi = _compute_hold_potential(
-            ctx_pnl, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, ctx_dur_ratio, params_can
+            ctx_pnl,
+            PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            ctx_dur_ratio,
+            PARAMS.RISK_REWARD_RATIO,
+            params_can,
         )
         self.assertFinite(prev_phi, name="prev_phi")
         next_phi_can = _compute_exit_potential(prev_phi, params_can)
@@ -871,6 +906,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.3,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
             prev_potential=prev_potential,
@@ -914,7 +950,11 @@ class TestPBRS(RewardSpaceTestBase):
 
         current_duration_ratio = ctx.trade_duration / params["max_trade_duration_candles"]
         prev_potential = _compute_hold_potential(
-            ctx.pnl, pnl_target, current_duration_ratio, params
+            ctx.pnl,
+            pnl_target,
+            current_duration_ratio,
+            PARAMS.RISK_REWARD_RATIO,
+            params,
         )
         self.assertNotEqual(prev_potential, 0.0)
 
@@ -1057,6 +1097,7 @@ class TestPBRS(RewardSpaceTestBase):
                     current_duration_ratio=0.3,
                     next_pnl=0.025,
                     next_duration_ratio=0.35,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     is_exit=False,
                     prev_potential=0.0,
                     params=params,
@@ -1097,6 +1138,7 @@ class TestPBRS(RewardSpaceTestBase):
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     is_exit=is_exit,
                     prev_potential=prev_potential,
                     params=params,
@@ -1149,6 +1191,7 @@ class TestPBRS(RewardSpaceTestBase):
                     current_duration_ratio=float(rng.uniform(0, 1)),
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     is_exit=is_exit,
                     prev_potential=prev_potential,
                     params=params,
