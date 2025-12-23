@@ -128,8 +128,8 @@
       "strategy": "amplitude",
       // "strategy": "hybrid",
       // "source_weights": {
-      //   "amplitude": 0.5,
-      //   "volume_weighted_efficiency_ratio": 0.5
+      //   "amplitude": 0.8,
+      //   "amplitude_threshold_ratio": 0.2
       // },
       "gamma": 1.5
     },

@@ -1209,27 +1209,31 @@ def calculate_reward(
 
     # Base reward calculation
     if base_reward is None:
-        if context.action == Actions.Neutral and context.position == Positions.Neutral:
-            base_reward = _idle_penalty(context, idle_factor, params)
-            breakdown.idle_penalty = base_reward
-        elif (
-            context.position in (Positions.Long, Positions.Short)
-            and context.action == Actions.Neutral
-        ):
-            base_reward = _hold_penalty(context, hold_factor, params)
-            breakdown.hold_penalty = base_reward
-        elif context.action == Actions.Long_exit and context.position == Positions.Long:
-            base_reward = _compute_exit_reward(
-                factor, pnl_target, current_duration_ratio, context, params, risk_reward_ratio
-            )
-            breakdown.exit_component = base_reward
-        elif context.action == Actions.Short_exit and context.position == Positions.Short:
-            base_reward = _compute_exit_reward(
-                factor, pnl_target, current_duration_ratio, context, params, risk_reward_ratio
-            )
-            breakdown.exit_component = base_reward
+        if context.action == Actions.Neutral:
+            if context.position == Positions.Neutral:
+                base_reward = _idle_penalty(context, idle_factor, params)
+                breakdown.idle_penalty = base_reward
+            elif context.position in (Positions.Long, Positions.Short):
+                base_reward = _hold_penalty(context, hold_factor, params)
+                breakdown.hold_penalty = base_reward
+            else:
+                base_reward = 0.0
         else:
-            base_reward = 0.0
+            is_exit_action = (
+                context.action == Actions.Long_exit and context.position == Positions.Long
+            ) or (context.action == Actions.Short_exit and context.position == Positions.Short)
+            if is_exit_action:
+                base_reward = _compute_exit_reward(
+                    factor,
+                    pnl_target,
+                    current_duration_ratio,
+                    context,
+                    params,
+                    risk_reward_ratio,
+                )
+                breakdown.exit_component = base_reward
+            else:
+                base_reward = 0.0
 
     breakdown.base_reward = float(base_reward)
 
@@ -1918,6 +1922,32 @@ def _perform_feature_analysis(
     model : Optional[RandomForestRegressor]
         Fitted model or None on failure.
     """
+
+    def build_feature_analysis_fallback_result(
+        *, usable_features, dropped_features, n_train, n_test, top_feature_override=None
+    ):
+        importance_df = pd.DataFrame(
+            {
+                "feature": list(usable_features),
+                "importance_mean": [np.nan] * len(usable_features),
+                "importance_std": [np.nan] * len(usable_features),
+            }
+        )
+        top_feature = top_feature_override
+        if top_feature is None:
+            top_feature = usable_features[0] if usable_features else None
+        analysis_stats = {
+            "r2_score": np.nan,
+            "n_features": len(usable_features),
+            "n_samples_train": int(n_train),
+            "n_samples_test": int(n_test),
+            "top_feature": top_feature,
+            "top_importance": np.nan,
+            "dropped_features": list(dropped_features),
+            "model_fitted": False,
+        }
+        return importance_df, analysis_stats, {}, None
+
     if (
         RandomForestRegressor is None
         or train_test_split is None
@@ -1937,7 +1967,6 @@ def _perform_feature_analysis(
         "is_invalid",
     ]
     available_features = [c for c in canonical_features if c in df.columns]
-
     # Reward column must exist; if absent produce empty stub outputs
     if "reward" not in df.columns or len(df) == 0 or len(available_features) == 0:
         empty_importance = pd.DataFrame(columns=["feature", "importance_mean", "importance_std"])
@@ -1972,49 +2001,23 @@ def _perform_feature_analysis(
     if drop_cols:
         X = X.drop(columns=drop_cols)
     usable_features = list(X.columns)
-
     if len(usable_features) < 2 or X.isna().any().any():
-        importance_df = pd.DataFrame(
-            {
-                "feature": usable_features,
-                "importance_mean": [np.nan] * len(usable_features),
-                "importance_std": [np.nan] * len(usable_features),
-            }
+        return build_feature_analysis_fallback_result(
+            usable_features=usable_features,
+            dropped_features=drop_cols,
+            n_train=0,
+            n_test=0,
         )
-        analysis_stats = {
-            "r2_score": np.nan,
-            "n_features": len(usable_features),
-            "n_samples_train": 0,
-            "n_samples_test": 0,
-            "top_feature": usable_features[0] if usable_features else None,
-            "top_importance": np.nan,
-            "dropped_features": drop_cols,
-            "model_fitted": False,
-        }
-        return importance_df, analysis_stats, {}, None
-
     # Train/test split
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=seed)
     except Exception:
-        importance_df = pd.DataFrame(
-            {
-                "feature": usable_features,
-                "importance_mean": [np.nan] * len(usable_features),
-                "importance_std": [np.nan] * len(usable_features),
-            }
+        return build_feature_analysis_fallback_result(
+            usable_features=usable_features,
+            dropped_features=drop_cols,
+            n_train=0,
+            n_test=0,
         )
-        analysis_stats = {
-            "r2_score": np.nan,
-            "n_features": len(usable_features),
-            "n_samples_train": 0,
-            "n_samples_test": 0,
-            "top_feature": usable_features[0] if usable_features else None,
-            "top_importance": np.nan,
-            "dropped_features": drop_cols,
-            "model_fitted": False,
-        }
-        return importance_df, analysis_stats, {}, None
 
     model: Optional[RandomForestRegressor] = RandomForestRegressor(
         n_estimators=400,
@@ -2033,24 +2036,12 @@ def _perform_feature_analysis(
         # Model failed to fit; drop to stub path
         model = None
         model_fitted_flag = False
-        importance_df = pd.DataFrame(
-            {
-                "feature": usable_features,
-                "importance_mean": [np.nan] * len(usable_features),
-                "importance_std": [np.nan] * len(usable_features),
-            }
+        return build_feature_analysis_fallback_result(
+            usable_features=usable_features,
+            dropped_features=drop_cols,
+            n_train=len(X_train),
+            n_test=len(X_test),
         )
-        analysis_stats = {
-            "r2_score": np.nan,
-            "n_features": len(usable_features),
-            "n_samples_train": len(X_train),
-            "n_samples_test": len(X_test),
-            "top_feature": usable_features[0] if usable_features else None,
-            "top_importance": np.nan,
-            "dropped_features": drop_cols,
-            "model_fitted": False,
-        }
-        return importance_df, analysis_stats, {}, None
 
     # Permutation importance
     try:
