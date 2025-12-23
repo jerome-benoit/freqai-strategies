@@ -514,8 +514,9 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 0.5)
         idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
-        factor = _get_float_param(params, "base_factor", float(base_factor))
-        idle_factor = factor * (profit_aim / 4.0)
+        base_factor = _get_float_param(params, "base_factor", float(base_factor))
+        risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
+        idle_factor = base_factor * (profit_aim / risk_reward_ratio) / 4.0
         observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_scale)
         if observed_ratio > 0:
             implied_max_idle_duration_candles = 120 / observed_ratio ** (1 / idle_penalty_power)

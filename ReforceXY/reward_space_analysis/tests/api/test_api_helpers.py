@@ -52,7 +52,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             draws = 2000
             entries = 0
             for _ in range(draws):
-                action = _sample_action(
+                action, _, _, _ = _sample_action(
                     Positions.Neutral,
                     rng,
                     short_allowed=short_allowed,

@@ -8,7 +8,7 @@ import unittest
 
 import pytest
 
-from reward_space_analysis import apply_potential_shaping
+from reward_space_analysis import compute_pbrs_components
 
 from ..constants import PARAMS
 from ..test_base import RewardSpaceTestBase
@@ -61,8 +61,8 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
                 "exit_additive_gain": 1.0,
             }
         )
+        base_reward = 0.05
         ctx = {
-            "base_reward": 0.05,
             "current_pnl": 0.01,
             "pnl_target": PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             "current_duration_ratio": 0.2,
@@ -71,16 +71,18 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "is_entry": True,
             "is_exit": False,
         }
-        _t0, s0, _n0, _pbrs0, _entry0, _exit0 = apply_potential_shaping(
+        s0, _n0, _pbrs0, _entry0, _exit0 = compute_pbrs_components(
             prev_potential=0.0, params=base, **ctx
         )
-        t1, s1, _n1, _pbrs1, _entry1, _exit1 = apply_potential_shaping(
+        t0 = base_reward + s0 + _entry0 + _exit0
+        s1, _n1, _pbrs1, _entry1, _exit1 = compute_pbrs_components(
             prev_potential=0.0, params=with_add, **ctx
         )
+        t1 = base_reward + s1 + _entry1 + _exit1
         self.assertFinite(t1)
         self.assertFinite(s1)
         self.assertLess(abs(s1 - s0), 0.2)
-        self.assertGreater(t1 - _t0, 0.0, "Total reward should increase with additives present")
+        self.assertGreater(t1 - t0, 0.0, "Total reward should increase with additives present")
 
 
 if __name__ == "__main__":

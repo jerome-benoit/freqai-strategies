@@ -2020,7 +2020,7 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """Compute PBRS potential Φ(s) for position holding states.
 
-        See ``_apply_potential_shaping`` for complete PBRS documentation.
+        See ``_compute_pbrs_components`` for PBRS documentation.
         """
         return self._compute_pnl_duration_signal(
             enabled=self._hold_potential_enabled,
@@ -2043,7 +2043,7 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """Compute exit additive reward for position exit transitions.
 
-        See ``_apply_potential_shaping`` for complete PBRS documentation.
+        See ``_compute_pbrs_components`` for PBRS documentation.
         """
         return self._compute_pnl_duration_signal(
             enabled=self._exit_additive_enabled,
@@ -2066,7 +2066,7 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """Compute entry additive reward for position entry transitions.
 
-        See ``_apply_potential_shaping`` for complete PBRS documentation.
+        See ``_compute_pbrs_components`` for PBRS documentation.
         """
         return self._compute_pnl_duration_signal(
             enabled=self._entry_additive_enabled,
@@ -2138,7 +2138,7 @@ class MyRLEnv(Base5ActionRLEnv):
     def _compute_exit_potential(self, prev_potential: float, gamma: float) -> float:
         """Compute next potential Φ(s') for exit transitions based on exit potential mode.
 
-        See ``_apply_potential_shaping`` for complete PBRS documentation.
+        See ``_compute_pbrs_components`` for PBRS documentation.
         """
         mode = self._exit_potential_mode
         # "canonical" or "non_canonical"
@@ -2201,137 +2201,196 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         return hold_potential_enabled and not add_state_info
 
-    def _apply_potential_shaping(
+    def _compute_pbrs_components(
         self,
-        base_reward: float,
+        *,
         action: int,
         trade_duration: float,
         max_trade_duration: float,
         pnl: float,
         pnl_target: float,
-    ) -> float:
-        """Apply potential-based reward shaping (PBRS) (Ng et al. 1999).
+    ) -> tuple[float, float, float]:
+        """Compute potential-based reward shaping (PBRS) components.
 
-        Canonical formula:  R'(s,a,s') = R_base(s,a,s') + γ Φ(s') − Φ(s)
+        This method computes the PBRS shaping terms without combining them with the base reward,
+        allowing the caller to construct the total reward as R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + additives.
+
+        Canonical PBRS Formula
+        ----------------------
+        R'(s,a,s') = R(s,a,s') + γ·Φ(s') - Φ(s)
+
+        where:
+            Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
 
         Notation
         --------
-        R_base: base reward; Φ(s)/Φ(s'): potentials (prev/next); γ: shaping discount;
-        Δ(s,s') = γΦ(s') − Φ(s); R' = R_base + Δ + optional additives; pnl_ratio = pnl/pnl_target;
-        duration_ratio = trade_duration / max_trade_duration (clamped to [0,1]).
+        **States & Actions:**
+            s     : current state
+            s'    : next state
+            a     : action
+
+        **Reward Components:**
+            R(s,a,s')     : base reward
+            R'(s,a,s')    : shaped reward
+            Δ(s,a,s')     : PBRS shaping term = γ·Φ(s') - Φ(s)
+
+        **Potential Function:**
+            Φ(s)          : potential at state s
+            γ             : discount factor for shaping (gamma)
+
+        **State Variables:**
+            r_pnl         : pnl / pnl_target (PnL ratio)
+            r_dur         : duration / max_duration (duration ratio, clamp [0,1])
+            g             : gain parameter
+            T_x           : transform function (tanh, softsign, etc.)
+
+        **Potential Formula:**
+            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sgn(r_pnl)·T_dur(g·r_dur)]
 
         PBRS Theory & Compliance
         ------------------------
-        - Ng et al. 1999 (potential-based shaping invariance)
-        - Wiewiora et al. 2003 (Φ(terminal)=0 handling)
-        - Invariance holds only in canonical mode with additives disabled.
+        - Ng et al. 1999: potential-based shaping preserves optimal policy
+        - Wiewiora et al. 2003: terminal states must have Φ(terminal) = 0
+        - Invariance holds ONLY in canonical mode with additives disabled
+        - Theorem: Canonical + no additives ⇒ Σ_t γ^t·Δ_t = 0 over episodes
 
         Architecture & Transitions
         --------------------------
-        Three mutually exclusive transition types:
+        **Three mutually exclusive transition types:**
 
         1. **Entry** (Neutral → Long/Short):
-           - Initialize potential Φ for next step: Φ(s') = hold_potential(next_state)
-           - PBRS shaping reward: γΦ(s') - Φ(s) where Φ(s)=0 (neutral has no potential)
-           - Optional entry additive (non-PBRS additive term, breaks invariance if used)
+           - Φ(s) = 0 (neutral state has no potential)
+           - Φ(s') = hold_potential(s')
+           - Δ(s,a,s') = γ·Φ(s') - 0 = γ·Φ(s')
+           - Optional entry additive (breaks invariance)
 
         2. **Hold** (Long/Short → Long/Short):
-           - Standard PBRS: γΦ(s') - Φ(s) where both potentials computed from hold_potential()
-           - Φ(s') accounts for updated PnL and trade duration progression
+           - Φ(s) = hold_potential(s)
+           - Φ(s') = hold_potential(s')
+           - Δ(s,a,s') = γ·Φ(s') - Φ(s)
+           - Φ(s') reflects updated PnL and duration
 
         3. **Exit** (Long/Short → Neutral):
-           - **Canonical mode**: Φ(terminal)=0, Δ(s,s') = -Φ(s)
-           - **Heuristic modes**: Φ(s') computed by _compute_exit_potential(), Δ(s,s') = γΦ(s')-Φ(s)
-           - Optional exit additive (non-PBRS additive term for trade quality summary)
-
-        Potential Function Φ(s)
-        -----------------------
-        Φ(s) = scale * 0.5 * [T_pnl(g * pnl_ratio) + sign(pnl_ratio) * T_dur(g * duration_ratio)]
-        Transforms (bounded in [-1,1]): tanh, softsign, arctan, sigmoid (≈ tanh(0.5x)), asinh, clip.
-        Parameters: gain g (sharpens/softens), scale.
+           - Φ(s) = hold_potential(s)
+           - Φ(s') depends on exit_potential_mode:
+             * **canonical**: Φ(s') = 0 → Δ = -Φ(s)
+             * **heuristic**: Φ(s') = f(Φ(s)) → Δ = γ·Φ(s') - Φ(s)
+           - Optional exit additive (breaks invariance)
 
         Exit Potential Modes
         --------------------
         **canonical** (PBRS-compliant):
-        - Φ(s')=0 for all exit transitions
-        - Maintains theoretical invariance guarantees
-        - Shaping reward: γ·0-Φ(s) = -Φ(s)
-        - Entry/exit additives automatically disabled to preserve invariance
+            Φ(s') = 0
+            Δ = γ·0 - Φ(s) = -Φ(s)
+            Additives disabled automatically
 
         **non_canonical**:
-        - Φ(s')=0 for all exit transitions
-        - Entry/exit additives are allowed
+            Φ(s') = 0
+            Δ = -Φ(s)
+            Additives allowed (breaks invariance)
 
         **progressive_release** (heuristic):
-        - Φ(s')=Φ(s)*(1-decay_factor), gradual decay
-        - Shaping reward: γΦ(s')-Φ(s) = γΦ(s)*(1-d)-Φ(s)
+            Φ(s') = Φ(s)·(1 - d)  where d = decay_factor
+            Δ = γ·Φ(s)·(1-d) - Φ(s)
 
         **spike_cancel** (heuristic):
-        - Φ(s')=Φ(s)/γ (γ>0 finite)
-        - Shaping reward: γΦ(s')-Φ(s) = γ*(Φ(s)/γ)-Φ(s) = 0
+            Φ(s') = Φ(s)/γ
+            Δ = γ·(Φ(s)/γ) - Φ(s) = 0
 
         **retain_previous** (heuristic):
-        - Φ(s')=Φ(s), full retention
-        - Shaping reward: (γ-1)Φ(s)
+            Φ(s') = Φ(s)
+            Δ = γ·Φ(s) - Φ(s) = (γ-1)·Φ(s)
 
-        Additive Components & Path Dependence
-        ------------------------------------
-        **Entry/Exit Additive Terms**: Non-PBRS additive rewards that break invariance
-        - Entry additive: Applied at entry transitions, computed via _compute_entry_additive()
-        - Exit additive: Applied at exit transitions, computed via _compute_exit_additive()
-        - Neither additive persists in stored potential (maintains neutrality)
-
-        **Path Dependence**: Only canonical preserves invariance; others introduce path dependence.
+        Additive Terms (Non-PBRS)
+        --------------------------
+        Entry and exit additives are **optional bonuses** that break PBRS invariance:
+        - Entry additive: applied on Neutral→Long/Short transitions
+        - Exit additive: applied on Long/Short→Neutral transitions
+        - These do NOT persist in Φ(s) storage
 
         Invariance & Validation
         -----------------------
-        **Theoretical Guarantee**: Canonical + no additives ⇒ Σ_t γ^t Δ_t = 0 (Φ(start)=Φ(end)=0).
+        **Theoretical Guarantee:**
+            Canonical + no additives ⇒ Σ_t γ^t·Δ_t = 0
+            (Φ(start) = Φ(end) = 0)
 
-        **Deviations from Theory**:
-        - Heuristic exit modes violate invariance
-        - Entry/exit additives break policy invariance
-        - Non-canonical modes may cause path-dependent learning
+        **Deviations from Theory:**
+            - Heuristic exit modes violate invariance
+            - Entry/exit additives break policy invariance
+            - Non-canonical modes introduce path dependence
 
-        **Robustness**:
-        - Bounded transforms prevent potential explosion
-        - Finite value validation with fallback to 0
-        - Terminal state enforcement: Φ(s)=0 when terminated=True
-        - All transform functions are strictly bounded in [-1, 1], ensuring numerical stability
-        - Bounds: |Φ(s)| ≤ scale ; |Δ(s,s')| ≤ (1+γ)*scale
+        **Robustness:**
+            - All transforms bounded: |T_x| ≤ 1
+            - Validation: |Φ(s)| ≤ scale
+            - Bounds: |Δ(s,a,s')| ≤ (1+γ)·scale
+            - Terminal enforcement: Φ(s) = 0 when terminated
+
+        Implementation Details
+        ----------------------
+        This method wraps the core PBRS logic for use in the RL environment:
+        - Reads Φ(s) from self._last_potential (previous state potential)
+        - Reads γ from self._potential_gamma
+        - Reads configuration from self._exit_potential_mode, self._entry_additive_enabled, etc.
+        - Computes next_position, next_duration_ratio, is_entry, is_exit internally
+        - Stores Φ(s') to self._last_potential for next step
+        - Updates diagnostic accumulators (_total_reward_shaping, _total_entry_additive, etc.)
 
         Parameters
         ----------
-        base_reward : float
-            Original reward before shaping
         action : int
-            Action taken leading to transition
+            Action taken: determines transition type (entry/hold/exit)
         trade_duration : float
-            Current trade duration in candles
+            Current trade duration in candles (for current state s)
         max_trade_duration : float
-            Maximum allowed trade duration
+            Maximum allowed trade duration (for normalization)
         pnl : float
-            Current position PnL
+            Current position PnL (for current state s)
         pnl_target : float
-            Target PnL for normalization
+            Target PnL for ratio normalization: r_pnl = pnl / pnl_target
 
         Returns
         -------
-        float
-            Shaped reward R'(s,a,s') = R_base + Δ(s,s') + optional_additives
+        tuple[float, float, float]
+            (reward_shaping, entry_additive, exit_additive)
+
+            - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
+            - entry_additive: optional non-PBRS entry bonus (0.0 if disabled or not entry)
+            - exit_additive: optional non-PBRS exit bonus (0.0 if disabled or not exit)
 
         Notes
         -----
-        - Canonical mode recommended for invariance
-        - Monitor discounted Σ γ^t Δ_t (≈0 per episode canonical)
-        - Heuristic exit modes may affect convergence
-        - Transform validation delegated to analysis tools
-        - Φ reset at exits (canonical) enables telescoping cancellation
+        **State Management:**
+        - Current Φ(s): read from self._last_potential
+        - Next Φ(s'): computed and stored to self._last_potential
+        - Transition type: inferred from self._position and action
+
+        **Configuration Sources:**
+        - γ: self._potential_gamma
+        - Exit mode: self._exit_potential_mode
+        - Additives: self._entry_additive_enabled, self._exit_additive_enabled
+        - Transforms: self._hold_potential_transform_pnl, etc.
+
+        **Recommendations:**
+        - Use canonical mode for policy-invariant shaping
+        - Monitor Σ_t γ^t·Δ_t ≈ 0 per episode in canonical mode
+        - Disable additives to preserve theoretical PBRS guarantees
+
+        See Also
+        --------
+        reward_space_analysis.compute_pbrs_components : Stateless version for analysis
         """
+        prev_potential = float(self._last_potential)
+
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
-            return base_reward
-        prev_potential = self._last_potential
+            self._last_prev_potential = float(prev_potential)
+            self._last_next_potential = float(prev_potential)
+            self._last_entry_additive = 0.0
+            self._last_exit_additive = 0.0
+            self._last_reward_shaping = 0.0
+            return 0.0, 0.0, 0.0
+
         next_position, next_trade_duration, next_pnl = self._get_next_transition_state(
             action=action, trade_duration=trade_duration, pnl=pnl
         )
@@ -2354,49 +2413,34 @@ class MyRLEnv(Base5ActionRLEnv):
         ) and next_position in (Positions.Long, Positions.Short)
 
         gamma = self._potential_gamma
-        if is_entry:
+
+        reward_shaping = 0.0
+        entry_additive = 0.0
+        exit_additive = 0.0
+        next_potential = prev_potential
+
+        if is_entry or is_hold:
             if self._hold_potential_enabled:
-                potential = self._compute_hold_potential(
+                next_potential = self._compute_hold_potential(
                     next_position, next_duration_ratio, next_pnl, pnl_target
                 )
-                reward_shaping = gamma * potential - prev_potential
-                self._last_potential = potential
+                reward_shaping = gamma * next_potential - prev_potential
             else:
+                next_potential = 0.0
                 reward_shaping = 0.0
-                self._last_potential = 0.0
-            self._last_exit_additive = 0.0
-            self._last_entry_additive = 0.0
-            entry_additive = 0.0
-            if self._entry_additive_enabled and not self.is_pbrs_invariant_mode():
+
+            if (
+                is_entry
+                and self._entry_additive_enabled
+                and not self.is_pbrs_invariant_mode()
+            ):
                 entry_additive = self._compute_entry_additive(
                     pnl=next_pnl,
                     pnl_target=pnl_target,
                     duration_ratio=next_duration_ratio,
                 )
-                self._last_entry_additive = float(entry_additive)
                 self._total_entry_additive += float(entry_additive)
-            self._last_reward_shaping = float(reward_shaping)
-            self._total_reward_shaping += float(reward_shaping)
-            self._last_prev_potential = float(prev_potential)
-            self._last_next_potential = float(self._last_potential)
-            return base_reward + reward_shaping + entry_additive
-        elif is_hold:
-            if self._hold_potential_enabled:
-                potential = self._compute_hold_potential(
-                    next_position, next_duration_ratio, next_pnl, pnl_target
-                )
-                reward_shaping = gamma * potential - prev_potential
-                self._last_potential = potential
-            else:
-                reward_shaping = 0.0
-                self._last_potential = 0.0
-            self._last_entry_additive = 0.0
-            self._last_exit_additive = 0.0
-            self._last_reward_shaping = float(reward_shaping)
-            self._total_reward_shaping += float(reward_shaping)
-            self._last_prev_potential = float(prev_potential)
-            self._last_next_potential = float(self._last_potential)
-            return base_reward + reward_shaping
+
         elif is_exit:
             if (
                 self._exit_potential_mode
@@ -2406,34 +2450,32 @@ class MyRLEnv(Base5ActionRLEnv):
                 == ReforceXY._EXIT_POTENTIAL_MODES[1]  # "non_canonical"
             ):
                 next_potential = 0.0
-                exit_reward_shaping = -prev_potential
+                reward_shaping = -prev_potential
             else:
                 next_potential = self._compute_exit_potential(prev_potential, gamma)
-                exit_reward_shaping = gamma * next_potential - prev_potential
-            self._last_entry_additive = 0.0
-            self._last_exit_additive = 0.0
-            exit_additive = 0.0
+                reward_shaping = gamma * next_potential - prev_potential
+
             if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
                 duration_ratio = trade_duration / max(max_trade_duration, 1)
                 exit_additive = self._compute_exit_additive(
                     pnl, pnl_target, duration_ratio
                 )
-                self._last_exit_additive = float(exit_additive)
                 self._total_exit_additive += float(exit_additive)
-            self._last_potential = next_potential
-            self._last_reward_shaping = float(exit_reward_shaping)
-            self._total_reward_shaping += float(exit_reward_shaping)
-            self._last_prev_potential = float(prev_potential)
-            self._last_next_potential = float(self._last_potential)
-            return base_reward + exit_reward_shaping + exit_additive
+
         else:
             # Neutral self-loop
-            self._last_prev_potential = float(prev_potential)
-            self._last_next_potential = float(self._last_potential)
-            self._last_entry_additive = 0.0
-            self._last_exit_additive = 0.0
-            self._last_reward_shaping = 0.0
-            return base_reward
+            next_potential = prev_potential
+            reward_shaping = 0.0
+
+        self._last_potential = float(next_potential)
+        self._last_prev_potential = float(prev_potential)
+        self._last_next_potential = float(self._last_potential)
+        self._last_entry_additive = float(entry_additive)
+        self._last_exit_additive = float(exit_additive)
+        self._last_reward_shaping = float(reward_shaping)
+        self._total_reward_shaping += float(reward_shaping)
+
+        return float(reward_shaping), float(entry_additive), float(exit_additive)
 
     def _set_observation_space(self) -> None:
         """
@@ -2755,7 +2797,7 @@ class MyRLEnv(Base5ActionRLEnv):
             3. Hold overtime penalty
             4. Exit reward
             5. Default fallback (0.0 if no specific reward)
-            6. PBRS application: R'(s,a,s') = R_base + Δ(s,s') + optional_additives
+            6. PBRS computation and application: R'(s,a,s') = R_base + Δ(s,a,s') + optional_additives
 
         The final shaped reward is what the RL agent receives for learning.
         In canonical PBRS mode, the learned policy is theoretically equivalent
@@ -2769,7 +2811,7 @@ class MyRLEnv(Base5ActionRLEnv):
         Returns
         -------
         float
-            Shaped reward R'(s,a,s') = R_base + Δ(s,s') + optional_additives
+            Shaped reward R'(s,a,s') = R_base + Δ(s,a,s') + optional_additives
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         base_reward: Optional[float] = None
@@ -2795,7 +2837,7 @@ class MyRLEnv(Base5ActionRLEnv):
         base_factor = float(
             model_reward_parameters.get("base_factor", ReforceXY.DEFAULT_BASE_FACTOR)
         )
-        idle_factor = base_factor * (self.profit_aim / 4.0)
+        idle_factor = base_factor * (self.profit_aim / self.rr) / 4.0
         hold_factor = idle_factor
 
         # 2. Idle penalty
@@ -2876,14 +2918,15 @@ class MyRLEnv(Base5ActionRLEnv):
             base_reward = 0.0
 
         # 6. Potential-based reward shaping
-        return self._apply_potential_shaping(
-            base_reward=base_reward,
+        reward_shaping, entry_additive, exit_additive = self._compute_pbrs_components(
             action=action,
             trade_duration=trade_duration,
             max_trade_duration=max_trade_duration,
             pnl=pnl,
             pnl_target=self._pnl_target,
         )
+
+        return base_reward + reward_shaping + entry_additive + exit_additive
 
     def _get_observation(self) -> NDArray[np.float32]:
         start_idx = max(self._start_tick, self._current_tick - self.window_size)
