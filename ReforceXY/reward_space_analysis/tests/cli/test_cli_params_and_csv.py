@@ -145,8 +145,8 @@ class TestParamsPropagation(RewardSpaceTestBase):
         # Section numbering includes PBRS invariance line 7
         self.assertIn("PBRS Invariance", content)
 
-    def test_strict_diagnostics_constant_distribution_raises(self):
-        """Run with --strict_diagnostics and very low num_samples to increase chance of constant columns; expect success but can parse diagnostics without fallback replacements."""
+    def test_strict_diagnostics_constant_distribution_succeeds(self):
+        """Run with --strict_diagnostics and low num_samples; expect success, exercising assertion branches before graceful fallback paths."""
         out_dir = self.output_path / "strict_diagnostics"
         cmd = [
             "uv",
@@ -172,8 +172,6 @@ class TestParamsPropagation(RewardSpaceTestBase):
         )
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
-
-    """Integration tests to validate max_trade_duration_candles propagation via CLI params and dynamic flag."""
 
     def test_max_trade_duration_candles_propagation_params(self):
         """--params max_trade_duration_candles=X propagates to manifest and simulation params."""

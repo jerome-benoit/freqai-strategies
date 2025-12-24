@@ -158,8 +158,8 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         )
         self.assertTrue(((values >= 0.0) & (values <= 0.9)).all())
 
-    def test_to_bool(self):
-        """Test _to_bool with various inputs."""
+    def test_simulate_samples_interprets_bool_string_params(self):
+        """Test simulate_samples correctly interprets string boolean params like action_masking."""
         df1 = simulate_samples_with_defaults(
             self.base_params(action_masking="true", max_trade_duration_candles=50),
             num_samples=10,

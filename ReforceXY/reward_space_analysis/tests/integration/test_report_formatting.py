@@ -90,8 +90,6 @@ class TestReportFormatting(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         return report_path.read_text(encoding="utf-8")
 
-    """Tests for report formatting elements not covered elsewhere."""
-
     def test_abs_shaping_line_present_and_constant(self):
         """Abs Σ Shaping Reward line present, formatted, uses constant not literal."""
         df = pd.DataFrame(
