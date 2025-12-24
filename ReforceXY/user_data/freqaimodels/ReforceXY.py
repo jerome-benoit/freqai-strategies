@@ -2012,9 +2012,9 @@ class MyRLEnv(Base5ActionRLEnv):
     def _compute_hold_potential(
         self,
         position: Positions,
-        duration_ratio: float,
         pnl: float,
         pnl_target: float,
+        duration_ratio: float,
         scale: float,
     ) -> float:
         """Compute PBRS potential Φ(s) for position holding states.
@@ -2432,9 +2432,9 @@ class MyRLEnv(Base5ActionRLEnv):
             if self._hold_potential_enabled:
                 next_potential = self._compute_hold_potential(
                     next_position,
-                    next_duration_ratio,
                     next_pnl,
                     pnl_target,
+                    next_duration_ratio,
                     hold_potential_scale,
                 )
                 reward_shaping = gamma * next_potential - prev_potential
