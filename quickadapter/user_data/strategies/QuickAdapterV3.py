@@ -146,9 +146,10 @@ class QuickAdapterV3(IStrategy):
 
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
-    _PLOT_EXTREMA_ZERO_EPS: Final[float] = 0.025
+    _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     timeframe_minutes = timeframe_to_minutes(timeframe)
+
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
     # FreqAI is crashing if minimal_roi is a property
@@ -1140,7 +1141,10 @@ class QuickAdapterV3(IStrategy):
             gamma=self.extrema_weighting["gamma"],
         )
 
-        plot_eps = QuickAdapterV3._PLOT_EXTREMA_ZERO_EPS
+        plot_eps = weighted_extrema.abs().where(weighted_extrema.ne(0.0)).min()
+        if not np.isfinite(plot_eps):
+            plot_eps = 0.0
+        plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
         dataframe["maxima"] = (
             weighted_extrema.where(extrema_direction.gt(0), 0.0)
             .clip(lower=0.0)
