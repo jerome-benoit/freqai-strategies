@@ -658,12 +658,21 @@ def assert_exit_mode_mathematical_validation(
         params, context.pnl, pnl_target, risk_reward_ratio
     )
     efficiency_coefficient = _compute_efficiency_coefficient(params, context, context.pnl)
-    pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
+
     observed_exit_factor = _get_exit_factor(
-        base_factor, context.pnl, pnl_target, duration_ratio, context, params, risk_reward_ratio
+        base_factor,
+        context.pnl,
+        pnl_target,
+        duration_ratio,
+        context,
+        params,
+        risk_reward_ratio,
     )
+    # Isolate time attenuation by dividing out base_factor and the two semantic coefficients
     observed_half_life_factor = observed_exit_factor / (
-        base_factor * max(pnl_coefficient, np.finfo(float).eps)
+        base_factor
+        * max(pnl_target_coefficient, np.finfo(float).eps)
+        * max(efficiency_coefficient, np.finfo(float).eps)
     )
     expected_half_life_factor = 2 ** (-duration_ratio / params["exit_half_life"])
     test_case.assertAlmostEqual(

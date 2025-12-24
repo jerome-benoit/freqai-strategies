@@ -2216,7 +2216,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         Canonical PBRS Formula
         ----------------------
-        R'(s,a,s') = R(s,a,s') + γ·Φ(s') - Δ(s,a,s')
+        R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
 
         where:
             Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)

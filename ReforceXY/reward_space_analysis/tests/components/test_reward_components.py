@@ -199,30 +199,225 @@ class TestRewardComponents(RewardSpaceTestBase):
             validate_idle_penalty,
         )
 
-    def test_efficiency_zero_policy(self):
-        """Test efficiency zero policy produces expected PnL coefficient.
+    def test_pnl_target_coefficient_zero_pnl(self):
+        """PnL target coefficient returns neutral value for zero PnL.
 
-        Verifies:
-        - efficiency_weight = 0 -> pnl_coefficient ~= 1.0
-        - Coefficient is finite and positive
+        Validates that zero realized profit/loss produces coefficient = 1.0,
+        ensuring no amplification or attenuation of base exit factor.
+
+        **Setup:**
+        - PnL: 0.0 (breakeven)
+        - pnl_target: profit_aim × risk_reward_ratio
+        - Parameters: default base_params
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient equals 1.0 within TOLERANCE.GENERIC_EQ
         """
+        params = self.base_params()
+        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
+
+        coefficient = _compute_pnl_target_coefficient(
+            params, pnl=0.0, pnl_target=pnl_target, risk_reward_ratio=PARAMS.RISK_REWARD_RATIO
+        )
+
+        self.assertFinite(coefficient, name="pnl_target_coefficient")
+        self.assertAlmostEqualFloat(coefficient, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
+
+    def test_pnl_target_coefficient_exceeds_target(self):
+        """PnL target coefficient rewards exits that exceed profit target.
+
+        Validates amplification behavior when realized PnL exceeds the target,
+        incentivizing the agent to achieve higher profits than baseline.
+
+        **Setup:**
+        - PnL: 150% of pnl_target (exceeds target by 50%)
+        - pnl_target: 0.045 (profit_aim=0.03 × risk_reward_ratio=1.5)
+        - Parameters: win_reward_factor=2.0, pnl_factor_beta=0.5
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient > 1.0 (rewards exceeding target)
+        """
+        params = self.base_params(win_reward_factor=2.0, pnl_factor_beta=0.5)
+        profit_aim = 0.03
+        risk_reward_ratio = 1.5
+        pnl_target = profit_aim * risk_reward_ratio
+        pnl = pnl_target * 1.5  # 50% above target
+
+        coefficient = _compute_pnl_target_coefficient(
+            params, pnl=pnl, pnl_target=pnl_target, risk_reward_ratio=risk_reward_ratio
+        )
+
+        self.assertFinite(coefficient, name="pnl_target_coefficient")
+        self.assertGreater(
+            coefficient, 1.0, "PnL exceeding target should reward with coefficient > 1.0"
+        )
+
+    def test_pnl_target_coefficient_below_loss_threshold(self):
+        """PnL target coefficient amplifies penalty for excessive losses.
+
+        Validates that losses exceeding risk-adjusted threshold produce
+        coefficient > 1.0 to amplify negative reward signal. Penalty applies
+        when BOTH conditions met: abs(pnl_ratio) > 1.0 AND pnl_ratio < -(1/rr).
+
+        **Setup:**
+        - PnL: -0.06 (exceeds pnl_target magnitude)
+        - pnl_target: 0.045 (profit_aim=0.03 × risk_reward_ratio=1.5)
+        - Penalty threshold: pnl < -pnl_target = -0.045
+        - Parameters: win_reward_factor=2.0, pnl_factor_beta=0.5
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient > 1.0 (amplifies loss penalty)
+        """
+        params = self.base_params(win_reward_factor=2.0, pnl_factor_beta=0.5)
+        profit_aim = 0.03
+        risk_reward_ratio = 1.5
+        pnl_target = profit_aim * risk_reward_ratio  # 0.045
+        # Need abs(pnl / pnl_target) > 1.0 AND pnl / pnl_target < -1/1.5
+        # So pnl < -0.045 (exceeds pnl_target in magnitude)
+        pnl = -0.06  # Much more negative than pnl_target
+
+        coefficient = _compute_pnl_target_coefficient(
+            params, pnl=pnl, pnl_target=pnl_target, risk_reward_ratio=risk_reward_ratio
+        )
+
+        self.assertFinite(coefficient, name="pnl_target_coefficient")
+        self.assertGreater(
+            coefficient, 1.0, "Excessive loss should amplify penalty with coefficient > 1.0"
+        )
+
+    def test_efficiency_coefficient_zero_weight(self):
+        """Efficiency coefficient returns neutral value when efficiency disabled.
+
+        Validates that efficiency_weight=0 disables exit timing efficiency
+        adjustments, returning coefficient = 1.0 regardless of exit position
+        relative to unrealized PnL extremes.
+
+        **Setup:**
+        - efficiency_weight: 0.0 (disabled)
+        - PnL: 0.02 (between min=-0.01 and max=0.03)
+        - Trade context: Long position with unrealized range
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient equals 1.0 within TOLERANCE.GENERIC_EQ
+        """
+        params = self.base_params(efficiency_weight=0.0)
         ctx = self.make_ctx(
-            pnl=0.0,
-            trade_duration=1,
-            max_unrealized_profit=0.0,
-            min_unrealized_profit=-0.02,
+            pnl=0.02,
+            trade_duration=10,
+            max_unrealized_profit=0.03,
+            min_unrealized_profit=-0.01,
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        params = self.base_params(efficiency_weight=0.0)
-        pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
-        pnl_target_coefficient = _compute_pnl_target_coefficient(
-            params, ctx.pnl, pnl_target, PARAMS.RISK_REWARD_RATIO
+
+        coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
+
+        self.assertFinite(coefficient, name="efficiency_coefficient")
+        self.assertAlmostEqualFloat(coefficient, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
+
+    def test_efficiency_coefficient_optimal_profit_exit(self):
+        """Efficiency coefficient rewards exits near peak unrealized profit.
+
+        Validates that exiting close to maximum unrealized profit produces
+        coefficient > 1.0, incentivizing optimal exit timing for profitable trades.
+
+        **Setup:**
+        - PnL: 0.029 (very close to max_unrealized_profit=0.03)
+        - Efficiency ratio: (0.029 - 0.0) / (0.03 - 0.0) ≈ 0.967 (high)
+        - efficiency_weight: 1.0, efficiency_center: 0.5
+        - Trade context: Long position exiting near peak
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient > 1.0 (rewards optimal timing)
+        """
+        params = self.base_params(efficiency_weight=1.0, efficiency_center=0.5)
+        ctx = self.make_ctx(
+            pnl=0.029,  # Close to max
+            trade_duration=10,
+            max_unrealized_profit=0.03,
+            min_unrealized_profit=0.0,
+            position=Positions.Long,
+            action=Actions.Long_exit,
         )
-        efficiency_coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
-        pnl_coefficient = pnl_target_coefficient * efficiency_coefficient
-        self.assertFinite(pnl_coefficient, name="pnl_coefficient")
-        self.assertAlmostEqualFloat(pnl_coefficient, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
+
+        coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
+
+        self.assertFinite(coefficient, name="efficiency_coefficient")
+        self.assertGreater(
+            coefficient, 1.0, "Exit near max profit should reward with coefficient > 1.0"
+        )
+
+    def test_efficiency_coefficient_poor_profit_exit(self):
+        """Efficiency coefficient penalizes exits far from peak unrealized profit.
+
+        Validates that exiting far below maximum unrealized profit produces
+        coefficient < 1.0, penalizing poor exit timing that leaves profit on the table.
+
+        **Setup:**
+        - PnL: 0.005 (far from max_unrealized_profit=0.03)
+        - Efficiency ratio: (0.005 - 0.0) / (0.03 - 0.0) ≈ 0.167 (low)
+        - efficiency_weight: 1.0, efficiency_center: 0.5
+        - Trade context: Long position exiting prematurely
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient < 1.0 (penalizes suboptimal timing)
+        """
+        params = self.base_params(efficiency_weight=1.0, efficiency_center=0.5)
+        ctx = self.make_ctx(
+            pnl=0.005,  # Far from max
+            trade_duration=10,
+            max_unrealized_profit=0.03,
+            min_unrealized_profit=0.0,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+
+        coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
+
+        self.assertFinite(coefficient, name="efficiency_coefficient")
+        self.assertLess(
+            coefficient, 1.0, "Exit far from max profit should penalize with coefficient < 1.0"
+        )
+
+    def test_efficiency_coefficient_optimal_loss_exit(self):
+        """Efficiency coefficient rewards loss exits near minimum unrealized loss.
+
+        Validates that exiting close to minimum unrealized loss produces
+        coefficient > 1.0, rewarding quick loss-cutting behavior for losing trades.
+
+        **Setup:**
+        - PnL: -0.005 (very close to min_unrealized_profit=-0.006)
+        - Efficiency ratio: (-0.005 - (-0.006)) / (0.0 - (-0.006)) ≈ 0.167 (low)
+        - For losses: coefficient = 1 + weight × (center - ratio) → rewards low ratio
+        - efficiency_weight: 1.0, efficiency_center: 0.5
+        - Trade context: Long position cutting losses quickly
+
+        **Assertions:**
+        - Coefficient is finite
+        - Coefficient > 1.0 (rewards optimal loss exit)
+        """
+        params = self.base_params(efficiency_weight=1.0, efficiency_center=0.5)
+        ctx = self.make_ctx(
+            pnl=-0.005,  # Close to min loss
+            trade_duration=10,
+            max_unrealized_profit=0.0,
+            min_unrealized_profit=-0.006,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+
+        coefficient = _compute_efficiency_coefficient(params, ctx, ctx.pnl)
+
+        self.assertFinite(coefficient, name="efficiency_coefficient")
+        self.assertGreater(
+            coefficient, 1.0, "Exit near min loss should reward with coefficient > 1.0"
+        )
 
     def test_exit_reward_never_positive_for_loss_due_to_efficiency(self):
         """Exit reward should not become positive for a loss trade.

@@ -113,13 +113,17 @@ class ProgressiveScalingConfig:
 class ExitFactorConfig:
     """Configuration for exit factor validation.
 
-    Parameters specific to exit factor calculations, including attenuation
-    mode and plateau behavior.
+    Parameters specific to exit factor calculations, including coefficient
+    decomposition, attenuation mode and plateau behavior.
+
+    The exit factor is computed as:
+        exit_factor = base_factor × time_attenuation × pnl_target × efficiency
 
     Attributes:
         base_factor: Base scaling factor
         pnl: Realized profit/loss
-        pnl_coefficient: PnL amplification coefficient
+        pnl_target_coefficient: PnL target amplification coefficient (typically 0.5-2.0)
+        efficiency_coefficient: Exit timing efficiency coefficient (typically 0.5-1.5)
         duration_ratio: Ratio of current to maximum duration
         attenuation_mode: Mode of attenuation ("linear", "power", etc.)
         plateau_enabled: Whether plateau behavior is active
@@ -129,7 +133,8 @@ class ExitFactorConfig:
 
     base_factor: float
     pnl: float
-    pnl_coefficient: float
+    pnl_target_coefficient: float
+    efficiency_coefficient: float
     duration_ratio: float
     attenuation_mode: str
     plateau_enabled: bool = False
