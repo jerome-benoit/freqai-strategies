@@ -32,7 +32,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
     ):
         """Smoke: each primary component activates in a representative scenario.
 
-        # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+        # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
         Detailed progressive / boundary / proportional invariants are NOT asserted here.
         We only check sign / non-zero activation plus total decomposition identity.
         """

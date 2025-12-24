@@ -1045,7 +1045,7 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Report classification / formatting ---------------- #
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101), robustness/test_robustness.py:125 (robustness-exit-pnl-only-117)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101), robustness/test_robustness.py:127 (robustness-exit-pnl-only-117)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_report_generation(self):
         """Synthetic invariance section: Non-canonical classification formatting."""
@@ -1210,7 +1210,7 @@ class TestPBRS(RewardSpaceTestBase):
             f"Expected non-zero shaping (got {shaping_sum})",
         )
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     # Owns invariant: pbrs-canonical-near-zero-report-116
     @pytest.mark.smoke
     def test_pbrs_canonical_near_zero_report(self):
@@ -1280,7 +1280,7 @@ class TestPBRS(RewardSpaceTestBase):
             )
         self.assertIn("max|correction|≈0", content)
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_canonical_suppresses_additives_in_report(self):
         """Canonical exit mode suppresses additives for classification.
@@ -1403,7 +1403,7 @@ class TestPBRS(RewardSpaceTestBase):
         expected_corr_fragment = f"{max_abs_corr:.6e}"
         self.assertIn(expected_corr_fragment, content)
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
         """Full report: Non-canonical classification aggregates mode + additives reasons."""
@@ -1457,7 +1457,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertIn("exit_potential_mode='progressive_release'", content)
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_mode_only_reason(self):
         """Non-canonical exit mode with additives disabled -> reason excludes additive list."""

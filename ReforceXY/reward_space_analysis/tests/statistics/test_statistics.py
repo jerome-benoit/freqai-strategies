@@ -293,7 +293,7 @@ class TestStatistics(RewardSpaceTestBase):
                     f"Expected near-zero divergence after equal scaling (k={k}, v={v})",
                 )
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_stats_mean_decomposition_consistency(self):
         """Batch mean additivity."""

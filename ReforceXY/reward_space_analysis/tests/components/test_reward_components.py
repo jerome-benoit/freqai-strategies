@@ -469,7 +469,7 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_exit_factor_calculation(self):
         """Exit factor calculation smoke test across attenuation modes.
 
-        Non-owning smoke test; ownership: robustness/test_robustness.py:35
+        Non-owning smoke test; ownership: robustness/test_robustness.py:43
 
         Verifies:
         - Exit factors are finite and positive (linear, power modes)
