@@ -57,7 +57,7 @@ def make_ctx(
 PBRS_INTEGRATION_PARAMS = [
     "potential_gamma",
     "hold_potential_enabled",
-    "hold_potential_scale",
+    "hold_potential_ratio",
     "entry_additive_enabled",
     "exit_additive_enabled",
 ]
@@ -144,10 +144,11 @@ class RewardSpaceTestBase(unittest.TestCase):
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
+                    base_factor=PARAMS.BASE_FACTOR,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    prev_potential=prev_potential,
                     is_exit=is_exit,
                     is_entry=False,
-                    prev_potential=prev_potential,
                     params=params,
                 )
             )

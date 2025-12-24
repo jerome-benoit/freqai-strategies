@@ -117,13 +117,13 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
     "base_factor": 100.0,
     # Idle penalty defaults
-    "idle_penalty_scale": 0.5,
+    "idle_penalty_scale": 1.0,
     "idle_penalty_power": 1.025,
     "max_trade_duration_candles": 128,
     # Fallback: DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
     "max_idle_duration_candles": None,
     # Hold penalty defaults
-    "hold_penalty_scale": 0.25,
+    "hold_penalty_scale": 1.0,
     "hold_penalty_power": 1.025,
     # Exit attenuation defaults
     "exit_attenuation_mode": "linear",
@@ -150,13 +150,13 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
     "hold_potential_enabled": True,
-    "hold_potential_scale": 1.0,
+    "hold_potential_ratio": 0.25,
     "hold_potential_gain": 1.0,
     "hold_potential_transform_pnl": "tanh",
     "hold_potential_transform_duration": "tanh",
     # Entry additive (non-PBRS additive term)
     "entry_additive_enabled": False,
-    "entry_additive_scale": 1.0,
+    "entry_additive_ratio": 0.125,
     "entry_additive_gain": 1.0,
     "entry_additive_transform_pnl": "tanh",
     "entry_additive_transform_duration": "tanh",
@@ -164,7 +164,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_fee_rate": 0.0,
     # Exit additive (non-PBRS additive term)
     "exit_additive_enabled": False,
-    "exit_additive_scale": 1.0,
+    "exit_additive_ratio": 0.125,
     "exit_additive_gain": 1.0,
     "exit_additive_transform_pnl": "tanh",
     "exit_additive_transform_duration": "tanh",
@@ -196,19 +196,19 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "exit_potential_mode": "Exit potential mode (canonical|non_canonical|progressive_release|spike_cancel|retain_previous)",
     "exit_potential_decay": "Decay for progressive_release (0–1)",
     "hold_potential_enabled": "Enable hold potential Φ",
-    "hold_potential_scale": "Hold potential scale",
+    "hold_potential_ratio": "Hold potential ratio",
     "hold_potential_gain": "Hold potential gain",
     "hold_potential_transform_pnl": "Hold PnL transform",
     "hold_potential_transform_duration": "Hold duration transform",
     "entry_additive_enabled": "Enable entry additive",
-    "entry_additive_scale": "Entry additive scale",
+    "entry_additive_ratio": "Entry additive ratio",
     "entry_additive_gain": "Entry additive gain",
     "entry_additive_transform_pnl": "Entry PnL transform",
     "entry_additive_transform_duration": "Entry duration transform",
     "entry_fee_rate": "Entry fee rate",
     "exit_fee_rate": "Exit fee rate",
     "exit_additive_enabled": "Enable exit additive",
-    "exit_additive_scale": "Exit additive scale",
+    "exit_additive_ratio": "Exit additive ratio",
     "exit_additive_gain": "Exit additive gain",
     "exit_additive_transform_pnl": "Exit PnL transform",
     "exit_additive_transform_duration": "Exit duration transform",
@@ -240,13 +240,13 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     # PBRS parameter bounds
     "potential_gamma": {"min": 0.0, "max": 1.0},
     "exit_potential_decay": {"min": 0.0, "max": 1.0},
-    "hold_potential_scale": {"min": 0.0},
+    "hold_potential_ratio": {"min": 0.0},
     "hold_potential_gain": {"min": 0.0},
-    "entry_additive_scale": {"min": 0.0},
+    "entry_additive_ratio": {"min": 0.0},
     "entry_additive_gain": {"min": 0.0},
     "entry_fee_rate": {"min": 0.0, "max": 0.1},
     "exit_fee_rate": {"min": 0.0, "max": 0.1},
-    "exit_additive_scale": {"min": 0.0},
+    "exit_additive_ratio": {"min": 0.0},
     "exit_additive_gain": {"min": 0.0},
 }
 
@@ -338,11 +338,6 @@ def _resolve_additive_enablement(
         entry_additive_enabled_raw or exit_additive_enabled_raw
     )
     return entry_additive_effective, exit_additive_effective, additives_suppressed
-
-
-def _is_strict_validation(params: RewardParams) -> bool:
-    """Return strict validation flag from params (default True)."""
-    return _get_bool_param(params, "strict_validation", True)
 
 
 def _get_float_param(params: RewardParams, key: str, default: RewardParamValue) -> float:
@@ -486,7 +481,7 @@ def _is_short_allowed(trading_mode: str) -> bool:
 
 
 def _fail_safely(reason: str) -> float:
-    """Return 0.0 on recoverable numeric failure."""
+    """Return 0.0 on numeric failure."""
     _ = reason
     return 0.0
 
@@ -794,22 +789,20 @@ def _compute_time_attenuation_coefficient(
         return 1.0 / (1.0 + exit_linear_slope * dr)
 
     def _power_kernel(dr: float) -> float:
-        tau = _get_float_param(
-            params,
-            "exit_power_tau",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_power_tau", 0.5),
-        )
-        if 0.0 < tau <= 1.0:
-            alpha = -math.log(tau) / _LOG_2
-        else:
-            if _is_strict_validation(params):
-                raise ValueError(f"exit_power_tau={tau} must be in (0,1] in strict mode")
-            warnings.warn(
-                f"exit_power_tau={tau} invalid; falling back to alpha=1.0",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
-            )
+        raw_tau = params.get("exit_power_tau", None)
+        if raw_tau is None:
             alpha = 1.0
+        else:
+            tau = _get_float_param(params, "exit_power_tau", np.nan)
+            if 0.0 < tau <= 1.0:
+                alpha = -math.log(tau) / _LOG_2
+            else:
+                warnings.warn(
+                    f"exit_power_tau={tau} invalid; falling back to alpha=1.0",
+                    RewardDiagnosticsWarning,
+                    stacklevel=2,
+                )
+                alpha = 1.0
         return 1.0 / math.pow(1.0 + dr, alpha)
 
     def _half_life_kernel(dr: float) -> float:
@@ -818,11 +811,16 @@ def _compute_time_attenuation_coefficient(
             "exit_half_life",
             DEFAULT_MODEL_REWARD_PARAMETERS.get("exit_half_life", 0.5),
         )
-        if hl <= 0.0 and _is_strict_validation(params):
-            raise ValueError(f"exit_half_life={hl} must be > 0 in strict mode")
         if np.isclose(hl, 0.0):
             warnings.warn(
                 f"exit_half_life={hl} close to 0; falling back to 1.0",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            return 1.0
+        if hl < 0.0:
+            warnings.warn(
+                f"exit_half_life={hl} negative; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -1100,7 +1098,7 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
     idle_penalty_scale = _get_float_param(
         params,
         "idle_penalty_scale",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_scale", 0.5),
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_scale", 1.0),
     )
     idle_penalty_power = _get_float_param(
         params,
@@ -1117,7 +1115,7 @@ def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardPara
     hold_penalty_scale = _get_float_param(
         params,
         "hold_penalty_scale",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_scale", 0.25),
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_scale", 1.0),
     )
     hold_penalty_power = _get_float_param(
         params,
@@ -1199,10 +1197,12 @@ def calculate_reward(
 
     if "risk_reward_ratio" in params:
         risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
+    elif "rr" in params:
+        risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
 
     pnl_target = float(profit_aim * risk_reward_ratio)
 
-    idle_factor = base_factor * (profit_aim / risk_reward_ratio) / 4.0
+    idle_factor = base_factor * (profit_aim / risk_reward_ratio)
     hold_factor = idle_factor
 
     max_trade_duration_candles = _get_int_param(
@@ -1366,6 +1366,7 @@ def calculate_reward(
                 prev_potential=prev_potential,
                 params=params,
                 risk_reward_ratio=risk_reward_ratio,
+                base_factor=base_factor,
             )
         )
 
@@ -3133,6 +3134,7 @@ def _compute_hold_potential(
     duration_ratio: float,
     risk_reward_ratio: float,
     params: RewardParams,
+    base_factor: float,
 ) -> float:
     """Compute PBRS hold potential Φ(s)."""
     if not _get_bool_param(
@@ -3148,12 +3150,13 @@ def _compute_hold_potential(
         pnl_target=pnl_target,
         duration_ratio=duration_ratio,
         params=params,
-        scale_key="hold_potential_scale",
+        scale_key="hold_potential_ratio",
         gain_key="hold_potential_gain",
         transform_pnl_key="hold_potential_transform_pnl",
         transform_dur_key="hold_potential_transform_duration",
         non_finite_key="non_finite_hold_potential",
         risk_reward_ratio=risk_reward_ratio,
+        base_factor=base_factor,
     )
 
 
@@ -3162,6 +3165,7 @@ def _compute_entry_additive(
     pnl_target: float,
     duration_ratio: float,
     params: RewardParams,
+    base_factor: float,
 ) -> float:
     if not _get_bool_param(
         params,
@@ -3175,11 +3179,12 @@ def _compute_entry_additive(
         pnl_target=pnl_target,
         duration_ratio=duration_ratio,
         params=params,
-        scale_key="entry_additive_scale",
+        scale_key="entry_additive_ratio",
         gain_key="entry_additive_gain",
         transform_pnl_key="entry_additive_transform_pnl",
         transform_dur_key="entry_additive_transform_duration",
         non_finite_key="non_finite_entry_additive",
+        base_factor=base_factor,
     )
 
 
@@ -3188,6 +3193,7 @@ def _compute_exit_additive(
     pnl_target: float,
     duration_ratio: float,
     params: RewardParams,
+    base_factor: float,
 ) -> float:
     if not _get_bool_param(
         params,
@@ -3201,11 +3207,12 @@ def _compute_exit_additive(
         pnl_target=pnl_target,
         duration_ratio=duration_ratio,
         params=params,
-        scale_key="exit_additive_scale",
+        scale_key="exit_additive_ratio",
         gain_key="exit_additive_gain",
         transform_pnl_key="exit_additive_transform_pnl",
         transform_dur_key="exit_additive_transform_duration",
         non_finite_key="non_finite_exit_additive",
+        base_factor=base_factor,
     )
 
 
@@ -3271,10 +3278,11 @@ def compute_pbrs_components(
     next_duration_ratio: float,
     params: RewardParams,
     *,
+    base_factor: float,
     risk_reward_ratio: float,
+    prev_potential: float,
     is_exit: bool = False,
     is_entry: bool = False,
-    prev_potential: float,
 ) -> tuple[float, float, float, float, float]:
     """Compute potential-based reward shaping (PBRS) components.
 
@@ -3333,6 +3341,7 @@ def compute_pbrs_components(
                 next_duration_ratio,
                 risk_reward_ratio,
                 params,
+                base_factor,
             )
             pbrs_delta = gamma * next_potential - prev_potential
             reward_shaping = pbrs_delta
@@ -3341,9 +3350,11 @@ def compute_pbrs_components(
         entry_additive = 0.0
         exit_additive = 0.0
     else:
-        cand_entry_add = _compute_entry_additive(next_pnl, pnl_target, next_duration_ratio, params)
+        cand_entry_add = _compute_entry_additive(
+            next_pnl, pnl_target, next_duration_ratio, params, base_factor
+        )
         cand_exit_add = _compute_exit_additive(
-            current_pnl, pnl_target, current_duration_ratio, params
+            current_pnl, pnl_target, current_duration_ratio, params, base_factor
         )
         entry_additive = cand_entry_add if is_entry else 0.0
         exit_additive = cand_exit_add if is_exit else 0.0
@@ -3375,10 +3386,11 @@ def apply_potential_shaping(
     next_duration_ratio: float,
     params: RewardParams,
     *,
+    base_factor: float,
     risk_reward_ratio: float,
+    prev_potential: float,
     is_exit: bool = False,
     is_entry: bool = False,
-    prev_potential: float,
 ) -> tuple[float, float, float, float, float, float]:
     """Compute shaped reward and PBRS diagnostics.
 
@@ -3403,10 +3415,11 @@ def apply_potential_shaping(
             next_pnl,
             next_duration_ratio,
             params,
+            base_factor=base_factor,
             risk_reward_ratio=risk_reward_ratio,
+            prev_potential=prev_potential,
             is_exit=is_exit,
             is_entry=is_entry,
-            prev_potential=prev_potential,
         )
     )
 
@@ -3436,6 +3449,7 @@ def _compute_bi_component(
     transform_dur_key: str,
     non_finite_key: str,
     *,
+    base_factor: float,
     risk_reward_ratio: Optional[float] = None,
 ) -> float:
     """Generic helper for (pnl, duration) bi-component transforms."""
@@ -3447,7 +3461,8 @@ def _compute_bi_component(
     pnl_ratio = float(pnl / pnl_target)
     duration_ratio = float(np.clip(duration_ratio, 0.0, 1.0))
 
-    scale = _get_float_param(params, scale_key, 1.0)
+    ratio = _get_float_param(params, scale_key, 0.25 if "hold" in scale_key else 0.125)
+    scale = ratio * base_factor
     gain = _get_float_param(params, gain_key, 1.0)
     transform_pnl = _get_str_param(params, transform_pnl_key, "tanh")
     transform_duration = _get_str_param(params, transform_dur_key, "tanh")
@@ -4422,7 +4437,11 @@ def main() -> None:
 
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
-    risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
+    risk_reward_ratio = _get_float_param(
+        params,
+        "risk_reward_ratio",
+        _get_float_param(params, "rr", float(args.risk_reward_ratio)),
+    )
 
     cli_action_masking = _to_bool(args.action_masking)
     if "action_masking" in params:

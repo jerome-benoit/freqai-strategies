@@ -298,9 +298,9 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 | ---------------------------- | ------- | -------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap         |
 | `max_idle_duration_candles`  | None    | Fallback 4× trade duration |
-| `idle_penalty_scale`         | 0.5     | Idle penalty scale         |
+| `idle_penalty_scale`         | 1.0     | Idle penalty scale         |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent      |
-| `hold_penalty_scale`         | 0.25    | Hold penalty scale         |
+| `hold_penalty_scale`         | 1.0     | Hold penalty scale         |
 | `hold_penalty_power`         | 1.025   | Hold penalty exponent      |
 
 #### Validation
@@ -334,7 +334,7 @@ across samples) and does not apply any drift correction in post-processing.
 
 | Parameter                           | Default | Description          |
 | ----------------------------------- | ------- | -------------------- |
-| `hold_potential_scale`              | 1.0     | Hold potential scale |
+| `hold_potential_ratio`              | 0.25    | Hold potential ratio |
 | `hold_potential_gain`               | 1.0     | Gain multiplier      |
 | `hold_potential_transform_pnl`      | tanh    | PnL transform        |
 | `hold_potential_transform_duration` | tanh    | Duration transform   |
@@ -366,7 +366,7 @@ losses compared to symmetric treatment.
 | Parameter                           | Default | Description           |
 | ----------------------------------- | ------- | --------------------- |
 | `entry_additive_enabled`            | false   | Enable entry additive |
-| `entry_additive_scale`              | 1.0     | Scale                 |
+| `entry_additive_ratio`              | 0.125   | Ratio                 |
 | `entry_additive_gain`               | 1.0     | Gain                  |
 | `entry_additive_transform_pnl`      | tanh    | PnL transform         |
 | `entry_additive_transform_duration` | tanh    | Duration transform    |
@@ -376,7 +376,7 @@ losses compared to symmetric treatment.
 | Parameter                          | Default | Description          |
 | ---------------------------------- | ------- | -------------------- |
 | `exit_additive_enabled`            | false   | Enable exit additive |
-| `exit_additive_scale`              | 1.0     | Scale                |
+| `exit_additive_ratio`              | 0.125   | Ratio                |
 | `exit_additive_gain`               | 1.0     | Gain                 |
 | `exit_additive_transform_pnl`      | tanh    | PnL transform        |
 | `exit_additive_transform_duration` | tanh    | Duration transform   |

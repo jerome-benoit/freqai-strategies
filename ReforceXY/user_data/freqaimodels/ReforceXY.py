@@ -158,13 +158,13 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_EXIT_POTENTIAL_DECAY: Final[float] = 0.5
     DEFAULT_ENTRY_ADDITIVE_ENABLED: Final[bool] = False
-    DEFAULT_ENTRY_ADDITIVE_SCALE: Final[float] = 1.0
+    DEFAULT_ENTRY_ADDITIVE_RATIO: Final[float] = 0.125
     DEFAULT_ENTRY_ADDITIVE_GAIN: Final[float] = 1.0
     DEFAULT_HOLD_POTENTIAL_ENABLED: Final[bool] = True
-    DEFAULT_HOLD_POTENTIAL_SCALE: Final[float] = 1.0
+    DEFAULT_HOLD_POTENTIAL_RATIO: Final[float] = 0.25
     DEFAULT_HOLD_POTENTIAL_GAIN: Final[float] = 1.0
     DEFAULT_EXIT_ADDITIVE_ENABLED: Final[bool] = False
-    DEFAULT_EXIT_ADDITIVE_SCALE: Final[float] = 1.0
+    DEFAULT_EXIT_ADDITIVE_RATIO: Final[float] = 0.125
     DEFAULT_EXIT_ADDITIVE_GAIN: Final[float] = 1.0
 
     DEFAULT_EXIT_PLATEAU: Final[bool] = True
@@ -177,9 +177,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
 
     DEFAULT_INVALID_ACTION: Final[float] = -2.0
-    DEFAULT_IDLE_PENALTY_SCALE: Final[float] = 0.5
+    DEFAULT_IDLE_PENALTY_SCALE: Final[float] = 1.0
     DEFAULT_IDLE_PENALTY_POWER: Final[float] = 1.025
-    DEFAULT_HOLD_PENALTY_SCALE: Final[float] = 0.25
+    DEFAULT_HOLD_PENALTY_SCALE: Final[float] = 1.0
     DEFAULT_HOLD_PENALTY_POWER: Final[float] = 1.025
 
     DEFAULT_CHECK_INVARIANTS: Final[bool] = True
@@ -1775,9 +1775,9 @@ class MyRLEnv(Base5ActionRLEnv):
                 "entry_additive_enabled", ReforceXY.DEFAULT_ENTRY_ADDITIVE_ENABLED
             )
         )
-        self._entry_additive_scale: float = float(
+        self._entry_additive_ratio: float = float(
             model_reward_parameters.get(
-                "entry_additive_scale", ReforceXY.DEFAULT_ENTRY_ADDITIVE_SCALE
+                "entry_additive_ratio", ReforceXY.DEFAULT_ENTRY_ADDITIVE_RATIO
             )
         )
         self._entry_additive_gain: float = float(
@@ -1803,9 +1803,9 @@ class MyRLEnv(Base5ActionRLEnv):
                 "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
             )
         )
-        self._hold_potential_scale: float = float(
+        self._hold_potential_ratio: float = float(
             model_reward_parameters.get(
-                "hold_potential_scale", ReforceXY.DEFAULT_HOLD_POTENTIAL_SCALE
+                "hold_potential_ratio", ReforceXY.DEFAULT_HOLD_POTENTIAL_RATIO
             )
         )
         self._hold_potential_gain: float = float(
@@ -1831,9 +1831,9 @@ class MyRLEnv(Base5ActionRLEnv):
                 "exit_additive_enabled", ReforceXY.DEFAULT_EXIT_ADDITIVE_ENABLED
             )
         )
-        self._exit_additive_scale: float = float(
+        self._exit_additive_ratio: float = float(
             model_reward_parameters.get(
-                "exit_additive_scale", ReforceXY.DEFAULT_EXIT_ADDITIVE_SCALE
+                "exit_additive_ratio", ReforceXY.DEFAULT_EXIT_ADDITIVE_RATIO
             )
         )
         self._exit_additive_gain: float = float(
@@ -2015,6 +2015,7 @@ class MyRLEnv(Base5ActionRLEnv):
         duration_ratio: float,
         pnl: float,
         pnl_target: float,
+        scale: float,
     ) -> float:
         """Compute PBRS potential Φ(s) for position holding states.
 
@@ -2027,7 +2028,7 @@ class MyRLEnv(Base5ActionRLEnv):
             pnl=pnl,
             pnl_target=pnl_target,
             duration_ratio=duration_ratio,
-            scale=self._hold_potential_scale,
+            scale=scale,
             gain=self._hold_potential_gain,
             transform_pnl=self._hold_potential_transform_pnl,
             transform_duration=self._hold_potential_transform_duration,
@@ -2039,6 +2040,7 @@ class MyRLEnv(Base5ActionRLEnv):
         pnl: float,
         pnl_target: float,
         duration_ratio: float,
+        scale: float,
     ) -> float:
         """Compute exit additive reward for position exit transitions.
 
@@ -2051,7 +2053,7 @@ class MyRLEnv(Base5ActionRLEnv):
             pnl=pnl,
             pnl_target=pnl_target,
             duration_ratio=duration_ratio,
-            scale=self._exit_additive_scale,
+            scale=scale,
             gain=self._exit_additive_gain,
             transform_pnl=self._exit_additive_transform_pnl,
             transform_duration=self._exit_additive_transform_duration,
@@ -2062,6 +2064,7 @@ class MyRLEnv(Base5ActionRLEnv):
         pnl: float,
         pnl_target: float,
         duration_ratio: float,
+        scale: float,
     ) -> float:
         """Compute entry additive reward for position entry transitions.
 
@@ -2074,7 +2077,7 @@ class MyRLEnv(Base5ActionRLEnv):
             pnl=pnl,
             pnl_target=pnl_target,
             duration_ratio=duration_ratio,
-            scale=self._entry_additive_scale,
+            scale=scale,
             gain=self._entry_additive_gain,
             transform_pnl=self._entry_additive_transform_pnl,
             transform_duration=self._entry_additive_transform_duration,
@@ -2208,6 +2211,9 @@ class MyRLEnv(Base5ActionRLEnv):
         max_trade_duration: float,
         pnl: float,
         pnl_target: float,
+        hold_potential_scale: float,
+        entry_additive_scale: float,
+        exit_additive_scale: float,
     ) -> tuple[float, float, float]:
         """Compute potential-based reward shaping (PBRS) components.
 
@@ -2240,6 +2246,7 @@ class MyRLEnv(Base5ActionRLEnv):
         **State Variables:**
             r_pnl         : pnl / pnl_target (PnL ratio)
             r_dur         : duration / max_duration (duration ratio, clamp [0,1])
+            scale         : scale parameter
             g             : gain parameter
             T_x           : transform function (tanh, softsign, etc.)
 
@@ -2347,6 +2354,12 @@ class MyRLEnv(Base5ActionRLEnv):
             Current position PnL (for current state s)
         pnl_target : float
             Target PnL for ratio normalization: r_pnl = pnl / pnl_target
+        hold_potential_scale : float
+            Magnitude scale for hold potential (= hold_potential_ratio * base_factor)
+        entry_additive_scale : float
+            Magnitude scale for entry additive (= entry_additive_ratio * base_factor)
+        exit_additive_scale : float
+            Magnitude scale for exit additive (= exit_additive_ratio * base_factor)
 
         Returns
         -------
@@ -2418,7 +2431,11 @@ class MyRLEnv(Base5ActionRLEnv):
         if is_entry or is_hold:
             if self._hold_potential_enabled:
                 next_potential = self._compute_hold_potential(
-                    next_position, next_duration_ratio, next_pnl, pnl_target
+                    next_position,
+                    next_duration_ratio,
+                    next_pnl,
+                    pnl_target,
+                    hold_potential_scale,
                 )
                 reward_shaping = gamma * next_potential - prev_potential
             else:
@@ -2431,9 +2448,10 @@ class MyRLEnv(Base5ActionRLEnv):
                 and not self.is_pbrs_invariant_mode()
             ):
                 entry_additive = self._compute_entry_additive(
-                    pnl=next_pnl,
-                    pnl_target=pnl_target,
-                    duration_ratio=next_duration_ratio,
+                    next_pnl,
+                    pnl_target,
+                    next_duration_ratio,
+                    entry_additive_scale,
                 )
                 self._total_entry_additive += float(entry_additive)
 
@@ -2454,7 +2472,7 @@ class MyRLEnv(Base5ActionRLEnv):
             if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
                 duration_ratio = trade_duration / max(max_trade_duration, 1)
                 exit_additive = self._compute_exit_additive(
-                    pnl, pnl_target, duration_ratio
+                    pnl, pnl_target, duration_ratio, exit_additive_scale
                 )
                 self._total_exit_additive += float(exit_additive)
 
@@ -2646,7 +2664,7 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters: Mapping[str, Any],
     ) -> float:
         """
-        Compute exit factor: base_factor × time_attenuation_coefficient x pnl_target_coefficient x efficiency_coefficient.
+        Compute exit factor: base_factor × time_attenuation_coefficient × pnl_target_coefficient × efficiency_coefficient.
         """
         if not (
             np.isfinite(base_factor)
@@ -2833,7 +2851,7 @@ class MyRLEnv(Base5ActionRLEnv):
         base_factor = float(
             model_reward_parameters.get("base_factor", ReforceXY.DEFAULT_BASE_FACTOR)
         )
-        idle_factor = base_factor * (self.profit_aim / self.rr) / 4.0
+        idle_factor = base_factor * (self.profit_aim / self.rr)
         hold_factor = idle_factor
 
         # 2. Idle penalty
@@ -2889,7 +2907,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._last_hold_penalty = float(base_reward)
 
         # 4. Exit rewards
-        pnl = self.get_unrealized_profit()
+        pnl: float = self.get_unrealized_profit()
         if (
             base_reward is None
             and action == Actions.Long_exit.value
@@ -2914,12 +2932,19 @@ class MyRLEnv(Base5ActionRLEnv):
             base_reward = 0.0
 
         # 6. Potential-based reward shaping
+        hold_potential_scale = self._hold_potential_ratio * base_factor
+        entry_additive_scale = self._entry_additive_ratio * base_factor
+        exit_additive_scale = self._exit_additive_ratio * base_factor
+
         reward_shaping, entry_additive, exit_additive = self._compute_pbrs_components(
             action=action,
             trade_duration=trade_duration,
             max_trade_duration=max_trade_duration,
             pnl=pnl,
             pnl_target=self._pnl_target,
+            hold_potential_scale=hold_potential_scale,
+            entry_additive_scale=entry_additive_scale,
+            exit_additive_scale=exit_additive_scale,
         )
 
         return base_reward + reward_shaping + entry_additive + exit_additive

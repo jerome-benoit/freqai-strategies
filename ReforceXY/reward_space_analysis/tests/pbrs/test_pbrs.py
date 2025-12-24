@@ -79,6 +79,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_dur,
             PARAMS.RISK_REWARD_RATIO,
             params,
+            PARAMS.BASE_FACTOR,
         )
         (
             _total_reward,
@@ -94,6 +95,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
@@ -126,7 +128,9 @@ class TestPBRS(RewardSpaceTestBase):
             current_dur,
             PARAMS.RISK_REWARD_RATIO,
             params,
+            PARAMS.BASE_FACTOR,
         )
+
         gamma = _get_float_param(
             params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
         )
@@ -147,6 +151,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
@@ -226,14 +231,22 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_additive_components_disabled_return_zero(self):
         """Verifies entry/exit additives return zero when disabled."""
-        params_entry = {"entry_additive_enabled": False, "entry_additive_scale": 1.0}
+        params_entry = {"entry_additive_enabled": False, "entry_additive_ratio": 1.0}
         val_entry = _compute_entry_additive(
-            0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params_entry
+            0.5,
+            PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            0.3,
+            params_entry,
+            PARAMS.BASE_FACTOR,
         )
         self.assertEqual(float(val_entry), 0.0)
-        params_exit = {"exit_additive_enabled": False, "exit_additive_scale": 1.0}
+        params_exit = {"exit_additive_enabled": False, "exit_additive_ratio": 1.0}
         val_exit = _compute_exit_additive(
-            0.5, PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO, 0.3, params_exit
+            0.5,
+            PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+            0.3,
+            params_exit,
+            PARAMS.BASE_FACTOR,
         )
         self.assertEqual(float(val_exit), 0.0)
 
@@ -260,6 +273,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.0,
             next_pnl=0.01,
             next_duration_ratio=0.0,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             is_entry=True,
@@ -301,6 +315,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.4,
             next_pnl=0.02,
             next_duration_ratio=0.41,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             is_entry=False,
@@ -386,6 +401,7 @@ class TestPBRS(RewardSpaceTestBase):
                 next_pnl=next_pnl,
                 next_duration_ratio=next_duration_ratio,
                 risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                base_factor=PARAMS.BASE_FACTOR,
                 is_exit=True,
                 is_entry=False,
                 prev_potential=0.789,
@@ -407,8 +423,8 @@ class TestPBRS(RewardSpaceTestBase):
             hold_potential_enabled=True,
             entry_additive_enabled=True,
             exit_additive_enabled=True,
-            entry_additive_scale=10.0,
-            exit_additive_scale=10.0,
+            entry_additive_ratio=10.0,
+            exit_additive_ratio=10.0,
         )
 
         (
@@ -425,6 +441,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.0,
             next_pnl=0.02,
             next_duration_ratio=0.0,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             is_entry=True,
@@ -443,6 +460,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_dur,
             PARAMS.RISK_REWARD_RATIO,
             params,
+            PARAMS.BASE_FACTOR,
         )
 
         (
@@ -459,6 +477,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
@@ -502,6 +521,7 @@ class TestPBRS(RewardSpaceTestBase):
                 next_pnl=0.0,
                 next_duration_ratio=0.0,
                 risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                base_factor=PARAMS.BASE_FACTOR,
                 is_exit=True,
                 prev_potential=prev_potential,
                 params=params,
@@ -535,6 +555,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             prev_potential=0.0,
@@ -548,6 +569,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio=0.2,
             next_pnl=0.035,
             next_duration_ratio=0.25,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=False,
             prev_potential=0.0,
@@ -723,6 +745,7 @@ class TestPBRS(RewardSpaceTestBase):
             entry_additive_enabled=False,
             exit_additive_enabled=False,
             potential_gamma=0.9,
+            base_factor=PARAMS.BASE_FACTOR,
         )
 
         trade_duration = 5
@@ -752,6 +775,7 @@ class TestPBRS(RewardSpaceTestBase):
             duration_ratio=(trade_duration / max_trade_duration_candles),
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             params=params,
+            base_factor=PARAMS.BASE_FACTOR,
         )
         self.assertAlmostEqualFloat(
             breakdown.next_potential,
@@ -766,13 +790,13 @@ class TestPBRS(RewardSpaceTestBase):
         """Batch validate strict failures + relaxed multi-reason aggregation via helpers."""
         strict_failures = [
             build_validation_case({"potential_gamma": -0.2}, strict=True, expect_error=True),
-            build_validation_case({"hold_potential_scale": -5.0}, strict=True, expect_error=True),
+            build_validation_case({"hold_potential_ratio": -5.0}, strict=True, expect_error=True),
         ]
         success_case = build_validation_case({}, strict=True, expect_error=False)
         relaxed_case = build_validation_case(
             {
                 "potential_gamma": "not-a-number",
-                "hold_potential_scale": "-5.0",
+                "hold_potential_ratio": "-5.0",
                 "max_idle_duration_candles": "nan",
             },
             strict=False,
@@ -793,7 +817,7 @@ class TestPBRS(RewardSpaceTestBase):
         params_relaxed.update(
             {
                 "potential_gamma": "not-a-number",
-                "hold_potential_scale": "-5.0",
+                "hold_potential_ratio": "-5.0",
                 "max_idle_duration_candles": "nan",
             }
         )
@@ -803,7 +827,7 @@ class TestPBRS(RewardSpaceTestBase):
             params_relaxed,
             {
                 "potential_gamma": ["non_numeric_reset"],
-                "hold_potential_scale": ["numeric_coerce", "min="],
+                "hold_potential_ratio": ["numeric_coerce", "min="],
                 "max_idle_duration_candles": ["derived_default"],
             },
         )
@@ -818,7 +842,7 @@ class TestPBRS(RewardSpaceTestBase):
             potential_gamma=gamma,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
-            hold_potential_scale=1.0,
+            hold_potential_ratio=1.0,
         )
         ctx_pnl = 0.012
         ctx_dur_ratio = 0.3
@@ -829,6 +853,7 @@ class TestPBRS(RewardSpaceTestBase):
             ctx_dur_ratio,
             PARAMS.RISK_REWARD_RATIO,
             params_can,
+            PARAMS.BASE_FACTOR,
         )
         self.assertFinite(prev_phi, name="prev_phi")
         next_phi_can = _compute_exit_potential(prev_phi, params_can)
@@ -892,6 +917,9 @@ class TestPBRS(RewardSpaceTestBase):
             potential_gamma=0.94,
         )
         prev_potential = 0.42
+        current_pnl = 0.02
+        current_dur = 0.5
+        profit_aim = PARAMS.PROFIT_AIM
         (
             _total_reward,
             reward_shaping,
@@ -901,11 +929,12 @@ class TestPBRS(RewardSpaceTestBase):
             _exit_additive,
         ) = apply_potential_shaping(
             base_reward=0.0,
-            current_pnl=0.012,
-            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-            current_duration_ratio=0.3,
+            current_pnl=current_pnl,
+            pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
+            current_duration_ratio=current_dur,
             next_pnl=0.0,
             next_duration_ratio=0.0,
+            base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             is_exit=True,
             is_entry=False,
@@ -936,6 +965,7 @@ class TestPBRS(RewardSpaceTestBase):
             entry_additive_enabled=False,
             exit_additive_enabled=False,
             potential_gamma=0.9,
+            base_factor=PARAMS.BASE_FACTOR,
         )
         pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
         ctx = self.make_ctx(
@@ -955,7 +985,9 @@ class TestPBRS(RewardSpaceTestBase):
             current_duration_ratio,
             PARAMS.RISK_REWARD_RATIO,
             params,
+            PARAMS.BASE_FACTOR,
         )
+
         self.assertNotEqual(prev_potential, 0.0)
 
         breakdown = calculate_reward(
@@ -1098,6 +1130,7 @@ class TestPBRS(RewardSpaceTestBase):
                     next_pnl=0.025,
                     next_duration_ratio=0.35,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    base_factor=PARAMS.BASE_FACTOR,
                     is_exit=False,
                     prev_potential=0.0,
                     params=params,
@@ -1139,6 +1172,7 @@ class TestPBRS(RewardSpaceTestBase):
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    base_factor=PARAMS.BASE_FACTOR,
                     is_exit=is_exit,
                     prev_potential=prev_potential,
                     params=params,
@@ -1192,6 +1226,7 @@ class TestPBRS(RewardSpaceTestBase):
                     next_pnl=next_pnl,
                     next_duration_ratio=next_dur,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    base_factor=PARAMS.BASE_FACTOR,
                     is_exit=is_exit,
                     prev_potential=prev_potential,
                     params=params,
@@ -1202,7 +1237,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertGreater(
             abs(shaping_sum),
             PBRS_INVARIANCE_TOL * 50,
-            f"Expected non-zero Σ shaping (got {shaping_sum})",
+            f"Expected non-zero shaping (got {shaping_sum})",
         )
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:35 (robustness-decomposition-integrity-101)

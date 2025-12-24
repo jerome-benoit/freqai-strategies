@@ -106,12 +106,12 @@ class PBRSConfig:
 
     Attributes:
         TERMINAL_TOL: Terminal potential must be within this tolerance of zero (1e-09)
-        MAX_ABS_SHAPING: Maximum absolute shaping value for bounded checks (10.0)
+        MAX_ABS_SHAPING: Maximum absolute shaping value for bounded checks (50.0)
         TERMINAL_PROBABILITY: Default probability of terminal state in sweeps (0.08)
     """
 
     TERMINAL_TOL: float = 1e-09
-    MAX_ABS_SHAPING: float = 10.0
+    MAX_ABS_SHAPING: float = 50.0
     TERMINAL_PROBABILITY: float = 0.08
 
 
@@ -238,7 +238,7 @@ class TestParameters:
         TRADE_DURATION_LONG: Long trade duration in steps (200)
 
         # Common additive parameters
-        ADDITIVE_SCALE_DEFAULT: Default additive scale factor (0.4)
+        ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.4)
         ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
     """
 
@@ -260,7 +260,7 @@ class TestParameters:
     TRADE_DURATION_LONG: int = 200
 
     # Additive parameters
-    ADDITIVE_SCALE_DEFAULT: float = 0.4
+    ADDITIVE_RATIO_DEFAULT: float = 0.4
     ADDITIVE_GAIN_DEFAULT: float = 1.0
 
 

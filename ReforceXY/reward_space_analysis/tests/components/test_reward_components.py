@@ -7,6 +7,7 @@ import unittest
 import pytest
 
 from reward_space_analysis import (
+    DEFAULT_IDLE_DURATION_MULTIPLIER,
     Actions,
     Positions,
     _compute_efficiency_coefficient,
@@ -15,6 +16,7 @@ from reward_space_analysis import (
     _get_exit_factor,
     _get_float_param,
     calculate_reward,
+    get_max_idle_duration_candles,
 )
 
 from ..constants import PARAMS, SCENARIOS, TOLERANCE
@@ -39,7 +41,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """Test hold potential computation returns finite values."""
         params = {
             "hold_potential_enabled": True,
-            "hold_potential_scale": 1.0,
+            "hold_potential_ratio": 1.0,
             "hold_potential_gain": 1.0,
             "hold_potential_transform_pnl": "tanh",
             "hold_potential_transform_duration": "tanh",
@@ -50,6 +52,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             0.3,
             PARAMS.RISK_REWARD_RATIO,
             params,
+            PARAMS.BASE_FACTOR,
         )
         self.assertFinite(val, name="hold_potential")
 
@@ -672,10 +675,23 @@ class TestRewardComponents(RewardSpaceTestBase):
         - penalty(duration=40) ≈ 2 × penalty(duration=20)
         - Proportional scaling with idle duration
         """
-        params = self.base_params(max_idle_duration_candles=None, max_trade_duration_candles=100)
         base_factor = PARAMS.BASE_FACTOR
         profit_aim = PARAMS.PROFIT_AIM
         risk_reward_ratio = 1.0
+        max_trade_duration_candles = 100
+        params = self.base_params(
+            max_idle_duration_candles=None,
+            max_trade_duration_candles=max_trade_duration_candles,
+            base_factor=base_factor,
+        )
+        expected_max_idle_duration_candles = int(
+            DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
+        )
+        self.assertEqual(
+            get_max_idle_duration_candles(params),
+            expected_max_idle_duration_candles,
+            "Expected fallback max_idle_duration from max_trade_duration",
+        )
 
         base_context_kwargs = {
             "pnl": 0.0,
@@ -711,15 +727,18 @@ class TestRewardComponents(RewardSpaceTestBase):
         if ratio is not None:
             self.assertAlmostEqualFloat(abs(ratio), 2.0, tolerance=0.2)
 
-        idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 0.5)
+        idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 1.0)
         idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
-        base_factor = _get_float_param(params, "base_factor", float(base_factor))
-        risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
-        idle_factor = base_factor * (profit_aim / risk_reward_ratio) / 4.0
+        idle_factor = base_factor * (profit_aim / risk_reward_ratio)
         observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_scale)
         if observed_ratio > 0:
             implied_max_idle_duration_candles = 120 / observed_ratio ** (1 / idle_penalty_power)
-            self.assertAlmostEqualFloat(implied_max_idle_duration_candles, 400.0, tolerance=20.0)
+            tolerance = 0.05 * expected_max_idle_duration_candles
+            self.assertAlmostEqualFloat(
+                implied_max_idle_duration_candles,
+                float(expected_max_idle_duration_candles),
+                tolerance=tolerance,
+            )
 
     # Owns invariant: components-pbrs-breakdown-fields-119
     def test_pbrs_breakdown_fields_finite_and_aligned(self):
@@ -775,6 +794,65 @@ class TestRewardComponents(RewardSpaceTestBase):
             0.0,
             tolerance=TOLERANCE.IDENTITY_STRICT,
             msg="invariance_correction should be ~0 in canonical mode",
+        )
+
+    def test_rr_alias_matches_risk_reward_ratio(self):
+        """`rr` param alias matches `risk_reward_ratio` runtime naming."""
+        context = self.make_ctx(
+            pnl=0.02,
+            trade_duration=40,
+            idle_duration=0,
+            max_unrealized_profit=0.03,
+            min_unrealized_profit=0.01,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        rr_value = 1.75
+
+        # Canonical spelling
+        params_ratio = self.base_params(
+            exit_potential_mode="canonical",
+            risk_reward_ratio=rr_value,
+        )
+        params_ratio.pop("rr", None)
+
+        # Runtime spelling
+        params_rr = self.base_params(
+            exit_potential_mode="canonical",
+            rr=rr_value,
+        )
+        params_rr.pop("risk_reward_ratio", None)
+
+        br_ratio = calculate_reward(
+            context,
+            params_ratio,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=1.0,
+            short_allowed=True,
+            action_masking=True,
+        )
+        br_rr = calculate_reward(
+            context,
+            params_rr,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=1.0,
+            short_allowed=True,
+            action_masking=True,
+        )
+
+        self.assertAlmostEqualFloat(
+            br_rr.total,
+            br_ratio.total,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Total reward should match when using rr alias",
+        )
+        self.assertAlmostEqualFloat(
+            br_rr.exit_component,
+            br_ratio.exit_component,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+            msg="Exit component should match when using rr alias",
         )
 
 

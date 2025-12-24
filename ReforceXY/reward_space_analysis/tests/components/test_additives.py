@@ -32,7 +32,7 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
         **Setup:**
         - Base configuration: hold_potential enabled, additives disabled
         - Test configuration: entry_additive and exit_additive enabled
-        - Additive parameters: scale=0.4, gain=1.0 for both entry/exit
+        - Additive parameters: ratio=0.4, gain=1.0 for both entry/exit
         - Context: base_reward=0.05, pnl=0.01, duration_ratio=0.2
 
         **Assertions:**
@@ -55,8 +55,8 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             {
                 "entry_additive_enabled": True,
                 "exit_additive_enabled": True,
-                "entry_additive_scale": 0.4,
-                "exit_additive_scale": 0.4,
+                "entry_additive_ratio": 0.4,
+                "exit_additive_ratio": 0.4,
                 "entry_additive_gain": 1.0,
                 "exit_additive_gain": 1.0,
             }
@@ -73,11 +73,17 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "is_exit": False,
         }
         s0, _n0, _pbrs0, _entry0, _exit0 = compute_pbrs_components(
-            prev_potential=0.0, params=base, **ctx
+            params=base,
+            base_factor=PARAMS.BASE_FACTOR,
+            prev_potential=0.0,
+            **ctx,
         )
         t0 = base_reward + s0 + _entry0 + _exit0
         s1, _n1, _pbrs1, _entry1, _exit1 = compute_pbrs_components(
-            prev_potential=0.0, params=with_add, **ctx
+            params=with_add,
+            base_factor=PARAMS.BASE_FACTOR,
+            prev_potential=0.0,
+            **ctx,
         )
         t1 = base_reward + s1 + _entry1 + _exit1
         self.assertFinite(t1)
