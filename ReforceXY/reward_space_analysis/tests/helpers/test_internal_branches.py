@@ -7,10 +7,10 @@ from reward_space_analysis import (
     Positions,
     RewardParams,
     _get_bool_param,
-    calculate_reward,
 )
 
 from ..test_base import make_ctx
+from . import calculate_reward_with_defaults
 
 
 def test_get_bool_param_none_and_invalid_literal():
@@ -69,14 +69,12 @@ def test_calculate_reward_unrealized_pnl_hold_path():
         "unrealized_pnl": True,
         "pnl_factor_beta": 0.5,
     }
-    breakdown = calculate_reward(
+    breakdown = calculate_reward_with_defaults(
         context,
         params,
         base_factor=100.0,
         profit_aim=0.05,
         risk_reward_ratio=1.0,
-        short_allowed=True,
-        action_masking=True,
         prev_potential=np.nan,
     )
     assert math.isfinite(breakdown.prev_potential)

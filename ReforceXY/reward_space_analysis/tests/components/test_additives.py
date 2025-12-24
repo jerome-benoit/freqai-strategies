@@ -10,7 +10,7 @@ import pytest
 
 from reward_space_analysis import compute_pbrs_components
 
-from ..constants import PARAMS
+from ..constants import PARAMS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.components
@@ -32,16 +32,16 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
         **Setup:**
         - Base configuration: hold_potential enabled, additives disabled
         - Test configuration: entry_additive and exit_additive enabled
-        - Additive parameters: ratio=0.4, gain=1.0 for both entry/exit
+        - Additive parameters: ratio=PARAMS.ADDITIVE_RATIO_DEFAULT, gain=PARAMS.ADDITIVE_GAIN_DEFAULT for both entry/exit
         - Context: base_reward=0.05, pnl=0.01, duration_ratio=0.2
 
         **Assertions:**
         - Total reward with additives > total reward without additives
-        - Shaping difference remains bounded: |s1 - s0| < 0.2
+        - Shaping difference remains bounded: |s1 - s0| < TOLERANCE.SHAPING_BOUND_TOLERANCE
         - Both total and shaping rewards are finite
 
         **Tolerance rationale:**
-        - Custom bound 0.2 for shaping delta: Additives should not cause
+        - Custom bound TOLERANCE.SHAPING_BOUND_TOLERANCE for shaping delta: Additives should not cause
           large shifts in shaping component, which maintains PBRS properties
         """
         base = self.base_params(
@@ -55,10 +55,10 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             {
                 "entry_additive_enabled": True,
                 "exit_additive_enabled": True,
-                "entry_additive_ratio": 0.4,
-                "exit_additive_ratio": 0.4,
-                "entry_additive_gain": 1.0,
-                "exit_additive_gain": 1.0,
+                "entry_additive_ratio": PARAMS.ADDITIVE_RATIO_DEFAULT,
+                "exit_additive_ratio": PARAMS.ADDITIVE_RATIO_DEFAULT,
+                "entry_additive_gain": PARAMS.ADDITIVE_GAIN_DEFAULT,
+                "exit_additive_gain": PARAMS.ADDITIVE_GAIN_DEFAULT,
             }
         )
         base_reward = 0.05
@@ -88,7 +88,7 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
         t1 = base_reward + s1 + _entry1 + _exit1
         self.assertFinite(t1)
         self.assertFinite(s1)
-        self.assertLess(abs(s1 - s0), 0.2)
+        self.assertLess(abs(s1 - s0), TOLERANCE.SHAPING_BOUND_TOLERANCE)
         self.assertGreater(t1 - t0, 0.0, "Total reward should increase with additives present")
 
 

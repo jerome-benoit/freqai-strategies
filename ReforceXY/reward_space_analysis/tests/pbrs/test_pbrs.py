@@ -22,7 +22,6 @@ from reward_space_analysis import (
     _compute_unrealized_pnl_estimate,
     _get_float_param,
     apply_potential_shaping,
-    calculate_reward,
     get_max_idle_duration_candles,
     simulate_samples,
     validate_reward_parameters,
@@ -41,6 +40,7 @@ from ..helpers import (
     assert_pbrs_invariance_report_classification,
     assert_relaxed_multi_reason_aggregation,
     build_validation_case,
+    calculate_reward_with_defaults,
     execute_validation_batch,
 )
 from ..test_base import RewardSpaceTestBase
@@ -343,16 +343,7 @@ class TestPBRS(RewardSpaceTestBase):
         ctx = self.make_ctx(position=Positions.Neutral, action=Actions.Neutral)
 
         prev_potential = 0.37
-        breakdown = calculate_reward(
-            ctx,
-            params,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-            prev_potential=prev_potential,
-        )
+        breakdown = calculate_reward_with_defaults(ctx, params, prev_potential=prev_potential)
 
         self.assertAlmostEqualFloat(
             breakdown.prev_potential,
@@ -602,16 +593,7 @@ class TestPBRS(RewardSpaceTestBase):
             ctx = self.make_ctx(
                 position=Positions.Neutral, action=action, pnl=0.0, trade_duration=0
             )
-            breakdown = calculate_reward(
-                ctx,
-                params,
-                base_factor=PARAMS.BASE_FACTOR,
-                profit_aim=PARAMS.PROFIT_AIM,
-                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                short_allowed=True,
-                action_masking=True,
-                prev_potential=0.0,
-            )
+            breakdown = calculate_reward_with_defaults(ctx, params, prev_potential=0.0)
             self.assertTrue(np.isfinite(breakdown.next_potential))
             # With any nonzero fees, immediate unrealized pnl should be negative.
             self.assertLess(
@@ -758,14 +740,9 @@ class TestPBRS(RewardSpaceTestBase):
             trade_duration=trade_duration,
         )
 
-        breakdown = calculate_reward(
+        breakdown = calculate_reward_with_defaults(
             ctx,
             {**params, "max_trade_duration_candles": max_trade_duration_candles},
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
             prev_potential=0.0,
         )
 
@@ -990,15 +967,8 @@ class TestPBRS(RewardSpaceTestBase):
 
         self.assertNotEqual(prev_potential, 0.0)
 
-        breakdown = calculate_reward(
-            ctx,
-            params,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=False,
-            prev_potential=prev_potential,
+        breakdown = calculate_reward_with_defaults(
+            ctx, params, action_masking=False, prev_potential=prev_potential
         )
 
         expected_shaping = params["potential_gamma"] * prev_potential - prev_potential

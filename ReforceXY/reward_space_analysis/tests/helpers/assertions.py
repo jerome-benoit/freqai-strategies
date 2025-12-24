@@ -16,8 +16,15 @@ from reward_space_analysis import (
     calculate_reward,
 )
 
-from ..constants import TOLERANCE
-from .configs import RewardScenarioConfig, ThresholdTestConfig, ValidationConfig
+from ..constants import PARAMS, TOLERANCE
+from .configs import (
+    DEFAULT_REWARD_CONFIG,
+    DEFAULT_SIMULATION_CONFIG,
+    RewardScenarioConfig,
+    SimulationConfig,
+    ThresholdTestConfig,
+    ValidationConfig,
+)
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -1299,4 +1306,198 @@ def assert_exit_factor_plateau_behavior(
         plateau_factor_pre,
         plateau_factor_post - tolerance_strict,
         "Plateau pre-grace factor should be >= post-grace factor",
+    )
+
+
+# ---------------- Wrapper functions with standard defaults ---------------- #
+
+
+def calculate_reward_with_defaults(
+    context,
+    params: Dict[str, Any],
+    config: RewardScenarioConfig | None = None,
+    **overrides,
+):
+    """Calculate reward with standard test defaults.
+
+    Reduces boilerplate by providing sensible defaults for common parameters.
+    Override any parameter by passing it as a keyword argument.
+
+    Args:
+        context: RewardContext for the calculation
+        params: Parameter dictionary for reward calculation
+        config: Optional RewardScenarioConfig (defaults to DEFAULT_REWARD_CONFIG)
+        **overrides: Keyword arguments to override config values. Supported keys:
+            - base_factor: Base scaling factor
+            - profit_aim: Base profit target
+            - risk_reward_ratio: Risk/reward ratio
+            - short_allowed: Whether short positions are permitted
+            - action_masking: Whether to apply action masking
+            - prev_potential: Previous potential for PBRS (passed through)
+
+    Returns:
+        RewardBreakdown from calculate_reward()
+
+    Example:
+        # Using all defaults
+        breakdown = calculate_reward_with_defaults(ctx, params)
+
+        # Overriding specific parameters
+        breakdown = calculate_reward_with_defaults(
+            ctx, params, action_masking=False
+        )
+
+        # Using custom config
+        custom_config = RewardScenarioConfig(...)
+        breakdown = calculate_reward_with_defaults(ctx, params, config=custom_config)
+    """
+    cfg = config or DEFAULT_REWARD_CONFIG
+
+    # Extract config values with potential overrides
+    base_factor = overrides.pop("base_factor", cfg.base_factor)
+    profit_aim = overrides.pop("profit_aim", cfg.profit_aim)
+    risk_reward_ratio = overrides.pop("risk_reward_ratio", cfg.risk_reward_ratio)
+    short_allowed = overrides.pop("short_allowed", cfg.short_allowed)
+    action_masking = overrides.pop("action_masking", cfg.action_masking)
+
+    return calculate_reward(
+        context,
+        params,
+        base_factor=base_factor,
+        profit_aim=profit_aim,
+        risk_reward_ratio=risk_reward_ratio,
+        short_allowed=short_allowed,
+        action_masking=action_masking,
+        **overrides,
+    )
+
+
+def get_exit_factor_with_defaults(
+    pnl: float,
+    duration_ratio: float,
+    context,
+    params: Dict[str, Any],
+    base_factor: float | None = None,
+    pnl_target: float | None = None,
+    risk_reward_ratio: float | None = None,
+):
+    """Calculate exit factor with standard test defaults.
+
+    Reduces boilerplate by providing sensible defaults for common parameters.
+    This wrapper is particularly useful for tests that need to call _get_exit_factor
+    repeatedly with varying pnl and duration_ratio values.
+
+    Args:
+        pnl: Realized profit/loss
+        duration_ratio: Ratio of current to maximum duration
+        context: RewardContext for efficiency coefficient calculation
+        params: Parameter dictionary
+        base_factor: Base scaling factor (defaults to PARAMS.BASE_FACTOR)
+        pnl_target: Target profit threshold (defaults to PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO)
+        risk_reward_ratio: Risk/reward ratio (defaults to PARAMS.RISK_REWARD_RATIO)
+
+    Returns:
+        Exit factor value from _get_exit_factor()
+
+    Example:
+        # Using all defaults
+        factor = get_exit_factor_with_defaults(0.05, 0.5, ctx, params)
+
+        # Overriding specific parameters
+        factor = get_exit_factor_with_defaults(
+            0.05, 0.5, ctx, params, base_factor=100.0
+        )
+    """
+    if base_factor is None:
+        base_factor = PARAMS.BASE_FACTOR
+    if risk_reward_ratio is None:
+        risk_reward_ratio = PARAMS.RISK_REWARD_RATIO
+    if pnl_target is None:
+        pnl_target = PARAMS.PROFIT_AIM * risk_reward_ratio
+
+    return _get_exit_factor(
+        base_factor,
+        pnl,
+        pnl_target,
+        duration_ratio,
+        context,
+        params,
+        risk_reward_ratio,
+    )
+
+
+def simulate_samples_with_defaults(
+    params: Dict[str, Any],
+    config: SimulationConfig | None = None,
+    base_factor: float | None = None,
+    profit_aim: float | None = None,
+    risk_reward_ratio: float | None = None,
+    **overrides,
+):
+    """Simulate samples with standard test defaults.
+
+    Reduces boilerplate by providing sensible defaults for simulation parameters.
+    Override any parameter by passing it as a keyword argument.
+
+    Args:
+        params: Parameter dictionary for reward calculation
+        config: Optional SimulationConfig (defaults to DEFAULT_SIMULATION_CONFIG)
+        base_factor: Base scaling factor (defaults to PARAMS.BASE_FACTOR)
+        profit_aim: Base profit target (defaults to PARAMS.PROFIT_AIM)
+        risk_reward_ratio: Risk/reward ratio (defaults to PARAMS.RISK_REWARD_RATIO)
+        **overrides: Keyword arguments to override config values. Supported keys:
+            - num_samples: Number of samples to generate
+            - seed: Random seed for reproducibility
+            - max_duration_ratio: Maximum duration ratio
+            - trading_mode: Trading mode ("margin", "spot", etc.)
+            - pnl_base_std: Base standard deviation for PnL generation
+            - pnl_duration_vol_scale: Volatility scaling factor
+
+    Returns:
+        DataFrame from simulate_samples()
+
+    Example:
+        # Using all defaults
+        df = simulate_samples_with_defaults(params)
+
+        # Overriding specific parameters
+        df = simulate_samples_with_defaults(params, num_samples=500, seed=123)
+
+        # Using custom config
+        custom_config = SimulationConfig(num_samples=1000, seed=42)
+        df = simulate_samples_with_defaults(params, config=custom_config)
+    """
+    # Import here to avoid circular imports
+    from reward_space_analysis import simulate_samples
+
+    cfg = config or DEFAULT_SIMULATION_CONFIG
+
+    # Use config values with potential overrides
+    num_samples = overrides.pop("num_samples", cfg.num_samples)
+    seed = overrides.pop("seed", cfg.seed)
+    max_duration_ratio = overrides.pop("max_duration_ratio", cfg.max_duration_ratio)
+    trading_mode = overrides.pop("trading_mode", cfg.trading_mode)
+    pnl_base_std = overrides.pop("pnl_base_std", cfg.pnl_base_std)
+    pnl_duration_vol_scale = overrides.pop("pnl_duration_vol_scale", cfg.pnl_duration_vol_scale)
+
+    # Use provided values or defaults for reward calculation params
+    if base_factor is None:
+        base_factor = PARAMS.BASE_FACTOR
+    if profit_aim is None:
+        profit_aim = PARAMS.PROFIT_AIM
+    if risk_reward_ratio is None:
+        risk_reward_ratio = PARAMS.RISK_REWARD_RATIO
+
+    return simulate_samples(
+        params=params,
+        num_samples=num_samples,
+        seed=seed,
+        base_factor=base_factor,
+        profit_aim=profit_aim,
+        risk_reward_ratio=risk_reward_ratio,
+        max_duration_ratio=max_duration_ratio,
+        trading_mode=trading_mode,
+        pnl_base_std=pnl_base_std,
+        pnl_duration_vol_scale=pnl_duration_vol_scale,
+        **overrides,
     )

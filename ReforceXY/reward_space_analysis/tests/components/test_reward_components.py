@@ -15,7 +15,6 @@ from reward_space_analysis import (
     _compute_pnl_target_coefficient,
     _get_exit_factor,
     _get_float_param,
-    calculate_reward,
     get_max_idle_duration_candles,
 )
 
@@ -29,6 +28,7 @@ from ..helpers import (
     assert_hold_penalty_threshold_behavior,
     assert_progressive_scaling_behavior,
     assert_reward_calculation_scenarios,
+    calculate_reward_with_defaults,
     make_idle_penalty_test_contexts,
 )
 from ..test_base import RewardSpaceTestBase
@@ -72,15 +72,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Neutral,
         )
-        breakdown = calculate_reward(
-            context,
-            self.DEFAULT_PARAMS,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        )
+        breakdown = calculate_reward_with_defaults(context, self.DEFAULT_PARAMS)
         self.assertLess(breakdown.hold_penalty, 0, "Hold penalty should be negative")
         config = ValidationConfig(
             tolerance_strict=TOLERANCE.IDENTITY_STRICT,
@@ -148,15 +140,7 @@ class TestRewardComponents(RewardSpaceTestBase):
                 position=Positions.Long,
                 action=Actions.Neutral,
             )
-            breakdown = calculate_reward(
-                context,
-                params,
-                base_factor=PARAMS.BASE_FACTOR,
-                profit_aim=PARAMS.PROFIT_AIM,
-                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                short_allowed=True,
-                action_masking=True,
-            )
+            breakdown = calculate_reward_with_defaults(context, params)
             penalties.append(breakdown.hold_penalty)
 
         assert_progressive_scaling_behavior(self, penalties, durations, "Hold penalty")
@@ -450,14 +434,8 @@ class TestRewardComponents(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        breakdown = calculate_reward(
-            context,
-            params,
-            base_factor=1.0,
-            profit_aim=0.03,
-            risk_reward_ratio=1.0,
-            short_allowed=True,
-            action_masking=True,
+        breakdown = calculate_reward_with_defaults(
+            context, params, base_factor=1.0, profit_aim=0.03
         )
         self.assertLessEqual(
             breakdown.exit_component,
@@ -474,7 +452,6 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         params_small = self.base_params(max_idle_duration_candles=50)
         params_large = self.base_params(max_idle_duration_candles=200)
-        base_factor = PARAMS.BASE_FACTOR
         context = self.make_ctx(
             pnl=0.0,
             trade_duration=0,
@@ -482,24 +459,8 @@ class TestRewardComponents(RewardSpaceTestBase):
             position=Positions.Neutral,
             action=Actions.Neutral,
         )
-        small = calculate_reward(
-            context,
-            params_small,
-            base_factor,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        )
-        large = calculate_reward(
-            context,
-            params_large,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        )
+        small = calculate_reward_with_defaults(context, params_small)
+        large = calculate_reward_with_defaults(context, params_large)
         self.assertLess(small.idle_penalty, 0.0)
         self.assertLess(large.idle_penalty, 0.0)
         self.assertGreater(large.idle_penalty, small.idle_penalty)
@@ -628,14 +589,8 @@ class TestRewardComponents(RewardSpaceTestBase):
                 position=Positions.Long,
                 action=Actions.Long_exit,
             )
-            br = calculate_reward(
-                context,
-                params,
-                base_factor=1.0,
-                profit_aim=profit_aim,
-                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                short_allowed=True,
-                action_masking=True,
+            br = calculate_reward_with_defaults(
+                context, params, base_factor=1.0, profit_aim=profit_aim
             )
             ratio = br.exit_component / pnl if pnl != 0 else 0.0
             ratios_observed.append(float(ratio))
@@ -706,14 +661,12 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         results = []
         for context, description in contexts_and_descriptions:
-            breakdown = calculate_reward(
+            breakdown = calculate_reward_with_defaults(
                 context,
                 params,
                 base_factor=base_factor,
                 profit_aim=profit_aim,
                 risk_reward_ratio=risk_reward_ratio,
-                short_allowed=True,
-                action_masking=True,
             )
             results.append((breakdown, context.idle_duration, description))
 
@@ -764,15 +717,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        breakdown = calculate_reward(
-            context,
-            canonical_params,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        )
+        breakdown = calculate_reward_with_defaults(context, canonical_params)
 
         # Verify all PBRS fields are finite
         self.assertFinite(breakdown.base_reward, name="base_reward")
@@ -823,24 +768,8 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         params_rr.pop("risk_reward_ratio", None)
 
-        br_ratio = calculate_reward(
-            context,
-            params_ratio,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=1.0,
-            short_allowed=True,
-            action_masking=True,
-        )
-        br_rr = calculate_reward(
-            context,
-            params_rr,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=1.0,
-            short_allowed=True,
-            action_masking=True,
-        )
+        br_ratio = calculate_reward_with_defaults(context, params_ratio, risk_reward_ratio=1.0)
+        br_rr = calculate_reward_with_defaults(context, params_rr, risk_reward_ratio=1.0)
 
         self.assertAlmostEqualFloat(
             br_rr.total,

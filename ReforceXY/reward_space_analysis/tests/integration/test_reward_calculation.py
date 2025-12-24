@@ -14,10 +14,10 @@ import pytest
 from reward_space_analysis import (
     Actions,
     Positions,
-    calculate_reward,
 )
 
 from ..constants import PARAMS, TOLERANCE
+from ..helpers import calculate_reward_with_defaults
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.integration
@@ -94,13 +94,9 @@ class TestRewardCalculation(RewardSpaceTestBase):
         for name, ctx_kwargs, expected_component in scenarios:
             with self.subTest(scenario=name):
                 ctx = self.make_ctx(**ctx_kwargs)
-                breakdown = calculate_reward(
+                breakdown = calculate_reward_with_defaults(
                     ctx,
                     self.DEFAULT_PARAMS,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    profit_aim=PARAMS.PROFIT_AIM,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    short_allowed=True,
                     action_masking=expected_component != "invalid_penalty",
                 )
 
@@ -160,23 +156,19 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     action=Actions.Short_exit,
                 )
 
-                br_long = calculate_reward(
+                br_long = calculate_reward_with_defaults(
                     ctx_long,
                     params,
                     base_factor=base_factor,
                     profit_aim=profit_aim,
                     risk_reward_ratio=rr,
-                    short_allowed=True,
-                    action_masking=True,
                 )
-                br_short = calculate_reward(
+                br_short = calculate_reward_with_defaults(
                     ctx_short,
                     params,
                     base_factor=base_factor,
                     profit_aim=profit_aim,
                     risk_reward_ratio=rr,
-                    short_allowed=True,
-                    action_masking=True,
                 )
 
                 if pnl > 0:

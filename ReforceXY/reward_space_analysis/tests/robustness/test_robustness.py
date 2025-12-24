@@ -14,7 +14,6 @@ from reward_space_analysis import (
     Positions,
     RewardContext,
     _get_exit_factor,
-    calculate_reward,
     simulate_samples,
 )
 
@@ -30,6 +29,7 @@ from ..helpers import (
     assert_exit_factor_attenuation_modes,
     assert_exit_mode_mathematical_validation,
     assert_single_active_component_with_additives,
+    calculate_reward_with_defaults,
     capture_warnings,
 )
 from ..test_base import RewardSpaceTestBase
@@ -108,15 +108,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     potential_gamma=0.0,
                     check_invariants=False,
                 )
-                br = calculate_reward(
-                    ctx_obj,
-                    params,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    profit_aim=PARAMS.PROFIT_AIM,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    short_allowed=True,
-                    action_masking=True,
-                )
+                br = calculate_reward_with_defaults(ctx_obj, params)
                 # Relaxed tolerance: Accumulated floating-point errors across multiple
                 # reward component calculations (entry, hold, exit additives, and penalties)
                 assert_single_active_component_with_additives(
@@ -222,24 +214,15 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             action=Actions.Long_exit,
         )
         with capture_warnings() as caught:
-            baseline = calculate_reward(
-                context,
-                params,
-                base_factor=PARAMS.BASE_FACTOR,
-                profit_aim=PARAMS.PROFIT_AIM,
-                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH,
-                short_allowed=True,
-                action_masking=True,
+            baseline = calculate_reward_with_defaults(
+                context, params, risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH
             )
             amplified_base_factor = PARAMS.BASE_FACTOR * 200.0
-            amplified = calculate_reward(
+            amplified = calculate_reward_with_defaults(
                 context,
                 params,
                 base_factor=amplified_base_factor,
-                profit_aim=PARAMS.PROFIT_AIM,
                 risk_reward_ratio=PARAMS.RISK_REWARD_RATIO_HIGH,
-                short_allowed=True,
-                action_masking=True,
             )
         self.assertGreater(baseline.exit_component, 0.0)
         self.assertGreater(amplified.exit_component, baseline.exit_component)
@@ -356,15 +339,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        br = calculate_reward(
-            context,
-            extreme_params,
-            base_factor=10000.0,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        )
+        br = calculate_reward_with_defaults(context, extreme_params, base_factor=10000.0)
         self.assertFinite(br.total, name="breakdown.total")
 
     def test_exit_attenuation_modes_enumeration(self):
@@ -399,15 +374,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     position=Positions.Long,
                     action=Actions.Long_exit,
                 )
-                br = calculate_reward(
-                    ctx,
-                    test_params,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    profit_aim=PARAMS.PROFIT_AIM,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    short_allowed=True,
-                    action_masking=True,
-                )
+                br = calculate_reward_with_defaults(ctx, test_params)
                 self.assertFinite(br.exit_component, name="breakdown.exit_component")
                 self.assertFinite(br.total, name="breakdown.total")
 

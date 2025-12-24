@@ -164,6 +164,7 @@ class TestSeeds:
 
         # Feature analysis failure seeds
         FEATURE_EMPTY: Seed for empty feature tests (17)
+        FEATURE_PRIME_7: Seed for feature test variant (7)
         FEATURE_PRIME_11: Seed for feature test variant (11)
         FEATURE_PRIME_13: Seed for feature test variant (13)
         FEATURE_PRIME_21: Seed for feature test variant (21)
@@ -195,6 +196,7 @@ class TestSeeds:
 
     # Feature analysis failure seeds
     FEATURE_EMPTY: int = 17
+    FEATURE_PRIME_7: int = 7
     FEATURE_PRIME_11: int = 11
     FEATURE_PRIME_13: int = 13
     FEATURE_PRIME_21: int = 21

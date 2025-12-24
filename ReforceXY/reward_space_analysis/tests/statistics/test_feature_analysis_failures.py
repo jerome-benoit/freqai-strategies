@@ -27,7 +27,7 @@ pytestmark = pytest.mark.statistics
 
 
 def _minimal_df(n: int = 30) -> pd.DataFrame:
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(SEEDS.BASE)
     return pd.DataFrame(
         {
             "pnl": rng.normal(0, 1, n),
@@ -100,7 +100,8 @@ def test_feature_analysis_single_feature_path():
     - importance_mean is all NaN (stub path for single feature)
     - model is None
     """
-    df = pd.DataFrame({"pnl": np.random.normal(0, 1, 25), "reward": np.random.normal(0, 1, 25)})
+    rng = np.random.default_rng(SEEDS.FEATURE_PRIME_11)
+    df = pd.DataFrame({"pnl": rng.normal(0, 1, 25), "reward": rng.normal(0, 1, 25)})
     importance_df, stats, partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_PRIME_11, skip_partial_dependence=True
     )
@@ -123,7 +124,7 @@ def test_feature_analysis_nans_present_path():
     - importance_mean is all NaN
     - model is None
     """
-    rng = np.random.default_rng(9)
+    rng = np.random.default_rng(SEEDS.FEATURE_PRIME_7)
     df = pd.DataFrame(
         {
             "pnl": rng.normal(0, 1, 40),

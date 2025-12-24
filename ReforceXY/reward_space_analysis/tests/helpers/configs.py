@@ -24,7 +24,7 @@ Usage:
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from ..constants import SEEDS, STATISTICAL, TOLERANCE
+from ..constants import PARAMS, SEEDS, STATISTICAL, TOLERANCE
 
 
 @dataclass
@@ -210,6 +210,31 @@ ValidationCallback = Callable[[object, object, str, float], None]
 ContextFactory = Callable[..., object]
 
 
+# Default config instances for common test scenarios
+# These reduce boilerplate by providing pre-configured defaults
+
+DEFAULT_REWARD_CONFIG: RewardScenarioConfig = RewardScenarioConfig(
+    base_factor=PARAMS.BASE_FACTOR,
+    profit_aim=PARAMS.PROFIT_AIM,
+    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+    tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
+    short_allowed=True,
+    action_masking=True,
+)
+"""Default RewardScenarioConfig with standard test parameters."""
+
+
+DEFAULT_SIMULATION_CONFIG: SimulationConfig = SimulationConfig(
+    num_samples=200,
+    seed=SEEDS.BASE,
+    max_duration_ratio=2.0,
+    trading_mode="margin",
+    pnl_base_std=PARAMS.PNL_STD,
+    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+)
+"""Default SimulationConfig with standard test parameters."""
+
+
 __all__ = [
     "RewardScenarioConfig",
     "ValidationConfig",
@@ -221,4 +246,6 @@ __all__ = [
     "WarningCaptureConfig",
     "ValidationCallback",
     "ContextFactory",
+    "DEFAULT_REWARD_CONFIG",
+    "DEFAULT_SIMULATION_CONFIG",
 ]

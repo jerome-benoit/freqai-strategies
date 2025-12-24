@@ -22,13 +22,12 @@ from reward_space_analysis import (
     _get_str_param,
     _sample_action,
     build_argument_parser,
-    calculate_reward,
     parse_overrides,
-    simulate_samples,
     write_complete_statistical_analysis,
 )
 
-from ..constants import PARAMS, SEEDS, TOLERANCE
+from ..constants import PARAMS, SCENARIOS, SEEDS, TOLERANCE
+from ..helpers import calculate_reward_with_defaults, simulate_samples_with_defaults
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.api
@@ -90,17 +89,11 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
 
     def test_api_simulation_and_reward_smoke(self):
         """Test api simulation and reward smoke."""
-        df = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=40),
-            num_samples=20,
+        df = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=40),
+            num_samples=SCENARIOS.SAMPLE_SIZE_TINY,
             seed=SEEDS.SMOKE_TEST,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=1.5,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         self.assertGreater(len(df), 0)
         any_exit = df[df["reward_exit"] != 0].head(1)
@@ -115,44 +108,21 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
                 position=Positions.Long,
                 action=Actions.Long_exit,
             )
-            breakdown = calculate_reward(
-                ctx,
-                self.DEFAULT_PARAMS,
-                base_factor=PARAMS.BASE_FACTOR,
-                profit_aim=PARAMS.PROFIT_AIM,
-                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                short_allowed=True,
-                action_masking=True,
-            )
+            breakdown = calculate_reward_with_defaults(ctx, self.DEFAULT_PARAMS)
             self.assertFinite(breakdown.total)
 
     def test_simulate_samples_trading_modes_spot_vs_margin(self):
         """simulate_samples coverage: spot should forbid shorts, margin should allow them."""
-        df_spot = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=100),
-            num_samples=80,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
+        df_spot = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=100),
+            num_samples=SCENARIOS.SAMPLE_SIZE_SMALL,
             trading_mode="spot",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         short_positions_spot = (df_spot["position"] == float(Positions.Short.value)).sum()
         self.assertEqual(short_positions_spot, 0, "Spot mode must not contain short positions")
-        df_margin = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=100),
-            num_samples=80,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        df_margin = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=100),
+            num_samples=SCENARIOS.SAMPLE_SIZE_SMALL,
         )
         for col in [
             "pnl",
@@ -174,17 +144,10 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
     def test_simulate_samples_sampling_probabilities_are_bounded(self):
         """simulate_samples() exposes bounded sampling probabilities."""
 
-        df = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=40),
-            num_samples=200,
+        df = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=40),
             seed=SEEDS.SMOKE_TEST,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             max_duration_ratio=1.5,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
 
         for col in ["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]:
@@ -197,46 +160,25 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
 
     def test_to_bool(self):
         """Test _to_bool with various inputs."""
-        df1 = simulate_samples(
-            params=self.base_params(action_masking="true", max_trade_duration_candles=50),
+        df1 = simulate_samples_with_defaults(
+            self.base_params(action_masking="true", max_trade_duration_candles=50),
             num_samples=10,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
             trading_mode="spot",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         self.assertIsInstance(df1, pd.DataFrame)
-        df2 = simulate_samples(
-            params=self.base_params(action_masking="false", max_trade_duration_candles=50),
+        df2 = simulate_samples_with_defaults(
+            self.base_params(action_masking="false", max_trade_duration_candles=50),
             num_samples=10,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
             trading_mode="spot",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         self.assertIsInstance(df2, pd.DataFrame)
 
     def test_short_allowed_via_simulation(self):
         """Test _is_short_allowed via different trading modes."""
-        df_futures = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=50),
-            num_samples=100,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
+        df_futures = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=50),
+            num_samples=SCENARIOS.SAMPLE_SIZE_SMALL,
             trading_mode="futures",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         short_positions = (df_futures["position"] == float(Positions.Short.value)).sum()
         self.assertGreater(short_positions, 0, "Futures mode should allow short positions")
@@ -343,17 +285,8 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
 
     def test_complete_statistical_analysis_writer(self):
         """Test write_complete_statistical_analysis function."""
-        test_data = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=100),
-            num_samples=200,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        test_data = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=100),
         )
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = Path(tmp_dir)
@@ -393,15 +326,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                     position=position,
                     action=action,
                 )
-                breakdown = calculate_reward(
-                    context,
-                    self.DEFAULT_PARAMS,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    profit_aim=PARAMS.PROFIT_AIM,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    short_allowed=True,
-                    action_masking=True,
-                )
+                breakdown = calculate_reward_with_defaults(context, self.DEFAULT_PARAMS)
                 self.assertNotEqual(
                     breakdown.exit_component,
                     0.0,
@@ -422,14 +347,8 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             position=Positions.Short,
             action=Actions.Long_exit,
         )
-        breakdown = calculate_reward(
-            context,
-            self.DEFAULT_PARAMS,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=False,
+        breakdown = calculate_reward_with_defaults(
+            context, self.DEFAULT_PARAMS, action_masking=False
         )
         self.assertLess(breakdown.invalid_penalty, 0, "Invalid action should have negative penalty")
         self.assertAlmostEqualFloat(
@@ -459,15 +378,7 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        breakdown = calculate_reward(
-            context,
-            params,
-            base_factor=10000000.0,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        )
+        breakdown = calculate_reward_with_defaults(context, params, base_factor=10000000.0)
         self.assertFinite(breakdown.exit_component, name="exit_component")
 
 
