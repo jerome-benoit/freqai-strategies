@@ -379,7 +379,7 @@ config.json
 **/user_data/data/**
 !.gitkeep
 
-*/.serena/
+*/.serena
 */.serena/**
 */.clinerules
 */.clinerules/**

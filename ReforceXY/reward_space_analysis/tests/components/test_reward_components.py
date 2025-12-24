@@ -727,10 +727,10 @@ class TestRewardComponents(RewardSpaceTestBase):
         if ratio is not None:
             self.assertAlmostEqualFloat(abs(ratio), 2.0, tolerance=0.2)
 
-        idle_penalty_scale = _get_float_param(params, "idle_penalty_scale", 1.0)
+        idle_penalty_ratio = _get_float_param(params, "idle_penalty_ratio", 1.0)
         idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
         idle_factor = base_factor * (profit_aim / risk_reward_ratio)
-        observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_scale)
+        observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_ratio)
         if observed_ratio > 0:
             implied_max_idle_duration_candles = 120 / observed_ratio ** (1 / idle_penalty_power)
             tolerance = 0.05 * expected_max_idle_duration_candles

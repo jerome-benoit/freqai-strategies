@@ -177,9 +177,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
 
     DEFAULT_INVALID_ACTION: Final[float] = -2.0
-    DEFAULT_IDLE_PENALTY_SCALE: Final[float] = 1.0
+    DEFAULT_IDLE_PENALTY_RATIO: Final[float] = 1.0
     DEFAULT_IDLE_PENALTY_POWER: Final[float] = 1.025
-    DEFAULT_HOLD_PENALTY_SCALE: Final[float] = 1.0
+    DEFAULT_HOLD_PENALTY_RATIO: Final[float] = 1.0
     DEFAULT_HOLD_PENALTY_POWER: Final[float] = 1.025
 
     DEFAULT_CHECK_INVARIANTS: Final[bool] = True
@@ -2861,9 +2861,9 @@ class MyRLEnv(Base5ActionRLEnv):
             and self._position == Positions.Neutral
         ):
             max_idle_duration = max(1, self.max_idle_duration_candles)
-            idle_penalty_scale = float(
+            idle_penalty_ratio = float(
                 model_reward_parameters.get(
-                    "idle_penalty_scale", ReforceXY.DEFAULT_IDLE_PENALTY_SCALE
+                    "idle_penalty_ratio", ReforceXY.DEFAULT_IDLE_PENALTY_RATIO
                 )
             )
             idle_penalty_power = float(
@@ -2875,7 +2875,7 @@ class MyRLEnv(Base5ActionRLEnv):
             idle_duration_ratio = idle_duration / max(1, max_idle_duration)
             base_reward = (
                 -idle_factor
-                * idle_penalty_scale
+                * idle_penalty_ratio
                 * idle_duration_ratio**idle_penalty_power
             )
             self._last_idle_penalty = float(base_reward)
@@ -2886,9 +2886,9 @@ class MyRLEnv(Base5ActionRLEnv):
             and self._position in (Positions.Short, Positions.Long)
             and action == Actions.Neutral.value
         ):
-            hold_penalty_scale = float(
+            hold_penalty_ratio = float(
                 model_reward_parameters.get(
-                    "hold_penalty_scale", ReforceXY.DEFAULT_HOLD_PENALTY_SCALE
+                    "hold_penalty_ratio", ReforceXY.DEFAULT_HOLD_PENALTY_RATIO
                 )
             )
             hold_penalty_power = float(
@@ -2901,7 +2901,7 @@ class MyRLEnv(Base5ActionRLEnv):
             else:
                 base_reward = (
                     -hold_factor
-                    * hold_penalty_scale
+                    * hold_penalty_ratio
                     * (duration_ratio - 1.0) ** hold_penalty_power
                 )
                 self._last_hold_penalty = float(base_reward)

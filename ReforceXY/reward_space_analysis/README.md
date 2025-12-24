@@ -115,7 +115,7 @@ Single-run example:
 ```shell
 uv run python reward_space_analysis.py \
   --num_samples 30000 \
-  --params win_reward_factor=4.0 idle_penalty_scale=1.5 \
+  --params win_reward_factor=4.0 idle_penalty_ratio=1.5 \
   --out_dir sensitivity_test
 ```
 
@@ -298,9 +298,9 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 | ---------------------------- | ------- | -------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap         |
 | `max_idle_duration_candles`  | None    | Fallback 4× trade duration |
-| `idle_penalty_scale`         | 1.0     | Idle penalty scale         |
+| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio         |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent      |
-| `hold_penalty_scale`         | 1.0     | Hold penalty scale         |
+| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio         |
 | `hold_penalty_power`         | 1.025   | Hold penalty exponent      |
 
 #### Validation
@@ -447,8 +447,8 @@ Direct flags and `--params` produce identical outcomes; conflicts resolved by
 bulk `--params` values.
 
 ```shell
-uv run python reward_space_analysis.py --win_reward_factor 3.0 --idle_penalty_scale 2.0 --num_samples 15000
-uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penalty_scale=2.0 --num_samples 15000
+uv run python reward_space_analysis.py --win_reward_factor 3.0 --idle_penalty_ratio 2.0 --num_samples 15000
+uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penalty_ratio=2.0 --num_samples 15000
 ```
 
 `--params` wins on conflicts.

@@ -117,13 +117,13 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
     "base_factor": 100.0,
     # Idle penalty defaults
-    "idle_penalty_scale": 1.0,
+    "idle_penalty_ratio": 1.0,
     "idle_penalty_power": 1.025,
     "max_trade_duration_candles": 128,
     # Fallback: DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
     "max_idle_duration_candles": None,
     # Hold penalty defaults
-    "hold_penalty_scale": 1.0,
+    "hold_penalty_ratio": 1.0,
     "hold_penalty_power": 1.025,
     # Exit attenuation defaults
     "exit_attenuation_mode": "linear",
@@ -174,10 +174,10 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "invalid_action": "Penalty for invalid actions",
     "base_factor": "Base reward scale",
     "idle_penalty_power": "Idle penalty exponent",
-    "idle_penalty_scale": "Idle penalty scale",
+    "idle_penalty_ratio": "Idle penalty ratio",
     "max_trade_duration_candles": "Trade duration cap (candles)",
     "max_idle_duration_candles": "Idle duration cap (candles)",
-    "hold_penalty_scale": "Hold penalty scale",
+    "hold_penalty_ratio": "Hold penalty ratio",
     "hold_penalty_power": "Hold penalty exponent",
     "exit_attenuation_mode": "Exit kernel (legacy|sqrt|linear|power|half_life)",
     "exit_plateau": "Use plateau before attenuation",
@@ -224,10 +224,10 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "invalid_action": {"max": 0.0},  # penalty should be <= 0
     "base_factor": {"min": 0.0},
     "idle_penalty_power": {"min": 0.0},
-    "idle_penalty_scale": {"min": 0.0},
+    "idle_penalty_ratio": {"min": 0.0},
     "max_trade_duration_candles": {"min": 1.0},
     "max_idle_duration_candles": {"min": 0.0},
-    "hold_penalty_scale": {"min": 0.0},
+    "hold_penalty_ratio": {"min": 0.0},
     "hold_penalty_power": {"min": 0.0},
     "exit_linear_slope": {"min": 0.0},
     "exit_plateau_grace": {"min": 0.0},
@@ -630,7 +630,7 @@ def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
     """Dynamically add CLI options for each tunable in DEFAULT_MODEL_REWARD_PARAMETERS.
 
     Rules:
-    - Use the same underscored names as option flags (e.g., --idle_penalty_scale).
+    - Use the same underscored names as option flags (e.g., --idle_penalty_ratio).
     - Defaults are None so only user-provided values override params.
     - For exit_attenuation_mode, enforce allowed choices (case-sensitive).
     - Skip keys already managed as top-level options (e.g., base_factor) to avoid duplicates.
@@ -1095,10 +1095,10 @@ def _get_next_position(
 
 def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardParams) -> float:
     """Compute idle penalty."""
-    idle_penalty_scale = _get_float_param(
+    idle_penalty_ratio = _get_float_param(
         params,
-        "idle_penalty_scale",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_scale", 1.0),
+        "idle_penalty_ratio",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("idle_penalty_ratio", 1.0),
     )
     idle_penalty_power = _get_float_param(
         params,
@@ -1107,15 +1107,15 @@ def _idle_penalty(context: RewardContext, idle_factor: float, params: RewardPara
     )
     max_idle_duration_candles = get_max_idle_duration_candles(params)
     idle_duration_ratio = context.idle_duration / max(1, max_idle_duration_candles)
-    return -idle_factor * idle_penalty_scale * idle_duration_ratio**idle_penalty_power
+    return -idle_factor * idle_penalty_ratio * idle_duration_ratio**idle_penalty_power
 
 
 def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardParams) -> float:
     """Compute hold penalty."""
-    hold_penalty_scale = _get_float_param(
+    hold_penalty_ratio = _get_float_param(
         params,
-        "hold_penalty_scale",
-        DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_scale", 1.0),
+        "hold_penalty_ratio",
+        DEFAULT_MODEL_REWARD_PARAMETERS.get("hold_penalty_ratio", 1.0),
     )
     hold_penalty_power = _get_float_param(
         params,
@@ -1132,7 +1132,7 @@ def _hold_penalty(context: RewardContext, hold_factor: float, params: RewardPara
     if duration_ratio < 1.0:
         return _fail_safely("hold_penalty_duration_ratio_lt_1")
 
-    return -hold_factor * hold_penalty_scale * (duration_ratio - 1.0) ** hold_penalty_power
+    return -hold_factor * hold_penalty_ratio * (duration_ratio - 1.0) ** hold_penalty_power
 
 
 def _compute_exit_reward(
@@ -3586,7 +3586,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         nargs="*",
         default=[],
         metavar="KEY=VALUE",
-        help="Override reward parameters, e.g. hold_penalty_scale=0.5",
+        help="Override reward parameters, e.g. hold_penalty_ratio=0.5",
     )
     # Dynamically add CLI options for all tunables
     add_tunable_cli_args(parser)
