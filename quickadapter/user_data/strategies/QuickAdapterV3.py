@@ -107,7 +107,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.187"
+        return "3.3.188"
 
     timeframe = "5m"
 
@@ -145,6 +145,8 @@ class QuickAdapterV3(IStrategy):
     _CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
 
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
+
+    _PLOT_EXTREMA_ZERO_EPS: Final[float] = 0.025
 
     timeframe_minutes = timeframe_to_minutes(timeframe)
     minimal_roi = {str(timeframe_minutes * 864): -1}
@@ -1110,8 +1112,10 @@ class QuickAdapterV3(IStrategy):
             )
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
 
+        extrema_direction = dataframe[EXTREMA_COLUMN]
+
         weighted_extrema, _ = get_weighted_extrema(
-            extrema=dataframe[EXTREMA_COLUMN],
+            extrema=extrema_direction,
             indices=pivots_indices,
             amplitudes=pivots_amplitudes,
             amplitude_threshold_ratios=pivots_amplitude_threshold_ratios,
@@ -1136,8 +1140,17 @@ class QuickAdapterV3(IStrategy):
             gamma=self.extrema_weighting["gamma"],
         )
 
-        dataframe["minima"] = weighted_extrema.clip(upper=0.0)
-        dataframe["maxima"] = weighted_extrema.clip(lower=0.0)
+        plot_eps = QuickAdapterV3._PLOT_EXTREMA_ZERO_EPS
+        dataframe["maxima"] = (
+            weighted_extrema.where(extrema_direction.gt(0), 0.0)
+            .clip(lower=0.0)
+            .mask(extrema_direction.gt(0) & weighted_extrema.eq(0.0), plot_eps)
+        )
+        dataframe["minima"] = (
+            weighted_extrema.where(extrema_direction.lt(0), 0.0)
+            .clip(upper=0.0)
+            .mask(extrema_direction.lt(0) & weighted_extrema.eq(0.0), -plot_eps)
+        )
 
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
             weighted_extrema,
