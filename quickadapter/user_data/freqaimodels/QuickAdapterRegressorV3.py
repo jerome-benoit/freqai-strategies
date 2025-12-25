@@ -2106,7 +2106,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(trial.values, list)
                 and len(trial.values) == n_objectives
                 and all(
-                    isinstance(value, (int, float)) and np.isfinite(value)
+                    isinstance(value, (int, float))
+                    and (np.isfinite(value) or np.isinf(value))
                     for value in trial.values
                 )
             )
@@ -2377,7 +2378,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> None:
         if not study:
             return
-
+        if not self.optuna_validate_params(pair, namespace, study):
+            return
         best_params = self.get_optuna_params(pair, namespace)
         if not best_params:
             return

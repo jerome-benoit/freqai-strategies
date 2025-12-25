@@ -30,7 +30,7 @@ class TestReportFormatting(RewardSpaceTestBase):
         # Construct df with idle_duration always zero -> reward_idle all zeros so idle_mask.sum()==0
         # Position has only one unique value -> groups<2
         # pnl all zeros so no positive/negative groups with >=30 each
-        n = 40
+        n = SCENARIOS.SAMPLE_SIZE_TINY
         df = pd.DataFrame(
             {
                 "reward": np.zeros(n),
@@ -112,12 +112,12 @@ class TestReportFormatting(RewardSpaceTestBase):
     def test_distribution_shift_section_present_with_real_episodes(self):
         """Distribution Shift section renders metrics table when real episodes provided."""
         # Synthetic df (ensure >=10 non-NaN per feature)
-        synth_df = self.make_stats_df(n=60, seed=SEEDS.REPORT_FORMAT_1)
+        synth_df = self.make_stats_df(n=SCENARIOS.SAMPLE_SIZE_TINY, seed=SEEDS.REPORT_FORMAT_1)
         # Real df: shift slightly (different mean) so metrics non-zero
         real_df = synth_df.copy()
-        real_df["pnl"] = real_df["pnl"] + 0.001  # small mean shift
-        real_df["trade_duration"] = real_df["trade_duration"] * 1.01
-        real_df["idle_duration"] = real_df["idle_duration"] * 0.99
+        real_df["pnl"] = real_df["pnl"] + PARAMS.PNL_DUR_VOL_SCALE  # small mean shift
+        real_df["trade_duration"] = real_df["trade_duration"] * SCENARIOS.REPORT_DURATION_SCALE_UP
+        real_df["idle_duration"] = real_df["idle_duration"] * SCENARIOS.REPORT_DURATION_SCALE_DOWN
         content = self._write_report(synth_df, real_df=real_df)
         # Assert metrics header and at least one feature row
         self.assertIn("### 5.4 Distribution Shift Analysis", content)
@@ -135,7 +135,7 @@ class TestReportFormatting(RewardSpaceTestBase):
     def test_partial_dependence_redundancy_note_emitted(self):
         """Redundancy note appears when both feature analysis and partial dependence skipped."""
         df = self.make_stats_df(
-            n=10, seed=SEEDS.REPORT_FORMAT_2
+            n=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL, seed=SEEDS.REPORT_FORMAT_2
         )  # small but >=4 so skip_feature_analysis flag drives behavior
         content = self._write_report(
             df,
@@ -162,27 +162,28 @@ class TestReportFormatting(RewardSpaceTestBase):
         - All metrics are formatted with proper precision
         """
         # Create df with PBRS columns
-        n = 100
+        n = SCENARIOS.SAMPLE_SIZE_SMALL
+        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_1)
         df = pd.DataFrame(
             {
-                "reward": np.random.normal(0, 0.1, n),
+                "reward": rng.normal(0, 0.1, n),
                 "reward_invalid": np.zeros(n),
                 "reward_idle": np.zeros(n),
                 "reward_hold": np.zeros(n),
-                "reward_exit": np.random.normal(0, 0.05, n),
-                "reward_shaping": np.random.normal(0, 0.02, n),
+                "reward_exit": rng.normal(0, 0.05, n),
+                "reward_shaping": rng.normal(0, 0.02, n),
                 "reward_entry_additive": np.zeros(n),
                 "reward_exit_additive": np.zeros(n),
                 # PBRS columns
-                "reward_base": np.random.normal(0, 0.1, n),
-                "reward_pbrs_delta": np.random.normal(0, 0.02, n),
-                "reward_invariance_correction": np.random.normal(0, 1e-6, n),
-                "pnl": np.random.normal(0, 0.01, n),
-                "trade_duration": np.random.randint(10, 100, n).astype(float),
+                "reward_base": rng.normal(0, 0.1, n),
+                "reward_pbrs_delta": rng.normal(0, 0.02, n),
+                "reward_invariance_correction": rng.normal(0, PBRS_INVARIANCE_TOL / 10.0, n),
+                "pnl": rng.normal(0, 0.01, n),
+                "trade_duration": rng.integers(10, 100, n).astype(float),
                 "idle_duration": np.zeros(n),
-                "position": np.random.choice([0, 1, 2], n).astype(float),
-                "action": np.random.choice([0, 1, 2, 3, 4], n).astype(float),
-                "duration_ratio": np.random.uniform(0, 1, n),
+                "position": rng.choice([0, 1, 2], n).astype(float),
+                "action": rng.choice([0, 1, 2, 3, 4], n).astype(float),
+                "duration_ratio": rng.uniform(0, 1, n),
                 "idle_ratio": np.zeros(n),
             }
         )

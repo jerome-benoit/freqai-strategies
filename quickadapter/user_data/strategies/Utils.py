@@ -1933,7 +1933,9 @@ def get_optuna_callbacks(
         ]
     elif regressor == REGRESSORS[1]:  # "lightgbm"
         callbacks = [
-            optuna.integration.LightGBMPruningCallback(trial, "rmse", valid_name="valid_0")
+            optuna.integration.LightGBMPruningCallback(
+                trial, "rmse", valid_name="valid_0"
+            )
         ]
     else:
         raise ValueError(

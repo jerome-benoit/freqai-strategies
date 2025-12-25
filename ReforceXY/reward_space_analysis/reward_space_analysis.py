@@ -2023,9 +2023,7 @@ def _perform_feature_analysis(
         )
 
     X = df[available_features].copy()
-    for col in ("trade_duration", "idle_duration"):
-        if col in X.columns and pd.api.types.is_integer_dtype(X[col]):
-            X.loc[:, col] = X[col].astype(float)
+    X = X.apply(pd.to_numeric, errors="coerce").astype(float)
     y = df["reward"].copy()
 
     # Drop wholly NaN or constant columns (provide no signal)

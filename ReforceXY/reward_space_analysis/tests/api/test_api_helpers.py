@@ -43,12 +43,12 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         The test is statistical but deterministic via fixed RNG seeds.
         """
 
-        max_idle_duration_candles = 20
+        max_idle_duration_candles = SCENARIOS.API_MAX_IDLE_DURATION_CANDLES
         max_trade_duration_candles = PARAMS.TRADE_DURATION_MEDIUM
 
         def sample_entry_rate(*, idle_duration: int, short_allowed: bool) -> float:
             rng = random.Random(SEEDS.REPRODUCIBILITY)
-            draws = 2_000
+            draws = SCENARIOS.API_ENTRY_RATE_DRAWS
             entries = 0
             for _ in range(draws):
                 action, _, _, _ = _sample_action(
@@ -65,7 +65,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             return entries / draws
 
         idle_duration_low = 0
-        idle_duration_high = 60
+        idle_duration_high = SCENARIOS.API_IDLE_DURATION_HIGH
 
         low_idle_rate = sample_entry_rate(idle_duration=idle_duration_low, short_allowed=True)
         high_idle_rate = sample_entry_rate(idle_duration=idle_duration_high, short_allowed=True)
@@ -95,10 +95,10 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
     def test_api_simulation_and_reward_smoke(self):
         """Test api simulation and reward smoke."""
         df = simulate_samples_with_defaults(
-            self.base_params(max_trade_duration_candles=40),
+            self.base_params(max_trade_duration_candles=SCENARIOS.API_MAX_TRADE_DURATION_CANDLES),
             num_samples=SCENARIOS.SAMPLE_SIZE_TINY,
             seed=SEEDS.SMOKE_TEST,
-            max_duration_ratio=1.5,
+            max_duration_ratio=SCENARIOS.API_MAX_DURATION_RATIO,
         )
         self.assertGreater(len(df), 0)
         any_exit = df[df["reward_exit"] != 0].head(1)
@@ -152,9 +152,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         """simulate_samples() exposes bounded sampling probabilities."""
 
         df = simulate_samples_with_defaults(
-            self.base_params(max_trade_duration_candles=40),
+            self.base_params(max_trade_duration_candles=SCENARIOS.API_MAX_TRADE_DURATION_CANDLES),
             seed=SEEDS.SMOKE_TEST,
-            max_duration_ratio=1.5,
+            max_duration_ratio=SCENARIOS.API_MAX_DURATION_RATIO,
         )
 
         for col in ["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]:
@@ -163,7 +163,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         values = (
             df[["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]].stack().dropna()
         )
-        prob_upper_bound = 0.9
+        prob_upper_bound = SCENARIOS.API_PROBABILITY_UPPER_BOUND
         self.assertTrue(((values >= 0.0) & (values <= prob_upper_bound)).all())
 
     def test_simulate_samples_interprets_bool_string_params(self):
@@ -172,7 +172,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             self.base_params(
                 action_masking="true", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
             ),
-            num_samples=10,
+            num_samples=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL,
             trading_mode="spot",
         )
         self.assertIsInstance(df1, pd.DataFrame)
@@ -180,7 +180,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             self.base_params(
                 action_masking="false", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
             ),
-            num_samples=10,
+            num_samples=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL,
             trading_mode="spot",
         )
         self.assertIsInstance(df2, pd.DataFrame)
@@ -291,7 +291,14 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         """Test build_argument_parser function."""
         parser = build_argument_parser()
         self.assertIsNotNone(parser)
-        args = parser.parse_args(["--num_samples", "100", "--out_dir", "test_output"])
+        args = parser.parse_args(
+            [
+                "--num_samples",
+                str(SCENARIOS.SAMPLE_SIZE_SMALL),
+                "--out_dir",
+                "test_output",
+            ]
+        )
         self.assertEqual(args.num_samples, 100)
         self.assertEqual(str(args.out_dir), "test_output")
 
@@ -323,7 +330,12 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         """Test exit reward calculation with various scenarios."""
         scenarios = [
             (Positions.Long, Actions.Long_exit, PARAMS.PNL_MEDIUM, "Profitable long exit"),
-            (Positions.Short, Actions.Short_exit, -0.03, "Profitable short exit"),
+            (
+                Positions.Short,
+                Actions.Short_exit,
+                -PARAMS.PNL_SHORT_PROFIT,
+                "Profitable short exit",
+            ),
             (Positions.Long, Actions.Long_exit, -PARAMS.PNL_SMALL, "Losing long exit"),
             (Positions.Short, Actions.Short_exit, PARAMS.PNL_SMALL, "Losing short exit"),
         ]
@@ -353,8 +365,8 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             pnl=PARAMS.PNL_SMALL,
             trade_duration=PARAMS.TRADE_DURATION_SHORT,
             idle_duration=0,
-            max_unrealized_profit=0.03,
-            min_unrealized_profit=0.01,
+            max_unrealized_profit=PARAMS.PNL_SHORT_PROFIT,
+            min_unrealized_profit=PARAMS.PNL_TINY,
             position=Positions.Short,
             action=Actions.Long_exit,
         )
@@ -389,7 +401,9 @@ class TestPrivateFunctions(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        breakdown = calculate_reward_with_defaults(context, params, base_factor=10_000_000.0)
+        breakdown = calculate_reward_with_defaults(
+            context, params, base_factor=SCENARIOS.API_EXTREME_BASE_FACTOR
+        )
         self.assertFinite(breakdown.exit_component, name="exit_component")
 
 

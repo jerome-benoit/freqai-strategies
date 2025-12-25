@@ -41,12 +41,15 @@ class TestStatistics(RewardSpaceTestBase):
     def test_statistics_feature_analysis_skip_partial_dependence(self):
         """Invariant 107: skip_partial_dependence=True yields empty partial_deps."""
         if _perform_feature_analysis is None:
-            self.skipTest("sklearn not available; skipping feature analysis invariance test")
+            self.skipTest("Feature analysis helper unavailable")
         # Use existing helper to get synthetic stats df (small for speed)
         df = self.make_stats_df(n=120, seed=SEEDS.BASE, idle_pattern="mixed")
-        importance_df, analysis_stats, partial_deps, model = _perform_feature_analysis(
-            df, seed=SEEDS.BASE, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
-        )
+        try:
+            importance_df, analysis_stats, partial_deps, model = _perform_feature_analysis(
+                df, seed=SEEDS.BASE, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
+            )
+        except ImportError:
+            self.skipTest("scikit-learn not available; skipping feature analysis invariance test")
         self.assertIsInstance(importance_df, pd.DataFrame)
         self.assertIsInstance(analysis_stats, dict)
         self.assertEqual(
@@ -248,19 +251,14 @@ class TestStatistics(RewardSpaceTestBase):
         df1 = self._shift_scale_df(300, shift=0.0)
         df2 = self._shift_scale_df(300, shift=0.3)
         metrics = compute_distribution_shift_metrics(df1, df2)
-        js_key = next((k for k in metrics if k.endswith("pnl_js_distance")), None)
-        if js_key is None:
-            self.skipTest("JS distance key not present in metrics output")
-        assert js_key is not None
+        self.assertIn("pnl_js_distance", metrics)
 
         metrics_swapped = compute_distribution_shift_metrics(df2, df1)
-        js_key_swapped = next((k for k in metrics_swapped if k.endswith("pnl_js_distance")), None)
-        self.assertIsNotNone(js_key_swapped)
-        assert js_key_swapped is not None
+        self.assertIn("pnl_js_distance", metrics_swapped)
 
         self.assertAlmostEqualFloat(
-            float(metrics[js_key]),
-            float(metrics_swapped[js_key_swapped]),
+            float(metrics["pnl_js_distance"]),
+            float(metrics_swapped["pnl_js_distance"]),
             tolerance=TOLERANCE.IDENTITY_STRICT,
             rtol=TOLERANCE.RELATIVE,
         )
@@ -446,12 +444,15 @@ class TestStatistics(RewardSpaceTestBase):
             float(reward_space_analysis.Actions.Short_exit.value),
         )
         exit_data = df[df["action"].isin(exit_action_codes)].copy()
-        if len(exit_data) < SCENARIOS.SAMPLE_SIZE_TINY:
-            self.skipTest("Insufficient exit actions for heteroscedasticity test")
+        self.assertGreaterEqual(
+            len(exit_data),
+            SCENARIOS.SAMPLE_SIZE_TINY,
+            f"Insufficient exit actions for heteroscedasticity test (n={len(exit_data)})",
+        )
         exit_data["duration_bin"] = pd.cut(
             exit_data["duration_ratio"], bins=4, labels=["Q1", "Q2", "Q3", "Q4"]
         )
-        variance_by_bin = exit_data.groupby("duration_bin")["pnl"].var().dropna()
+        variance_by_bin = exit_data.groupby("duration_bin", observed=False)["pnl"].var().dropna()
         if "Q1" in variance_by_bin.index and "Q4" in variance_by_bin.index:
             self.assertGreater(
                 variance_by_bin["Q4"],

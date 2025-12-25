@@ -10,7 +10,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ..constants import SEEDS, TOLERANCE
+from reward_space_analysis import Actions
+
+from ..constants import SCENARIOS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 # Pytest marker for taxonomy classification
@@ -46,7 +48,12 @@ class TestCsvEncoding(RewardSpaceTestBase):
         out_dir = self.output_path / "csv_int_check"
         result = _run_cli(
             out_dir=out_dir,
-            args=["--num_samples", "200", "--seed", str(SEEDS.BASE)],
+            args=[
+                "--num_samples",
+                str(SCENARIOS.CLI_NUM_SAMPLES_STANDARD),
+                "--seed",
+                str(SEEDS.BASE),
+            ],
         )
         _assert_cli_success(self, result)
         csv_path = out_dir / "reward_samples.csv"
@@ -58,7 +65,7 @@ class TestCsvEncoding(RewardSpaceTestBase):
             all((float(v).is_integer() for v in values)),
             "Non-integer values detected in 'action' column",
         )
-        allowed = {0, 1, 2, 3, 4}
+        allowed = {int(action.value) for action in Actions}
         self.assertTrue(set((int(v) for v in values)).issubset(allowed))
 
 
@@ -79,7 +86,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=out_dir,
             args=[
                 "--num_samples",
-                "200",
+                str(SCENARIOS.CLI_NUM_SAMPLES_STANDARD),
                 "--seed",
                 str(SEEDS.BASE),
                 "--skip_feature_analysis",
@@ -100,11 +107,11 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=out_dir,
             args=[
                 "--num_samples",
-                "150",
+                str(SCENARIOS.CLI_NUM_SAMPLES_HASH),
                 "--seed",
                 str(SEEDS.BASE),
                 "--risk_reward_ratio",
-                "1.5",
+                str(SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT),
             ],
         )
         _assert_cli_success(self, result)
@@ -121,7 +128,12 @@ class TestParamsPropagation(RewardSpaceTestBase):
         # Use small sample for speed; rely on default shaping logic
         result = _run_cli(
             out_dir=out_dir,
-            args=["--num_samples", "180", "--seed", str(SEEDS.BASE)],
+            args=[
+                "--num_samples",
+                str(SCENARIOS.CLI_NUM_SAMPLES_REPORT),
+                "--seed",
+                str(SEEDS.BASE),
+            ],
         )
         _assert_cli_success(self, result)
         report_path = out_dir / "statistical_analysis.md"
@@ -137,7 +149,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=out_dir,
             args=[
                 "--num_samples",
-                "120",
+                str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
                 "--seed",
                 str(SEEDS.BASE),
                 "--strict_diagnostics",
@@ -159,11 +171,11 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=out_dir,
             args=[
                 "--num_samples",
-                "120",
+                str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
                 "--seed",
                 str(SEEDS.BASE),
                 "--params",
-                "max_trade_duration_candles=96",
+                f"max_trade_duration_candles={SCENARIOS.CLI_MAX_TRADE_DURATION_PARAMS}",
             ],
         )
         _assert_cli_success(self, result)
@@ -175,7 +187,9 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertIn("simulation_params", manifest)
         rp = manifest["reward_params"]
         self.assertIn("max_trade_duration_candles", rp)
-        self.assertEqual(int(rp["max_trade_duration_candles"]), 96)
+        self.assertEqual(
+            int(rp["max_trade_duration_candles"]), SCENARIOS.CLI_MAX_TRADE_DURATION_PARAMS
+        )
 
     def test_max_trade_duration_candles_propagation_flag(self):
         """Dynamic flag --max_trade_duration_candles X propagates identically."""
@@ -184,11 +198,11 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=out_dir,
             args=[
                 "--num_samples",
-                "120",
+                str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
                 "--seed",
                 str(SEEDS.BASE),
                 "--max_trade_duration_candles",
-                "64",
+                str(SCENARIOS.CLI_MAX_TRADE_DURATION_FLAG),
             ],
         )
         _assert_cli_success(self, result)
@@ -200,7 +214,9 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertIn("simulation_params", manifest)
         rp = manifest["reward_params"]
         self.assertIn("max_trade_duration_candles", rp)
-        self.assertEqual(int(rp["max_trade_duration_candles"]), 64)
+        self.assertEqual(
+            int(rp["max_trade_duration_candles"]), SCENARIOS.CLI_MAX_TRADE_DURATION_FLAG
+        )
 
     # Owns invariant: cli-pbrs-csv-columns-121
     def test_csv_contains_pbrs_columns_when_shaping_present(self):
@@ -216,7 +232,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=out_dir,
             args=[
                 "--num_samples",
-                "150",
+                str(SCENARIOS.CLI_NUM_SAMPLES_HASH),
                 "--seed",
                 str(SEEDS.BASE),
                 # Enable PBRS shaping explicitly

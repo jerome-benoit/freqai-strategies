@@ -26,6 +26,7 @@ class ToleranceConfig:
         NUMERIC_GUARD: Minimum threshold to prevent division by zero (1e-18)
         NEGLIGIBLE: Threshold below which values are considered negligible (1e-15)
         RELATIVE: Relative tolerance for ratio/percentage comparisons (1e-06)
+        INTEGRATION_RELATIVE_COARSE: Coarse relative tolerance for integration smoke checks (0.25)
         DISTRIB_SHAPE: Tolerance for distribution shape metrics (skew, kurtosis) (0.15)
         DECIMAL_PLACES_STRICT: Decimal places for exact formula validation (12)
         DECIMAL_PLACES_STANDARD: Decimal places for general calculations (9)
@@ -44,6 +45,7 @@ class ToleranceConfig:
     NUMERIC_GUARD: float = 1e-18
     NEGLIGIBLE: float = 1e-15
     RELATIVE: float = 1e-06
+    INTEGRATION_RELATIVE_COARSE: float = 0.25
     DISTRIB_SHAPE: float = 0.15
     DECIMAL_PLACES_STRICT: int = 12
     DECIMAL_PLACES_STANDARD: int = 9
@@ -230,7 +232,9 @@ class TestParameters:
         PNL_DUR_VOL_SCALE: Duration-based volatility scaling factor (0.001)
 
         # Common test PnL values
+        PNL_TINY: Tiny profit/loss value (0.01)
         PNL_SMALL: Small profit/loss value (0.02)
+        PNL_SHORT_PROFIT: Short profit/loss value (0.03)
         PNL_MEDIUM: Medium profit/loss value (0.05)
         PNL_LARGE: Large profit/loss value (0.10)
 
@@ -255,7 +259,9 @@ class TestParameters:
     PNL_DUR_VOL_SCALE: float = 0.001
 
     # Common PnL values
+    PNL_TINY: float = 0.01
     PNL_SMALL: float = 0.02
+    PNL_SHORT_PROFIT: float = 0.03
     PNL_MEDIUM: float = 0.05
     PNL_LARGE: float = 0.10
 
@@ -295,6 +301,27 @@ class TestScenarios:
         PBRS_SWEEP_ITERATIONS: Number of iterations for PBRS sweep tests (120)
         BOOTSTRAP_MINIMAL_ITERATIONS: Minimal bootstrap iterations for quick tests (25)
         BOOTSTRAP_EXTENDED_ITERATIONS: Extended bootstrap iterations (200)
+        SAMPLE_SIZE_REPORT_MINIMAL: Minimal sample size for report smoke tests (10)
+        REPORT_DURATION_SCALE_UP: Duration scale applied to synthetic real episodes (1.01)
+        REPORT_DURATION_SCALE_DOWN: Duration scale applied to synthetic real episodes (0.99)
+
+        # API smoke parameters
+        API_MAX_IDLE_DURATION_CANDLES: Idle duration cap used in _sample_action tests (20)
+        API_IDLE_DURATION_HIGH: High idle duration used to trigger hazard (60)
+        API_ENTRY_RATE_DRAWS: Draw count for entry-rate estimation (2000)
+        API_MAX_TRADE_DURATION_CANDLES: Max trade duration used in API simulation tests (40)
+        API_MAX_DURATION_RATIO: Max duration ratio used in API simulation tests (1.5)
+        API_PROBABILITY_UPPER_BOUND: Upper bound for exposed sampling probabilities (0.9)
+        API_EXTREME_BASE_FACTOR: Extreme base_factor used to trigger warning paths (10000000.0)
+
+        # CLI smoke parameters
+        CLI_NUM_SAMPLES_STANDARD: Default CLI sample size for smoke runs (200)
+        CLI_NUM_SAMPLES_REPORT: CLI sample size used in PBRS report smoke (180)
+        CLI_NUM_SAMPLES_HASH: CLI sample size used for params_hash checks (150)
+        CLI_NUM_SAMPLES_FAST: CLI sample size for quick branch coverage (120)
+        CLI_RISK_REWARD_RATIO_NON_DEFAULT: Non-default risk/reward ratio for manifest hashing (1.5)
+        CLI_MAX_TRADE_DURATION_PARAMS: CLI max_trade_duration_candles for --params propagation (96)
+        CLI_MAX_TRADE_DURATION_FLAG: CLI max_trade_duration_candles for dynamic flag propagation (64)
     """
 
     DURATION_SHORT: int = 150
@@ -315,6 +342,27 @@ class TestScenarios:
     PBRS_SWEEP_ITERATIONS: int = 120
     BOOTSTRAP_MINIMAL_ITERATIONS: int = 25
     BOOTSTRAP_EXTENDED_ITERATIONS: int = 200
+    SAMPLE_SIZE_REPORT_MINIMAL: int = 10
+    REPORT_DURATION_SCALE_UP: float = 1.01
+    REPORT_DURATION_SCALE_DOWN: float = 0.99
+
+    # API smoke parameters
+    API_MAX_IDLE_DURATION_CANDLES: int = 20
+    API_IDLE_DURATION_HIGH: int = 60
+    API_ENTRY_RATE_DRAWS: int = 2000
+    API_MAX_TRADE_DURATION_CANDLES: int = 40
+    API_MAX_DURATION_RATIO: float = 1.5
+    API_PROBABILITY_UPPER_BOUND: float = 0.9
+    API_EXTREME_BASE_FACTOR: float = 10_000_000.0
+
+    # CLI smoke parameters
+    CLI_NUM_SAMPLES_STANDARD: int = 200
+    CLI_NUM_SAMPLES_REPORT: int = 180
+    CLI_NUM_SAMPLES_HASH: int = 150
+    CLI_NUM_SAMPLES_FAST: int = 120
+    CLI_RISK_REWARD_RATIO_NON_DEFAULT: float = 1.5
+    CLI_MAX_TRADE_DURATION_PARAMS: int = 96
+    CLI_MAX_TRADE_DURATION_FLAG: int = 64
 
 
 @dataclass(frozen=True)

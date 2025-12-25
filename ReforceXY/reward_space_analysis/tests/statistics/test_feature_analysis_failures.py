@@ -161,8 +161,6 @@ def test_feature_analysis_model_fitting_failure(monkeypatch):
     if RandomForestRegressor is None:  # type: ignore[comparison-overlap]
         pytest.skip("sklearn components unavailable; skipping model fitting failure test")
 
-    _ = RandomForestRegressor.fit  # preserve reference for clarity (unused)
-
     def boom(self, *a, **kw):  # noqa: D401
         raise RuntimeError("forced fit failure")
 

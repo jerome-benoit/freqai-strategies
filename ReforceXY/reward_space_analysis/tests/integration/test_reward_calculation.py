@@ -143,15 +143,15 @@ class TestRewardCalculation(RewardSpaceTestBase):
         """
         params = self.base_params()
         params.pop("base_factor", None)
-        base_factor = 100.0
-        profit_aim = 0.04
+        base_factor = DEFAULT_MODEL_REWARD_PARAMETERS["base_factor"]
+        profit_aim = PARAMS.PNL_MEDIUM
         rr = PARAMS.RISK_REWARD_RATIO
 
-        for pnl, label in [(0.02, "profit"), (-0.02, "loss")]:
+        for pnl, label in [(PARAMS.PNL_SMALL, "profit"), (-PARAMS.PNL_SMALL, "loss")]:
             with self.subTest(pnl=pnl, label=label):
                 ctx_long = self.make_ctx(
                     pnl=pnl,
-                    trade_duration=50,
+                    trade_duration=PARAMS.TRADE_DURATION_SHORT,
                     idle_duration=0,
                     max_unrealized_profit=abs(pnl) + 0.005,
                     min_unrealized_profit=0.0 if pnl > 0 else pnl,
@@ -160,7 +160,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                 )
                 ctx_short = self.make_ctx(
                     pnl=pnl,
-                    trade_duration=50,
+                    trade_duration=PARAMS.TRADE_DURATION_SHORT,
                     idle_duration=0,
                     max_unrealized_profit=abs(pnl) + 0.005 if pnl > 0 else 0.01,
                     min_unrealized_profit=0.0 if pnl > 0 else pnl,
@@ -192,6 +192,10 @@ class TestRewardCalculation(RewardSpaceTestBase):
 
                 # Coarse symmetry: relative diff below relaxed tolerance
                 rel_diff = abs(abs(br_long.exit_component) - abs(br_short.exit_component)) / max(
-                    1e-12, abs(br_long.exit_component)
+                    TOLERANCE.IDENTITY_STRICT, abs(br_long.exit_component)
                 )
-                self.assertLess(rel_diff, 0.25, f"Excessive asymmetry ({rel_diff:.3f}) for {label}")
+                self.assertLess(
+                    rel_diff,
+                    TOLERANCE.INTEGRATION_RELATIVE_COARSE,
+                    f"Excessive asymmetry ({rel_diff:.3f}) for {label}",
+                )
