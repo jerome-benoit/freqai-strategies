@@ -144,7 +144,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
         params = self.base_params()
         params.pop("base_factor", None)
         base_factor = DEFAULT_MODEL_REWARD_PARAMETERS["base_factor"]
-        profit_aim = PARAMS.PNL_MEDIUM
+        profit_aim = PARAMS.PROFIT_AIM
         rr = PARAMS.RISK_REWARD_RATIO
 
         for pnl, label in [(PARAMS.PNL_SMALL, "profit"), (-PARAMS.PNL_SMALL, "loss")]:

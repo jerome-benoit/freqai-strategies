@@ -115,7 +115,7 @@ class TestReportFormatting(RewardSpaceTestBase):
         synth_df = self.make_stats_df(n=SCENARIOS.SAMPLE_SIZE_TINY, seed=SEEDS.REPORT_FORMAT_1)
         # Real df: shift slightly (different mean) so metrics non-zero
         real_df = synth_df.copy()
-        real_df["pnl"] = real_df["pnl"] + PARAMS.PNL_DUR_VOL_SCALE  # small mean shift
+        real_df["pnl"] = real_df["pnl"] + SCENARIOS.REPORT_PNL_MEAN_SHIFT  # small mean shift
         real_df["trade_duration"] = real_df["trade_duration"] * SCENARIOS.REPORT_DURATION_SCALE_UP
         real_df["idle_duration"] = real_df["idle_duration"] * SCENARIOS.REPORT_DURATION_SCALE_DOWN
         content = self._write_report(synth_df, real_df=real_df)

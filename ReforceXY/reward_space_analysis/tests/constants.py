@@ -304,6 +304,7 @@ class TestScenarios:
         SAMPLE_SIZE_REPORT_MINIMAL: Minimal sample size for report smoke tests (10)
         REPORT_DURATION_SCALE_UP: Duration scale applied to synthetic real episodes (1.01)
         REPORT_DURATION_SCALE_DOWN: Duration scale applied to synthetic real episodes (0.99)
+        REPORT_PNL_MEAN_SHIFT: PnL mean shift applied to synthetic real episodes (0.001)
 
         # API smoke parameters
         API_MAX_IDLE_DURATION_CANDLES: Idle duration cap used in _sample_action tests (20)
@@ -345,6 +346,7 @@ class TestScenarios:
     SAMPLE_SIZE_REPORT_MINIMAL: int = 10
     REPORT_DURATION_SCALE_UP: float = 1.01
     REPORT_DURATION_SCALE_DOWN: float = 0.99
+    REPORT_PNL_MEAN_SHIFT: float = 0.001
 
     # API smoke parameters
     API_MAX_IDLE_DURATION_CANDLES: int = 20
