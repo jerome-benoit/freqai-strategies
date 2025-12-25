@@ -315,30 +315,6 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._model_params_cache: Optional[Dict[str, Any]] = None
         self.unset_unsupported()
 
-        model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
-        profit_aim = float(model_reward_parameters.get("profit_aim", np.nan))
-        rr = float(model_reward_parameters.get("rr", np.nan))
-        if (
-            (not np.isfinite(profit_aim))
-            or (profit_aim <= 0.0)
-            or np.isclose(profit_aim, 0.0)
-        ):
-            raise ValueError(
-                f"Invalid profit_aim={profit_aim:.12g}; expected a finite value > 0"
-            )
-        if (not np.isfinite(rr)) or (rr <= 0.0) or np.isclose(rr, 0.0):
-            raise ValueError(f"Invalid rr={rr:.12g}; expected a finite value > 0")
-
-        pnl_target = profit_aim * rr
-        if (
-            (not np.isfinite(pnl_target))
-            or (pnl_target <= 0.0)
-            or np.isclose(pnl_target, 0.0)
-        ):
-            raise ValueError(
-                f"Invalid pnl_target={pnl_target:.12g} computed from profit_aim={profit_aim:.12g} and rr={rr:.12g}"
-            )
-
     @staticmethod
     def _normalize_position(position: Any) -> Positions:
         if isinstance(position, Positions):
@@ -451,7 +427,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             and self.optuna_purge_period > 0
         ):
             logger.warning(
-                "purge_period=%s has no effect when continuous=True. Forcing purge_period=0",
+                "Setting purge_period=%s has no effect when continuous=True. Forcing purge_period=0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
@@ -1682,9 +1658,7 @@ MyRLEnv: Type[BaseEnvironment]
 
 
 class MyRLEnv(Base5ActionRLEnv):
-    """
-    Env
-    """
+    """Env."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1727,21 +1701,10 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         # === PBRS COMMON PARAMETERS ===
-        potential_gamma = model_reward_parameters.get("potential_gamma")
-        if potential_gamma is None:
-            logger.warning("potential_gamma not specified; defaulting to 0.95")
-            self._potential_gamma = 0.95
-        else:
-            self._potential_gamma = float(potential_gamma)
-        # Validate potential_gamma range (0 <= gamma <= 1)
-        if not (0.0 <= self._potential_gamma <= 1.0):
-            original_gamma = self._potential_gamma
-            self._potential_gamma = min(1.0, max(0.0, self._potential_gamma))
-            logger.warning(
-                "potential_gamma=%s is outside [0,1]; clamped to %s",
-                original_gamma,
-                self._potential_gamma,
-            )
+        self._potential_gamma = float(
+            model_reward_parameters.get("potential_gamma", 0.95)
+        )
+
         # === EXIT POTENTIAL MODE ===
         # exit_potential_mode options:
         #   'canonical'           -> Φ(s')=0 (preserves invariance, disables additives)

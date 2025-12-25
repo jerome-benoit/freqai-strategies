@@ -1091,6 +1091,7 @@ class TestPBRS(RewardSpaceTestBase):
                 exit_additive_enabled=False,
                 exit_potential_mode="canonical",
                 potential_gamma=gamma,
+                hold_potential_ratio=1.0,
             )
             _tot, shap, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
                 apply_potential_shaping(
@@ -1110,6 +1111,10 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertFinite(float(shap), name="shaping")
             self.assertFinite(float(next_pot), name="next_potential")
             self.assertLessEqual(abs(shap), PBRS.MAX_ABS_SHAPING)
+
+            # With bounded transforms and hold_potential_ratio=1:
+            # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor
+            self.assertLessEqual(abs(float(shap)), (1.0 + gamma) * PARAMS.BASE_FACTOR)
 
     def test_report_cumulative_invariance_aggregation(self):
         """Canonical telescoping term: small per-step mean drift, bounded increments."""
