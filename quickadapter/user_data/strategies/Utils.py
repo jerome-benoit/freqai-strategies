@@ -98,7 +98,7 @@ RANK_METHODS: Final[tuple[RankMethod, ...]] = (
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SmoothingMethod = Union[
-    SmoothingKernel, Literal["smm", "sma", "savgol", "nadaraya_watson"]
+    SmoothingKernel, Literal["smm", "sma", "savgol", "gaussian_filter1d"]
 ]
 SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
     "gaussian",
@@ -107,7 +107,7 @@ SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
     "smm",
     "sma",
     "savgol",
-    "nadaraya_watson",
+    "gaussian_filter1d",
 )
 
 SmoothingMode = Literal["mirror", "constant", "nearest", "wrap", "interp"]
@@ -126,7 +126,7 @@ DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
     "beta": 8.0,
     "polyorder": 3,
     "mode": SMOOTHING_MODES[0],  # "mirror"
-    "bandwidth": 1.0,
+    "sigma": 1.0,
 }
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
@@ -209,19 +209,6 @@ def get_savgol_params(
     return window, polyorder, mode
 
 
-def nadaraya_watson(
-    series: pd.Series, bandwidth: float, mode: SmoothingMode
-) -> pd.Series:
-    return pd.Series(
-        gaussian_filter1d(
-            series.to_numpy(),
-            sigma=bandwidth,
-            mode=mode,  # type: ignore
-        ),
-        index=series.index,
-    )
-
-
 @lru_cache(maxsize=8)
 def _calculate_coeffs(
     window: int,
@@ -270,7 +257,7 @@ def smooth_extrema(
     beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
     polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
     mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
-    bandwidth: float = DEFAULTS_EXTREMA_SMOOTHING["bandwidth"],
+    sigma: float = DEFAULTS_EXTREMA_SMOOTHING["sigma"],
 ) -> pd.Series:
     n = len(series)
     if n == 0:
@@ -326,8 +313,15 @@ def smooth_extrema(
             ),
             index=series.index,
         )
-    elif method == SMOOTHING_METHODS[6]:  # "nadaraya_watson"
-        return nadaraya_watson(series, bandwidth, mode)
+    elif method == SMOOTHING_METHODS[6]:  # "gaussian_filter1d"
+        return pd.Series(
+            gaussian_filter1d(
+                series.to_numpy(),
+                sigma=sigma,
+                mode=mode,  # type: ignore
+            ),
+            index=series.index,
+        )
     else:
         return zero_phase_filter(
             series=series,

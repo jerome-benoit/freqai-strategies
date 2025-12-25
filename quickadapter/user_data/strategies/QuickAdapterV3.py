@@ -409,9 +409,7 @@ class QuickAdapterV3(IStrategy):
         logger.info(f"  beta: {format_number(self.extrema_smoothing['beta'])}")
         logger.info(f"  polyorder: {self.extrema_smoothing['polyorder']}")
         logger.info(f"  mode: {self.extrema_smoothing['mode']}")
-        logger.info(
-            f"  bandwidth: {format_number(self.extrema_smoothing['bandwidth'])}"
-        )
+        logger.info(f"  sigma: {format_number(self.extrema_smoothing['sigma'])}")
 
         logger.info("Reversal Confirmation:")
         logger.info(f"  lookback_period: {self._reversal_lookback_period}")
@@ -1036,18 +1034,18 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_mode = SMOOTHING_MODES[0]
 
-        smoothing_bandwidth = extrema_smoothing.get(
-            "bandwidth", DEFAULTS_EXTREMA_SMOOTHING["bandwidth"]
+        smoothing_sigma = extrema_smoothing.get(
+            "sigma", DEFAULTS_EXTREMA_SMOOTHING["sigma"]
         )
         if (
-            not isinstance(smoothing_bandwidth, (int, float))
-            or smoothing_bandwidth <= 0
-            or not np.isfinite(smoothing_bandwidth)
+            not isinstance(smoothing_sigma, (int, float))
+            or smoothing_sigma <= 0
+            or not np.isfinite(smoothing_sigma)
         ):
             logger.warning(
-                f"Invalid extrema_smoothing bandwidth {smoothing_bandwidth}, must be a positive finite number, using default {DEFAULTS_EXTREMA_SMOOTHING['bandwidth']}"
+                f"Invalid extrema_smoothing sigma {smoothing_sigma}, must be a positive finite number, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']}"
             )
-            smoothing_bandwidth = DEFAULTS_EXTREMA_SMOOTHING["bandwidth"]
+            smoothing_sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
 
         return {
             "method": smoothing_method,
@@ -1055,7 +1053,7 @@ class QuickAdapterV3(IStrategy):
             "beta": smoothing_beta,
             "polyorder": int(smoothing_polyorder),
             "mode": smoothing_mode,
-            "bandwidth": float(smoothing_bandwidth),
+            "sigma": float(smoothing_sigma),
         }
 
     @staticmethod
@@ -1163,7 +1161,7 @@ class QuickAdapterV3(IStrategy):
             self.extrema_smoothing["beta"],
             self.extrema_smoothing["polyorder"],
             self.extrema_smoothing["mode"],
-            self.extrema_smoothing["bandwidth"],
+            self.extrema_smoothing["sigma"],
         )
 
         if debug:
