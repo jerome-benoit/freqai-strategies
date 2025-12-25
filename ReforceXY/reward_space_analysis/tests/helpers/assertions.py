@@ -1405,7 +1405,7 @@ def get_exit_factor_with_defaults(
 
         # Overriding specific parameters
         factor = get_exit_factor_with_defaults(
-            0.05, 0.5, ctx, params, base_factor=100.0
+            0.05, 0.5, ctx, params, base_factor=PARAMS.BASE_FACTOR
         )
     """
     if base_factor is None:

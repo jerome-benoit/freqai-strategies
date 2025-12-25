@@ -352,6 +352,7 @@ where:
 
 - `r_pnl = pnl / pnl_target`
 - `r_dur = clamp(duration_ratio, 0, 1)`
+- `scale = base_factor · hold_potential_ratio`
 - `g = hold_potential_gain`
 - `T_pnl`, `T_dur` = configured transforms
 - `m_dur = 1.0` if `r_pnl >= 0` (profit side)

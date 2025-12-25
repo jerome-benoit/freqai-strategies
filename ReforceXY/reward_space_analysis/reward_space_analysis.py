@@ -3056,7 +3056,7 @@ def _compute_hold_potential(
     if not _get_bool_param(params, "hold_potential_enabled"):
         return _fail_safely("hold_potential_disabled")
 
-    return _compute_bi_component(
+    return _compute_pnl_duration_signal(
         kind="hold_potential",
         pnl=pnl,
         pnl_target=pnl_target,
@@ -3081,7 +3081,7 @@ def _compute_entry_additive(
 ) -> float:
     if not _get_bool_param(params, "entry_additive_enabled"):
         return _fail_safely("entry_additive_disabled")
-    return _compute_bi_component(
+    return _compute_pnl_duration_signal(
         kind="entry_additive",
         pnl=pnl,
         pnl_target=pnl_target,
@@ -3105,7 +3105,7 @@ def _compute_exit_additive(
 ) -> float:
     if not _get_bool_param(params, "exit_additive_enabled"):
         return _fail_safely("exit_additive_disabled")
-    return _compute_bi_component(
+    return _compute_pnl_duration_signal(
         kind="exit_additive",
         pnl=pnl,
         pnl_target=pnl_target,
@@ -3182,8 +3182,7 @@ def compute_pbrs_components(
 ) -> tuple[float, float, float, float, float]:
     """Compute potential-based reward shaping (PBRS) components.
 
-    This function computes the PBRS shaping terms without combining them with the base reward,
-    allowing the caller to construct the total reward as R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + additives.
+    This function computes the PBRS shaping terms.
 
     Canonical PBRS Formula
     ----------------------
@@ -3197,6 +3196,7 @@ def compute_pbrs_components(
     Let:
         r_pnl = pnl / pnl_target
         r_dur = clamp(duration_ratio, 0, 1)
+        scale = base_factor · hold_potential_ratio
         g = gain
         T_pnl, T_dur = configured bounded transforms
         m_dur = 1.0 if r_pnl >= 0 else loss_duration_multiplier(r_pnl, risk_reward_ratio)
@@ -3325,7 +3325,7 @@ def apply_potential_shaping(
     )
 
 
-def _compute_bi_component(
+def _compute_pnl_duration_signal(
     kind: str,
     pnl: float,
     pnl_target: float,

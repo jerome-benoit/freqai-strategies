@@ -19,28 +19,36 @@ pytestmark = pytest.mark.cli
 SCRIPT_PATH = Path(__file__).parent.parent.parent / "reward_space_analysis.py"
 
 
+def _run_cli(*, out_dir: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    cmd = [
+        "uv",
+        "run",
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--out_dir",
+        str(out_dir),
+        *args,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+
+
+def _assert_cli_success(
+    testcase: unittest.TestCase, result: subprocess.CompletedProcess[str]
+) -> None:
+    testcase.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+
+
 class TestCsvEncoding(RewardSpaceTestBase):
     """Validate CSV output encoding invariants."""
 
     def test_action_column_integer_in_csv(self):
         """Ensure 'action' column in reward_samples.csv is encoded as integers."""
         out_dir = self.output_path / "csv_int_check"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "200",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--num_samples", "200", "--seed", str(SEEDS.BASE)],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
         csv_path = out_dir / "reward_samples.csv"
         self.assertTrue(csv_path.exists(), "Missing reward_samples.csv")
         df = pd.read_csv(csv_path)
@@ -67,23 +75,17 @@ class TestParamsPropagation(RewardSpaceTestBase):
     def test_skip_feature_analysis_summary_branch(self):
         """CLI run with --skip_feature_analysis should mark feature importance skipped in summary and omit feature_importance.csv."""
         out_dir = self.output_path / "skip_feature_analysis"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "200",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-            "--skip_feature_analysis",
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                "200",
+                "--seed",
+                str(SEEDS.BASE),
+                "--skip_feature_analysis",
+            ],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
         content = report_path.read_text(encoding="utf-8")
@@ -94,24 +96,18 @@ class TestParamsPropagation(RewardSpaceTestBase):
     def test_manifest_params_hash_generation(self):
         """Ensure params_hash appears when non-default simulation params differ (risk_reward_ratio altered)."""
         out_dir = self.output_path / "manifest_hash"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "150",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-            "--risk_reward_ratio",
-            "1.5",
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                "150",
+                "--seed",
+                str(SEEDS.BASE),
+                "--risk_reward_ratio",
+                "1.5",
+            ],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
         manifest_path = out_dir / "manifest.json"
         self.assertTrue(manifest_path.exists(), "Missing manifest.json")
         manifest = json.loads(manifest_path.read_text())
@@ -123,22 +119,11 @@ class TestParamsPropagation(RewardSpaceTestBase):
         """When reward_shaping column exists, summary should include PBRS invariance section."""
         out_dir = self.output_path / "pbrs_invariance"
         # Use small sample for speed; rely on default shaping logic
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "180",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--num_samples", "180", "--seed", str(SEEDS.BASE)],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
         content = report_path.read_text(encoding="utf-8")
@@ -148,21 +133,15 @@ class TestParamsPropagation(RewardSpaceTestBase):
     def test_strict_diagnostics_constant_distribution_succeeds(self):
         """Run with --strict_diagnostics and low num_samples; expect success, exercising assertion branches before graceful fallback paths."""
         out_dir = self.output_path / "strict_diagnostics"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "120",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-            "--strict_diagnostics",
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                "120",
+                "--seed",
+                str(SEEDS.BASE),
+                "--strict_diagnostics",
+            ],
         )
         # Should not raise; if constant distributions occur they should assert before graceful fallback paths, exercising assertion branches.
         self.assertEqual(
@@ -176,24 +155,18 @@ class TestParamsPropagation(RewardSpaceTestBase):
     def test_max_trade_duration_candles_propagation_params(self):
         """--params max_trade_duration_candles=X propagates to manifest and simulation params."""
         out_dir = self.output_path / "mtd_params"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "120",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-            "--params",
-            "max_trade_duration_candles=96",
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                "120",
+                "--seed",
+                str(SEEDS.BASE),
+                "--params",
+                "max_trade_duration_candles=96",
+            ],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
         manifest_path = out_dir / "manifest.json"
         self.assertTrue(manifest_path.exists(), "Missing manifest.json")
         with open(manifest_path, "r") as f:
@@ -207,24 +180,18 @@ class TestParamsPropagation(RewardSpaceTestBase):
     def test_max_trade_duration_candles_propagation_flag(self):
         """Dynamic flag --max_trade_duration_candles X propagates identically."""
         out_dir = self.output_path / "mtd_flag"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "120",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-            "--max_trade_duration_candles",
-            "64",
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                "120",
+                "--seed",
+                str(SEEDS.BASE),
+                "--max_trade_duration_candles",
+                "64",
+            ],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
         manifest_path = out_dir / "manifest.json"
         self.assertTrue(manifest_path.exists(), "Missing manifest.json")
         with open(manifest_path, "r") as f:
@@ -245,25 +212,19 @@ class TestParamsPropagation(RewardSpaceTestBase):
         - Column values align mathematically
         """
         out_dir = self.output_path / "pbrs_csv_columns"
-        cmd = [
-            "uv",
-            "run",
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--num_samples",
-            "150",
-            "--seed",
-            str(SEEDS.BASE),
-            "--out_dir",
-            str(out_dir),
-            # Enable PBRS shaping explicitly
-            "--params",
-            "exit_potential_mode=canonical",
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=Path(__file__).parent.parent
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                "150",
+                "--seed",
+                str(SEEDS.BASE),
+                # Enable PBRS shaping explicitly
+                "--params",
+                "exit_potential_mode=canonical",
+            ],
         )
-        self.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+        _assert_cli_success(self, result)
 
         csv_path = out_dir / "reward_samples.csv"
         self.assertTrue(csv_path.exists(), "Missing reward_samples.csv")
@@ -278,10 +239,8 @@ class TestParamsPropagation(RewardSpaceTestBase):
         # Verify all values are finite
         for col in required_cols:
             self.assertFalse(df[col].isna().any(), f"Column {col} contains NaN values")
-            self.assertTrue(
-                df[col].apply(lambda x: abs(x) < float("inf")).all(),
-                f"Column {col} contains infinite values",
-            )
+            for i, value in enumerate(df[col].to_numpy()):
+                self.assertFinite(float(value), name=f"{col}[{i}]")
 
         # Verify mathematical alignment (CSV-level invariants)
         # By construction in `calculate_reward()`: reward_shaping = pbrs_delta + invariance_correction

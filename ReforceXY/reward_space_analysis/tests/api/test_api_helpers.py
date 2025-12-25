@@ -48,7 +48,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
 
         def sample_entry_rate(*, idle_duration: int, short_allowed: bool) -> float:
             rng = random.Random(SEEDS.REPRODUCIBILITY)
-            draws = 2000
+            draws = 2_000
             entries = 0
             for _ in range(draws):
                 action, _, _, _ = _sample_action(
@@ -64,8 +64,11 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
                     entries += 1
             return entries / draws
 
-        low_idle_rate = sample_entry_rate(idle_duration=0, short_allowed=True)
-        high_idle_rate = sample_entry_rate(idle_duration=60, short_allowed=True)
+        idle_duration_low = 0
+        idle_duration_high = 60
+
+        low_idle_rate = sample_entry_rate(idle_duration=idle_duration_low, short_allowed=True)
+        high_idle_rate = sample_entry_rate(idle_duration=idle_duration_high, short_allowed=True)
 
         self.assertGreater(
             high_idle_rate,
@@ -73,8 +76,10 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             "Entry rate should increase after exceeding max idle duration",
         )
 
-        low_idle_rate_spot = sample_entry_rate(idle_duration=0, short_allowed=False)
-        high_idle_rate_spot = sample_entry_rate(idle_duration=60, short_allowed=False)
+        low_idle_rate_spot = sample_entry_rate(idle_duration=idle_duration_low, short_allowed=False)
+        high_idle_rate_spot = sample_entry_rate(
+            idle_duration=idle_duration_high, short_allowed=False
+        )
         self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
 
     def test_parse_overrides(self):
@@ -99,12 +104,14 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         any_exit = df[df["reward_exit"] != 0].head(1)
         if not any_exit.empty:
             row = any_exit.iloc[0]
+            unrealized_pad = PARAMS.PNL_SMALL / 2
+            pnl = float(row["pnl"])
             ctx = self.make_ctx(
-                pnl=float(row["pnl"]),
+                pnl=pnl,
                 trade_duration=int(row["trade_duration"]),
                 idle_duration=int(row["idle_duration"]),
-                max_unrealized_profit=float(row["pnl"]) + 0.01,
-                min_unrealized_profit=float(row["pnl"]) - 0.01,
+                max_unrealized_profit=pnl + unrealized_pad,
+                min_unrealized_profit=pnl - unrealized_pad,
                 position=Positions.Long,
                 action=Actions.Long_exit,
             )
@@ -114,14 +121,14 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
     def test_simulate_samples_trading_modes_spot_vs_margin(self):
         """simulate_samples coverage: spot should forbid shorts, margin should allow them."""
         df_spot = simulate_samples_with_defaults(
-            self.base_params(max_trade_duration_candles=100),
+            self.base_params(max_trade_duration_candles=PARAMS.TRADE_DURATION_MEDIUM),
             num_samples=SCENARIOS.SAMPLE_SIZE_SMALL,
             trading_mode="spot",
         )
         short_positions_spot = (df_spot["position"] == float(Positions.Short.value)).sum()
         self.assertEqual(short_positions_spot, 0, "Spot mode must not contain short positions")
         df_margin = simulate_samples_with_defaults(
-            self.base_params(max_trade_duration_candles=100),
+            self.base_params(max_trade_duration_candles=PARAMS.TRADE_DURATION_MEDIUM),
             num_samples=SCENARIOS.SAMPLE_SIZE_SMALL,
         )
         for col in [
@@ -156,18 +163,23 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         values = (
             df[["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]].stack().dropna()
         )
-        self.assertTrue(((values >= 0.0) & (values <= 0.9)).all())
+        prob_upper_bound = 0.9
+        self.assertTrue(((values >= 0.0) & (values <= prob_upper_bound)).all())
 
     def test_simulate_samples_interprets_bool_string_params(self):
         """Test simulate_samples correctly interprets string boolean params like action_masking."""
         df1 = simulate_samples_with_defaults(
-            self.base_params(action_masking="true", max_trade_duration_candles=50),
+            self.base_params(
+                action_masking="true", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
+            ),
             num_samples=10,
             trading_mode="spot",
         )
         self.assertIsInstance(df1, pd.DataFrame)
         df2 = simulate_samples_with_defaults(
-            self.base_params(action_masking="false", max_trade_duration_candles=50),
+            self.base_params(
+                action_masking="false", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
+            ),
             num_samples=10,
             trading_mode="spot",
         )
@@ -176,7 +188,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
     def test_short_allowed_via_simulation(self):
         """Test _is_short_allowed via different trading modes."""
         df_futures = simulate_samples_with_defaults(
-            self.base_params(max_trade_duration_candles=50),
+            self.base_params(max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT),
             num_samples=SCENARIOS.SAMPLE_SIZE_SMALL,
             trading_mode="futures",
         )
@@ -333,15 +345,13 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                     0.0,
                     f"Exit component should be non-zero for {description}",
                 )
-                self.assertTrue(
-                    np.isfinite(breakdown.total), f"Total should be finite for {description}"
-                )
+                self.assertFinite(breakdown.total, name="total")
 
     def test_invalid_action_handling(self):
         """Test invalid action penalty."""
         context = self.make_ctx(
-            pnl=0.02,
-            trade_duration=50,
+            pnl=PARAMS.PNL_SMALL,
+            trade_duration=PARAMS.TRADE_DURATION_SHORT,
             idle_duration=0,
             max_unrealized_profit=0.03,
             min_unrealized_profit=0.01,

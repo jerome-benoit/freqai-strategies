@@ -12,6 +12,7 @@ Detailed invariant ownership is tracked in tests/README.md Coverage Mapping.
 import pytest
 
 from reward_space_analysis import (
+    DEFAULT_MODEL_REWARD_PARAMETERS,
     Actions,
     Positions,
 )
@@ -19,6 +20,14 @@ from reward_space_analysis import (
 from ..constants import PARAMS, TOLERANCE
 from ..helpers import calculate_reward_with_defaults
 from ..test_base import RewardSpaceTestBase
+
+_DEFAULT_MAX_TRADE_DURATION_CANDLES = DEFAULT_MODEL_REWARD_PARAMETERS.get(
+    "max_trade_duration_candles"
+)
+if isinstance(_DEFAULT_MAX_TRADE_DURATION_CANDLES, (int, float)):
+    HOLD_PENALTY_ACTIVE_TRADE_DURATION = int(_DEFAULT_MAX_TRADE_DURATION_CANDLES) + 1
+else:
+    HOLD_PENALTY_ACTIVE_TRADE_DURATION = PARAMS.TRADE_DURATION_LONG
 
 pytestmark = pytest.mark.integration
 
@@ -39,9 +48,9 @@ class TestRewardCalculation(RewardSpaceTestBase):
         scenarios = [
             (
                 "hold_penalty_active",
-                dict(
+                self.make_ctx(
                     pnl=0.0,
-                    trade_duration=160,  # > default threshold
+                    trade_duration=HOLD_PENALTY_ACTIVE_TRADE_DURATION,  # > default threshold
                     idle_duration=0,
                     max_unrealized_profit=0.02,
                     min_unrealized_profit=-0.01,
@@ -49,10 +58,11 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     action=Actions.Neutral,
                 ),
                 "hold_penalty",
+                True,
             ),
             (
                 "idle_penalty_active",
-                dict(
+                self.make_ctx(
                     pnl=0.0,
                     trade_duration=0,
                     idle_duration=25,
@@ -62,10 +72,11 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     action=Actions.Neutral,
                 ),
                 "idle_penalty",
+                True,
             ),
             (
                 "profitable_exit_long",
-                dict(
+                self.make_ctx(
                     pnl=0.04,
                     trade_duration=40,
                     idle_duration=0,
@@ -75,10 +86,11 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     action=Actions.Long_exit,
                 ),
                 "exit_component",
+                True,
             ),
             (
                 "invalid_action_penalty",
-                dict(
+                self.make_ctx(
                     pnl=0.01,
                     trade_duration=10,
                     idle_duration=0,
@@ -88,16 +100,16 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     action=Actions.Long_exit,  # invalid pairing
                 ),
                 "invalid_penalty",
+                False,
             ),
         ]
 
-        for name, ctx_kwargs, expected_component in scenarios:
+        for name, ctx, expected_component, action_masking in scenarios:
             with self.subTest(scenario=name):
-                ctx = self.make_ctx(**ctx_kwargs)
                 breakdown = calculate_reward_with_defaults(
                     ctx,
                     self.DEFAULT_PARAMS,
-                    action_masking=expected_component != "invalid_penalty",
+                    action_masking=action_masking,
                 )
 
                 value = getattr(breakdown, expected_component)

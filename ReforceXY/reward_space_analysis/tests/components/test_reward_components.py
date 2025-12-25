@@ -129,7 +129,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         - Progressive scaling beyond max_duration threshold
         """
 
-        params = self.base_params(max_trade_duration_candles=100)
+        params = self.base_params(max_trade_duration_candles=PARAMS.TRADE_DURATION_MEDIUM)
         durations = list(SCENARIOS.DURATION_SCENARIOS)
         penalties = []
         for duration in durations:
@@ -476,7 +476,8 @@ class TestRewardComponents(RewardSpaceTestBase):
         - Plateau mode attenuates after grace period
         """
         modes_to_test = ["linear", "power"]
-        pnl = 0.02
+        pnl = PARAMS.PNL_SMALL
+
         pnl_target = 0.045  # 0.03 * 1.5 coefficient
         context = self.make_ctx(
             pnl=pnl,
@@ -633,7 +634,8 @@ class TestRewardComponents(RewardSpaceTestBase):
         base_factor = PARAMS.BASE_FACTOR
         profit_aim = PARAMS.PROFIT_AIM
         risk_reward_ratio = 1.0
-        max_trade_duration_candles = 100
+        max_trade_duration_candles = PARAMS.TRADE_DURATION_MEDIUM
+
         params = self.base_params(
             max_idle_duration_candles=None,
             max_trade_duration_candles=max_trade_duration_candles,
@@ -709,8 +711,8 @@ class TestRewardComponents(RewardSpaceTestBase):
             exit_additive_enabled=False,
         )
         context = self.make_ctx(
-            pnl=0.02,
-            trade_duration=50,
+            pnl=PARAMS.PNL_SMALL,
+            trade_duration=PARAMS.TRADE_DURATION_SHORT,
             idle_duration=0,
             max_unrealized_profit=0.03,
             min_unrealized_profit=0.01,

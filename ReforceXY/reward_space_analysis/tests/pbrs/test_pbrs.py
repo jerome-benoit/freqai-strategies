@@ -193,7 +193,8 @@ class TestPBRS(RewardSpaceTestBase):
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {True}, f"Unexpected invariant flags: {unique_flags}")
-        self.assertTrue(np.isfinite(df["reward_shaping"]).all())
+        for v in df["reward_shaping"].tolist():
+            self.assertFinite(float(v), name="reward_shaping")
         self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
 
     def test_non_canonical_flag_false_and_sum_nonzero(self):
@@ -405,7 +406,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertAlmostEqual(shaping, -0.789, delta=TOLERANCE.IDENTITY_RELAXED)
         residual = total - base_reward - shaping
         self.assertAlmostEqual(residual, 0.0, delta=TOLERANCE.IDENTITY_RELAXED)
-        self.assertTrue(np.isfinite(total))
+        self.assertFinite(float(total), name="total")
 
     def test_canonical_mode_suppresses_additives_even_if_enabled(self):
         """Verifies canonical mode forces entry/exit additive terms to zero."""
@@ -594,7 +595,7 @@ class TestPBRS(RewardSpaceTestBase):
                 position=Positions.Neutral, action=action, pnl=0.0, trade_duration=0
             )
             breakdown = calculate_reward_with_defaults(ctx, params, prev_potential=0.0)
-            self.assertTrue(np.isfinite(breakdown.next_potential))
+            self.assertFinite(float(breakdown.next_potential), name="next_potential")
             # With any nonzero fees, immediate unrealized pnl should be negative.
             self.assertLess(
                 breakdown.next_potential,
@@ -1011,7 +1012,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         abs_sum = float(df["reward_shaping"].abs().sum())
-        self.assertTrue(np.isfinite(abs_sum))
+        self.assertFinite(abs_sum, name="abs_sum")
         self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
         # Even with trajectories, Σ can partially cancel; use L1 magnitude instead.
         self.assertGreater(
@@ -1106,8 +1107,8 @@ class TestPBRS(RewardSpaceTestBase):
                     params=params,
                 )
             )
-            self.assertTrue(np.isfinite(shap))
-            self.assertTrue(np.isfinite(next_pot))
+            self.assertFinite(float(shap), name="shaping")
+            self.assertFinite(float(next_pot), name="next_potential")
             self.assertLessEqual(abs(shap), PBRS.MAX_ABS_SHAPING)
 
     def test_report_cumulative_invariance_aggregation(self):

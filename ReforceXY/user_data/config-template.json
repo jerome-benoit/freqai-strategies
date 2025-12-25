@@ -159,9 +159,9 @@
       "model_type": "MaskablePPO",
       "policy_type": "MlpPolicy",
       "model_reward_parameters": {
-        "rr": 2,
+        "rr": 2.0,
         "profit_aim": 0.025,
-        "win_reward_factor": 2,
+        "win_reward_factor": 2.0,
         "max_trade_duration_candles": 96 // Maximum trade duration in candles
       },
       "train_cycles": 25,

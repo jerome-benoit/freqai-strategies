@@ -4,6 +4,7 @@ import unittest
 import pytest
 
 from reward_space_analysis import (
+    DEFAULT_MODEL_REWARD_PARAMETERS,
     Actions,
     Positions,
     RewardContext,
@@ -21,6 +22,11 @@ from ..helpers import (
     run_strict_validation_failure_cases,
 )
 from ..test_base import make_ctx
+
+_raw_max_trade_duration = DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles")
+DEFAULT_MAX_TRADE_DURATION_CANDLES = (
+    float(_raw_max_trade_duration) if isinstance(_raw_max_trade_duration, (int, float)) else 128.0
+)
 
 
 class _PyTestAdapter(unittest.TestCase):
@@ -234,7 +240,7 @@ def test_hold_penalty_short_duration_returns_zero():
 
     **Setup:**
     - Trade duration: 1 candle (short)
-    - Max trade duration: 128 candles
+    - Max trade duration: DEFAULT_MAX_TRADE_DURATION_CANDLES
     - Position: Long, Action: Neutral (hold)
 
     **Assertions:**
@@ -242,14 +248,14 @@ def test_hold_penalty_short_duration_returns_zero():
     """
     context = make_ctx(
         pnl=0.0,
-        trade_duration=1,  # shorter than default max trade duration (128)
+        trade_duration=1,  # shorter than default max trade duration
         idle_duration=0,
         max_unrealized_profit=0.0,
         min_unrealized_profit=0.0,
         position=Positions.Long,
         action=Actions.Neutral,
     )
-    params: RewardParams = {"max_trade_duration_candles": 128.0}
+    params: RewardParams = {"max_trade_duration_candles": DEFAULT_MAX_TRADE_DURATION_CANDLES}
     penalty = _hold_penalty(context, hold_factor=1.0, params=params)
     assert penalty == 0.0
 

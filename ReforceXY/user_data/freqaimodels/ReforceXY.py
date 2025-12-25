@@ -2217,8 +2217,7 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> tuple[float, float, float]:
         """Compute potential-based reward shaping (PBRS) components.
 
-        This method computes the PBRS shaping terms without combining them with the base reward,
-        allowing the caller to construct the total reward as R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + additives.
+        This method computes the PBRS shaping terms.
 
         Canonical PBRS Formula
         ----------------------
