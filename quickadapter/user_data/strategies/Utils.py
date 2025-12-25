@@ -542,10 +542,11 @@ def _impute_weights(
     weights = weights.astype(float, copy=True)
 
     # Weights computed by `zigzag` can be NaN on boundary pivots
-    if len(weights) > 0 and not np.isfinite(weights[0]):
-        weights[0] = 0.0
-    if len(weights) > 0 and not np.isfinite(weights[-1]):
-        weights[-1] = 0.0
+    if len(weights) > 0:
+        if not np.isfinite(weights[0]):
+            weights[0] = 0.0
+        if not np.isfinite(weights[-1]):
+            weights[-1] = 0.0
 
     finite_mask = np.isfinite(weights)
     if not finite_mask.any():
