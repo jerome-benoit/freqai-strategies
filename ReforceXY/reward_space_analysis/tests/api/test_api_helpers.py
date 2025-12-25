@@ -299,7 +299,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
                 "test_output",
             ]
         )
-        self.assertEqual(args.num_samples, 100)
+        self.assertEqual(args.num_samples, SCENARIOS.SAMPLE_SIZE_SMALL)
         self.assertEqual(str(args.out_dir), "test_output")
 
     def test_complete_statistical_analysis_writer(self):

@@ -311,8 +311,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "threshold_outlier",
             QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT,
         )
-        if not isinstance(threshold_outlier, (int, float)) or not (
-            0 < threshold_outlier < 1
+        if (
+            not isinstance(threshold_outlier, (int, float))
+            or not np.isfinite(threshold_outlier)
+            or not (0 < threshold_outlier < 1)
         ):
             threshold_outlier = (
                 QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT
@@ -345,7 +347,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "thresholds_alpha",
             QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT,
         )
-        if not isinstance(thresholds_alpha, (int, float)) or thresholds_alpha < 0:
+        if (
+            not isinstance(thresholds_alpha, (int, float))
+            or not np.isfinite(thresholds_alpha)
+            or thresholds_alpha < 0
+        ):
             thresholds_alpha = (
                 QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT
             )
@@ -1147,13 +1153,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         di_values = pred_df.get("DI_values")
 
-        # fit the DI_threshold
+        # Fit DI_value cutoff
         if not warmed_up:
-            f = [0, 0, 0]
-            cutoff = 2
+            f = [0.0, 0.0, 0.0]
+            cutoff = 2.0
         else:
             f = sp.stats.weibull_min.fit(
-                pd.to_numeric(di_values, errors="coerce").dropna()
+                pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
             )
             cutoff = sp.stats.weibull_min.ppf(
                 self.predictions_extrema["threshold_outlier"], *f
