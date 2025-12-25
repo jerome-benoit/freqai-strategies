@@ -797,19 +797,37 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
 
     # Owns invariant: robustness-near-zero-half-life-105
     def test_robustness_105_half_life_near_zero_fallback(self):
-        """Invariant 105: Near-zero exit_half_life warns and returns factor≈base_factor (no attenuation)."""
+        """Invariant 105: Near-zero exit_half_life yields no attenuation (factor≈base).
+
+        This invariant is specifically about the *time attenuation kernel*:
+        `exit_attenuation_mode="half_life"` should return a time coefficient of 1.0 when
+        `exit_half_life` is close to zero.
+
+        To isolate the time coefficient, we choose inputs that keep the other
+        multiplicative coefficients at 1.0 (pnl_target and efficiency).
+        """
+
         base_factor = 60.0
-        pnl = 0.02
         pnl_target = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO_HIGH
+        pnl = 0.5 * pnl_target
         test_context = self.make_ctx(
-            pnl=pnl, trade_duration=50, max_unrealized_profit=0.03, min_unrealized_profit=0.0
+            pnl=pnl,
+            trade_duration=50,
+            max_unrealized_profit=pnl,
+            min_unrealized_profit=0.0,
         )
         duration_ratio = 0.7
+
         near_zero_values = [1e-15, 1e-12, 5e-14]
         for hl in near_zero_values:
-            params = self.base_params(exit_attenuation_mode="half_life", exit_half_life=hl)
+            params = self.base_params(
+                exit_attenuation_mode="half_life",
+                exit_half_life=hl,
+                efficiency_weight=0.0,
+                win_reward_factor=0.0,
+            )
             with assert_diagnostic_warning(["exit_half_life", "close to 0"]):
-                _ = _get_exit_factor(
+                f0 = _get_exit_factor(
                     base_factor,
                     pnl,
                     pnl_target,
@@ -827,14 +845,25 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     params,
                     PARAMS.RISK_REWARD_RATIO_HIGH,
                 )
-            # Note: The expected value calculation needs adjustment since _get_exit_factor now computes
-            # pnl_target_coefficient and efficiency_coefficient internally
-            # For now, we just check that fdr is finite and reasonable
+
             self.assertFinite(fdr, name="fdr")
-            self.assertGreaterEqual(
+            self.assertAlmostEqualFloat(
                 fdr,
-                0.0,
-                msg=f"Near-zero half-life should give non-negative factor hl={hl} fdr={fdr}",
+                base_factor,
+                tolerance=TOLERANCE.IDENTITY_STRICT,
+                msg=f"Expected no time attenuation for near-zero half-life hl={hl} (fdr={fdr})",
+            )
+            self.assertAlmostEqualFloat(
+                f0,
+                base_factor,
+                tolerance=TOLERANCE.IDENTITY_STRICT,
+                msg=f"Expected factor==base at dr=0 for hl={hl} (f0={f0})",
+            )
+            self.assertAlmostEqualFloat(
+                fdr,
+                f0,
+                tolerance=TOLERANCE.IDENTITY_STRICT,
+                msg=f"Expected dr-insensitive factor under half-life near zero hl={hl} (f0={f0}, fdr={fdr})",
             )
 
 

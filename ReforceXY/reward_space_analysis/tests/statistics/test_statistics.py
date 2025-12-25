@@ -170,8 +170,8 @@ class TestStatistics(RewardSpaceTestBase):
         if len(df) > 30:
             idle_data = df[df["idle_duration"] > 0]
             if len(idle_data) > 10:
-                idle_dur = idle_data["idle_duration"].to_numpy()
-                idle_rew = idle_data["reward_idle"].to_numpy()
+                idle_dur = np.asarray(idle_data["idle_duration"], dtype=float)
+                idle_rew = np.asarray(idle_data["reward_idle"], dtype=float)
                 self.assertTrue(
                     len(idle_dur) == len(idle_rew),
                     "Idle duration and reward arrays should have same length",
@@ -425,7 +425,9 @@ class TestStatistics(RewardSpaceTestBase):
         """PnL variance increases with trade duration (heteroscedasticity)."""
 
         df = simulate_samples(
-            params=self.base_params(max_trade_duration_candles=100),
+            params=self.base_params(
+                max_trade_duration_candles=PARAMS.MAX_TRADE_DURATION_HETEROSCEDASTICITY
+            ),
             num_samples=SCENARIOS.SAMPLE_SIZE_LARGE + 200,
             seed=SEEDS.HETEROSCEDASTICITY,
             base_factor=PARAMS.BASE_FACTOR,
@@ -436,7 +438,14 @@ class TestStatistics(RewardSpaceTestBase):
             pnl_base_std=PARAMS.PNL_STD,
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
-        exit_data = df[df["reward_exit"] != 0].copy()
+        # Use the action code rather than `reward_exit != 0`.
+        # `reward_exit` can be zero for break-even exits, but the exit action still
+        # contributes to the heteroscedasticity structure.
+        exit_action_codes = (
+            float(reward_space_analysis.Actions.Long_exit.value),
+            float(reward_space_analysis.Actions.Short_exit.value),
+        )
+        exit_data = df[df["action"].isin(exit_action_codes)].copy()
         if len(exit_data) < SCENARIOS.SAMPLE_SIZE_TINY:
             self.skipTest("Insufficient exit actions for heteroscedasticity test")
         exit_data["duration_bin"] = pd.cut(

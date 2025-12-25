@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ..constants import SEEDS
+from ..constants import SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 # Pytest marker for taxonomy classification
@@ -282,6 +282,33 @@ class TestParamsPropagation(RewardSpaceTestBase):
                 df[col].apply(lambda x: abs(x) < float("inf")).all(),
                 f"Column {col} contains infinite values",
             )
+
+        # Verify mathematical alignment (CSV-level invariants)
+        # By construction in `calculate_reward()`: reward_shaping = pbrs_delta + invariance_correction
+        shaping_residual = (
+            df["reward_shaping"] - (df["reward_pbrs_delta"] + df["reward_invariance_correction"])
+        ).abs()
+        self.assertLessEqual(
+            float(shaping_residual.max()),
+            TOLERANCE.GENERIC_EQ,
+            "Expected reward_shaping == reward_pbrs_delta + reward_invariance_correction",
+        )
+
+        # Total reward should decompose into base + shaping + additives
+        reward_residual = (
+            df["reward"]
+            - (
+                df["reward_base"]
+                + df["reward_shaping"]
+                + df["reward_entry_additive"]
+                + df["reward_exit_additive"]
+            )
+        ).abs()
+        self.assertLessEqual(
+            float(reward_residual.max()),
+            TOLERANCE.GENERIC_EQ,
+            "Expected reward == reward_base + reward_shaping + additives",
+        )
 
 
 if __name__ == "__main__":

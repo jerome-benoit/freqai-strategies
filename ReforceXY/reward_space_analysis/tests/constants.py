@@ -239,6 +239,9 @@ class TestParameters:
         TRADE_DURATION_MEDIUM: Medium trade duration in steps (100)
         TRADE_DURATION_LONG: Long trade duration in steps (200)
 
+        # Simulation configuration
+        MAX_TRADE_DURATION_HETEROSCEDASTICITY: Max trade duration used for heteroscedasticity tests (10)
+
         # Common additive parameters
         ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.4)
         ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
@@ -260,6 +263,9 @@ class TestParameters:
     TRADE_DURATION_SHORT: int = 50
     TRADE_DURATION_MEDIUM: int = 100
     TRADE_DURATION_LONG: int = 200
+
+    # Simulation configuration
+    MAX_TRADE_DURATION_HETEROSCEDASTICITY: int = 10
 
     # Additive parameters
     ADDITIVE_RATIO_DEFAULT: float = 0.4

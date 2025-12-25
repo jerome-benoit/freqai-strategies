@@ -44,7 +44,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         """
 
         max_idle_duration_candles = 20
-        max_trade_duration_candles = 100
+        max_trade_duration_candles = PARAMS.TRADE_DURATION_MEDIUM
 
         def sample_entry_rate(*, idle_duration: int, short_allowed: bool) -> float:
             rng = random.Random(SEEDS.REPRODUCIBILITY)
@@ -310,19 +310,20 @@ class TestPrivateFunctions(RewardSpaceTestBase):
     def test_exit_reward_calculation(self):
         """Test exit reward calculation with various scenarios."""
         scenarios = [
-            (Positions.Long, Actions.Long_exit, 0.05, "Profitable long exit"),
+            (Positions.Long, Actions.Long_exit, PARAMS.PNL_MEDIUM, "Profitable long exit"),
             (Positions.Short, Actions.Short_exit, -0.03, "Profitable short exit"),
-            (Positions.Long, Actions.Long_exit, -0.02, "Losing long exit"),
-            (Positions.Short, Actions.Short_exit, 0.02, "Losing short exit"),
+            (Positions.Long, Actions.Long_exit, -PARAMS.PNL_SMALL, "Losing long exit"),
+            (Positions.Short, Actions.Short_exit, PARAMS.PNL_SMALL, "Losing short exit"),
         ]
+        unrealized_pad = PARAMS.PNL_SMALL / 2
         for position, action, pnl, description in scenarios:
             with self.subTest(description=description):
                 context = self.make_ctx(
                     pnl=pnl,
-                    trade_duration=50,
+                    trade_duration=PARAMS.TRADE_DURATION_SHORT,
                     idle_duration=0,
-                    max_unrealized_profit=max(pnl + 0.01, 0.01),
-                    min_unrealized_profit=min(pnl - 0.01, -0.01),
+                    max_unrealized_profit=max(pnl + unrealized_pad, unrealized_pad),
+                    min_unrealized_profit=min(pnl - unrealized_pad, -unrealized_pad),
                     position=position,
                     action=action,
                 )
@@ -370,15 +371,15 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         self.assertIn("check_invariants", params)
         self.assertIn("exit_factor_threshold", params)
         context = self.make_ctx(
-            pnl=0.05,
-            trade_duration=300,
+            pnl=PARAMS.PNL_MEDIUM,
+            trade_duration=SCENARIOS.DURATION_LONG,
             idle_duration=0,
-            max_unrealized_profit=0.06,
+            max_unrealized_profit=PARAMS.PROFIT_AIM,
             min_unrealized_profit=0.0,
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        breakdown = calculate_reward_with_defaults(context, params, base_factor=10000000.0)
+        breakdown = calculate_reward_with_defaults(context, params, base_factor=10_000_000.0)
         self.assertFinite(breakdown.exit_component, name="exit_component")
 
 

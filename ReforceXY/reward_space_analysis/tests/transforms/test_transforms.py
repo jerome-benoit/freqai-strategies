@@ -49,7 +49,7 @@ class TestTransforms(RewardSpaceTestBase):
                     self.assertAlmostEqualFloat(
                         result,
                         expected_value,
-                        tolerance=1e-10,
+                        tolerance=TOLERANCE.GENERIC_EQ,
                         msg=f"{transform_name}({test_val}) should equal {expected_value}",
                     )
 

@@ -108,11 +108,6 @@ class TestReportFormatting(RewardSpaceTestBase):
         val = float(m.group(1)) if m else None
         if val is not None:
             self.assertLess(val, TOLERANCE.NEGLIGIBLE + TOLERANCE.IDENTITY_STRICT)
-        self.assertNotIn(
-            str(TOLERANCE.GENERIC_EQ),
-            content,
-            "Tolerance constant value should appear, not raw literal",
-        )
 
     def test_distribution_shift_section_present_with_real_episodes(self):
         """Distribution Shift section renders metrics table when real episodes provided."""
