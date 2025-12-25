@@ -537,18 +537,17 @@ def _normalize_rank(
 def _impute_weights(
     weights: NDArray[np.floating],
     *,
-    finite_mask: NDArray[np.bool_] | None = None,
     default_weight: float = DEFAULT_EXTREMA_WEIGHT,
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
 
-    # weights computed by zigzag have NaN on first element if it cannot be computed correctly
+    # Weights computed by `zigzag` can be NaN on boundary pivots
     if len(weights) > 0 and not np.isfinite(weights[0]):
         weights[0] = 0.0
+    if len(weights) > 0 and not np.isfinite(weights[-1]):
+        weights[-1] = 0.0
 
-    if finite_mask is None:
-        finite_mask = np.isfinite(weights)
-
+    finite_mask = np.isfinite(weights)
     if not finite_mask.any():
         return np.full_like(weights, default_weight, dtype=float)
 
@@ -589,10 +588,8 @@ def normalize_weights(
     if weights.size == 0:
         return weights
 
-    weights_finite_mask = np.isfinite(weights)
     weights = _impute_weights(
         weights,
-        finite_mask=weights_finite_mask,
         default_weight=DEFAULT_EXTREMA_WEIGHT,
     )
 
@@ -1693,15 +1690,16 @@ def zigzag(
         nonlocal last_pivot_pos
         if pivots_indices and indices[pos] == pivots_indices[-1]:
             return
-        pivots_indices.append(indices[pos])
-        pivots_values.append(value)
-        pivots_directions.append(direction)
 
-        if len(pivots_values) > 1 and last_pivot_pos >= 0:
+        if (
+            pivots_values
+            and last_pivot_pos >= 0
+            and len(pivots_values) == len(pivots_amplitudes)
+        ):
             amplitude, amplitude_threshold_ratio = (
                 calculate_pivot_amplitude_and_threshold_ratio(
                     previous_pos=last_pivot_pos,
-                    previous_value=pivots_values[-2],
+                    previous_value=pivots_values[-1],
                     current_pos=pos,
                     current_value=value,
                 )
@@ -1725,22 +1723,26 @@ def zigzag(
                     current_pos=pos,
                 )
             )
-        else:
-            amplitude = np.nan
-            amplitude_threshold_ratio = np.nan
-            volume_rate = np.nan
-            speed = np.nan
-            efficiency_ratio = np.nan
-            volume_weighted_efficiency_ratio = np.nan
 
-        pivots_amplitudes.append(amplitude)
-        pivots_amplitude_threshold_ratios.append(amplitude_threshold_ratio)
-        pivots_volume_rates.append(volume_rate)
-        pivots_speeds.append(speed)
-        pivots_efficiency_ratios.append(efficiency_ratio)
-        pivots_volume_weighted_efficiency_ratios.append(
-            volume_weighted_efficiency_ratio
-        )
+            pivots_amplitudes[-1] = amplitude
+            pivots_amplitude_threshold_ratios[-1] = amplitude_threshold_ratio
+            pivots_volume_rates[-1] = volume_rate
+            pivots_speeds[-1] = speed
+            pivots_efficiency_ratios[-1] = efficiency_ratio
+            pivots_volume_weighted_efficiency_ratios[-1] = (
+                volume_weighted_efficiency_ratio
+            )
+
+        pivots_indices.append(indices[pos])
+        pivots_values.append(value)
+        pivots_directions.append(direction)
+
+        pivots_amplitudes.append(np.nan)
+        pivots_amplitude_threshold_ratios.append(np.nan)
+        pivots_volume_rates.append(np.nan)
+        pivots_speeds.append(np.nan)
+        pivots_efficiency_ratios.append(np.nan)
+        pivots_volume_weighted_efficiency_ratios.append(np.nan)
 
         last_pivot_pos = pos
         reset_candidate_pivot()
