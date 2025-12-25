@@ -150,18 +150,17 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     _LOG_2: Final[float] = math.log(2.0)
 
+    DEFAULT_BASE_FACTOR: Final[float] = 100.0
+
     DEFAULT_MAX_TRADE_DURATION_CANDLES: Final[int] = 128
     DEFAULT_IDLE_DURATION_MULTIPLIER: Final[int] = 4
-
-    DEFAULT_BASE_FACTOR: Final[float] = 100.0
-    DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
 
     DEFAULT_EXIT_POTENTIAL_DECAY: Final[float] = 0.5
     DEFAULT_ENTRY_ADDITIVE_ENABLED: Final[bool] = False
     DEFAULT_ENTRY_ADDITIVE_RATIO: Final[float] = 0.125
     DEFAULT_ENTRY_ADDITIVE_GAIN: Final[float] = 1.0
     DEFAULT_HOLD_POTENTIAL_ENABLED: Final[bool] = True
-    DEFAULT_HOLD_POTENTIAL_RATIO: Final[float] = 0.25
+    DEFAULT_HOLD_POTENTIAL_RATIO: Final[float] = 0.015625
     DEFAULT_HOLD_POTENTIAL_GAIN: Final[float] = 1.0
     DEFAULT_EXIT_ADDITIVE_ENABLED: Final[bool] = False
     DEFAULT_EXIT_ADDITIVE_RATIO: Final[float] = 0.125
@@ -174,6 +173,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_PNL_FACTOR_BETA: Final[float] = 0.5
     DEFAULT_WIN_REWARD_FACTOR: Final[float] = 2.0
+    DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
 
     DEFAULT_INVALID_ACTION: Final[float] = -2.0
@@ -262,6 +262,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         self.pairs: List[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -2432,7 +2433,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 reward_shaping = gamma * next_potential - prev_potential
 
             if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
-                duration_ratio = trade_duration / max(max_trade_duration, 1)
+                duration_ratio = trade_duration / max(1, max_trade_duration)
                 exit_additive = self._compute_exit_additive(
                     pnl, pnl_target, duration_ratio, exit_additive_scale
                 )
@@ -4072,7 +4073,7 @@ def deepmerge(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
 
 def _compute_gradient_steps(tf: int, ss: int) -> int:
     if tf > 0 and ss > 0:
-        return min(tf, max(math.ceil(tf / ss), 1))
+        return min(tf, max(1, math.ceil(tf / ss)))
     return -1
 
 

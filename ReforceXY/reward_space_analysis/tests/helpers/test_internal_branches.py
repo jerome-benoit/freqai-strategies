@@ -9,6 +9,7 @@ from reward_space_analysis import (
     _get_bool_param,
 )
 
+from ..constants import PARAMS
 from ..test_base import make_ctx
 from . import calculate_reward_with_defaults
 
@@ -74,7 +75,7 @@ def test_calculate_reward_unrealized_pnl_hold_path():
         params,
         base_factor=100.0,
         profit_aim=0.05,
-        risk_reward_ratio=1.0,
+        risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         prev_potential=np.nan,
     )
     assert math.isfinite(breakdown.prev_potential)

@@ -176,7 +176,7 @@ be overridden via `--params`.
 
 - **`--profit_aim`** (float, default: 0.03) – Profit target threshold (e.g.
   0.03=3%).
-- **`--risk_reward_ratio`** (float, default: 1.0) – Risk-reward multiplier.
+- **`--risk_reward_ratio`** (float, default: 2.0) – Risk-reward multiplier.
 - **`--action_masking`** (bool, default: true) – Simulate environment action
   masking. Invalid actions receive penalties only if masking disabled.
 
@@ -240,8 +240,8 @@ The exit factor is computed as:
 | Parameter           | Default | Description                   |
 | ------------------- | ------- | ----------------------------- |
 | `profit_aim`        | 0.03    | Profit target threshold       |
-| `risk_reward_ratio` | 1.0     | Risk/reward multiplier        |
-| `win_reward_factor` | 2.0     | Profit overshoot bonus factor |
+| `risk_reward_ratio` | 2.0     | Risk/reward multiplier        |
+| `win_reward_factor` | 2.0     | Profit target bonus factor    |
 | `pnl_factor_beta`   | 0.5     | PnL amplification sensitivity |
 
 **Note:** In ReforceXY, `risk_reward_ratio` maps to `rr`.
@@ -332,12 +332,12 @@ across samples) and does not apply any drift correction in post-processing.
 
 #### Hold Potential Transforms
 
-| Parameter                           | Default | Description          |
-| ----------------------------------- | ------- | -------------------- |
-| `hold_potential_ratio`              | 0.25    | Hold potential ratio |
-| `hold_potential_gain`               | 1.0     | Gain multiplier      |
-| `hold_potential_transform_pnl`      | tanh    | PnL transform        |
-| `hold_potential_transform_duration` | tanh    | Duration transform   |
+| Parameter                           | Default  | Description          |
+| ----------------------------------- | -------- | -------------------- |
+| `hold_potential_ratio`              | 0.015625 | Hold potential ratio |
+| `hold_potential_gain`               | 1.0      | Gain multiplier      |
+| `hold_potential_transform_pnl`      | tanh     | PnL transform        |
+| `hold_potential_transform_duration` | tanh     | Duration transform   |
 
 **Hold Potential Formula:**
 

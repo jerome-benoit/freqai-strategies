@@ -226,8 +226,8 @@ class TestParameters:
     Attributes:
         BASE_FACTOR: Default base factor for reward scaling (90.0)
         PROFIT_AIM: Target profit threshold (0.06)
-        RISK_REWARD_RATIO: Standard risk/reward ratio (1.0)
-        RISK_REWARD_RATIO_HIGH: High risk/reward ratio for stress tests (2.0)
+        RISK_REWARD_RATIO: Standard risk/reward ratio (2.0)
+        RISK_REWARD_RATIO_HIGH: High risk/reward ratio for stress tests (4.0)
         PNL_STD: Standard deviation for PnL generation (0.02)
         PNL_DUR_VOL_SCALE: Duration-based volatility scaling factor (0.001)
 
@@ -247,14 +247,17 @@ class TestParameters:
         MAX_TRADE_DURATION_HETEROSCEDASTICITY: Max trade duration used for heteroscedasticity tests (10)
 
         # Common additive parameters
-        ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.4)
+        ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.125)
         ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
+
+        # PBRS hold potential parameters
+        HOLD_POTENTIAL_RATIO_DEFAULT: Default hold potential ratio (0.015625)
     """
 
     BASE_FACTOR: float = 90.0
     PROFIT_AIM: float = 0.06
-    RISK_REWARD_RATIO: float = 1.0
-    RISK_REWARD_RATIO_HIGH: float = 2.0
+    RISK_REWARD_RATIO: float = 2.0
+    RISK_REWARD_RATIO_HIGH: float = 4.0
     PNL_STD: float = 0.02
     PNL_DUR_VOL_SCALE: float = 0.001
 
@@ -274,8 +277,11 @@ class TestParameters:
     MAX_TRADE_DURATION_HETEROSCEDASTICITY: int = 10
 
     # Additive parameters
-    ADDITIVE_RATIO_DEFAULT: float = 0.4
+    ADDITIVE_RATIO_DEFAULT: float = 0.125
     ADDITIVE_GAIN_DEFAULT: float = 1.0
+
+    # PBRS hold potential parameters
+    HOLD_POTENTIAL_RATIO_DEFAULT: float = 0.015625
 
 
 @dataclass(frozen=True)

@@ -176,7 +176,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         config = RewardScenarioConfig(
             base_factor=PARAMS.BASE_FACTOR,
             profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=1.0,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
         )
         assert_reward_calculation_scenarios(
@@ -569,6 +569,8 @@ class TestRewardComponents(RewardSpaceTestBase):
         win_reward_factor = 3.0
         beta = 0.5
         profit_aim = PARAMS.PROFIT_AIM
+        risk_reward_ratio = PARAMS.RISK_REWARD_RATIO
+        pnl_target = profit_aim * risk_reward_ratio
         params = self.base_params(
             win_reward_factor=win_reward_factor,
             pnl_factor_beta=beta,
@@ -578,7 +580,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             exit_linear_slope=0.0,
         )
         params.pop("base_factor", None)
-        pnl_values = [profit_aim * m for m in (1.05, PARAMS.RISK_REWARD_RATIO_HIGH, 5.0, 10.0)]
+        pnl_values = [pnl_target * m for m in (1.05, 2.0, 5.0, 10.0)]
         ratios_observed: list[float] = []
         for pnl in pnl_values:
             context = self.make_ctx(
@@ -591,7 +593,11 @@ class TestRewardComponents(RewardSpaceTestBase):
                 action=Actions.Long_exit,
             )
             br = calculate_reward_with_defaults(
-                context, params, base_factor=1.0, profit_aim=profit_aim
+                context,
+                params,
+                base_factor=1.0,
+                profit_aim=profit_aim,
+                risk_reward_ratio=risk_reward_ratio,
             )
             ratio = br.exit_component / pnl if pnl != 0 else 0.0
             ratios_observed.append(float(ratio))
@@ -611,7 +617,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         expected_ratios: list[float] = []
         for pnl in pnl_values:
-            pnl_ratio = pnl / profit_aim
+            pnl_ratio = pnl / pnl_target
             expected = 1.0 + win_reward_factor * math.tanh(beta * (pnl_ratio - 1.0))
             expected_ratios.append(expected)
         for obs, exp in zip(ratios_observed, expected_ratios):
@@ -633,7 +639,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         """
         base_factor = PARAMS.BASE_FACTOR
         profit_aim = PARAMS.PROFIT_AIM
-        risk_reward_ratio = 1.0
+        risk_reward_ratio = PARAMS.RISK_REWARD_RATIO
         max_trade_duration_candles = PARAMS.TRADE_DURATION_MEDIUM
 
         params = self.base_params(
@@ -770,8 +776,12 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         params_rr.pop("risk_reward_ratio", None)
 
-        br_ratio = calculate_reward_with_defaults(context, params_ratio, risk_reward_ratio=1.0)
-        br_rr = calculate_reward_with_defaults(context, params_rr, risk_reward_ratio=1.0)
+        br_ratio = calculate_reward_with_defaults(
+            context, params_ratio, risk_reward_ratio=PARAMS.RISK_REWARD_RATIO
+        )
+        br_rr = calculate_reward_with_defaults(
+            context, params_rr, risk_reward_ratio=PARAMS.RISK_REWARD_RATIO
+        )
 
         self.assertAlmostEqualFloat(
             br_rr.total,

@@ -76,6 +76,9 @@ PBRS_INVARIANCE_TOL: float = 1e-6
 # Default discount factor γ for potential-based reward shaping
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
 
+# Default risk/reward ratio (RR)
+RISK_REWARD_RATIO_DEFAULT: float = 2.0
+
 # Supported attenuation modes
 ATTENUATION_MODES: Tuple[str, ...] = ("sqrt", "linear", "power", "half_life")
 ATTENUATION_MODES_WITH_LEGACY: Tuple[str, ...] = ("legacy",) + ATTENUATION_MODES
@@ -150,7 +153,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
     "hold_potential_enabled": True,
-    "hold_potential_ratio": 0.25,
+    "hold_potential_ratio": 0.015625,
     "hold_potential_gain": 1.0,
     "hold_potential_transform_pnl": "tanh",
     "hold_potential_transform_duration": "tanh",
@@ -580,14 +583,14 @@ def validate_reward_parameters(
     for bkey in _bool_keys:
         if bkey in sanitized:
             original_val = sanitized[bkey]
-            coerced = _to_bool(original_val)
-            if coerced is not original_val:
-                sanitized[bkey] = coerced
+            coerced_val = _to_bool(original_val)
+            if coerced_val is not original_val:
+                sanitized[bkey] = coerced_val
             adjustments.setdefault(
                 bkey,
                 {
                     "original": original_val,
-                    "adjusted": coerced,
+                    "adjusted": coerced_val,
                     "reason": "bool_coerce",
                     "validation_mode": "strict" if strict else "relaxed",
                 },
@@ -600,10 +603,10 @@ def validate_reward_parameters(
 
         original_val = sanitized[key]
         # Robust coercion to float using helper (handles None/str/bool/non-finite)
-        coerced = _get_float_param({key: original_val}, key, np.nan)
+        coerced_val = _get_float_param({key: original_val}, key, np.nan)
 
         # Handle non-numeric or unparsable values
-        if not np.isfinite(coerced):
+        if not np.isfinite(coerced_val):
             # Treat derived parameters specially: drop to allow downstream derivation
             if key == "max_idle_duration_candles":
                 # Remove the key so downstream helpers derive from max_trade_duration_candles
@@ -627,7 +630,7 @@ def validate_reward_parameters(
             }
             continue
 
-        original_numeric = float(coerced)
+        original_numeric = float(coerced_val)
 
         # Track type coercion
         if not isinstance(original_val, (int, float)):
@@ -982,7 +985,7 @@ def _compute_pnl_target_coefficient(
     if pnl_target > 0.0:
         win_reward_factor = _get_float_param(params, "win_reward_factor")
         pnl_factor_beta = _get_float_param(params, "pnl_factor_beta")
-        rr = risk_reward_ratio if risk_reward_ratio > 0 else 1.0
+        rr = risk_reward_ratio if risk_reward_ratio > 0 else RISK_REWARD_RATIO_DEFAULT
 
         pnl_ratio = pnl / pnl_target
         if abs(pnl_ratio) > 1.0:
@@ -3347,11 +3350,11 @@ def _compute_pnl_duration_signal(
     pnl_ratio = float(pnl / pnl_target)
     duration_ratio = float(np.clip(duration_ratio, 0.0, 1.0))
 
-    ratio = _get_float_param(params, scale_key, 0.25 if "hold" in scale_key else 0.125)
+    ratio = _get_float_param(params, scale_key)
     scale = ratio * base_factor
-    gain = _get_float_param(params, gain_key, 1.0)
-    transform_pnl = _get_str_param(params, transform_pnl_key, "tanh")
-    transform_duration = _get_str_param(params, transform_dur_key, "tanh")
+    gain = _get_float_param(params, gain_key)
+    transform_pnl = _get_str_param(params, transform_pnl_key)
+    transform_duration = _get_str_param(params, transform_dur_key)
 
     duration_multiplier = 1.0
     if risk_reward_ratio is not None:
@@ -3426,8 +3429,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--risk_reward_ratio",
         type=float,
-        default=1.0,
-        help="Risk reward ratio multiplier (default: 1.0).",
+        default=RISK_REWARD_RATIO_DEFAULT,
+        help=f"Risk reward ratio multiplier (default: {RISK_REWARD_RATIO_DEFAULT}).",
     )
     parser.add_argument(
         "--max_duration_ratio",

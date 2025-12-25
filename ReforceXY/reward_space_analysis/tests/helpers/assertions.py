@@ -530,7 +530,7 @@ def assert_exit_factor_attenuation_modes(
     attenuation_modes: Sequence[str],
     base_params_fn,
     tolerance_relaxed: float,
-    risk_reward_ratio: float = 1.0,
+    risk_reward_ratio: float = PARAMS.RISK_REWARD_RATIO,
 ):
     """Validate exit factor attenuation across multiple modes.
 
@@ -1067,7 +1067,7 @@ def assert_exit_factor_invariant_suite(
                 duration_ratio=case["duration_ratio"],
                 context=case["context"],
                 params=case["params"],
-                risk_reward_ratio=2.0,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             )
             exp = case.get("expectation")
             if exp == "safe_zero":
@@ -1124,7 +1124,7 @@ def assert_exit_factor_kernel_fallback(
             self, _get_exit_factor, 90.0, 0.08, 0.03, 0.5, test_context,
             bad_params={"exit_attenuation_mode": "power", "exit_power_tau": -1.0},
             reference_params={"exit_attenuation_mode": "linear"},
-            risk_reward_ratio=1.0
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO
         )
     """
 
