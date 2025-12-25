@@ -100,9 +100,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_SKIMAGE_THRESHOLD_METHODS,
         *_CUSTOM_THRESHOLD_METHODS,
     )
+
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
     _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
+
+    _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
+    _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
+        optuna.study.StudyDirection.MAXIMIZE,
+    ) * _OPTUNA_LABEL_N_OBJECTIVES
 
     _SCIPY_METRICS: Final[tuple[str, ...]] = (
         # "braycurtis",
@@ -417,7 +423,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_train_value[pair] = -1
-            self._optuna_label_values[pair] = [-1, -1, -1, -1, -1, -1]
+            self._optuna_label_values[pair] = [
+                -1
+            ] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
             self._optuna_hp_params[pair] = (
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
@@ -1090,15 +1098,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT,
                         ),
                     ),
-                    directions=[
-                        optuna.study.StudyDirection.MAXIMIZE,
-                        optuna.study.StudyDirection.MAXIMIZE,
-                        optuna.study.StudyDirection.MAXIMIZE,
-                        optuna.study.StudyDirection.MAXIMIZE,
-                        optuna.study.StudyDirection.MAXIMIZE,
-                        optuna.study.StudyDirection.MAXIMIZE,
-                        optuna.study.StudyDirection.MAXIMIZE,
-                    ],
+                    directions=list(QuickAdapterRegressorV3._OPTUNA_LABEL_DIRECTIONS),
                 ),
             )
 
@@ -2106,8 +2106,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(trial.values, list)
                 and len(trial.values) == n_objectives
                 and all(
-                    isinstance(value, (int, float))
-                    and (np.isfinite(value) or np.isinf(value))
+                    isinstance(value, (int, float)) and np.isfinite(value)
                     for value in trial.values
                 )
             )
@@ -2162,10 +2161,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if self._optuna_config.get("warm_start"):
             self.optuna_enqueue_previous_best_params(pair, namespace, study)
 
-        if is_study_single_objective is True:
-            objective_type = "single"
-        else:
-            objective_type = "multi"
+        objective_type = "single" if is_study_single_objective else "multi"
         logger.info(
             f"Optuna {pair} {namespace} {objective_type} objective hyperopt started"
         )
@@ -2379,13 +2375,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def optuna_enqueue_previous_best_params(
         self, pair: str, namespace: str, study: Optional[optuna.study.Study]
     ) -> None:
+        if not study:
+            return
+
         best_params = self.get_optuna_params(pair, namespace)
-        if (
-            study
-            and best_params
-            and self.optuna_validate_params(pair, namespace, study)
-        ):
+        if not best_params:
+            return
+
+        try:
             study.enqueue_trial(best_params)
+        except Exception as e:
+            logger.warning(
+                "Failed to enqueue previous best params for %s %s: %r",
+                pair,
+                namespace,
+                e,
+            )
 
     def optuna_save_best_params(self, pair: str, namespace: str) -> None:
         best_params_path = Path(

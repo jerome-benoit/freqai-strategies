@@ -1932,7 +1932,9 @@ def get_optuna_callbacks(
             optuna.integration.XGBoostPruningCallback(trial, "validation_0-rmse")
         ]
     elif regressor == REGRESSORS[1]:  # "lightgbm"
-        callbacks = [optuna.integration.LightGBMPruningCallback(trial, "rmse")]
+        callbacks = [
+            optuna.integration.LightGBMPruningCallback(trial, "rmse", valid_name="valid_0")
+        ]
     else:
         raise ValueError(
             f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
