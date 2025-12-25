@@ -1146,7 +1146,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if pred_df_label is None or pred_df_label.dtype == object:
                 continue
             if not warmed_up:
-                f = [0, 0]
+                f = [0.0, 0.0]
             else:
                 f = sp.stats.norm.fit(pred_df_label)
             dk.data["labels_mean"][label], dk.data["labels_std"][label] = f[0], f[1]
