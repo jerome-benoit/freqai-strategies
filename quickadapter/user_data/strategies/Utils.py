@@ -119,6 +119,15 @@ SMOOTHING_MODES: Final[tuple[SmoothingMode, ...]] = (
     "interp",
 )
 
+TradePriceTarget = Literal[
+    "moving_average", "quantile_interpolation", "weighted_average"
+]
+TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
+    "moving_average",
+    "quantile_interpolation",
+    "weighted_average",
+)
+
 
 DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
     "method": SMOOTHING_METHODS[0],  # "gaussian"

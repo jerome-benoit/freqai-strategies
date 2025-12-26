@@ -40,6 +40,7 @@ from Utils import (
     SMOOTHING_METHODS,
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
+    TRADE_PRICE_TARGETS,
     WEIGHT_STRATEGIES,
     alligator,
     bottom_change_percent,
@@ -1278,7 +1279,7 @@ class QuickAdapterV3(IStrategy):
             isna(trade_duration) or trade_duration <= 0
         )
 
-    def get_trade_weighted_interpolation_natr(
+    def get_trade_weighted_average_natr(
         self, df: DataFrame, trade: Trade
     ) -> Optional[float]:
         label_natr = df.get("natr_label_period_candles")
@@ -1333,7 +1334,7 @@ class QuickAdapterV3(IStrategy):
             weights=np.array([entry_weight, current_weight, median_weight]),
         )
 
-    def get_trade_interpolation_natr(
+    def get_trade_quantile_interpolation_natr(
         self, df: DataFrame, trade: Trade
     ) -> Optional[float]:
         label_natr = df.get("natr_label_period_candles")
@@ -1395,21 +1396,27 @@ class QuickAdapterV3(IStrategy):
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
     ) -> Optional[float]:
         trade_price_target = self.config.get("exit_pricing", {}).get(
-            "trade_price_target", "moving_average"
+            "trade_price_target",
+            TRADE_PRICE_TARGETS[0],  # "moving_average"
         )
         trade_price_target_methods: dict[str, Callable[[], Optional[float]]] = {
-            "moving_average": lambda: self.get_trade_moving_average_natr(
+            # 0 - "moving_average"
+            TRADE_PRICE_TARGETS[0]: lambda: self.get_trade_moving_average_natr(
                 df, trade.pair, trade_duration_candles
             ),
-            "interpolation": lambda: self.get_trade_interpolation_natr(df, trade),
-            "weighted_interpolation": lambda: self.get_trade_weighted_interpolation_natr(
+            # 1 - "quantile_interpolation"
+            TRADE_PRICE_TARGETS[1]: lambda: self.get_trade_quantile_interpolation_natr(
+                df, trade
+            ),
+            # 2 - "weighted_average"
+            TRADE_PRICE_TARGETS[2]: lambda: self.get_trade_weighted_average_natr(
                 df, trade
             ),
         }
         trade_price_target_fn = trade_price_target_methods.get(trade_price_target)
         if trade_price_target_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target: {trade_price_target}. Available: {', '.join(sorted(trade_price_target_methods.keys()))}"
+                f"Invalid trade_price_target: {trade_price_target}. Available: {', '.join(sorted(TRADE_PRICE_TARGETS))}"
             )
         return trade_price_target_fn()
 
@@ -1463,6 +1470,10 @@ class QuickAdapterV3(IStrategy):
     def get_take_profit_distance(
         self, df: DataFrame, trade: Trade, natr_ratio_percent: float
     ) -> Optional[float]:
+        if not (0.0 <= natr_ratio_percent <= 1.0):
+            raise ValueError(
+                f"natr_ratio_percent must be in [0, 1], got {natr_ratio_percent}"
+            )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
             return None
