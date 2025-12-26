@@ -366,52 +366,49 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning("Invalid n_envs=%s. Forcing n_envs=1", self.n_envs)
+            logger.warning("Config: invalid n_envs=%s, forcing n_envs=1", self.n_envs)
             self.n_envs = 1
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
-                "Invalid n_eval_envs=%s. Forcing n_eval_envs=1", self.n_eval_envs
+                "Config: invalid n_eval_envs=%s, forcing n_eval_envs=1",
+                self.n_eval_envs,
             )
             self.n_eval_envs = 1
         if self.multiprocessing and self.n_envs <= 1:
             logger.warning(
-                "User tried to use multiprocessing with n_envs=%s. Deactivating multiprocessing",
-                self.n_envs,
+                "Config: multiprocessing requires n_envs>1, deactivating multiprocessing",
             )
             self.multiprocessing = False
         if self.eval_multiprocessing and self.n_eval_envs <= 1:
             logger.warning(
-                "User tried to use eval_multiprocessing with n_eval_envs=%s. Deactivating eval_multiprocessing",
-                self.n_eval_envs,
+                "Config: eval_multiprocessing requires n_eval_envs>1, deactivating eval_multiprocessing",
             )
             self.eval_multiprocessing = False
         if self.multiprocessing and self.plot_new_best:
             logger.warning(
-                "User tried to use plot_new_best with multiprocessing=%s. Deactivating plot_new_best",
-                self.multiprocessing,
+                "Config: plot_new_best incompatible with multiprocessing, deactivating plot_new_best",
             )
             self.plot_new_best = False
         if not isinstance(self.frame_stacking, int) or self.frame_stacking < 0:
             logger.warning(
-                "Invalid frame_stacking=%s. Forcing frame_stacking=0",
+                "Config: invalid frame_stacking=%s, forcing frame_stacking=0",
                 self.frame_stacking,
             )
             self.frame_stacking = 0
         if self.frame_stacking == 1:
             logger.warning(
-                "Setting frame_stacking=%s is equivalent to no stacking. Forcing frame_stacking=0",
-                self.frame_stacking,
+                "Config: frame_stacking=1 is equivalent to no stacking, forcing frame_stacking=0",
             )
             self.frame_stacking = 0
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
-                "Invalid n_eval_steps=%s. Forcing n_eval_steps=10_000",
+                "Config: invalid n_eval_steps=%s, forcing n_eval_steps=10_000",
                 self.n_eval_steps,
             )
             self.n_eval_steps = 10_000
         if not isinstance(self.n_eval_episodes, int) or self.n_eval_episodes <= 0:
             logger.warning(
-                "Invalid n_eval_episodes=%s. Forcing n_eval_episodes=5",
+                "Config: invalid n_eval_episodes=%s, forcing n_eval_episodes=5",
                 self.n_eval_episodes,
             )
             self.n_eval_episodes = 5
@@ -420,7 +417,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or self.optuna_purge_period < 0
         ):
             logger.warning(
-                "Invalid purge_period=%s. Forcing purge_period=0",
+                "Config: invalid purge_period=%s, forcing purge_period=0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
@@ -429,28 +426,24 @@ class ReforceXY(BaseReinforcementLearningModel):
             and self.optuna_purge_period > 0
         ):
             logger.warning(
-                "Setting purge_period=%s has no effect when continuous=True. Forcing purge_period=0",
-                self.optuna_purge_period,
+                "Config: purge_period has no effect when continuous=True, forcing purge_period=0",
             )
             self.optuna_purge_period = 0
         add_state_info = self.rl_config.get("add_state_info", False)
         if not add_state_info:
             logger.warning(
-                "Setting add_state_info=%s will lead to desynchronized trade states during inference after restart",
-                add_state_info,
+                "Config: add_state_info=False will lead to desynchronized trade states after restart",
             )
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
-                "Invalid tensorboard_throttle=%s. Forcing tensorboard_throttle=1",
+                "Config: invalid tensorboard_throttle=%s, forcing tensorboard_throttle=1",
                 tensorboard_throttle,
             )
             self.rl_config["tensorboard_throttle"] = 1
         if self.continual_learning and bool(self.frame_stacking):
             logger.warning(
-                "User tried to use continual_learning with frame_stacking=%s. "
-                "Deactivating continual_learning",
-                self.frame_stacking,
+                "Config: continual_learning incompatible with frame_stacking, deactivating continual_learning",
             )
             self.continual_learning = False
 
@@ -491,7 +484,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             model_reward_parameters["potential_gamma"] = gamma
         else:
             logger.warning(
-                f"{pair}: No valid PBRS discount gamma resolved for environment"
+                "PBRS: %s no valid discount gamma resolved for environment", pair
             )
 
         return env_info
@@ -507,7 +500,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         Set training and evaluation environments
         """
         if self.train_env is not None or self.eval_env is not None:
-            logger.info("Closing environments")
+            logger.info("Env: closing environments")
             self.close_envs()
 
         train_df = data_dictionary.get("train_features")
@@ -516,7 +509,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         seed = self.get_model_params().get("seed", 42)
 
         if self.check_envs:
-            logger.info("Checking environments")
+            logger.info("Env: checking environments")
             _train_env_check = MyRLEnv(
                 df=train_df,
                 prices=prices_train,
@@ -541,7 +534,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 _eval_env_check.close()
 
         logger.info(
-            "Populating %s train and %s eval environments",
+            "Env: populating %s train and %s eval environments",
             self.n_envs,
             self.n_eval_envs,
         )
@@ -575,7 +568,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), lr
                 )
                 logger.info(
-                    "Learning rate linear schedule enabled, initial value: %s", lr
+                    "Training: learning rate linear schedule enabled, initial=%s", lr
                 )
 
         # "PPO"
@@ -590,7 +583,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params["clip_range"] = get_schedule(
                     cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), cr
                 )
-                logger.info("Clip range linear schedule enabled, initial value: %s", cr)
+                logger.info(
+                    "Training: clip range linear schedule enabled, initial=%s", cr
+                )
 
         # "DQN"
         if ReforceXY._MODEL_TYPES[3] in self.model_type:
@@ -620,7 +615,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                         cast(NetArchSize, net_arch),
                     )
                 else:
-                    logger.warning("Invalid net_arch=%s, using default", net_arch)
+                    logger.warning(
+                        "Config: invalid net_arch=%s, using default", net_arch
+                    )
                     model_params["policy_kwargs"]["net_arch"] = {
                         "pi": default_net_arch,
                         "vf": default_net_arch,
@@ -644,7 +641,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params["policy_kwargs"]["net_arch"] = {"pi": pi, "vf": vf}
             else:
                 logger.warning(
-                    "Unexpected net_arch type=%s, using default", type(net_arch)
+                    "Config: unexpected net_arch type=%s, using default",
+                    type(net_arch),
                 )
                 model_params["policy_kwargs"]["net_arch"] = {
                     "pi": default_net_arch,
@@ -658,13 +656,16 @@ class ReforceXY(BaseReinforcementLearningModel):
                         cast(NetArchSize, net_arch),
                     )
                 else:
-                    logger.warning("Invalid net_arch=%s, using default", net_arch)
+                    logger.warning(
+                        "Config: invalid net_arch=%s, using default", net_arch
+                    )
                     model_params["policy_kwargs"]["net_arch"] = default_net_arch
             elif isinstance(net_arch, list):
                 model_params["policy_kwargs"]["net_arch"] = net_arch
             else:
                 logger.warning(
-                    "Unexpected net_arch type=%s, using default", type(net_arch)
+                    "Config: unexpected net_arch type=%s, using default",
+                    type(net_arch),
                 )
                 model_params["policy_kwargs"]["net_arch"] = default_net_arch
 
@@ -825,7 +826,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         logger.info("Model: %s", self.model_type)
         logger.info(
-            "Train: %s steps (%s days), %s cycles, %s env(s) -> total %s steps (%s days)",
+            "Training: %s steps (%s days), %s cycles, %s env(s) -> total %s steps (%s days)",
             train_timesteps,
             train_days,
             train_cycles,
@@ -834,18 +835,18 @@ class ReforceXY(BaseReinforcementLearningModel):
             total_days,
         )
         logger.info(
-            "Eval: %s steps (%s days), %s episodes, %s env(s)",
+            "Training: eval %s steps (%s days), %s episodes, %s env(s)",
             eval_timesteps,
             eval_days,
             self.n_eval_episodes,
             self.n_eval_envs,
         )
-        logger.info("Multiprocessing: %s", self.multiprocessing)
-        logger.info("Eval multiprocessing: %s", self.eval_multiprocessing)
-        logger.info("Frame stacking: %s", self.frame_stacking)
-        logger.info("Action masking: %s", self.action_masking)
-        logger.info("Recurrent: %s", self.recurrent)
-        logger.info("Hyperopt: %s", self.hyperopt)
+        logger.info("Config: multiprocessing=%s", self.multiprocessing)
+        logger.info("Config: eval_multiprocessing=%s", self.eval_multiprocessing)
+        logger.info("Config: frame_stacking=%s", self.frame_stacking)
+        logger.info("Config: action_masking=%s", self.action_masking)
+        logger.info("Config: recurrent=%s", self.recurrent)
+        logger.info("Config: hyperopt=%s", self.hyperopt)
 
         start_time = time.time()
         if self.hyperopt:
@@ -858,7 +859,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             model_params = best_params
         else:
             model_params = self.get_model_params()
-        logger.info("%s params: %s", self.model_type, model_params)
+        logger.info("Model: %s params: %s", self.model_type, model_params)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -866,7 +867,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             min_timesteps = 2 * n_steps * self.n_envs
             if total_timesteps <= min_timesteps:
                 logger.warning(
-                    "total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
+                    "Training: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
                     total_timesteps,
                     min_timesteps,
                     self.model_type,
@@ -879,7 +880,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if aligned_total_timesteps != total_timesteps:
                     total_timesteps = aligned_total_timesteps
                     logger.info(
-                        "Train: aligned total %s steps (%s days) for model %s",
+                        "Training: aligned total %s steps (%s days) for model %s",
                         total_timesteps,
                         steps_to_days(total_timesteps, self.config.get("timeframe")),
                         self.model_type,
@@ -903,7 +904,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         model = self.get_init_model(dk.pair)
         if model is not None:
             logger.info(
-                "Continual training activated: starting training from previously trained model state"
+                "Training: continual training activated, starting from previously trained model state"
             )
             model.set_env(self.train_env)
         else:
@@ -932,17 +933,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_filename = dk.model_filename if dk.model_filename else "best"
         model_filepath = Path(dk.data_path / f"{model_filename}_model.zip")
         if model_filepath.is_file():
-            logger.info("Found best model at %s", model_filepath)
+            logger.info("Model: found best model at %s", model_filepath)
             try:
                 best_model = self.MODELCLASS.load(
                     dk.data_path / f"{model_filename}_model"
                 )
                 return best_model
             except Exception as e:
-                logger.error("Error loading best model: %r", e, exc_info=True)
+                logger.error("Model: failed to load best model: %r", e, exc_info=True)
 
         logger.info(
-            "Could not find best model at %s, using final model instead", model_filepath
+            "Model: best model not found at %s, using final model", model_filepath
         )
 
         return model
@@ -1799,7 +1800,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         if self._exit_potential_mode not in set(ReforceXY._EXIT_POTENTIAL_MODES):
             logger.warning(
-                "Unknown exit_potential_mode %r; defaulting to %r. Valid modes: %s",
+                "PBRS: unknown exit_potential_mode %r; defaulting to %r. Valid modes: %s",
                 self._exit_potential_mode,
                 ReforceXY._EXIT_POTENTIAL_MODES[0],
                 ", ".join(ReforceXY._EXIT_POTENTIAL_MODES),
@@ -1901,8 +1902,9 @@ class MyRLEnv(Base5ActionRLEnv):
         if self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]:
             if self._entry_additive_enabled or self._exit_additive_enabled:
                 logger.info(
-                    "PBRS canonical mode: additive rewards disabled with Φ(terminal)=0. PBRS invariance is preserved. "
-                    f"To use additive rewards, set exit_potential_mode={ReforceXY._EXIT_POTENTIAL_MODES[1]}."
+                    "PBRS: canonical mode, additive rewards disabled with Φ(terminal)=0. "
+                    "Invariance preserved. To use additive rewards, set exit_potential_mode=%s",
+                    ReforceXY._EXIT_POTENTIAL_MODES[1],
                 )
                 self._entry_additive_enabled = False
                 self._exit_additive_enabled = False
@@ -1910,7 +1912,8 @@ class MyRLEnv(Base5ActionRLEnv):
         elif self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]:
             if self._entry_additive_enabled or self._exit_additive_enabled:
                 logger.info(
-                    "PBRS non-canonical mode: additive rewards enabled with Φ(terminal)=0. PBRS invariance is intentionally broken."
+                    "PBRS: non-canonical mode, additive rewards enabled with Φ(terminal)=0. "
+                    "Invariance intentionally broken."
                 )
 
         if MyRLEnv.is_unsupported_pbrs_config(
@@ -2174,7 +2177,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return min(max(-1.0, x), 1.0)
 
         logger.warning(
-            "Unknown potential transform '%s'; falling back to tanh. Valid transforms: %s",
+            "PBRS: unknown potential transform '%s'; falling back to tanh. Valid transforms: %s",
             name,
             ", ".join(ReforceXY._TRANSFORM_FUNCTIONS),
         )
@@ -2618,7 +2621,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         if exit_plateau_grace < 0.0:
-            logger.warning("exit_plateau_grace < 0; falling back to 0.0")
+            logger.warning("PBRS: exit_plateau_grace < 0; falling back to 0.0")
             exit_plateau_grace = 0.0
 
         def _legacy(dr: float, p: Mapping[str, Any]) -> float:
@@ -2632,7 +2635,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE)
             )
             if slope < 0.0:
-                logger.warning("exit_linear_slope < 0; falling back to 1.0")
+                logger.warning("PBRS: exit_linear_slope < 0; falling back to 1.0")
                 slope = 1.0
             return 1.0 / (1.0 + slope * dr)
 
@@ -2673,7 +2676,7 @@ class MyRLEnv(Base5ActionRLEnv):
         strategy_fn = strategies.get(exit_attenuation_mode, None)
         if strategy_fn is None:
             logger.debug(
-                "Unknown exit_attenuation_mode '%s'; defaulting to %s. Valid modes: %s",
+                "PBRS: unknown exit_attenuation_mode '%s'; defaulting to %s. Valid modes: %s",
                 exit_attenuation_mode,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
                 ", ".join(ReforceXY._EXIT_ATTENUATION_MODES),
@@ -2686,7 +2689,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         except Exception as e:
             logger.warning(
-                "exit_attenuation_mode '%s' failed (%r); fallback to %s (effective_dr=%.5f)",
+                "PBRS: exit_attenuation_mode '%s' failed (%r); fallback to %s (effective_dr=%.5f)",
                 exit_attenuation_mode,
                 e,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
@@ -2742,17 +2745,17 @@ class MyRLEnv(Base5ActionRLEnv):
         if check_invariants:
             if not np.isfinite(exit_factor):
                 logger.debug(
-                    "_get_exit_factor produced non-finite factor; resetting to 0.0"
+                    "PBRS: _get_exit_factor produced non-finite factor; resetting to 0.0"
                 )
                 return 0.0
             if efficiency_coefficient < 0.0:
                 logger.debug(
-                    "_compute_efficiency_coefficient produced negative coefficient %.5f",
+                    "PBRS: _compute_efficiency_coefficient produced negative coefficient %.5f",
                     efficiency_coefficient,
                 )
             if exit_factor < 0.0 and pnl >= 0.0:
                 logger.debug(
-                    "_get_exit_factor produced negative factor with positive pnl (exit_factor=%.5f, pnl=%.5f); clamping to 0.0",
+                    "PBRS: _get_exit_factor produced negative factor with positive pnl (exit_factor=%.5f, pnl=%.5f); clamping to 0.0",
                     exit_factor,
                     pnl,
                 )
@@ -2764,7 +2767,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             if exit_factor_threshold > 0 and abs(exit_factor) > exit_factor_threshold:
                 logger.warning(
-                    "_get_exit_factor |exit_factor|=%.2f exceeds threshold %.2f",
+                    "PBRS: _get_exit_factor |exit_factor|=%.2f exceeds threshold %.2f",
                     exit_factor,
                     exit_factor_threshold,
                 )
@@ -3342,12 +3345,12 @@ class MyRLEnv(Base5ActionRLEnv):
         Get environment data aligned on ticks, including optional trade events
         """
         if not self.history:
-            logger.warning("history is empty")
+            logger.warning("Env: history is empty")
             return DataFrame()
 
         _history_df = DataFrame(self.history)
         if "tick" not in _history_df.columns:
-            logger.warning("'tick' column is missing from history")
+            logger.warning("Env: 'tick' column missing from history")
             return DataFrame()
 
         _rollout_history = _history_df.copy()
@@ -3368,8 +3371,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         except Exception as e:
             logger.error(
-                f"Failed to merge history with prices: {repr(e)}",
-                exc_info=True,
+                "Env: failed to merge history with prices: %r", e, exc_info=True
             )
             return DataFrame()
         return history
@@ -3545,7 +3547,7 @@ class InfoMetricsCallback(TensorboardCallback):
         try:
             self.logger.record(key, value, exclude=exclude)
         except Exception as e:
-            logger.warning("logger.record failed at %r: %r", key, e)
+            logger.warning("Tensorboard: logger.record failed at %r: %r", key, e)
             if exclude is None:
                 exclude = ("tensorboard",)
             else:
@@ -3556,7 +3558,9 @@ class InfoMetricsCallback(TensorboardCallback):
             try:
                 self.logger.record(key, value, exclude=exclude)
             except Exception as e:
-                logger.error("logger.record retry on stdout failed at %r: %r", key, e)
+                logger.error(
+                    "Tensorboard: logger.record retry failed at %r: %r", key, e
+                )
                 pass
 
     @staticmethod
@@ -3964,7 +3968,9 @@ class RolloutPlotCallback(BaseCallback):
                     exclude=("stdout", "log", "json", "csv"),
                 )
             except Exception as e:
-                logger.error("logger.record failed at %r: %r", f"best/train_env{i}", e)
+                logger.error(
+                    "Tensorboard: logger.record failed at best/train_env%s: %r", i, e
+                )
                 pass
         return True
 

@@ -279,8 +279,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = default_label_frequency_candles
             else:
                 logger.warning(
-                    f"Invalid string value for label_frequency_candles: '{label_frequency_candles}'. "
-                    f"Only 'auto' is supported. Using fallback"
+                    f"Invalid string value for label_frequency_candles: '{label_frequency_candles}', "
+                    f"only 'auto' is supported, using default {default_label_frequency_candles}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         elif isinstance(label_frequency_candles, (int, float)):
@@ -288,14 +288,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = int(label_frequency_candles)
             else:
                 logger.warning(
-                    f"Invalid numeric value for label_frequency_candles: {label_frequency_candles}. "
-                    f"Must be between 2 and 10000. Using fallback"
+                    f"Invalid numeric value for label_frequency_candles: {label_frequency_candles}, "
+                    f"must be between 2 and 10000, using default {default_label_frequency_candles}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         else:
             logger.warning(
-                f"Invalid type for label_frequency_candles: {type(label_frequency_candles).__name__}. "
-                f"Expected int, float, or 'auto'. Using fallback"
+                f"Invalid type for label_frequency_candles: {type(label_frequency_candles).__name__}, "
+                f"expected int, float, or 'auto', using default {default_label_frequency_candles}"
             )
             label_frequency_candles = default_label_frequency_candles
 
@@ -855,7 +855,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def set_optuna_label_candle(self, pair: str) -> None:
         if len(self._optuna_label_candle_pool) == 0:
             logger.warning(
-                "Optuna label candle pool is empty, reinitializing it ("
+                f"Optuna {pair} label candle pool is empty, reinitializing it ("
                 f"{self._optuna_label_candle_pool=} ,"
                 f"{self._optuna_label_candle_pool_full=} ,"
                 f"{self._optuna_label_candle.values()=} ,"
@@ -1494,7 +1494,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return threshold_func(values)
         except Exception as e:
             logger.warning(
-                f"Failed to apply skimage threshold function {threshold_func.__name__} on series {series.name}: {repr(e)}. Falling back to median",
+                f"Failed to apply skimage threshold function {threshold_func.__name__} on series {series.name}: {e!r}, falling back to median",
                 exc_info=True,
             )
             return np.nanmedian(values)

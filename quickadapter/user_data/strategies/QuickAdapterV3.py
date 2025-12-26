@@ -493,7 +493,7 @@ class QuickAdapterV3(IStrategy):
 
         if not isinstance(lookback_period, int) or lookback_period < 0:
             logger.warning(
-                f"reversal_confirmation: invalid lookback_period {lookback_period!r}, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period']}"
+                f"Invalid reversal_confirmation lookback_period {lookback_period!r}, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period']}"
             )
             lookback_period = QuickAdapterV3.default_reversal_confirmation[
                 "lookback_period"
@@ -501,7 +501,7 @@ class QuickAdapterV3(IStrategy):
 
         if not isinstance(decay_ratio, (int, float)) or not (0.0 < decay_ratio <= 1.0):
             logger.warning(
-                f"reversal_confirmation: invalid decay_ratio {decay_ratio!r}, using default {QuickAdapterV3.default_reversal_confirmation['decay_ratio']}"
+                f"Invalid reversal_confirmation decay_ratio {decay_ratio!r}, using default {QuickAdapterV3.default_reversal_confirmation['decay_ratio']}"
             )
             decay_ratio = QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
 
@@ -1071,7 +1071,7 @@ class QuickAdapterV3(IStrategy):
         try:
             return pattern.format(**duration)
         except (KeyError, ValueError) as e:
-            raise ValueError(f"Invalid pattern '{pattern}': {repr(e)}")
+            raise ValueError(f"Invalid pattern '{pattern}': {e!r}")
 
     def set_freqai_targets(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
@@ -1386,7 +1386,7 @@ class QuickAdapterV3(IStrategy):
                     return trade_kama_natr_values[-1]
             except Exception as e:
                 logger.warning(
-                    f"Failed to calculate trade NATR KAMA for pair {pair}: {repr(e)}. Falling back to last trade NATR value",
+                    f"{pair}: failed to calculate trade NATR KAMA: {e!r}, falling back to last trade NATR value",
                     exc_info=True,
                 )
         return label_natr.iloc[-1]
@@ -1495,9 +1495,7 @@ class QuickAdapterV3(IStrategy):
             try:
                 callback()
             except Exception as e:
-                logger.error(
-                    f"Error executing callback for {pair}: {repr(e)}", exc_info=True
-                )
+                logger.error(f"{pair}: callback execution failed: {e!r}", exc_info=True)
 
             threshold_secs = 10 * candle_duration_secs
             keys_to_remove = [
@@ -2418,7 +2416,9 @@ class QuickAdapterV3(IStrategy):
         if (
             side == QuickAdapterV3._TRADE_DIRECTIONS[1] and not self.can_short
         ):  # "short"
-            logger.info(f"User denied short entry for {pair}: shorting not allowed")
+            logger.info(
+                f"User denied short {QuickAdapterV3._ORDER_TYPES[0]} for {pair}: shorting not allowed"
+            )
             return False
         if Trade.get_open_trade_count() >= self.config.get("max_open_trades", 0):
             return False
@@ -2435,7 +2435,9 @@ class QuickAdapterV3(IStrategy):
             pair=pair, timeframe=self.config.get("timeframe")
         )
         if df.empty:
-            logger.info(f"User denied {side} entry for {pair}: dataframe is empty")
+            logger.info(
+                f"User denied {side} {QuickAdapterV3._ORDER_TYPES[0]} for {pair}: dataframe is empty"
+            )
             return False
         if self.reversal_confirmed(
             df,

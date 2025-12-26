@@ -2334,9 +2334,7 @@ def validate_range(
             or (finite_only and not np.isfinite(value))
             or (non_negative and value < 0)
         ):
-            logger.warning(
-                f"{name}: invalid value {value!r}, using default {default_value}"
-            )
+            logger.warning(f"Invalid {name} {value!r}, using default {default_value}")
             return default_value
         return value
 
@@ -2350,13 +2348,13 @@ def validate_range(
     )
     if not ordering_ok:
         logger.warning(
-            f"{name}: invalid ordering ({min_name}={sanitized_min}, {max_name}={sanitized_max}); using defaults ({default_min}, {default_max})"
+            f"Invalid {name} ordering ({min_name}={sanitized_min}, {max_name}={sanitized_max}), using defaults ({default_min}, {default_max})"
         )
         sanitized_min, sanitized_max = default_min, default_max
 
     if sanitized_min != min_val or sanitized_max != max_val:
         logger.warning(
-            f"{name}: sanitized {min_name}={sanitized_min}, {max_name}={sanitized_max} (defaults=({default_min}, {default_max}))"
+            f"Invalid {name} values sanitized: {min_name}={sanitized_min}, {max_name}={sanitized_max} (defaults=({default_min}, {default_max}))"
         )
 
     return sanitized_min, sanitized_max
