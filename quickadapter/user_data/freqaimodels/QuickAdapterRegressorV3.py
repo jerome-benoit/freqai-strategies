@@ -1226,6 +1226,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         fit_live_predictions_candles: int,
         label_period_candles: int,
     ) -> tuple[float, float]:
+        if not isinstance(label_period_candles, int) or label_period_candles <= 0:
+            label_period_candles = self.ft_params.get(
+                "label_period_candles", self._default_label_period_candles
+            )
         thresholds_candles = (
             max(2, int(fit_live_predictions_candles / label_period_candles))
             * label_period_candles

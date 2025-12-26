@@ -243,11 +243,11 @@ def run_scenario(
         cmd_str = " ".join(cmd)
         stderr_head_lines = proc.stderr.splitlines()[:3]
         stderr_head = "\n".join(stderr_head_lines)
-        print(f"[error details] command: {cmd_str}")
+        print(f"[error] Command: {cmd_str}")
         if stderr_head:
-            print(f"[error details] stderr head:\n{stderr_head}")
+            print(f"[error] Stderr:\n{stderr_head}")
         else:
-            print("[error details] stderr is empty.")
+            print("[error] Stderr: (empty)")
     combined = proc.stdout.splitlines() + proc.stderr.splitlines()
     warnings = sum(1 for line in combined if _is_warning_header(line))
     if full_logs:
@@ -379,9 +379,8 @@ def main():
         else:
             invalid_params.append(p)
     if invalid_params:
-        msg = f"Warning: ignoring malformed --params entries: {invalid_params}"
+        msg = f"[warning] Ignoring malformed --params entries: {invalid_params}"
         print(msg, file=sys.stderr)
-        print(f"{msg}")
     args.params = valid_params
 
     # Prepare list of (conf, strict)
@@ -528,7 +527,7 @@ def main():
                 os.remove(tmp_path)
             except OSError:
                 pass
-    print("Summary written to", out_dir / SUMMARY_FILENAME)
+    print(f"Summary saved to: {out_dir / SUMMARY_FILENAME}")
     if not interrupted and summary["failures"]:
         print("Failures detected:")
         for f in summary["failures"]:

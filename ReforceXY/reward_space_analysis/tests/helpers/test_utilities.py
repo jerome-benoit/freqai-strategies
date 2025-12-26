@@ -42,9 +42,9 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
             loaded = load_real_episodes(p)
         self.assertEqual(len(loaded), 2, "Expected duplicate row removal to reduce length")
         msgs = [str(warning.message) for warning in w]
-        dup_msgs = [m for m in msgs if "duplicate transition" in m]
+        dup_msgs = [m for m in msgs if "duplicate" in m.lower()]
         self.assertTrue(
-            any("Removed" in m for m in dup_msgs), f"No duplicate removal warning found in: {msgs}"
+            any("Dropped" in m for m in dup_msgs), f"No duplicate removal warning found in: {msgs}"
         )
 
     def test_missing_multiple_required_columns_single_warning(self):
@@ -63,7 +63,7 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
             self.assertIn(col, loaded.columns)
             self.assertTrue(loaded[col].isna().all(), f"Column {col} should be all NaN")
         msgs = [str(warning.message) for warning in w]
-        miss_msgs = [m for m in msgs if "missing columns" in m]
+        miss_msgs = [m for m in msgs if "Missing columns" in m]
         self.assertEqual(
             len(miss_msgs), 1, f"Expected single missing columns warning (got {miss_msgs})"
         )

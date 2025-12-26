@@ -793,7 +793,7 @@ def _compute_time_attenuation_coefficient(
     exit_plateau_grace = _get_float_param(params, "exit_plateau_grace")
     if exit_plateau_grace < 0.0:
         warnings.warn(
-            "exit_plateau_grace < 0; falling back to 0.0",
+            f"exit_plateau_grace={exit_plateau_grace} < 0; falling back to 0.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -801,7 +801,7 @@ def _compute_time_attenuation_coefficient(
     exit_linear_slope = _get_float_param(params, "exit_linear_slope")
     if exit_linear_slope < 0.0:
         warnings.warn(
-            "exit_linear_slope < 0; falling back to 1.0",
+            f"exit_linear_slope={exit_linear_slope} < 0; falling back to 1.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -826,7 +826,7 @@ def _compute_time_attenuation_coefficient(
                 alpha = -math.log(tau) / _LOG_2
             else:
                 warnings.warn(
-                    f"exit_power_tau={tau} invalid; falling back to alpha=1.0",
+                    f"exit_power_tau={tau} outside (0,1]; falling back to alpha=1.0",
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
@@ -837,14 +837,14 @@ def _compute_time_attenuation_coefficient(
         hl = _get_float_param(params, "exit_half_life")
         if np.isclose(hl, 0.0):
             warnings.warn(
-                f"exit_half_life={hl} close to 0; falling back to 1.0",
+                f"exit_half_life={hl} <= 0; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
             return 1.0
         if hl < 0.0:
             warnings.warn(
-                f"exit_half_life={hl} negative; falling back to 1.0",
+                f"exit_half_life={hl} < 0; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -881,7 +881,7 @@ def _compute_time_attenuation_coefficient(
         time_attenuation_coefficient = kernel(effective_dr)
     except Exception as e:
         warnings.warn(
-            f"exit_attenuation_mode '{exit_attenuation_mode}' failed ({e!r}); fallback linear (effective_dr={effective_dr:.5f})",
+            f"exit_attenuation_mode='{exit_attenuation_mode}' failed ({e!r}); falling back to linear",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -948,9 +948,7 @@ def _get_exit_factor(
         if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):
             if abs(exit_factor) > exit_factor_threshold:
                 warnings.warn(
-                    (
-                        f"_get_exit_factor |exit_factor|={abs(exit_factor):.2f} exceeds threshold {exit_factor_threshold:.2f}"
-                    ),
+                    f"|exit_factor|={abs(exit_factor):.2f} > threshold={exit_factor_threshold:.2f}",
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
@@ -1045,7 +1043,7 @@ def _compute_efficiency_coefficient(
     if efficiency_coefficient < 0.0:
         if _get_bool_param(params, "check_invariants"):
             warnings.warn(
-                f"efficiency_coefficient={efficiency_coefficient:.6f} < 0; clamping to 0.0",
+                f"efficiency_coefficient={efficiency_coefficient:.6f} < 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -2214,7 +2212,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 skipped += 1
         if skipped:
             warnings.warn(
-                f"Ignored {skipped} episode(s) without 'transitions' when loading '{path}'",
+                f"Skipped {skipped} episode(s) without 'transitions' when loading '{path}'",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -2271,10 +2269,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
             if coerced > 0:
                 frac = coerced / len(df) if len(df) > 0 else 0.0
                 warnings.warn(
-                    (
-                        f"Column '{col}' contained {coerced} non-numeric value(s) "
-                        f"({frac:.1%}) that were coerced to NaN when loading '{path}'."
-                    ),
+                    f"Coerced {coerced} non-numeric value(s) ({frac:.1%}) in column '{col}' to NaN when loading '{path}'",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -2296,7 +2291,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 f"Found columns: {sorted(list(df.columns))}."
             )
         warnings.warn(
-            f"Loaded episodes data is missing columns {sorted(missing_required)}; filling with NaN (enforce_columns=False)",
+            f"Missing columns {sorted(missing_required)}; filled with NaN when loading (enforce_columns=False)",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -2313,7 +2308,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     df = df.drop_duplicates()
     if len(df) != before_dupes:
         warnings.warn(
-            f"Removed {before_dupes - len(df)} duplicate transition row(s) while loading '{path}'.",
+            f"Dropped {before_dupes - len(df)} duplicate row(s) when loading '{path}'",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -2630,7 +2625,7 @@ def bootstrap_confidence_intervals(
     min_rec = int(INTERNAL_GUARDS.get("bootstrap_min_recommended", 200))
     if n_bootstrap < min_rec:
         warnings.warn(
-            f"n_bootstrap={n_bootstrap} < recommended minimum {min_rec}; confidence intervals may be unstable",
+            f"n_bootstrap={n_bootstrap} < {min_rec}; confidence intervals may be unstable",
             RewardDiagnosticsWarning,
         )
 
@@ -2719,8 +2714,7 @@ def _validate_bootstrap_results(
                 ci_low, ci_high = lower, upper
             results[metric] = (mean, ci_low, ci_high)
             warnings.warn(
-                f"Degenerate bootstrap CI for {metric} adjusted to maintain positive width;"
-                f" original width={width:.6e}, epsilon={epsilon:.1e}",
+                f"bootstrap_ci for '{metric}' degenerate (width={width:.6e}); adjusted with epsilon={epsilon:.1e}",
                 RewardDiagnosticsWarning,
             )
 
@@ -2806,7 +2800,7 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
                     fallback = INTERNAL_GUARDS.get("distribution_constant_fallback_moment", 0.0)
                     diag[key] = fallback
                     warnings.warn(
-                        f"Replaced undefined {key} (constant distribution) with {fallback}",
+                        f"{key} undefined (constant distribution); falling back to {fallback}",
                         RewardDiagnosticsWarning,
                     )
                 else:
@@ -2821,7 +2815,7 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
                     fallback = INTERNAL_GUARDS.get("distribution_constant_fallback_moment", 0.0)
                     diag[key] = fallback
                     warnings.warn(
-                        f"Replaced undefined Anderson diagnostic {key} (constant distribution) with {fallback}",
+                        f"{key} undefined (constant distribution); falling back to {fallback}",
                         RewardDiagnosticsWarning,
                     )
                     continue
@@ -2833,7 +2827,7 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
                     fallback_r2 = INTERNAL_GUARDS.get("distribution_constant_fallback_qq_r2", 1.0)
                     diag[key] = fallback_r2
                     warnings.warn(
-                        f"Replaced undefined Q-Q R^2 {key} (constant distribution) with {fallback_r2}",
+                        f"{key} undefined (constant distribution); falling back to {fallback_r2}",
                         RewardDiagnosticsWarning,
                     )
                 else:
@@ -2923,7 +2917,7 @@ def _get_potential_gamma(params: RewardParams) -> float:
     gamma = _get_float_param(params, "potential_gamma", np.nan)
     if not np.isfinite(gamma):
         warnings.warn(
-            f"potential_gamma not specified or invalid; defaulting to {POTENTIAL_GAMMA_DEFAULT}",
+            f"potential_gamma not specified; falling back to {POTENTIAL_GAMMA_DEFAULT}",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -2933,7 +2927,7 @@ def _get_potential_gamma(params: RewardParams) -> float:
     gamma, reason_parts = _clamp_float_to_bounds("potential_gamma", raw_gamma, strict=False)
     if reason_parts:
         warnings.warn(
-            f"potential_gamma={raw_gamma} outside [0,1]; clamped to {gamma}",
+            f"potential_gamma={raw_gamma} outside [0,1]; falling back to {gamma}",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -3131,7 +3125,7 @@ def _compute_exit_potential(prev_potential: float, params: RewardParams) -> floa
         decay = _get_float_param(params, "exit_potential_decay")
         if not np.isfinite(decay) or decay < 0.0:
             warnings.warn(
-                "exit_potential_decay invalid or < 0; falling back to 0.0",
+                f"exit_potential_decay={decay} invalid or < 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -3600,7 +3594,7 @@ def write_complete_statistical_analysis(
     analysis_stats = None
     partial_deps = {}
     if skip_feature_analysis or len(df) < 4:
-        print("Skipping feature analysis: flag set or insufficient samples (<4).")
+        print("Skipping feature analysis: insufficient samples or flag set.")
         # Do NOT create feature_importance.csv when skipped (tests expect absence)
         # Create minimal partial dependence placeholders only if feature analysis was NOT explicitly skipped
         if not skip_feature_analysis and not skip_partial_dependence:
@@ -3633,7 +3627,7 @@ def write_complete_statistical_analysis(
                         f"{feature},partial_dependence\n", encoding="utf-8"
                     )
         except ImportError:
-            print("scikit-learn unavailable; generating placeholder analysis artifacts.")
+            print("Skipping feature analysis: scikit-learn unavailable.")
             (output_dir / "feature_importance.csv").write_text(
                 "feature,importance_mean,importance_std\n", encoding="utf-8"
             )
@@ -4428,11 +4422,11 @@ def main() -> None:
     # Load real episodes if provided
     real_df = None
     if args.real_episodes and args.real_episodes.exists():
-        print(f"Loading real episodes from {args.real_episodes}...")
+        print(f"Loading real episodes from: {args.real_episodes}...")
         real_df = load_real_episodes(args.real_episodes)
 
     # Generate consolidated statistical analysis report (with enhanced tests)
-    print("Generating complete statistical analysis...")
+    print("Generating statistical analysis...")
 
     write_complete_statistical_analysis(
         df,
@@ -4450,7 +4444,7 @@ def main() -> None:
         rf_n_jobs=int(getattr(args, "rf_n_jobs", -1)),
         perm_n_jobs=int(getattr(args, "perm_n_jobs", -1)),
     )
-    print(f"Complete statistical analysis saved to: {args.out_dir / 'statistical_analysis.md'}")
+    print(f"Statistical analysis saved to: {args.out_dir / 'statistical_analysis.md'}")
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
@@ -4487,7 +4481,7 @@ def main() -> None:
             manifest["simulation_params"] = sim_params
         with manifest_path.open("w", encoding="utf-8") as mh:
             json.dump(manifest, mh, indent=2)
-        print(f"Manifest written to: {manifest_path}")
+        print(f"Manifest saved to: {manifest_path}")
     except Exception as e:
         print(f"Manifest generation failed: {e}")
 

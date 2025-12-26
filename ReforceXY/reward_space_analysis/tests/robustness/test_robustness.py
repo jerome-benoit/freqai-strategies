@@ -233,9 +233,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertTrue(
             any(
                 (
-                    "exceeded threshold" in str(w.message)
-                    or "exceeds threshold" in str(w.message)
-                    or "|factor|=" in str(w.message)
+                    ">" in str(w.message)
+                    and "threshold" in str(w.message)
+                    or "|exit_factor|=" in str(w.message)
                     for w in runtime_warnings
                 )
             )
@@ -715,7 +715,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.04, min_unrealized_profit=0.0
         )
         duration_ratio = 0.5
-        with assert_diagnostic_warning(["exit_plateau_grace < 0"]):
+        with assert_diagnostic_warning(["exit_plateau_grace=", "< 0"]):
             f_neg = _get_exit_factor(
                 base_factor,
                 pnl,
@@ -826,7 +826,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 efficiency_weight=0.0,
                 win_reward_factor=0.0,
             )
-            with assert_diagnostic_warning(["exit_half_life", "close to 0"]):
+            with assert_diagnostic_warning(["exit_half_life=", "<= 0"]):
                 f0 = _get_exit_factor(
                     base_factor,
                     pnl,
