@@ -14,7 +14,7 @@ import scipy as sp
 import talib.abstract as ta
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import gmean
+from scipy.stats import gmean, percentileofscore
 from technical import qtpylib
 
 T = TypeVar("T", pd.Series, float)
@@ -1418,18 +1418,15 @@ def find_fractals(df: pd.DataFrame, period: int = 2) -> tuple[list[int], list[in
 
 
 def calculate_quantile(values: NDArray[np.floating], value: float) -> float:
+    """Return the quantile (0-1) of value within values.
+
+    Uses percentileofscore(kind='mean') for unbiased estimation.
+    Returns np.nan if values is empty. NaN values are ignored.
+    """
     if values.size == 0:
         return np.nan
 
-    first_value = values[0]
-    if np.allclose(values, first_value):
-        return (
-            0.5
-            if np.isclose(value, first_value)
-            else (0.0 if value < first_value else 1.0)
-        )
-
-    return np.sum(values <= value) / values.size
+    return percentileofscore(values, value, kind="mean", nan_policy="omit") / 100.0
 
 
 class TrendDirection(IntEnum):

@@ -1892,8 +1892,8 @@ class QuickAdapterV3(IStrategy):
         self,
         df: DataFrame,
         pair: str,
-        side: str,
-        order: Literal["entry", "exit"],
+        side: TradeDirection,
+        order: OrderType,
         rate: float,
         lookback_period: int,
         decay_ratio: float,
@@ -1949,8 +1949,9 @@ class QuickAdapterV3(IStrategy):
 
         Rejection Conditions
         --------------------
-        Empty dataframe, invalid side/order, negative lookback, decay_ratio outside (0,1],
-        failure to break current threshold, or failed historical step comparison.
+        Empty dataframe, invalid side/order, non-finite rate, negative lookback,
+        decay_ratio outside (0,1], invalid min/max ordering, failure to break current
+        threshold, or failed historical step comparison.
 
         Complexity
         ----------
@@ -1963,14 +1964,25 @@ class QuickAdapterV3(IStrategy):
 
         Limitations
         -----------
-        No validation of min/max ordering beyond usage; no strict mode; partial data may
-        still confirm. Rate finiteness not explicitly validated.
+        No strict mode; partial data may still confirm.
         """
         if df.empty:
             return False
         if side not in QuickAdapterV3._trade_directions_set():
             return False
         if order not in QuickAdapterV3._order_types_set():
+            return False
+        if not isinstance(rate, (int, float)) or not np.isfinite(rate):
+            return False
+        if (
+            not isinstance(min_natr_ratio_percent, (int, float))
+            or not isinstance(max_natr_ratio_percent, (int, float))
+            or not np.isfinite(min_natr_ratio_percent)
+            or not np.isfinite(max_natr_ratio_percent)
+            or min_natr_ratio_percent < 0
+            or max_natr_ratio_percent < 0
+            or min_natr_ratio_percent > max_natr_ratio_percent
+        ):
             return False
 
         trade_direction = side
