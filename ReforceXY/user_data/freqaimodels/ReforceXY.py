@@ -267,7 +267,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.pairs: List[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
-                "FreqAI model requires StaticPairList method defined in pairlists configuration and pair_whitelist defined in exchange section configuration"
+                "Config: missing 'pair_whitelist' in exchange section "
+                "or StaticPairList method not defined in pairlists configuration"
             )
         self.action_masking: bool = (
             self.model_type == ReforceXY._MODEL_TYPES[2]
@@ -813,7 +814,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         train_df = data_dictionary.get("train_features")
         train_timesteps = len(train_df)
         if train_timesteps <= 0:
-            raise ValueError("train_features dataframe has zero length")
+            raise ValueError("Training: train_features dataframe has zero length")
         test_df = data_dictionary.get("test_features")
         eval_timesteps = len(test_df)
         train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
@@ -1172,7 +1173,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             raise ValueError(
-                f"Unsupported storage backend: {storage_backend}. Supported backends are: {', '.join(ReforceXY._STORAGE_BACKENDS)}"
+                f"Hyperopt: unsupported storage backend '{storage_backend}'. "
+                f"Expected one of: {list(ReforceXY._STORAGE_BACKENDS)}"
             )
         return storage
 
@@ -1213,7 +1215,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             raise ValueError(
-                f"Unsupported sampler: {sampler}. Supported samplers: {', '.join(ReforceXY._SAMPLER_TYPES)}"
+                f"Hyperopt: unsupported sampler '{sampler}'. "
+                f"Expected one of: {list(ReforceXY._SAMPLER_TYPES)}"
             )
 
     @staticmethod
@@ -1547,7 +1550,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         elif ReforceXY._MODEL_TYPES[3] in self.model_type:
             return sample_params_dqn(trial)
         else:
-            raise NotImplementedError(f"{self.model_type} not supported for hyperopt")
+            raise NotImplementedError(
+                f"Hyperopt: model type '{self.model_type}' not supported"
+            )
 
     def objective(
         self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int
@@ -4322,7 +4327,7 @@ def convert_optuna_params_to_model_params(
 
     lr = optuna_params.get("learning_rate")
     if lr is None:
-        raise ValueError(f"missing {'learning_rate'} in optuna params for {model_type}")
+        raise ValueError(f"Optuna: missing 'learning_rate' in params for {model_type}")
     lr = get_schedule(
         optuna_params.get("lr_schedule", ReforceXY._SCHEDULE_TYPES[1]), float(lr)
     )  # default: "constant"
@@ -4341,7 +4346,9 @@ def convert_optuna_params_to_model_params(
         ]
         for param in required_ppo_params:
             if optuna_params.get(param) is None:
-                raise ValueError(f"missing '{param}' in optuna params for {model_type}")
+                raise ValueError(
+                    f"Optuna: missing '{param}' in params for {model_type}"
+                )
         cr = optuna_params.get("clip_range")
         cr = get_schedule(
             optuna_params.get("cr_schedule", ReforceXY._SCHEDULE_TYPES[1]),
@@ -4384,7 +4391,9 @@ def convert_optuna_params_to_model_params(
         ]
         for param in required_dqn_params:
             if optuna_params.get(param) is None:
-                raise ValueError(f"missing '{param}' in optuna params for {model_type}")
+                raise ValueError(
+                    f"Optuna: missing '{param}' in params for {model_type}"
+                )
         train_freq = optuna_params.get("train_freq")
         subsample_steps = optuna_params.get("subsample_steps")
         gradient_steps = compute_gradient_steps(train_freq, subsample_steps)
@@ -4418,7 +4427,7 @@ def convert_optuna_params_to_model_params(
         ):  # "QRDQN"
             policy_kwargs["n_quantiles"] = int(optuna_params["n_quantiles"])
     else:
-        raise ValueError(f"Model {model_type} not supported")
+        raise ValueError(f"Optuna: model type '{model_type}' not supported")
 
     if optuna_params.get("net_arch"):
         net_arch_value = str(optuna_params["net_arch"])

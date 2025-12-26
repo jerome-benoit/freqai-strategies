@@ -168,4 +168,7 @@ class RLAgentStrategy(IStrategy):
         elif trading_mode == RLAgentStrategy._TRADING_MODES[2]:
             return False
         else:
-            raise ValueError(f"Invalid trading_mode: {trading_mode}")
+            raise ValueError(
+                f"Config: invalid trading_mode '{trading_mode}'. "
+                f"Expected one of: {list(RLAgentStrategy._TRADING_MODES)}"
+            )

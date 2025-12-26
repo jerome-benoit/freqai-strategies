@@ -199,7 +199,7 @@ def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
 @lru_cache(maxsize=8)
 def get_odd_window(window: int) -> int:
     if window < 1:
-        raise ValueError("Window size must be greater than 0")
+        raise ValueError(f"Invalid window {window}: must be > 0")
     return window if window % 2 == 1 else window + 1
 
 
@@ -232,7 +232,10 @@ def _calculate_coeffs(
     elif win_type == SMOOTHING_METHODS[2]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
-        raise ValueError(f"Unknown window type: {win_type}")
+        raise ValueError(
+            f"Invalid window type '{win_type}'. "
+            f"Supported: {', '.join(SMOOTHING_METHODS[:3])}"
+        )
     return coeffs / np.sum(coeffs)
 
 
@@ -439,7 +442,10 @@ def standardize_weights(
         return _standardize_mmad(weights, scaling_factor=mmad_scaling_factor)
 
     else:
-        raise ValueError(f"Unknown standardization method: {method}")
+        raise ValueError(
+            f"Invalid standardization method '{method}'. "
+            f"Supported: {', '.join(STANDARDIZATION_TYPES)}"
+        )
 
 
 def _normalize_sigmoid(
@@ -625,7 +631,10 @@ def normalize_weights(
     elif normalization == NORMALIZATION_TYPES[5]:  # "rank"
         normalized_weights = _normalize_rank(standardized_weights, method=rank_method)
     else:
-        raise ValueError(f"Unknown normalization method: {normalization}")
+        raise ValueError(
+            f"Invalid normalization method '{normalization}'. "
+            f"Supported: {', '.join(NORMALIZATION_TYPES)}"
+        )
 
     # Phase 3: Post-processing
     if not np.isclose(gamma, 1.0) and np.isfinite(gamma) and gamma > 0:
@@ -778,7 +787,10 @@ def calculate_hybrid_extrema_weights(
             weights=source_weights_array[:, np.newaxis],
         )
     else:
-        raise ValueError(f"Unknown hybrid aggregation method: {aggregation}")
+        raise ValueError(
+            f"Invalid hybrid aggregation method '{aggregation}'. "
+            f"Supported: {', '.join(HYBRID_AGGREGATIONS)}"
+        )
 
     if aggregation_normalization != NORMALIZATION_TYPES[6]:  # "none"
         combined_source_weights_array = normalize_weights(
@@ -956,7 +968,10 @@ def compute_extrema_weights(
             default_weight=np.nanmedian(normalized_weights),
         )
 
-    raise ValueError(f"Unknown extrema weighting strategy: {strategy}")
+    raise ValueError(
+        f"Invalid extrema weighting strategy '{strategy}'. "
+        f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
+    )
 
 
 def _apply_weights(
@@ -1044,7 +1059,7 @@ def get_weighted_extrema(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise ValueError("fn must be callable")
+        raise ValueError("Invalid fn: must be callable")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -1056,7 +1071,7 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if code is None and hasattr(fn, "__call__"):
         code = getattr(fn.__call__, "__code__", None)
     if code is None:
-        raise ValueError("Unable to retrieve code object from fn")
+        raise ValueError("Invalid fn: unable to retrieve code object")
     return hashlib.sha256(code.co_code).hexdigest()
 
 
@@ -1115,7 +1130,7 @@ def top_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
     :return: The top change percentage series
     """
     if period < 1:
-        raise ValueError("period must be greater than or equal to 1")
+        raise ValueError(f"Invalid period {period}: must be >= 1")
 
     previous_close_top = (
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
@@ -1133,7 +1148,7 @@ def bottom_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
     :return: The bottom change percentage series
     """
     if period < 1:
-        raise ValueError("period must be greater than or equal to 1")
+        raise ValueError(f"Invalid period {period}: must be >= 1")
 
     previous_close_bottom = (
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
@@ -1152,7 +1167,7 @@ def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series
     :return: Retracement percentage series
     """
     if period < 1:
-        raise ValueError("period must be greater than or equal to 1")
+        raise ValueError(f"Invalid period {period}: must be >= 1")
 
     previous_close_low = (
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
@@ -1234,7 +1249,7 @@ def _fractal_dimension(
 ) -> float:
     """Original fractal dimension computation implementation per Ehlers' paper."""
     if period % 2 != 0:
-        raise ValueError("period must be even")
+        raise ValueError(f"Invalid period {period}: must be even")
 
     half_period = period // 2
 
@@ -1263,7 +1278,7 @@ def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Seri
     Original FRAMA implementation per Ehlers' paper with optional zero lag.
     """
     if period % 2 != 0:
-        raise ValueError("period must be even")
+        raise ValueError(f"Invalid period {period}: must be even")
 
     n = len(df)
 
@@ -1305,7 +1320,7 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     https://www.sierrachart.com/index.php?page=doc/StudiesReference.php&ID=173&Name=Moving_Average_-_Smoothed
     """
     if period <= 0:
-        raise ValueError("period must be greater than 0")
+        raise ValueError(f"Invalid period {period}: must be > 0")
     n = len(series)
     if n < period:
         return pd.Series(index=series.index, dtype=float)
@@ -1945,7 +1960,7 @@ def get_optuna_callbacks(
         ]
     else:
         raise ValueError(
-            f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
+            f"Invalid regressor '{regressor}'. Supported: {', '.join(REGRESSORS)}"
         )
     return callbacks
 
@@ -2016,7 +2031,7 @@ def fit_regressor(
         )
     else:
         raise ValueError(
-            f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
+            f"Invalid regressor '{regressor}'. Supported: {', '.join(REGRESSORS)}"
         )
     return model
 
@@ -2030,13 +2045,13 @@ def get_optuna_study_model_parameters(
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(
-            f"Unsupported regressor model: {regressor} (supported: {', '.join(REGRESSORS)})"
+            f"Invalid regressor '{regressor}'. Supported: {', '.join(REGRESSORS)}"
         )
     if not isinstance(expansion_ratio, (int, float)) or not (
         0.0 <= expansion_ratio <= 1.0
     ):
         raise ValueError(
-            f"expansion_ratio must be a float between 0 and 1, got {expansion_ratio}"
+            f"Invalid expansion_ratio {expansion_ratio}: must be a float between 0 and 1"
         )
     default_ranges: dict[str, tuple[float, float]] = {
         "n_estimators": (100, 2000),
@@ -2162,9 +2177,9 @@ def get_optuna_study_model_parameters(
 @lru_cache(maxsize=128)
 def largest_divisor_to_step(integer: int, step: int) -> Optional[int]:
     if not isinstance(integer, int) or integer <= 0:
-        raise ValueError("integer must be a positive integer")
+        raise ValueError(f"Invalid integer {integer!r}: must be a positive integer")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError("step must be a positive integer")
+        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
 
     if step == 1 or integer % step == 0:
         return integer
@@ -2216,7 +2231,8 @@ def get_min_max_label_period_candles(
 ) -> tuple[int, int, int]:
     if min_label_period_candles > max_label_period_candles:
         raise ValueError(
-            "min_label_period_candles must be less than or equal to max_label_period_candles"
+            f"Invalid label_period_candles range: min ({min_label_period_candles}) "
+            f"must be <= max ({max_label_period_candles})"
         )
 
     capped_period_candles = max(1, floor_to_step(max_period_candles, candles_step))
@@ -2268,9 +2284,9 @@ def round_to_step(value: float | int, step: int) -> int:
     :raises ValueError: If step is not a positive integer or value is not finite.
     """
     if not isinstance(value, (int, float)):
-        raise ValueError("value must be an integer or float")
+        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError("step must be a positive integer")
+        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
     if isinstance(value, (int, np.integer)):
         q, r = divmod(value, step)
         twice_r = r * 2
@@ -2280,33 +2296,33 @@ def round_to_step(value: float | int, step: int) -> int:
             return (q + 1) * step
         return int(round(value / step) * step)
     if not np.isfinite(value):
-        raise ValueError("value must be finite")
+        raise ValueError(f"Invalid value {value!r}: must be finite")
     return int(round(float(value) / step) * step)
 
 
 @lru_cache(maxsize=128)
 def ceil_to_step(value: float | int, step: int) -> int:
     if not isinstance(value, (int, float)):
-        raise ValueError("value must be an integer or float")
+        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError("step must be a positive integer")
+        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
     if isinstance(value, (int, np.integer)):
         return int(-(-int(value) // step) * step)
     if not np.isfinite(value):
-        raise ValueError("value must be finite")
+        raise ValueError(f"Invalid value {value!r}: must be finite")
     return int(math.ceil(float(value) / step) * step)
 
 
 @lru_cache(maxsize=128)
 def floor_to_step(value: float | int, step: int) -> int:
     if not isinstance(value, (int, float)):
-        raise ValueError("value must be an integer or float")
+        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError("step must be a positive integer")
+        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
     if isinstance(value, (int, np.integer)):
         return int((int(value) // step) * step)
     if not np.isfinite(value):
-        raise ValueError("value must be finite")
+        raise ValueError(f"Invalid value {value!r}: must be finite")
     return int(math.floor(float(value) / step) * step)
 
 

@@ -42,6 +42,7 @@ from Utils import (
 
 ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
+ClusterSelectionMethod = Literal["medoid", "min"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
     "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
@@ -101,14 +102,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_CUSTOM_THRESHOLD_METHODS,
     )
 
-    _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
-    _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
-    _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
+    _CLUSTER_SELECTION_METHODS: Final[tuple[ClusterSelectionMethod, ...]] = (
+        "medoid",
+        "min",
+    )
 
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
+
+    _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
+    _OPTUNA_SAMPLERS: Final[tuple[str, ...]] = ("tpe", "auto")
+    _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
 
     _SCIPY_METRICS: Final[tuple[str, ...]] = (
         # "braycurtis",
@@ -160,6 +166,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_CUSTOM_METRICS,
     )
 
+    _UNSUPPORTED_CLUSTER_METRICS: Final[tuple[str, ...]] = (
+        "mahalanobis",
+        "seuclidean",
+        "jensenshannon",
+    )
+
     PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT: Final[float] = 0.999
     PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT: Final[float] = 12.0
     PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
@@ -204,6 +216,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._METRICS)
+
+    @staticmethod
+    def _unsupported_cluster_metrics_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)
+
+    @staticmethod
+    def _cluster_selection_methods_set() -> set[ClusterSelectionMethod]:
+        return set(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)
 
     @staticmethod
     def _get_label_p_order_default(metric: str) -> Optional[float]:
@@ -646,7 +666,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
             }:
                 logger.info(
-                    f"  label_kmeans_selection: min (default for {label_metric})"
+                    f"  label_kmeans_selection: {QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]} (default for {label_metric})"
                 )
             label_kmedoids_metric_config = self.ft_params.get("label_kmedoids_metric")
             if label_kmedoids_metric_config is not None:
@@ -669,7 +689,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]
             ):  # "kmedoids"
                 logger.info(
-                    f"  label_kmedoids_selection: min (default for {label_metric})"
+                    f"  label_kmedoids_selection: {QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]} (default for {label_metric})"
                 )
 
             label_knn_metric_config = self.ft_params.get("label_knn_metric")
@@ -779,8 +799,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             params = self._optuna_label_params.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
         return params
 
@@ -795,8 +815,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_params[pair] = params
         else:
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
 
     def get_optuna_value(self, pair: str, namespace: str) -> float:
@@ -806,8 +826,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             value = self._optuna_train_value.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
             )
         return value
 
@@ -818,8 +838,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_train_value[pair] = value
         else:
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
             )
 
     def get_optuna_values(self, pair: str, namespace: str) -> list[float | int]:
@@ -827,8 +847,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             values = self._optuna_label_values.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         return values
 
@@ -839,8 +859,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_values[pair] = values
         else:
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
 
     def init_optuna_label_candle_pool(self) -> None:
@@ -1036,11 +1056,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
         }:  # Only "label"
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         if not callable(callback):
-            raise ValueError("callback must be callable")
+            raise ValueError("Invalid callback: must be callable")
         self._optuna_label_candles[pair] += 1
         if pair not in self._optuna_label_incremented_pairs:
             self._optuna_label_incremented_pairs.append(pair)
@@ -1371,8 +1391,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pred_minima = pred_extrema[pred_extrema < -eps]
         else:
             raise ValueError(
-                f"Unsupported extrema selection method: {extrema_selection}. "
-                f"Supported methods are {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
+                f"Invalid extrema_selection '{extrema_selection}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
             )
 
         return pred_minima, pred_maxima
@@ -1413,7 +1433,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
-            raise ValueError("alpha must be non-negative")
+            raise ValueError(f"Invalid alpha {alpha}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
             pred_extrema, extrema_selection, extrema_fraction
         )
@@ -1465,7 +1485,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         try:
             threshold_func = getattr(skimage.filters, f"threshold_{method}")
         except AttributeError:
-            raise ValueError(f"Unknown skimage threshold function: threshold_{method}")
+            raise ValueError(
+                f"Invalid skimage threshold method '{method}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)}"
+            )
 
         min_func = QuickAdapterRegressorV3.apply_skimage_threshold
         max_func = QuickAdapterRegressorV3.apply_skimage_threshold
@@ -1521,7 +1544,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
           Must contain only finite values (no NaN or inf).
         - metric: distance metric name accepted by scipy.spatial.distance.pdist.
         - weights: optional weight vector per feature (passed as 'w' to pdist).
-                   Not supported by mahalanobis, seuclidean, jensenshannon.
+                   Not supported by metrics in _UNSUPPORTED_CLUSTER_METRICS.
                    Must have size equal to n_features and contain finite non-negative values.
         - p: optional Minkowski order (default 2.0 if metric=='minkowski').
 
@@ -1542,26 +1565,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             array([2.        , 2.41421356, 2.41421356])
         """
         if matrix.ndim != 2:
-            raise ValueError("matrix must be 2-dimensional")
+            raise ValueError("Invalid matrix: must be 2-dimensional")
         if matrix.shape[1] == 0:
-            raise ValueError("matrix must have at least one feature")
+            raise ValueError("Invalid matrix: must have at least one feature")
 
         if not np.all(np.isfinite(matrix)):
-            raise ValueError("matrix must contain only finite values (no NaN or inf)")
+            raise ValueError(
+                "Invalid matrix: must contain only finite values (no NaN or inf)"
+            )
 
         if weights is not None:
             if weights.size != matrix.shape[1]:
                 raise ValueError(
-                    f"weights size {weights.size} must match number of features {matrix.shape[1]}"
+                    f"Invalid weights: size {weights.size} must match number of features {matrix.shape[1]}"
                 )
             if not np.all(np.isfinite(weights)) or np.any(weights < 0):
-                raise ValueError("weights must be finite and non-negative")
-            if metric in {
-                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
-                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
-                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
-            }:
-                raise ValueError(f"weights not supported for metric '{metric}'")
+                raise ValueError("Invalid weights: must be finite and non-negative")
+            if metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
+                raise ValueError(
+                    f"Invalid weights: not supported for metric '{metric}'"
+                )
 
         matrix = np.asarray(matrix, dtype=np.float64)
         if weights is not None:
@@ -1601,17 +1624,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         directions: list[optuna.study.StudyDirection],
     ) -> NDArray[np.floating]:
         if objective_values_matrix.ndim != 2:
-            raise ValueError("objective_values_matrix must be 2-dimensional")
+            raise ValueError("Invalid objective_values_matrix: must be 2-dimensional")
 
         n_samples, n_objectives = objective_values_matrix.shape
         if n_samples == 0 or n_objectives == 0:
             raise ValueError(
-                "objective_values_matrix must have at least one sample and one objective"
+                "Invalid objective_values_matrix: must have at least one sample and one objective"
             )
 
         if len(directions) != n_objectives:
             raise ValueError(
-                f"Number of directions ({len(directions)}) must match number of objectives ({n_objectives})"
+                f"Invalid directions: length ({len(directions)}) must match number of objectives ({n_objectives})"
             )
 
         normalized_matrix = np.zeros_like(objective_values_matrix, dtype=float)
@@ -1699,16 +1722,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         metrics: set[str],
     ) -> NDArray[np.floating]:
         if normalized_matrix.ndim != 2:
-            raise ValueError("normalized_matrix must be 2-dimensional")
+            raise ValueError("Invalid normalized_matrix: must be 2-dimensional")
         n_objectives = normalized_matrix.shape[1]
         n_samples = normalized_matrix.shape[0]
         if n_samples == 0 or n_objectives == 0:
             raise ValueError(
-                "normalized_matrix must have at least one sample and one objective"
+                "Invalid normalized_matrix: must have at least one sample and one objective"
             )
         if not np.all(np.isfinite(normalized_matrix)):
             raise ValueError(
-                "normalized_matrix must contain only finite values (no NaN or inf)"
+                "Invalid normalized_matrix: must contain only finite values (no NaN or inf)"
             )
         label_p_order = self.ft_params.get("label_p_order")
         label_weights = self.ft_params.get("label_weights")
@@ -1718,17 +1741,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             np_weights = np.array(label_weights, dtype=float)
         else:
             raise ValueError(
-                f"label_weights must be a list, tuple, or array, got {type(label_weights).__name__}"
+                f"Invalid label_weights: must be a list, tuple, or array, got {type(label_weights).__name__}"
             )
         if np_weights.size != n_objectives:
-            raise ValueError("label_weights length must match number of objectives")
+            raise ValueError(
+                "Invalid label_weights: length must match number of objectives"
+            )
         if not np.all(np.isfinite(np_weights)):
-            raise ValueError("label_weights must contain only finite values")
+            raise ValueError("Invalid label_weights: must contain only finite values")
         if np.any(np_weights < 0):
-            raise ValueError("label_weights values must be non-negative")
+            raise ValueError("Invalid label_weights: values must be non-negative")
         label_weights_sum = np.nansum(np.abs(np_weights))
         if np.isclose(label_weights_sum, 0.0):
-            raise ValueError("label_weights sum cannot be zero")
+            raise ValueError("Invalid label_weights: sum cannot be zero")
         np_weights = np_weights / label_weights_sum
 
         ideal_point = np.ones(n_objectives)
@@ -1751,11 +1776,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if metric in QuickAdapterRegressorV3._scipy_metrics_set():
             cdist_kwargs: dict[str, Any] = {}
-            if metric not in {
-                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
-                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
-                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
-            }:
+            if metric not in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
                 cdist_kwargs["w"] = np_weights
             if metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]:  # "minkowski"
                 cdist_kwargs["p"] = (
@@ -1778,7 +1799,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 variances = np.nanvar(np_sqrt_normalized_matrix, axis=0, ddof=1)
                 if np.any(variances <= 0):
                     raise ValueError(
-                        "shellinger metric requires non-zero variance for all objectives"
+                        "Invalid data for shellinger metric: requires non-zero variance for all objectives"
                     )
                 np_weights = 1 / variances
             return (
@@ -1821,13 +1842,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "label_medoid_metric",
                 QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
             )
-            if label_medoid_metric in {
-                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
-                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
-                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
-            }:
+            if (
+                label_medoid_metric
+                in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
+            ):
                 raise ValueError(
-                    f"Unsupported label_medoid_metric: {label_medoid_metric}. Supported are euclidean/minkowski/cityblock/chebyshev/..."
+                    f"Invalid label_medoid_metric '{label_medoid_metric}'. "
+                    f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
                 )
             p = None
             if (
@@ -1864,13 +1885,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "label_kmeans_metric",
                 QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
             )
-            if label_kmeans_metric in {
-                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
-                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
-                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
-            }:
+            if (
+                label_kmeans_metric
+                in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
+            ):
                 raise ValueError(
-                    f"Unsupported label_kmeans_metric: {label_kmeans_metric}. Supported are euclidean/minkowski/cityblock/chebyshev/..."
+                    f"Invalid label_kmeans_metric '{label_kmeans_metric}'. "
+                    f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
                 )
             cdist_kwargs: dict[str, Any] = {}
             if (
@@ -1888,7 +1909,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 metric=label_kmeans_metric,
                 **cdist_kwargs,
             ).flatten()
-            label_kmeans_selection = self.ft_params.get("label_kmeans_selection", "min")
+            label_kmeans_selection = self.ft_params.get(
+                "label_kmeans_selection",
+                QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1],  # "min"
+            )
             ordered_cluster_indices = np.argsort(cluster_center_distances_to_ideal)
             best_cluster_indices = None
             for cluster_index in ordered_cluster_indices:
@@ -1900,7 +1924,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if best_cluster_indices is not None and best_cluster_indices.size > 0:
                 if (
                     label_kmeans_selection
-                    == QuickAdapterRegressorV3._CUSTOM_METRICS[16]  # "medoid"
+                    == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[0]  # "medoid"
                 ):
                     p = None
                     if (
@@ -1927,7 +1951,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         **cdist_kwargs,
                     ).item()
                     trial_distances[best_trial_index] = best_trial_distance
-                elif label_kmeans_selection == "min":
+                elif (
+                    label_kmeans_selection
+                    == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]  # "min"
+                ):
                     best_cluster_distances = sp.spatial.distance.cdist(
                         normalized_matrix[best_cluster_indices],
                         ideal_point_2d,
@@ -1941,7 +1968,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     ]
                 else:
                     raise ValueError(
-                        f"Unsupported label_kmeans_selection: {label_kmeans_selection}. Supported are medoid/min"
+                        f"Invalid label_kmeans_selection '{label_kmeans_selection}'. "
+                        f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)}"
                     )
             return trial_distances
         elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]:  # "kmedoids"
@@ -1950,13 +1978,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "label_kmedoids_metric",
                 QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
             )
-            if label_kmedoids_metric in {
-                QuickAdapterRegressorV3._SCIPY_METRICS[4],  # "mahalanobis"
-                QuickAdapterRegressorV3._SCIPY_METRICS[6],  # "seuclidean"
-                QuickAdapterRegressorV3._SCIPY_METRICS[3],  # "jensenshannon"
-            }:
+            if (
+                label_kmedoids_metric
+                in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
+            ):
                 raise ValueError(
-                    f"Unsupported label_kmedoids_metric: {label_kmedoids_metric}. Supported are euclidean/minkowski/cityblock/chebyshev/..."
+                    f"Invalid label_kmedoids_metric '{label_kmedoids_metric}'. "
+                    f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
                 )
             kmedoids_kwargs: dict[str, Any] = {
                 "metric": label_kmedoids_metric,
@@ -1984,7 +2012,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 **cdist_kwargs,
             ).flatten()
             label_kmedoids_selection = self.ft_params.get(
-                "label_kmedoids_selection", "min"
+                "label_kmedoids_selection",
+                QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1],  # "min"
             )
             best_medoid_distance_position = np.nanargmin(medoid_distances_to_ideal)
             best_medoid_index = medoid_indices[best_medoid_distance_position]
@@ -1994,12 +2023,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if best_cluster_indices.size > 0:
                 if (
                     label_kmedoids_selection
-                    == QuickAdapterRegressorV3._CUSTOM_METRICS[16]  # "medoid"
+                    == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[0]  # "medoid"
                 ):
                     trial_distances[best_medoid_index] = medoid_distances_to_ideal[
                         best_medoid_distance_position
                     ]
-                elif label_kmedoids_selection == "min":
+                elif (
+                    label_kmedoids_selection
+                    == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]  # "min"
+                ):
                     if best_cluster_indices.size == 1:
                         best_trial_index = best_cluster_indices[0]
                         trial_distances[best_trial_index] = medoid_distances_to_ideal[
@@ -2019,7 +2051,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ]
                 else:
                     raise ValueError(
-                        f"Unsupported label_kmedoids_selection: {label_kmedoids_selection}. Supported are medoid/min"
+                        f"Invalid label_kmedoids_selection '{label_kmedoids_selection}'. "
+                        f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)}"
                     )
             return trial_distances
         elif metric in {
@@ -2087,7 +2120,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 return np.nanmax(neighbor_distances, axis=1)
         else:
             raise ValueError(
-                f"Unsupported label metric: {metric}. Supported metrics are {', '.join(metrics)}"
+                f"Invalid label metric '{metric}'. Supported: {', '.join(metrics)}"
             )
 
     def _get_multi_objective_study_best_trial(
@@ -2097,8 +2130,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
         }:  # Only "label"
             raise ValueError(
-                f"Invalid namespace: {namespace}. "
-                f"Expected {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Invalid namespace '{namespace}'. "
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         n_objectives = len(study.directions)
         if n_objectives < 2:
@@ -2114,7 +2147,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )  # "euclidean"
         if label_metric not in metrics:
             raise ValueError(
-                f"Unsupported label metric: {label_metric}. Supported metrics are {', '.join(metrics)}"
+                f"Invalid label_metric '{label_metric}'. Supported: {', '.join(metrics)}"
             )
 
         best_trials = [
@@ -2284,8 +2317,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Unsupported optuna storage backend: {storage_backend}. "
-                f"Supported backends are {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
+                f"Invalid optuna storage_backend '{storage_backend}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
             )
         return storage
 
@@ -2316,8 +2349,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Unsupported sampler: {sampler}. "
-                f"Supported samplers are {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
+                f"Invalid optuna sampler '{sampler}'. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
             )
 
     def optuna_create_study(

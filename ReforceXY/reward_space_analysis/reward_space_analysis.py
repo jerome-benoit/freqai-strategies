@@ -115,6 +115,14 @@ ALLOWED_EXIT_POTENTIAL_MODES = {
     "retain_previous",
 }
 
+# Supported trading modes
+TRADING_MODES: Tuple[str, ...] = ("spot", "margin", "futures")
+
+# Supported p-value adjustment methods
+ADJUST_METHODS: Tuple[str, ...] = ("none", "benjamini_hochberg")
+# Alias without underscore for convenience
+_ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
+
 
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
@@ -305,7 +313,7 @@ def _to_bool(value: Any) -> bool:
     if text in {"false", "0", "no", "n", "off"}:
         return False
     # Unsupported type
-    raise ValueError(f"Unrecognized boolean literal: {value!r}")
+    raise ValueError(f"Param: unrecognized boolean literal {value!r}")
 
 
 def _get_bool_param(params: RewardParams, key: str, default: Optional[bool] = None) -> bool:
@@ -422,7 +430,7 @@ def _clamp_float_to_bounds(
     if "min" in effective_bounds and adjusted < float(effective_bounds["min"]):
         if strict:
             raise ValueError(
-                f"Parameter '{key}'={adjusted} below min {float(effective_bounds['min'])}"
+                f"Param: '{key}'={adjusted} below min {float(effective_bounds['min'])}"
             )
         adjusted = float(effective_bounds["min"])
         reason_parts.append(f"min={float(effective_bounds['min'])}")
@@ -430,14 +438,14 @@ def _clamp_float_to_bounds(
     if "max" in effective_bounds and adjusted > float(effective_bounds["max"]):
         if strict:
             raise ValueError(
-                f"Parameter '{key}'={adjusted} above max {float(effective_bounds['max'])}"
+                f"Param: '{key}'={adjusted} above max {float(effective_bounds['max'])}"
             )
         adjusted = float(effective_bounds["max"])
         reason_parts.append(f"max={float(effective_bounds['max'])}")
 
     if not np.isfinite(adjusted):
         if strict:
-            raise ValueError(f"Parameter '{key}' is non-finite: {adjusted}")
+            raise ValueError(f"Param: '{key}' is non-finite: {adjusted}")
         adjusted = float(effective_bounds.get("min", 0.0))
         reason_parts.append("non_finite_reset")
 
@@ -521,11 +529,13 @@ def _compute_duration_ratio(trade_duration: int, max_trade_duration_candles: int
 
 def _is_short_allowed(trading_mode: str) -> bool:
     mode = trading_mode.lower()
-    if mode in {"margin", "futures"}:
+    if mode in TRADING_MODES[1:]:  # "margin", "futures"
         return True
-    if mode == "spot":
+    if mode == TRADING_MODES[0]:  # "spot"
         return False
-    raise ValueError("Unsupported trading mode. Expected one of: spot, margin, futures")
+    raise ValueError(
+        f"Config: unsupported trading mode '{mode}'. Expected one of: {list(TRADING_MODES)}"
+    )
 
 
 def _fail_safely(reason: str) -> float:
@@ -619,7 +629,7 @@ def validate_reward_parameters(
                 }
                 continue
             if strict:
-                raise ValueError(f"Parameter '{key}' is non-numeric or invalid: {original_val!r}")
+                raise ValueError(f"Param: '{key}' is non-numeric or invalid: {original_val!r}")
             adjusted = bounds.get("min", 0.0)
             sanitized[key] = adjusted
             adjustments[key] = {
@@ -1451,7 +1461,7 @@ def parse_overrides(overrides: Iterable[str]) -> RewardParams:
     parsed: RewardParams = {}
     for override in overrides:
         if "=" not in override:
-            raise ValueError(f"Invalid override format: '{override}'")
+            raise ValueError(f"CLI: invalid override format '{override}'. Expected 'key=value'")
         key, value = override.split("=", 1)
         try:
             parsed[key] = float(value)
@@ -1807,7 +1817,7 @@ def _binned_stats(
     """Return count/mean/std/min/max of target grouped by clipped bins of column."""
     bins_arr = np.asarray(list(bins), dtype=float)
     if bins_arr.ndim != 1 or bins_arr.size < 2:
-        raise ValueError("bins must contain at least two edges")
+        raise ValueError("Stats: bins must contain at least two edges")
     clipped = df[column].clip(lower=float(bins_arr[0]), upper=float(bins_arr[-1]))
     categories = pd.cut(
         clipped,
@@ -1991,7 +2001,7 @@ def _perform_feature_analysis(
         or permutation_importance is None
         or r2_score is None
     ):
-        raise ImportError("scikit-learn is not available; skipping feature analysis.")
+        raise ImportError("Feature analysis: scikit-learn is not available")
 
     canonical_features = [
         "pnl",
@@ -2172,7 +2182,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
         with path.open("rb") as f:
             episodes_data = pickle.load(f)
     except Exception as e:
-        raise ValueError(f"Failed to unpickle '{path}': {e!r}") from e
+        raise ValueError(f"Data: failed to unpickle '{path}': {e!r}") from e
 
     # Top-level dict with 'transitions'
     if isinstance(episodes_data, dict) and "transitions" in episodes_data:
@@ -2184,11 +2194,11 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 df = pd.DataFrame(list(candidate))
             except TypeError:
                 raise ValueError(
-                    f"Top-level 'transitions' in '{path}' is not iterable (type {type(candidate)!r})."
+                    f"Data: 'transitions' in '{path}' is not iterable (type {type(candidate)!r})"
                 )
             except Exception as e:
                 raise ValueError(
-                    f"Could not build DataFrame from top-level 'transitions' in '{path}': {e!r}"
+                    f"Data: could not build DataFrame from 'transitions' in '{path}': {e!r}"
                 ) from e
     # List of episodes where some entries have 'transitions'
     elif isinstance(episodes_data, list) and any(
@@ -2206,7 +2216,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                         all_transitions.extend(list(trans))
                     except TypeError:
                         raise ValueError(
-                            f"Episode 'transitions' is not iterable in file '{path}'; found type {type(trans)!r}"
+                            f"Data: episode 'transitions' is not iterable in '{path}' (type {type(trans)!r})"
                         )
             else:
                 skipped += 1
@@ -2220,7 +2230,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
             df = pd.DataFrame(all_transitions)
         except Exception as e:
             raise ValueError(
-                f"Could not build DataFrame from flattened transitions in '{path}': {e!r}"
+                f"Data: could not build DataFrame from transitions in '{path}': {e!r}"
             ) from e
     else:
         try:
@@ -2230,7 +2240,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 df = pd.DataFrame(episodes_data)
         except Exception as e:
             raise ValueError(
-                f"Could not convert pickled object from '{path}' to DataFrame: {e!r}"
+                f"Data: could not convert pickled object from '{path}' to DataFrame: {e!r}"
             ) from e
 
     # Coerce common numeric fields; warn when values are coerced to NaN
@@ -2287,8 +2297,8 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     if missing_required:
         if enforce_columns:
             raise ValueError(
-                f"Loaded episodes data is missing required columns: {sorted(missing_required)}. "
-                f"Found columns: {sorted(list(df.columns))}."
+                f"Data: missing required columns {sorted(missing_required)}. "
+                f"Found: {sorted(list(df.columns))}"
             )
         warnings.warn(
             f"Missing columns {sorted(missing_required)}; filled with NaN when loading (enforce_columns=False)",
@@ -2416,7 +2426,7 @@ def _validate_distribution_metrics(metrics: Dict[str, float]) -> None:
 
 
 def statistical_hypothesis_tests(
-    df: pd.DataFrame, *, adjust_method: str = "none", seed: int = 42
+    df: pd.DataFrame, *, adjust_method: str = ADJUST_METHODS[0], seed: int = 42
 ) -> Dict[str, Any]:
     """Statistical hypothesis tests (Spearman, Kruskal-Wallis, Mann-Whitney).
 
@@ -2517,11 +2527,13 @@ def statistical_hypothesis_tests(
         }
 
     # Optional multiple testing correction (Benjamini-Hochberg)
-    if adjust_method not in {"none", "benjamini_hochberg", "benjaminihochberg"}:
+    _valid_adjust = set(ADJUST_METHODS) | _ADJUST_METHODS_ALIASES
+    if adjust_method not in _valid_adjust:
         raise ValueError(
-            "Unsupported adjust_method. Use 'none', 'benjamini_hochberg', or 'benjaminihochberg'."
+            f"Stats: unsupported adjust_method '{adjust_method}'. "
+            f"Expected one of: {list(ADJUST_METHODS)}"
         )
-    if adjust_method in {"benjamini_hochberg", "benjaminihochberg"} and results:
+    if adjust_method in _valid_adjust - {ADJUST_METHODS[0]} and results:
         # Collect p-values
         items = list(results.items())
         pvals = np.array([v[1]["p_value"] for v in items])
@@ -3447,8 +3459,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--trading_mode",
         type=str.lower,
-        choices=["spot", "margin", "futures"],
-        default="spot",
+        choices=list(TRADING_MODES),
+        default=TRADING_MODES[0],
         help=("Trading mode to simulate (spot disables shorts). Default: spot."),
     )
     parser.add_argument(
@@ -3482,8 +3494,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pvalue_adjust",
         type=str.lower,
-        choices=["none", "benjamini_hochberg"],
-        default="none",
+        choices=list(ADJUST_METHODS),
+        default=ADJUST_METHODS[0],
         help="Multiple testing correction method for hypothesis tests (default: none).",
     )
     parser.add_argument(
@@ -3527,7 +3539,7 @@ def write_complete_statistical_analysis(
     seed: int,
     real_df: Optional[pd.DataFrame] = None,
     *,
-    adjust_method: str = "none",
+    adjust_method: str = ADJUST_METHODS[0],
     stats_seed: Optional[int] = None,
     strict_diagnostics: bool = False,
     bootstrap_resamples: int = 10000,

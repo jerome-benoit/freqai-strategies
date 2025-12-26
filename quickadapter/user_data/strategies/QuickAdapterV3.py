@@ -727,7 +727,7 @@ class QuickAdapterV3(IStrategy):
     def get_label_natr_ratio_percent(self, pair: str, percent: float) -> float:
         if not isinstance(percent, float) or not (0.0 <= percent <= 1.0):
             raise ValueError(
-                f"Invalid percent value: {percent}. It should be a float between 0 and 1"
+                f"Invalid percent {percent}: must be a float between 0 and 1"
             )
         return self.get_label_natr_ratio(pair) * percent
 
@@ -1416,7 +1416,8 @@ class QuickAdapterV3(IStrategy):
         trade_price_target_fn = trade_price_target_methods.get(trade_price_target)
         if trade_price_target_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target: {trade_price_target}. Available: {', '.join(sorted(TRADE_PRICE_TARGETS))}"
+                f"Invalid trade_price_target '{trade_price_target}'. "
+                f"Supported: {', '.join(sorted(TRADE_PRICE_TARGETS))}"
             )
         return trade_price_target_fn()
 
@@ -1445,7 +1446,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float]:
         if not (0.0 <= natr_ratio_percent <= 1.0):
             raise ValueError(
-                f"natr_ratio_percent must be in [0, 1], got {natr_ratio_percent}"
+                f"Invalid natr_ratio_percent {natr_ratio_percent}: must be in [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1472,7 +1473,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float]:
         if not (0.0 <= natr_ratio_percent <= 1.0):
             raise ValueError(
-                f"natr_ratio_percent must be in [0, 1], got {natr_ratio_percent}"
+                f"Invalid natr_ratio_percent {natr_ratio_percent}: must be in [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1494,7 +1495,7 @@ class QuickAdapterV3(IStrategy):
         callback: Callable[[], None],
     ) -> None:
         if not callable(callback):
-            raise ValueError("callback must be callable")
+            raise ValueError("Invalid callback: must be callable")
         timestamp = int(current_time.timestamp())
         candle_duration_secs = max(1, int(self._candle_duration_secs))
         candle_start_secs = (timestamp // candle_duration_secs) * candle_duration_secs
@@ -1818,8 +1819,8 @@ class QuickAdapterV3(IStrategy):
             )
         else:
             raise ValueError(
-                f"Invalid interpolation_direction: {interpolation_direction}. "
-                f"Expected {', '.join(QuickAdapterV3._INTERPOLATION_DIRECTIONS)}"
+                f"Invalid interpolation_direction '{interpolation_direction}'. "
+                f"Supported: {', '.join(QuickAdapterV3._INTERPOLATION_DIRECTIONS)}"
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
@@ -1892,7 +1893,7 @@ class QuickAdapterV3(IStrategy):
             candle_threshold = base_price * (1 - current_deviation)
         else:
             raise ValueError(
-                f"Invalid side: {side}. Expected {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
+                f"Invalid side '{side}'. Supported: {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
             )
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]
@@ -2475,8 +2476,8 @@ class QuickAdapterV3(IStrategy):
             return False
         else:
             raise ValueError(
-                f"Invalid trading_mode: {trading_mode}. "
-                f"Expected {', '.join(QuickAdapterV3._TRADING_MODES)}"
+                f"Invalid trading_mode '{trading_mode}'. "
+                f"Supported: {', '.join(QuickAdapterV3._TRADING_MODES)}"
             )
 
     def leverage(
