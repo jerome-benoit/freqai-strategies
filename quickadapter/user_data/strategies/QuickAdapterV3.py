@@ -108,7 +108,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.189"
+        return "3.3.190"
 
     timeframe = "5m"
 
@@ -1378,7 +1378,7 @@ class QuickAdapterV3(IStrategy):
             zl_kama = get_zl_ma_fn("kama")
             try:
                 trade_kama_natr_values = np.asarray(
-                    zl_kama(label_natr, timeperiod=trade_duration_candles)
+                    zl_kama(label_natr, timeperiod=trade_duration_candles), dtype=float
                 )
                 trade_kama_natr_values = trade_kama_natr_values[
                     np.isfinite(trade_kama_natr_values)
@@ -1832,7 +1832,7 @@ class QuickAdapterV3(IStrategy):
         self,
         df: DataFrame,
         pair: str,
-        side: str,
+        side: TradeDirection,
         min_natr_ratio_percent: float,
         max_natr_ratio_percent: float,
         candle_idx: int = -1,
@@ -2108,7 +2108,7 @@ class QuickAdapterV3(IStrategy):
             (velocity_values, velocity_mean, velocity_std,
              acceleration_values, acceleration_mean, acceleration_std)
         """
-        unrealized_pnl_history_array = np.asarray(unrealized_pnl_history)
+        unrealized_pnl_history_array = np.asarray(unrealized_pnl_history, dtype=float)
 
         if window_size > 0 and len(unrealized_pnl_history_array) > window_size:
             unrealized_pnl_history_array = unrealized_pnl_history_array[-window_size:]
@@ -2183,7 +2183,7 @@ class QuickAdapterV3(IStrategy):
         if n < 4:
             return max(1.0, n - 1)
 
-        x_arr = np.asarray(x)
+        x_arr = np.asarray(x, dtype=float)
         x_centered = x_arr - np.nanmean(x_arr)
 
         try:
@@ -2345,7 +2345,7 @@ class QuickAdapterV3(IStrategy):
             trade_unrealized_pnl_history, self._pnl_momentum_window_size
         )
 
-        q_decl = float(self._exit_thresholds_calibration.get("decline_quantile"))
+        q_decl = self._exit_thresholds_calibration.get("decline_quantile")
 
         n_trade_recent_velocity = len(trade_recent_velocity_values)
         n_trade_recent_acceleration = len(trade_recent_acceleration_values)
