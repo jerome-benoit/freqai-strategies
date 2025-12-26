@@ -999,7 +999,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     test_weights = test_weights[-test_period_candles:]
             elif optuna_train_value >= optuna_hp_value:
                 logger.warning(
-                    f"Optuna {dk.pair} train RMSE {format_number(optuna_train_value)} is not better than hp RMSE {format_number(optuna_hp_value)}, skipping training sets sizing optimization"
+                    f"Optuna {dk.pair} {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]} RMSE {format_number(optuna_train_value)} is not better than {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]} RMSE {format_number(optuna_hp_value)}, skipping training sets sizing optimization"
                 )
 
         eval_set, eval_weights = QuickAdapterRegressorV3.eval_set_and_weights(
@@ -1052,7 +1052,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 callback()
             except Exception as e:
                 logger.error(
-                    f"Error executing optuna {pair} {namespace} callback: {repr(e)}",
+                    f"Optuna {pair} {namespace} callback execution failed: {e!r}",
                     exc_info=True,
                 )
             finally:
@@ -1707,7 +1707,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "normalized_matrix must contain only finite values (no NaN or inf)"
             )
         label_p_order = self.ft_params.get("label_p_order")
-        np_weights = np.array(self.ft_params.get("label_weights", [1.0] * n_objectives))
+        label_weights = self.ft_params.get("label_weights")
+        if label_weights is None:
+            np_weights = np.array([1.0] * n_objectives)
+        elif isinstance(label_weights, (list, tuple, np.ndarray)):
+            np_weights = np.array(label_weights, dtype=float)
+        else:
+            raise ValueError(
+                f"label_weights must be a list, tuple, or array, got {type(label_weights).__name__}"
+            )
         if np_weights.size != n_objectives:
             raise ValueError("label_weights length must match number of objectives")
         if not np.all(np.isfinite(np_weights)):
@@ -2184,7 +2192,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         except Exception as e:
             time_spent = time.time() - start_time
             logger.error(
-                f"Optuna {pair} {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): {repr(e)}",
+                f"Optuna {pair} {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): {e!r}",
                 exc_info=True,
             )
             return
@@ -2210,7 +2218,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             except Exception as e:
                 logger.error(
-                    f"Optuna {pair} {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): {repr(e)}",
+                    f"Optuna {pair} {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): {e!r}",
                     exc_info=True,
                 )
                 best_trial = None
@@ -2334,7 +2342,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             storage = self.optuna_create_storage(pair)
         except Exception as e:
             logger.error(
-                f"Failed to create optuna storage for study {study_name}: {repr(e)}",
+                f"Optuna {pair} {namespace} storage creation failed for study {study_name}: {e!r}",
                 exc_info=True,
             )
             return None
@@ -2355,7 +2363,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         except Exception as e:
             logger.error(
-                f"Failed to create optuna study {study_name}: {repr(e)}", exc_info=True
+                f"Optuna {pair} {namespace} study creation failed ({study_name}): {e!r}",
+                exc_info=True,
             )
             return None
 
@@ -2394,10 +2403,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             study.enqueue_trial(best_params)
         except Exception as e:
             logger.warning(
-                "Failed to enqueue previous best params for %s %s: %r",
-                pair,
-                namespace,
-                e,
+                f"Optuna {pair} {namespace} failed to enqueue previous best params: {e!r}"
             )
 
     def optuna_save_best_params(self, pair: str, namespace: str) -> None:
@@ -2409,7 +2415,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 json.dump(self.get_optuna_params(pair, namespace), write_file, indent=4)
         except Exception as e:
             logger.error(
-                f"Failed to save optuna {namespace} best params for {pair}: {repr(e)}",
+                f"Optuna {pair} {namespace} failed to save best params: {e!r}",
                 exc_info=True,
             )
             raise
@@ -2432,7 +2438,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
         except Exception as e:
-            logger.warning("Failed to delete study %s: %r", study_name, e)
+            logger.warning(f"Optuna study deletion failed ({study_name}): {e!r}")
 
     @staticmethod
     def optuna_load_study(

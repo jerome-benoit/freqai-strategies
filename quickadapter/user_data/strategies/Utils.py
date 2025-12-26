@@ -2065,6 +2065,8 @@ def get_optuna_study_model_parameters(
                 continue
 
             if param in log_scaled_params:
+                if center_value <= 0:
+                    continue
                 new_min = center_value / (1 + expansion_ratio)
                 new_max = center_value * (1 + expansion_ratio)
             else:

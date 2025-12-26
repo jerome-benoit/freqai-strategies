@@ -52,6 +52,7 @@ from optuna.storages import (
 )
 from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
+from optuna.trial import TrialState
 from pandas import DataFrame, merge
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.maskable.utils import is_masking_supported
@@ -851,7 +852,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             best_params = self.optimize(dk, total_timesteps)
             if best_params is None:
                 logger.error(
-                    "Hyperopt failed. Using default configured model params instead"
+                    "Hyperopt: optimization failed, using default model params"
                 )
                 best_params = self.get_model_params()
             model_params = best_params
@@ -938,7 +939,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
                 return best_model
             except Exception as e:
-                logger.error(f"Error at loading best model: {repr(e)}", exc_info=True)
+                logger.error("Error loading best model: %r", e, exc_info=True)
 
         logger.info(
             "Could not find best model at %s, using final model instead", model_filepath
@@ -1103,7 +1104,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         try:
             delete_study(study_name=study_name, storage=storage)
         except Exception as e:
-            logger.warning("Failed to delete study %s: %r", study_name, e)
+            logger.warning("Hyperopt %s: failed to delete study: %r", study_name, e)
 
     @staticmethod
     def _sanitize_pair(pair: str) -> str:
@@ -1128,7 +1129,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                         result[key] = value
                 return result
         except Exception as e:
-            logger.warning("Failed to load optuna retrain counters: %r", e)
+            logger.warning("Hyperopt: failed to load retrain counters: %r", e)
         return {}
 
     def _save_optuna_retrain_counters(self, counters: Dict[str, int]) -> None:
@@ -1137,7 +1138,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             with counters_path.open("w", encoding="utf-8") as write_file:
                 json.dump(counters, write_file, indent=4, sort_keys=True)
         except Exception as e:
-            logger.warning("Failed to save optuna retrain counters: %r", e)
+            logger.warning("Hyperopt: failed to save retrain counters: %r", e)
 
     def _increment_optuna_retrain_counter(self, pair: str) -> int:
         pair = ReforceXY._sanitize_pair(pair)
@@ -1188,18 +1189,26 @@ class ReforceXY(BaseReinforcementLearningModel):
         sampler: SamplerType = self.rl_config_optuna.get(
             "sampler", ReforceXY._SAMPLER_TYPES[0]
         )  # "tpe"
+        seed = self.rl_config_optuna.get("seed", 42)
         # "auto"
         if sampler == ReforceXY._SAMPLER_TYPES[1]:
-            return optunahub.load_module("samplers/auto_sampler").AutoSampler(
-                seed=self.rl_config_optuna.get("seed", 42)
+            logger.info(
+                "Hyperopt: using AutoSampler (seed=%s)",
+                seed,
             )
+            return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
         # "tpe"
         elif sampler == ReforceXY._SAMPLER_TYPES[0]:
+            logger.info(
+                "Hyperopt: using TPESampler (n_startup_trials=%s, multivariate=True, group=True, seed=%s)",
+                self.optuna_n_startup_trials,
+                seed,
+            )
             return TPESampler(
                 n_startup_trials=self.optuna_n_startup_trials,
                 multivariate=True,
                 group=True,
-                seed=self.rl_config_optuna.get("seed", 42),
+                seed=seed,
             )
         else:
             raise ValueError(
@@ -1210,6 +1219,12 @@ class ReforceXY(BaseReinforcementLearningModel):
     def create_pruner(
         min_resource: int, max_resource: int, reduction_factor: int
     ) -> BasePruner:
+        logger.info(
+            "Hyperopt: using HyperbandPruner (min_resource=%s, max_resource=%s, reduction_factor=%s)",
+            min_resource,
+            max_resource,
+            reduction_factor,
+        )
         return HyperbandPruner(
             min_resource=min_resource,
             max_resource=max_resource,
@@ -1256,10 +1271,15 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         if continuous or pair_purge_triggered:
             ReforceXY.delete_study(study_name, storage)
+            if continuous and not pair_purge_triggered:
+                logger.info(
+                    "Hyperopt %s: study deleted (continuous mode)",
+                    study_name,
+                )
 
         if pair_purge_triggered:
             logger.info(
-                "Hyperopt study %s purged on retrain %s (purge_period=%s)",
+                "Hyperopt %s: study purged on retrain %s (purge_period=%s)",
                 study_name,
                 pair_purge_count,
                 self.optuna_purge_period,
@@ -1278,15 +1298,26 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             max_resource = max(min_resource, total_timesteps + (n_envs - 1))
 
+        direction = StudyDirection.MAXIMIZE
+        load_if_exists = not continuous and not pair_purge_triggered
         study: Study = create_study(
             study_name=study_name,
             sampler=self.create_sampler(),
             pruner=ReforceXY.create_pruner(
                 min_resource, max_resource, reduction_factor
             ),
-            direction=StudyDirection.MAXIMIZE,
+            direction=direction,
             storage=storage,
-            load_if_exists=not continuous and not pair_purge_triggered,
+            load_if_exists=load_if_exists,
+        )
+        logger.info(
+            "Hyperopt %s: study created (direction=%s, n_trials=%s, timeout=%s, continuous=%s, load_if_exists=%s)",
+            study_name,
+            direction.name,
+            self.optuna_n_trials,
+            f"{self.optuna_timeout_hours}h" if self.optuna_timeout_hours else "None",
+            continuous,
+            load_if_exists,
         )
         if (
             self.rl_config_optuna.get("warm_start", False) and not pair_purge_triggered
@@ -1294,6 +1325,15 @@ class ReforceXY(BaseReinforcementLearningModel):
             best_trial_params = self.load_best_trial_params(dk.pair)
             if best_trial_params:
                 study.enqueue_trial(best_trial_params)
+                logger.info(
+                    "Hyperopt %s: warm start enqueued previous best params",
+                    study_name,
+                )
+            else:
+                logger.info(
+                    "Hyperopt %s: warm start found no previous best params",
+                    study_name,
+                )
         hyperopt_failed = False
         start_time = time.time()
         try:
@@ -1311,19 +1351,39 @@ class ReforceXY(BaseReinforcementLearningModel):
                 n_jobs=1,
             )
         except KeyboardInterrupt:
-            pass
+            time_spent = time.time() - start_time
+            logger.info(
+                "Hyperopt %s: interrupted by user after %.2f secs",
+                study_name,
+                time_spent,
+            )
         except Exception as e:
             time_spent = time.time() - start_time
             logger.error(
-                f"Hyperopt {study_name} failed ({time_spent:.2f} secs): {repr(e)}",
+                "Hyperopt %s: optimization failed after %.2f secs: %r",
+                study_name,
+                time_spent,
+                e,
                 exc_info=True,
             )
             hyperopt_failed = True
         time_spent = time.time() - start_time
+        n_complete = len([t for t in study.trials if t.state == TrialState.COMPLETE])
+        n_pruned = len([t for t in study.trials if t.state == TrialState.PRUNED])
+        n_failed = len([t for t in study.trials if t.state == TrialState.FAIL])
+        logger.info(
+            "Hyperopt %s: %s complete, %s pruned, %s failed trials",
+            study_name,
+            n_complete,
+            n_pruned,
+            n_failed,
+        )
         study_has_best_trial = ReforceXY.study_has_best_trial(study)
         if not study_has_best_trial:
             logger.error(
-                f"Hyperopt {study_name} failed ({time_spent:.2f} secs): no study best trial found"
+                "Hyperopt %s: no best trial found after %.2f secs",
+                study_name,
+                time_spent,
             )
             hyperopt_failed = True
 
@@ -1331,25 +1391,26 @@ class ReforceXY(BaseReinforcementLearningModel):
             best_trial_params = self.load_best_trial_params(dk.pair)
             if best_trial_params is None:
                 logger.error(
-                    f"Hyperopt {study_name} failed ({time_spent:.2f} secs): no previously saved best trial params found"
+                    "Hyperopt %s: no previously saved best params found",
+                    study_name,
                 )
                 return None
         else:
             best_trial_params = study.best_trial.params
 
         logger.info(
-            "------------ Hyperopt %s results (%.2f secs) ------------",
+            "Hyperopt %s: completed in %.2f secs",
             study_name,
             time_spent,
         )
         if study_has_best_trial:
             logger.info(
-                "Best trial: %s. Score: %s",
+                "Hyperopt %s: best trial #%s with score %s",
+                study_name,
                 study.best_trial.number,
                 study.best_trial.value,
             )
-        logger.info("Best trial params: %s", best_trial_params)
-        logger.info("-------------------------------------------------------")
+        logger.info("Hyperopt %s: best params %s", study_name, best_trial_params)
 
         self.save_best_trial_params(best_trial_params, dk.pair)
 
@@ -1368,15 +1429,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         best_trial_params_path = Path(
             self.full_path / f"{best_trial_params_filename}.json"
         )
-        logger.info(
-            "%s: saving best params to %s JSON file", pair, best_trial_params_path
-        )
+        logger.info("Hyperopt: saving best params to %s", best_trial_params_path)
         try:
             with best_trial_params_path.open("w", encoding="utf-8") as write_file:
                 json.dump(best_trial_params, write_file, indent=4)
         except Exception as e:
             logger.error(
-                f"Error saving best trial params to {best_trial_params_path}: {repr(e)}",
+                "Hyperopt: failed to save best params to %s: %r",
+                best_trial_params_path,
+                e,
                 exc_info=True,
             )
             raise
@@ -1390,11 +1451,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.full_path / f"{best_trial_params_filename}.json"
         )
         if best_trial_params_path.is_file():
-            logger.info(
-                "%s: loading best params from %s JSON file",
-                pair,
-                best_trial_params_path,
-            )
+            logger.info("Hyperopt: loading best params from %s", best_trial_params_path)
             with best_trial_params_path.open("r", encoding="utf-8") as read_file:
                 best_trial_params = json.load(read_file)
             return best_trial_params
@@ -1497,7 +1554,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         """
         Objective function for Optuna trials hyperparameter optimization
         """
-        logger.info("------------ Hyperopt trial %d ------------", trial.number)
+        study_name = trial.study.study_name
+        logger.info("Hyperopt %s: starting trial #%d", study_name, trial.number)
 
         params = self.get_optuna_params(trial)
 
@@ -1532,7 +1590,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
         params["seed"] = params.get("seed", 42) + trial.number
-        logger.info("Trial %s params: %s", trial.number, params)
+        logger.info(
+            "Hyperopt %s: trial #%s params %s", study_name, trial.number, params
+        )
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -1576,20 +1636,39 @@ class ReforceXY(BaseReinforcementLearningModel):
         try:
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
         except AssertionError:
-            logger.warning("Optuna encountered NaN (AssertionError)")
+            logger.warning(
+                "Hyperopt %s: trial #%s encountered NaN (AssertionError)",
+                study_name,
+                trial.number,
+            )
             nan_encountered = True
         except ValueError as e:
             if any(x in str(e).lower() for x in ("nan", "inf")):
-                logger.warning("Optuna encountered NaN/Inf (ValueError): %r", e)
+                logger.warning(
+                    "Hyperopt %s: trial #%s encountered NaN/Inf (ValueError): %r",
+                    study_name,
+                    trial.number,
+                    e,
+                )
                 nan_encountered = True
             else:
                 raise
         except FloatingPointError as e:
-            logger.warning("Optuna encountered NaN/Inf (FloatingPointError): %r", e)
+            logger.warning(
+                "Hyperopt %s: trial #%s encountered NaN/Inf (FloatingPointError): %r",
+                study_name,
+                trial.number,
+                e,
+            )
             nan_encountered = True
         except RuntimeError as e:
             if any(x in str(e).lower() for x in ("nan", "inf")):
-                logger.warning("Optuna encountered NaN/Inf (RuntimeError): %r", e)
+                logger.warning(
+                    "Hyperopt %s: trial #%s encountered NaN/Inf (RuntimeError): %r",
+                    study_name,
+                    trial.number,
+                    e,
+                )
                 nan_encountered = True
             else:
                 raise
@@ -3945,7 +4024,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 last_mean_reward = float(getattr(self, "last_mean_reward", np.nan))
             except Exception as e:
                 logger.warning(
-                    "Optuna: invalid last_mean_reward (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt %s: trial #%s invalid last_mean_reward (eval_idx=%s, timesteps=%s): %r",
+                    self.trial.study.study_name,
+                    self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
                     e,
@@ -3955,7 +4036,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
 
             if not np.isfinite(last_mean_reward):
                 logger.warning(
-                    "Optuna: non-finite last_mean_reward (eval_idx=%s, timesteps=%s)",
+                    "Hyperopt %s: trial #%s non-finite last_mean_reward (eval_idx=%s, timesteps=%s)",
+                    self.trial.study.study_name,
+                    self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
                 )
@@ -3966,7 +4049,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 self.trial.report(last_mean_reward, self.num_timesteps)
             except Exception as e:
                 logger.warning(
-                    "Optuna: trial.report failed (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt %s: trial #%s trial.report failed (eval_idx=%s, timesteps=%s): %r",
+                    self.trial.study.study_name,
+                    self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
                     e,
@@ -3978,7 +4063,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 best_mean_reward = float(getattr(self, "best_mean_reward", np.nan))
             except Exception as e:
                 logger.warning(
-                    "Optuna: invalid best_mean_reward (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt %s: trial #%s invalid best_mean_reward (eval_idx=%s, timesteps=%s): %r",
+                    self.trial.study.study_name,
+                    self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
                     e,
@@ -4002,13 +4089,17 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     )
                 else:
                     logger.warning(
-                        "Optuna: non-finite best_mean_reward (eval_idx=%s, timesteps=%s)",
+                        "Hyperopt %s: trial #%s non-finite best_mean_reward (eval_idx=%s, timesteps=%s)",
+                        self.trial.study.study_name,
+                        self.trial.number,
                         self.eval_idx,
                         self.num_timesteps,
                     )
             except Exception as e:
                 logger.error(
-                    "Optuna: logger.record failed (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt %s: trial #%s logger.record failed (eval_idx=%s, timesteps=%s): %r",
+                    self.trial.study.study_name,
+                    self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
                     e,
@@ -4017,7 +4108,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
             try:
                 if self.trial.should_prune():
                     logger.info(
-                        "Optuna: trial pruned (eval_idx=%s, timesteps=%s, score=%.5f)",
+                        "Hyperopt %s: trial #%s pruned (eval_idx=%s, timesteps=%s, score=%.5f)",
+                        self.trial.study.study_name,
+                        self.trial.number,
                         self.eval_idx,
                         self.num_timesteps,
                         last_mean_reward,
@@ -4026,7 +4119,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     return False
             except Exception as e:
                 logger.warning(
-                    "Optuna: trial.should_prune failed (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt %s: trial #%s should_prune failed (eval_idx=%s, timesteps=%s): %r",
+                    self.trial.study.study_name,
+                    self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
                     e,
