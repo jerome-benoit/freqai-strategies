@@ -235,7 +235,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertTrue(math.isnan(_get_float_param({"k": float("-inf")}, "k", 0.0)))
         self.assertTrue(math.isnan(_get_float_param({"k": np.nan}, "k", 0.0)))
         self.assertTrue(
-            math.isnan(_get_float_param(cast(RewardParams, {"k": cast(Any, [1, 2, 3])}), "k", 0.0))
+            math.isnan(
+                _get_float_param(cast("RewardParams", {"k": cast("Any", [1, 2, 3])}), "k", 0.0)
+            )
         )
 
     def test_get_str_param(self):
@@ -284,7 +286,9 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertEqual(_get_int_param({"k": ""}, "k", 5), 5)
         self.assertEqual(_get_int_param({"k": "abc"}, "k", 5), 5)
         self.assertEqual(_get_int_param({"k": "NaN"}, "k", 5), 5)
-        self.assertEqual(_get_int_param(cast(RewardParams, {"k": cast(Any, [1, 2, 3])}), "k", 3), 3)
+        self.assertEqual(
+            _get_int_param(cast("RewardParams", {"k": cast("Any", [1, 2, 3])}), "k", 3), 3
+        )
         self.assertEqual(_get_int_param({}, "missing", "zzz"), 0)
 
     def test_argument_parser_construction(self):

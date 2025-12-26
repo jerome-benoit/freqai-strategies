@@ -12,14 +12,13 @@ dependencies = [
     "pandas",
     "scikit-learn",
     "scipy>=1.11",
-    "pytest",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
-    "pytest>=6.0",
-    "ruff",
-    "pytest-cov>=7.0.0",
+    "pytest>=8.0",
+    "pytest-cov>=7.0",
+    "ruff>=0.8",
 ]
 
 [build-system]
@@ -59,22 +58,37 @@ log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(name)s: %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 
-# Coverage configuration
 addopts = [
     "--verbose",
     "--tb=short",
     "--strict-markers",
     "--color=yes",
-    "--cov=reward_space_analysis",
-    "--cov-config=pyproject.toml",
-    "--cov-fail-under=85"
+    "--cov",
 ]
 
 [tool.coverage.run]
 source = ["reward_space_analysis"]
+branch = true
+parallel = true
+relative_files = true
 omit = [
-    "tests/*",
-    "test_*.py",
+    "*/tests/*",
+    "**/test_*.py",
+    "**/__pycache__/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@abstractmethod",
 ]
 
 [tool.ruff]
@@ -82,5 +96,26 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = ["E501"]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["reward_space_analysis"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

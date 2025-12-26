@@ -62,11 +62,11 @@ class TestCsvEncoding(RewardSpaceTestBase):
         self.assertIn("action", df.columns)
         values = df["action"].tolist()
         self.assertTrue(
-            all((float(v).is_integer() for v in values)),
+            all(float(v).is_integer() for v in values),
             "Non-integer values detected in 'action' column",
         )
         allowed = {int(action.value) for action in Actions}
-        self.assertTrue(set((int(v) for v in values)).issubset(allowed))
+        self.assertTrue({int(v) for v in values}.issubset(allowed))
 
 
 class TestParamsPropagation(RewardSpaceTestBase):
@@ -181,7 +181,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
         _assert_cli_success(self, result)
         manifest_path = out_dir / "manifest.json"
         self.assertTrue(manifest_path.exists(), "Missing manifest.json")
-        with open(manifest_path, "r") as f:
+        with manifest_path.open() as f:
             manifest = json.load(f)
         self.assertIn("reward_params", manifest)
         self.assertIn("simulation_params", manifest)
@@ -208,7 +208,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
         _assert_cli_success(self, result)
         manifest_path = out_dir / "manifest.json"
         self.assertTrue(manifest_path.exists(), "Missing manifest.json")
-        with open(manifest_path, "r") as f:
+        with manifest_path.open() as f:
             manifest = json.load(f)
         self.assertIn("reward_params", manifest)
         self.assertIn("simulation_params", manifest)

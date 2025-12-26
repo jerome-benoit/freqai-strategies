@@ -21,8 +21,8 @@ Usage:
     ... )
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from ..constants import PARAMS, SEEDS, STATISTICAL, TOLERANCE
 
@@ -67,7 +67,7 @@ class ValidationConfig:
 
     tolerance_strict: float = TOLERANCE.IDENTITY_STRICT
     tolerance_relaxed: float = TOLERANCE.IDENTITY_RELAXED
-    exclude_components: Optional[list[str]] = None
+    exclude_components: list[str] | None = None
     component_description: str = "reward components"
 
 
@@ -117,7 +117,7 @@ class ExitFactorConfig:
     decomposition, attenuation mode and plateau behavior.
 
     The exit factor is computed as:
-        exit_factor = base_factor × time_attenuation × pnl_target × efficiency
+        exit_factor = base_factor * time_attenuation * pnl_target * efficiency
 
     Attributes:
         base_factor: Base scaling factor
@@ -160,7 +160,7 @@ class StatisticalTestConfig:
     n_bootstrap: int = STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS
     confidence_level: float = 0.95
     seed: int = SEEDS.BASE
-    adjust_method: Optional[str] = None
+    adjust_method: str | None = None
     alpha: float = 0.05
 
 
@@ -236,16 +236,16 @@ DEFAULT_SIMULATION_CONFIG: SimulationConfig = SimulationConfig(
 
 
 __all__ = [
-    "RewardScenarioConfig",
-    "ValidationConfig",
-    "ThresholdTestConfig",
-    "ProgressiveScalingConfig",
-    "ExitFactorConfig",
-    "StatisticalTestConfig",
-    "SimulationConfig",
-    "WarningCaptureConfig",
-    "ValidationCallback",
-    "ContextFactory",
     "DEFAULT_REWARD_CONFIG",
     "DEFAULT_SIMULATION_CONFIG",
+    "ContextFactory",
+    "ExitFactorConfig",
+    "ProgressiveScalingConfig",
+    "RewardScenarioConfig",
+    "SimulationConfig",
+    "StatisticalTestConfig",
+    "ThresholdTestConfig",
+    "ValidationCallback",
+    "ValidationConfig",
+    "WarningCaptureConfig",
 ]

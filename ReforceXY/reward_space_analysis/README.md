@@ -351,7 +351,7 @@ multiplier for loss-side holds:
 where:
 
 - `r_pnl = pnl / pnl_target`
-- `r_dur = clamp(duration_ratio, 0, 1)`
+- `r_dur = max(duration_ratio, 0)`
 - `scale = base_factor · hold_potential_ratio`
 - `g = hold_potential_gain`
 - `T_pnl`, `T_dur` = configured transforms

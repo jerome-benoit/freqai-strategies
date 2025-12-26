@@ -34,6 +34,7 @@ Exit codes
 from __future__ import annotations
 
 import argparse
+import contextlib
 import itertools
 import json
 import math
@@ -47,15 +48,15 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, TypedDict
 
 try:
     from typing import NotRequired, Required  # Python >=3.11
 except ImportError:
-    from typing_extensions import NotRequired, Required  # Python <3.11
+    from typing import NotRequired, Required  # Python <3.11
 
 
-ConfigTuple = Tuple[str, str, float, int, int, int]
+ConfigTuple = tuple[str, str, float, int, int, int]
 
 SUMMARY_FILENAME = "reward_space_cli.json"
 
@@ -66,25 +67,25 @@ class ScenarioResult(TypedDict):
     stdout: str
     stderr: str
     strict: bool
-    seconds: Optional[float]
+    seconds: float | None
     warnings: int
 
 
 class SummaryResult(TypedDict, total=False):
     # Required keys
     total: Required[int]
-    successes: Required[List[ScenarioResult]]
-    failures: Required[List[ScenarioResult]]
-    mean_seconds: Required[Optional[float]]
-    max_seconds: Required[Optional[float]]
-    min_seconds: Required[Optional[float]]
-    median_seconds: Required[Optional[float]]
-    p95_seconds: Required[Optional[float]]
+    successes: Required[list[ScenarioResult]]
+    failures: Required[list[ScenarioResult]]
+    mean_seconds: Required[float | None]
+    max_seconds: Required[float | None]
+    min_seconds: Required[float | None]
+    median_seconds: Required[float | None]
+    p95_seconds: Required[float | None]
 
     # Extension keys
-    warnings_breakdown: NotRequired[Dict[str, int]]
-    seeds: NotRequired[Dict[str, Any]]
-    metadata: NotRequired[Dict[str, Any]]
+    warnings_breakdown: NotRequired[dict[str, int]]
+    seeds: NotRequired[dict[str, Any]]
+    metadata: NotRequired[dict[str, Any]]
     interrupted: NotRequired[bool]
 
 
@@ -102,8 +103,8 @@ def _is_warning_header(line: str) -> bool:
 
 def build_arg_matrix(
     max_scenarios: int = 40,
-    shuffle_seed: Optional[int] = None,
-) -> List[ConfigTuple]:
+    shuffle_seed: int | None = None,
+) -> list[ConfigTuple]:
     exit_potential_modes = [
         "canonical",
         "non_canonical",
@@ -126,7 +127,7 @@ def build_arg_matrix(
         exit_additive_enabled,
     )
 
-    full: List[ConfigTuple] = list(product_iter)
+    full: list[ConfigTuple] = list(product_iter)
     full = [c for c in full if not (c[0] == "canonical" and (c[4] == 1 or c[5] == 1))]
     if shuffle_seed is not None:
         rnd = random.Random(shuffle_seed)
@@ -135,10 +136,10 @@ def build_arg_matrix(
         return full
     step = len(full) / max_scenarios
     idx_pos = step / 2.0  # Centered sampling
-    selected: List[ConfigTuple] = []
+    selected: list[ConfigTuple] = []
     selected_indices: set[int] = set()
     for _ in range(max_scenarios):
-        idx = int(round(idx_pos))
+        idx = round(idx_pos)
         if idx < 0:
             idx = 0
         elif idx >= len(full):
@@ -177,7 +178,7 @@ def run_scenario(
     skip_partial_dependence: bool = False,
     unrealized_pnl: bool = False,
     full_logs: bool = False,
-    params: Optional[List[str]] = None,
+    params: list[str] | None = None,
     tail_chars: int = 5000,
 ) -> ScenarioResult:
     (
@@ -223,7 +224,7 @@ def run_scenario(
     if strict:
         cmd.append("--strict_diagnostics")
     if params:
-        cmd += ["--params"] + list(params)
+        cmd += ["--params", *list(params)]
     start = time.perf_counter()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
@@ -371,8 +372,8 @@ def main():
     scenarios = build_arg_matrix(max_scenarios=args.max_scenarios, shuffle_seed=args.shuffle_seed)
 
     # Validate --params basic KEY=VALUE format
-    valid_params: List[str] = []
-    invalid_params: List[str] = []
+    valid_params: list[str] = []
+    invalid_params: list[str] = []
     for p in args.params:
         if "=" in p:
             valid_params.append(p)
@@ -384,7 +385,7 @@ def main():
     args.params = valid_params
 
     # Prepare list of (conf, strict)
-    scenario_pairs: List[Tuple[ConfigTuple, bool]] = [(c, False) for c in scenarios]
+    scenario_pairs: list[tuple[ConfigTuple, bool]] = [(c, False) for c in scenarios]
     indices = {conf: idx for idx, conf in enumerate(scenarios, start=1)}
     n_duplicated = min(max(0, args.strict_sample), len(scenarios))
     if n_duplicated > 0:
@@ -392,7 +393,7 @@ def main():
     for c in scenarios[:n_duplicated]:
         scenario_pairs.append((c, True))
 
-    results: List[ScenarioResult] = []
+    results: list[ScenarioResult] = []
     total = len(scenario_pairs)
     interrupted = False
     try:
@@ -425,7 +426,7 @@ def main():
 
     successes = [r for r in results if r["status"] == "ok"]
     failures = [r for r in results if r["status"] != "ok"]
-    durations: List[float] = [
+    durations: list[float] = [
         float(r["seconds"]) for r in results if isinstance(r["seconds"], float)
     ]
     if durations:
@@ -436,8 +437,8 @@ def main():
             p95_seconds = _sorted[0]
         else:
             pos = 0.95 * (n - 1)
-            i0 = int(math.floor(pos))
-            i1 = int(math.ceil(pos))
+            i0 = math.floor(pos)
+            i1 = math.ceil(pos)
             if i0 == i1:
                 p95_seconds = _sorted[i0]
             else:
@@ -457,7 +458,7 @@ def main():
         "p95_seconds": p95_seconds,
     }
     # Build warnings breakdown
-    warnings_breakdown: Dict[str, int] = {}
+    warnings_breakdown: dict[str, int] = {}
     for r in results:
         text = (r["stderr"] + "\n" + r["stdout"]).splitlines()
         for line in text:
@@ -466,7 +467,7 @@ def main():
                 warnings_breakdown[fp] = warnings_breakdown.get(fp, 0) + 1
 
     # Collect reproducibility metadata
-    def _git_hash() -> Optional[str]:
+    def _git_hash() -> str | None:
         try:
             proc = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
@@ -504,10 +505,11 @@ def main():
         summary["interrupted"] = True
     # Atomic write to avoid corrupt partial files
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="_tmp_summary_", dir=str(out_dir))
+    tmp_path_obj = Path(tmp_path)
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, indent=2)
-        os.replace(tmp_path, out_dir / SUMMARY_FILENAME)
+        tmp_path_obj.replace(out_dir / SUMMARY_FILENAME)
     except Exception:
         # Best effort fallback
         try:
@@ -515,18 +517,14 @@ def main():
                 json.dumps(summary, indent=2), encoding="utf-8"
             )
         finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+            if tmp_path_obj.exists():
+                with contextlib.suppress(OSError):
+                    tmp_path_obj.unlink()
     else:
         # Defensive cleanup: remove temp file if atomic replace did not clean up
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+        if tmp_path_obj.exists():
+            with contextlib.suppress(OSError):
+                tmp_path_obj.unlink()
     print(f"Summary saved to: {out_dir / SUMMARY_FILENAME}")
     if not interrupted and summary["failures"]:
         print("Failures detected:")

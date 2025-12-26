@@ -44,8 +44,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
     def test_decomposition_integrity(self):
         """reward must equal the single active core component under mutually exclusive scenarios (idle/hold/exit/invalid)."""
         scenarios = [
-            dict(
-                ctx=self.make_ctx(
+            {
+                "ctx": self.make_ctx(
                     pnl=0.0,
                     trade_duration=0,
                     idle_duration=25,
@@ -54,10 +54,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     position=Positions.Neutral,
                     action=Actions.Neutral,
                 ),
-                active="idle_penalty",
-            ),
-            dict(
-                ctx=self.make_ctx(
+                "active": "idle_penalty",
+            },
+            {
+                "ctx": self.make_ctx(
                     pnl=0.0,
                     trade_duration=150,
                     idle_duration=0,
@@ -66,10 +66,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     position=Positions.Long,
                     action=Actions.Neutral,
                 ),
-                active="hold_penalty",
-            ),
-            dict(
-                ctx=self.make_ctx(
+                "active": "hold_penalty",
+            },
+            {
+                "ctx": self.make_ctx(
                     pnl=PARAMS.PROFIT_AIM,
                     trade_duration=60,
                     idle_duration=0,
@@ -78,10 +78,10 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     position=Positions.Long,
                     action=Actions.Long_exit,
                 ),
-                active="exit_component",
-            ),
-            dict(
-                ctx=self.make_ctx(
+                "active": "exit_component",
+            },
+            {
+                "ctx": self.make_ctx(
                     pnl=0.01,
                     trade_duration=10,
                     idle_duration=0,
@@ -90,8 +90,8 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     position=Positions.Short,
                     action=Actions.Long_exit,
                 ),
-                active="invalid_penalty",
-            ),
+                "active": "invalid_penalty",
+            },
         ]
         for sc in scenarios:
             ctx_obj = sc["ctx"]
@@ -178,7 +178,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
 
         # Part 2: Monotonic attenuation validation
-        modes = list(ATTENUATION_MODES) + ["plateau_linear"]
+        modes = [*list(ATTENUATION_MODES), "plateau_linear"]
         test_pnl = 0.05
         test_context = self.make_ctx(
             pnl=test_pnl,
@@ -232,12 +232,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertTrue(runtime_warnings)
         self.assertTrue(
             any(
-                (
-                    ">" in str(w.message)
-                    and "threshold" in str(w.message)
-                    or "|exit_factor|=" in str(w.message)
-                    for w in runtime_warnings
-                )
+                (">" in str(w.message) and "threshold" in str(w.message))
+                or "|exit_factor|=" in str(w.message)
+                for w in runtime_warnings
             )
         )
 
@@ -298,10 +295,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 params,
                 PARAMS.RISK_REWARD_RATIO,
             )
-            if 0.0 < tau <= 1.0:
-                alpha = -math.log(tau) / math.log(2.0)
-            else:
-                alpha = 1.0
+            alpha = -math.log(tau) / math.log(2.0) if 0.0 < tau <= 1.0 else 1.0
             expected_ratio = 1.0 / (1.0 + duration_ratio) ** alpha
             observed_ratio = f1 / f0 if f0 != 0 else np.nan
             self.assertFinite(observed_ratio, name="observed_ratio")
@@ -656,7 +650,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             f"Scaling ratio too large (ratio={ratio:.2f})",
         )
 
-    # === Robustness invariants 102–105 ===
+    # === Robustness invariants 102–105 ===  # noqa: RUF003
     # Owns invariant: robustness-exit-mode-fallback-102
     def test_robustness_102_unknown_exit_mode_fallback_linear(self):
         """Invariant 102: Unknown exit_attenuation_mode gracefully warns and falls back to linear kernel."""

@@ -16,7 +16,7 @@ Usage:
 
 import warnings
 from contextlib import contextmanager
-from typing import Any, Optional
+from typing import Any
 
 import reward_space_analysis
 
@@ -55,7 +55,7 @@ def capture_warnings(warning_category: type[Warning] = Warning, always_capture: 
 @contextmanager
 def assert_diagnostic_warning(
     expected_substrings: list[str],
-    warning_category: Optional[type[Warning]] = None,
+    warning_category: type[Warning] | None = None,
     strict_mode: bool = True,
 ):
     """Context manager that captures warnings and asserts their presence.
@@ -192,8 +192,8 @@ def validate_warning_content(
 
 
 __all__ = [
-    "capture_warnings",
     "assert_diagnostic_warning",
     "assert_no_warnings",
+    "capture_warnings",
     "validate_warning_content",
 ]

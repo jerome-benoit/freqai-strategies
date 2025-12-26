@@ -5,6 +5,7 @@ reducing duplication while maintaining full functional coverage for mathematical
 """
 
 import math
+from typing import ClassVar
 
 import pytest
 
@@ -20,8 +21,8 @@ class TestTransforms(RewardSpaceTestBase):
     """Comprehensive transform function tests with parameterized scenarios."""
 
     # Transform function test data
-    SMOOTH_TRANSFORMS = [t for t in ALLOWED_TRANSFORMS if t != "clip"]
-    ALL_TRANSFORMS = list(ALLOWED_TRANSFORMS)
+    SMOOTH_TRANSFORMS: ClassVar[list[str]] = [t for t in ALLOWED_TRANSFORMS if t != "clip"]
+    ALL_TRANSFORMS: ClassVar[list[str]] = list(ALLOWED_TRANSFORMS)
 
     def test_transform_exact_values(self):
         """Test transform functions produce exact expected values for specific inputs."""
@@ -34,14 +35,14 @@ class TestTransforms(RewardSpaceTestBase):
             ("asinh", [0.0], [0.0]),  # More complex calculations tested separately
             # arctan transform: (2/pi) * arctan(x) in (-1, 1)
             ("arctan", [0.0, 1.0], [0.0, 2.0 / math.pi * math.atan(1.0)]),
-            # sigmoid transform: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)
+            # sigmoid transform: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)  # noqa: RUF003
             ("sigmoid", [0.0], [0.0]),  # More complex calculations tested separately
             # clip transform: clip(x, -1, 1) in [-1, 1]
             ("clip", [0.0, 0.5, 2.0, -2.0], [0.0, 0.5, 1.0, -1.0]),
         ]
 
         for transform_name, test_values, expected_values in test_cases:
-            for test_val, expected_value in zip(test_values, expected_values):
+            for test_val, expected_value in zip(test_values, expected_values, strict=False):
                 with self.subTest(
                     transform=transform_name, input=test_val, expected=expected_value
                 ):

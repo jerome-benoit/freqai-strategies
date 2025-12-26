@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Base class and utilities for reward space analysis tests."""
 
+import itertools
 import math
 import random
 import shutil
 import tempfile
 import unittest
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Sequence, Union
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -61,7 +63,7 @@ PBRS_INTEGRATION_PARAMS = [
     "entry_additive_enabled",
     "exit_additive_enabled",
 ]
-PBRS_REQUIRED_PARAMS = PBRS_INTEGRATION_PARAMS + ["exit_potential_mode"]
+PBRS_REQUIRED_PARAMS = [*PBRS_INTEGRATION_PARAMS, "exit_potential_mode"]
 
 
 class RewardSpaceTestBase(unittest.TestCase):
@@ -105,9 +107,9 @@ class RewardSpaceTestBase(unittest.TestCase):
             action=action,
         )
 
-    def base_params(self, **overrides) -> Dict[str, Any]:
+    def base_params(self, **overrides) -> dict[str, Any]:
         """Return fresh copy of default reward params with overrides."""
-        params: Dict[str, Any] = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
+        params: dict[str, Any] = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
         params.update(overrides)
         return params
 
@@ -115,8 +117,8 @@ class RewardSpaceTestBase(unittest.TestCase):
         self,
         params: dict,
         *,
-        iterations: Optional[int] = None,
-        terminal_prob: Optional[float] = None,
+        iterations: int | None = None,
+        terminal_prob: float | None = None,
         seed: int = SEEDS.CANONICAL_SWEEP,
     ) -> tuple[list[float], list[float]]:
         """Run a lightweight canonical invariance sweep.
@@ -171,10 +173,10 @@ class RewardSpaceTestBase(unittest.TestCase):
         reward_mean: float = 0.0,
         reward_std: float = 1.0,
         pnl_mean: float = 0.01,
-        pnl_std: Optional[float] = None,
+        pnl_std: float | None = None,
         trade_duration_dist: str = "uniform",
         idle_pattern: str = "mixed",
-        seed: Optional[int] = None,
+        seed: int | None = None,
     ) -> pd.DataFrame:
         """Generate a synthetic statistical DataFrame.
 
@@ -235,11 +237,11 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def assertAlmostEqualFloat(
         self,
-        first: Union[float, int],
-        second: Union[float, int],
-        tolerance: Optional[float] = None,
-        rtol: Optional[float] = None,
-        msg: Union[str, None] = None,
+        first: float | int,
+        second: float | int,
+        tolerance: float | None = None,
+        rtol: float | None = None,
+        msg: str | None = None,
     ) -> None:
         """Compare floats with absolute and optional relative tolerance.
 
@@ -264,14 +266,14 @@ class RewardSpaceTestBase(unittest.TestCase):
             or f"Difference {diff} exceeds tolerance {tolerance} and relative tolerance {rtol} (a={first}, b={second})"
         )
 
-    def assertPValue(self, value: Union[float, int], msg: str = "") -> None:
+    def assertPValue(self, value: float | int, msg: str = "") -> None:
         """Assert a p-value is finite and within [0,1]."""
         self.assertFinite(value, name="p-value")
         self.assertGreaterEqual(value, 0.0, msg or f"p-value < 0: {value}")
         self.assertLessEqual(value, 1.0, msg or f"p-value > 1: {value}")
 
     def assertPlacesEqual(
-        self, a: Union[float, int], b: Union[float, int], places: int, msg: Optional[str] = None
+        self, a: float | int, b: float | int, places: int, msg: str | None = None
     ) -> None:
         """Bridge for legacy places-based approximate equality.
 
@@ -283,10 +285,10 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def assertDistanceMetric(
         self,
-        value: Union[float, int],
+        value: float | int,
         *,
         non_negative: bool = True,
-        upper: Optional[float] = None,
+        upper: float | None = None,
         name: str = "metric",
     ) -> None:
         """Generic distance/divergence bounds: finite, optional non-negativity and optional upper bound."""
@@ -298,7 +300,7 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def assertEffectSize(
         self,
-        value: Union[float, int],
+        value: float | int,
         *,
         lower: float = -1.0,
         upper: float = 1.0,
@@ -309,17 +311,17 @@ class RewardSpaceTestBase(unittest.TestCase):
         self.assertGreaterEqual(value, lower, f"{name} < {lower}: {value}")
         self.assertLessEqual(value, upper, f"{name} > {upper}: {value}")
 
-    def assertFinite(self, value: Union[float, int], name: str = "value") -> None:
+    def assertFinite(self, value: float | int, name: str = "value") -> None:
         """Assert scalar is finite."""
         if not np.isfinite(value):
             self.fail(f"{name} not finite: {value}")
 
     def assertMonotonic(
         self,
-        seq: Union[Sequence[Union[float, int]], Iterable[Union[float, int]]],
+        seq: Sequence[float | int] | Iterable[float | int],
         *,
-        non_increasing: Optional[bool] = None,
-        non_decreasing: Optional[bool] = None,
+        non_increasing: bool | None = None,
+        non_decreasing: bool | None = None,
         tolerance: float = 0.0,
         name: str = "sequence",
     ) -> None:
@@ -331,21 +333,20 @@ class RewardSpaceTestBase(unittest.TestCase):
         data = list(seq)
         if len(data) < 2:
             return
-        if non_increasing and non_decreasing or (not non_increasing and (not non_decreasing)):
+        if (non_increasing and non_decreasing) or (not non_increasing and (not non_decreasing)):
             self.fail("Specify exactly one monotonic direction")
-        for a, b in zip(data, data[1:]):
+        for a, b in itertools.pairwise(data):
             if non_increasing:
                 if b > a + tolerance:
                     self.fail(f"{name} not non-increasing at pair ({a}, {b})")
-            elif non_decreasing:
-                if b + tolerance < a:
-                    self.fail(f"{name} not non-decreasing at pair ({a}, {b})")
+            elif non_decreasing and b + tolerance < a:
+                self.fail(f"{name} not non-decreasing at pair ({a}, {b})")
 
     def assertWithin(
         self,
-        value: Union[float, int],
-        low: Union[float, int],
-        high: Union[float, int],
+        value: float | int,
+        low: float | int,
+        high: float | int,
         *,
         name: str = "value",
         inclusive: bool = True,
@@ -360,7 +361,7 @@ class RewardSpaceTestBase(unittest.TestCase):
             self.assertLess(value, high, f"{name} >= {high}")
 
     def assertNearZero(
-        self, value: Union[float, int], *, atol: Optional[float] = None, msg: Optional[str] = None
+        self, value: float | int, *, atol: float | None = None, msg: str | None = None
     ) -> None:
         """Assert a scalar is numerically near zero within absolute tolerance.
 
@@ -377,9 +378,9 @@ class RewardSpaceTestBase(unittest.TestCase):
         a,
         b,
         *,
-        atol: Optional[float] = None,
-        rtol: Optional[float] = None,
-        msg: Optional[str] = None,
+        atol: float | None = None,
+        rtol: float | None = None,
+        msg: str | None = None,
     ) -> None:
         """Assert function(func, a, b) == function(func, b, a) within tolerance.
 

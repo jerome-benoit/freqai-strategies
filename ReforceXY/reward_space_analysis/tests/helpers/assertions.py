@@ -4,7 +4,9 @@ These functions centralize common numeric and behavioral checks to enforce
 single invariant ownership and reduce duplication across taxonomy modules.
 """
 
-from typing import Any, Dict, List, Sequence, Tuple
+import itertools
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -358,7 +360,7 @@ def assert_single_active_component_with_additives(
 
 def assert_reward_calculation_scenarios(
     test_case,
-    scenarios: List[Tuple[Any, Dict[str, Any], str]],
+    scenarios: list[tuple[Any, dict[str, Any], str]],
     config: RewardScenarioConfig,
     validation_fn,
 ):
@@ -405,9 +407,9 @@ def assert_reward_calculation_scenarios(
 
 def assert_parameter_sensitivity_behavior(
     test_case,
-    parameter_variations: List[Dict[str, Any]],
+    parameter_variations: list[dict[str, Any]],
     base_context,
-    base_params: Dict[str, Any],
+    base_params: dict[str, Any],
     component_name: str,
     expected_trend: str,
     config: RewardScenarioConfig,
@@ -486,7 +488,7 @@ def assert_parameter_sensitivity_behavior(
 def make_idle_penalty_test_contexts(
     context_factory_fn,
     idle_duration_scenarios: Sequence[int],
-    base_context_kwargs: Dict[str, Any] | None = None,
+    base_context_kwargs: dict[str, Any] | None = None,
 ):
     """Generate contexts for idle penalty testing with varying durations.
 
@@ -541,7 +543,7 @@ def assert_exit_factor_attenuation_modes(
         test_case: Test case instance with assertion methods
         base_factor: Base scaling factor
         pnl: Realized profit/loss
-        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        pnl_target: Target profit threshold (pnl_target = profit_aim * risk_reward_ratio)
         context: RewardContext for efficiency coefficient calculation
         attenuation_modes: List of mode names to test
         base_params_fn: Factory function for creating parameter dicts
@@ -588,12 +590,14 @@ def assert_exit_factor_attenuation_modes(
             if mode == "plateau_linear":
                 grace = float(mode_params["exit_plateau_grace"])
                 filtered = [
-                    (r, v) for r, v in zip(ratios, values) if r >= grace - tolerance_relaxed
+                    (r, v)
+                    for r, v in zip(ratios, values, strict=False)
+                    if r >= grace - tolerance_relaxed
                 ]
                 values_to_check = [v for _, v in filtered]
             else:
                 values_to_check = values
-            for earlier, later in zip(values_to_check, values_to_check[1:]):
+            for earlier, later in itertools.pairwise(values_to_check):
                 test_case.assertLessEqual(
                     later, earlier + tolerance_relaxed, f"Non-monotonic attenuation in mode={mode}"
                 )
@@ -602,7 +606,7 @@ def assert_exit_factor_attenuation_modes(
 def assert_exit_mode_mathematical_validation(
     test_case,
     context,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     base_factor: float,
     profit_aim: float,
     risk_reward_ratio: float,
@@ -704,16 +708,16 @@ def assert_exit_mode_mathematical_validation(
         reward_half_life.exit_component,
         reward_linear.exit_component,
     ]
-    test_case.assertTrue(all((r > 0 for r in rewards)))
-    unique_rewards = set((f"{r:.6f}" for r in rewards))
+    test_case.assertTrue(all(r > 0 for r in rewards))
+    unique_rewards = {f"{r:.6f}" for r in rewards}
     test_case.assertGreater(len(unique_rewards), 1)
 
 
 def assert_multi_parameter_sensitivity(
     test_case,
-    parameter_test_cases: List[Tuple[float, float, str]],
+    parameter_test_cases: list[tuple[float, float, str]],
     context_factory_fn,
-    base_params: Dict[str, Any],
+    base_params: dict[str, Any],
     config: RewardScenarioConfig,
 ):
     """Validate reward behavior across multiple parameter combinations.
@@ -781,7 +785,7 @@ def assert_multi_parameter_sensitivity(
 def assert_hold_penalty_threshold_behavior(
     test_case,
     context_factory_fn,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     base_factor: float,
     profit_aim: float,
     risk_reward_ratio: float,
@@ -842,11 +846,11 @@ def assert_hold_penalty_threshold_behavior(
 
 
 def build_validation_case(
-    param_updates: Dict[str, Any],
+    param_updates: dict[str, Any],
     strict: bool,
     expect_error: bool = False,
     expected_reason_substrings: Sequence[str] | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a structured validation test case descriptor.
 
     Creates a standardized test case dictionary for parameter validation testing,
@@ -876,7 +880,7 @@ def build_validation_case(
     }
 
 
-def execute_validation_batch(test_case, cases: Sequence[Dict[str, Any]], validate_fn):
+def execute_validation_batch(test_case, cases: Sequence[dict[str, Any]], validate_fn):
     """Execute a batch of parameter validation test cases.
 
     Runs multiple validation scenarios in batch, handling both strict (error-raising)
@@ -903,7 +907,7 @@ def execute_validation_batch(test_case, cases: Sequence[Dict[str, Any]], validat
             params = case["params"].copy()
             strict_flag = case["strict"]
             if strict_flag and case["expect_error"]:
-                test_case.assertRaises(Exception, validate_fn, params, True)
+                test_case.assertRaises(ValueError, validate_fn, params, True)
                 continue
             result = validate_fn(params, strict=strict_flag)
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], dict):
@@ -922,7 +926,7 @@ def execute_validation_batch(test_case, cases: Sequence[Dict[str, Any]], validat
 
 
 def assert_adjustment_reason_contains(
-    test_case, adjustments: Dict[str, Dict[str, Any]], key: str, expected_substrings: Sequence[str]
+    test_case, adjustments: dict[str, dict[str, Any]], key: str, expected_substrings: Sequence[str]
 ):
     """Assert adjustment reason contains all expected substrings.
 
@@ -953,7 +957,7 @@ def assert_adjustment_reason_contains(
 
 
 def run_strict_validation_failure_cases(
-    test_case, failure_params_list: Sequence[Dict[str, Any]], validate_fn
+    test_case, failure_params_list: Sequence[dict[str, Any]], validate_fn
 ):
     """Batch test strict validation failures.
 
@@ -983,7 +987,7 @@ def run_strict_validation_failure_cases(
 
 def run_relaxed_validation_adjustment_cases(
     test_case,
-    relaxed_cases: Sequence[Tuple[Dict[str, Any], Sequence[str]]],
+    relaxed_cases: Sequence[tuple[dict[str, Any], Sequence[str]]],
     validate_fn,
 ):
     """Batch test relaxed validation adjustments.
@@ -1020,7 +1024,7 @@ def run_relaxed_validation_adjustment_cases(
 
 
 def assert_exit_factor_invariant_suite(
-    test_case, suite_cases: Sequence[Dict[str, Any]], exit_factor_fn
+    test_case, suite_cases: Sequence[dict[str, Any]], exit_factor_fn
 ):
     """Validate exit factor invariants across multiple scenarios.
 
@@ -1033,7 +1037,7 @@ def assert_exit_factor_invariant_suite(
         suite_cases: List of scenario dicts with keys:
             - base_factor: Base scaling factor
             - pnl: Realized profit/loss
-            - pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio) for coefficient calculation
+            - pnl_target: Target profit threshold (pnl_target = profit_aim * risk_reward_ratio) for coefficient calculation
             - context: RewardContext for efficiency coefficient
             - duration_ratio: Duration ratio (0-2)
             - params: Parameter dictionary
@@ -1088,8 +1092,8 @@ def assert_exit_factor_kernel_fallback(
     pnl_target: float,
     duration_ratio: float,
     context,
-    bad_params: Dict[str, Any],
-    reference_params: Dict[str, Any],
+    bad_params: dict[str, Any],
+    reference_params: dict[str, Any],
     risk_reward_ratio: float,
 ):
     """Validate exit factor fallback behavior on kernel failure.
@@ -1141,8 +1145,8 @@ def assert_exit_factor_kernel_fallback(
 def assert_relaxed_multi_reason_aggregation(
     test_case,
     validate_fn,
-    params: Dict[str, Any],
-    key_expectations: Dict[str, Sequence[str]],
+    params: dict[str, Any],
+    key_expectations: dict[str, Sequence[str]],
 ):
     """Validate relaxed validation produces expected adjustment reasons.
 
@@ -1268,7 +1272,7 @@ def assert_exit_factor_plateau_behavior(
         exit_factor_fn: Exit factor calculation function (_get_exit_factor)
         base_factor: Base factor for exit calculation
         pnl: PnL value
-        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio) for coefficient calculation
+        pnl_target: Target profit threshold (pnl_target = profit_aim * risk_reward_ratio) for coefficient calculation
         context: RewardContext for efficiency coefficient
         plateau_params: Parameters dict with plateau configuration
         grace: Grace period threshold (exit_plateau_grace value)
@@ -1314,7 +1318,7 @@ def assert_exit_factor_plateau_behavior(
 
 def calculate_reward_with_defaults(
     context,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     config: RewardScenarioConfig | None = None,
     **overrides,
 ):
@@ -1376,7 +1380,7 @@ def get_exit_factor_with_defaults(
     pnl: float,
     duration_ratio: float,
     context,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     base_factor: float | None = None,
     pnl_target: float | None = None,
     risk_reward_ratio: float | None = None,
@@ -1427,7 +1431,7 @@ def get_exit_factor_with_defaults(
 
 
 def simulate_samples_with_defaults(
-    params: Dict[str, Any],
+    params: dict[str, Any],
     config: SimulationConfig | None = None,
     base_factor: float | None = None,
     profit_aim: float | None = None,

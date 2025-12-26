@@ -492,8 +492,8 @@ class TestPBRS(RewardSpaceTestBase):
         terminal_next_potentials, shaping_values = self._canonical_sweep(params)
         self.assertEqual(params, params_before)
         if terminal_next_potentials:
-            self.assertTrue(all((abs(p) < PBRS.TERMINAL_TOL for p in terminal_next_potentials)))
-        max_abs = max((abs(v) for v in shaping_values)) if shaping_values else 0.0
+            self.assertTrue(all(abs(p) < PBRS.TERMINAL_TOL for p in terminal_next_potentials))
+        max_abs = max(abs(v) for v in shaping_values) if shaping_values else 0.0
         self.assertLessEqual(max_abs, PBRS.MAX_ABS_SHAPING)
 
     def test_progressive_release_negative_decay_clamped(self):
@@ -528,7 +528,7 @@ class TestPBRS(RewardSpaceTestBase):
             gamma = float(gamma_fallback)
         except Exception:
             gamma = 0.95
-        # PBRS shaping Δ = γ·Φ(next) − Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.
+        # PBRS shaping Δ = γ·Φ(next) − Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.  # noqa: RUF003
         self.assertLessEqual(
             abs(shaping - ((gamma - 1.0) * prev_potential)),
             TOLERANCE.GENERIC_EQ,
@@ -788,7 +788,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         execute_validation_batch(
             self,
-            [success_case] + strict_failures + [relaxed_case],
+            [success_case, *strict_failures, relaxed_case],
             validate_reward_parameters,
         )
         params_relaxed = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
@@ -815,13 +815,13 @@ class TestPBRS(RewardSpaceTestBase):
     def test_compute_exit_potential_mode_differences(self):
         """Exit potential modes: canonical vs spike_cancel shaping magnitude differences."""
         gamma = 0.93
-        base_common = dict(
-            hold_potential_enabled=True,
-            potential_gamma=gamma,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            hold_potential_ratio=1.0,
-        )
+        base_common = {
+            "hold_potential_enabled": True,
+            "potential_gamma": gamma,
+            "entry_additive_enabled": False,
+            "exit_additive_enabled": False,
+            "hold_potential_ratio": 1.0,
+        }
         ctx_pnl = 0.012
         ctx_dur_ratio = 0.3
         params_can = self.base_params(exit_potential_mode="canonical", **base_common)
@@ -1113,7 +1113,7 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertLessEqual(abs(shap), PBRS.MAX_ABS_SHAPING)
 
             # With bounded transforms and hold_potential_ratio=1:
-            # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor
+            # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor  # noqa: RUF003
             self.assertLessEqual(abs(float(shap)), (1.0 + gamma) * PARAMS.BASE_FACTOR)
 
     def test_report_cumulative_invariance_aggregation(self):
@@ -1159,10 +1159,7 @@ class TestPBRS(RewardSpaceTestBase):
             if abs(inc) > max_abs_step:
                 max_abs_step = abs(inc)
             steps += 1
-            if is_exit:
-                prev_potential = 0.0
-            else:
-                prev_potential = next_potential
+            prev_potential = 0.0 if is_exit else next_potential
         mean_drift = telescoping_sum / max(1, steps)
         self.assertLess(
             abs(mean_drift),

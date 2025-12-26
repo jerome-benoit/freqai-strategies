@@ -90,7 +90,7 @@ class TestIntegration(RewardSpaceTestBase):
         _assert_cli_success(self, result2)
 
         for run_dir in ["run1", "run2"]:
-            with open(self.output_path / run_dir / "manifest.json", "r") as f:
+            with (self.output_path / run_dir / "manifest.json").open() as f:
                 manifest = json.load(f)
             required_keys = {
                 "generated_at",
@@ -112,9 +112,9 @@ class TestIntegration(RewardSpaceTestBase):
             self.assertEqual(manifest["num_samples"], SCENARIOS.SAMPLE_SIZE_SMALL)
             self.assertEqual(manifest["seed"], SEEDS.BASE)
 
-        with open(self.output_path / "run1" / "manifest.json", "r") as f:
+        with (self.output_path / "run1" / "manifest.json").open() as f:
             manifest1 = json.load(f)
-        with open(self.output_path / "run2" / "manifest.json", "r") as f:
+        with (self.output_path / "run2" / "manifest.json").open() as f:
             manifest2 = json.load(f)
         self.assertEqual(
             manifest1["params_hash"],

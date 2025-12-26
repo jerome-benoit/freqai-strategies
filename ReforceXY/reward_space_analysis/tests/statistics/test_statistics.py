@@ -45,7 +45,7 @@ class TestStatistics(RewardSpaceTestBase):
         # Use existing helper to get synthetic stats df (small for speed)
         df = self.make_stats_df(n=120, seed=SEEDS.BASE, idle_pattern="mixed")
         try:
-            importance_df, analysis_stats, partial_deps, model = _perform_feature_analysis(
+            importance_df, analysis_stats, partial_deps, _model = _perform_feature_analysis(
                 df, seed=SEEDS.BASE, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
             )
         except ImportError:
@@ -135,15 +135,13 @@ class TestStatistics(RewardSpaceTestBase):
         for metric_name, value in metrics.items():
             if "pnl" in metric_name:
                 if any(
-                    (
-                        suffix in metric_name
-                        for suffix in [
-                            "js_distance",
-                            "ks_statistic",
-                            "wasserstein",
-                            "kl_divergence",
-                        ]
-                    )
+                    suffix in metric_name
+                    for suffix in [
+                        "js_distance",
+                        "ks_statistic",
+                        "wasserstein",
+                        "kl_divergence",
+                    ]
                 ):
                     self.assertDistanceMetric(value, name=metric_name)
                 else:
@@ -180,7 +178,7 @@ class TestStatistics(RewardSpaceTestBase):
                     "Idle duration and reward arrays should have same length",
                 )
                 self.assertTrue(
-                    all((d >= 0 for d in idle_dur)), "Idle durations should be non-negative"
+                    all(d >= 0 for d in idle_dur), "Idle durations should be non-negative"
                 )
                 negative_rewards = (idle_rew < 0).sum()
                 total_rewards = len(idle_rew)
@@ -231,7 +229,7 @@ class TestStatistics(RewardSpaceTestBase):
         diagnostics = distribution_diagnostics(df)
         expected_prefixes = ["reward_", "pnl_"]
         for prefix in expected_prefixes:
-            matching_keys = [key for key in diagnostics.keys() if key.startswith(prefix)]
+            matching_keys = [key for key in diagnostics if key.startswith(prefix)]
             self.assertGreater(len(matching_keys), 0, f"Should have diagnostics for {prefix}")
             expected_suffixes = ["mean", "std", "skewness", "kurtosis"]
             for suffix in expected_suffixes:
@@ -509,7 +507,7 @@ class TestStatistics(RewardSpaceTestBase):
             df, adjust_method="benjamini_hochberg", seed=SEEDS.REPRODUCIBILITY
         )
         self.assertGreater(len(results_adj), 0)
-        for name, res in results_adj.items():
+        for _name, res in results_adj.items():
             self.assertIn("p_value", res)
             self.assertIn("p_value_adj", res)
             self.assertIn("significant_adj", res)
@@ -542,8 +540,8 @@ class TestStatistics(RewardSpaceTestBase):
         large = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_LARGE)
         res_small = bootstrap_confidence_intervals(small, ["reward"], n_bootstrap=400)
         res_large = bootstrap_confidence_intervals(large, ["reward"], n_bootstrap=400)
-        _, lo_s, hi_s = list(res_small.values())[0]
-        _, lo_l, hi_l = list(res_large.values())[0]
+        _, lo_s, hi_s = next(iter(res_small.values()))
+        _, lo_l, hi_l = next(iter(res_large.values()))
         hw_small = (hi_s - lo_s) / 2.0
         hw_large = (hi_l - lo_l) / 2.0
         self.assertFinite(hw_small, name="hw_small")

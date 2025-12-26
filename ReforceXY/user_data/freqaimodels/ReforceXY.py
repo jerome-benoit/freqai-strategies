@@ -2033,9 +2033,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if require_position and position not in (Positions.Long, Positions.Short):
             return 0.0
 
-        duration_ratio = 0.0 if duration_ratio < 0.0 else duration_ratio
-        if duration_ratio > 1.0:
-            duration_ratio = 1.0
+        duration_ratio = max(0.0, duration_ratio)
 
         try:
             pnl_ratio = pnl / pnl_target
@@ -2295,7 +2293,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         **State Variables:**
             r_pnl         : pnl / pnl_target (PnL ratio)
-            r_dur         : duration / max_duration (duration ratio, clamp [0,1])
+            r_dur         : duration / max_duration (duration ratio, max 0)
             scale         : scale parameter
             g             : gain parameter
             T_x           : transform function (tanh, softsign, etc.)

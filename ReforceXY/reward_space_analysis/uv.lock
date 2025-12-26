@@ -343,12 +343,11 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pandas" },
-    { name = "pytest" },
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
 
-[package.dev-dependencies]
+[package.optional-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -359,17 +358,13 @@ dev = [
 requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas" },
-    { name = "pytest" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "scikit-learn" },
     { name = "scipy", specifier = ">=1.11" },
 ]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=6.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "ruff" },
-]
+provides-extras = ["dev"]
 
 [[package]]
 name = "ruff"

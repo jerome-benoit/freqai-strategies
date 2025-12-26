@@ -194,7 +194,7 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         **Setup:**
         - PnL: 0.0 (breakeven)
-        - pnl_target: profit_aim × risk_reward_ratio
+        - pnl_target: profit_aim * risk_reward_ratio
         - Parameters: default base_params
 
         **Assertions:**
@@ -219,7 +219,7 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         **Setup:**
         - PnL: 150% of pnl_target (exceeds target by 50%)
-        - pnl_target: 0.045 (profit_aim=0.03 × risk_reward_ratio=1.5)
+        - pnl_target: 0.045 (profit_aim=0.03 * risk_reward_ratio=1.5)
         - Parameters: win_reward_factor=2.0, pnl_factor_beta=0.5
 
         **Assertions:**
@@ -250,7 +250,7 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         **Setup:**
         - PnL: -0.06 (exceeds pnl_target magnitude)
-        - pnl_target: 0.045 (profit_aim=0.03 × risk_reward_ratio=1.5)
+        - pnl_target: 0.045 (profit_aim=0.03 * risk_reward_ratio=1.5)
         - Penalty threshold: pnl < -pnl_target = -0.045
         - Parameters: win_reward_factor=2.0, pnl_factor_beta=0.5
 
@@ -381,7 +381,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         **Setup:**
         - PnL: -0.005 (very close to min_unrealized_profit=-0.006)
         - Efficiency ratio: (-0.005 - (-0.006)) / (0.0 - (-0.006)) ≈ 0.167 (low)
-        - For losses: coefficient = 1 + weight × (center - ratio) → rewards low ratio
+        - For losses: coefficient = 1 + weight * (center - ratio) → rewards low ratio
         - efficiency_weight: 1.0, efficiency_center: 0.5
         - Trade context: Long position cutting losses quickly
 
@@ -620,7 +620,7 @@ class TestRewardComponents(RewardSpaceTestBase):
             pnl_ratio = pnl / pnl_target
             expected = 1.0 + win_reward_factor * math.tanh(beta * (pnl_ratio - 1.0))
             expected_ratios.append(expected)
-        for obs, exp in zip(ratios_observed, expected_ratios):
+        for obs, exp in zip(ratios_observed, expected_ratios, strict=False):
             self.assertFinite(obs, name="observed_ratio")
             self.assertFinite(exp, name="expected_ratio")
             self.assertLess(
@@ -634,7 +634,7 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         Verifies:
         - max_idle_duration = None → use max_trade_duration as fallback
-        - penalty(duration=40) ≈ 2 × penalty(duration=20)
+        - penalty(duration=40) ≈ 2 * penalty(duration=20)
         - Proportional scaling with idle duration
         """
         base_factor = PARAMS.BASE_FACTOR

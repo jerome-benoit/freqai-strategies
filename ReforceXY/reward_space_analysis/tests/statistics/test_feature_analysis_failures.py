@@ -80,7 +80,7 @@ def test_feature_analysis_empty_frame():
     - model is None
     """
     df = _minimal_df(0)  # empty
-    importance_df, stats, partial_deps, model = _perform_feature_analysis(
+    importance_df, stats, _partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_EMPTY, skip_partial_dependence=True
     )
     assert importance_df.empty
@@ -102,7 +102,7 @@ def test_feature_analysis_single_feature_path():
     """
     rng = np.random.default_rng(SEEDS.FEATURE_PRIME_11)
     df = pd.DataFrame({"pnl": rng.normal(0, 1, 25), "reward": rng.normal(0, 1, 25)})
-    importance_df, stats, partial_deps, model = _perform_feature_analysis(
+    importance_df, stats, _partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_PRIME_11, skip_partial_dependence=True
     )
     assert stats["n_features"] == 1
@@ -132,7 +132,7 @@ def test_feature_analysis_nans_present_path():
             "reward": rng.normal(0, 1, 40),
         }
     )
-    importance_df, stats, partial_deps, model = _perform_feature_analysis(
+    importance_df, stats, _partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_PRIME_13, skip_partial_dependence=True
     )
     # Should hit NaN stub path (model_fitted False)
@@ -161,12 +161,12 @@ def test_feature_analysis_model_fitting_failure(monkeypatch):
     if RandomForestRegressor is None:  # type: ignore[comparison-overlap]
         pytest.skip("sklearn components unavailable; skipping model fitting failure test")
 
-    def boom(self, *a, **kw):  # noqa: D401
+    def boom(self, *a, **kw):
         raise RuntimeError("forced fit failure")
 
     monkeypatch.setattr(RandomForestRegressor, "fit", boom)
     df = _minimal_df(50)
-    importance_df, stats, partial_deps, model = _perform_feature_analysis(
+    importance_df, stats, _partial_deps, model = _perform_feature_analysis(
         df, seed=SEEDS.FEATURE_PRIME_21, skip_partial_dependence=True
     )
     assert stats["model_fitted"] is False
@@ -194,7 +194,7 @@ def test_feature_analysis_permutation_failure_partial_dependence(monkeypatch):
     """
 
     # Monkeypatch permutation_importance to raise while allowing partial dependence
-    def perm_boom(*a, **kw):  # noqa: D401
+    def perm_boom(*a, **kw):
         raise RuntimeError("forced permutation failure")
 
     monkeypatch.setattr("reward_space_analysis.permutation_importance", perm_boom)
@@ -249,7 +249,7 @@ def test_feature_analysis_import_fallback(monkeypatch):
 
 
 def test_module_level_sklearn_import_failure_reload():
-    """Force module-level sklearn import failure to execute fallback block (lines 32–42).
+    """Force module-level sklearn import failure to execute fallback block (lines 32-42).
 
     Strategy:
     - Temporarily monkeypatch builtins.__import__ to raise on any 'sklearn' import.
@@ -261,7 +261,7 @@ def test_module_level_sklearn_import_failure_reload():
     orig_mod = sys.modules.get("reward_space_analysis")
     orig_import = builtins.__import__
 
-    def fake_import(name, *args, **kwargs):  # noqa: D401
+    def fake_import(name, *args, **kwargs):
         if name.startswith("sklearn"):
             raise RuntimeError("forced sklearn import failure")
         return orig_import(name, *args, **kwargs)
@@ -274,10 +274,10 @@ def test_module_level_sklearn_import_failure_reload():
         reloaded_module = importlib.import_module("reward_space_analysis")
 
         # Fallback assigns sklearn symbols to None
-        assert getattr(reloaded_module, "RandomForestRegressor") is None
-        assert getattr(reloaded_module, "train_test_split") is None
-        assert getattr(reloaded_module, "permutation_importance") is None
-        assert getattr(reloaded_module, "r2_score") is None
+        assert reloaded_module.RandomForestRegressor is None
+        assert reloaded_module.train_test_split is None
+        assert reloaded_module.permutation_importance is None
+        assert reloaded_module.r2_score is None
         # Perform feature analysis should raise ImportError under missing components
         df = _minimal_df(15)
         with pytest.raises(ImportError):

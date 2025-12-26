@@ -18,13 +18,16 @@ import random
 import warnings
 from enum import Enum, IntEnum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.spatial.distance import jensenshannon
 from scipy.stats import entropy, probplot
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 try:
     from sklearn.ensemble import RandomForestRegressor
@@ -73,15 +76,15 @@ DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 # When that diagnostic column is not available (e.g., reporting from partial datasets),
 # we fall back to the weaker heuristic |Σ shaping| < PBRS_INVARIANCE_TOL.
 PBRS_INVARIANCE_TOL: float = 1e-6
-# Default discount factor γ for potential-based reward shaping
+# Default discount factor γ for potential-based reward shaping  # noqa: RUF003
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
 
 # Default risk/reward ratio (RR)
 RISK_REWARD_RATIO_DEFAULT: float = 2.0
 
 # Supported attenuation modes
-ATTENUATION_MODES: Tuple[str, ...] = ("sqrt", "linear", "power", "half_life")
-ATTENUATION_MODES_WITH_LEGACY: Tuple[str, ...] = ("legacy",) + ATTENUATION_MODES
+ATTENUATION_MODES: tuple[str, ...] = ("sqrt", "linear", "power", "half_life")
+ATTENUATION_MODES_WITH_LEGACY: tuple[str, ...] = ("legacy", *ATTENUATION_MODES)
 
 # Internal numeric guards and behavior toggles
 INTERNAL_GUARDS: dict[str, float] = {
@@ -116,10 +119,10 @@ ALLOWED_EXIT_POTENTIAL_MODES = {
 }
 
 # Supported trading modes
-TRADING_MODES: Tuple[str, ...] = ("spot", "margin", "futures")
+TRADING_MODES: tuple[str, ...] = ("spot", "margin", "futures")
 
 # Supported p-value adjustment methods
-ADJUST_METHODS: Tuple[str, ...] = ("none", "benjamini_hochberg")
+ADJUST_METHODS: tuple[str, ...] = ("none", "benjamini_hochberg")
 # Alias without underscore for convenience
 _ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
 
@@ -154,7 +157,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_factor_threshold": 1000.0,
     # === PBRS PARAMETERS ===
     # Potential-based reward shaping core parameters
-    # Discount factor γ for potential term (0 ≤ γ ≤ 1)
+    # Discount factor γ for potential term (0 ≤ γ ≤ 1)  # noqa: RUF003
     "potential_gamma": POTENTIAL_GAMMA_DEFAULT,
     # Exit potential modes: canonical | non_canonical | progressive_release | spike_cancel | retain_previous
     "exit_potential_mode": "canonical",
@@ -181,7 +184,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_additive_transform_duration": "tanh",
 }
 
-DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
+DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "invalid_action": "Penalty for invalid actions",
     "base_factor": "Base reward scale",
     "idle_penalty_power": "Idle penalty exponent",
@@ -203,9 +206,9 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
     "check_invariants": "Enable runtime invariant checks",
     "exit_factor_threshold": "Warn if |exit_factor| exceeds",
     # PBRS parameters
-    "potential_gamma": "PBRS discount γ (0–1)",
+    "potential_gamma": "PBRS discount γ (0-1)",  # noqa: RUF001
     "exit_potential_mode": "Exit potential mode (canonical|non_canonical|progressive_release|spike_cancel|retain_previous)",
-    "exit_potential_decay": "Decay for progressive_release (0–1)",
+    "exit_potential_decay": "Decay for progressive_release (0-1)",
     "hold_potential_enabled": "Enable hold potential Φ",
     "hold_potential_ratio": "Hold potential ratio",
     "hold_potential_gain": "Hold potential gain",
@@ -230,7 +233,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: Dict[str, str] = {
 # Parameter validation utilities
 # ---------------------------------------------------------------------------
 
-_PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
+_PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     # key: {min: ..., max: ...}  (bounds are inclusive where it makes sense)
     "invalid_action": {"max": 0.0},  # penalty should be <= 0
     "base_factor": {"min": 0.0},
@@ -261,8 +264,8 @@ _PARAMETER_BOUNDS: Dict[str, Dict[str, float]] = {
     "exit_additive_gain": {"min": 0.0},
 }
 
-RewardParamValue = Union[float, str, bool, None]
-RewardParams = Dict[str, RewardParamValue]
+RewardParamValue = float | str | bool | None
+RewardParams = dict[str, RewardParamValue]
 
 
 class RewardDiagnosticsWarning(RuntimeWarning):
@@ -316,7 +319,7 @@ def _to_bool(value: Any) -> bool:
     raise ValueError(f"Param: unrecognized boolean literal {value!r}")
 
 
-def _get_bool_param(params: RewardParams, key: str, default: Optional[bool] = None) -> bool:
+def _get_bool_param(params: RewardParams, key: str, default: bool | None = None) -> bool:
     """Extract boolean parameter with type safety.
 
     Args:
@@ -363,7 +366,7 @@ def _resolve_additive_enablement(
 
 
 def _get_float_param(
-    params: RewardParams, key: str, default: Optional[RewardParamValue] = None
+    params: RewardParams, key: str, default: RewardParamValue | None = None
 ) -> float:
     """Extract float parameter with type safety and default fallback.
 
@@ -409,7 +412,7 @@ def _clamp_float_to_bounds(
     key: str,
     value: float,
     *,
-    bounds: Optional[Dict[str, float]] = None,
+    bounds: dict[str, float] | None = None,
     strict: bool,
 ) -> tuple[float, list[str]]:
     """Clamp numeric `value` to bounds for `key`.
@@ -452,9 +455,7 @@ def _clamp_float_to_bounds(
     return adjusted, reason_parts
 
 
-def _get_int_param(
-    params: RewardParams, key: str, default: Optional[RewardParamValue] = None
-) -> int:
+def _get_int_param(params: RewardParams, key: str, default: RewardParamValue | None = None) -> int:
     """Extract integer parameter with robust coercion.
 
     Args:
@@ -502,7 +503,7 @@ def _get_int_param(
     return int(default) if isinstance(default, (int, float)) else 0
 
 
-def _get_str_param(params: RewardParams, key: str, default: Optional[str] = None) -> str:
+def _get_str_param(params: RewardParams, key: str, default: str | None = None) -> str:
     """Extract string parameter with type safety and default fallback.
 
     Args:
@@ -547,7 +548,7 @@ def _fail_safely(reason: str) -> float:
 def get_max_idle_duration_candles(
     params: RewardParams,
     *,
-    max_trade_duration_candles: Optional[int] = None,
+    max_trade_duration_candles: int | None = None,
 ) -> int:
     mtd = (
         int(max_trade_duration_candles)
@@ -569,7 +570,7 @@ def get_max_idle_duration_candles(
 def validate_reward_parameters(
     params: RewardParams,
     strict: bool = True,
-) -> Tuple[RewardParams, Dict[str, Dict[str, Any]]]:
+) -> tuple[RewardParams, dict[str, dict[str, Any]]]:
     """Clamp parameters to bounds and coerce booleans and numeric overrides.
 
     Returns a sanitized copy plus adjustments mapping (param -> original/adjusted/reason).
@@ -578,10 +579,10 @@ def validate_reward_parameters(
     - Numeric-bounded keys are coerced to float when provided as str/bool/None.
       * In strict mode: raise on non-numeric or out-of-bounds.
       * In relaxed mode: fallback to min bound or 0.0 with adjustment reason.
-    - Non‑finite numerics fall back to min bound or 0.0 (relaxed) or raise (strict).
+    - Non-finite numerics fall back to min bound or 0.0 (relaxed) or raise (strict).
     """
     sanitized = dict(params)
-    adjustments: Dict[str, Dict[str, Any]] = {}
+    adjustments: dict[str, dict[str, Any]] = {}
 
     # Boolean parameter coercion
     _bool_keys = [
@@ -665,7 +666,7 @@ def validate_reward_parameters(
         if not np.isclose(adjusted, original_numeric):
             sanitized[key] = adjusted
             prev_reason = adjustments.get(key, {}).get("reason")
-            reason: List[str] = []
+            reason: list[str] = []
             if prev_reason:
                 reason.append(prev_reason)
             reason.extend(reason_parts)
@@ -781,7 +782,7 @@ class RewardBreakdown:
     next_potential: float = 0.0
     # PBRS helpers
     base_reward: float = 0.0
-    pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') − Φ(s)
+    pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') − Φ(s)  # noqa: RUF003
     invariance_correction: float = 0.0
 
 
@@ -876,7 +877,7 @@ def _compute_time_attenuation_coefficient(
     else:
         effective_dr = duration_ratio
 
-    kernel = kernels.get(exit_attenuation_mode, None)
+    kernel = kernels.get(exit_attenuation_mode)
     if kernel is None:
         _warn_unknown_mode(
             "exit_attenuation_mode",
@@ -912,12 +913,12 @@ def _get_exit_factor(
     """
     Compute exit reward factor by applying multiplicative coefficients to base_factor.
 
-    Formula: exit_factor = base_factor × time_attenuation_coefficient × pnl_target_coefficient × efficiency_coefficient
+    Formula: exit_factor = base_factor * time_attenuation_coefficient * pnl_target_coefficient * efficiency_coefficient
 
     Args:
         base_factor: Base reward value before coefficient adjustments
         pnl: Realized profit/loss
-        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        pnl_target: Target profit threshold (pnl_target = profit_aim * risk_reward_ratio)
         duration_ratio: Trade duration relative to target duration
         context: Trade context with unrealized profit/loss extremes
         params: Reward configuration parameters
@@ -955,7 +956,7 @@ def _get_exit_factor(
         if exit_factor < 0.0 and pnl >= 0.0:
             exit_factor = 0.0
         exit_factor_threshold = _get_float_param(params, "exit_factor_threshold")
-        if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):
+        if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):  # noqa: SIM102
             if abs(exit_factor) > exit_factor_threshold:
                 warnings.warn(
                     f"|exit_factor|={abs(exit_factor):.2f} > threshold={exit_factor_threshold:.2f}",
@@ -982,7 +983,7 @@ def _compute_pnl_target_coefficient(
     Args:
         params: Reward configuration parameters
         pnl: Realized profit/loss
-        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        pnl_target: Target profit threshold (pnl_target = profit_aim * risk_reward_ratio)
         risk_reward_ratio: Risk/reward ratio for loss penalty calculation
 
     Returns:
@@ -1134,14 +1135,14 @@ def _compute_exit_reward(
 
     Args:
         base_factor: Base reward value before coefficient adjustments
-        pnl_target: Target profit threshold (pnl_target = profit_aim × risk_reward_ratio)
+        pnl_target: Target profit threshold (pnl_target = profit_aim * risk_reward_ratio)
         duration_ratio: Trade duration relative to target duration
         context: Trade context with PnL and unrealized profit/loss extremes
         params: Reward configuration parameters
         risk_reward_ratio: Risk/reward ratio (must match the value used to calculate pnl_target)
 
     Returns:
-        float: Exit reward (pnl × exit_factor)
+        float: Exit reward (pnl * exit_factor)
     """
     exit_factor = _get_exit_factor(
         base_factor, context.pnl, pnl_target, duration_ratio, context, params, risk_reward_ratio
@@ -1168,7 +1169,7 @@ def calculate_reward(
         short_allowed=short_allowed,
     )
 
-    base_reward: Optional[float] = None
+    base_reward: float | None = None
     if not is_valid and not action_masking:
         breakdown.invalid_penalty = _get_float_param(params, "invalid_action")
         base_reward = breakdown.invalid_penalty
@@ -1516,7 +1517,7 @@ def simulate_samples(
     )
     max_trade_duration_cap = int(max_trade_duration_candles * max_duration_ratio)
 
-    samples: list[Dict[str, float]] = []
+    samples: list[dict[str, float]] = []
     prev_potential: float = 0.0
 
     # Stateful trajectory variables
@@ -1763,7 +1764,7 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
         )
 
 
-def _compute_summary_stats(df: pd.DataFrame) -> Dict[str, Any]:
+def _compute_summary_stats(df: pd.DataFrame) -> dict[str, Any]:
     """Compute summary statistics without writing to file."""
     action_summary = df.groupby("action")["reward"].agg(["count", "mean", "std", "min", "max"])
     component_share = df[
@@ -1835,7 +1836,7 @@ def _binned_stats(
     return aggregated
 
 
-def _compute_relationship_stats(df: pd.DataFrame) -> Dict[str, Any]:
+def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
     """Return binned stats dict for idle, trade duration and pnl (uniform bins).
 
     Defensive against missing optional columns (e.g., reward_invalid when synthetic
@@ -1897,7 +1898,7 @@ def _compute_representativity_stats(
     df: pd.DataFrame,
     profit_aim: float,
     risk_reward_ratio: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Compute representativity statistics for the reward space."""
     pnl_target = float(profit_aim * risk_reward_ratio)
     total = len(df)
@@ -1942,7 +1943,7 @@ def _perform_feature_analysis(
     skip_partial_dependence: bool = False,
     rf_n_jobs: int = 1,
     perm_n_jobs: int = 1,
-) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, pd.DataFrame], Optional[RandomForestRegressor]]:
+) -> tuple[pd.DataFrame, dict[str, Any], dict[str, pd.DataFrame], RandomForestRegressor | None]:
     """Compute feature importances using RandomForestRegressor.
 
     Parameters
@@ -2064,7 +2065,7 @@ def _perform_feature_analysis(
             n_test=0,
         )
 
-    model: Optional[RandomForestRegressor] = RandomForestRegressor(
+    model: RandomForestRegressor | None = RandomForestRegressor(
         n_estimators=400,
         max_depth=None,
         random_state=seed,
@@ -2119,7 +2120,7 @@ def _perform_feature_analysis(
         )
 
     # Partial dependence (optional)
-    partial_deps: Dict[str, pd.DataFrame] = {}
+    partial_deps: dict[str, pd.DataFrame] = {}
     if model is not None and not skip_partial_dependence:
         for feature in [
             f for f in ["trade_duration", "idle_duration", "pnl"] if f in X_test.columns
@@ -2192,10 +2193,10 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
         else:
             try:
                 df = pd.DataFrame(list(candidate))
-            except TypeError:
+            except TypeError as e:
                 raise ValueError(
                     f"Data: 'transitions' in '{path}' is not iterable (type {type(candidate)!r})"
-                )
+                ) from e
             except Exception as e:
                 raise ValueError(
                     f"Data: could not build DataFrame from 'transitions' in '{path}': {e!r}"
@@ -2214,10 +2215,10 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 else:
                     try:
                         all_transitions.extend(list(trans))
-                    except TypeError:
+                    except TypeError as e:
                         raise ValueError(
                             f"Data: episode 'transitions' is not iterable in '{path}' (type {type(trans)!r})"
-                        )
+                        ) from e
             else:
                 skipped += 1
         if skipped:
@@ -2298,7 +2299,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
         if enforce_columns:
             raise ValueError(
                 f"Data: missing required columns {sorted(missing_required)}. "
-                f"Found: {sorted(list(df.columns))}"
+                f"Found: {sorted(df.columns)}"
             )
         warnings.warn(
             f"Missing columns {sorted(missing_required)}; filled with NaN when loading (enforce_columns=False)",
@@ -2329,7 +2330,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
 def compute_distribution_shift_metrics(
     synthetic_df: pd.DataFrame,
     real_df: pd.DataFrame,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute distribution shift metrics between synthetic and real samples.
 
     Returns KL divergence, JS distance, Wasserstein distance, and KS test
@@ -2395,7 +2396,7 @@ def compute_distribution_shift_metrics(
     return metrics
 
 
-def _validate_distribution_metrics(metrics: Dict[str, float]) -> None:
+def _validate_distribution_metrics(metrics: dict[str, float]) -> None:
     """Validate mathematical bounds of distribution shift metrics."""
     for key, value in metrics.items():
         if not np.isfinite(value):
@@ -2406,28 +2407,25 @@ def _validate_distribution_metrics(metrics: Dict[str, float]) -> None:
             raise AssertionError(f"KL divergence {key} must be >= 0, got {value:.6f}")
 
         # JS distance must be in [0, 1]
-        if "js_distance" in key:
-            if not (0 <= value <= 1):
-                raise AssertionError(f"JS distance {key} must be in [0,1], got {value:.6f}")
+        if "js_distance" in key and not (0 <= value <= 1):
+            raise AssertionError(f"JS distance {key} must be in [0,1], got {value:.6f}")
 
         # Wasserstein distance must be >= 0
         if "wasserstein" in key and value < 0:
             raise AssertionError(f"Wasserstein distance {key} must be >= 0, got {value:.6f}")
 
         # KS statistic must be in [0, 1]
-        if "ks_statistic" in key:
-            if not (0 <= value <= 1):
-                raise AssertionError(f"KS statistic {key} must be in [0,1], got {value:.6f}")
+        if "ks_statistic" in key and not (0 <= value <= 1):
+            raise AssertionError(f"KS statistic {key} must be in [0,1], got {value:.6f}")
 
         # p-values must be in [0, 1]
-        if "pvalue" in key:
-            if not (0 <= value <= 1):
-                raise AssertionError(f"p-value {key} must be in [0,1], got {value:.6f}")
+        if "pvalue" in key and not (0 <= value <= 1):
+            raise AssertionError(f"p-value {key} must be in [0,1], got {value:.6f}")
 
 
 def statistical_hypothesis_tests(
     df: pd.DataFrame, *, adjust_method: str = ADJUST_METHODS[0], seed: int = 42
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Statistical hypothesis tests (Spearman, Kruskal-Wallis, Mann-Whitney).
 
     Parameters
@@ -2547,7 +2545,7 @@ def statistical_hypothesis_tests(
         adj_final = np.empty_like(adj_sorted)
         adj_final[order] = np.clip(adj_sorted, 0, 1)
         # Attach adjusted p-values and recompute significance
-        for (name, res), p_adj in zip(items, adj_final):
+        for (name, res), p_adj in zip(items, adj_final, strict=False):
             res["p_value_adj"] = float(p_adj)
             res["significant_adj"] = bool(p_adj < alpha)
             results[name] = res
@@ -2558,7 +2556,7 @@ def statistical_hypothesis_tests(
     return results
 
 
-def _validate_hypothesis_test_results(results: Dict[str, Any]) -> None:
+def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
     """Validate statistical properties of hypothesis test results."""
     for test_name, result in results.items():
         # All p-values must be in [0, 1] or NaN (for cases like constant input)
@@ -2616,13 +2614,13 @@ def _validate_hypothesis_test_results(results: Dict[str, Any]) -> None:
 
 def bootstrap_confidence_intervals(
     df: pd.DataFrame,
-    metrics: List[str],
+    metrics: list[str],
     n_bootstrap: int = 10000,
     confidence_level: float = 0.95,
     seed: int = 42,
     *,
     strict_diagnostics: bool = False,
-) -> Dict[str, Tuple[float, float, float]]:
+) -> dict[str, tuple[float, float, float]]:
     """Compute bootstrap confidence intervals for metric means.
 
     Returns percentile-based CIs, skipping metrics with <10 samples.
@@ -2639,6 +2637,7 @@ def bootstrap_confidence_intervals(
         warnings.warn(
             f"n_bootstrap={n_bootstrap} < {min_rec}; confidence intervals may be unstable",
             RewardDiagnosticsWarning,
+            stacklevel=2,
         )
 
     # Local RNG to avoid mutating global NumPy RNG state
@@ -2686,7 +2685,7 @@ def bootstrap_confidence_intervals(
 
 
 def _validate_bootstrap_results(
-    results: Dict[str, Tuple[float, float, float]], *, strict_diagnostics: bool
+    results: dict[str, tuple[float, float, float]], *, strict_diagnostics: bool
 ) -> None:
     """Validate each bootstrap CI: finite bounds, ordered, positive width (adjust or raise)."""
     for metric, (mean, ci_low, ci_high) in results.items():
@@ -2710,10 +2709,7 @@ def _validate_bootstrap_results(
             if strict_diagnostics:
                 raise AssertionError(f"Bootstrap CI for {metric}: non-positive width {width:.6f}")
             # Graceful mode: expand interval symmetrically
-            if width == 0:
-                epsilon = INTERNAL_GUARDS["degenerate_ci_epsilon"]
-            else:
-                epsilon = abs(width) * 1e-6
+            epsilon = INTERNAL_GUARDS["degenerate_ci_epsilon"] if width == 0 else abs(width) * 1e-06
             center = mean
             # Adjust only if current bounds are identical; otherwise enforce ordering minimally.
             if ci_low == ci_high:
@@ -2728,6 +2724,7 @@ def _validate_bootstrap_results(
             warnings.warn(
                 f"bootstrap_ci for '{metric}' degenerate (width={width:.6e}); adjusted with epsilon={epsilon:.1e}",
                 RewardDiagnosticsWarning,
+                stacklevel=2,
             )
 
 
@@ -2736,7 +2733,7 @@ def distribution_diagnostics(
     *,
     seed: int | None = None,
     strict_diagnostics: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return mapping col-> diagnostics (tests, moments, entropy, divergences).
 
     Skips missing columns; selects Shapiro-Wilk when n<=5000 else K2; ignores non-finite intermediates.
@@ -2763,7 +2760,7 @@ def distribution_diagnostics(
             msg = f"Extreme moment(s) for {col}: skew={skew_v:.3e}, kurtosis={kurt_v:.3e} exceeds threshold {thr}."
             if strict_diagnostics:
                 raise AssertionError(msg)
-            warnings.warn(msg, RewardDiagnosticsWarning)
+            warnings.warn(msg, RewardDiagnosticsWarning, stacklevel=2)
 
         if len(data) < 5000:
             sw_stat, sw_pval = stats.shapiro(data)
@@ -2785,7 +2782,7 @@ def distribution_diagnostics(
     return diagnostics
 
 
-def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnostics: bool) -> None:
+def _validate_distribution_diagnostics(diag: dict[str, Any], *, strict_diagnostics: bool) -> None:
     """Validate mathematical properties of distribution diagnostics.
 
     Ensures all reported statistics are finite and within theoretical bounds where applicable.
@@ -2800,7 +2797,7 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
             zero_var_columns.add(prefix)
 
     for key, value in list(diag.items()):
-        if any(suffix in key for suffix in ["_mean", "_std", "_skewness", "_kurtosis"]):
+        if any(suffix in key for suffix in ["_mean", "_std", "_skewness", "_kurtosis"]):  # noqa: SIM102
             if not np.isfinite(value):
                 # Graceful degradation for constant distributions: skewness/kurtosis become NaN.
                 constant_problem = any(
@@ -2814,13 +2811,13 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
                     warnings.warn(
                         f"{key} undefined (constant distribution); falling back to {fallback}",
                         RewardDiagnosticsWarning,
+                        stacklevel=2,
                     )
                 else:
                     raise AssertionError(f"Distribution diagnostic {key} is not finite: {value}")
-        if key.endswith("_shapiro_pval"):
-            if not (0 <= value <= 1):
-                raise AssertionError(f"Shapiro p-value {key} must be in [0,1], got {value}")
-        if key.endswith("_anderson_stat") or key.endswith("_anderson_critical_5pct"):
+        if key.endswith("_shapiro_pval") and not (0 <= value <= 1):
+            raise AssertionError(f"Shapiro p-value {key} must be in [0,1], got {value}")
+        if key.endswith("_anderson_stat") or key.endswith("_anderson_critical_5pct"):  # noqa: SIM102
             if not np.isfinite(value):
                 prefix = key.rsplit("_", 2)[0]
                 if prefix in zero_var_columns and not strict_diagnostics:
@@ -2829,10 +2826,11 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
                     warnings.warn(
                         f"{key} undefined (constant distribution); falling back to {fallback}",
                         RewardDiagnosticsWarning,
+                        stacklevel=2,
                     )
                     continue
                 raise AssertionError(f"Anderson statistic {key} must be finite, got {value}")
-        if key.endswith("_qq_r_squared"):
+        if key.endswith("_qq_r_squared"):  # noqa: SIM102
             if not (isinstance(value, (int, float)) and np.isfinite(value) and 0 <= value <= 1):
                 prefix = key[: -len("_qq_r_squared")]
                 if prefix in zero_var_columns and not strict_diagnostics:
@@ -2841,6 +2839,7 @@ def _validate_distribution_diagnostics(diag: Dict[str, Any], *, strict_diagnosti
                     warnings.warn(
                         f"{key} undefined (constant distribution); falling back to {fallback_r2}",
                         RewardDiagnosticsWarning,
+                        stacklevel=2,
                     )
                 else:
                     raise AssertionError(f"Q-Q R^2 {key} must be in [0,1], got {value}")
@@ -2868,7 +2867,7 @@ def _apply_transform_arctan(value: float) -> float:
 
 
 def _apply_transform_sigmoid(value: float) -> float:
-    """sigmoid: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)."""
+    """sigmoid: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)."""  # noqa: RUF002
     x = value
     try:
         if x >= 0:
@@ -3196,13 +3195,13 @@ def compute_pbrs_components(
     R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
 
     where:
-        Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
+        Δ(s,a,s') = gamma * Phi(s') - Phi(s)  (PBRS shaping term)
 
     Hold Potential Formula
     ----------------------
     Let:
         r_pnl = pnl / pnl_target
-        r_dur = clamp(duration_ratio, 0, 1)
+        r_dur = max(duration_ratio, 0)
         scale = base_factor · hold_potential_ratio
         g = gain
         T_pnl, T_dur = configured bounded transforms
@@ -3345,7 +3344,7 @@ def _compute_pnl_duration_signal(
     non_finite_key: str,
     *,
     base_factor: float,
-    risk_reward_ratio: Optional[float] = None,
+    risk_reward_ratio: float | None = None,
 ) -> float:
     """Generic helper for (pnl, duration) bi-component transforms."""
     if not (np.isfinite(pnl) and np.isfinite(pnl_target) and np.isfinite(duration_ratio)):
@@ -3354,7 +3353,7 @@ def _compute_pnl_duration_signal(
         return _fail_safely(f"{kind}_invalid_pnl_target")
 
     pnl_ratio = float(pnl / pnl_target)
-    duration_ratio = float(np.clip(duration_ratio, 0.0, 1.0))
+    duration_ratio = float(max(0.0, duration_ratio))
 
     ratio = _get_float_param(params, scale_key)
     scale = ratio * base_factor
@@ -3537,10 +3536,10 @@ def write_complete_statistical_analysis(
     profit_aim: float,
     risk_reward_ratio: float,
     seed: int,
-    real_df: Optional[pd.DataFrame] = None,
+    real_df: pd.DataFrame | None = None,
     *,
     adjust_method: str = ADJUST_METHODS[0],
-    stats_seed: Optional[int] = None,
+    stats_seed: int | None = None,
     strict_diagnostics: bool = False,
     bootstrap_resamples: int = 10000,
     skip_partial_dependence: bool = False,
@@ -3590,7 +3589,7 @@ def write_complete_statistical_analysis(
             sep += "|" + "-" * (len(str(c)) + 2)
         sep += "|\n"
         # Rows
-        rows: List[str] = []
+        rows: list[str] = []
         for idx, row in df.iterrows():
             vals = [_fmt_val(row[c], ndigits) for c in cols]
             rows.append("| " + str(idx) + " | " + " | ".join(vals) + " |")
@@ -3720,7 +3719,7 @@ def write_complete_statistical_analysis(
         # Blank separator before overrides block
         f.write("|  |  |\n")
 
-        overrides_pairs: List[str] = []
+        overrides_pairs: list[str] = []
         if reward_params:
             for k, default_v in DEFAULT_MODEL_REWARD_PARAMETERS.items():
                 if k in ("exit_potential_mode", "potential_gamma"):
@@ -3755,7 +3754,7 @@ def write_complete_statistical_analysis(
         f.write("### 1.3 Component Activation Rates\n\n")
         f.write("Percentage of samples where each reward component is non-zero:\n\n")
         comp_share = summary_stats["component_share"].copy()
-        formatted_rows: List[str] = [
+        formatted_rows: list[str] = [
             "| Component | Activation Rate |",
             "|-----------|----------------|",
         ]
@@ -3864,7 +3863,7 @@ def write_complete_statistical_analysis(
         f.write(_df_to_md(corr_df, index_name=corr_df.index.name, ndigits=4))
         _dropped = relationship_stats.get("correlation_dropped") or []
         if _dropped:
-            dropped_strs: List[str] = [str(x) for x in _dropped]
+            dropped_strs: list[str] = [str(x) for x in _dropped]
             f.write("\n_Constant features removed: " + ", ".join(dropped_strs) + "._\n\n")
 
         # Section 3.5: PBRS Analysis
@@ -3933,10 +3932,10 @@ def write_complete_statistical_analysis(
                 f.write("|--------|-------|-------------|\n")
                 f.write(f"| Mean Base Reward | {mean_base:.6f} | Average reward before PBRS |\n")
                 f.write(f"| Std Base Reward | {std_base:.6f} | Variability of base reward |\n")
-                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s')−Φ(s) |\n")
+                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s')−Φ(s) |\n")  # noqa: RUF001
                 f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
                 f.write(
-                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping − pbrs_delta |\n"
+                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping − pbrs_delta |\n"  # noqa: RUF001
                 )
                 f.write(
                     f"| Std Invariance Correction | {std_inv_corr:.6f} | Variability of correction |\n"
@@ -4093,7 +4092,7 @@ def write_complete_statistical_analysis(
                 # Render as markdown without index column
                 header = "| feature | importance_mean | importance_std |\n"
                 sep = "|---------|------------------|----------------|\n"
-                rows: List[str] = []
+                rows: list[str] = []
                 for _, r in top_imp.iterrows():
                     rows.append(
                         f"| {r['feature']} | {_fmt_val(r['importance_mean'], 6)} | {_fmt_val(r['importance_std'], 6)} |"
@@ -4120,16 +4119,16 @@ def write_complete_statistical_analysis(
                 h = hypothesis_tests["idle_correlation"]
                 f.write("#### 5.1.1 Idle Duration → Idle Penalty Correlation\n\n")
                 f.write(f"**Test Method:** {h['test']}\n\n")
-                f.write(f"- Spearman ρ: **{h['rho']:.4f}**\n")
+                f.write(f"- Spearman ρ: **{h['rho']:.4f}**\n")  # noqa: RUF001
                 f.write(f"- p-value: {h['p_value']:.4g}\n")
                 if "p_value_adj" in h:
                     f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
+                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"  # noqa: RUF001
                     )
                 f.write(f"- 95% CI: [{h['ci_95'][0]:.4f}, {h['ci_95'][1]:.4f}]\n")
                 f.write(f"- CI width: {(h['ci_95'][1] - h['ci_95'][0]):.4f}\n")
                 f.write(f"- Sample size: {h['n_samples']:,}\n")
-                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")
+                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")  # noqa: RUF001
                 f.write(f"- **Interpretation:** {h['interpretation']}\n\n")
 
             if "position_reward_difference" in hypothesis_tests:
@@ -4140,11 +4139,11 @@ def write_complete_statistical_analysis(
                 f.write(f"- p-value: {h['p_value']:.4g}\n")
                 if "p_value_adj" in h:
                     f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
+                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"  # noqa: RUF001
                     )
                 f.write(f"- Effect size (ε²): {h['effect_size_epsilon_sq']:.4f}\n")
                 f.write(f"- Number of groups: {h['n_groups']}\n")
-                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")
+                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")  # noqa: RUF001
                 f.write(f"- **Interpretation:** {h['interpretation']} effect\n\n")
 
             if "pnl_sign_reward_difference" in hypothesis_tests:
@@ -4155,11 +4154,11 @@ def write_complete_statistical_analysis(
                 f.write(f"- p-value: {h['p_value']:.4g}\n")
                 if "p_value_adj" in h:
                     f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"
+                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"  # noqa: RUF001
                     )
                 f.write(f"- Median (PnL+): {h['median_pnl_positive']:.4f}\n")
                 f.write(f"- Median (PnL-): {h['median_pnl_negative']:.4f}\n")
-                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n\n")
+                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n\n")  # noqa: RUF001
 
             # Bootstrap CI
             if bootstrap_ci:
@@ -4408,7 +4407,7 @@ def main() -> None:
         "action_masking",
     ]
 
-    sim_params: Dict[str, Any] = {}
+    sim_params: dict[str, Any] = {}
     for k in candidate_keys:
         if k in args_dict:
             v = args_dict[k]
@@ -4460,12 +4459,12 @@ def main() -> None:
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
-        resolved_reward_params: Dict[str, Any] = dict(
+        resolved_reward_params: dict[str, Any] = dict(
             params
         )  # already validated/normalized upstream
-        manifest: Dict[str, Any] = {
+        manifest: dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
-            "num_samples": int(len(df)),
+            "num_samples": len(df),
             "seed": int(args.seed),
             "pnl_target": float(profit_aim * risk_reward_ratio),
             "pvalue_adjust_method": args.pvalue_adjust,
@@ -4475,13 +4474,13 @@ def main() -> None:
         sim_params_dict = df.attrs.get("simulation_params", {})
         if not isinstance(sim_params_dict, dict):
             sim_params_dict = {}
-        sim_params: Dict[str, Any] = dict(sim_params_dict)
+        sim_params: dict[str, Any] = dict(sim_params_dict)
         if sim_params:
             excluded_for_hash = {"out_dir", "real_episodes"}
-            sim_params_for_hash: Dict[str, Any] = {
+            sim_params_for_hash: dict[str, Any] = {
                 k: sim_params[k] for k in sim_params if k not in excluded_for_hash
             }
-            _hash_source: Dict[str, Any] = {
+            _hash_source: dict[str, Any] = {
                 **{f"sim::{k}": sim_params_for_hash[k] for k in sorted(sim_params_for_hash)},
                 **{
                     f"reward::{k}": resolved_reward_params[k]
