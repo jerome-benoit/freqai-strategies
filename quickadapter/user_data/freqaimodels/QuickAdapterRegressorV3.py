@@ -2400,7 +2400,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         except Exception as e:
             logger.error(
-                f"[{pair}] Optuna {namespace} study creation failed ({study_name}): {e!r}",
+                f"[{pair}] Optuna {namespace} study creation failed for study {study_name}: {e!r}",
                 exc_info=True,
             )
             return None

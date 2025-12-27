@@ -1104,11 +1104,11 @@ class QuickAdapterV3(IStrategy):
 
         if len(pivots_indices) == 0:
             logger.warning(
-                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | {label_natr_ratio=:.2f}"
+                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | label_natr_ratio={format_number(label_natr_ratio)}"
             )
         else:
             logger.info(
-                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | {label_natr_ratio=:.2f}"
+                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | label_natr_ratio={format_number(label_natr_ratio)}"
             )
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
 
@@ -2004,12 +2004,12 @@ class QuickAdapterV3(IStrategy):
             lookback_period = max_lookback_period
         if not isinstance(decay_ratio, (int, float)):
             logger.info(
-                f"User denied {trade_direction} {order} for {pair}: invalid decay_ratio type"
+                f"[{pair}] Denied {trade_direction} {order}: invalid decay_ratio type"
             )
             return False
         if not (0.0 < decay_ratio <= 1.0):
             logger.info(
-                f"User denied {trade_direction} {order} for {pair}: invalid decay_ratio {decay_ratio}, must be in (0, 1]"
+                f"[{pair}] Denied {trade_direction} {order}: invalid decay_ratio {decay_ratio}, must be in (0, 1]"
             )
             return False
 
@@ -2036,7 +2036,7 @@ class QuickAdapterV3(IStrategy):
                 trade_direction = QuickAdapterV3._TRADE_DIRECTIONS[0]  # "long"
         if not current_ok:
             logger.info(
-                f"User denied {trade_direction} {order} for {pair}: rate {format_number(rate)} did not break threshold {format_number(current_threshold)}"
+                f"[{pair}] Denied {trade_direction} {order}: rate {format_number(rate)} did not break threshold {format_number(current_threshold)}"
             )
             return False
 
@@ -2078,7 +2078,7 @@ class QuickAdapterV3(IStrategy):
                 and not (close_k < threshold_k)  # "short"
             ):
                 logger.info(
-                    f"User denied {trade_direction} {order} for {pair}: "
+                    f"[{pair}] Denied {trade_direction} {order}: "
                     f"close_k[{-k}] {format_number(close_k)} "
                     f"did not break threshold_k[{-(k + 1)}] {format_number(threshold_k)} "
                     f"(decayed natr_ratio_percent: min={format_number(decayed_min_natr_ratio_percent)}, max={format_number(decayed_max_natr_ratio_percent)})"
@@ -2431,7 +2431,7 @@ class QuickAdapterV3(IStrategy):
             side == QuickAdapterV3._TRADE_DIRECTIONS[1] and not self.can_short
         ):  # "short"
             logger.info(
-                f"User denied short {QuickAdapterV3._ORDER_TYPES[0]} for {pair}: shorting not allowed"
+                f"[{pair}] Denied short {QuickAdapterV3._ORDER_TYPES[0]}: shorting not allowed"
             )
             return False
         if Trade.get_open_trade_count() >= self.config.get("max_open_trades", 0):
@@ -2449,8 +2449,8 @@ class QuickAdapterV3(IStrategy):
             pair=pair, timeframe=self.config.get("timeframe")
         )
         if df.empty:
-            logger.info(
-                f"User denied {side} {QuickAdapterV3._ORDER_TYPES[0]} for {pair}: dataframe is empty"
+            logger.warning(
+                f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_TYPES[0]}: dataframe is empty"
             )
             return False
         if self.reversal_confirmed(
