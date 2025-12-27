@@ -1144,7 +1144,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         try:
             delete_study(study_name=study_name, storage=storage)
         except Exception as e:
-            logger.warning("Hyperopt [%s]: failed to delete study: %r", study_name, e)
+            logger.warning(
+                "Hyperopt [%s]: failed to delete study: %r",
+                study_name,
+                e,
+                exc_info=True,
+            )
 
     @staticmethod
     def _sanitize_pair(pair: str) -> str:
@@ -1174,6 +1179,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 pair,
                 counters_path,
                 e,
+                exc_info=True,
             )
         return {}
 
@@ -1190,6 +1196,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 pair,
                 counters_path,
                 e,
+                exc_info=True,
             )
 
     def _increment_optuna_retrain_counter(self, pair: str) -> int:
@@ -1702,11 +1709,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
         try:
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
-        except AssertionError:
+        except AssertionError as e:
             logger.warning(
-                "Hyperopt [%s]: trial #%d encountered NaN (AssertionError)",
+                "Hyperopt [%s]: trial #%d encountered NaN (AssertionError): %r",
                 study_name,
                 trial.number,
+                e,
+                exc_info=True,
             )
             nan_encountered = True
         except ValueError as e:
@@ -1716,6 +1725,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     study_name,
                     trial.number,
                     e,
+                    exc_info=True,
                 )
                 nan_encountered = True
             else:
@@ -1726,6 +1736,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 study_name,
                 trial.number,
                 e,
+                exc_info=True,
             )
             nan_encountered = True
         except RuntimeError as e:
@@ -1735,6 +1746,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     study_name,
                     trial.number,
                     e,
+                    exc_info=True,
                 )
                 nan_encountered = True
             else:
@@ -2788,6 +2800,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 e,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
                 effective_dr,
+                exc_info=True,
             )
             time_attenuation_coefficient = _linear(
                 effective_dr, model_reward_parameters
@@ -3650,7 +3663,10 @@ class InfoMetricsCallback(TensorboardCallback):
             self.logger.record(key, value, exclude=exclude)
         except Exception as e:
             logger.warning(
-                "Tensorboard [global]: logger.record failed at %r: %r", key, e
+                "Tensorboard [global]: logger.record failed at %r: %r",
+                key,
+                e,
+                exc_info=True,
             )
             if exclude is None:
                 exclude = ("tensorboard",)
@@ -4146,6 +4162,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     self.eval_idx,
                     self.num_timesteps,
                     e,
+                    exc_info=True,
                 )
                 self.is_pruned = True
                 return False
@@ -4171,6 +4188,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     self.eval_idx,
                     self.num_timesteps,
                     e,
+                    exc_info=True,
                 )
                 self.is_pruned = True
                 return False
@@ -4185,6 +4203,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     self.eval_idx,
                     self.num_timesteps,
                     e,
+                    exc_info=True,
                 )
                 best_mean_reward = np.nan
 
@@ -4242,6 +4261,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     self.eval_idx,
                     self.num_timesteps,
                     e,
+                    exc_info=True,
                 )
                 self.is_pruned = True
                 return False
