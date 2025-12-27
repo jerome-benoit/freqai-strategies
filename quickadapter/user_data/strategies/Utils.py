@@ -1930,8 +1930,12 @@ def zigzag(
     )
 
 
-Regressor = Literal["xgboost", "lightgbm"]
-REGRESSORS: Final[tuple[Regressor, ...]] = ("xgboost", "lightgbm")
+Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor"]
+REGRESSORS: Final[tuple[Regressor, ...]] = (
+    "xgboost",
+    "lightgbm",
+    "histgradientboostingregressor",
+)
 
 
 def get_optuna_callbacks(
@@ -1958,6 +1962,10 @@ def get_optuna_callbacks(
                 trial, "rmse", valid_name="valid_0"
             )
         ]
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        # HistGradientBoostingRegressor does not support Optuna pruning callbacks.
+        # Early stopping is handled internally via early_stopping parameter.
+        callbacks = []
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
@@ -2029,6 +2037,56 @@ def fit_regressor(
             init_model=init_model,
             callbacks=callbacks,
         )
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        import logging
+
+        from sklearn.ensemble import HistGradientBoostingRegressor
+
+        model_training_parameters.setdefault("random_state", 1)
+
+        if trial is not None:
+            model_training_parameters["random_state"] = (
+                model_training_parameters["random_state"] + trial.number
+            )
+
+        # HistGradientBoostingRegressor does not support init_model (warm start
+        # from a previous model instance). The warm_start parameter requires
+        # keeping the same model object, which is not compatible with the current
+        # architecture. Log a warning if init_model is provided.
+        if init_model is not None:
+            logging.getLogger(__name__).warning(
+                "init_model is not supported for histgradientboostingregressor; "
+                "training from scratch instead"
+            )
+
+        # Enable early stopping when validation set is provided
+        early_stopping_enabled = eval_set is not None
+
+        model = HistGradientBoostingRegressor(
+            loss="squared_error",
+            early_stopping=early_stopping_enabled,
+            **model_training_parameters,
+        )
+
+        if eval_set is not None:
+            X_val, y_val = eval_set[0]
+            val_weights = eval_weights[0] if eval_weights else None
+            model.fit(
+                X=X,
+                y=y.values.ravel() if hasattr(y, "values") else np.ravel(y),
+                sample_weight=train_weights,
+                X_val=X_val,
+                y_val=y_val.values.ravel()
+                if hasattr(y_val, "values")
+                else np.ravel(y_val),
+                sample_weight_val=val_weights,
+            )
+        else:
+            model.fit(
+                X=X,
+                y=y.values.ravel() if hasattr(y, "values") else np.ravel(y),
+                sample_weight=train_weights,
+            )
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
@@ -2053,6 +2111,95 @@ def get_optuna_study_model_parameters(
         raise ValueError(
             f"Invalid expansion_ratio {expansion_ratio!r}: must be in range [0, 1]"
         )
+
+    # HistGradientBoostingRegressor has a distinct set of hyperparameters
+    # that don't overlap with XGBoost/LightGBM, so we handle it separately.
+    if regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        histgb_default_ranges: dict[str, tuple[float, float]] = {
+            "max_iter": (100, 2000),
+            "learning_rate": (1e-3, 0.5),
+            "max_depth": (3, 15),
+            "max_leaf_nodes": (8, 256),
+            "min_samples_leaf": (10, 100),
+            "l2_regularization": (1e-8, 100.0),
+            "max_features": (0.5, 1.0),
+            "n_iter_no_change": (5, 20),
+        }
+
+        histgb_log_scaled_params = {"learning_rate", "l2_regularization"}
+
+        histgb_ranges = copy.deepcopy(histgb_default_ranges)
+        if space_reduction and model_training_best_parameters:
+            for param, (default_min, default_max) in histgb_default_ranges.items():
+                center_value = model_training_best_parameters.get(param)
+
+                center_value = center_value or midpoint(default_min, default_max)
+                if not isinstance(center_value, (int, float)) or not np.isfinite(
+                    center_value
+                ):
+                    continue
+
+                if param in histgb_log_scaled_params:
+                    if center_value <= 0:
+                        continue
+                    new_min = center_value / (1 + expansion_ratio)
+                    new_max = center_value * (1 + expansion_ratio)
+                else:
+                    margin = (default_max - default_min) * expansion_ratio / 2
+                    new_min = center_value - margin
+                    new_max = center_value + margin
+
+                param_min = max(default_min, new_min)
+                param_max = min(default_max, new_max)
+
+                if param_min < param_max:
+                    histgb_ranges[param] = (param_min, param_max)
+
+        return {
+            "max_iter": trial.suggest_int(
+                "max_iter",
+                int(histgb_ranges["max_iter"][0]),
+                int(histgb_ranges["max_iter"][1]),
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                histgb_ranges["learning_rate"][0],
+                histgb_ranges["learning_rate"][1],
+                log=True,
+            ),
+            "max_depth": trial.suggest_int(
+                "max_depth",
+                int(histgb_ranges["max_depth"][0]),
+                int(histgb_ranges["max_depth"][1]),
+            ),
+            "max_leaf_nodes": trial.suggest_int(
+                "max_leaf_nodes",
+                int(histgb_ranges["max_leaf_nodes"][0]),
+                int(histgb_ranges["max_leaf_nodes"][1]),
+            ),
+            "min_samples_leaf": trial.suggest_int(
+                "min_samples_leaf",
+                int(histgb_ranges["min_samples_leaf"][0]),
+                int(histgb_ranges["min_samples_leaf"][1]),
+            ),
+            "l2_regularization": trial.suggest_float(
+                "l2_regularization",
+                histgb_ranges["l2_regularization"][0],
+                histgb_ranges["l2_regularization"][1],
+                log=True,
+            ),
+            "max_features": trial.suggest_float(
+                "max_features",
+                histgb_ranges["max_features"][0],
+                histgb_ranges["max_features"][1],
+            ),
+            "n_iter_no_change": trial.suggest_int(
+                "n_iter_no_change",
+                int(histgb_ranges["n_iter_no_change"][0]),
+                int(histgb_ranges["n_iter_no_change"][1]),
+            ),
+        }
+
     default_ranges: dict[str, tuple[float, float]] = {
         "n_estimators": (100, 2000),
         "learning_rate": (1e-3, 0.5),
