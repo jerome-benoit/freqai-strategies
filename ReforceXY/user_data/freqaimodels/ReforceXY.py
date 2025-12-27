@@ -1131,7 +1131,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                         result[key] = value
                 return result
         except Exception as e:
-            logger.warning("Hyperopt: failed to load retrain counters: %r", e)
+            logger.warning(
+                "Hyperopt: failed to load retrain counters from %s: %r",
+                counters_path,
+                e,
+            )
         return {}
 
     def _save_optuna_retrain_counters(self, counters: Dict[str, int]) -> None:
@@ -1140,7 +1144,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             with counters_path.open("w", encoding="utf-8") as write_file:
                 json.dump(counters, write_file, indent=4, sort_keys=True)
         except Exception as e:
-            logger.warning("Hyperopt: failed to save retrain counters: %r", e)
+            logger.warning(
+                "Hyperopt: failed to save retrain counters to %s: %r", counters_path, e
+            )
 
     def _increment_optuna_retrain_counter(self, pair: str) -> int:
         pair = ReforceXY._sanitize_pair(pair)
@@ -1433,13 +1439,16 @@ class ReforceXY(BaseReinforcementLearningModel):
         best_trial_params_path = Path(
             self.full_path / f"{best_trial_params_filename}.json"
         )
-        logger.info("Hyperopt: saving best params to %s", best_trial_params_path)
+        logger.info(
+            "Hyperopt %s: saving best params to %s", pair, best_trial_params_path
+        )
         try:
             with best_trial_params_path.open("w", encoding="utf-8") as write_file:
                 json.dump(best_trial_params, write_file, indent=4)
         except Exception as e:
             logger.error(
-                "Hyperopt: failed to save best params to %s: %r",
+                "Hyperopt %s: failed to save best params to %s: %r",
+                pair,
                 best_trial_params_path,
                 e,
                 exc_info=True,
@@ -1455,7 +1464,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.full_path / f"{best_trial_params_filename}.json"
         )
         if best_trial_params_path.is_file():
-            logger.info("Hyperopt: loading best params from %s", best_trial_params_path)
+            logger.info(
+                "Hyperopt %s: loading best params from %s", pair, best_trial_params_path
+            )
             with best_trial_params_path.open("r", encoding="utf-8") as read_file:
                 best_trial_params = json.load(read_file)
             return best_trial_params
@@ -2695,7 +2706,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         strategy_fn = strategies.get(exit_attenuation_mode, None)
         if strategy_fn is None:
-            logger.debug(
+            logger.warning(
                 "PBRS: unknown exit_attenuation_mode '%s'; defaulting to %s. Valid modes: %s",
                 exit_attenuation_mode,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
@@ -2787,7 +2798,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             if exit_factor_threshold > 0 and abs(exit_factor) > exit_factor_threshold:
                 logger.warning(
-                    "PBRS: _get_exit_factor |exit_factor|=%.2f exceeds threshold %.2f",
+                    "PBRS: _get_exit_factor |exit_factor|=%.5f exceeds threshold %.5f",
                     exit_factor,
                     exit_factor_threshold,
                 )
@@ -3579,7 +3590,10 @@ class InfoMetricsCallback(TensorboardCallback):
                 self.logger.record(key, value, exclude=exclude)
             except Exception as e:
                 logger.error(
-                    "Tensorboard: logger.record retry failed at %r: %r", key, e
+                    "Tensorboard: logger.record retry failed at %r: %r",
+                    key,
+                    e,
+                    exc_info=True,
                 )
                 pass
 
@@ -3989,7 +4003,10 @@ class RolloutPlotCallback(BaseCallback):
                 )
             except Exception as e:
                 logger.error(
-                    "Tensorboard: logger.record failed at best/train_env%s: %r", i, e
+                    "Tensorboard: logger.record failed at best/train_env%s: %r",
+                    i,
+                    e,
+                    exc_info=True,
                 )
                 pass
         return True
@@ -4129,6 +4146,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     self.eval_idx,
                     self.num_timesteps,
                     e,
+                    exc_info=True,
                 )
 
             try:
