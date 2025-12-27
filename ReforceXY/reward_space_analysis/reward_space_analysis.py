@@ -126,6 +126,20 @@ ADJUST_METHODS: tuple[str, ...] = ("none", "benjamini_hochberg")
 # Alias without underscore for convenience
 _ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
 
+# ---------------------------------------------------------------------------
+# Log message prefixes for consistent error/warning formatting
+# ---------------------------------------------------------------------------
+# Usage: f"{LOG_PREFIX_*}: <message>; falling back to <value>"
+#
+# Prefixes:
+#   Param:  - Parameter validation/coercion issues
+#   Data:   - Data loading/validation issues
+#   Stats:  - Statistical computation issues
+#   PBRS:   - Potential-Based Reward Shaping issues
+#   Sim:    - Simulation invariant violations
+#   CLI:    - Command-line argument issues
+#   Config: - Trading configuration issues
+# ---------------------------------------------------------------------------
 
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
@@ -296,8 +310,8 @@ def _warn_unknown_mode(
     """
     valid_sorted = sorted(valid_values)
     warnings.warn(
-        f"Unknown {mode_type} '{provided_value}'. "
-        f"Expected one of: {valid_sorted}. Falling back to '{fallback_value}'.",
+        f"Param: unknown {mode_type} '{provided_value}'. "
+        f"Expected one of: {valid_sorted}; falling back to '{fallback_value}'.",
         RewardDiagnosticsWarning,
         stacklevel=stacklevel,
     )
@@ -810,7 +824,7 @@ def _compute_time_attenuation_coefficient(
     exit_plateau_grace = _get_float_param(params, "exit_plateau_grace")
     if exit_plateau_grace < 0.0:
         warnings.warn(
-            f"exit_plateau_grace={exit_plateau_grace} < 0; falling back to 0.0",
+            f"Param: exit_plateau_grace={exit_plateau_grace} < 0; falling back to 0.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -818,7 +832,7 @@ def _compute_time_attenuation_coefficient(
     exit_linear_slope = _get_float_param(params, "exit_linear_slope")
     if exit_linear_slope < 0.0:
         warnings.warn(
-            f"exit_linear_slope={exit_linear_slope} < 0; falling back to 1.0",
+            f"Param: exit_linear_slope={exit_linear_slope} < 0; falling back to 1.0",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -843,7 +857,7 @@ def _compute_time_attenuation_coefficient(
                 alpha = -math.log(tau) / _LOG_2
             else:
                 warnings.warn(
-                    f"exit_power_tau={tau} outside (0,1]; falling back to alpha=1.0",
+                    f"Param: exit_power_tau={tau} outside (0,1]; falling back to alpha=1.0",
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
@@ -854,14 +868,14 @@ def _compute_time_attenuation_coefficient(
         hl = _get_float_param(params, "exit_half_life")
         if np.isclose(hl, 0.0):
             warnings.warn(
-                f"exit_half_life={hl} <= 0; falling back to 1.0",
+                f"Param: exit_half_life={hl} <= 0; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
             return 1.0
         if hl < 0.0:
             warnings.warn(
-                f"exit_half_life={hl} < 0; falling back to 1.0",
+                f"Param: exit_half_life={hl} < 0; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -898,7 +912,7 @@ def _compute_time_attenuation_coefficient(
         time_attenuation_coefficient = kernel(effective_dr)
     except Exception as e:
         warnings.warn(
-            f"exit_attenuation_mode='{exit_attenuation_mode}' failed ({e!r}); falling back to linear",
+            f"Param: exit_attenuation_mode='{exit_attenuation_mode}' failed ({e!r}); falling back to linear",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -965,7 +979,7 @@ def _get_exit_factor(
         if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):  # noqa: SIM102
             if abs(exit_factor) > exit_factor_threshold:
                 warnings.warn(
-                    f"|exit_factor|={abs(exit_factor):.2f} > threshold={exit_factor_threshold:.2f}",
+                    f"Param: |exit_factor|={abs(exit_factor):.2f} > threshold={exit_factor_threshold:.2f}",
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
@@ -1065,7 +1079,7 @@ def _compute_efficiency_coefficient(
     if efficiency_coefficient < 0.0:
         if _get_bool_param(params, "check_invariants"):
             warnings.warn(
-                f"efficiency_coefficient={efficiency_coefficient:.6f} < 0; falling back to 0.0",
+                f"Param: efficiency_coefficient={efficiency_coefficient:.4f} < 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -1716,50 +1730,38 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
     short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
     if len(long_exits) > 0:
-        raise AssertionError(
-            f"ACTION-POSITION INCONSISTENCY: {len(long_exits)} Long_exit actions "
-            f"without Long position"
-        )
+        raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
     if len(short_exits) > 0:
-        raise AssertionError(
-            f"ACTION-POSITION INCONSISTENCY: {len(short_exits)} Short_exit actions "
-            f"without Short position"
-        )
+        raise AssertionError(f"Sim: {len(short_exits)} Short_exit actions without Short position")
 
     long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
     short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
     if len(long_entries) > 0:
         raise AssertionError(
-            f"ACTION-POSITION INCONSISTENCY: {len(long_entries)} Long_enter actions "
-            f"without Neutral position"
+            f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
         )
     if len(short_entries) > 0:
         raise AssertionError(
-            f"ACTION-POSITION INCONSISTENCY: {len(short_entries)} Short_enter actions "
-            f"without Neutral position"
+            f"Sim: {len(short_entries)} Short_enter actions without Neutral position"
         )
 
     # INVARIANT 2: Duration logic
     neutral_with_trade = df[(df["position"] == 0.5) & (df["trade_duration"] > 0)]
     if len(neutral_with_trade) > 0:
         raise AssertionError(
-            f"DURATION LOGIC VIOLATION: {len(neutral_with_trade)} Neutral positions "
-            f"with non-zero trade_duration"
+            f"Sim: {len(neutral_with_trade)} Neutral positions with non-zero trade_duration"
         )
 
     inpos_with_idle = df[(df["position"] != 0.5) & (df["idle_duration"] > 0)]
     if len(inpos_with_idle) > 0:
         raise AssertionError(
-            f"DURATION LOGIC VIOLATION: {len(inpos_with_idle)} In-position samples "
-            f"with idle_duration > 0"
+            f"Sim: {len(inpos_with_idle)} in-position samples with idle_duration > 0"
         )
 
     # INVARIANT 3: Neutral states have zero PnL (simulation design)
     neutral_with_pnl = df[(df["position"] == 0.5) & (df["pnl"].abs() > eps_pnl)]
     if len(neutral_with_pnl) > 0:
-        raise AssertionError(
-            f"PNL LOGIC VIOLATION: {len(neutral_with_pnl)} Neutral positions with non-zero pnl"
-        )
+        raise AssertionError(f"Sim: {len(neutral_with_pnl)} Neutral positions with non-zero pnl")
 
     # INVARIANT 4: Exit rewards only appear on exit actions
     non_exit_with_exit_reward = df[
@@ -1767,8 +1769,7 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     ]
     if len(non_exit_with_exit_reward) > 0:
         raise AssertionError(
-            f"EXIT REWARD INCONSISTENCY: {len(non_exit_with_exit_reward)} non-exit actions "
-            f"have non-zero exit reward"
+            f"Sim: {len(non_exit_with_exit_reward)} non-exit actions have non-zero exit reward"
         )
 
     # INVARIANT 5: Bounded values
@@ -1776,8 +1777,7 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     if len(extreme_pnl) > 0:
         max_abs_pnl = float(df["pnl"].abs().max())
         raise AssertionError(
-            f"BOUNDS VIOLATION: {len(extreme_pnl)} samples with extreme PnL, "
-            f"max |PnL| = {max_abs_pnl:.6f}"
+            f"Sim: {len(extreme_pnl)} samples with extreme PnL, max |PnL| = {max_abs_pnl:.6f}"
         )
 
 
@@ -2019,7 +2019,7 @@ def _perform_feature_analysis(
         or permutation_importance is None
         or r2_score is None
     ):
-        raise ImportError("Feature analysis: scikit-learn is not available")
+        raise ImportError("Stats: feature analysis requires scikit-learn")
 
     canonical_features = [
         "pnl",
@@ -2240,8 +2240,8 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 skipped += 1
         if skipped:
             warnings.warn(
-                f"Skipped {skipped} episode(s) without 'transitions' when loading '{path}'",
-                RuntimeWarning,
+                f"Data: skipped {skipped} episode(s) without 'transitions' when loading '{path}'",
+                RewardDiagnosticsWarning,
                 stacklevel=2,
             )
         try:
@@ -2297,8 +2297,8 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
             if coerced > 0:
                 frac = coerced / len(df) if len(df) > 0 else 0.0
                 warnings.warn(
-                    f"Coerced {coerced} non-numeric value(s) ({frac:.1%}) in column '{col}' to NaN when loading '{path}'",
-                    RuntimeWarning,
+                    f"Data: coerced {coerced} non-numeric value(s) ({frac:.1%}) in column '{col}' to NaN when loading '{path}'",
+                    RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
 
@@ -2319,8 +2319,8 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
                 f"Found: {sorted(df.columns)}"
             )
         warnings.warn(
-            f"Missing columns {sorted(missing_required)}; filled with NaN when loading (enforce_columns=False)",
-            RuntimeWarning,
+            f"Data: missing columns {sorted(missing_required)}; filled with NaN when loading (enforce_columns=False)",
+            RewardDiagnosticsWarning,
             stacklevel=2,
         )
         for col in missing_required:
@@ -2336,8 +2336,8 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     df = df.drop_duplicates()
     if len(df) != before_dupes:
         warnings.warn(
-            f"Dropped {before_dupes - len(df)} duplicate row(s) when loading '{path}'",
-            RuntimeWarning,
+            f"Data: dropped {before_dupes - len(df)} duplicate row(s) when loading '{path}'",
+            RewardDiagnosticsWarning,
             stacklevel=2,
         )
 
@@ -2417,27 +2417,27 @@ def _validate_distribution_metrics(metrics: dict[str, float]) -> None:
     """Validate mathematical bounds of distribution shift metrics."""
     for key, value in metrics.items():
         if not np.isfinite(value):
-            raise AssertionError(f"Distribution metric {key} is not finite: {value}")
+            raise AssertionError(f"Stats: distribution metric {key} is not finite: {value}")
 
         # KL divergence must be >= 0
         if "kl_divergence" in key and value < 0:
-            raise AssertionError(f"KL divergence {key} must be >= 0, got {value:.6f}")
+            raise AssertionError(f"Stats: KL divergence {key} must be >= 0, got {value:.6f}")
 
         # JS distance must be in [0, 1]
         if "js_distance" in key and not (0 <= value <= 1):
-            raise AssertionError(f"JS distance {key} must be in [0,1], got {value:.6f}")
+            raise AssertionError(f"Stats: JS distance {key} must be in [0,1], got {value:.6f}")
 
         # Wasserstein distance must be >= 0
         if "wasserstein" in key and value < 0:
-            raise AssertionError(f"Wasserstein distance {key} must be >= 0, got {value:.6f}")
+            raise AssertionError(f"Stats: Wasserstein distance {key} must be >= 0, got {value:.6f}")
 
         # KS statistic must be in [0, 1]
         if "ks_statistic" in key and not (0 <= value <= 1):
-            raise AssertionError(f"KS statistic {key} must be in [0,1], got {value:.6f}")
+            raise AssertionError(f"Stats: KS statistic {key} must be in [0,1], got {value:.6f}")
 
         # p-values must be in [0, 1]
         if "pvalue" in key and not (0 <= value <= 1):
-            raise AssertionError(f"p-value {key} must be in [0,1], got {value:.6f}")
+            raise AssertionError(f"Stats: p-value {key} must be in [0,1], got {value:.6f}")
 
 
 def statistical_hypothesis_tests(
@@ -2581,7 +2581,7 @@ def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
             p_val = result["p_value"]
             if not (np.isnan(p_val) or (0 <= p_val <= 1)):
                 raise AssertionError(
-                    f"Invalid p-value for {test_name}: {p_val:.6f} not in [0,1] or NaN"
+                    f"Stats: invalid p-value for {test_name}: {p_val:.6f} not in [0,1] or NaN"
                 )
 
         # Adjusted p-values must also be in [0, 1] or NaN
@@ -2589,7 +2589,7 @@ def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
             p_adj = result["p_value_adj"]
             if not (np.isnan(p_adj) or (0 <= p_adj <= 1)):
                 raise AssertionError(
-                    f"Invalid adjusted p-value for {test_name}: {p_adj:.6f} not in [0,1] or NaN"
+                    f"Stats: invalid adjusted p-value for {test_name}: {p_adj:.6f} not in [0,1] or NaN"
                 )
 
         # Effect sizes must be finite and in valid ranges
@@ -2597,14 +2597,14 @@ def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
             epsilon_sq = result["effect_size_epsilon_sq"]
             if not np.isfinite(epsilon_sq) or epsilon_sq < 0:
                 raise AssertionError(
-                    f"Invalid ε² for {test_name}: {epsilon_sq:.6f} (must be finite and >= 0)"
+                    f"Stats: invalid ε² for {test_name}: {epsilon_sq:.6f} (must be finite and >= 0)"
                 )
 
         if "effect_size_rank_biserial" in result:
             rb_corr = result["effect_size_rank_biserial"]
             if not np.isfinite(rb_corr) or not (-1 <= rb_corr <= 1):
                 raise AssertionError(
-                    f"Invalid rank-biserial correlation for {test_name}: {rb_corr:.6f} "
+                    f"Stats: invalid rank-biserial correlation for {test_name}: {rb_corr:.6f} "
                     f"(must be finite and in [-1,1])"
                 )
 
@@ -2613,7 +2613,7 @@ def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
             rho = result["rho"]
             if np.isfinite(rho) and not (-1 <= rho <= 1):
                 raise AssertionError(
-                    f"Invalid correlation coefficient for {test_name}: {rho:.6f} not in [-1,1]"
+                    f"Stats: invalid correlation coefficient for {test_name}: {rho:.6f} not in [-1,1]"
                 )
 
         # Confidence intervals must be properly ordered
@@ -2625,7 +2625,7 @@ def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
             ci_low, ci_high = result["ci_95"]
             if np.isfinite(ci_low) and np.isfinite(ci_high) and ci_low > ci_high:
                 raise AssertionError(
-                    f"Invalid CI ordering for {test_name}: [{ci_low:.6f}, {ci_high:.6f}]"
+                    f"Stats: invalid CI ordering for {test_name}: [{ci_low:.6f}, {ci_high:.6f}]"
                 )
 
 
@@ -2652,7 +2652,7 @@ def bootstrap_confidence_intervals(
     min_rec = int(INTERNAL_GUARDS.get("bootstrap_min_recommended", 200))
     if n_bootstrap < min_rec:
         warnings.warn(
-            f"n_bootstrap={n_bootstrap} < {min_rec}; confidence intervals may be unstable",
+            f"Stats: n_bootstrap={n_bootstrap} < {min_rec}; confidence intervals may be unstable",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -2709,14 +2709,14 @@ def _validate_bootstrap_results(
         # CI bounds must be finite
         if not (np.isfinite(mean) and np.isfinite(ci_low) and np.isfinite(ci_high)):
             raise AssertionError(
-                f"Bootstrap CI for {metric}: non-finite values "
+                f"Stats: bootstrap CI for {metric}: non-finite values "
                 f"(mean={mean}, ci_low={ci_low}, ci_high={ci_high})"
             )
 
         # CI must be properly ordered
         if not (ci_low <= mean <= ci_high):
             raise AssertionError(
-                f"Bootstrap CI for {metric}: ordering violation "
+                f"Stats: bootstrap CI for {metric}: ordering violation "
                 f"({ci_low:.6f} <= {mean:.6f} <= {ci_high:.6f})"
             )
 
@@ -2724,7 +2724,9 @@ def _validate_bootstrap_results(
         width = ci_high - ci_low
         if width <= 0:
             if strict_diagnostics:
-                raise AssertionError(f"Bootstrap CI for {metric}: non-positive width {width:.6f}")
+                raise AssertionError(
+                    f"Stats: bootstrap CI for {metric}: non-positive width {width:.6f}"
+                )
             # Graceful mode: expand interval symmetrically
             epsilon = INTERNAL_GUARDS["degenerate_ci_epsilon"] if width == 0 else abs(width) * 1e-06
             center = mean
@@ -2739,7 +2741,7 @@ def _validate_bootstrap_results(
                 ci_low, ci_high = lower, upper
             results[metric] = (mean, ci_low, ci_high)
             warnings.warn(
-                f"bootstrap_ci for '{metric}' degenerate (width={width:.6e}); adjusted with epsilon={epsilon:.1e}",
+                f"Stats: bootstrap_ci for '{metric}' degenerate (width={width:.2e}); adjusted to epsilon={epsilon:.1e}",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -2774,7 +2776,7 @@ def distribution_diagnostics(
         diagnostics[f"{col}_kurtosis"] = kurt_v
         thr = INTERNAL_GUARDS.get("moment_extreme_threshold", 1e4)
         if abs(skew_v) > thr or abs(kurt_v) > thr:
-            msg = f"Extreme moment(s) for {col}: skew={skew_v:.3e}, kurtosis={kurt_v:.3e} exceeds threshold {thr}."
+            msg = f"Stats: extreme moment(s) for {col}: skew={skew_v:.3e}, kurtosis={kurt_v:.3e} exceeds threshold {thr}"
             if strict_diagnostics:
                 raise AssertionError(msg)
             warnings.warn(msg, RewardDiagnosticsWarning, stacklevel=2)
@@ -2826,14 +2828,16 @@ def _validate_distribution_diagnostics(diag: dict[str, Any], *, strict_diagnosti
                     fallback = INTERNAL_GUARDS.get("distribution_constant_fallback_moment", 0.0)
                     diag[key] = fallback
                     warnings.warn(
-                        f"{key} undefined (constant distribution); falling back to {fallback}",
+                        f"Stats: {key} undefined (constant distribution); falling back to {fallback}",
                         RewardDiagnosticsWarning,
                         stacklevel=2,
                     )
                 else:
-                    raise AssertionError(f"Distribution diagnostic {key} is not finite: {value}")
+                    raise AssertionError(
+                        f"Stats: distribution diagnostic {key} is not finite: {value}"
+                    )
         if key.endswith("_shapiro_pval") and not (0 <= value <= 1):
-            raise AssertionError(f"Shapiro p-value {key} must be in [0,1], got {value}")
+            raise AssertionError(f"Stats: Shapiro p-value {key} must be in [0,1], got {value}")
         if key.endswith("_anderson_stat") or key.endswith("_anderson_critical_5pct"):  # noqa: SIM102
             if not np.isfinite(value):
                 prefix = key.rsplit("_", 2)[0]
@@ -2841,12 +2845,12 @@ def _validate_distribution_diagnostics(diag: dict[str, Any], *, strict_diagnosti
                     fallback = INTERNAL_GUARDS.get("distribution_constant_fallback_moment", 0.0)
                     diag[key] = fallback
                     warnings.warn(
-                        f"{key} undefined (constant distribution); falling back to {fallback}",
+                        f"Stats: {key} undefined (constant distribution); falling back to {fallback}",
                         RewardDiagnosticsWarning,
                         stacklevel=2,
                     )
                     continue
-                raise AssertionError(f"Anderson statistic {key} must be finite, got {value}")
+                raise AssertionError(f"Stats: Anderson statistic {key} must be finite, got {value}")
         if key.endswith("_qq_r_squared"):  # noqa: SIM102
             if not (isinstance(value, (int, float)) and np.isfinite(value) and 0 <= value <= 1):
                 prefix = key[: -len("_qq_r_squared")]
@@ -2854,12 +2858,12 @@ def _validate_distribution_diagnostics(diag: dict[str, Any], *, strict_diagnosti
                     fallback_r2 = INTERNAL_GUARDS.get("distribution_constant_fallback_qq_r2", 1.0)
                     diag[key] = fallback_r2
                     warnings.warn(
-                        f"{key} undefined (constant distribution); falling back to {fallback_r2}",
+                        f"Stats: {key} undefined (constant distribution); falling back to {fallback_r2}",
                         RewardDiagnosticsWarning,
                         stacklevel=2,
                     )
                 else:
-                    raise AssertionError(f"Q-Q R^2 {key} must be in [0,1], got {value}")
+                    raise AssertionError(f"Stats: Q-Q R^2 {key} must be in [0,1], got {value}")
 
 
 """PBRS (Potential-Based Reward Shaping) transforms & helpers."""
@@ -2945,7 +2949,7 @@ def _get_potential_gamma(params: RewardParams) -> float:
     gamma = _get_float_param(params, "potential_gamma", np.nan)
     if not np.isfinite(gamma):
         warnings.warn(
-            f"potential_gamma not specified; falling back to {POTENTIAL_GAMMA_DEFAULT}",
+            f"PBRS: potential_gamma not specified; falling back to {POTENTIAL_GAMMA_DEFAULT}",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -2955,7 +2959,7 @@ def _get_potential_gamma(params: RewardParams) -> float:
     gamma, reason_parts = _clamp_float_to_bounds("potential_gamma", raw_gamma, strict=False)
     if reason_parts:
         warnings.warn(
-            f"potential_gamma={raw_gamma} outside [0,1]; falling back to {gamma}",
+            f"PBRS: potential_gamma={raw_gamma} outside [0,1]; falling back to {gamma}",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -3153,14 +3157,14 @@ def _compute_exit_potential(prev_potential: float, params: RewardParams) -> floa
         decay = _get_float_param(params, "exit_potential_decay")
         if not np.isfinite(decay) or decay < 0.0:
             warnings.warn(
-                f"exit_potential_decay={decay} invalid or < 0; falling back to 0.0",
+                f"PBRS: exit_potential_decay={decay} invalid or < 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
             decay = 0.0
         if decay > 1.0:
             warnings.warn(
-                f"exit_potential_decay={decay} > 1; falling back to 1.0",
+                f"PBRS: exit_potential_decay={decay} > 1; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -4389,7 +4393,7 @@ def main() -> None:
     }
     if nan_issues:
         raise AssertionError(
-            "NaN values detected in critical simulated columns: "
+            "Sim: NaN values detected in critical simulated columns: "
             + ", ".join(f"{k}={v}" for k, v in nan_issues.items())
         )
     # Attach simulation parameters for downstream manifest

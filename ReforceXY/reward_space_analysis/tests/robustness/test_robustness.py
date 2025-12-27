@@ -664,7 +664,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             pnl=pnl, trade_duration=50, max_unrealized_profit=0.06, min_unrealized_profit=0.0
         )
         duration_ratio = 0.8
-        with assert_diagnostic_warning(["Unknown exit_attenuation_mode"]):
+        with assert_diagnostic_warning(["unknown exit_attenuation_mode"]):
             f_unknown = _get_exit_factor(
                 base_factor,
                 pnl,
