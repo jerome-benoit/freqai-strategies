@@ -171,8 +171,8 @@ class TestStatistics(RewardSpaceTestBase):
         if len(df) > 30:
             idle_data = df[df["idle_duration"] > 0]
             if len(idle_data) > 10:
-                idle_dur = np.asarray(idle_data["idle_duration"], dtype=float)
-                idle_rew = np.asarray(idle_data["reward_idle"], dtype=float)
+                idle_dur = idle_data["idle_duration"].to_numpy(dtype=float)
+                idle_rew = idle_data["reward_idle"].to_numpy(dtype=float)
                 self.assertTrue(
                     len(idle_dur) == len(idle_rew),
                     "Idle duration and reward arrays should have same length",

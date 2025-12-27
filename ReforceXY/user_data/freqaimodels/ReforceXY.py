@@ -1372,13 +1372,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             hyperopt_failed = True
         time_spent = time.time() - start_time
-        n_complete = len([t for t in study.trials if t.state == TrialState.COMPLETE])
+        n_completed = len([t for t in study.trials if t.state == TrialState.COMPLETE])
         n_pruned = len([t for t in study.trials if t.state == TrialState.PRUNED])
         n_failed = len([t for t in study.trials if t.state == TrialState.FAIL])
         logger.info(
-            "Hyperopt %s: %s complete, %s pruned, %s failed trials",
+            "Hyperopt %s: %s completed, %s pruned, %s failed trials",
             study_name,
-            n_complete,
+            n_completed,
             n_pruned,
             n_failed,
         )
@@ -1975,31 +1975,46 @@ class MyRLEnv(Base5ActionRLEnv):
         self,
         action: int,
         trade_duration: float,
-        pnl: float,
+        current_pnl: float,
     ) -> Tuple[Positions, int, float]:
-        """Compute next transition state tuple."""
+        """Compute next transition state tuple (next_position, next_duration, next_pnl).
+
+        Parameters
+        ----------
+        action : int
+            Action taken by the agent.
+        trade_duration : float
+            Trade duration at current tick.
+        current_pnl : float
+            Unrealized PnL at current tick.
+
+        Returns
+        -------
+        tuple[Positions, int, float]
+            (next_position, next_trade_duration, next_pnl) for the transition s -> s'.
+        """
         next_position = self._get_next_position(action)
 
-        # Entry
+        # Entry: Neutral -> Long/Short
         if self._position == Positions.Neutral and next_position in (
             Positions.Long,
             Positions.Short,
         ):
             return next_position, 0, self._get_entry_unrealized_profit(next_position)
 
-        # Exit
+        # Exit: Long/Short -> Neutral
         if (
             self._position in (Positions.Long, Positions.Short)
             and next_position == Positions.Neutral
         ):
             return next_position, 0, 0.0
 
-        # Hold
+        # Hold: Long/Short -> Long/Short
         if self._position in (Positions.Long, Positions.Short) and next_position in (
             Positions.Long,
             Positions.Short,
         ):
-            return next_position, int(trade_duration), pnl
+            return next_position, int(trade_duration), current_pnl
 
         # Neutral self-loop
         return next_position, 0, 0.0
@@ -2258,7 +2273,7 @@ class MyRLEnv(Base5ActionRLEnv):
         action: int,
         trade_duration: float,
         max_trade_duration: float,
-        pnl: float,
+        current_pnl: float,
         pnl_target: float,
         hold_potential_scale: float,
         entry_additive_scale: float,
@@ -2395,11 +2410,13 @@ class MyRLEnv(Base5ActionRLEnv):
         action : int
             Action taken: determines transition type (entry/hold/exit)
         trade_duration : float
-            Current trade duration in candles (for current state s)
+            Trade duration at current tick.
+            This is the duration for state s'.
         max_trade_duration : float
             Maximum allowed trade duration (for normalization)
-        pnl : float
-            Current position PnL (for current state s)
+        current_pnl : float
+            Unrealized PnL at current tick.
+            This is the PnL for state s'.
         pnl_target : float
             Target PnL for ratio normalization: r_pnl = pnl / pnl_target
         hold_potential_scale : float
@@ -2449,7 +2466,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return 0.0, 0.0, 0.0
 
         next_position, next_trade_duration, next_pnl = self._get_next_transition_state(
-            action=action, trade_duration=trade_duration, pnl=pnl
+            action=action, trade_duration=trade_duration, current_pnl=current_pnl
         )
         if max_trade_duration <= 0:
             next_duration_ratio = 0.0
@@ -2520,7 +2537,7 @@ class MyRLEnv(Base5ActionRLEnv):
             if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
                 duration_ratio = trade_duration / max(1, max_trade_duration)
                 exit_additive = self._compute_exit_additive(
-                    pnl, pnl_target, duration_ratio, exit_additive_scale
+                    current_pnl, pnl_target, duration_ratio, exit_additive_scale
                 )
                 self._total_exit_additive += float(exit_additive)
 
@@ -2988,7 +3005,7 @@ class MyRLEnv(Base5ActionRLEnv):
             action=action,
             trade_duration=trade_duration,
             max_trade_duration=max_trade_duration,
-            pnl=pnl,
+            current_pnl=pnl,
             pnl_target=self._pnl_target,
             hold_potential_scale=hold_potential_scale,
             entry_additive_scale=entry_additive_scale,

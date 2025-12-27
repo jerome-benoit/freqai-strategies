@@ -756,9 +756,15 @@ def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
 
 @dataclasses.dataclass
 class RewardContext:
-    """Context for reward computation."""
+    """Context for reward computation.
 
-    pnl: float
+    Attributes
+    ----------
+    current_pnl : float
+        Unrealized PnL at the current tick (state s').
+    """
+
+    current_pnl: float
     trade_duration: int
     idle_duration: int
     max_unrealized_profit: float
@@ -1039,6 +1045,11 @@ def _compute_efficiency_coefficient(
         range_pnl = max_pnl - min_pnl
         if np.isfinite(range_pnl) and not np.isclose(range_pnl, 0.0):
             efficiency_ratio = (pnl - min_pnl) / range_pnl
+            # For profits (pnl > 0): high ratio = good exit → higher coefficient → amplify gain
+            # For losses (pnl < 0): high ratio = good exit → LOWER coefficient → attenuate penalty
+            # The sign inversion for losses ensures reward = pnl * coef behaves correctly:
+            #   - Good loss exit: small |pnl| * low coef = small penalty
+            #   - Bad loss exit: large |pnl| * high coef = large penalty
             if pnl > 0.0:
                 efficiency_coefficient = 1.0 + efficiency_weight * (
                     efficiency_ratio - efficiency_center
@@ -1145,9 +1156,15 @@ def _compute_exit_reward(
         float: Exit reward (pnl * exit_factor)
     """
     exit_factor = _get_exit_factor(
-        base_factor, context.pnl, pnl_target, duration_ratio, context, params, risk_reward_ratio
+        base_factor,
+        context.current_pnl,
+        pnl_target,
+        duration_ratio,
+        context,
+        params,
+        risk_reward_ratio,
     )
-    return context.pnl * exit_factor
+    return context.current_pnl * exit_factor
 
 
 def calculate_reward(
@@ -1225,7 +1242,7 @@ def calculate_reward(
     breakdown.base_reward = float(base_reward)
 
     # === PBRS INTEGRATION ===
-    current_pnl = context.pnl if context.position != Positions.Neutral else 0.0
+    current_pnl = context.current_pnl if context.position != Positions.Neutral else 0.0
 
     next_position = _get_next_position(
         context.position, context.action, short_allowed=short_allowed
@@ -1582,7 +1599,7 @@ def simulate_samples(
         )
 
         context = RewardContext(
-            pnl=pnl,
+            current_pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
             max_unrealized_profit=max_unrealized_profit,
@@ -1606,7 +1623,7 @@ def simulate_samples(
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
         samples.append(
             {
-                "pnl": context.pnl,
+                "pnl": context.current_pnl,
                 "trade_duration": context.trade_duration,
                 "idle_duration": context.idle_duration,
                 "duration_ratio": _compute_duration_ratio(

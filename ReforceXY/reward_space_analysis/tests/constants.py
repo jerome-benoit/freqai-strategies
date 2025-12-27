@@ -101,6 +101,40 @@ class ExitFactorConfig:
 
 
 @dataclass(frozen=True)
+class EfficiencyConfig:
+    """Efficiency coefficient testing configuration.
+
+    Configuration for exit timing efficiency coefficient validation, including
+    the formula parameters and standard test values.
+
+    The efficiency coefficient modifies exit rewards based on how well the agent
+    timed its exit relative to unrealized PnL extremes during the trade.
+
+    Formula:
+        For profits: coefficient = 1.0 + weight * (ratio - center)
+        For losses:  coefficient = 1.0 + weight * (center - ratio)  [inverted]
+        Where: ratio = (pnl - min_unrealized) / (max_unrealized - min_unrealized)
+
+    Attributes:
+        WEIGHT_DEFAULT: Default efficiency_weight parameter (1.0)
+        CENTER_DEFAULT: Default efficiency_center parameter (0.5)
+        MAX_UNREALIZED_PROFIT: Standard max unrealized profit for profit tests (0.03)
+        MIN_UNREALIZED_PROFIT: Standard min unrealized profit for loss tests (-0.03)
+        PNL_RANGE_PROFIT: Standard PnL range for profit tests: (min, max) tuple
+        PNL_RANGE_LOSS: Standard PnL range for loss tests: (min, max) tuple
+        TRADE_DURATION_DEFAULT: Default trade duration for efficiency tests (10)
+    """
+
+    WEIGHT_DEFAULT: float = 1.0
+    CENTER_DEFAULT: float = 0.5
+    MAX_UNREALIZED_PROFIT: float = 0.03
+    MIN_UNREALIZED_PROFIT: float = -0.03
+    PNL_RANGE_PROFIT: tuple[float, ...] = (0.005, 0.010, 0.015, 0.020, 0.025, 0.029)
+    PNL_RANGE_LOSS: tuple[float, ...] = (-0.029, -0.025, -0.020, -0.015, -0.010, -0.005, -0.001)
+    TRADE_DURATION_DEFAULT: int = 10
+
+
+@dataclass(frozen=True)
 class PBRSConfig:
     """Potential-Based Reward Shaping (PBRS) configuration.
 
@@ -398,6 +432,7 @@ class StatisticalTolerances:
 # Global singleton instances for easy import
 TOLERANCE: Final[ToleranceConfig] = ToleranceConfig()
 CONTINUITY: Final[ContinuityConfig] = ContinuityConfig()
+EFFICIENCY: Final[EfficiencyConfig] = EfficiencyConfig()
 EXIT_FACTOR: Final[ExitFactorConfig] = ExitFactorConfig()
 PBRS: Final[PBRSConfig] = PBRSConfig()
 STATISTICAL: Final[StatisticalConfig] = StatisticalConfig()
@@ -409,6 +444,7 @@ STAT_TOL: Final[StatisticalTolerances] = StatisticalTolerances()
 
 __all__ = [
     "CONTINUITY",
+    "EFFICIENCY",
     "EXIT_FACTOR",
     "PARAMS",
     "PBRS",
@@ -418,6 +454,7 @@ __all__ = [
     "STAT_TOL",
     "TOLERANCE",
     "ContinuityConfig",
+    "EfficiencyConfig",
     "ExitFactorConfig",
     "PBRSConfig",
     "StatisticalConfig",

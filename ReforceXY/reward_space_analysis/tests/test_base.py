@@ -45,7 +45,7 @@ def make_ctx(
 ) -> RewardContext:
     """Create a RewardContext with neutral defaults."""
     return RewardContext(
-        pnl=pnl,
+        current_pnl=pnl,
         trade_duration=trade_duration,
         idle_duration=idle_duration,
         max_unrealized_profit=max_unrealized_profit,

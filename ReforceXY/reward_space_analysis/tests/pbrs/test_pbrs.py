@@ -748,7 +748,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
 
         expected_next_potential = _compute_hold_potential(
-            pnl=ctx.pnl,
+            pnl=ctx.current_pnl,
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             duration_ratio=(trade_duration / max_trade_duration_candles),
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -958,7 +958,7 @@ class TestPBRS(RewardSpaceTestBase):
 
         current_duration_ratio = ctx.trade_duration / params["max_trade_duration_candles"]
         prev_potential = _compute_hold_potential(
-            ctx.pnl,
+            ctx.current_pnl,
             pnl_target,
             current_duration_ratio,
             PARAMS.RISK_REWARD_RATIO,
