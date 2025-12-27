@@ -297,8 +297,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = default_label_frequency_candles
             else:
                 logger.warning(
-                    f"Invalid string value for label_frequency_candles {label_frequency_candles!r}, "
-                    f"only 'auto' is supported, using default {default_label_frequency_candles!r}"
+                    f"Invalid label_frequency_candles {label_frequency_candles!r}: only 'auto' is supported for string values. Using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         elif isinstance(label_frequency_candles, (int, float)):
@@ -306,14 +305,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = int(label_frequency_candles)
             else:
                 logger.warning(
-                    f"Invalid numeric value for label_frequency_candles: {label_frequency_candles!r}, "
-                    f"must be between 2 and 10000, using default {default_label_frequency_candles!r}"
+                    f"Invalid label_frequency_candles {label_frequency_candles!r}: must be in range [2, 10000]. Using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         else:
             logger.warning(
-                f"Invalid type for label_frequency_candles {type(label_frequency_candles).__name__!r}, "
-                f"expected int, float, or 'auto', using default {default_label_frequency_candles!r}"
+                f"Invalid label_frequency_candles {label_frequency_candles!r}: expected int, float, or 'auto'. Using default {default_label_frequency_candles!r}"
             )
             label_frequency_candles = default_label_frequency_candles
 
@@ -1436,7 +1433,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
-            raise ValueError(f"Invalid alpha {alpha}: must be >= 0")
+            raise ValueError(f"Invalid alpha {alpha!r}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
             pred_extrema, extrema_selection, extrema_fraction
         )
@@ -1693,7 +1690,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if not np.all(np.isfinite(normalized_matrix)):
             raise ValueError(
-                "normalized_matrix must contain only finite values after normalization"
+                "Invalid normalized_matrix: must contain only finite values after normalization"
             )
 
         return normalized_matrix

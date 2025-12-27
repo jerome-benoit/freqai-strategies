@@ -2367,7 +2367,7 @@ def validate_range(
             or (non_negative and value < 0)
         ):
             logger.warning(
-                f"Invalid {name} {value!r}, must be {constraint_str}, using default {default_value!r}"
+                f"Invalid {name} {value!r}: must be {constraint_str}. Using default {default_value!r}"
             )
             return default_value
         return value
