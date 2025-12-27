@@ -2353,13 +2353,22 @@ def validate_range(
     def _validate_component(
         value: float | int | None, name: str, default_value: float | int
     ) -> float | int:
+        constraints = []
+        if finite_only:
+            constraints.append("finite")
+        if non_negative:
+            constraints.append("non-negative")
+        constraints.append("numeric")
+        constraint_str = " ".join(constraints)
         if (
             not isinstance(value, (int, float))
             or isinstance(value, bool)
             or (finite_only and not np.isfinite(value))
             or (non_negative and value < 0)
         ):
-            logger.warning(f"Invalid {name} {value!r}, using default {default_value!r}")
+            logger.warning(
+                f"Invalid {name} {value!r}, must be {constraint_str}, using default {default_value!r}"
+            )
             return default_value
         return value
 
@@ -2373,7 +2382,7 @@ def validate_range(
     )
     if not ordering_ok:
         logger.warning(
-            f"Invalid {name} ordering ({min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}), using defaults ({default_min!r}, {default_max!r})"
+            f"Invalid {name} ordering ({min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}), must have {min_name} < {max_name}, using defaults ({default_min!r}, {default_max!r})"
         )
         sanitized_min, sanitized_max = default_min, default_max
 

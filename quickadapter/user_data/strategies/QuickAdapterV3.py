@@ -742,7 +742,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_strategy not in set(WEIGHT_STRATEGIES):
             logger.warning(
-                f"Invalid extrema_weighting strategy {weighting_strategy!r}, using default {WEIGHT_STRATEGIES[0]!r}"
+                f"Invalid extrema_weighting strategy {weighting_strategy!r}, must be one of {WEIGHT_STRATEGIES!r}, using default {WEIGHT_STRATEGIES[0]!r}"
             )
             weighting_strategy = WEIGHT_STRATEGIES[0]
 
@@ -754,7 +754,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_standardization not in set(STANDARDIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting standardization {weighting_standardization!r}, using default {STANDARDIZATION_TYPES[0]!r}"
+                f"Invalid extrema_weighting standardization {weighting_standardization!r}, must be one of {STANDARDIZATION_TYPES!r}, using default {STANDARDIZATION_TYPES[0]!r}"
             )
             weighting_standardization = STANDARDIZATION_TYPES[0]
 
@@ -803,7 +803,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting normalization {weighting_normalization!r}, using default {NORMALIZATION_TYPES[0]!r}"
+                f"Invalid extrema_weighting normalization {weighting_normalization!r}, must be one of {NORMALIZATION_TYPES!r}, using default {NORMALIZATION_TYPES[0]!r}"
             )
             weighting_normalization = NORMALIZATION_TYPES[0]
 
@@ -882,7 +882,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_rank_method not in set(RANK_METHODS):
             logger.warning(
-                f"Invalid extrema_weighting rank_method {weighting_rank_method!r}, using default {RANK_METHODS[0]!r}"
+                f"Invalid extrema_weighting rank_method {weighting_rank_method!r}, must be one of {RANK_METHODS!r}, using default {RANK_METHODS[0]!r}"
             )
             weighting_rank_method = RANK_METHODS[0]
 
@@ -935,7 +935,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_aggregation not in set(HYBRID_AGGREGATIONS):
             logger.warning(
-                f"Invalid extrema_weighting aggregation {weighting_aggregation!r}, using default {HYBRID_AGGREGATIONS[0]!r}"
+                f"Invalid extrema_weighting aggregation {weighting_aggregation!r}, must be one of {HYBRID_AGGREGATIONS!r}, using default {HYBRID_AGGREGATIONS[0]!r}"
             )
             weighting_aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
         weighting_aggregation_normalization = str(
@@ -946,7 +946,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_aggregation_normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting aggregation_normalization {weighting_aggregation_normalization!r}, using default {NORMALIZATION_TYPES[6]!r}"
+                f"Invalid extrema_weighting aggregation_normalization {weighting_aggregation_normalization!r}, must be one of {NORMALIZATION_TYPES!r}, using default {NORMALIZATION_TYPES[6]!r}"
             )
             weighting_aggregation_normalization = DEFAULTS_EXTREMA_WEIGHTING[
                 "aggregation_normalization"
@@ -992,7 +992,7 @@ class QuickAdapterV3(IStrategy):
         )
         if smoothing_method not in set(SMOOTHING_METHODS):
             logger.warning(
-                f"Invalid extrema_smoothing method {smoothing_method!r}, using default {SMOOTHING_METHODS[0]!r}"
+                f"Invalid extrema_smoothing method {smoothing_method!r}, must be one of {SMOOTHING_METHODS!r}, using default {SMOOTHING_METHODS[0]!r}"
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
@@ -1032,7 +1032,7 @@ class QuickAdapterV3(IStrategy):
         )
         if smoothing_mode not in set(SMOOTHING_MODES):
             logger.warning(
-                f"Invalid extrema_smoothing mode {smoothing_mode!r}, using default {SMOOTHING_MODES[0]!r}"
+                f"Invalid extrema_smoothing mode {smoothing_mode!r}, must be one of {SMOOTHING_MODES!r}, using default {SMOOTHING_MODES[0]!r}"
             )
             smoothing_mode = SMOOTHING_MODES[0]
 
@@ -2323,7 +2323,7 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
+                    f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
                 ),
             )
@@ -2397,7 +2397,7 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
+                    f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)} | "
                     f"Declining: {trade_recent_pnl_declining} "
                     f"(tV:{format_number(t_trade_recent_velocity)}<=-t:{format_number(-t_crit_trade_recent_velocity)}, tA:{format_number(t_trade_recent_acceleration)}<=-t:{format_number(-t_crit_trade_recent_acceleration)})"
