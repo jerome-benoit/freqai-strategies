@@ -126,20 +126,6 @@ ADJUST_METHODS: tuple[str, ...] = ("none", "benjamini_hochberg")
 # Alias without underscore for convenience
 _ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
 
-# ---------------------------------------------------------------------------
-# Log message prefixes for consistent error/warning formatting
-# ---------------------------------------------------------------------------
-# Usage: f"{LOG_PREFIX_*}: <message>; falling back to <value>"
-#
-# Prefixes:
-#   Param:  - Parameter validation/coercion issues
-#   Data:   - Data loading/validation issues
-#   Stats:  - Statistical computation issues
-#   PBRS:   - Potential-Based Reward Shaping issues
-#   Sim:    - Simulation invariant violations
-#   CLI:    - Command-line argument issues
-#   Config: - Trading configuration issues
-# ---------------------------------------------------------------------------
 
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
@@ -549,7 +535,7 @@ def _is_short_allowed(trading_mode: str) -> bool:
     if mode == TRADING_MODES[0]:  # "spot"
         return False
     raise ValueError(
-        f"Config: unsupported trading mode '{mode}'. Expected one of: {list(TRADING_MODES)}"
+        f"Param: unsupported trading mode '{mode}'. Expected one of: {list(TRADING_MODES)}"
     )
 
 
