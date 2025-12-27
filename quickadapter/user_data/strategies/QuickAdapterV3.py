@@ -44,7 +44,6 @@ from Utils import (
     WEIGHT_STRATEGIES,
     alligator,
     bottom_change_percent,
-    calculate_n_extrema,
     calculate_quantile,
     ewo,
     format_number,
@@ -74,8 +73,6 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
-
-debug = False
 
 logger = logging.getLogger(__name__)
 
@@ -1165,11 +1162,6 @@ class QuickAdapterV3(IStrategy):
             self.extrema_smoothing["sigma"],
         )
 
-        if debug:
-            extrema = dataframe[EXTREMA_COLUMN]
-            logger.debug(f"{extrema.to_numpy()=}")
-            n_extrema: int = calculate_n_extrema(extrema)
-            logger.debug(f"{n_extrema=}")
         return dataframe
 
     def populate_indicators(
@@ -2449,7 +2441,7 @@ class QuickAdapterV3(IStrategy):
             pair=pair, timeframe=self.config.get("timeframe")
         )
         if df.empty:
-            logger.warning(
+            logger.info(
                 f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_TYPES[0]}: dataframe is empty"
             )
             return False

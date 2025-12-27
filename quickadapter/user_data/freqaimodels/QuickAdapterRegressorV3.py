@@ -49,8 +49,6 @@ SkimageThresholdMethod = Literal[
 ]
 ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
 
-debug = False
-
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
@@ -300,7 +298,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else:
                 logger.warning(
                     f"Invalid string value for label_frequency_candles {label_frequency_candles!r}, "
-                    f"only 'auto' is supported, using default {default_label_frequency_candles}"
+                    f"only 'auto' is supported, using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         elif isinstance(label_frequency_candles, (int, float)):
@@ -315,7 +313,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             logger.warning(
                 f"Invalid type for label_frequency_candles {type(label_frequency_candles).__name__!r}, "
-                f"expected int, float, or 'auto', using default {default_label_frequency_candles}"
+                f"expected int, float, or 'auto', using default {default_label_frequency_candles!r}"
             )
             label_frequency_candles = default_label_frequency_candles
 
@@ -875,12 +873,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def set_optuna_label_candle(self, pair: str) -> None:
         if len(self._optuna_label_candle_pool) == 0:
             logger.warning(
-                f"[{pair}] Optuna label candle pool is empty, reinitializing it ("
-                f"{self._optuna_label_candle_pool=} ,"
-                f"{self._optuna_label_candle_pool_full=} ,"
-                f"{self._optuna_label_candle.values()=} ,"
-                f"{self._optuna_label_candles.values()=} ,"
-                f"{self._optuna_label_incremented_pairs=})"
+                f"[{pair}] Optuna label candle pool is empty, reinitializing"
+            )
+            logger.debug(
+                f"[{pair}] Optuna label candle pool state: "
+                f"pool={self._optuna_label_candle_pool}, "
+                f"pool_full={self._optuna_label_candle_pool_full}, "
+                f"candle={list(self._optuna_label_candle.values())}, "
+                f"candles={list(self._optuna_label_candles.values())}, "
+                f"incremented_pairs={self._optuna_label_incremented_pairs}"
             )
             self.init_optuna_label_candle_pool()
         optuna_label_candle_pool = copy.deepcopy(self._optuna_label_candle_pool)
@@ -971,6 +972,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 objective=lambda trial: train_objective(
                     trial,
                     self.regressor,
+                    dk.pair,
                     X,
                     y,
                     train_weights,
@@ -2477,7 +2479,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             optuna.delete_study(study_name=study_name, storage=storage)
         except Exception as e:
             logger.warning(
-                f"Optuna study {study_name} deletion failed: {e!r}", exc_info=True
+                f"Optuna study deletion failed for study {study_name}: {e!r}",
+                exc_info=True,
             )
 
     @staticmethod
@@ -2514,6 +2517,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 def train_objective(
     trial: optuna.trial.Trial,
     regressor: Regressor,
+    pair: str,
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
@@ -2527,17 +2531,10 @@ def train_objective(
 ) -> float:
     test_ok = True
     test_length = len(X_test)
-    if debug:
-        test_extrema = y_test.get(EXTREMA_COLUMN)
-        n_test_extrema: int = calculate_n_extrema(test_extrema)
-        min_test_extrema: int = calculate_min_extrema(
-            test_length, fit_live_predictions_candles
-        )
-        logger.info(f"{test_length=}, {n_test_extrema=}, {min_test_extrema=}")
     min_test_period_candles: int = fit_live_predictions_candles * 4
     if test_length < min_test_period_candles:
         logger.warning(
-            f"Insufficient test data: {test_length} < {min_test_period_candles}"
+            f"[{pair}] Optuna train | Insufficient test data: {test_length} < {min_test_period_candles}"
         )
         return np.inf
     max_test_period_candles: int = test_length
@@ -2555,28 +2552,20 @@ def train_objective(
         test_period_candles, fit_live_predictions_candles
     )
     if n_test_extrema < min_test_extrema:
-        if debug:
-            logger.warning(
-                f"Insufficient extrema in test data with {test_period_candles=}: {n_test_extrema=} < {min_test_extrema=}"
-            )
+        logger.debug(
+            f"[{pair}] Optuna train | Insufficient extrema in test data with {test_period_candles=}: {n_test_extrema=} < {min_test_extrema=}"
+        )
         test_ok = False
     test_weights = test_weights[-test_period_candles:]
 
     train_ok = True
     train_length = len(X)
-    if debug:
-        train_extrema = y.get(EXTREMA_COLUMN)
-        n_train_extrema: int = calculate_n_extrema(train_extrema)
-        min_train_extrema: int = calculate_min_extrema(
-            train_length, fit_live_predictions_candles
-        )
-        logger.info(f"{train_length=}, {n_train_extrema=}, {min_train_extrema=}")
     min_train_period_candles: int = min_test_period_candles * int(
         round(1 / test_size - 1)
     )
     if train_length < min_train_period_candles:
         logger.warning(
-            f"Insufficient train data: {train_length} < {min_train_period_candles}"
+            f"[{pair}] Optuna train | Insufficient train data: {train_length} < {min_train_period_candles}"
         )
         return np.inf
     max_train_period_candles: int = train_length
@@ -2594,10 +2583,9 @@ def train_objective(
         train_period_candles, fit_live_predictions_candles
     )
     if n_train_extrema < min_train_extrema:
-        if debug:
-            logger.warning(
-                f"Insufficient extrema in train data with {train_period_candles=}: {n_train_extrema=} < {min_train_extrema=}"
-            )
+        logger.debug(
+            f"[{pair}] Optuna train | Insufficient extrema in train data with {train_period_candles=}: {n_train_extrema=} < {min_train_extrema=}"
+        )
         train_ok = False
     train_weights = train_weights[-train_period_candles:]
 

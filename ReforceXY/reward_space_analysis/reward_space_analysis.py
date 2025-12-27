@@ -310,8 +310,8 @@ def _warn_unknown_mode(
     """
     valid_sorted = sorted(valid_values)
     warnings.warn(
-        f"Param: unknown {mode_type} '{provided_value}'. "
-        f"Expected one of: {valid_sorted}; falling back to '{fallback_value}'.",
+        f"Param: unknown {mode_type} '{provided_value}', "
+        f"expected one of: {valid_sorted}; falling back to '{fallback_value}'",
         RewardDiagnosticsWarning,
         stacklevel=stacklevel,
     )
@@ -3626,7 +3626,7 @@ def write_complete_statistical_analysis(
     analysis_stats = None
     partial_deps = {}
     if skip_feature_analysis or len(df) < 4:
-        print("Skipping feature analysis: insufficient samples or flag set.")
+        print("Skipping feature analysis: insufficient samples or flag set")
         # Do NOT create feature_importance.csv when skipped (tests expect absence)
         # Create minimal partial dependence placeholders only if feature analysis was NOT explicitly skipped
         if not skip_feature_analysis and not skip_partial_dependence:
@@ -3659,7 +3659,7 @@ def write_complete_statistical_analysis(
                         f"{feature},partial_dependence\n", encoding="utf-8"
                     )
         except ImportError:
-            print("Skipping feature analysis: scikit-learn unavailable.")
+            print("Skipping feature analysis: scikit-learn unavailable")
             (output_dir / "feature_importance.csv").write_text(
                 "feature,importance_mean,importance_std\n", encoding="utf-8"
             )
@@ -4517,7 +4517,7 @@ def main() -> None:
     except Exception as e:
         print(f"Manifest generation failed: {e}")
 
-    print(f"Generated {len(df):,} synthetic samples.")
+    print(f"Generated {len(df):,} synthetic samples")
     print(sample_output_message)
     print(f"Artifacts saved to: {args.out_dir.resolve()}")
 
