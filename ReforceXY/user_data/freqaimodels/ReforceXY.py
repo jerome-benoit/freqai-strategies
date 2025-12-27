@@ -267,7 +267,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.pairs: List[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
-                "Config: missing 'pair_whitelist' in exchange section "
+                "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
         self.action_masking: bool = (
@@ -367,51 +367,51 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning("Config: n_envs=%r invalid, set to 1", self.n_envs)
+            logger.warning("Config [global]: n_envs=%r invalid, set to 1", self.n_envs)
             self.n_envs = 1
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
-                "Config: n_eval_envs=%r invalid, set to 1",
+                "Config [global]: n_eval_envs=%r invalid, set to 1",
                 self.n_eval_envs,
             )
             self.n_eval_envs = 1
         if self.multiprocessing and self.n_envs <= 1:
             logger.warning(
-                "Config: multiprocessing=True requires n_envs=%d>1, set to False",
+                "Config [global]: multiprocessing=True requires n_envs=%d>1, set to False",
                 self.n_envs,
             )
             self.multiprocessing = False
         if self.eval_multiprocessing and self.n_eval_envs <= 1:
             logger.warning(
-                "Config: eval_multiprocessing=True requires n_eval_envs=%d>1, set to False",
+                "Config [global]: eval_multiprocessing=True requires n_eval_envs=%d>1, set to False",
                 self.n_eval_envs,
             )
             self.eval_multiprocessing = False
         if self.multiprocessing and self.plot_new_best:
             logger.warning(
-                "Config: plot_new_best=True incompatible with multiprocessing=True, set to False",
+                "Config [global]: plot_new_best=True incompatible with multiprocessing=True, set to False",
             )
             self.plot_new_best = False
         if not isinstance(self.frame_stacking, int) or self.frame_stacking < 0:
             logger.warning(
-                "Config: frame_stacking=%r invalid, set to 0",
+                "Config [global]: frame_stacking=%r invalid, set to 0",
                 self.frame_stacking,
             )
             self.frame_stacking = 0
         if self.frame_stacking == 1:
             logger.warning(
-                "Config: frame_stacking=1 equivalent to no stacking, set to 0",
+                "Config [global]: frame_stacking=1 equivalent to no stacking, set to 0",
             )
             self.frame_stacking = 0
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
-                "Config: n_eval_steps=%r invalid, set to 10000",
+                "Config [global]: n_eval_steps=%r invalid, set to 10_000",
                 self.n_eval_steps,
             )
             self.n_eval_steps = 10_000
         if not isinstance(self.n_eval_episodes, int) or self.n_eval_episodes <= 0:
             logger.warning(
-                "Config: n_eval_episodes=%r invalid, set to 5",
+                "Config [global]: n_eval_episodes=%r invalid, set to 5",
                 self.n_eval_episodes,
             )
             self.n_eval_episodes = 5
@@ -420,7 +420,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or self.optuna_purge_period < 0
         ):
             logger.warning(
-                "Config: purge_period=%r invalid, set to 0",
+                "Config [global]: purge_period=%r invalid, set to 0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
@@ -429,24 +429,24 @@ class ReforceXY(BaseReinforcementLearningModel):
             and self.optuna_purge_period > 0
         ):
             logger.warning(
-                "Config: purge_period has no effect when continuous=True, set to 0",
+                "Config [global]: purge_period has no effect when continuous=True, set to 0",
             )
             self.optuna_purge_period = 0
         add_state_info = self.rl_config.get("add_state_info", False)
         if not add_state_info:
             logger.warning(
-                "Config: add_state_info=False will lead to desynchronized trade states after restart",
+                "Config [global]: add_state_info=False will lead to desynchronized trade states after restart",
             )
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
-                "Config: tensorboard_throttle=%r invalid, set to 1",
+                "Config [global]: tensorboard_throttle=%r invalid, set to 1",
                 tensorboard_throttle,
             )
             self.rl_config["tensorboard_throttle"] = 1
         if self.continual_learning and bool(self.frame_stacking):
             logger.warning(
-                "Config: continual_learning=True incompatible with frame_stacking=%d, set to False",
+                "Config [global]: continual_learning=True incompatible with frame_stacking=%d, set to False",
                 self.frame_stacking,
             )
             self.continual_learning = False
@@ -488,7 +488,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             model_reward_parameters["potential_gamma"] = gamma
         else:
             logger.warning(
-                "PBRS [%s]: no valid discount gamma resolved for environment", pair
+                "Env [%s]: no valid discount gamma resolved for environment", pair
             )
 
         return env_info
@@ -573,7 +573,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                     cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), lr
                 )
                 logger.info(
-                    "Training: learning rate linear schedule enabled, initial=%.6f", lr
+                    "Config [global]: learning rate linear schedule enabled, initial=%.6f",
+                    lr,
                 )
 
         # "PPO"
@@ -589,7 +590,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                     cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), cr
                 )
                 logger.info(
-                    "Training: clip range linear schedule enabled, initial=%.2f", cr
+                    "Config [global]: clip range linear schedule enabled, initial=%.2f",
+                    cr,
                 )
 
         # "DQN"
@@ -621,7 +623,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 else:
                     logger.warning(
-                        "Config: net_arch=%r invalid, set to %r",
+                        "Config [global]: net_arch=%r invalid, set to %r",
                         net_arch,
                         {"pi": default_net_arch, "vf": default_net_arch},
                     )
@@ -648,7 +650,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params["policy_kwargs"]["net_arch"] = {"pi": pi, "vf": vf}
             else:
                 logger.warning(
-                    "Config: net_arch type=%s unexpected, set to %r",
+                    "Config [global]: net_arch type=%s invalid, set to %r",
                     type(net_arch).__name__,
                     {"pi": default_net_arch, "vf": default_net_arch},
                 )
@@ -665,7 +667,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 else:
                     logger.warning(
-                        "Config: net_arch=%r invalid, set to %r",
+                        "Config [global]: net_arch=%r invalid, set to %r",
                         net_arch,
                         default_net_arch,
                     )
@@ -674,7 +676,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params["policy_kwargs"]["net_arch"] = net_arch
             else:
                 logger.warning(
-                    "Config: net_arch type=%s unexpected, set to %r",
+                    "Config [global]: net_arch type=%s invalid, set to %r",
                     type(net_arch).__name__,
                     default_net_arch,
                 )
@@ -824,7 +826,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         train_df = data_dictionary.get("train_features")
         train_timesteps = len(train_df)
         if train_timesteps <= 0:
-            raise ValueError("Training: train_features dataframe has zero length")
+            raise ValueError(
+                f"Training [{dk.pair}]: train_features dataframe has zero length"
+            )
         test_df = data_dictionary.get("test_features")
         eval_timesteps = len(test_df)
         train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
@@ -855,8 +859,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.n_eval_envs,
         )
         logger.info(
-            "Config: multiprocessing=%s, eval_multiprocessing=%s, "
+            "Config [%s]: multiprocessing=%s, eval_multiprocessing=%s, "
             "frame_stacking=%s, action_masking=%s, recurrent=%s, hyperopt=%s",
+            dk.pair,
             self.multiprocessing,
             self.eval_multiprocessing,
             self.frame_stacking,
@@ -1213,7 +1218,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             raise ValueError(
                 f"Hyperopt [{pair}]: unsupported storage backend '{storage_backend}'. "
-                f"Expected one of: {list(ReforceXY._STORAGE_BACKENDS)}"
+                f"Valid: {', '.join(ReforceXY._STORAGE_BACKENDS)}"
             )
         return storage
 
@@ -1235,17 +1240,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         # "auto"
         if sampler == ReforceXY._SAMPLER_TYPES[1]:
             logger.info(
-                "Hyperopt: using AutoSampler (seed=%d)",
+                "Hyperopt [global]: using AutoSampler (seed=%d)",
                 seed,
-            )  # No identifier needed for global sampler config
+            )
             return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
         # "tpe"
         elif sampler == ReforceXY._SAMPLER_TYPES[0]:
             logger.info(
-                "Hyperopt: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
+                "Hyperopt [global]: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
                 self.optuna_n_startup_trials,
                 seed,
-            )  # No identifier needed for global sampler config
+            )
             return TPESampler(
                 n_startup_trials=self.optuna_n_startup_trials,
                 multivariate=True,
@@ -1254,8 +1259,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             raise ValueError(
-                f"Hyperopt: unsupported sampler '{sampler}'. "
-                f"Expected one of: {list(ReforceXY._SAMPLER_TYPES)}"
+                f"Hyperopt [global]: unsupported sampler '{sampler}'. "
+                f"Valid: {', '.join(ReforceXY._SAMPLER_TYPES)}"
             )
 
     @staticmethod
@@ -1263,11 +1268,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         min_resource: int, max_resource: int, reduction_factor: int
     ) -> BasePruner:
         logger.info(
-            "Hyperopt: using HyperbandPruner (min_resource=%d, max_resource=%d, reduction_factor=%d)",
+            "Hyperopt [global]: using HyperbandPruner (min_resource=%d, max_resource=%d, reduction_factor=%d)",
             min_resource,
             max_resource,
             reduction_factor,
-        )  # No identifier needed for global pruner config
+        )
         return HyperbandPruner(
             min_resource=min_resource,
             max_resource=max_resource,
@@ -2240,9 +2245,10 @@ class MyRLEnv(Base5ActionRLEnv):
             return min(max(-1.0, x), 1.0)
 
         logger.warning(
-            "PBRS [%s]: potential_transform=%r invalid, set to 'tanh'. Valid: %s",
+            "PBRS [%s]: potential_transform=%r invalid, set to %r. Valid: %s",
             self.id,
             name,
+            ReforceXY._TRANSFORM_FUNCTIONS[0],
             ", ".join(ReforceXY._TRANSFORM_FUNCTIONS),
         )
         return math.tanh(x)
@@ -2820,21 +2826,21 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         if check_invariants:
             if not np.isfinite(exit_factor):
-                logger.debug(
+                logger.warning(
                     "PBRS [%s]: exit_factor=%.5f non-finite, set to 0.0",
                     self.id,
                     exit_factor,
                 )
                 return 0.0
             if efficiency_coefficient < 0.0:
-                logger.debug(
+                logger.warning(
                     "PBRS [%s]: efficiency_coefficient=%.5f negative",
                     self.id,
                     efficiency_coefficient,
                 )
             if exit_factor < 0.0 and pnl >= 0.0:
-                logger.debug(
-                    "PBRS [%s]: exit_factor=%.5f negative with pnl=%.5f positive, clamped to 0.0",
+                logger.warning(
+                    "PBRS [%s]: exit_factor=%.5f negative with pnl=%.5f positive, set to 0.0",
                     self.id,
                     exit_factor,
                     pnl,
@@ -3426,7 +3432,7 @@ class MyRLEnv(Base5ActionRLEnv):
         Get environment data aligned on ticks, including optional trade events
         """
         if not self.history:
-            logger.debug("Env [%s]: history is empty", self.id)
+            logger.info("Env [%s]: history is empty", self.id)
             return DataFrame()
 
         _history_df = DataFrame(self.history)
@@ -3631,7 +3637,9 @@ class InfoMetricsCallback(TensorboardCallback):
         try:
             self.logger.record(key, value, exclude=exclude)
         except Exception as e:
-            logger.warning("Tensorboard: logger.record failed at %r: %r", key, e)
+            logger.warning(
+                "Tensorboard [global]: logger.record failed at %r: %r", key, e
+            )
             if exclude is None:
                 exclude = ("tensorboard",)
             else:
@@ -3643,7 +3651,7 @@ class InfoMetricsCallback(TensorboardCallback):
                 self.logger.record(key, value, exclude=exclude)
             except Exception as e:
                 logger.error(
-                    "Tensorboard: logger.record retry failed at %r: %r",
+                    "Tensorboard [global]: logger.record retry failed at %r: %r",
                     key,
                     e,
                     exc_info=True,
@@ -4056,7 +4064,7 @@ class RolloutPlotCallback(BaseCallback):
                 )
             except Exception as e:
                 logger.error(
-                    "Tensorboard: logger.record failed at best/train_env%d: %r",
+                    "Tensorboard [global]: logger.record failed at best/train_env%d: %r",
                     i,
                     e,
                     exc_info=True,
@@ -4413,9 +4421,7 @@ def convert_optuna_params_to_model_params(
 
     lr = optuna_params.get("learning_rate")
     if lr is None:
-        raise ValueError(
-            f"Hyperopt: missing 'learning_rate' in params for {model_type}"
-        )
+        raise ValueError(f"Hyperopt [{model_type}]: missing 'learning_rate' in params")
     lr = get_schedule(
         optuna_params.get("lr_schedule", ReforceXY._SCHEDULE_TYPES[1]), float(lr)
     )  # default: "constant"
@@ -4435,7 +4441,7 @@ def convert_optuna_params_to_model_params(
         for param in required_ppo_params:
             if optuna_params.get(param) is None:
                 raise ValueError(
-                    f"Hyperopt: missing '{param}' in params for {model_type}"
+                    f"Hyperopt [{model_type}]: missing '{param}' in params"
                 )
         cr = optuna_params.get("clip_range")
         cr = get_schedule(
@@ -4480,7 +4486,7 @@ def convert_optuna_params_to_model_params(
         for param in required_dqn_params:
             if optuna_params.get(param) is None:
                 raise ValueError(
-                    f"Hyperopt: missing '{param}' in params for {model_type}"
+                    f"Hyperopt [{model_type}]: missing '{param}' in params"
                 )
         train_freq = optuna_params.get("train_freq")
         subsample_steps = optuna_params.get("subsample_steps")
@@ -4515,7 +4521,7 @@ def convert_optuna_params_to_model_params(
         ):  # "QRDQN"
             policy_kwargs["n_quantiles"] = int(optuna_params["n_quantiles"])
     else:
-        raise ValueError(f"Hyperopt: model type '{model_type}' not supported")
+        raise ValueError(f"Hyperopt [global]: model type '{model_type}' not supported")
 
     if optuna_params.get("net_arch"):
         net_arch_value = str(optuna_params["net_arch"])
