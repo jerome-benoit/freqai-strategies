@@ -367,51 +367,53 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning("Config [global]: n_envs=%r invalid, set to 1", self.n_envs)
+            logger.warning(
+                "Config [global]: n_envs=%r invalid; defaulting to 1", self.n_envs
+            )
             self.n_envs = 1
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
-                "Config [global]: n_eval_envs=%r invalid, set to 1",
+                "Config [global]: n_eval_envs=%r invalid; defaulting to 1",
                 self.n_eval_envs,
             )
             self.n_eval_envs = 1
         if self.multiprocessing and self.n_envs <= 1:
             logger.warning(
-                "Config [global]: multiprocessing=True requires n_envs=%d>1, set to False",
+                "Config [global]: multiprocessing=True requires n_envs=%d>1; defaulting to False",
                 self.n_envs,
             )
             self.multiprocessing = False
         if self.eval_multiprocessing and self.n_eval_envs <= 1:
             logger.warning(
-                "Config [global]: eval_multiprocessing=True requires n_eval_envs=%d>1, set to False",
+                "Config [global]: eval_multiprocessing=True requires n_eval_envs=%d>1; defaulting to False",
                 self.n_eval_envs,
             )
             self.eval_multiprocessing = False
         if self.multiprocessing and self.plot_new_best:
             logger.warning(
-                "Config [global]: plot_new_best=True incompatible with multiprocessing=True, set to False",
+                "Config [global]: plot_new_best=True incompatible with multiprocessing=True; defaulting to False"
             )
             self.plot_new_best = False
         if not isinstance(self.frame_stacking, int) or self.frame_stacking < 0:
             logger.warning(
-                "Config [global]: frame_stacking=%r invalid, set to 0",
+                "Config [global]: frame_stacking=%r invalid; defaulting to 0",
                 self.frame_stacking,
             )
             self.frame_stacking = 0
         if self.frame_stacking == 1:
             logger.warning(
-                "Config [global]: frame_stacking=1 equivalent to no stacking, set to 0",
+                "Config [global]: frame_stacking=1 equivalent to no stacking; defaulting to 0"
             )
             self.frame_stacking = 0
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
-                "Config [global]: n_eval_steps=%r invalid, set to 10_000",
+                "Config [global]: n_eval_steps=%r invalid; defaulting to 10000",
                 self.n_eval_steps,
             )
             self.n_eval_steps = 10_000
         if not isinstance(self.n_eval_episodes, int) or self.n_eval_episodes <= 0:
             logger.warning(
-                "Config [global]: n_eval_episodes=%r invalid, set to 5",
+                "Config [global]: n_eval_episodes=%r invalid; defaulting to 5",
                 self.n_eval_episodes,
             )
             self.n_eval_episodes = 5
@@ -420,7 +422,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or self.optuna_purge_period < 0
         ):
             logger.warning(
-                "Config [global]: purge_period=%r invalid, set to 0",
+                "Config [global]: purge_period=%r invalid; defaulting to 0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
@@ -429,24 +431,24 @@ class ReforceXY(BaseReinforcementLearningModel):
             and self.optuna_purge_period > 0
         ):
             logger.warning(
-                "Config [global]: purge_period has no effect when continuous=True, set to 0",
+                "Config [global]: purge_period has no effect when continuous=True; defaulting to 0"
             )
             self.optuna_purge_period = 0
         add_state_info = self.rl_config.get("add_state_info", False)
         if not add_state_info:
             logger.warning(
-                "Config [global]: add_state_info=False will lead to desynchronized trade states after restart",
+                "Config [global]: add_state_info=False may lead to desynchronized trade states after restart"
             )
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
-                "Config [global]: tensorboard_throttle=%r invalid, set to 1",
+                "Config [global]: tensorboard_throttle=%r invalid; defaulting to 1",
                 tensorboard_throttle,
             )
             self.rl_config["tensorboard_throttle"] = 1
         if self.continual_learning and bool(self.frame_stacking):
             logger.warning(
-                "Config [global]: continual_learning=True incompatible with frame_stacking=%d, set to False",
+                "Config [global]: continual_learning=True incompatible with frame_stacking=%d; defaulting to False",
                 self.frame_stacking,
             )
             self.continual_learning = False
@@ -623,9 +625,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 else:
                     logger.warning(
-                        "Config [global]: net_arch=%r invalid, set to %r",
+                        "Config [global]: net_arch=%r invalid; defaulting to %r. Valid: %s",
                         net_arch,
                         {"pi": default_net_arch, "vf": default_net_arch},
+                        ", ".join(ReforceXY._NET_ARCH_SIZES),
                     )
                     model_params["policy_kwargs"]["net_arch"] = {
                         "pi": default_net_arch,
@@ -650,9 +653,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params["policy_kwargs"]["net_arch"] = {"pi": pi, "vf": vf}
             else:
                 logger.warning(
-                    "Config [global]: net_arch type=%s invalid, set to %r",
+                    "Config [global]: net_arch type=%s invalid; defaulting to %r. Valid: %s",
                     type(net_arch).__name__,
                     {"pi": default_net_arch, "vf": default_net_arch},
+                    ", ".join(ReforceXY._NET_ARCH_SIZES),
                 )
                 model_params["policy_kwargs"]["net_arch"] = {
                     "pi": default_net_arch,
@@ -667,18 +671,20 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 else:
                     logger.warning(
-                        "Config [global]: net_arch=%r invalid, set to %r",
+                        "Config [global]: net_arch=%r invalid; defaulting to %r. Valid: %s",
                         net_arch,
                         default_net_arch,
+                        ", ".join(ReforceXY._NET_ARCH_SIZES),
                     )
                     model_params["policy_kwargs"]["net_arch"] = default_net_arch
             elif isinstance(net_arch, list):
                 model_params["policy_kwargs"]["net_arch"] = net_arch
             else:
                 logger.warning(
-                    "Config [global]: net_arch type=%s invalid, set to %r",
+                    "Config [global]: net_arch type=%s invalid; defaulting to %r. Valid: %s",
                     type(net_arch).__name__,
                     default_net_arch,
+                    ", ".join(ReforceXY._NET_ARCH_SIZES),
                 )
                 model_params["policy_kwargs"]["net_arch"] = default_net_arch
 
@@ -973,7 +979,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     exc_info=True,
                 )
 
-        logger.info(
+        logger.warning(
             "Model [%s]: best model not found at %s, using final model",
             dk.pair,
             model_filepath,
@@ -1621,28 +1627,32 @@ class ReforceXY(BaseReinforcementLearningModel):
             n_steps = params.get("n_steps")
             if n_steps * self.n_envs > total_timesteps:
                 raise TrialPruned(
-                    f"{n_steps=} * n_envs={self.n_envs}={n_steps * self.n_envs} is greater than {total_timesteps=}"
+                    f"Hyperopt [{study_name}]: n_steps={n_steps} * n_envs={self.n_envs}={n_steps * self.n_envs} is greater than total_timesteps={total_timesteps}"
                 )
             batch_size = params.get("batch_size")
             if (n_steps * self.n_envs) % batch_size != 0:
                 raise TrialPruned(
-                    f"{n_steps=} * {self.n_envs=} = {n_steps * self.n_envs} is not divisible by {batch_size=}"
+                    f"Hyperopt [{study_name}]: n_steps={n_steps} * n_envs={self.n_envs} = {n_steps * self.n_envs} is not divisible by batch_size={batch_size}"
                 )
 
         # "DQN"
         if ReforceXY._MODEL_TYPES[3] in self.model_type:
             gradient_steps = params.get("gradient_steps")
             if isinstance(gradient_steps, int) and gradient_steps <= 0:
-                raise TrialPruned(f"{gradient_steps=} is negative or zero")
+                raise TrialPruned(
+                    f"Hyperopt [{study_name}]: gradient_steps={gradient_steps} is negative or zero"
+                )
             batch_size = params.get("batch_size")
             buffer_size = params.get("buffer_size")
             if (batch_size * gradient_steps) > buffer_size:
                 raise TrialPruned(
-                    f"{batch_size=} * {gradient_steps=}={batch_size * gradient_steps} is greater than {buffer_size=}"
+                    f"Hyperopt [{study_name}]: batch_size={batch_size} * gradient_steps={gradient_steps}={batch_size * gradient_steps} is greater than buffer_size={buffer_size}"
                 )
             learning_starts = params.get("learning_starts")
             if learning_starts > buffer_size:
-                raise TrialPruned(f"{learning_starts=} is greater than {buffer_size=}")
+                raise TrialPruned(
+                    f"Hyperopt [{study_name}]: learning_starts={learning_starts} is greater than buffer_size={buffer_size}"
+                )
 
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
@@ -1739,10 +1749,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             del model, train_env, eval_env
 
         if nan_encountered:
-            raise TrialPruned("NaN encountered during training")
+            raise TrialPruned(
+                f"Hyperopt [{study_name}]: NaN encountered during training"
+            )
 
         if self.optuna_eval_callback.is_pruned:
-            raise TrialPruned()
+            raise TrialPruned(f"Hyperopt [{study_name}]: pruned by eval callback")
 
         return self.optuna_eval_callback.best_mean_reward
 
@@ -1856,7 +1868,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         if self._exit_potential_mode not in set(ReforceXY._EXIT_POTENTIAL_MODES):
             logger.warning(
-                "PBRS [%s]: exit_potential_mode=%r invalid, set to %r. Valid: %s",
+                "PBRS [%s]: exit_potential_mode=%r invalid; defaulting to %r. Valid: %s",
                 self.id,
                 self._exit_potential_mode,
                 ReforceXY._EXIT_POTENTIAL_MODES[0],
@@ -2245,7 +2257,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return min(max(-1.0, x), 1.0)
 
         logger.warning(
-            "PBRS [%s]: potential_transform=%r invalid, set to %r. Valid: %s",
+            "PBRS [%s]: potential_transform=%r invalid; defaulting to %r. Valid: %s",
             self.id,
             name,
             ReforceXY._TRANSFORM_FUNCTIONS[0],
@@ -2694,7 +2706,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         if exit_plateau_grace < 0.0:
             logger.warning(
-                "PBRS [%s]: exit_plateau_grace=%.2f invalid, set to 0.0",
+                "PBRS [%s]: exit_plateau_grace=%.2f invalid; defaulting to 0.0",
                 self.id,
                 exit_plateau_grace,
             )
@@ -2712,7 +2724,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             if slope < 0.0:
                 logger.warning(
-                    "PBRS [%s]: exit_linear_slope=%.2f invalid, set to 1.0",
+                    "PBRS [%s]: exit_linear_slope=%.2f invalid; defaulting to 1.0",
                     self.id,
                     slope,
                 )
@@ -2756,7 +2768,7 @@ class MyRLEnv(Base5ActionRLEnv):
         strategy_fn = strategies.get(exit_attenuation_mode, None)
         if strategy_fn is None:
             logger.warning(
-                "PBRS [%s]: exit_attenuation_mode=%r invalid, set to %r. Valid: %s",
+                "PBRS [%s]: exit_attenuation_mode=%r invalid; defaulting to %r. Valid: %s",
                 self.id,
                 exit_attenuation_mode,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
@@ -2770,7 +2782,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         except Exception as e:
             logger.warning(
-                "PBRS [%s]: exit_attenuation_mode=%r failed (%r), set to %r (effective_dr=%.5f)",
+                "PBRS [%s]: exit_attenuation_mode=%r failed (%r); defaulting to %r (effective_dr=%.5f)",
                 self.id,
                 exit_attenuation_mode,
                 e,
@@ -2827,7 +2839,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if check_invariants:
             if not np.isfinite(exit_factor):
                 logger.warning(
-                    "PBRS [%s]: exit_factor=%.5f non-finite, set to 0.0",
+                    "PBRS [%s]: exit_factor=%.5f non-finite; defaulting to 0.0",
                     self.id,
                     exit_factor,
                 )
@@ -2840,7 +2852,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
             if exit_factor < 0.0 and pnl >= 0.0:
                 logger.warning(
-                    "PBRS [%s]: exit_factor=%.5f negative with pnl=%.5f positive, set to 0.0",
+                    "PBRS [%s]: exit_factor=%.5f negative with pnl=%.5f positive; defaulting to 0.0",
                     self.id,
                     exit_factor,
                     pnl,
