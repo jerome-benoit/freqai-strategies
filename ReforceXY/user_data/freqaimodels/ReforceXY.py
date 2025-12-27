@@ -367,32 +367,34 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning("Config: n_envs=%s invalid, set to 1", self.n_envs)
+            logger.warning("Config: n_envs=%r invalid, set to 1", self.n_envs)
             self.n_envs = 1
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
-                "Config: n_eval_envs=%s invalid, set to 1",
+                "Config: n_eval_envs=%r invalid, set to 1",
                 self.n_eval_envs,
             )
             self.n_eval_envs = 1
         if self.multiprocessing and self.n_envs <= 1:
             logger.warning(
-                "Config: multiprocessing requires n_envs>1, set to False",
+                "Config: multiprocessing=True requires n_envs=%d>1, set to False",
+                self.n_envs,
             )
             self.multiprocessing = False
         if self.eval_multiprocessing and self.n_eval_envs <= 1:
             logger.warning(
-                "Config: eval_multiprocessing requires n_eval_envs>1, set to False",
+                "Config: eval_multiprocessing=True requires n_eval_envs=%d>1, set to False",
+                self.n_eval_envs,
             )
             self.eval_multiprocessing = False
         if self.multiprocessing and self.plot_new_best:
             logger.warning(
-                "Config: plot_new_best incompatible with multiprocessing, set to False",
+                "Config: plot_new_best=True incompatible with multiprocessing=True, set to False",
             )
             self.plot_new_best = False
         if not isinstance(self.frame_stacking, int) or self.frame_stacking < 0:
             logger.warning(
-                "Config: frame_stacking=%s invalid, set to 0",
+                "Config: frame_stacking=%r invalid, set to 0",
                 self.frame_stacking,
             )
             self.frame_stacking = 0
@@ -403,13 +405,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.frame_stacking = 0
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
-                "Config: n_eval_steps=%s invalid, set to 10000",
+                "Config: n_eval_steps=%r invalid, set to 10000",
                 self.n_eval_steps,
             )
             self.n_eval_steps = 10_000
         if not isinstance(self.n_eval_episodes, int) or self.n_eval_episodes <= 0:
             logger.warning(
-                "Config: n_eval_episodes=%s invalid, set to 5",
+                "Config: n_eval_episodes=%r invalid, set to 5",
                 self.n_eval_episodes,
             )
             self.n_eval_episodes = 5
@@ -418,7 +420,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or self.optuna_purge_period < 0
         ):
             logger.warning(
-                "Config: purge_period=%s invalid, set to 0",
+                "Config: purge_period=%r invalid, set to 0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
@@ -438,13 +440,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
-                "Config: tensorboard_throttle=%s invalid, set to 1",
+                "Config: tensorboard_throttle=%r invalid, set to 1",
                 tensorboard_throttle,
             )
             self.rl_config["tensorboard_throttle"] = 1
         if self.continual_learning and bool(self.frame_stacking):
             logger.warning(
-                "Config: continual_learning incompatible with frame_stacking, set to False",
+                "Config: continual_learning=True incompatible with frame_stacking=%d, set to False",
+                self.frame_stacking,
             )
             self.continual_learning = False
 
@@ -484,7 +487,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         if gamma is not None:
             model_reward_parameters["potential_gamma"] = gamma
         else:
-            logger.warning("PBRS: no valid discount gamma resolved for environment")
+            logger.warning(
+                "PBRS [%s]: no valid discount gamma resolved for environment", pair
+            )
 
         return env_info
 
@@ -499,7 +504,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         Set training and evaluation environments
         """
         if self.train_env is not None or self.eval_env is not None:
-            logger.info("Env: closing environments")
+            logger.info("Env [%s]: closing environments", dk.pair)
             self.close_envs()
 
         train_df = data_dictionary.get("train_features")
@@ -508,7 +513,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         seed = self.get_model_params().get("seed", 42)
 
         if self.check_envs:
-            logger.info("Env: checking environments")
+            logger.info("Env [%s]: checking environments", dk.pair)
             _train_env_check = MyRLEnv(
                 df=train_df,
                 prices=prices_train,
@@ -533,7 +538,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 _eval_env_check.close()
 
         logger.info(
-            "Env: populating %s train and %s eval environments",
+            "Env [%s]: populating %s train and %s eval environments",
+            dk.pair,
             self.n_envs,
             self.n_eval_envs,
         )
@@ -829,9 +835,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         eval_days = steps_to_days(eval_timesteps, self.config.get("timeframe"))
         total_days = steps_to_days(total_timesteps, self.config.get("timeframe"))
 
-        logger.info("Model: type=%s", self.model_type)
+        logger.info("Model [%s]: type=%s", dk.pair, self.model_type)
         logger.info(
-            "Training: %s steps (%s days), %s cycles, %s env(s) -> total %s steps (%s days)",
+            "Training [%s]: %s steps (%s days), %s cycles, %s env(s) -> total %s steps (%s days)",
+            dk.pair,
             train_timesteps,
             train_days,
             train_cycles,
@@ -840,32 +847,37 @@ class ReforceXY(BaseReinforcementLearningModel):
             total_days,
         )
         logger.info(
-            "Training: eval %s steps (%s days), %s episodes, %s env(s)",
+            "Training [%s]: eval %s steps (%s days), %s episodes, %s env(s)",
+            dk.pair,
             eval_timesteps,
             eval_days,
             self.n_eval_episodes,
             self.n_eval_envs,
         )
-        logger.info("Config: multiprocessing=%s", self.multiprocessing)
-        logger.info("Config: eval_multiprocessing=%s", self.eval_multiprocessing)
-        logger.info("Config: frame_stacking=%s", self.frame_stacking)
-        logger.info("Config: action_masking=%s", self.action_masking)
-        logger.info("Config: recurrent=%s", self.recurrent)
-        logger.info("Config: hyperopt=%s", self.hyperopt)
+        logger.info(
+            "Config: multiprocessing=%s, eval_multiprocessing=%s, "
+            "frame_stacking=%s, action_masking=%s, recurrent=%s, hyperopt=%s",
+            self.multiprocessing,
+            self.eval_multiprocessing,
+            self.frame_stacking,
+            self.action_masking,
+            self.recurrent,
+            self.hyperopt,
+        )
 
         start_time = time.time()
         if self.hyperopt:
             best_params = self.optimize(dk, total_timesteps)
             if best_params is None:
                 logger.error(
-                    "Hyperopt %s: optimization failed, using default model params",
+                    "Hyperopt [%s]: optimization failed, using default model params",
                     dk.pair,
                 )
                 best_params = self.get_model_params()
             model_params = best_params
         else:
             model_params = self.get_model_params()
-        logger.info("Model: %s params: %s", self.model_type, model_params)
+        logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -873,7 +885,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             min_timesteps = 2 * n_steps * self.n_envs
             if total_timesteps <= min_timesteps:
                 logger.warning(
-                    "Training: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
+                    "Training [%s]: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
+                    dk.pair,
                     total_timesteps,
                     min_timesteps,
                     self.model_type,
@@ -886,7 +899,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if aligned_total_timesteps != total_timesteps:
                     total_timesteps = aligned_total_timesteps
                     logger.info(
-                        "Training: aligned total %s steps (%s days) for model %s",
+                        "Training [%s]: aligned total %s steps (%s days) for model %s",
+                        dk.pair,
                         total_timesteps,
                         steps_to_days(total_timesteps, self.config.get("timeframe")),
                         self.model_type,
@@ -910,7 +924,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         model = self.get_init_model(dk.pair)
         if model is not None:
             logger.info(
-                "Training: continual training activated, starting from previously trained model state"
+                "Training [%s]: continual training activated, starting from previously trained model state",
+                dk.pair,
             )
             model.set_env(self.train_env)
         else:
@@ -939,17 +954,24 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_filename = dk.model_filename if dk.model_filename else "best"
         model_filepath = Path(dk.data_path / f"{model_filename}_model.zip")
         if model_filepath.is_file():
-            logger.info("Model: found best model at %s", model_filepath)
+            logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
                 best_model = self.MODELCLASS.load(
                     dk.data_path / f"{model_filename}_model"
                 )
                 return best_model
             except Exception as e:
-                logger.error("Model: failed to load best model: %r", e, exc_info=True)
+                logger.error(
+                    "Model [%s]: failed to load best model: %r",
+                    dk.pair,
+                    e,
+                    exc_info=True,
+                )
 
         logger.info(
-            "Model: best model not found at %s, using final model", model_filepath
+            "Model [%s]: best model not found at %s, using final model",
+            dk.pair,
+            model_filepath,
         )
 
         return model
@@ -1111,7 +1133,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         try:
             delete_study(study_name=study_name, storage=storage)
         except Exception as e:
-            logger.warning("Hyperopt %s: failed to delete study: %r", study_name, e)
+            logger.warning("Hyperopt [%s]: failed to delete study: %r", study_name, e)
 
     @staticmethod
     def _sanitize_pair(pair: str) -> str:
@@ -1137,7 +1159,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 return result
         except Exception as e:
             logger.warning(
-                "Hyperopt %s: failed to load retrain counters from %s: %r",
+                "Hyperopt [%s]: failed to load retrain counters from %s: %r",
                 pair,
                 counters_path,
                 e,
@@ -1153,7 +1175,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 json.dump(counters, write_file, indent=4, sort_keys=True)
         except Exception as e:
             logger.warning(
-                "Hyperopt %s: failed to save retrain counters to %s: %r",
+                "Hyperopt [%s]: failed to save retrain counters to %s: %r",
                 pair,
                 counters_path,
                 e,
@@ -1190,7 +1212,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         else:
             raise ValueError(
-                f"Hyperopt {pair}: unsupported storage backend '{storage_backend}'. "
+                f"Hyperopt [{pair}]: unsupported storage backend '{storage_backend}'. "
                 f"Expected one of: {list(ReforceXY._STORAGE_BACKENDS)}"
             )
         return storage
@@ -1215,7 +1237,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             logger.info(
                 "Hyperopt: using AutoSampler (seed=%d)",
                 seed,
-            )
+            )  # No identifier needed for global sampler config
             return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
         # "tpe"
         elif sampler == ReforceXY._SAMPLER_TYPES[0]:
@@ -1223,7 +1245,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Hyperopt: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
                 self.optuna_n_startup_trials,
                 seed,
-            )
+            )  # No identifier needed for global sampler config
             return TPESampler(
                 n_startup_trials=self.optuna_n_startup_trials,
                 multivariate=True,
@@ -1245,7 +1267,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             min_resource,
             max_resource,
             reduction_factor,
-        )
+        )  # No identifier needed for global pruner config
         return HyperbandPruner(
             min_resource=min_resource,
             max_resource=max_resource,
@@ -1294,13 +1316,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             ReforceXY.delete_study(study_name, storage)
             if continuous and not pair_purge_triggered:
                 logger.info(
-                    "Hyperopt %s: study deleted (continuous mode)",
+                    "Hyperopt [%s]: study deleted (continuous mode)",
                     study_name,
                 )
 
         if pair_purge_triggered:
             logger.info(
-                "Hyperopt %s: study purged on retrain %s (purge_period=%s)",
+                "Hyperopt [%s]: study purged on retrain %s (purge_period=%s)",
                 study_name,
                 pair_purge_count,
                 self.optuna_purge_period,
@@ -1332,7 +1354,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             load_if_exists=load_if_exists,
         )
         logger.info(
-            "Hyperopt %s: study created (direction=%s, n_trials=%s, timeout=%s, continuous=%s, load_if_exists=%s)",
+            "Hyperopt [%s]: study created (direction=%s, n_trials=%s, timeout=%s, continuous=%s, load_if_exists=%s)",
             study_name,
             direction.name,
             self.optuna_n_trials,
@@ -1347,12 +1369,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             if best_trial_params:
                 study.enqueue_trial(best_trial_params)
                 logger.info(
-                    "Hyperopt %s: warm start enqueued previous best params",
+                    "Hyperopt [%s]: warm start enqueued previous best params",
                     study_name,
                 )
             else:
                 logger.info(
-                    "Hyperopt %s: warm start found no previous best params",
+                    "Hyperopt [%s]: warm start found no previous best params",
                     study_name,
                 )
         hyperopt_failed = False
@@ -1374,14 +1396,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         except KeyboardInterrupt:
             time_spent = time.time() - start_time
             logger.info(
-                "Hyperopt %s: interrupted by user after %.2f secs",
+                "Hyperopt [%s]: interrupted by user after %.2f secs",
                 study_name,
                 time_spent,
             )
         except Exception as e:
             time_spent = time.time() - start_time
             logger.error(
-                "Hyperopt %s: optimization failed after %.2f secs: %r",
+                "Hyperopt [%s]: optimization failed after %.2f secs: %r",
                 study_name,
                 time_spent,
                 e,
@@ -1393,7 +1415,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         n_pruned = len([t for t in study.trials if t.state == TrialState.PRUNED])
         n_failed = len([t for t in study.trials if t.state == TrialState.FAIL])
         logger.info(
-            "Hyperopt %s: %s completed, %s pruned, %s failed trials",
+            "Hyperopt [%s]: %s completed, %s pruned, %s failed trials",
             study_name,
             n_completed,
             n_pruned,
@@ -1402,7 +1424,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         study_has_best_trial = ReforceXY.study_has_best_trial(study)
         if not study_has_best_trial:
             logger.error(
-                "Hyperopt %s: no best trial found after %.2f secs",
+                "Hyperopt [%s]: no best trial found after %.2f secs",
                 study_name,
                 time_spent,
             )
@@ -1412,7 +1434,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             best_trial_params = self.load_best_trial_params(dk.pair)
             if best_trial_params is None:
                 logger.error(
-                    "Hyperopt %s: no previously saved best params found",
+                    "Hyperopt [%s]: no previously saved best params found",
                     study_name,
                 )
                 return None
@@ -1420,18 +1442,18 @@ class ReforceXY(BaseReinforcementLearningModel):
             best_trial_params = study.best_trial.params
 
         logger.info(
-            "Hyperopt %s: completed in %.2f secs",
+            "Hyperopt [%s]: completed in %.2f secs",
             study_name,
             time_spent,
         )
         if study_has_best_trial:
             logger.info(
-                "Hyperopt %s: best trial #%d with score %s",
+                "Hyperopt [%s]: best trial #%d with score %s",
                 study_name,
                 study.best_trial.number,
                 study.best_trial.value,
             )
-        logger.info("Hyperopt %s: best params %s", study_name, best_trial_params)
+        logger.info("Hyperopt [%s]: best params: %s", study_name, best_trial_params)
 
         self.save_best_trial_params(best_trial_params, dk.pair)
 
@@ -1451,14 +1473,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.full_path / f"{best_trial_params_filename}.json"
         )
         logger.info(
-            "Hyperopt %s: saving best params to %s", pair, best_trial_params_path
+            "Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path
         )
         try:
             with best_trial_params_path.open("w", encoding="utf-8") as write_file:
                 json.dump(best_trial_params, write_file, indent=4)
         except Exception as e:
             logger.error(
-                "Hyperopt %s: failed to save best params to %s: %r",
+                "Hyperopt [%s]: failed to save best params to %s: %r",
                 pair,
                 best_trial_params_path,
                 e,
@@ -1476,7 +1498,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if best_trial_params_path.is_file():
             logger.info(
-                "Hyperopt %s: loading best params from %s", pair, best_trial_params_path
+                "Hyperopt [%s]: loading best params from %s",
+                pair,
+                best_trial_params_path,
             )
             with best_trial_params_path.open("r", encoding="utf-8") as read_file:
                 best_trial_params = json.load(read_file)
@@ -1573,7 +1597,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return sample_params_dqn(trial)
         else:
             raise NotImplementedError(
-                f"Hyperopt {trial.study.study_name}: model type '{self.model_type}' not supported"
+                f"Hyperopt [{trial.study.study_name}]: model type '{self.model_type}' not supported"
             )
 
     def objective(
@@ -1583,7 +1607,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         Objective function for Optuna trials hyperparameter optimization
         """
         study_name = trial.study.study_name
-        logger.info("Hyperopt %s: starting trial #%d", study_name, trial.number)
+        logger.info("Hyperopt [%s]: starting trial #%d", study_name, trial.number)
 
         params = self.get_optuna_params(trial)
 
@@ -1619,7 +1643,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         params = deepmerge(self.get_model_params(), params)
         params["seed"] = params.get("seed", 42) + trial.number
         logger.info(
-            "Hyperopt %s: trial #%d params %s", study_name, trial.number, params
+            "Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params
         )
 
         # "PPO"
@@ -1665,7 +1689,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
         except AssertionError:
             logger.warning(
-                "Hyperopt %s: trial #%d encountered NaN (AssertionError)",
+                "Hyperopt [%s]: trial #%d encountered NaN (AssertionError)",
                 study_name,
                 trial.number,
             )
@@ -1673,7 +1697,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         except ValueError as e:
             if any(x in str(e).lower() for x in ("nan", "inf")):
                 logger.warning(
-                    "Hyperopt %s: trial #%d encountered NaN/Inf (ValueError): %r",
+                    "Hyperopt [%s]: trial #%d encountered NaN/Inf (ValueError): %r",
                     study_name,
                     trial.number,
                     e,
@@ -1683,7 +1707,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 raise
         except FloatingPointError as e:
             logger.warning(
-                "Hyperopt %s: trial #%d encountered NaN/Inf (FloatingPointError): %r",
+                "Hyperopt [%s]: trial #%d encountered NaN/Inf (FloatingPointError): %r",
                 study_name,
                 trial.number,
                 e,
@@ -1692,7 +1716,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         except RuntimeError as e:
             if any(x in str(e).lower() for x in ("nan", "inf")):
                 logger.warning(
-                    "Hyperopt %s: trial #%d encountered NaN/Inf (RuntimeError): %r",
+                    "Hyperopt [%s]: trial #%d encountered NaN/Inf (RuntimeError): %r",
                     study_name,
                     trial.number,
                     e,
@@ -1827,7 +1851,8 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         if self._exit_potential_mode not in set(ReforceXY._EXIT_POTENTIAL_MODES):
             logger.warning(
-                "PBRS: exit_potential_mode=%r invalid, set to %r. Valid: %s",
+                "PBRS [%s]: exit_potential_mode=%r invalid, set to %r. Valid: %s",
+                self.id,
                 self._exit_potential_mode,
                 ReforceXY._EXIT_POTENTIAL_MODES[0],
                 ", ".join(ReforceXY._EXIT_POTENTIAL_MODES),
@@ -1929,7 +1954,8 @@ class MyRLEnv(Base5ActionRLEnv):
         if self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]:
             if self._entry_additive_enabled or self._exit_additive_enabled:
                 logger.info(
-                    "PBRS: canonical mode, additive disabled (use exit_potential_mode=%s to enable)",
+                    "PBRS [%s]: canonical mode, additive disabled (use exit_potential_mode=%s to enable)",
+                    self.id,
                     ReforceXY._EXIT_POTENTIAL_MODES[1],
                 )
                 self._entry_additive_enabled = False
@@ -1937,13 +1963,14 @@ class MyRLEnv(Base5ActionRLEnv):
         # "non_canonical"
         elif self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]:
             if self._entry_additive_enabled or self._exit_additive_enabled:
-                logger.info("PBRS: non-canonical mode, additive enabled")
+                logger.info("PBRS [%s]: non-canonical mode, additive enabled", self.id)
 
         if MyRLEnv.is_unsupported_pbrs_config(
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
             logger.warning(
-                "PBRS: hold_potential_enabled=True requires add_state_info=True, enabling"
+                "PBRS [%s]: hold_potential_enabled=True requires add_state_info=True, enabling",
+                self.id,
             )
             self.add_state_info = True
             self._set_observation_space()
@@ -2213,7 +2240,8 @@ class MyRLEnv(Base5ActionRLEnv):
             return min(max(-1.0, x), 1.0)
 
         logger.warning(
-            "PBRS: potential_transform=%r invalid, set to 'tanh'. Valid: %s",
+            "PBRS [%s]: potential_transform=%r invalid, set to 'tanh'. Valid: %s",
+            self.id,
             name,
             ", ".join(ReforceXY._TRANSFORM_FUNCTIONS),
         )
@@ -2660,7 +2688,9 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         if exit_plateau_grace < 0.0:
             logger.warning(
-                "PBRS: exit_plateau_grace=%.2f invalid, set to 0.0", exit_plateau_grace
+                "PBRS [%s]: exit_plateau_grace=%.2f invalid, set to 0.0",
+                self.id,
+                exit_plateau_grace,
             )
             exit_plateau_grace = 0.0
 
@@ -2676,7 +2706,9 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             if slope < 0.0:
                 logger.warning(
-                    "PBRS: exit_linear_slope=%.2f invalid, set to 1.0", slope
+                    "PBRS [%s]: exit_linear_slope=%.2f invalid, set to 1.0",
+                    self.id,
+                    slope,
                 )
                 slope = 1.0
             return 1.0 / (1.0 + slope * dr)
@@ -2718,7 +2750,8 @@ class MyRLEnv(Base5ActionRLEnv):
         strategy_fn = strategies.get(exit_attenuation_mode, None)
         if strategy_fn is None:
             logger.warning(
-                "PBRS: exit_attenuation_mode=%r invalid, set to %r. Valid: %s",
+                "PBRS [%s]: exit_attenuation_mode=%r invalid, set to %r. Valid: %s",
+                self.id,
                 exit_attenuation_mode,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
                 ", ".join(ReforceXY._EXIT_ATTENUATION_MODES),
@@ -2731,7 +2764,8 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         except Exception as e:
             logger.warning(
-                "PBRS: exit_attenuation_mode=%r failed (%r), set to %r (effective_dr=%.5f)",
+                "PBRS [%s]: exit_attenuation_mode=%r failed (%r), set to %r (effective_dr=%.5f)",
+                self.id,
                 exit_attenuation_mode,
                 e,
                 ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
@@ -2787,16 +2821,21 @@ class MyRLEnv(Base5ActionRLEnv):
         if check_invariants:
             if not np.isfinite(exit_factor):
                 logger.debug(
-                    "PBRS: exit_factor=%.5f non-finite, set to 0.0", exit_factor
+                    "PBRS [%s]: exit_factor=%.5f non-finite, set to 0.0",
+                    self.id,
+                    exit_factor,
                 )
                 return 0.0
             if efficiency_coefficient < 0.0:
                 logger.debug(
-                    "PBRS: efficiency_coefficient=%.5f negative", efficiency_coefficient
+                    "PBRS [%s]: efficiency_coefficient=%.5f negative",
+                    self.id,
+                    efficiency_coefficient,
                 )
             if exit_factor < 0.0 and pnl >= 0.0:
                 logger.debug(
-                    "PBRS: exit_factor=%.5f negative with pnl=%.5f positive, clamped to 0.0",
+                    "PBRS [%s]: exit_factor=%.5f negative with pnl=%.5f positive, clamped to 0.0",
+                    self.id,
                     exit_factor,
                     pnl,
                 )
@@ -2808,7 +2847,8 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             if exit_factor_threshold > 0 and abs(exit_factor) > exit_factor_threshold:
                 logger.warning(
-                    "PBRS: |exit_factor|=%.5f exceeds exit_factor_threshold=%.5f",
+                    "PBRS [%s]: |exit_factor|=%.5f exceeds exit_factor_threshold=%.5f",
+                    self.id,
                     abs(exit_factor),
                     exit_factor_threshold,
                 )
@@ -3386,12 +3426,12 @@ class MyRLEnv(Base5ActionRLEnv):
         Get environment data aligned on ticks, including optional trade events
         """
         if not self.history:
-            logger.warning("Env: history is empty")
+            logger.debug("Env [%s]: history is empty", self.id)
             return DataFrame()
 
         _history_df = DataFrame(self.history)
         if "tick" not in _history_df.columns:
-            logger.warning("Env: 'tick' column missing from history")
+            logger.error("Env [%s]: 'tick' column missing from history", self.id)
             return DataFrame()
 
         _rollout_history = _history_df.copy()
@@ -3412,7 +3452,10 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         except Exception as e:
             logger.error(
-                "Env: failed to merge history with prices: %r", e, exc_info=True
+                "Env [%s]: failed to merge history with prices: %r",
+                self.id,
+                e,
+                exc_info=True,
             )
             return DataFrame()
         return history
@@ -4077,7 +4120,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 last_mean_reward = float(getattr(self, "last_mean_reward", np.nan))
             except Exception as e:
                 logger.warning(
-                    "Hyperopt %s: trial #%d invalid last_mean_reward (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt [%s]: trial #%d invalid last_mean_reward (eval_idx=%s, timesteps=%s): %r",
                     self.trial.study.study_name,
                     self.trial.number,
                     self.eval_idx,
@@ -4089,7 +4132,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
 
             if not np.isfinite(last_mean_reward):
                 logger.warning(
-                    "Hyperopt %s: trial #%d non-finite last_mean_reward (eval_idx=%s, timesteps=%s)",
+                    "Hyperopt [%s]: trial #%d non-finite last_mean_reward (eval_idx=%s, timesteps=%s)",
                     self.trial.study.study_name,
                     self.trial.number,
                     self.eval_idx,
@@ -4102,7 +4145,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 self.trial.report(last_mean_reward, self.num_timesteps)
             except Exception as e:
                 logger.warning(
-                    "Hyperopt %s: trial #%d trial.report failed (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt [%s]: trial #%d trial.report failed (eval_idx=%s, timesteps=%s): %r",
                     self.trial.study.study_name,
                     self.trial.number,
                     self.eval_idx,
@@ -4116,7 +4159,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 best_mean_reward = float(getattr(self, "best_mean_reward", np.nan))
             except Exception as e:
                 logger.warning(
-                    "Hyperopt %s: trial #%d invalid best_mean_reward (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt [%s]: trial #%d invalid best_mean_reward (eval_idx=%s, timesteps=%s): %r",
                     self.trial.study.study_name,
                     self.trial.number,
                     self.eval_idx,
@@ -4142,7 +4185,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     )
                 else:
                     logger.warning(
-                        "Hyperopt %s: trial #%d non-finite best_mean_reward (eval_idx=%s, timesteps=%s)",
+                        "Hyperopt [%s]: trial #%d non-finite best_mean_reward (eval_idx=%s, timesteps=%s)",
                         self.trial.study.study_name,
                         self.trial.number,
                         self.eval_idx,
@@ -4150,7 +4193,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     )
             except Exception as e:
                 logger.error(
-                    "Hyperopt %s: trial #%d logger.record failed (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt [%s]: trial #%d logger.record failed (eval_idx=%s, timesteps=%s): %r",
                     self.trial.study.study_name,
                     self.trial.number,
                     self.eval_idx,
@@ -4162,7 +4205,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
             try:
                 if self.trial.should_prune():
                     logger.info(
-                        "Hyperopt %s: trial #%d pruned (eval_idx=%s, timesteps=%s, score=%.5f)",
+                        "Hyperopt [%s]: trial #%d pruned (eval_idx=%s, timesteps=%s, score=%.5f)",
                         self.trial.study.study_name,
                         self.trial.number,
                         self.eval_idx,
@@ -4173,7 +4216,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                     return False
             except Exception as e:
                 logger.warning(
-                    "Hyperopt %s: trial #%d should_prune failed (eval_idx=%s, timesteps=%s): %r",
+                    "Hyperopt [%s]: trial #%d should_prune failed (eval_idx=%s, timesteps=%s): %r",
                     self.trial.study.study_name,
                     self.trial.number,
                     self.eval_idx,

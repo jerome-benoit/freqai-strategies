@@ -659,7 +659,7 @@ def _build_weights_array(
 
     if len(indices) != weights.size:
         raise ValueError(
-            f"Length mismatch: {len(indices)} indices but {weights.size} weights"
+            f"Invalid indices/weights: length mismatch ({len(indices)} indices but {weights.size} weights)"
         )
 
     weights_array = np.full(n_extrema, default_weight, dtype=float)
@@ -746,7 +746,7 @@ def calculate_hybrid_extrema_weights(
 
     if any(weights_array_by_source[s].size != n for s in enabled_sources):
         raise ValueError(
-            f"Length mismatch: hybrid {n} indices but inconsistent weights lengths"
+            f"Invalid hybrid weights: length mismatch ({n} indices but inconsistent weights lengths)"
         )
 
     source_weights_array: NDArray[np.floating] = np.asarray(
@@ -2344,11 +2344,9 @@ def validate_range(
     if not isinstance(default_min, (int, float)) or not isinstance(
         default_max, (int, float)
     ):
-        raise ValueError(f"{name}: defaults must be numeric")
+        raise ValueError(f"Invalid {name}: defaults must be numeric")
     if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(
-            f"{name}: invalid defaults ordering {default_min} >= {default_max}"
-        )
+        raise ValueError(f"Invalid {name}: defaults ordering must have min < max")
 
     def _validate_component(
         value: float | int | None, name: str, default_value: float | int

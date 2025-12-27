@@ -2386,7 +2386,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         continuous = self._optuna_config.get("continuous")
         if continuous:
-            QuickAdapterRegressorV3.optuna_delete_study(study_name, storage)
+            QuickAdapterRegressorV3.optuna_delete_study(
+                pair, namespace, study_name, storage
+            )
 
         try:
             return optuna.create_study(
@@ -2471,13 +2473,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def optuna_delete_study(
-        study_name: str, storage: optuna.storages.BaseStorage
+        pair: str, namespace: str, study_name: str, storage: optuna.storages.BaseStorage
     ) -> None:
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
         except Exception as e:
             logger.warning(
-                f"Optuna study {study_name} deletion failed: {e!r}",
+                f"[{pair}] Optuna {namespace} study {study_name} deletion failed: {e!r}",
                 exc_info=True,
             )
 
