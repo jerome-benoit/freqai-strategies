@@ -1105,11 +1105,11 @@ class QuickAdapterV3(IStrategy):
 
         if len(pivots_indices) == 0:
             logger.warning(
-                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | label_natr_ratio={format_number(label_natr_ratio)}"
+                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_ratio: {format_number(label_natr_ratio)}"
             )
         else:
             logger.info(
-                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | label_natr_ratio={format_number(label_natr_ratio)}"
+                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_ratio: {format_number(label_natr_ratio)}"
             )
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
 
