@@ -2046,34 +2046,22 @@ def fit_regressor(
                 model_training_parameters["random_state"] + trial.number
             )
 
-        early_stopping = eval_set is not None
         model_training_parameters.pop("early_stopping", None)
 
         model = HistGradientBoostingRegressor(
-            early_stopping=early_stopping,
-            scoring="neg_root_mean_squared_error" if early_stopping else None,
+            early_stopping=True,
+            scoring="neg_root_mean_squared_error",
             **model_training_parameters,
         )
 
-        if eval_set is not None:
-            X_val, y_val = eval_set[0]
-            val_weights = eval_weights[0] if eval_weights else None
-            model.fit(
-                X=X,
-                y=y.values.ravel() if hasattr(y, "values") else np.ravel(y),
-                sample_weight=train_weights,
-                X_val=X_val,
-                y_val=y_val.values.ravel()
-                if hasattr(y_val, "values")
-                else np.ravel(y_val),
-                sample_weight_val=val_weights,
-            )
-        else:
-            model.fit(
-                X=X,
-                y=y.values.ravel() if hasattr(y, "values") else np.ravel(y),
-                sample_weight=train_weights,
-            )
+        model.fit(
+            X=X,
+            y=y,
+            sample_weight=train_weights,
+            X_val=eval_set[0][0],
+            y_val=eval_set[0][1],
+            sample_weight_val=eval_weights[0],
+        )
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
