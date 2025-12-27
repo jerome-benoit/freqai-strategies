@@ -199,7 +199,7 @@ def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
 @lru_cache(maxsize=8)
 def get_odd_window(window: int) -> int:
     if window < 1:
-        raise ValueError(f"Invalid window {window}: must be > 0")
+        raise ValueError(f"Invalid window {window!r}: must be > 0")
     return window if window % 2 == 1 else window + 1
 
 
@@ -233,7 +233,7 @@ def _calculate_coeffs(
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(
-            f"Invalid window type '{win_type}'. "
+            f"Invalid window type {win_type!r}. "
             f"Supported: {', '.join(SMOOTHING_METHODS[:3])}"
         )
     return coeffs / np.sum(coeffs)
@@ -443,7 +443,7 @@ def standardize_weights(
 
     else:
         raise ValueError(
-            f"Invalid standardization method '{method}'. "
+            f"Invalid standardization method {method!r}. "
             f"Supported: {', '.join(STANDARDIZATION_TYPES)}"
         )
 
@@ -632,7 +632,7 @@ def normalize_weights(
         normalized_weights = _normalize_rank(standardized_weights, method=rank_method)
     else:
         raise ValueError(
-            f"Invalid normalization method '{normalization}'. "
+            f"Invalid normalization method {normalization!r}. "
             f"Supported: {', '.join(NORMALIZATION_TYPES)}"
         )
 
@@ -788,7 +788,7 @@ def calculate_hybrid_extrema_weights(
         )
     else:
         raise ValueError(
-            f"Invalid hybrid aggregation method '{aggregation}'. "
+            f"Invalid hybrid aggregation method {aggregation!r}. "
             f"Supported: {', '.join(HYBRID_AGGREGATIONS)}"
         )
 
@@ -969,7 +969,7 @@ def compute_extrema_weights(
         )
 
     raise ValueError(
-        f"Invalid extrema weighting strategy '{strategy}'. "
+        f"Invalid extrema weighting strategy {strategy!r}. "
         f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
     )
 
@@ -1130,7 +1130,7 @@ def top_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
     :return: The top change percentage series
     """
     if period < 1:
-        raise ValueError(f"Invalid period {period}: must be >= 1")
+        raise ValueError(f"Invalid period {period!r}: must be >= 1")
 
     previous_close_top = (
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
@@ -1148,7 +1148,7 @@ def bottom_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
     :return: The bottom change percentage series
     """
     if period < 1:
-        raise ValueError(f"Invalid period {period}: must be >= 1")
+        raise ValueError(f"Invalid period {period!r}: must be >= 1")
 
     previous_close_bottom = (
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
@@ -1167,7 +1167,7 @@ def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series
     :return: Retracement percentage series
     """
     if period < 1:
-        raise ValueError(f"Invalid period {period}: must be >= 1")
+        raise ValueError(f"Invalid period {period!r}: must be >= 1")
 
     previous_close_low = (
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
@@ -1249,7 +1249,7 @@ def _fractal_dimension(
 ) -> float:
     """Original fractal dimension computation implementation per Ehlers' paper."""
     if period % 2 != 0:
-        raise ValueError(f"Invalid period {period}: must be even")
+        raise ValueError(f"Invalid period {period!r}: must be even")
 
     half_period = period // 2
 
@@ -1278,7 +1278,7 @@ def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Seri
     Original FRAMA implementation per Ehlers' paper with optional zero lag.
     """
     if period % 2 != 0:
-        raise ValueError(f"Invalid period {period}: must be even")
+        raise ValueError(f"Invalid period {period!r}: must be even")
 
     n = len(df)
 
@@ -1320,7 +1320,7 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     https://www.sierrachart.com/index.php?page=doc/StudiesReference.php&ID=173&Name=Moving_Average_-_Smoothed
     """
     if period <= 0:
-        raise ValueError(f"Invalid period {period}: must be > 0")
+        raise ValueError(f"Invalid period {period!r}: must be > 0")
     n = len(series)
     if n < period:
         return pd.Series(index=series.index, dtype=float)
@@ -1960,7 +1960,7 @@ def get_optuna_callbacks(
         ]
     else:
         raise ValueError(
-            f"Invalid regressor '{regressor}'. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
     return callbacks
 
@@ -2031,7 +2031,7 @@ def fit_regressor(
         )
     else:
         raise ValueError(
-            f"Invalid regressor '{regressor}'. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
     return model
 
@@ -2045,13 +2045,13 @@ def get_optuna_study_model_parameters(
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(
-            f"Invalid regressor '{regressor}'. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
     if not isinstance(expansion_ratio, (int, float)) or not (
         0.0 <= expansion_ratio <= 1.0
     ):
         raise ValueError(
-            f"Invalid expansion_ratio {expansion_ratio}: must be a float between 0 and 1"
+            f"Invalid expansion_ratio {expansion_ratio!r}: must be in range [0, 1]"
         )
     default_ranges: dict[str, tuple[float, float]] = {
         "n_estimators": (100, 2000),

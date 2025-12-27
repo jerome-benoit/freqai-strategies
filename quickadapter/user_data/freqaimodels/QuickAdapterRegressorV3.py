@@ -798,7 +798,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             params = self._optuna_label_params.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
         return params
@@ -814,7 +814,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_params[pair] = params
         else:
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
 
@@ -825,7 +825,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             value = self._optuna_train_value.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
             )
         return value
@@ -837,7 +837,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_train_value[pair] = value
         else:
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
             )
 
@@ -846,7 +846,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             values = self._optuna_label_values.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         return values
@@ -858,7 +858,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_values[pair] = values
         else:
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
 
@@ -1059,7 +1059,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
         }:  # Only "label"
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         if not callable(callback):
@@ -1394,7 +1394,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pred_minima = pred_extrema[pred_extrema < -eps]
         else:
             raise ValueError(
-                f"Invalid extrema_selection '{extrema_selection}'. "
+                f"Invalid extrema_selection {extrema_selection!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
             )
 
@@ -1489,7 +1489,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             threshold_func = getattr(skimage.filters, f"threshold_{method}")
         except AttributeError:
             raise ValueError(
-                f"Invalid skimage threshold method '{method}'. "
+                f"Invalid skimage threshold method {method!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)}"
             )
 
@@ -1524,7 +1524,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return threshold_func(values)
         except Exception as e:
             logger.warning(
-                f"Failed to apply skimage threshold function {threshold_func.__name__} on series {series.name}: {e!r}, falling back to median",
+                f"Threshold function {threshold_func.__name__} failed on series {series.name}: {e!r}, falling back to median",
                 exc_info=True,
             )
             return np.nanmedian(values)
@@ -1586,7 +1586,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 raise ValueError("Invalid weights: must be finite and non-negative")
             if metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
                 raise ValueError(
-                    f"Invalid weights: not supported for metric '{metric}'"
+                    f"Invalid weights: not supported for metric {metric!r}"
                 )
 
         matrix = np.asarray(matrix, dtype=np.float64)
@@ -1850,7 +1850,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
             ):
                 raise ValueError(
-                    f"Invalid label_medoid_metric '{label_medoid_metric}'. "
+                    f"Invalid label_medoid_metric {label_medoid_metric!r}. "
                     f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
                 )
             p = None
@@ -1893,7 +1893,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
             ):
                 raise ValueError(
-                    f"Invalid label_kmeans_metric '{label_kmeans_metric}'. "
+                    f"Invalid label_kmeans_metric {label_kmeans_metric!r}. "
                     f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
                 )
             cdist_kwargs: dict[str, Any] = {}
@@ -1971,7 +1971,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     ]
                 else:
                     raise ValueError(
-                        f"Invalid label_kmeans_selection '{label_kmeans_selection}'. "
+                        f"Invalid label_kmeans_selection {label_kmeans_selection!r}. "
                         f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)}"
                     )
             return trial_distances
@@ -1986,7 +1986,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
             ):
                 raise ValueError(
-                    f"Invalid label_kmedoids_metric '{label_kmedoids_metric}'. "
+                    f"Invalid label_kmedoids_metric {label_kmedoids_metric!r}. "
                     f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
                 )
             kmedoids_kwargs: dict[str, Any] = {
@@ -2054,7 +2054,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ]
                 else:
                     raise ValueError(
-                        f"Invalid label_kmedoids_selection '{label_kmedoids_selection}'. "
+                        f"Invalid label_kmedoids_selection {label_kmedoids_selection!r}. "
                         f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)}"
                     )
             return trial_distances
@@ -2123,7 +2123,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 return np.nanmax(neighbor_distances, axis=1)
         else:
             raise ValueError(
-                f"Invalid label metric '{metric}'. Supported: {', '.join(metrics)}"
+                f"Invalid label metric {metric!r}. Supported: {', '.join(metrics)}"
             )
 
     def _get_multi_objective_study_best_trial(
@@ -2133,7 +2133,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
         }:  # Only "label"
             raise ValueError(
-                f"Invalid namespace '{namespace}'. "
+                f"Invalid namespace {namespace!r}. "
                 f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
             )
         n_objectives = len(study.directions)
@@ -2150,7 +2150,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )  # "euclidean"
         if label_metric not in metrics:
             raise ValueError(
-                f"Invalid label_metric '{label_metric}'. Supported: {', '.join(metrics)}"
+                f"Invalid label_metric {label_metric!r}. Supported: {', '.join(metrics)}"
             )
 
         best_trials = [
@@ -2275,7 +2275,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             }
             metric_log_msg = f" using {self.ft_params.get('label_metric', QuickAdapterRegressorV3._SCIPY_METRICS[2])} metric"
         logger.info(
-            f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt done{metric_log_msg} ({time_spent:.2f} secs)"
+            f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed{metric_log_msg} ({time_spent:.2f} secs)"
         )
         for key, value in study_best_results.items():
             if isinstance(value, list):
@@ -2320,7 +2320,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid optuna storage_backend '{storage_backend}'. "
+                f"Invalid optuna storage_backend {storage_backend!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
             )
         return storage
@@ -2352,7 +2352,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid optuna sampler '{sampler}'. "
+                f"Invalid optuna sampler {sampler!r}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
             )
 
@@ -2480,7 +2480,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             optuna.delete_study(study_name=study_name, storage=storage)
         except Exception as e:
             logger.warning(
-                f"Optuna study deletion failed for study {study_name}: {e!r}",
+                f"Optuna study {study_name} deletion failed: {e!r}",
                 exc_info=True,
             )
 

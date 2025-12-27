@@ -728,7 +728,7 @@ class QuickAdapterV3(IStrategy):
     def get_label_natr_ratio_percent(self, pair: str, percent: float) -> float:
         if not isinstance(percent, float) or not (0.0 <= percent <= 1.0):
             raise ValueError(
-                f"Invalid percent {percent}: must be a float between 0 and 1"
+                f"Invalid percent {percent!r}: must be a float in range [0, 1]"
             )
         return self.get_label_natr_ratio(pair) * percent
 
@@ -789,7 +789,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_mmad_scaling_factor <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting mmad_scaling_factor {weighting_mmad_scaling_factor!r}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
+                f"Invalid extrema_weighting mmad_scaling_factor {weighting_mmad_scaling_factor!r}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
             )
             weighting_mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING[
                 "mmad_scaling_factor"
@@ -856,7 +856,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_sigmoid_scale <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting sigmoid_scale {weighting_sigmoid_scale!r}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
+                f"Invalid extrema_weighting sigmoid_scale {weighting_sigmoid_scale!r}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
             )
             weighting_sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
 
@@ -869,7 +869,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_softmax_temperature <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting softmax_temperature {weighting_softmax_temperature!r}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
+                f"Invalid extrema_weighting softmax_temperature {weighting_softmax_temperature!r}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
             )
             weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
                 "softmax_temperature"
@@ -1045,7 +1045,7 @@ class QuickAdapterV3(IStrategy):
             or not np.isfinite(smoothing_sigma)
         ):
             logger.warning(
-                f"Invalid extrema_smoothing sigma {smoothing_sigma!r}, must be a positive finite number, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
+                f"Invalid extrema_smoothing sigma {smoothing_sigma!r}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
             )
             smoothing_sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
 
@@ -1073,7 +1073,7 @@ class QuickAdapterV3(IStrategy):
         try:
             return pattern.format(**duration)
         except (KeyError, ValueError) as e:
-            raise ValueError(f"Invalid pattern '{pattern}': {e!r}")
+            raise ValueError(f"Invalid pattern {pattern!r}: {e!r}")
 
     def set_freqai_targets(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
@@ -1412,8 +1412,8 @@ class QuickAdapterV3(IStrategy):
         trade_price_target_fn = trade_price_target_methods.get(trade_price_target)
         if trade_price_target_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target '{trade_price_target}'. "
-                f"Supported: {', '.join(sorted(TRADE_PRICE_TARGETS))}"
+                f"Invalid trade_price_target {trade_price_target!r}. "
+                f"Supported: {', '.join(TRADE_PRICE_TARGETS)}"
             )
         return trade_price_target_fn()
 
@@ -1442,7 +1442,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float]:
         if not (0.0 <= natr_ratio_percent <= 1.0):
             raise ValueError(
-                f"Invalid natr_ratio_percent {natr_ratio_percent}: must be in [0, 1]"
+                f"Invalid natr_ratio_percent {natr_ratio_percent!r}: must be in range [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1469,7 +1469,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float]:
         if not (0.0 <= natr_ratio_percent <= 1.0):
             raise ValueError(
-                f"Invalid natr_ratio_percent {natr_ratio_percent}: must be in [0, 1]"
+                f"Invalid natr_ratio_percent {natr_ratio_percent!r}: must be in range [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1817,7 +1817,7 @@ class QuickAdapterV3(IStrategy):
             )
         else:
             raise ValueError(
-                f"Invalid interpolation_direction '{interpolation_direction}'. "
+                f"Invalid interpolation_direction {interpolation_direction!r}. "
                 f"Supported: {', '.join(QuickAdapterV3._INTERPOLATION_DIRECTIONS)}"
             )
         candle_deviation = (
@@ -1891,7 +1891,7 @@ class QuickAdapterV3(IStrategy):
             candle_threshold = base_price * (1 - current_deviation)
         else:
             raise ValueError(
-                f"Invalid side '{side}'. Supported: {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
+                f"Invalid side {side!r}. Supported: {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
             )
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]
@@ -1999,12 +1999,12 @@ class QuickAdapterV3(IStrategy):
         if lookback_period > max_lookback_period:
             lookback_period = max_lookback_period
         if not isinstance(decay_ratio, (int, float)):
-            logger.info(
+            logger.debug(
                 f"[{pair}] Denied {trade_direction} {order}: invalid decay_ratio type"
             )
             return False
         if not (0.0 < decay_ratio <= 1.0):
-            logger.info(
+            logger.debug(
                 f"[{pair}] Denied {trade_direction} {order}: invalid decay_ratio {decay_ratio}, must be in (0, 1]"
             )
             return False
@@ -2031,7 +2031,7 @@ class QuickAdapterV3(IStrategy):
             if side == QuickAdapterV3._TRADE_DIRECTIONS[1]:  # "short"
                 trade_direction = QuickAdapterV3._TRADE_DIRECTIONS[0]  # "long"
         if not current_ok:
-            logger.info(
+            logger.debug(
                 f"[{pair}] Denied {trade_direction} {order}: rate {format_number(rate)} did not break threshold {format_number(current_threshold)}"
             )
             return False
@@ -2073,7 +2073,7 @@ class QuickAdapterV3(IStrategy):
                 side == QuickAdapterV3._TRADE_DIRECTIONS[1]
                 and not (close_k < threshold_k)  # "short"
             ):
-                logger.info(
+                logger.debug(
                     f"[{pair}] Denied {trade_direction} {order}: "
                     f"close_k[{-k}] {format_number(close_k)} "
                     f"did not break threshold_k[{-(k + 1)}] {format_number(threshold_k)} "
@@ -2474,7 +2474,7 @@ class QuickAdapterV3(IStrategy):
             return False
         else:
             raise ValueError(
-                f"Invalid trading_mode '{trading_mode}'. "
+                f"Invalid trading_mode {trading_mode!r}. "
                 f"Supported: {', '.join(QuickAdapterV3._TRADING_MODES)}"
             )
 
