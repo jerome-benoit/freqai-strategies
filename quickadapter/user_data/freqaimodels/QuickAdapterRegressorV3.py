@@ -535,7 +535,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             label_weights = self.ft_params.get("label_weights")
             if label_weights is not None:
-                logger.info(f"  label_weights: {label_weights}")
+                formatted_label_weights = [format_number(w) for w in label_weights]
+                logger.info(f"  label_weights: [{', '.join(formatted_label_weights)}]")
             else:
                 logger.info(
                     "  label_weights: [1.0, ...] * n_objectives, l1 normalized (default)"
@@ -1081,7 +1082,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 self.set_optuna_label_candle(pair)
                 self._optuna_label_candles[pair] = 0
         else:
-            logger.info(
+            logger.debug(
                 f"[{pair}] Optuna {namespace} callback throttled, still {optuna_label_remaining_candles} candles to go"
             )
         if len(self._optuna_label_incremented_pairs) >= len(self.pairs):

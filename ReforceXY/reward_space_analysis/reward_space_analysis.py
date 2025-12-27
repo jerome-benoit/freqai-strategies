@@ -857,7 +857,7 @@ def _compute_time_attenuation_coefficient(
                 alpha = -math.log(tau) / _LOG_2
             else:
                 warnings.warn(
-                    f"Param: exit_power_tau={tau} outside (0,1]; falling back to alpha=1.0",
+                    f"Param: exit_power_tau={tau} outside (0,1]; falling back to 1.0",
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
@@ -905,7 +905,7 @@ def _compute_time_attenuation_coefficient(
         time_attenuation_coefficient = kernel(effective_dr)
     except Exception as e:
         warnings.warn(
-            f"Param: exit_attenuation_mode='{exit_attenuation_mode}' failed ({e!r}); falling back to linear",
+            f"Param: exit_attenuation_mode='{exit_attenuation_mode}' failed ({e!r}); falling back to 'linear'",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -972,7 +972,7 @@ def _get_exit_factor(
         if exit_factor_threshold > 0 and np.isfinite(exit_factor_threshold):  # noqa: SIM102
             if abs(exit_factor) > exit_factor_threshold:
                 warnings.warn(
-                    f"Param: |exit_factor|={abs(exit_factor):.2f} > threshold={exit_factor_threshold:.2f}",
+                    f"Param: |exit_factor|={abs(exit_factor):.6g} > threshold={exit_factor_threshold:.6g}",
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
@@ -1072,7 +1072,7 @@ def _compute_efficiency_coefficient(
     if efficiency_coefficient < 0.0:
         if _get_bool_param(params, "check_invariants"):
             warnings.warn(
-                f"Param: efficiency_coefficient={efficiency_coefficient:.4f} < 0; falling back to 0.0",
+                f"Param: efficiency_coefficient={efficiency_coefficient:.6g} < 0; falling back to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -2734,7 +2734,7 @@ def _validate_bootstrap_results(
                 ci_low, ci_high = lower, upper
             results[metric] = (mean, ci_low, ci_high)
             warnings.warn(
-                f"Stats: bootstrap_ci for '{metric}' degenerate (width={width:.2e}); adjusted to epsilon={epsilon:.1e}",
+                f"Stats: bootstrap_ci for '{metric}' degenerate (width={width:.6g}); falling back to epsilon={epsilon:.6g}",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )

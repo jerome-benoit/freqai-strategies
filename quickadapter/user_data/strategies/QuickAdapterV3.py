@@ -376,7 +376,11 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Extrema Weighting:")
         logger.info(f"  strategy: {self.extrema_weighting['strategy']}")
-        logger.info(f"  source_weights: {self.extrema_weighting['source_weights']}")
+        formatted_source_weights = {
+            k: format_number(v)
+            for k, v in self.extrema_weighting["source_weights"].items()
+        }
+        logger.info(f"  source_weights: {formatted_source_weights}")
         logger.info(f"  aggregation: {self.extrema_weighting['aggregation']}")
         logger.info(
             f"  aggregation_normalization: {self.extrema_weighting['aggregation_normalization']}"
@@ -1699,7 +1703,7 @@ class QuickAdapterV3(IStrategy):
                 pair=trade.pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
                 ),
             )
@@ -1717,7 +1721,7 @@ class QuickAdapterV3(IStrategy):
                 initial_trade_partial_stake_amount = trade_partial_stake_amount
                 trade_partial_stake_amount = trade.stake_amount - min_stake
                 logger.info(
-                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} to {format_number(trade_partial_stake_amount)} to respect min_stake {format_number(min_stake)}"
                 )
             return (
@@ -2319,7 +2323,7 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
                 ),
             )
@@ -2393,7 +2397,7 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"Trade {trade.trade_direction} {trade.pair} stage {trade_exit_stage} | "
+                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)} | "
                     f"Declining: {trade_recent_pnl_declining} "
                     f"(tV:{format_number(t_trade_recent_velocity)}<=-t:{format_number(-t_crit_trade_recent_velocity)}, tA:{format_number(t_trade_recent_acceleration)}<=-t:{format_number(-t_crit_trade_recent_acceleration)})"
