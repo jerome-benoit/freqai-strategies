@@ -741,7 +741,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_strategy not in set(WEIGHT_STRATEGIES):
             logger.warning(
-                f"Invalid extrema_weighting strategy '{weighting_strategy}', using default '{WEIGHT_STRATEGIES[0]}'"
+                f"Invalid extrema_weighting strategy {weighting_strategy!r}, using default {WEIGHT_STRATEGIES[0]!r}"
             )
             weighting_strategy = WEIGHT_STRATEGIES[0]
 
@@ -753,7 +753,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_standardization not in set(STANDARDIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting standardization '{weighting_standardization}', using default '{STANDARDIZATION_TYPES[0]}'"
+                f"Invalid extrema_weighting standardization {weighting_standardization!r}, using default {STANDARDIZATION_TYPES[0]!r}"
             )
             weighting_standardization = STANDARDIZATION_TYPES[0]
 
@@ -770,7 +770,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_robust_quantiles[0] >= weighting_robust_quantiles[1]
         ):
             logger.warning(
-                f"Invalid extrema_weighting robust_quantiles {weighting_robust_quantiles}, must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']}"
+                f"Invalid extrema_weighting robust_quantiles {weighting_robust_quantiles!r}, must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
             )
             weighting_robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
         else:
@@ -788,7 +788,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_mmad_scaling_factor <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting mmad_scaling_factor {weighting_mmad_scaling_factor}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']}"
+                f"Invalid extrema_weighting mmad_scaling_factor {weighting_mmad_scaling_factor!r}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
             )
             weighting_mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING[
                 "mmad_scaling_factor"
@@ -802,7 +802,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting normalization '{weighting_normalization}', using default '{NORMALIZATION_TYPES[0]}'"
+                f"Invalid extrema_weighting normalization {weighting_normalization!r}, using default {NORMALIZATION_TYPES[0]!r}"
             )
             weighting_normalization = NORMALIZATION_TYPES[0]
 
@@ -837,7 +837,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_minmax_range[0] >= weighting_minmax_range[1]
         ):
             logger.warning(
-                f"Invalid extrema_weighting minmax_range {weighting_minmax_range}, must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']}"
+                f"Invalid extrema_weighting minmax_range {weighting_minmax_range!r}, must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
             )
             weighting_minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
         else:
@@ -855,7 +855,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_sigmoid_scale <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting sigmoid_scale {weighting_sigmoid_scale}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']}"
+                f"Invalid extrema_weighting sigmoid_scale {weighting_sigmoid_scale!r}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
             )
             weighting_sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
 
@@ -868,7 +868,7 @@ class QuickAdapterV3(IStrategy):
             or weighting_softmax_temperature <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting softmax_temperature {weighting_softmax_temperature}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']}"
+                f"Invalid extrema_weighting softmax_temperature {weighting_softmax_temperature!r}, must be > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
             )
             weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
                 "softmax_temperature"
@@ -881,7 +881,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_rank_method not in set(RANK_METHODS):
             logger.warning(
-                f"Invalid extrema_weighting rank_method '{weighting_rank_method}', using default '{RANK_METHODS[0]}'"
+                f"Invalid extrema_weighting rank_method {weighting_rank_method!r}, using default {RANK_METHODS[0]!r}"
             )
             weighting_rank_method = RANK_METHODS[0]
 
@@ -895,7 +895,7 @@ class QuickAdapterV3(IStrategy):
             or not (0 < weighting_gamma <= 10.0)
         ):
             logger.warning(
-                f"Invalid extrema_weighting gamma {weighting_gamma}, must be a finite number in (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']}"
+                f"Invalid extrema_weighting gamma {weighting_gamma!r}, must be a finite number in (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
             )
             weighting_gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
 
@@ -904,7 +904,7 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(weighting_source_weights, dict):
             logger.warning(
-                f"Invalid extrema_weighting source_weights {weighting_source_weights}, must be a dict of source name to weight, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']}"
+                f"Invalid extrema_weighting source_weights {weighting_source_weights!r}, must be a dict of source name to weight, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
             )
             weighting_source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
         else:
@@ -921,7 +921,7 @@ class QuickAdapterV3(IStrategy):
                 sanitized_source_weights[str(source)] = float(weight)
             if not sanitized_source_weights:
                 logger.warning(
-                    f"Invalid/empty extrema_weighting source_weights, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']}"
+                    f"Invalid/empty extrema_weighting source_weights {weighting_source_weights!r}, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
                 )
                 weighting_source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
             else:
@@ -934,7 +934,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_aggregation not in set(HYBRID_AGGREGATIONS):
             logger.warning(
-                f"Invalid extrema_weighting aggregation '{weighting_aggregation}', using default '{HYBRID_AGGREGATIONS[0]}'"
+                f"Invalid extrema_weighting aggregation {weighting_aggregation!r}, using default {HYBRID_AGGREGATIONS[0]!r}"
             )
             weighting_aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
         weighting_aggregation_normalization = str(
@@ -945,7 +945,7 @@ class QuickAdapterV3(IStrategy):
         )
         if weighting_aggregation_normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting aggregation_normalization '{weighting_aggregation_normalization}', using default '{NORMALIZATION_TYPES[6]}'"
+                f"Invalid extrema_weighting aggregation_normalization {weighting_aggregation_normalization!r}, using default {NORMALIZATION_TYPES[6]!r}"
             )
             weighting_aggregation_normalization = DEFAULTS_EXTREMA_WEIGHTING[
                 "aggregation_normalization"
@@ -991,7 +991,7 @@ class QuickAdapterV3(IStrategy):
         )
         if smoothing_method not in set(SMOOTHING_METHODS):
             logger.warning(
-                f"Invalid extrema_smoothing method '{smoothing_method}', using default '{SMOOTHING_METHODS[0]}'"
+                f"Invalid extrema_smoothing method {smoothing_method!r}, using default {SMOOTHING_METHODS[0]!r}"
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
@@ -1000,7 +1000,7 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(smoothing_window, int) or smoothing_window < 3:
             logger.warning(
-                f"Invalid extrema_smoothing window {smoothing_window}, must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window']}"
+                f"Invalid extrema_smoothing window {smoothing_window!r}, must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window']!r}"
             )
             smoothing_window = DEFAULTS_EXTREMA_SMOOTHING["window"]
 
@@ -1013,7 +1013,7 @@ class QuickAdapterV3(IStrategy):
             or smoothing_beta <= 0
         ):
             logger.warning(
-                f"Invalid extrema_smoothing beta {smoothing_beta}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']}"
+                f"Invalid extrema_smoothing beta {smoothing_beta!r}, must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
             )
             smoothing_beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
 
@@ -1022,7 +1022,7 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(smoothing_polyorder, int) or smoothing_polyorder < 1:
             logger.warning(
-                f"Invalid extrema_smoothing polyorder {smoothing_polyorder}, must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']}"
+                f"Invalid extrema_smoothing polyorder {smoothing_polyorder!r}, must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
             )
             smoothing_polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
 
@@ -1031,7 +1031,7 @@ class QuickAdapterV3(IStrategy):
         )
         if smoothing_mode not in set(SMOOTHING_MODES):
             logger.warning(
-                f"Invalid extrema_smoothing mode '{smoothing_mode}', using default '{SMOOTHING_MODES[0]}'"
+                f"Invalid extrema_smoothing mode {smoothing_mode!r}, using default {SMOOTHING_MODES[0]!r}"
             )
             smoothing_mode = SMOOTHING_MODES[0]
 
@@ -1044,7 +1044,7 @@ class QuickAdapterV3(IStrategy):
             or not np.isfinite(smoothing_sigma)
         ):
             logger.warning(
-                f"Invalid extrema_smoothing sigma {smoothing_sigma}, must be a positive finite number, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']}"
+                f"Invalid extrema_smoothing sigma {smoothing_sigma!r}, must be a positive finite number, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
             )
             smoothing_sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
 
@@ -1104,11 +1104,11 @@ class QuickAdapterV3(IStrategy):
 
         if len(pivots_indices) == 0:
             logger.warning(
-                f"{pair}: no extrema to label (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
+                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | {label_natr_ratio=:.2f}"
             )
         else:
             logger.info(
-                f"{pair}: labeled {len(pivots_indices)} extrema (label_period={QuickAdapterV3._td_format(label_period)} / {label_period_candles=} / {label_natr_ratio=:.2f})"
+                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | {label_period_candles=} | {label_natr_ratio=:.2f}"
             )
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
 
@@ -1167,9 +1167,9 @@ class QuickAdapterV3(IStrategy):
 
         if debug:
             extrema = dataframe[EXTREMA_COLUMN]
-            logger.info(f"{extrema.to_numpy()=}")
+            logger.debug(f"{extrema.to_numpy()=}")
             n_extrema: int = calculate_n_extrema(extrema)
-            logger.info(f"{n_extrema=}")
+            logger.debug(f"{n_extrema=}")
         return dataframe
 
     def populate_indicators(
@@ -1387,7 +1387,7 @@ class QuickAdapterV3(IStrategy):
                     return trade_kama_natr_values[-1]
             except Exception as e:
                 logger.warning(
-                    f"{pair}: failed to calculate trade NATR KAMA: {e!r}, falling back to last trade NATR value",
+                    f"[{pair}] Failed to calculate trade NATR KAMA: {e!r}, falling back to last trade NATR value",
                     exc_info=True,
                 )
         return label_natr.iloc[-1]
@@ -1507,7 +1507,9 @@ class QuickAdapterV3(IStrategy):
             try:
                 callback()
             except Exception as e:
-                logger.error(f"{pair}: callback execution failed: {e!r}", exc_info=True)
+                logger.error(
+                    f"[{pair}] Callback execution failed: {e!r}", exc_info=True
+                )
 
             threshold_secs = 10 * candle_duration_secs
             keys_to_remove = [
@@ -2260,7 +2262,7 @@ class QuickAdapterV3(IStrategy):
                 n_outliers = trade.get_custom_data("n_outliers", 0)
                 n_outliers += 1
                 logger.warning(
-                    f"{pair}: detected new predictions outlier ({n_outliers=}) on trade {trade.id}"
+                    f"[{pair}] Detected new predictions outlier ({n_outliers=}) on trade {trade.id}"
                 )
                 trade.set_custom_data("n_outliers", n_outliers)
                 trade.set_custom_data("last_outlier_date", last_candle_date.isoformat())

@@ -2379,7 +2379,7 @@ def validate_range(
 
     if sanitized_min != min_val or sanitized_max != max_val:
         logger.warning(
-            f"Invalid {name} values sanitized: {min_name}={sanitized_min}, {max_name}={sanitized_max} (defaults=({default_min}, {default_max}))"
+            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
         )
 
     return sanitized_min, sanitized_max
