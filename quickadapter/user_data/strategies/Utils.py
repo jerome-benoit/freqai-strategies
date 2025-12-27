@@ -2047,6 +2047,21 @@ def fit_regressor(
             )
 
         model_training_parameters.pop("early_stopping", None)
+        model_training_parameters.pop("n_jobs", None)
+        model_training_parameters.pop("l2_regularization_zero", None)
+
+        verbosity = model_training_parameters.pop("verbosity", None)
+        if "verbose" not in model_training_parameters and verbosity is not None:
+            model_training_parameters["verbose"] = verbosity
+
+        X_val = None
+        y_val = None
+        if eval_set is not None and len(eval_set) > 0:
+            X_val, y_val = eval_set[0]
+
+        sample_weight_val = None
+        if eval_weights is not None and len(eval_weights) > 0:
+            sample_weight_val = eval_weights[0]
 
         model = HistGradientBoostingRegressor(
             early_stopping=True,
@@ -2058,9 +2073,9 @@ def fit_regressor(
             X=X,
             y=y,
             sample_weight=train_weights,
-            X_val=eval_set[0][0],
-            y_val=eval_set[0][1],
-            sample_weight_val=eval_weights[0],
+            X_val=X_val,
+            y_val=y_val,
+            sample_weight_val=sample_weight_val,
         )
     else:
         raise ValueError(
@@ -2087,26 +2102,10 @@ def get_optuna_study_model_parameters(
             f"Invalid expansion_ratio {expansion_ratio!r}: must be in range [0, 1]"
         )
 
-    if regressor == REGRESSORS[0]:  # "xgboost"
-        default_ranges: dict[str, tuple[float, float]] = {
-            "n_estimators": (100, 2000),
-            "learning_rate": (1e-3, 0.5),
-            "max_depth": (3, 13),
-            "min_child_weight": (1e-8, 100.0),
-            "subsample": (0.5, 1.0),
-            "colsample_bytree": (0.5, 1.0),
-            "reg_alpha": (1e-8, 100.0),
-            "reg_lambda": (1e-8, 100.0),
-            "gamma": (1e-8, 10.0),
-        }
-        log_scaled_params = {
-            "learning_rate",
-            "min_child_weight",
-            "reg_alpha",
-            "reg_lambda",
-            "gamma",
-        }
-
+    def _build_ranges(
+        default_ranges: dict[str, tuple[float, float]],
+        log_scaled_params: set[str],
+    ) -> dict[str, tuple[float, float]]:
         ranges = copy.deepcopy(default_ranges)
         if space_reduction and model_training_best_parameters:
             for param, (default_min, default_max) in default_ranges.items():
@@ -2130,6 +2129,29 @@ def get_optuna_study_model_parameters(
                 param_max = min(default_max, new_max)
                 if param_min < param_max:
                     ranges[param] = (param_min, param_max)
+        return ranges
+
+    if regressor == REGRESSORS[0]:  # "xgboost"
+        default_ranges: dict[str, tuple[float, float]] = {
+            "n_estimators": (100, 2000),
+            "learning_rate": (1e-3, 0.5),
+            "max_depth": (3, 13),
+            "min_child_weight": (1e-8, 100.0),
+            "subsample": (0.5, 1.0),
+            "colsample_bytree": (0.5, 1.0),
+            "reg_alpha": (1e-8, 100.0),
+            "reg_lambda": (1e-8, 100.0),
+            "gamma": (1e-8, 10.0),
+        }
+        log_scaled_params = {
+            "learning_rate",
+            "min_child_weight",
+            "reg_alpha",
+            "reg_lambda",
+            "gamma",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
 
         return {
             "n_estimators": trial.suggest_int(
@@ -2194,29 +2216,7 @@ def get_optuna_study_model_parameters(
             "min_split_gain",
         }
 
-        ranges = copy.deepcopy(default_ranges)
-        if space_reduction and model_training_best_parameters:
-            for param, (default_min, default_max) in default_ranges.items():
-                center_value = model_training_best_parameters.get(param)
-                if center_value is None:
-                    center_value = midpoint(default_min, default_max)
-                if not isinstance(center_value, (int, float)) or not np.isfinite(
-                    center_value
-                ):
-                    continue
-                if param in log_scaled_params:
-                    if center_value <= 0:
-                        continue
-                    new_min = center_value / (1 + expansion_ratio)
-                    new_max = center_value * (1 + expansion_ratio)
-                else:
-                    margin = (default_max - default_min) * expansion_ratio / 2
-                    new_min = center_value - margin
-                    new_max = center_value + margin
-                param_min = max(default_min, new_min)
-                param_max = min(default_max, new_max)
-                if param_min < param_max:
-                    ranges[param] = (param_min, param_max)
+        ranges = _build_ranges(default_ranges, log_scaled_params)
 
         return {
             "n_estimators": trial.suggest_int(
@@ -2272,44 +2272,41 @@ def get_optuna_study_model_parameters(
         default_ranges: dict[str, tuple[float, float]] = {
             "max_iter": (100, 2000),
             "learning_rate": (1e-3, 0.5),
-            "max_depth": (3, 15),
             "max_leaf_nodes": (8, 256),
-            "min_samples_leaf": (10, 100),
+            "min_samples_leaf": (5, 200),
             "l2_regularization": (1e-8, 100.0),
-            "max_features": (0.5, 1.0),
-            "n_iter_no_change": (5, 20),
+            "max_bins": (32, 255),
+            "max_features": (0.4, 1.0),
+            "n_iter_no_change": (3, 50),
+            "tol": (1e-8, 1e-4),
         }
-        log_scaled_params = {"learning_rate", "l2_regularization"}
+        log_scaled_params = {
+            "max_iter",
+            "learning_rate",
+            "max_leaf_nodes",
+            "min_samples_leaf",
+            "l2_regularization",
+            "tol",
+        }
 
-        ranges = copy.deepcopy(default_ranges)
-        if space_reduction and model_training_best_parameters:
-            for param, (default_min, default_max) in default_ranges.items():
-                center_value = model_training_best_parameters.get(param)
-                if center_value is None:
-                    center_value = midpoint(default_min, default_max)
-                if not isinstance(center_value, (int, float)) or not np.isfinite(
-                    center_value
-                ):
-                    continue
-                if param in log_scaled_params:
-                    if center_value <= 0:
-                        continue
-                    new_min = center_value / (1 + expansion_ratio)
-                    new_max = center_value * (1 + expansion_ratio)
-                else:
-                    margin = (default_max - default_min) * expansion_ratio / 2
-                    new_min = center_value - margin
-                    new_max = center_value + margin
-                param_min = max(default_min, new_min)
-                param_max = min(default_max, new_max)
-                if param_min < param_max:
-                    ranges[param] = (param_min, param_max)
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        l2_regularization_zero = trial.suggest_categorical(
+            "l2_regularization_zero", [False, True]
+        )
+        l2_regularization = trial.suggest_float(
+            "l2_regularization",
+            ranges["l2_regularization"][0],
+            ranges["l2_regularization"][1],
+            log=True,
+        )
 
         return {
             "max_iter": trial.suggest_int(
                 "max_iter",
                 int(ranges["max_iter"][0]),
                 int(ranges["max_iter"][1]),
+                log=True,
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
@@ -2317,26 +2314,26 @@ def get_optuna_study_model_parameters(
                 ranges["learning_rate"][1],
                 log=True,
             ),
-            "max_depth": trial.suggest_int(
-                "max_depth",
-                int(ranges["max_depth"][0]),
-                int(ranges["max_depth"][1]),
+            "max_depth": trial.suggest_categorical(
+                "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
             ),
             "max_leaf_nodes": trial.suggest_int(
                 "max_leaf_nodes",
                 int(ranges["max_leaf_nodes"][0]),
                 int(ranges["max_leaf_nodes"][1]),
+                log=True,
             ),
             "min_samples_leaf": trial.suggest_int(
                 "min_samples_leaf",
                 int(ranges["min_samples_leaf"][0]),
                 int(ranges["min_samples_leaf"][1]),
-            ),
-            "l2_regularization": trial.suggest_float(
-                "l2_regularization",
-                ranges["l2_regularization"][0],
-                ranges["l2_regularization"][1],
                 log=True,
+            ),
+            "l2_regularization": 0.0 if l2_regularization_zero else l2_regularization,
+            "max_bins": trial.suggest_int(
+                "max_bins",
+                int(ranges["max_bins"][0]),
+                int(ranges["max_bins"][1]),
             ),
             "max_features": trial.suggest_float(
                 "max_features",
@@ -2347,6 +2344,12 @@ def get_optuna_study_model_parameters(
                 "n_iter_no_change",
                 int(ranges["n_iter_no_change"][0]),
                 int(ranges["n_iter_no_change"][1]),
+            ),
+            "tol": trial.suggest_float(
+                "tol",
+                ranges["tol"][0],
+                ranges["tol"][1],
+                log=True,
             ),
         }
 
