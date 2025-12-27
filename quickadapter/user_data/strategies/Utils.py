@@ -1963,8 +1963,6 @@ def get_optuna_callbacks(
             )
         ]
     elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
-        # HistGradientBoostingRegressor does not support Optuna pruning callbacks.
-        # Early stopping is handled internally via early_stopping parameter.
         callbacks = []
     else:
         raise ValueError(
@@ -2038,33 +2036,22 @@ def fit_regressor(
             callbacks=callbacks,
         )
     elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
-        import logging
-
         from sklearn.ensemble import HistGradientBoostingRegressor
 
         model_training_parameters.setdefault("random_state", 1)
+        model_training_parameters.setdefault("loss", "squared_error")
 
         if trial is not None:
             model_training_parameters["random_state"] = (
                 model_training_parameters["random_state"] + trial.number
             )
 
-        # HistGradientBoostingRegressor does not support init_model (warm start
-        # from a previous model instance). The warm_start parameter requires
-        # keeping the same model object, which is not compatible with the current
-        # architecture. Log a warning if init_model is provided.
-        if init_model is not None:
-            logging.getLogger(__name__).warning(
-                "init_model is not supported for histgradientboostingregressor; "
-                "training from scratch instead"
-            )
-
-        # Enable early stopping when validation set is provided
-        early_stopping_enabled = eval_set is not None
+        early_stopping = eval_set is not None
+        model_training_parameters.pop("early_stopping", None)
 
         model = HistGradientBoostingRegressor(
-            loss="squared_error",
-            early_stopping=early_stopping_enabled,
+            early_stopping=early_stopping,
+            scoring="neg_root_mean_squared_error" if early_stopping else None,
             **model_training_parameters,
         )
 
@@ -2112,10 +2099,189 @@ def get_optuna_study_model_parameters(
             f"Invalid expansion_ratio {expansion_ratio!r}: must be in range [0, 1]"
         )
 
-    # HistGradientBoostingRegressor has a distinct set of hyperparameters
-    # that don't overlap with XGBoost/LightGBM, so we handle it separately.
-    if regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
-        histgb_default_ranges: dict[str, tuple[float, float]] = {
+    if regressor == REGRESSORS[0]:  # "xgboost"
+        default_ranges: dict[str, tuple[float, float]] = {
+            "n_estimators": (100, 2000),
+            "learning_rate": (1e-3, 0.5),
+            "max_depth": (3, 13),
+            "min_child_weight": (1e-8, 100.0),
+            "subsample": (0.5, 1.0),
+            "colsample_bytree": (0.5, 1.0),
+            "reg_alpha": (1e-8, 100.0),
+            "reg_lambda": (1e-8, 100.0),
+            "gamma": (1e-8, 10.0),
+        }
+        log_scaled_params = {
+            "learning_rate",
+            "min_child_weight",
+            "reg_alpha",
+            "reg_lambda",
+            "gamma",
+        }
+
+        ranges = copy.deepcopy(default_ranges)
+        if space_reduction and model_training_best_parameters:
+            for param, (default_min, default_max) in default_ranges.items():
+                center_value = model_training_best_parameters.get(param)
+                if center_value is None:
+                    center_value = midpoint(default_min, default_max)
+                if not isinstance(center_value, (int, float)) or not np.isfinite(
+                    center_value
+                ):
+                    continue
+                if param in log_scaled_params:
+                    if center_value <= 0:
+                        continue
+                    new_min = center_value / (1 + expansion_ratio)
+                    new_max = center_value * (1 + expansion_ratio)
+                else:
+                    margin = (default_max - default_min) * expansion_ratio / 2
+                    new_min = center_value - margin
+                    new_max = center_value + margin
+                param_min = max(default_min, new_min)
+                param_max = min(default_max, new_max)
+                if param_min < param_max:
+                    ranges[param] = (param_min, param_max)
+
+        return {
+            "n_estimators": trial.suggest_int(
+                "n_estimators",
+                int(ranges["n_estimators"][0]),
+                int(ranges["n_estimators"][1]),
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            "max_depth": trial.suggest_int(
+                "max_depth",
+                int(ranges["max_depth"][0]),
+                int(ranges["max_depth"][1]),
+            ),
+            "min_child_weight": trial.suggest_float(
+                "min_child_weight",
+                ranges["min_child_weight"][0],
+                ranges["min_child_weight"][1],
+                log=True,
+            ),
+            "subsample": trial.suggest_float(
+                "subsample", ranges["subsample"][0], ranges["subsample"][1]
+            ),
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree",
+                ranges["colsample_bytree"][0],
+                ranges["colsample_bytree"][1],
+            ),
+            "reg_alpha": trial.suggest_float(
+                "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
+            ),
+            "reg_lambda": trial.suggest_float(
+                "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
+            ),
+            "gamma": trial.suggest_float(
+                "gamma", ranges["gamma"][0], ranges["gamma"][1], log=True
+            ),
+        }
+
+    elif regressor == REGRESSORS[1]:  # "lightgbm"
+        default_ranges: dict[str, tuple[float, float]] = {
+            "n_estimators": (100, 2000),
+            "learning_rate": (1e-3, 0.5),
+            "num_leaves": (8, 256),
+            "min_child_weight": (1e-8, 100.0),
+            "subsample": (0.5, 1.0),
+            "colsample_bytree": (0.5, 1.0),
+            "reg_alpha": (1e-8, 100.0),
+            "reg_lambda": (1e-8, 100.0),
+            "min_split_gain": (1e-8, 10.0),
+            "min_child_samples": (10, 100),
+        }
+        log_scaled_params = {
+            "learning_rate",
+            "min_child_weight",
+            "reg_alpha",
+            "reg_lambda",
+            "min_split_gain",
+        }
+
+        ranges = copy.deepcopy(default_ranges)
+        if space_reduction and model_training_best_parameters:
+            for param, (default_min, default_max) in default_ranges.items():
+                center_value = model_training_best_parameters.get(param)
+                if center_value is None:
+                    center_value = midpoint(default_min, default_max)
+                if not isinstance(center_value, (int, float)) or not np.isfinite(
+                    center_value
+                ):
+                    continue
+                if param in log_scaled_params:
+                    if center_value <= 0:
+                        continue
+                    new_min = center_value / (1 + expansion_ratio)
+                    new_max = center_value * (1 + expansion_ratio)
+                else:
+                    margin = (default_max - default_min) * expansion_ratio / 2
+                    new_min = center_value - margin
+                    new_max = center_value + margin
+                param_min = max(default_min, new_min)
+                param_max = min(default_max, new_max)
+                if param_min < param_max:
+                    ranges[param] = (param_min, param_max)
+
+        return {
+            "n_estimators": trial.suggest_int(
+                "n_estimators",
+                int(ranges["n_estimators"][0]),
+                int(ranges["n_estimators"][1]),
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            "num_leaves": trial.suggest_int(
+                "num_leaves",
+                int(ranges["num_leaves"][0]),
+                int(ranges["num_leaves"][1]),
+            ),
+            "min_child_weight": trial.suggest_float(
+                "min_child_weight",
+                ranges["min_child_weight"][0],
+                ranges["min_child_weight"][1],
+                log=True,
+            ),
+            "subsample": trial.suggest_float(
+                "subsample", ranges["subsample"][0], ranges["subsample"][1]
+            ),
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree",
+                ranges["colsample_bytree"][0],
+                ranges["colsample_bytree"][1],
+            ),
+            "reg_alpha": trial.suggest_float(
+                "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
+            ),
+            "reg_lambda": trial.suggest_float(
+                "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
+            ),
+            "min_split_gain": trial.suggest_float(
+                "min_split_gain",
+                ranges["min_split_gain"][0],
+                ranges["min_split_gain"][1],
+                log=True,
+            ),
+            "min_child_samples": trial.suggest_int(
+                "min_child_samples",
+                int(ranges["min_child_samples"][0]),
+                int(ranges["min_child_samples"][1]),
+            ),
+        }
+
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        default_ranges: dict[str, tuple[float, float]] = {
             "max_iter": (100, 2000),
             "learning_rate": (1e-3, 0.5),
             "max_depth": (3, 15),
@@ -2125,21 +2291,19 @@ def get_optuna_study_model_parameters(
             "max_features": (0.5, 1.0),
             "n_iter_no_change": (5, 20),
         }
+        log_scaled_params = {"learning_rate", "l2_regularization"}
 
-        histgb_log_scaled_params = {"learning_rate", "l2_regularization"}
-
-        histgb_ranges = copy.deepcopy(histgb_default_ranges)
+        ranges = copy.deepcopy(default_ranges)
         if space_reduction and model_training_best_parameters:
-            for param, (default_min, default_max) in histgb_default_ranges.items():
+            for param, (default_min, default_max) in default_ranges.items():
                 center_value = model_training_best_parameters.get(param)
-
-                center_value = center_value or midpoint(default_min, default_max)
+                if center_value is None:
+                    center_value = midpoint(default_min, default_max)
                 if not isinstance(center_value, (int, float)) or not np.isfinite(
                     center_value
                 ):
                     continue
-
-                if param in histgb_log_scaled_params:
+                if param in log_scaled_params:
                     if center_value <= 0:
                         continue
                     new_min = center_value / (1 + expansion_ratio)
@@ -2148,177 +2312,60 @@ def get_optuna_study_model_parameters(
                     margin = (default_max - default_min) * expansion_ratio / 2
                     new_min = center_value - margin
                     new_max = center_value + margin
-
                 param_min = max(default_min, new_min)
                 param_max = min(default_max, new_max)
-
                 if param_min < param_max:
-                    histgb_ranges[param] = (param_min, param_max)
+                    ranges[param] = (param_min, param_max)
 
         return {
             "max_iter": trial.suggest_int(
                 "max_iter",
-                int(histgb_ranges["max_iter"][0]),
-                int(histgb_ranges["max_iter"][1]),
+                int(ranges["max_iter"][0]),
+                int(ranges["max_iter"][1]),
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
-                histgb_ranges["learning_rate"][0],
-                histgb_ranges["learning_rate"][1],
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
                 log=True,
             ),
             "max_depth": trial.suggest_int(
                 "max_depth",
-                int(histgb_ranges["max_depth"][0]),
-                int(histgb_ranges["max_depth"][1]),
+                int(ranges["max_depth"][0]),
+                int(ranges["max_depth"][1]),
             ),
             "max_leaf_nodes": trial.suggest_int(
                 "max_leaf_nodes",
-                int(histgb_ranges["max_leaf_nodes"][0]),
-                int(histgb_ranges["max_leaf_nodes"][1]),
+                int(ranges["max_leaf_nodes"][0]),
+                int(ranges["max_leaf_nodes"][1]),
             ),
             "min_samples_leaf": trial.suggest_int(
                 "min_samples_leaf",
-                int(histgb_ranges["min_samples_leaf"][0]),
-                int(histgb_ranges["min_samples_leaf"][1]),
+                int(ranges["min_samples_leaf"][0]),
+                int(ranges["min_samples_leaf"][1]),
             ),
             "l2_regularization": trial.suggest_float(
                 "l2_regularization",
-                histgb_ranges["l2_regularization"][0],
-                histgb_ranges["l2_regularization"][1],
+                ranges["l2_regularization"][0],
+                ranges["l2_regularization"][1],
                 log=True,
             ),
             "max_features": trial.suggest_float(
                 "max_features",
-                histgb_ranges["max_features"][0],
-                histgb_ranges["max_features"][1],
+                ranges["max_features"][0],
+                ranges["max_features"][1],
             ),
             "n_iter_no_change": trial.suggest_int(
                 "n_iter_no_change",
-                int(histgb_ranges["n_iter_no_change"][0]),
-                int(histgb_ranges["n_iter_no_change"][1]),
+                int(ranges["n_iter_no_change"][0]),
+                int(ranges["n_iter_no_change"][1]),
             ),
         }
 
-    default_ranges: dict[str, tuple[float, float]] = {
-        "n_estimators": (100, 2000),
-        "learning_rate": (1e-3, 0.5),
-        "min_child_weight": (1e-8, 100.0),
-        "subsample": (0.5, 1.0),
-        "colsample_bytree": (0.5, 1.0),
-        "reg_alpha": (1e-8, 100.0),
-        "reg_lambda": (1e-8, 100.0),
-        "max_depth": (3, 13),
-        "gamma": (1e-8, 10.0),
-        "num_leaves": (8, 256),
-        "min_split_gain": (1e-8, 10.0),
-        "min_child_samples": (10, 100),
-    }
-
-    log_scaled_params = {
-        "learning_rate",
-        "min_child_weight",
-        "reg_alpha",
-        "reg_lambda",
-        "gamma",
-        "min_split_gain",
-    }
-
-    ranges = copy.deepcopy(default_ranges)
-    if space_reduction and model_training_best_parameters:
-        for param, (default_min, default_max) in default_ranges.items():
-            center_value = model_training_best_parameters.get(param)
-
-            center_value = center_value or midpoint(default_min, default_max)
-            if not isinstance(center_value, (int, float)) or not np.isfinite(
-                center_value
-            ):
-                continue
-
-            if param in log_scaled_params:
-                if center_value <= 0:
-                    continue
-                new_min = center_value / (1 + expansion_ratio)
-                new_max = center_value * (1 + expansion_ratio)
-            else:
-                margin = (default_max - default_min) * expansion_ratio / 2
-                new_min = center_value - margin
-                new_max = center_value + margin
-
-            param_min = max(default_min, new_min)
-            param_max = min(default_max, new_max)
-
-            if param_min < param_max:
-                ranges[param] = (param_min, param_max)
-
-    study_model_parameters = {
-        "n_estimators": trial.suggest_int(
-            "n_estimators",
-            int(ranges["n_estimators"][0]),
-            int(ranges["n_estimators"][1]),
-        ),
-        "learning_rate": trial.suggest_float(
-            "learning_rate",
-            ranges["learning_rate"][0],
-            ranges["learning_rate"][1],
-            log=True,
-        ),
-        "min_child_weight": trial.suggest_float(
-            "min_child_weight",
-            ranges["min_child_weight"][0],
-            ranges["min_child_weight"][1],
-            log=True,
-        ),
-        "subsample": trial.suggest_float(
-            "subsample", ranges["subsample"][0], ranges["subsample"][1]
-        ),
-        "colsample_bytree": trial.suggest_float(
-            "colsample_bytree",
-            ranges["colsample_bytree"][0],
-            ranges["colsample_bytree"][1],
-        ),
-        "reg_alpha": trial.suggest_float(
-            "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
-        ),
-        "reg_lambda": trial.suggest_float(
-            "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
-        ),
-    }
-    if regressor == REGRESSORS[0]:  # "xgboost"
-        study_model_parameters.update(
-            {
-                "max_depth": trial.suggest_int(
-                    "max_depth",
-                    int(ranges["max_depth"][0]),
-                    int(ranges["max_depth"][1]),
-                ),
-                "gamma": trial.suggest_float(
-                    "gamma", ranges["gamma"][0], ranges["gamma"][1], log=True
-                ),
-            }
+    else:
+        raise ValueError(
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
-        study_model_parameters.update(
-            {
-                "num_leaves": trial.suggest_int(
-                    "num_leaves",
-                    int(ranges["num_leaves"][0]),
-                    int(ranges["num_leaves"][1]),
-                ),
-                "min_split_gain": trial.suggest_float(
-                    "min_split_gain",
-                    ranges["min_split_gain"][0],
-                    ranges["min_split_gain"][1],
-                    log=True,
-                ),
-                "min_child_samples": trial.suggest_int(
-                    "min_child_samples",
-                    int(ranges["min_child_samples"][0]),
-                    int(ranges["min_child_samples"][1]),
-                ),
-            }
-        )
-    return study_model_parameters
 
 
 @lru_cache(maxsize=128)
