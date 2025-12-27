@@ -866,16 +866,9 @@ def _compute_time_attenuation_coefficient(
 
     def _half_life_kernel(dr: float) -> float:
         hl = _get_float_param(params, "exit_half_life")
-        if np.isclose(hl, 0.0):
+        if hl <= 0.0 or np.isclose(hl, 0.0):
             warnings.warn(
                 f"Param: exit_half_life={hl} <= 0; falling back to 1.0",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
-            )
-            return 1.0
-        if hl < 0.0:
-            warnings.warn(
-                f"Param: exit_half_life={hl} < 0; falling back to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
@@ -3626,7 +3619,7 @@ def write_complete_statistical_analysis(
     analysis_stats = None
     partial_deps = {}
     if skip_feature_analysis or len(df) < 4:
-        print("Skipping feature analysis: insufficient samples or flag set")
+        print("CLI: Skipping feature analysis; insufficient samples or flag set")
         # Do NOT create feature_importance.csv when skipped (tests expect absence)
         # Create minimal partial dependence placeholders only if feature analysis was NOT explicitly skipped
         if not skip_feature_analysis and not skip_partial_dependence:
@@ -3659,7 +3652,7 @@ def write_complete_statistical_analysis(
                         f"{feature},partial_dependence\n", encoding="utf-8"
                     )
         except ImportError:
-            print("Skipping feature analysis: scikit-learn unavailable")
+            print("CLI: Skipping feature analysis; scikit-learn unavailable")
             (output_dir / "feature_importance.csv").write_text(
                 "feature,importance_mean,importance_std\n", encoding="utf-8"
             )
@@ -4340,7 +4333,7 @@ def main() -> None:
             f"  - {k}: {v['original']} -> {v['adjusted']} ({v['reason']})"
             for k, v in adjustments.items()
         ]
-        print("Parameter adjustments applied:\n" + "\n".join(adj_lines))
+        print("CLI: Parameter adjustments applied\n" + "\n".join(adj_lines))
 
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
@@ -4454,11 +4447,11 @@ def main() -> None:
     # Load real episodes if provided
     real_df = None
     if args.real_episodes and args.real_episodes.exists():
-        print(f"Loading real episodes from: {args.real_episodes}...")
+        print(f"CLI: Loading real episodes from {args.real_episodes}")
         real_df = load_real_episodes(args.real_episodes)
 
     # Generate consolidated statistical analysis report (with enhanced tests)
-    print("Generating statistical analysis...")
+    print("CLI: Generating statistical analysis")
 
     write_complete_statistical_analysis(
         df,
@@ -4476,7 +4469,7 @@ def main() -> None:
         rf_n_jobs=int(getattr(args, "rf_n_jobs", -1)),
         perm_n_jobs=int(getattr(args, "perm_n_jobs", -1)),
     )
-    print(f"Statistical analysis saved to: {args.out_dir / 'statistical_analysis.md'}")
+    print(f"CLI: Statistical analysis saved to {args.out_dir / 'statistical_analysis.md'}")
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
@@ -4513,13 +4506,13 @@ def main() -> None:
             manifest["simulation_params"] = sim_params
         with manifest_path.open("w", encoding="utf-8") as mh:
             json.dump(manifest, mh, indent=2)
-        print(f"Manifest saved to: {manifest_path}")
+        print(f"CLI: Manifest saved to {manifest_path}")
     except Exception as e:
-        print(f"Manifest generation failed: {e}")
+        print(f"CLI: Manifest generation failed; {e}")
 
-    print(f"Generated {len(df):,} synthetic samples")
-    print(sample_output_message)
-    print(f"Artifacts saved to: {args.out_dir.resolve()}")
+    print(f"CLI: Generated {len(df):,} synthetic samples")
+    print(f"CLI: {sample_output_message}")
+    print(f"CLI: Artifacts saved to {args.out_dir.resolve()}")
 
 
 if __name__ == "__main__":

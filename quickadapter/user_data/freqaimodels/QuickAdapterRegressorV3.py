@@ -499,7 +499,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def _log_model_configuration(self) -> None:
         logger.info("=" * 60)
-        logger.info("QuickAdapterRegressor Configuration")
+        logger.info("QuickAdapterRegressor Model Configuration")
         logger.info("=" * 60)
 
         logger.info(f"Model Version: {self.version}")
