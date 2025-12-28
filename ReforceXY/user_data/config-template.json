@@ -162,7 +162,8 @@
         "rr": 2.0,
         "profit_aim": 0.025,
         "win_reward_factor": 2.0,
-        "max_trade_duration_candles": 96 // Maximum trade duration in candles
+        "max_trade_duration_candles": 96, // Maximum trade duration in candles
+        "idle_penalty_ratio": 0.0
       },
       "train_cycles": 25,
       "add_state_info": true,
