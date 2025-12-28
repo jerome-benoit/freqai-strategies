@@ -2058,6 +2058,7 @@ def fit_regressor(
         y_val = None
         if eval_set is not None and len(eval_set) > 0:
             X_val, y_val = eval_set[0]
+            y_val = y_val.to_numpy().ravel()
 
         sample_weight_val = None
         if eval_weights is not None and len(eval_weights) > 0:
@@ -2071,7 +2072,7 @@ def fit_regressor(
 
         model.fit(
             X=X,
-            y=y,
+            y=y.to_numpy().ravel(),
             sample_weight=train_weights,
             X_val=X_val,
             y_val=y_val,
