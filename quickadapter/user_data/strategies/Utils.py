@@ -2185,6 +2185,8 @@ def get_optuna_study_model_parameters(
             "reg_alpha": (1e-8, 10.0),
             "reg_lambda": (1e-8, 10.0),
             "gamma": (1e-8, 1.0),
+            # Binning
+            "max_bin": (63, 255),
         }
         log_scaled_params = {
             "n_estimators",
@@ -2201,11 +2203,6 @@ def get_optuna_study_model_parameters(
         grow_policy = trial.suggest_categorical(
             "grow_policy", ["depthwise", "lossguide"]
         )
-        tree_method = (
-            "hist"
-            if grow_policy == "lossguide"
-            else trial.suggest_categorical("tree_method", ["hist", "approx"])
-        )
 
         return {
             # Boosting/Training
@@ -2219,7 +2216,6 @@ def get_optuna_study_model_parameters(
                 log=True,
             ),
             # Tree structure
-            "tree_method": tree_method,
             "grow_policy": grow_policy,
             **(
                 {
@@ -2270,6 +2266,10 @@ def get_optuna_study_model_parameters(
             ),
             "gamma": trial.suggest_float(
                 "gamma", ranges["gamma"][0], ranges["gamma"][1], log=True
+            ),
+            # Binning
+            "max_bin": _optuna_suggest_int_from_range(
+                trial, "max_bin", ranges["max_bin"], min_val=2
             ),
         }
 
@@ -2408,6 +2408,17 @@ def get_optuna_study_model_parameters(
                 log=True,
             )
 
+        max_depth = trial.suggest_categorical(
+            "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
+        )
+
+        max_leaf_nodes_range = ranges["max_leaf_nodes"]
+        if isinstance(max_depth, int) and max_depth > 0:
+            max_leaf_nodes_range = (
+                max_leaf_nodes_range[0],
+                min(max_leaf_nodes_range[1], float(2**max_depth)),
+            )
+
         return {
             # Boosting/Training
             "max_iter": _optuna_suggest_int_from_range(
@@ -2420,11 +2431,9 @@ def get_optuna_study_model_parameters(
                 log=True,
             ),
             # Tree structure
-            "max_depth": trial.suggest_categorical(
-                "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
-            ),
+            "max_depth": max_depth,
             "max_leaf_nodes": _optuna_suggest_int_from_range(
-                trial, "max_leaf_nodes", ranges["max_leaf_nodes"], min_val=2, log=True
+                trial, "max_leaf_nodes", max_leaf_nodes_range, min_val=2, log=True
             ),
             # Leaf constraints
             "min_samples_leaf": _optuna_suggest_int_from_range(
