@@ -1235,12 +1235,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
             ).get("label_period_candles")  # "label"
         )
-        label_natr_multiplier = self.get_optuna_params(
-            pair,
-            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
-        ).get("label_natr_multiplier")
         dk.data["extra_returns_per_train"]["label_natr_multiplier"] = (
-            label_natr_multiplier
+            self.get_optuna_params(
+                pair,
+                QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
+            ).get("label_natr_multiplier")
         )
 
         hp_rmse = self.optuna_validate_value(
