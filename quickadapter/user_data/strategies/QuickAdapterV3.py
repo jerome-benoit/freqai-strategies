@@ -1049,7 +1049,7 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
-        smoothing_window = get_config_value(
+        smoothing_window_candles = get_config_value(
             extrema_smoothing,
             new_key="window_candles",
             old_key="window",
@@ -1058,11 +1058,14 @@ class QuickAdapterV3(IStrategy):
             new_path="freqai.extrema_smoothing.window_candles",
             old_path="freqai.extrema_smoothing.window",
         )
-        if not isinstance(smoothing_window, int) or smoothing_window < 3:
+        if (
+            not isinstance(smoothing_window_candles, int)
+            or smoothing_window_candles < 3
+        ):
             logger.warning(
-                f"Invalid extrema_smoothing window_candles {smoothing_window!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
+                f"Invalid extrema_smoothing window_candles {smoothing_window_candles!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
             )
-            smoothing_window = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
+            smoothing_window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
 
         smoothing_beta = extrema_smoothing.get(
             "beta", DEFAULTS_EXTREMA_SMOOTHING["beta"]
@@ -1110,7 +1113,7 @@ class QuickAdapterV3(IStrategy):
 
         return {
             "method": smoothing_method,
-            "window_candles": int(smoothing_window),
+            "window_candles": int(smoothing_window_candles),
             "beta": smoothing_beta,
             "polyorder": int(smoothing_polyorder),
             "mode": smoothing_mode,
@@ -1232,20 +1235,21 @@ class QuickAdapterV3(IStrategy):
     ) -> DataFrame:
         dataframe = self.freqai.start(dataframe, metadata, self)
 
-        dataframe["DI_catch"] = np.where(
-            dataframe.get("DI_values") > dataframe.get("DI_cutoff"),
-            0,
-            1,
-        )
+        di_values = dataframe.get("DI_values")
+        di_cutoff = dataframe.get("DI_cutoff")
+        if di_values is not None and di_cutoff is not None:
+            dataframe["DI_catch"] = np.where(di_values > di_cutoff, 0, 1)
+        else:
+            dataframe["DI_catch"] = 1
 
         pair = str(metadata.get("pair"))
 
-        self.set_label_period_candles(
-            pair, dataframe.get("label_period_candles").iloc[-1]
-        )
-        self.set_label_natr_multiplier(
-            pair, dataframe.get("label_natr_multiplier").iloc[-1]
-        )
+        label_period_candles_series = dataframe.get("label_period_candles")
+        if label_period_candles_series is not None:
+            self.set_label_period_candles(pair, label_period_candles_series.iloc[-1])
+        label_natr_multiplier_series = dataframe.get("label_natr_multiplier")
+        if label_natr_multiplier_series is not None:
+            self.set_label_natr_multiplier(pair, label_natr_multiplier_series.iloc[-1])
 
         dataframe["natr_label_period_candles"] = ta.NATR(
             dataframe, timeperiod=self.get_label_period_candles(pair)
@@ -1453,7 +1457,7 @@ class QuickAdapterV3(IStrategy):
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
     ) -> Optional[float]:
         exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target = get_config_value(
+        trade_price_target_method = get_config_value(
             exit_pricing,
             new_key="trade_price_target_method",
             old_key="trade_price_target",
@@ -1476,13 +1480,15 @@ class QuickAdapterV3(IStrategy):
                 df, trade
             ),
         }
-        trade_price_target_fn = trade_price_target_methods.get(trade_price_target)
-        if trade_price_target_fn is None:
+        trade_price_target_method_fn = trade_price_target_methods.get(
+            trade_price_target_method
+        )
+        if trade_price_target_method_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target {trade_price_target!r}. "
+                f"Invalid trade_price_target_method {trade_price_target_method!r}. "
                 f"Supported: {', '.join(TRADE_PRICE_TARGETS)}"
             )
-        return trade_price_target_fn()
+        return trade_price_target_method_fn()
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
