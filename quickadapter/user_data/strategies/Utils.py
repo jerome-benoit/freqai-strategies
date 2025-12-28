@@ -2626,14 +2626,6 @@ def get_config_value(
     new_path: str,
     old_path: str,
 ) -> Any:
-    """Read a config value with backward-compatible deprecated alias.
-
-    Precedence is:
-    1) `new_key` (canonical)
-    2) `old_key` (deprecated, logs warning)
-    3) `default`
-    """
-
     if not isinstance(config, dict):
         return default
 
