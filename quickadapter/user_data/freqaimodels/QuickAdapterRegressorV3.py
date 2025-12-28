@@ -280,6 +280,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }
 
     @cached_property
+    def _min_label_period_candles(self) -> int:
+        return self.ft_params.get(
+            "min_label_period_candles",
+            QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
+        )
+
+    @cached_property
+    def _max_label_period_candles(self) -> int:
+        return self.ft_params.get(
+            "max_label_period_candles",
+            QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
+        )
+
+    @cached_property
     def _min_label_natr_multiplier(self) -> float:
         return self.ft_params.get(
             "min_label_natr_multiplier",
@@ -797,12 +811,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
         )
         logger.info(f"  label_frequency_candles: {self._label_frequency_candles}")
-        logger.info(
-            f"  min_label_period_candles: {self.ft_params.get('min_label_period_candles', QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT)}"
-        )
-        logger.info(
-            f"  max_label_period_candles: {self.ft_params.get('max_label_period_candles', QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT)}"
-        )
+        logger.info(f"  min_label_period_candles: {self._min_label_period_candles}")
+        logger.info(f"  max_label_period_candles: {self._max_label_period_candles}")
         logger.info(
             f"  min_label_natr_multiplier: {format_number(self._min_label_natr_multiplier)}"
         )
@@ -1151,14 +1161,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ),
                         fit_live_predictions_candles,
                         self._optuna_config.get("label_candles_step"),
-                        min_label_period_candles=self.ft_params.get(
-                            "min_label_period_candles",
-                            QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
-                        ),
-                        max_label_period_candles=self.ft_params.get(
-                            "max_label_period_candles",
-                            QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
-                        ),
+                        min_label_period_candles=self._min_label_period_candles,
+                        max_label_period_candles=self._max_label_period_candles,
                         min_label_natr_multiplier=self._min_label_natr_multiplier,
                         max_label_natr_multiplier=self._max_label_natr_multiplier,
                     ),
