@@ -2111,7 +2111,15 @@ def get_optuna_study_model_parameters(
             for param, (default_min, default_max) in default_ranges.items():
                 center_value = model_training_best_parameters.get(param)
                 if center_value is None:
-                    center_value = midpoint(default_min, default_max)
+                    # Use geometric mean for log-scaled params
+                    if (
+                        param in log_scaled_params
+                        and default_min > 0
+                        and default_max > 0
+                    ):
+                        center_value = math.sqrt(default_min * default_max)
+                    else:
+                        center_value = midpoint(default_min, default_max)
                 if not isinstance(center_value, (int, float)) or not np.isfinite(
                     center_value
                 ):
@@ -2119,8 +2127,9 @@ def get_optuna_study_model_parameters(
                 if param in log_scaled_params:
                     if center_value <= 0:
                         continue
-                    new_min = center_value / (1 + expansion_ratio)
-                    new_max = center_value * (1 + expansion_ratio)
+                    factor = 1 + expansion_ratio
+                    new_min = center_value / factor
+                    new_max = center_value * factor
                 else:
                     margin = (default_max - default_min) * expansion_ratio / 2
                     new_min = center_value - margin
@@ -2132,20 +2141,32 @@ def get_optuna_study_model_parameters(
         return ranges
 
     if regressor == REGRESSORS[0]:  # "xgboost"
+        # Parameter order: boosting -> tree structure -> leaf constraints ->
+        #                  sampling -> regularization
         default_ranges: dict[str, tuple[float, float]] = {
-            "n_estimators": (100, 2000),
-            "learning_rate": (1e-3, 0.5),
-            "max_depth": (3, 13),
-            "min_child_weight": (1e-8, 100.0),
+            # Boosting/Training
+            "n_estimators": (50, 3000),
+            "learning_rate": (0.005, 0.3),
+            # Tree structure
+            "max_depth": (3, 10),
+            "max_leaves": (16, 512),
+            # Leaf constraints
+            "min_child_weight": (1.0, 200.0),
+            # Sampling
             "subsample": (0.5, 1.0),
-            "colsample_bytree": (0.5, 1.0),
-            "reg_alpha": (1e-8, 100.0),
-            "reg_lambda": (1e-8, 100.0),
-            "gamma": (1e-8, 10.0),
+            "colsample_bytree": (0.3, 1.0),
+            "colsample_bylevel": (0.3, 1.0),
+            "colsample_bynode": (0.3, 1.0),
+            # Regularization
+            "reg_alpha": (1e-8, 10.0),
+            "reg_lambda": (1e-8, 10.0),
+            "gamma": (1e-8, 1.0),
         }
         log_scaled_params = {
+            "n_estimators",
             "learning_rate",
             "min_child_weight",
+            "max_leaves",
             "reg_alpha",
             "reg_lambda",
             "gamma",
@@ -2153,11 +2174,18 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
+        tree_method = trial.suggest_categorical("tree_method", ["hist", "approx"])
+        grow_policy = trial.suggest_categorical(
+            "grow_policy", ["depthwise", "lossguide"]
+        )
+
         return {
+            # Boosting/Training
             "n_estimators": trial.suggest_int(
                 "n_estimators",
                 int(ranges["n_estimators"][0]),
                 int(ranges["n_estimators"][1]),
+                log=True,
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
@@ -2165,17 +2193,36 @@ def get_optuna_study_model_parameters(
                 ranges["learning_rate"][1],
                 log=True,
             ),
-            "max_depth": trial.suggest_int(
-                "max_depth",
-                int(ranges["max_depth"][0]),
-                int(ranges["max_depth"][1]),
+            # Tree structure
+            "tree_method": tree_method,
+            "grow_policy": grow_policy,
+            **(
+                {
+                    "max_depth": 0,
+                    "max_leaves": trial.suggest_int(
+                        "max_leaves",
+                        int(ranges["max_leaves"][0]),
+                        int(ranges["max_leaves"][1]),
+                        log=True,
+                    ),
+                }
+                if grow_policy == "lossguide"
+                else {
+                    "max_depth": trial.suggest_int(
+                        "max_depth",
+                        int(ranges["max_depth"][0]),
+                        int(ranges["max_depth"][1]),
+                    ),
+                }
             ),
+            # Leaf constraints
             "min_child_weight": trial.suggest_float(
                 "min_child_weight",
                 ranges["min_child_weight"][0],
                 ranges["min_child_weight"][1],
                 log=True,
             ),
+            # Sampling
             "subsample": trial.suggest_float(
                 "subsample", ranges["subsample"][0], ranges["subsample"][1]
             ),
@@ -2184,6 +2231,17 @@ def get_optuna_study_model_parameters(
                 ranges["colsample_bytree"][0],
                 ranges["colsample_bytree"][1],
             ),
+            "colsample_bylevel": trial.suggest_float(
+                "colsample_bylevel",
+                ranges["colsample_bylevel"][0],
+                ranges["colsample_bylevel"][1],
+            ),
+            "colsample_bynode": trial.suggest_float(
+                "colsample_bynode",
+                ranges["colsample_bynode"][0],
+                ranges["colsample_bynode"][1],
+            ),
+            # Regularization
             "reg_alpha": trial.suggest_float(
                 "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
             ),
@@ -2196,33 +2254,46 @@ def get_optuna_study_model_parameters(
         }
 
     elif regressor == REGRESSORS[1]:  # "lightgbm"
+        # Parameter order: boosting -> tree structure -> leaf constraints ->
+        #                  sampling -> regularization -> binning
         default_ranges: dict[str, tuple[float, float]] = {
-            "n_estimators": (100, 2000),
-            "learning_rate": (1e-3, 0.5),
+            # Boosting/Training
+            "n_estimators": (50, 3000),
+            "learning_rate": (0.005, 0.3),
+            # Tree structure
             "num_leaves": (8, 256),
-            "min_child_weight": (1e-8, 100.0),
-            "subsample": (0.5, 1.0),
-            "colsample_bytree": (0.5, 1.0),
-            "reg_alpha": (1e-8, 100.0),
-            "reg_lambda": (1e-8, 100.0),
-            "min_split_gain": (1e-8, 10.0),
-            "min_child_samples": (10, 100),
+            # Leaf constraints
+            "min_child_weight": (1e-5, 10.0),
+            "min_child_samples": (5, 100),
+            "min_split_gain": (1e-8, 1.0),
+            # Sampling
+            "subsample": (0.4, 1.0),
+            "subsample_freq": (1, 7),
+            "colsample_bytree": (0.4, 1.0),
+            # Regularization
+            "reg_alpha": (1e-8, 10.0),
+            "reg_lambda": (1e-8, 10.0),
+            # Binning
+            "max_bin": (63, 255),
         }
         log_scaled_params = {
+            "n_estimators",
             "learning_rate",
             "min_child_weight",
+            "min_split_gain",
             "reg_alpha",
             "reg_lambda",
-            "min_split_gain",
         }
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
         return {
+            # Boosting/Training
             "n_estimators": trial.suggest_int(
                 "n_estimators",
                 int(ranges["n_estimators"][0]),
                 int(ranges["n_estimators"][1]),
+                log=True,
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
@@ -2230,35 +2301,17 @@ def get_optuna_study_model_parameters(
                 ranges["learning_rate"][1],
                 log=True,
             ),
+            # Tree structure
             "num_leaves": trial.suggest_int(
                 "num_leaves",
                 int(ranges["num_leaves"][0]),
                 int(ranges["num_leaves"][1]),
             ),
+            # Leaf constraints
             "min_child_weight": trial.suggest_float(
                 "min_child_weight",
                 ranges["min_child_weight"][0],
                 ranges["min_child_weight"][1],
-                log=True,
-            ),
-            "subsample": trial.suggest_float(
-                "subsample", ranges["subsample"][0], ranges["subsample"][1]
-            ),
-            "colsample_bytree": trial.suggest_float(
-                "colsample_bytree",
-                ranges["colsample_bytree"][0],
-                ranges["colsample_bytree"][1],
-            ),
-            "reg_alpha": trial.suggest_float(
-                "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
-            ),
-            "reg_lambda": trial.suggest_float(
-                "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
-            ),
-            "min_split_gain": trial.suggest_float(
-                "min_split_gain",
-                ranges["min_split_gain"][0],
-                ranges["min_split_gain"][1],
                 log=True,
             ),
             "min_child_samples": trial.suggest_int(
@@ -2266,19 +2319,61 @@ def get_optuna_study_model_parameters(
                 int(ranges["min_child_samples"][0]),
                 int(ranges["min_child_samples"][1]),
             ),
+            "min_split_gain": trial.suggest_float(
+                "min_split_gain",
+                ranges["min_split_gain"][0],
+                ranges["min_split_gain"][1],
+                log=True,
+            ),
+            # Sampling
+            "subsample": trial.suggest_float(
+                "subsample", ranges["subsample"][0], ranges["subsample"][1]
+            ),
+            "subsample_freq": trial.suggest_int(
+                "subsample_freq",
+                int(ranges["subsample_freq"][0]),
+                int(ranges["subsample_freq"][1]),
+            ),
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree",
+                ranges["colsample_bytree"][0],
+                ranges["colsample_bytree"][1],
+            ),
+            # Regularization
+            "reg_alpha": trial.suggest_float(
+                "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
+            ),
+            "reg_lambda": trial.suggest_float(
+                "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
+            ),
+            # Binning
+            "max_bin": trial.suggest_int(
+                "max_bin",
+                int(ranges["max_bin"][0]),
+                int(ranges["max_bin"][1]),
+            ),
         }
 
     elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        # Parameter order: boosting -> tree structure -> leaf constraints ->
+        #                  sampling -> regularization -> binning -> early stopping
         default_ranges: dict[str, tuple[float, float]] = {
+            # Boosting/Training
             "max_iter": (100, 2000),
-            "learning_rate": (1e-3, 0.5),
-            "max_leaf_nodes": (8, 256),
-            "min_samples_leaf": (5, 200),
-            "l2_regularization": (1e-8, 100.0),
-            "max_bins": (32, 255),
-            "max_features": (0.4, 1.0),
-            "n_iter_no_change": (3, 50),
-            "tol": (1e-8, 1e-4),
+            "learning_rate": (0.01, 0.3),
+            # Tree structure
+            "max_leaf_nodes": (15, 255),
+            # Leaf constraints
+            "min_samples_leaf": (5, 150),
+            # Sampling
+            "max_features": (0.5, 1.0),
+            # Regularization
+            "l2_regularization": (1e-8, 10.0),
+            # Binning
+            "max_bins": (64, 255),
+            # Early stopping
+            "n_iter_no_change": (5, 20),
+            "tol": (1e-7, 1e-3),
         }
         log_scaled_params = {
             "max_iter",
@@ -2294,14 +2389,18 @@ def get_optuna_study_model_parameters(
         l2_regularization_zero = trial.suggest_categorical(
             "l2_regularization_zero", [False, True]
         )
-        l2_regularization = trial.suggest_float(
-            "l2_regularization",
-            ranges["l2_regularization"][0],
-            ranges["l2_regularization"][1],
-            log=True,
-        )
+        if l2_regularization_zero:
+            l2_regularization = 0.0
+        else:
+            l2_regularization = trial.suggest_float(
+                "l2_regularization",
+                ranges["l2_regularization"][0],
+                ranges["l2_regularization"][1],
+                log=True,
+            )
 
         return {
+            # Boosting/Training
             "max_iter": trial.suggest_int(
                 "max_iter",
                 int(ranges["max_iter"][0]),
@@ -2314,6 +2413,7 @@ def get_optuna_study_model_parameters(
                 ranges["learning_rate"][1],
                 log=True,
             ),
+            # Tree structure
             "max_depth": trial.suggest_categorical(
                 "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
             ),
@@ -2323,23 +2423,28 @@ def get_optuna_study_model_parameters(
                 int(ranges["max_leaf_nodes"][1]),
                 log=True,
             ),
+            # Leaf constraints
             "min_samples_leaf": trial.suggest_int(
                 "min_samples_leaf",
                 int(ranges["min_samples_leaf"][0]),
                 int(ranges["min_samples_leaf"][1]),
                 log=True,
             ),
-            "l2_regularization": 0.0 if l2_regularization_zero else l2_regularization,
-            "max_bins": trial.suggest_int(
-                "max_bins",
-                int(ranges["max_bins"][0]),
-                int(ranges["max_bins"][1]),
-            ),
+            # Sampling
             "max_features": trial.suggest_float(
                 "max_features",
                 ranges["max_features"][0],
                 ranges["max_features"][1],
             ),
+            # Regularization
+            "l2_regularization": l2_regularization,
+            # Binning
+            "max_bins": trial.suggest_int(
+                "max_bins",
+                int(ranges["max_bins"][0]),
+                int(ranges["max_bins"][1]),
+            ),
+            # Early stopping
             "n_iter_no_change": trial.suggest_int(
                 "n_iter_no_change",
                 int(ranges["n_iter_no_change"][0]),
