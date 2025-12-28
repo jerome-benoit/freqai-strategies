@@ -171,9 +171,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "jensenshannon",
     )
 
-    PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT: Final[float] = 0.999
-    PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT: Final[float] = 12.0
-    PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
+    PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_FRACTION_DEFAULT: Final[float] = 0.999
+    PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT: Final[float] = 12.0
+    PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
 
     FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
         DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
@@ -327,7 +327,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             predictions_extrema,
             new_key="outlier_threshold_fraction",
             old_key="threshold_outlier",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT,
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_FRACTION_DEFAULT,
             logger=logger,
             new_path="freqai.predictions_extrema.outlier_threshold_fraction",
             old_path="freqai.predictions_extrema.threshold_outlier",
@@ -337,9 +337,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             or not np.isfinite(outlier_threshold_fraction)
             or not (0 < outlier_threshold_fraction < 1)
         ):
-            outlier_threshold_fraction = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT
-            )
+            outlier_threshold_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_FRACTION_DEFAULT
 
         selection_method = str(
             predictions_extrema.get(
@@ -376,7 +374,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             predictions_extrema,
             new_key="soft_extremum_alpha",
             old_key="thresholds_alpha",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT,
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT,
             logger=logger,
             new_path="freqai.predictions_extrema.soft_extremum_alpha",
             old_path="freqai.predictions_extrema.thresholds_alpha",
@@ -387,14 +385,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             or soft_extremum_alpha < 0
         ):
             soft_extremum_alpha = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT
+                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT
             )
 
         keep_extrema_fraction = get_config_value_with_deprecated_alias(
             predictions_extrema,
             new_key="keep_extrema_fraction",
             old_key="extrema_fraction",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT,
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT,
             logger=logger,
             new_path="freqai.predictions_extrema.keep_extrema_fraction",
             old_path="freqai.predictions_extrema.extrema_fraction",
@@ -402,9 +400,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(keep_extrema_fraction, (int, float)) or not (
             0 < keep_extrema_fraction <= 1
         ):
-            keep_extrema_fraction = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT
-            )
+            keep_extrema_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT
 
         return {
             "outlier_threshold_fraction": float(outlier_threshold_fraction),
