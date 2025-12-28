@@ -1930,8 +1930,12 @@ def zigzag(
     )
 
 
-Regressor = Literal["xgboost", "lightgbm"]
-REGRESSORS: Final[tuple[Regressor, ...]] = ("xgboost", "lightgbm")
+Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor"]
+REGRESSORS: Final[tuple[Regressor, ...]] = (
+    "xgboost",
+    "lightgbm",
+    "histgradientboostingregressor",
+)
 
 
 def get_optuna_callbacks(
@@ -1958,6 +1962,8 @@ def get_optuna_callbacks(
                 trial, "rmse", valid_name="valid_0"
             )
         ]
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        callbacks = []
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
@@ -2029,6 +2035,48 @@ def fit_regressor(
             init_model=init_model,
             callbacks=callbacks,
         )
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        from sklearn.ensemble import HistGradientBoostingRegressor
+
+        model_training_parameters.setdefault("random_state", 1)
+        model_training_parameters.setdefault("loss", "squared_error")
+
+        if trial is not None:
+            model_training_parameters["random_state"] = (
+                model_training_parameters["random_state"] + trial.number
+            )
+
+        model_training_parameters.pop("early_stopping", None)
+        model_training_parameters.pop("n_jobs", None)
+        model_training_parameters.pop("l2_regularization_zero", None)
+
+        verbosity = model_training_parameters.pop("verbosity", None)
+        if "verbose" not in model_training_parameters and verbosity is not None:
+            model_training_parameters["verbose"] = verbosity
+
+        X_val = None
+        y_val = None
+        if eval_set is not None and len(eval_set) > 0:
+            X_val, y_val = eval_set[0]
+
+        sample_weight_val = None
+        if eval_weights is not None and len(eval_weights) > 0:
+            sample_weight_val = eval_weights[0]
+
+        model = HistGradientBoostingRegressor(
+            early_stopping=True,
+            scoring="neg_root_mean_squared_error",
+            **model_training_parameters,
+        )
+
+        model.fit(
+            X=X,
+            y=y,
+            sample_weight=train_weights,
+            X_val=X_val,
+            y_val=y_val,
+            sample_weight_val=sample_weight_val,
+        )
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
@@ -2053,125 +2101,367 @@ def get_optuna_study_model_parameters(
         raise ValueError(
             f"Invalid expansion_ratio {expansion_ratio!r}: must be in range [0, 1]"
         )
-    default_ranges: dict[str, tuple[float, float]] = {
-        "n_estimators": (100, 2000),
-        "learning_rate": (1e-3, 0.5),
-        "min_child_weight": (1e-8, 100.0),
-        "subsample": (0.5, 1.0),
-        "colsample_bytree": (0.5, 1.0),
-        "reg_alpha": (1e-8, 100.0),
-        "reg_lambda": (1e-8, 100.0),
-        "max_depth": (3, 13),
-        "gamma": (1e-8, 10.0),
-        "num_leaves": (8, 256),
-        "min_split_gain": (1e-8, 10.0),
-        "min_child_samples": (10, 100),
-    }
 
-    log_scaled_params = {
-        "learning_rate",
-        "min_child_weight",
-        "reg_alpha",
-        "reg_lambda",
-        "gamma",
-        "min_split_gain",
-    }
-
-    ranges = copy.deepcopy(default_ranges)
-    if space_reduction and model_training_best_parameters:
-        for param, (default_min, default_max) in default_ranges.items():
-            center_value = model_training_best_parameters.get(param)
-
-            center_value = center_value or midpoint(default_min, default_max)
-            if not isinstance(center_value, (int, float)) or not np.isfinite(
-                center_value
-            ):
-                continue
-
-            if param in log_scaled_params:
-                if center_value <= 0:
+    def _build_ranges(
+        default_ranges: dict[str, tuple[float, float]],
+        log_scaled_params: set[str],
+    ) -> dict[str, tuple[float, float]]:
+        ranges = copy.deepcopy(default_ranges)
+        if space_reduction and model_training_best_parameters:
+            for param, (default_min, default_max) in default_ranges.items():
+                center_value = model_training_best_parameters.get(param)
+                if center_value is None:
+                    # Use geometric mean for log-scaled params
+                    if (
+                        param in log_scaled_params
+                        and default_min > 0
+                        and default_max > 0
+                    ):
+                        center_value = math.sqrt(default_min * default_max)
+                    else:
+                        center_value = midpoint(default_min, default_max)
+                if not isinstance(center_value, (int, float)) or not np.isfinite(
+                    center_value
+                ):
                     continue
-                new_min = center_value / (1 + expansion_ratio)
-                new_max = center_value * (1 + expansion_ratio)
-            else:
-                margin = (default_max - default_min) * expansion_ratio / 2
-                new_min = center_value - margin
-                new_max = center_value + margin
+                if param in log_scaled_params:
+                    if center_value <= 0:
+                        continue
+                    factor = 1 + expansion_ratio
+                    new_min = center_value / factor
+                    new_max = center_value * factor
+                else:
+                    margin = (default_max - default_min) * expansion_ratio / 2
+                    new_min = center_value - margin
+                    new_max = center_value + margin
+                param_min = max(default_min, new_min)
+                param_max = min(default_max, new_max)
+                if param_min < param_max:
+                    ranges[param] = (param_min, param_max)
+        return ranges
 
-            param_min = max(default_min, new_min)
-            param_max = min(default_max, new_max)
-
-            if param_min < param_max:
-                ranges[param] = (param_min, param_max)
-
-    study_model_parameters = {
-        "n_estimators": trial.suggest_int(
-            "n_estimators",
-            int(ranges["n_estimators"][0]),
-            int(ranges["n_estimators"][1]),
-        ),
-        "learning_rate": trial.suggest_float(
-            "learning_rate",
-            ranges["learning_rate"][0],
-            ranges["learning_rate"][1],
-            log=True,
-        ),
-        "min_child_weight": trial.suggest_float(
-            "min_child_weight",
-            ranges["min_child_weight"][0],
-            ranges["min_child_weight"][1],
-            log=True,
-        ),
-        "subsample": trial.suggest_float(
-            "subsample", ranges["subsample"][0], ranges["subsample"][1]
-        ),
-        "colsample_bytree": trial.suggest_float(
-            "colsample_bytree",
-            ranges["colsample_bytree"][0],
-            ranges["colsample_bytree"][1],
-        ),
-        "reg_alpha": trial.suggest_float(
-            "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
-        ),
-        "reg_lambda": trial.suggest_float(
-            "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
-        ),
-    }
     if regressor == REGRESSORS[0]:  # "xgboost"
-        study_model_parameters.update(
-            {
-                "max_depth": trial.suggest_int(
-                    "max_depth",
-                    int(ranges["max_depth"][0]),
-                    int(ranges["max_depth"][1]),
-                ),
-                "gamma": trial.suggest_float(
-                    "gamma", ranges["gamma"][0], ranges["gamma"][1], log=True
-                ),
-            }
+        # Parameter order: boosting -> tree structure -> leaf constraints ->
+        #                  sampling -> regularization
+        default_ranges: dict[str, tuple[float, float]] = {
+            # Boosting/Training
+            "n_estimators": (50, 3000),
+            "learning_rate": (0.005, 0.3),
+            # Tree structure
+            "max_depth": (3, 10),
+            "max_leaves": (16, 512),
+            # Leaf constraints
+            "min_child_weight": (1.0, 200.0),
+            # Sampling
+            "subsample": (0.5, 1.0),
+            "colsample_bytree": (0.3, 1.0),
+            "colsample_bylevel": (0.3, 1.0),
+            "colsample_bynode": (0.3, 1.0),
+            # Regularization
+            "reg_alpha": (1e-8, 10.0),
+            "reg_lambda": (1e-8, 10.0),
+            "gamma": (1e-8, 1.0),
+        }
+        log_scaled_params = {
+            "n_estimators",
+            "learning_rate",
+            "min_child_weight",
+            "max_leaves",
+            "reg_alpha",
+            "reg_lambda",
+            "gamma",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        tree_method = trial.suggest_categorical("tree_method", ["hist", "approx"])
+        grow_policy = trial.suggest_categorical(
+            "grow_policy", ["depthwise", "lossguide"]
         )
+
+        return {
+            # Boosting/Training
+            "n_estimators": trial.suggest_int(
+                "n_estimators",
+                int(ranges["n_estimators"][0]),
+                int(ranges["n_estimators"][1]),
+                log=True,
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            # Tree structure
+            "tree_method": tree_method,
+            "grow_policy": grow_policy,
+            **(
+                {
+                    "max_depth": 0,
+                    "max_leaves": trial.suggest_int(
+                        "max_leaves",
+                        int(ranges["max_leaves"][0]),
+                        int(ranges["max_leaves"][1]),
+                        log=True,
+                    ),
+                }
+                if grow_policy == "lossguide"
+                else {
+                    "max_depth": trial.suggest_int(
+                        "max_depth",
+                        int(ranges["max_depth"][0]),
+                        int(ranges["max_depth"][1]),
+                    ),
+                }
+            ),
+            # Leaf constraints
+            "min_child_weight": trial.suggest_float(
+                "min_child_weight",
+                ranges["min_child_weight"][0],
+                ranges["min_child_weight"][1],
+                log=True,
+            ),
+            # Sampling
+            "subsample": trial.suggest_float(
+                "subsample", ranges["subsample"][0], ranges["subsample"][1]
+            ),
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree",
+                ranges["colsample_bytree"][0],
+                ranges["colsample_bytree"][1],
+            ),
+            "colsample_bylevel": trial.suggest_float(
+                "colsample_bylevel",
+                ranges["colsample_bylevel"][0],
+                ranges["colsample_bylevel"][1],
+            ),
+            "colsample_bynode": trial.suggest_float(
+                "colsample_bynode",
+                ranges["colsample_bynode"][0],
+                ranges["colsample_bynode"][1],
+            ),
+            # Regularization
+            "reg_alpha": trial.suggest_float(
+                "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
+            ),
+            "reg_lambda": trial.suggest_float(
+                "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
+            ),
+            "gamma": trial.suggest_float(
+                "gamma", ranges["gamma"][0], ranges["gamma"][1], log=True
+            ),
+        }
+
     elif regressor == REGRESSORS[1]:  # "lightgbm"
-        study_model_parameters.update(
-            {
-                "num_leaves": trial.suggest_int(
-                    "num_leaves",
-                    int(ranges["num_leaves"][0]),
-                    int(ranges["num_leaves"][1]),
-                ),
-                "min_split_gain": trial.suggest_float(
-                    "min_split_gain",
-                    ranges["min_split_gain"][0],
-                    ranges["min_split_gain"][1],
-                    log=True,
-                ),
-                "min_child_samples": trial.suggest_int(
-                    "min_child_samples",
-                    int(ranges["min_child_samples"][0]),
-                    int(ranges["min_child_samples"][1]),
-                ),
-            }
+        # Parameter order: boosting -> tree structure -> leaf constraints ->
+        #                  sampling -> regularization -> binning
+        default_ranges: dict[str, tuple[float, float]] = {
+            # Boosting/Training
+            "n_estimators": (50, 3000),
+            "learning_rate": (0.005, 0.3),
+            # Tree structure
+            "num_leaves": (8, 256),
+            # Leaf constraints
+            "min_child_weight": (1e-5, 10.0),
+            "min_child_samples": (5, 100),
+            "min_split_gain": (1e-8, 1.0),
+            # Sampling
+            "subsample": (0.4, 1.0),
+            "subsample_freq": (1, 7),
+            "colsample_bytree": (0.4, 1.0),
+            # Regularization
+            "reg_alpha": (1e-8, 10.0),
+            "reg_lambda": (1e-8, 10.0),
+            # Binning
+            "max_bin": (63, 255),
+        }
+        log_scaled_params = {
+            "n_estimators",
+            "learning_rate",
+            "min_child_weight",
+            "min_split_gain",
+            "reg_alpha",
+            "reg_lambda",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        return {
+            # Boosting/Training
+            "n_estimators": trial.suggest_int(
+                "n_estimators",
+                int(ranges["n_estimators"][0]),
+                int(ranges["n_estimators"][1]),
+                log=True,
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            # Tree structure
+            "num_leaves": trial.suggest_int(
+                "num_leaves",
+                int(ranges["num_leaves"][0]),
+                int(ranges["num_leaves"][1]),
+            ),
+            # Leaf constraints
+            "min_child_weight": trial.suggest_float(
+                "min_child_weight",
+                ranges["min_child_weight"][0],
+                ranges["min_child_weight"][1],
+                log=True,
+            ),
+            "min_child_samples": trial.suggest_int(
+                "min_child_samples",
+                int(ranges["min_child_samples"][0]),
+                int(ranges["min_child_samples"][1]),
+            ),
+            "min_split_gain": trial.suggest_float(
+                "min_split_gain",
+                ranges["min_split_gain"][0],
+                ranges["min_split_gain"][1],
+                log=True,
+            ),
+            # Sampling
+            "subsample": trial.suggest_float(
+                "subsample", ranges["subsample"][0], ranges["subsample"][1]
+            ),
+            "subsample_freq": trial.suggest_int(
+                "subsample_freq",
+                int(ranges["subsample_freq"][0]),
+                int(ranges["subsample_freq"][1]),
+            ),
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree",
+                ranges["colsample_bytree"][0],
+                ranges["colsample_bytree"][1],
+            ),
+            # Regularization
+            "reg_alpha": trial.suggest_float(
+                "reg_alpha", ranges["reg_alpha"][0], ranges["reg_alpha"][1], log=True
+            ),
+            "reg_lambda": trial.suggest_float(
+                "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
+            ),
+            # Binning
+            "max_bin": trial.suggest_int(
+                "max_bin",
+                int(ranges["max_bin"][0]),
+                int(ranges["max_bin"][1]),
+            ),
+        }
+
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        # Parameter order: boosting -> tree structure -> leaf constraints ->
+        #                  sampling -> regularization -> binning -> early stopping
+        default_ranges: dict[str, tuple[float, float]] = {
+            # Boosting/Training
+            "max_iter": (100, 2000),
+            "learning_rate": (0.01, 0.3),
+            # Tree structure
+            "max_leaf_nodes": (15, 255),
+            # Leaf constraints
+            "min_samples_leaf": (5, 150),
+            # Sampling
+            "max_features": (0.5, 1.0),
+            # Regularization
+            "l2_regularization": (1e-8, 10.0),
+            # Binning
+            "max_bins": (64, 255),
+            # Early stopping
+            "n_iter_no_change": (5, 20),
+            "tol": (1e-7, 1e-3),
+        }
+        log_scaled_params = {
+            "max_iter",
+            "learning_rate",
+            "max_leaf_nodes",
+            "min_samples_leaf",
+            "l2_regularization",
+            "tol",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        l2_regularization_zero = trial.suggest_categorical(
+            "l2_regularization_zero", [False, True]
         )
-    return study_model_parameters
+        if l2_regularization_zero:
+            l2_regularization = 0.0
+        else:
+            l2_regularization = trial.suggest_float(
+                "l2_regularization",
+                ranges["l2_regularization"][0],
+                ranges["l2_regularization"][1],
+                log=True,
+            )
+
+        return {
+            # Boosting/Training
+            "max_iter": trial.suggest_int(
+                "max_iter",
+                int(ranges["max_iter"][0]),
+                int(ranges["max_iter"][1]),
+                log=True,
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            # Tree structure
+            "max_depth": trial.suggest_categorical(
+                "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
+            ),
+            "max_leaf_nodes": trial.suggest_int(
+                "max_leaf_nodes",
+                int(ranges["max_leaf_nodes"][0]),
+                int(ranges["max_leaf_nodes"][1]),
+                log=True,
+            ),
+            # Leaf constraints
+            "min_samples_leaf": trial.suggest_int(
+                "min_samples_leaf",
+                int(ranges["min_samples_leaf"][0]),
+                int(ranges["min_samples_leaf"][1]),
+                log=True,
+            ),
+            # Sampling
+            "max_features": trial.suggest_float(
+                "max_features",
+                ranges["max_features"][0],
+                ranges["max_features"][1],
+            ),
+            # Regularization
+            "l2_regularization": l2_regularization,
+            # Binning
+            "max_bins": trial.suggest_int(
+                "max_bins",
+                int(ranges["max_bins"][0]),
+                int(ranges["max_bins"][1]),
+            ),
+            # Early stopping
+            "n_iter_no_change": trial.suggest_int(
+                "n_iter_no_change",
+                int(ranges["n_iter_no_change"][0]),
+                int(ranges["n_iter_no_change"][1]),
+            ),
+            "tol": trial.suggest_float(
+                "tol",
+                ranges["tol"][0],
+                ranges["tol"][1],
+                log=True,
+            ),
+        }
+
+    else:
+        raise ValueError(
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+        )
 
 
 @lru_cache(maxsize=128)
