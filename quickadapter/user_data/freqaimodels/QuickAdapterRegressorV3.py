@@ -265,7 +265,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "seed": 1,
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        space_fraction = get_config_value(
+        get_config_value(
             optuna_hyperopt,
             new_key="space_fraction",
             old_key="expansion_ratio",
@@ -277,31 +277,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return {
             **optuna_default_config,
             **optuna_hyperopt,
-            "space_fraction": space_fraction,
         }
 
     @cached_property
     def _min_label_natr_multiplier(self) -> float:
-        return get_config_value(
-            self.ft_params,
-            new_key="min_label_natr_multiplier",
-            old_key="min_label_natr_ratio",
-            default=QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
-            logger=logger,
-            new_path="freqai.feature_parameters.min_label_natr_multiplier",
-            old_path="freqai.feature_parameters.min_label_natr_ratio",
+        return self.ft_params.get(
+            "min_label_natr_multiplier",
+            QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
         )
 
     @cached_property
     def _max_label_natr_multiplier(self) -> float:
-        return get_config_value(
-            self.ft_params,
-            new_key="max_label_natr_multiplier",
-            old_key="max_label_natr_ratio",
-            default=QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
-            logger=logger,
-            new_path="freqai.feature_parameters.max_label_natr_multiplier",
-            old_path="freqai.feature_parameters.max_label_natr_ratio",
+        return self.ft_params.get(
+            "max_label_natr_multiplier",
+            QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
         )
 
     @cached_property
@@ -533,14 +522,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         self._default_label_period_candles,
                     ),
                     "label_natr_multiplier": float(
-                        get_config_value(
-                            self.ft_params,
-                            new_key="label_natr_multiplier",
-                            old_key="label_natr_ratio",
-                            default=self._default_label_natr_multiplier,
-                            logger=logger,
-                            new_path="freqai.feature_parameters.label_natr_multiplier",
-                            old_path="freqai.feature_parameters.label_natr_ratio",
+                        self.ft_params.get(
+                            "label_natr_multiplier",
+                            self._default_label_natr_multiplier,
                         )
                     ),
                 }

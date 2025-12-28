@@ -2630,14 +2630,16 @@ def get_config_value(
         return default
 
     if new_key in config:
-        return config.get(new_key, default)
+        return config[new_key]
 
     if old_key in config:
         logger.warning(
             f"Deprecated config key {old_path} detected; use {new_path} instead"
         )
-        return config.get(old_key, default)
+        config[new_key] = config.pop(old_key)
+        return config[new_key]
 
+    config[new_key] = default
     return default
 
 
@@ -2747,6 +2749,15 @@ def get_label_defaults(
     )
     default_label_natr_multiplier = float(
         midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
+    )
+    get_config_value(
+        feature_parameters,
+        new_key="label_natr_multiplier",
+        old_key="label_natr_ratio",
+        default=default_label_natr_multiplier,
+        logger=logger,
+        new_path="freqai.feature_parameters.label_natr_multiplier",
+        old_path="freqai.feature_parameters.label_natr_ratio",
     )
 
     min_label_period_candles = feature_parameters.get(

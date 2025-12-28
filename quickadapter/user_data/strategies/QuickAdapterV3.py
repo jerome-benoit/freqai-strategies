@@ -141,7 +141,7 @@ class QuickAdapterV3(IStrategy):
     # (natr_multiplier_fraction, stake_percent, color)
     _FINAL_EXIT_STAGE: Final[tuple[float, float, str]] = (1.0, 1.0, "deepskyblue")
 
-    _CUSTOM_STOPLOSS_NATR_RATIO_FRACTION: Final[float] = 0.7860
+    _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
 
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
@@ -333,15 +333,6 @@ class QuickAdapterV3(IStrategy):
             get_label_defaults(feature_parameters, logger)
         )
         self._label_params: dict[str, dict[str, Any]] = {}
-        default_label_natr_multiplier = get_config_value(
-            feature_parameters,
-            new_key="label_natr_multiplier",
-            old_key="label_natr_ratio",
-            default=self._default_label_natr_multiplier,
-            logger=logger,
-            new_path="freqai.feature_parameters.label_natr_multiplier",
-            old_path="freqai.feature_parameters.label_natr_ratio",
-        )
         for pair in self.pairs:
             self._label_params[pair] = (
                 self.optuna_load_best_params(pair, "label")
@@ -351,7 +342,12 @@ class QuickAdapterV3(IStrategy):
                         "label_period_candles",
                         self._default_label_period_candles,
                     ),
-                    "label_natr_multiplier": float(default_label_natr_multiplier),
+                    "label_natr_multiplier": float(
+                        feature_parameters.get(
+                            "label_natr_multiplier",
+                            self._default_label_natr_multiplier,
+                        )
+                    ),
                 }
             )
         self._init_reversal_confirmation_defaults()
@@ -446,7 +442,7 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Custom Stoploss:")
         logger.info(
-            f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_RATIO_FRACTION)}"
+            f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
         logger.info("Partial Exit Stages:")
@@ -769,14 +765,8 @@ class QuickAdapterV3(IStrategy):
             return label_natr_multiplier
         feature_parameters = self.freqai_info.get("feature_parameters", {})
         return float(
-            get_config_value(
-                feature_parameters,
-                new_key="label_natr_multiplier",
-                old_key="label_natr_ratio",
-                default=self._default_label_natr_multiplier,
-                logger=logger,
-                new_path="freqai.feature_parameters.label_natr_multiplier",
-                old_path="freqai.feature_parameters.label_natr_ratio",
+            feature_parameters.get(
+                "label_natr_multiplier", self._default_label_natr_multiplier
             )
         )
 
@@ -1614,7 +1604,10 @@ class QuickAdapterV3(IStrategy):
             return None
 
         stoploss_distance = self.get_stoploss_distance(
-            df, trade, current_rate, QuickAdapterV3._CUSTOM_STOPLOSS_NATR_RATIO_FRACTION
+            df,
+            trade,
+            current_rate,
+            QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION,
         )
         if isna(stoploss_distance) or stoploss_distance <= 0:
             return None
