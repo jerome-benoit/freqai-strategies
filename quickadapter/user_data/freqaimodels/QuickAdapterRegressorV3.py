@@ -1495,7 +1495,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
-            raise ValueError(f"Invalid alpha {alpha!r}: must be >= 0")
+            raise ValueError(
+                f"Invalid alpha {alpha!r}: must be >= 0 (alpha=0 uses the mean extremum)"
+            )
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
             pred_extrema, extrema_selection, keep_extrema_fraction
         )

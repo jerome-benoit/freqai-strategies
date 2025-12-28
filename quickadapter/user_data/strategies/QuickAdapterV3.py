@@ -1066,7 +1066,7 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(smoothing_window, int) or smoothing_window < 3:
             logger.warning(
-                f"Invalid extrema_smoothing window {smoothing_window!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window']!r}"
+                f"Invalid extrema_smoothing window_candles {smoothing_window!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
             )
             smoothing_window = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
 

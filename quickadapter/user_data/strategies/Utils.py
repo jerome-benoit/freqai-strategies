@@ -167,7 +167,7 @@ def get_distance(p1: T, p2: T) -> T:
 
 
 def midpoint(value1: T, value2: T) -> T:
-    """Calculate the midpoint (arithmetic mean) between two values."""
+    """Calculate the midpoint between two values."""
     return (value1 + value2) / 2
 
 
