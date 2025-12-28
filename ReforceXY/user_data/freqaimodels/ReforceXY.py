@@ -172,7 +172,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EXIT_LINEAR_SLOPE: Final[float] = 1.0
     DEFAULT_EXIT_HALF_LIFE: Final[float] = 0.5
 
-    DEFAULT_PNL_FACTOR_BETA: Final[float] = 0.5
+    DEFAULT_PNL_AMPLIFICATION_SENSITIVITY: Final[float] = 0.5
     DEFAULT_WIN_REWARD_FACTOR: Final[float] = 2.0
     DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
@@ -2895,16 +2895,17 @@ class MyRLEnv(Base5ActionRLEnv):
         pnl_target_coefficient = 1.0
 
         if pnl_target > 0.0:
-            pnl_factor_beta = float(
+            pnl_amplification_sensitivity = float(
                 model_reward_parameters.get(
-                    "pnl_factor_beta", ReforceXY.DEFAULT_PNL_FACTOR_BETA
+                    "pnl_amplification_sensitivity",
+                    ReforceXY.DEFAULT_PNL_AMPLIFICATION_SENSITIVITY,
                 )
             )
             pnl_ratio = pnl / pnl_target
 
             if abs(pnl_ratio) > 1.0:
                 base_pnl_target_coefficient = math.tanh(
-                    pnl_factor_beta * (abs(pnl_ratio) - 1.0)
+                    pnl_amplification_sensitivity * (abs(pnl_ratio) - 1.0)
                 )
                 win_reward_factor = float(
                     model_reward_parameters.get(

@@ -220,13 +220,13 @@ class TestRewardComponents(RewardSpaceTestBase):
         **Setup:**
         - PnL: 150% of pnl_target (exceeds target by 50%)
         - pnl_target: 0.045 (profit_aim=0.03 * risk_reward_ratio=1.5)
-        - Parameters: win_reward_factor=2.0, pnl_factor_beta=0.5
+        - Parameters: win_reward_factor=2.0, pnl_amplification_sensitivity=0.5
 
         **Assertions:**
         - Coefficient is finite
         - Coefficient > 1.0 (rewards exceeding target)
         """
-        params = self.base_params(win_reward_factor=2.0, pnl_factor_beta=0.5)
+        params = self.base_params(win_reward_factor=2.0, pnl_amplification_sensitivity=0.5)
         profit_aim = 0.03
         risk_reward_ratio = 1.5
         pnl_target = profit_aim * risk_reward_ratio
@@ -252,13 +252,13 @@ class TestRewardComponents(RewardSpaceTestBase):
         - PnL: -0.06 (exceeds pnl_target magnitude)
         - pnl_target: 0.045 (profit_aim=0.03 * risk_reward_ratio=1.5)
         - Penalty threshold: pnl < -pnl_target = -0.045
-        - Parameters: win_reward_factor=2.0, pnl_factor_beta=0.5
+        - Parameters: win_reward_factor=2.0, pnl_amplification_sensitivity=0.5
 
         **Assertions:**
         - Coefficient is finite
         - Coefficient > 1.0 (amplifies loss penalty)
         """
-        params = self.base_params(win_reward_factor=2.0, pnl_factor_beta=0.5)
+        params = self.base_params(win_reward_factor=2.0, pnl_amplification_sensitivity=0.5)
         profit_aim = 0.03
         risk_reward_ratio = 1.5
         pnl_target = profit_aim * risk_reward_ratio  # 0.045
@@ -652,7 +652,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         pnl_target = profit_aim * risk_reward_ratio
         params = self.base_params(
             win_reward_factor=win_reward_factor,
-            pnl_factor_beta=beta,
+            pnl_amplification_sensitivity=beta,
             efficiency_weight=0.0,
             exit_attenuation_mode="linear",
             exit_plateau=False,

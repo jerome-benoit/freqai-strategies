@@ -151,7 +151,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "efficiency_center": 0.5,
     # Profit factor defaults
     "win_reward_factor": 2.0,
-    "pnl_factor_beta": 0.5,
+    "pnl_amplification_sensitivity": 0.5,
     # Invariant / safety defaults
     "check_invariants": True,
     "exit_factor_threshold": 1000.0,
@@ -202,7 +202,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "efficiency_weight": "Efficiency weight",
     "efficiency_center": "Efficiency pivot in [0,1]",
     "win_reward_factor": "Profit overshoot bonus factor",
-    "pnl_factor_beta": "PnL amplification sensitivity",
+    "pnl_amplification_sensitivity": "PnL amplification sensitivity",
     "check_invariants": "Enable runtime invariant checks",
     "exit_factor_threshold": "Warn if |exit_factor| exceeds",
     # PBRS parameters
@@ -250,7 +250,7 @@ _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     "efficiency_weight": {"min": 0.0, "max": 2.0},
     "efficiency_center": {"min": 0.0, "max": 1.0},
     "win_reward_factor": {"min": 0.0},
-    "pnl_factor_beta": {"min": 1e-6},
+    "pnl_amplification_sensitivity": {"min": 1e-6},
     # PBRS parameter bounds
     "potential_gamma": {"min": 0.0, "max": 1.0},
     "exit_potential_decay": {"min": 0.0, "max": 1.0},
@@ -992,12 +992,14 @@ def _compute_pnl_target_coefficient(
 
     if pnl_target > 0.0:
         win_reward_factor = _get_float_param(params, "win_reward_factor")
-        pnl_factor_beta = _get_float_param(params, "pnl_factor_beta")
+        pnl_amplification_sensitivity = _get_float_param(params, "pnl_amplification_sensitivity")
         rr = risk_reward_ratio if risk_reward_ratio > 0 else RISK_REWARD_RATIO_DEFAULT
 
         pnl_ratio = pnl / pnl_target
         if abs(pnl_ratio) > 1.0:
-            base_pnl_target_coefficient = math.tanh(pnl_factor_beta * (abs(pnl_ratio) - 1.0))
+            base_pnl_target_coefficient = math.tanh(
+                pnl_amplification_sensitivity * (abs(pnl_ratio) - 1.0)
+            )
             if pnl_ratio > 1.0:
                 pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
             elif pnl_ratio < -(1.0 / rr):
@@ -1285,7 +1287,7 @@ def calculate_reward(
             center_unrealized = 0.5 * (
                 context.max_unrealized_profit + context.min_unrealized_profit
             )
-            beta = _get_float_param(params, "pnl_factor_beta")
+            beta = _get_float_param(params, "pnl_amplification_sensitivity")
             next_pnl = float(center_unrealized * math.tanh(beta * next_duration_ratio))
         else:
             next_pnl = current_pnl

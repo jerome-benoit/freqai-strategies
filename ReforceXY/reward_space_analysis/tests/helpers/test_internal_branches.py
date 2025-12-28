@@ -68,7 +68,7 @@ def test_calculate_reward_unrealized_pnl_hold_path():
     params = {
         "hold_potential_enabled": True,
         "unrealized_pnl": True,
-        "pnl_factor_beta": 0.5,
+        "pnl_amplification_sensitivity": 0.5,
     }
     breakdown = calculate_reward_with_defaults(
         context,

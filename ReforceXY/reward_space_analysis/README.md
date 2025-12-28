@@ -52,7 +52,7 @@ Full test documentation: [tests/README.md](./tests/README.md).
   - [Reward & Shaping](#reward--shaping)
   - [Diagnostics & Validation](#diagnostics--validation)
   - [Overrides](#overrides)
-  - [Reward Parameter Cheat Sheet](#reward-parameter-cheat-sheet)
+  - [Reward Tunables Reference](#reward-tunables-reference)
   - [Exit Attenuation Kernels](#exit-attenuation-kernels)
   - [Transform Functions](#transform-functions)
   - [Skipping Feature Analysis](#skipping-feature-analysis)
@@ -220,7 +220,7 @@ be overridden via `--params`.
   scalars (`profit_aim`, `risk_reward_ratio`, `action_masking`). Conflicts:
   individual flags vs `--params` ⇒ `--params` wins.
 
-### Reward Parameter Cheat Sheet
+### Reward Tunables Reference
 
 #### Core
 
@@ -237,12 +237,12 @@ The exit factor is computed as:
 
 ##### PnL Target
 
-| Parameter           | Default | Description                   |
-| ------------------- | ------- | ----------------------------- |
-| `profit_aim`        | 0.03    | Profit target threshold       |
-| `risk_reward_ratio` | 2.0     | Risk/reward multiplier        |
-| `win_reward_factor` | 2.0     | Profit target bonus factor    |
-| `pnl_factor_beta`   | 0.5     | PnL amplification sensitivity |
+| Parameter                       | Default | Description                   |
+| ------------------------------- | ------- | ----------------------------- |
+| `profit_aim`                    | 0.03    | Profit target threshold       |
+| `risk_reward_ratio`             | 2.0     | Risk/reward multiplier        |
+| `win_reward_factor`             | 2.0     | Profit target bonus factor    |
+| `pnl_amplification_sensitivity` | 0.5     | PnL amplification sensitivity |
 
 **Note:** In ReforceXY, `risk_reward_ratio` maps to `rr`.
 
@@ -252,9 +252,9 @@ Let `pnl_target = profit_aim × risk_reward_ratio`, `pnl_ratio = pnl / pnl_targe
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
-  `pnl_target_coefficient = 1.0 + win_reward_factor × tanh(pnl_factor_beta × (pnl_ratio − 1.0))`
+  `pnl_target_coefficient = 1.0 + win_reward_factor × tanh(pnl_amplification_sensitivity × (pnl_ratio − 1.0))`
 - If `pnl_ratio < −(1.0 / risk_reward_ratio)`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor × risk_reward_ratio) × tanh(pnl_factor_beta × (|pnl_ratio| − 1.0))`
+  `pnl_target_coefficient = 1.0 + (win_reward_factor × risk_reward_ratio) × tanh(pnl_amplification_sensitivity × (|pnl_ratio| − 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -465,7 +465,7 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 `risk_reward_ratio`, `action_masking`.
 
 **Reward tunables** (tunable via either direct flag or `--params`) correspond to
-those listed under Reward Parameter Cheat Sheet: Core, Duration Penalties, Exit
+those listed under Reward Tunables Reference: Core, Duration Penalties, Exit
 Attenuation, Efficiency, Validation, PBRS, Hold/Entry/Exit Potential Transforms.
 
 ## Examples

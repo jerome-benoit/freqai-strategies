@@ -132,7 +132,9 @@ class TestPBRS(RewardSpaceTestBase):
         )
 
         gamma = _get_float_param(
-            params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
+            params,
+            "potential_gamma",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
         )
         expected_next_potential = (
             prev_potential / gamma if gamma not in (0.0, None) else prev_potential
@@ -872,7 +874,9 @@ class TestPBRS(RewardSpaceTestBase):
             potential_gamma=0.9,
         )
         gamma = _get_float_param(
-            params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
+            params,
+            "potential_gamma",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
         )
         rng = np.random.default_rng(555)
         potentials = rng.uniform(0.05, 0.85, size=220)
@@ -1126,7 +1130,9 @@ class TestPBRS(RewardSpaceTestBase):
             exit_potential_mode="canonical",
         )
         gamma = _get_float_param(
-            params, "potential_gamma", DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
+            params,
+            "potential_gamma",
+            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
         )
         rng = np.random.default_rng(321)
         prev_potential = 0.0
