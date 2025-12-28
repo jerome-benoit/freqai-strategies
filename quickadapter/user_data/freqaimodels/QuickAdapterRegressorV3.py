@@ -32,6 +32,7 @@ from Utils import (
     calculate_n_extrema,
     fit_regressor,
     format_number,
+    get_config_value,
     get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_callbacks,
@@ -71,7 +72,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.7.141"
+    version = "3.8.0"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -170,17 +171,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "jensenshannon",
     )
 
-    PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT: Final[float] = 0.999
-    PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT: Final[float] = 12.0
-    PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
+    PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT: Final[float] = 0.999
+    PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT: Final[float] = 12.0
+    PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
 
     FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
         DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
     )
     MIN_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 12
     MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 24
-    MIN_LABEL_NATR_RATIO_DEFAULT: Final[float] = 9.0
-    MAX_LABEL_NATR_RATIO_DEFAULT: Final[float] = 12.0
+    MIN_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = 9.0
+    MAX_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = 12.0
     LABEL_KNN_N_NEIGHBORS_DEFAULT: Final[int] = 5
 
     @staticmethod
@@ -259,14 +260,52 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "label_candles_step": 1,
             "train_candles_step": 10,
             "space_reduction": False,
-            "expansion_ratio": 0.4,
+            "space_fraction": 0.4,
             "min_resource": 3,
             "seed": 1,
         }
+        optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
+        get_config_value(
+            optuna_hyperopt,
+            new_key="space_fraction",
+            old_key="expansion_ratio",
+            default=optuna_default_config["space_fraction"],
+            logger=logger,
+            new_path="freqai.optuna_hyperopt.space_fraction",
+            old_path="freqai.optuna_hyperopt.expansion_ratio",
+        )
         return {
             **optuna_default_config,
-            **self.config.get("freqai", {}).get("optuna_hyperopt", {}),
+            **optuna_hyperopt,
         }
+
+    @cached_property
+    def _min_label_period_candles(self) -> int:
+        return self.ft_params.get(
+            "min_label_period_candles",
+            QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
+        )
+
+    @cached_property
+    def _max_label_period_candles(self) -> int:
+        return self.ft_params.get(
+            "max_label_period_candles",
+            QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
+        )
+
+    @cached_property
+    def _min_label_natr_multiplier(self) -> float:
+        return self.ft_params.get(
+            "min_label_natr_multiplier",
+            QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
+        )
+
+    @cached_property
+    def _max_label_natr_multiplier(self) -> float:
+        return self.ft_params.get(
+            "max_label_natr_multiplier",
+            QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
+        )
 
     @cached_property
     def _label_frequency_candles(self) -> int:
@@ -322,18 +361,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(predictions_extrema, dict):
             predictions_extrema = {}
 
-        threshold_outlier = predictions_extrema.get(
-            "threshold_outlier",
-            QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT,
+        outlier_threshold_quantile = get_config_value(
+            predictions_extrema,
+            new_key="outlier_threshold_quantile",
+            old_key="threshold_outlier",
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT,
+            logger=logger,
+            new_path="freqai.predictions_extrema.outlier_threshold_quantile",
+            old_path="freqai.predictions_extrema.threshold_outlier",
         )
         if (
-            not isinstance(threshold_outlier, (int, float))
-            or not np.isfinite(threshold_outlier)
-            or not (0 < threshold_outlier < 1)
+            not isinstance(outlier_threshold_quantile, (int, float))
+            or not np.isfinite(outlier_threshold_quantile)
+            or not (0 < outlier_threshold_quantile < 1)
         ):
-            threshold_outlier = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLD_OUTLIER_DEFAULT
-            )
+            outlier_threshold_quantile = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT
 
         selection_method = str(
             predictions_extrema.get(
@@ -347,47 +389,63 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ):
             selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
 
-        thresholds_smoothing = str(
-            predictions_extrema.get(
-                "thresholds_smoothing",
-                QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
+        threshold_smoothing_method = str(
+            get_config_value(
+                predictions_extrema,
+                new_key="threshold_smoothing_method",
+                old_key="thresholds_smoothing",
+                default=QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
+                logger=logger,
+                new_path="freqai.predictions_extrema.threshold_smoothing_method",
+                old_path="freqai.predictions_extrema.thresholds_smoothing",
             )
         )
-        if thresholds_smoothing not in QuickAdapterRegressorV3._threshold_methods_set():
-            thresholds_smoothing = QuickAdapterRegressorV3._THRESHOLD_METHODS[
+        if (
+            threshold_smoothing_method
+            not in QuickAdapterRegressorV3._threshold_methods_set()
+        ):
+            threshold_smoothing_method = QuickAdapterRegressorV3._THRESHOLD_METHODS[
                 0
             ]  # "mean"
 
-        thresholds_alpha = predictions_extrema.get(
-            "thresholds_alpha",
-            QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT,
+        soft_extremum_alpha = get_config_value(
+            predictions_extrema,
+            new_key="soft_extremum_alpha",
+            old_key="thresholds_alpha",
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT,
+            logger=logger,
+            new_path="freqai.predictions_extrema.soft_extremum_alpha",
+            old_path="freqai.predictions_extrema.thresholds_alpha",
         )
         if (
-            not isinstance(thresholds_alpha, (int, float))
-            or not np.isfinite(thresholds_alpha)
-            or thresholds_alpha < 0
+            not isinstance(soft_extremum_alpha, (int, float))
+            or not np.isfinite(soft_extremum_alpha)
+            or soft_extremum_alpha < 0
         ):
-            thresholds_alpha = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_THRESHOLDS_ALPHA_DEFAULT
+            soft_extremum_alpha = (
+                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT
             )
 
-        extrema_fraction = predictions_extrema.get(
-            "extrema_fraction",
-            QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT,
+        keep_extrema_fraction = get_config_value(
+            predictions_extrema,
+            new_key="keep_extrema_fraction",
+            old_key="extrema_fraction",
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT,
+            logger=logger,
+            new_path="freqai.predictions_extrema.keep_extrema_fraction",
+            old_path="freqai.predictions_extrema.extrema_fraction",
         )
-        if not isinstance(extrema_fraction, (int, float)) or not (
-            0 < extrema_fraction <= 1
+        if not isinstance(keep_extrema_fraction, (int, float)) or not (
+            0 < keep_extrema_fraction <= 1
         ):
-            extrema_fraction = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_EXTREMA_FRACTION_DEFAULT
-            )
+            keep_extrema_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT
 
         return {
-            "threshold_outlier": float(threshold_outlier),
+            "outlier_threshold_quantile": float(outlier_threshold_quantile),
             "selection_method": selection_method,
-            "thresholds_smoothing": thresholds_smoothing,
-            "thresholds_alpha": float(thresholds_alpha),
-            "extrema_fraction": float(extrema_fraction),
+            "threshold_smoothing_method": threshold_smoothing_method,
+            "soft_extremum_alpha": float(soft_extremum_alpha),
+            "keep_extrema_fraction": float(keep_extrema_fraction),
         }
 
     @property
@@ -438,7 +496,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
         self._optuna_label_incremented_pairs: list[str] = []
-        self._default_label_natr_ratio, self._default_label_period_candles = (
+        self._default_label_natr_multiplier, self._default_label_period_candles = (
             get_label_defaults(self.ft_params, logger)
         )
         for pair in self.pairs:
@@ -477,10 +535,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         "label_period_candles",
                         self._default_label_period_candles,
                     ),
-                    "label_natr_ratio": float(
+                    "label_natr_multiplier": float(
                         self.ft_params.get(
-                            "label_natr_ratio",
-                            self._default_label_natr_ratio,
+                            "label_natr_multiplier",
+                            self._default_label_natr_multiplier,
                         )
                     ),
                 }
@@ -522,7 +580,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"  space_reduction: {optuna_config.get('space_reduction')}")
             logger.info(
-                f"  expansion_ratio: {format_number(optuna_config.get('expansion_ratio'))}"
+                f"  space_fraction: {format_number(optuna_config.get('space_fraction'))}"
             )
             logger.info(f"  min_resource: {optuna_config.get('min_resource')}")
             logger.info(f"  seed: {optuna_config.get('seed')}")
@@ -736,16 +794,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"  selection_method: {predictions_extrema.get('selection_method')}"
         )
         logger.info(
-            f"  thresholds_smoothing: {predictions_extrema.get('thresholds_smoothing')}"
+            f"  threshold_smoothing_method: {predictions_extrema.get('threshold_smoothing_method')}"
         )
         logger.info(
-            f"  threshold_outlier: {format_number(predictions_extrema.get('threshold_outlier'))}"
+            f"  outlier_threshold_quantile: {format_number(predictions_extrema.get('outlier_threshold_quantile'))}"
         )
         logger.info(
-            f"  thresholds_alpha: {format_number(predictions_extrema.get('thresholds_alpha'))}"
+            f"  soft_extremum_alpha: {format_number(predictions_extrema.get('soft_extremum_alpha'))}"
         )
         logger.info(
-            f"  extrema_fraction: {format_number(predictions_extrema.get('extrema_fraction'))}"
+            f"  keep_extrema_fraction: {format_number(predictions_extrema.get('keep_extrema_fraction'))}"
         )
 
         logger.info("Label Configuration:")
@@ -753,17 +811,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
         )
         logger.info(f"  label_frequency_candles: {self._label_frequency_candles}")
+        logger.info(f"  min_label_period_candles: {self._min_label_period_candles}")
+        logger.info(f"  max_label_period_candles: {self._max_label_period_candles}")
         logger.info(
-            f"  min_label_period_candles: {self.ft_params.get('min_label_period_candles', QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT)}"
+            f"  min_label_natr_multiplier: {format_number(self._min_label_natr_multiplier)}"
         )
         logger.info(
-            f"  max_label_period_candles: {self.ft_params.get('max_label_period_candles', QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT)}"
-        )
-        logger.info(
-            f"  min_label_natr_ratio: {format_number(self.ft_params.get('min_label_natr_ratio', QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT))}"
-        )
-        logger.info(
-            f"  max_label_natr_ratio: {format_number(self.ft_params.get('max_label_natr_ratio', QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT))}"
+            f"  max_label_natr_multiplier: {format_number(self._max_label_natr_multiplier)}"
         )
 
         if self._optuna_hyperopt:
@@ -773,7 +827,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if params:
                     logger.info(
                         f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
-                        f"label_natr_ratio={format_number(params.get('label_natr_ratio'))}"
+                        f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}"
                     )
         else:
             logger.info("Label Parameters:")
@@ -781,7 +835,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"  label_period_candles: {self.ft_params.get('label_period_candles', self._default_label_period_candles)}"
             )
             logger.info(
-                f"  label_natr_ratio: {format_number(float(self.ft_params.get('label_natr_ratio', self._default_label_natr_ratio)))}"
+                f"  label_natr_multiplier: {format_number(float(self.ft_params.get('label_natr_multiplier', self._default_label_natr_multiplier)))}"
             )
 
         logger.info("=" * 60)
@@ -950,7 +1004,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     ),  # "hp"
                     model_training_parameters,
                     self._optuna_config.get("space_reduction"),
-                    self._optuna_config.get("expansion_ratio"),
+                    self._optuna_config.get("space_fraction"),
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
             )
@@ -1107,22 +1161,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         ),
                         fit_live_predictions_candles,
                         self._optuna_config.get("label_candles_step"),
-                        min_label_period_candles=self.ft_params.get(
-                            "min_label_period_candles",
-                            QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
-                        ),
-                        max_label_period_candles=self.ft_params.get(
-                            "max_label_period_candles",
-                            QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
-                        ),
-                        min_label_natr_ratio=self.ft_params.get(
-                            "min_label_natr_ratio",
-                            QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT,
-                        ),
-                        max_label_natr_ratio=self.ft_params.get(
-                            "max_label_natr_ratio",
-                            QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT,
-                        ),
+                        min_label_period_candles=self._min_label_period_candles,
+                        max_label_period_candles=self._max_label_period_candles,
+                        min_label_natr_multiplier=self._min_label_natr_multiplier,
+                        max_label_natr_multiplier=self._max_label_natr_multiplier,
                     ),
                     directions=list(QuickAdapterRegressorV3._OPTUNA_LABEL_DIRECTIONS),
                 ),
@@ -1182,7 +1224,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
             )
             cutoff = sp.stats.weibull_min.ppf(
-                self.predictions_extrema["threshold_outlier"], *f
+                self.predictions_extrema["outlier_threshold_quantile"], *f
             )
 
         dk.data["DI_value_mean"] = di_values.mean()
@@ -1197,10 +1239,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]
             ).get("label_period_candles")  # "label"
         )
-        dk.data["extra_returns_per_train"]["label_natr_ratio"] = self.get_optuna_params(
-            pair,
-            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
-        ).get("label_natr_ratio")
+        dk.data["extra_returns_per_train"]["label_natr_multiplier"] = (
+            self.get_optuna_params(
+                pair,
+                QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2],  # "label"
+            ).get("label_natr_multiplier")
+        )
 
         hp_rmse = self.optuna_validate_value(
             self.get_optuna_value(pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0])
@@ -1258,30 +1302,35 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
 
         extrema_selection = self.predictions_extrema["selection_method"]
-        thresholds_smoothing = self.predictions_extrema["thresholds_smoothing"]
-        extrema_fraction = self.predictions_extrema["extrema_fraction"]
+        threshold_smoothing_method = self.predictions_extrema[
+            "threshold_smoothing_method"
+        ]
+        keep_extrema_fraction = self.predictions_extrema["keep_extrema_fraction"]
 
         if (
-            thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
+            threshold_smoothing_method == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
         ):  # "median"
             return QuickAdapterRegressorV3.median_min_max(
-                pred_extrema, extrema_selection, extrema_fraction
+                pred_extrema, extrema_selection, keep_extrema_fraction
             )
         elif (
-            thresholds_smoothing == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
+            threshold_smoothing_method == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
         ):  # "soft_extremum"
             return QuickAdapterRegressorV3.soft_extremum_min_max(
                 pred_extrema,
-                self.predictions_extrema["thresholds_alpha"],
+                self.predictions_extrema["soft_extremum_alpha"],
                 extrema_selection,
-                extrema_fraction,
+                keep_extrema_fraction,
             )
         elif (
-            thresholds_smoothing
+            threshold_smoothing_method
             in QuickAdapterRegressorV3._skimage_threshold_methods_set()
         ):
             return QuickAdapterRegressorV3.skimage_min_max(
-                pred_extrema, thresholds_smoothing, extrema_selection, extrema_fraction
+                pred_extrema,
+                threshold_smoothing_method,
+                extrema_selection,
+                keep_extrema_fraction,
             )
 
     @staticmethod
@@ -1297,15 +1346,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         minima_indices: NDArray[np.intp],
         maxima_indices: NDArray[np.intp],
-        extrema_fraction: float = 1.0,
+        keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         n_minima = (
-            max(1, int(round(minima_indices.size * extrema_fraction)))
+            max(1, int(round(minima_indices.size * keep_extrema_fraction)))
             if minima_indices.size > 0
             else 0
         )
         n_maxima = (
-            max(1, int(round(maxima_indices.size * extrema_fraction)))
+            max(1, int(round(maxima_indices.size * keep_extrema_fraction)))
             if maxima_indices.size > 0
             else 0
         )
@@ -1330,15 +1379,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         n_minima: int,
         n_maxima: int,
-        extrema_fraction: float = 1.0,
+        keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         pred_minima = (
-            pred_extrema.nsmallest(max(1, int(round(n_minima * extrema_fraction))))
+            pred_extrema.nsmallest(max(1, int(round(n_minima * keep_extrema_fraction))))
             if n_minima > 0
             else pd.Series(dtype=float)
         )
         pred_maxima = (
-            pred_extrema.nlargest(max(1, int(round(n_maxima * extrema_fraction))))
+            pred_extrema.nlargest(max(1, int(round(n_maxima * keep_extrema_fraction))))
             if n_maxima > 0
             else pd.Series(dtype=float)
         )
@@ -1349,7 +1398,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def get_pred_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
-        extrema_fraction: float = 1.0,
+        keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         pred_extrema = (
             pd.to_numeric(pred_extrema, errors="coerce")
@@ -1369,7 +1418,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_extrema,
                 minima_indices.size,
                 maxima_indices.size,
-                extrema_fraction,
+                keep_extrema_fraction,
             )
 
         elif (
@@ -1379,7 +1428,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
             pred_minima, pred_maxima = QuickAdapterRegressorV3._get_ranked_peaks(
-                pred_extrema, minima_indices, maxima_indices, extrema_fraction
+                pred_extrema, minima_indices, maxima_indices, keep_extrema_fraction
             )
 
         elif (
@@ -1430,12 +1479,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         alpha: float,
         extrema_selection: ExtremaSelectionMethod,
-        extrema_fraction: float = 1.0,
+        keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
             raise ValueError(f"Invalid alpha {alpha!r}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, extrema_fraction
+            pred_extrema, extrema_selection, keep_extrema_fraction
         )
         soft_minimum = soft_extremum(pred_minima, alpha=-alpha)
         if not np.isfinite(soft_minimum):
@@ -1449,10 +1498,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def median_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
-        extrema_fraction: float = 1.0,
+        keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, extrema_fraction
+            pred_extrema, extrema_selection, keep_extrema_fraction
         )
 
         if pred_minima.empty:
@@ -1476,10 +1525,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         method: str,
         extrema_selection: ExtremaSelectionMethod,
-        extrema_fraction: float = 1.0,
+        keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, extrema_fraction
+            pred_extrema, extrema_selection, keep_extrema_fraction
         )
 
         try:
@@ -2622,14 +2671,14 @@ def hp_objective(
     model_training_best_parameters: dict[str, Any],
     model_training_parameters: dict[str, Any],
     space_reduction: bool,
-    expansion_ratio: float,
+    space_fraction: float,
 ) -> float:
     study_model_parameters = get_optuna_study_model_parameters(
         trial,
         regressor,
         model_training_best_parameters,
         space_reduction,
-        expansion_ratio,
+        space_fraction,
     )
     model_training_parameters = {**model_training_parameters, **study_model_parameters}
 
@@ -2658,8 +2707,8 @@ def label_objective(
     candles_step: int,
     min_label_period_candles: int = QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
     max_label_period_candles: int = QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
-    min_label_natr_ratio: float = QuickAdapterRegressorV3.MIN_LABEL_NATR_RATIO_DEFAULT,
-    max_label_natr_ratio: float = QuickAdapterRegressorV3.MAX_LABEL_NATR_RATIO_DEFAULT,
+    min_label_natr_multiplier: float = QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
+    max_label_natr_multiplier: float = QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
 ) -> tuple[int, float, float, float, float, float, float]:
     min_label_period_candles, max_label_period_candles, candles_step = (
         get_min_max_label_period_candles(
@@ -2678,8 +2727,11 @@ def label_objective(
         max_label_period_candles,
         step=candles_step,
     )
-    label_natr_ratio = trial.suggest_float(
-        "label_natr_ratio", min_label_natr_ratio, max_label_natr_ratio, step=0.05
+    label_natr_multiplier = trial.suggest_float(
+        "label_natr_multiplier",
+        min_label_natr_multiplier,
+        max_label_natr_multiplier,
+        step=0.05,
     )
 
     df = df.iloc[
@@ -2705,7 +2757,7 @@ def label_objective(
     ) = zigzag(
         df,
         natr_period=label_period_candles,
-        natr_ratio=label_natr_ratio,
+        natr_multiplier=label_natr_multiplier,
     )
 
     median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))

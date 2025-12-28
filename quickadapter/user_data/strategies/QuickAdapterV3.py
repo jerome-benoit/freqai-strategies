@@ -48,6 +48,7 @@ from Utils import (
     ewo,
     format_number,
     get_callable_sha256,
+    get_config_value,
     get_distance,
     get_label_defaults,
     get_weighted_extrema,
@@ -105,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.3.191"
+        return "3.8.0"
 
     timeframe = "5m"
 
@@ -122,25 +123,25 @@ class QuickAdapterV3(IStrategy):
     }
 
     default_reversal_confirmation: ClassVar[dict[str, int | float]] = {
-        "lookback_period": 0,
-        "decay_ratio": 0.5,
-        "min_natr_ratio_percent": 0.0095,
-        "max_natr_ratio_percent": 0.075,
+        "lookback_period_candles": 0,
+        "decay_fraction": 0.5,
+        "min_natr_multiplier_fraction": 0.0095,
+        "max_natr_multiplier_fraction": 0.075,
     }
 
     position_adjustment_enable = True
 
-    # {stage: (natr_ratio_percent, stake_percent, color)}
+    # {stage: (natr_multiplier_fraction, stake_percent, color)}
     partial_exit_stages: ClassVar[dict[int, tuple[float, float, str]]] = {
         0: (0.4858, 0.4, "lime"),
         1: (0.6180, 0.3, "yellow"),
         2: (0.7640, 0.2, "coral"),
     }
 
-    # (natr_ratio_percent, stake_percent, color)
+    # (natr_multiplier_fraction, stake_percent, color)
     _FINAL_EXIT_STAGE: Final[tuple[float, float, str]] = (1.0, 1.0, "deepskyblue")
 
-    _CUSTOM_STOPLOSS_NATR_RATIO_PERCENT: Final[float] = 0.7860
+    _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
 
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
@@ -328,7 +329,7 @@ class QuickAdapterV3(IStrategy):
             / self.freqai_info.get("identifier")
         )
         feature_parameters = self.freqai_info.get("feature_parameters", {})
-        self._default_label_natr_ratio, self._default_label_period_candles = (
+        self._default_label_natr_multiplier, self._default_label_period_candles = (
             get_label_defaults(feature_parameters, logger)
         )
         self._label_params: dict[str, dict[str, Any]] = {}
@@ -341,10 +342,10 @@ class QuickAdapterV3(IStrategy):
                         "label_period_candles",
                         self._default_label_period_candles,
                     ),
-                    "label_natr_ratio": float(
+                    "label_natr_multiplier": float(
                         feature_parameters.get(
-                            "label_natr_ratio",
-                            self._default_label_natr_ratio,
+                            "label_natr_multiplier",
+                            self._default_label_natr_multiplier,
                         )
                     ),
                 }
@@ -407,46 +408,56 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Extrema Smoothing:")
         logger.info(f"  method: {self.extrema_smoothing['method']}")
-        logger.info(f"  window: {self.extrema_smoothing['window']}")
+        logger.info(f"  window_candles: {self.extrema_smoothing['window_candles']}")
         logger.info(f"  beta: {format_number(self.extrema_smoothing['beta'])}")
         logger.info(f"  polyorder: {self.extrema_smoothing['polyorder']}")
         logger.info(f"  mode: {self.extrema_smoothing['mode']}")
         logger.info(f"  sigma: {format_number(self.extrema_smoothing['sigma'])}")
 
         logger.info("Reversal Confirmation:")
-        logger.info(f"  lookback_period: {self._reversal_lookback_period}")
-        logger.info(f"  decay_ratio: {format_number(self._reversal_decay_ratio)}")
         logger.info(
-            f"  min_natr_ratio_percent: {format_number(self._reversal_min_natr_ratio_percent)}"
+            f"  lookback_period_candles: {self._reversal_lookback_period_candles}"
+        )
+        logger.info(f"  decay_fraction: {format_number(self._reversal_decay_fraction)}")
+        logger.info(
+            f"  min_natr_multiplier_fraction: {format_number(self._reversal_min_natr_multiplier_fraction)}"
         )
         logger.info(
-            f"  max_natr_ratio_percent: {format_number(self._reversal_max_natr_ratio_percent)}"
+            f"  max_natr_multiplier_fraction: {format_number(self._reversal_max_natr_multiplier_fraction)}"
         )
 
         exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target = exit_pricing.get("trade_price_target", "moving_average")
+        trade_price_target_method = get_config_value(
+            exit_pricing,
+            new_key="trade_price_target_method",
+            old_key="trade_price_target",
+            default=TRADE_PRICE_TARGETS[0],  # "moving_average"
+            logger=logger,
+            new_path="exit_pricing.trade_price_target_method",
+            old_path="exit_pricing.trade_price_target",
+        )
         logger.info("Exit Pricing:")
-        logger.info(f"  trade_price_target: {trade_price_target}")
+        logger.info(f"  trade_price_target_method: {trade_price_target_method}")
         logger.info(f"  thresholds_calibration: {self._exit_thresholds_calibration}")
 
         logger.info("Custom Stoploss:")
         logger.info(
-            f"  natr_ratio_percent: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_RATIO_PERCENT)}"
+            f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
         logger.info("Partial Exit Stages:")
         for stage, (
-            natr_ratio_percent,
+            natr_multiplier_fraction,
             stake_percent,
             color,
         ) in QuickAdapterV3.partial_exit_stages.items():
             logger.info(
-                f"  stage {stage}: natr_ratio_percent={format_number(natr_ratio_percent)}, stake_percent={format_number(stake_percent)}, color={color}"
+                f"  stage {stage}: natr_multiplier_fraction={format_number(natr_multiplier_fraction)}, stake_percent={format_number(stake_percent)}, color={color}"
             )
 
         final_stage = max(QuickAdapterV3.partial_exit_stages.keys(), default=-1) + 1
         logger.info(
-            f"Final Exit Stage: stage {final_stage}: natr_ratio_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE[2]}"
+            f"Final Exit Stage: stage {final_stage}: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE[2]}"
         )
 
         logger.info("Protections:")
@@ -477,56 +488,92 @@ class QuickAdapterV3(IStrategy):
 
     def _init_reversal_confirmation_defaults(self) -> None:
         reversal_confirmation = self.config.get("reversal_confirmation", {})
-        lookback_period = reversal_confirmation.get(
-            "lookback_period",
-            QuickAdapterV3.default_reversal_confirmation["lookback_period"],
+        lookback_period_candles = get_config_value(
+            reversal_confirmation,
+            new_key="lookback_period_candles",
+            old_key="lookback_period",
+            default=QuickAdapterV3.default_reversal_confirmation[
+                "lookback_period_candles"
+            ],
+            logger=logger,
+            new_path="reversal_confirmation.lookback_period_candles",
+            old_path="reversal_confirmation.lookback_period",
         )
-        decay_ratio = reversal_confirmation.get(
-            "decay_ratio", QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
-        )
-        min_natr_ratio_percent = reversal_confirmation.get(
-            "min_natr_ratio_percent",
-            QuickAdapterV3.default_reversal_confirmation["min_natr_ratio_percent"],
-        )
-        max_natr_ratio_percent = reversal_confirmation.get(
-            "max_natr_ratio_percent",
-            QuickAdapterV3.default_reversal_confirmation["max_natr_ratio_percent"],
+        decay_fraction = get_config_value(
+            reversal_confirmation,
+            new_key="decay_fraction",
+            old_key="decay_ratio",
+            default=QuickAdapterV3.default_reversal_confirmation["decay_fraction"],
+            logger=logger,
+            new_path="reversal_confirmation.decay_fraction",
+            old_path="reversal_confirmation.decay_ratio",
         )
 
-        if not isinstance(lookback_period, int) or lookback_period < 0:
+        min_natr_multiplier_fraction = get_config_value(
+            reversal_confirmation,
+            new_key="min_natr_multiplier_fraction",
+            old_key="min_natr_ratio_percent",
+            default=QuickAdapterV3.default_reversal_confirmation[
+                "min_natr_multiplier_fraction"
+            ],
+            logger=logger,
+            new_path="reversal_confirmation.min_natr_multiplier_fraction",
+            old_path="reversal_confirmation.min_natr_ratio_percent",
+        )
+        max_natr_multiplier_fraction = get_config_value(
+            reversal_confirmation,
+            new_key="max_natr_multiplier_fraction",
+            old_key="max_natr_ratio_percent",
+            default=QuickAdapterV3.default_reversal_confirmation[
+                "max_natr_multiplier_fraction"
+            ],
+            logger=logger,
+            new_path="reversal_confirmation.max_natr_multiplier_fraction",
+            old_path="reversal_confirmation.max_natr_ratio_percent",
+        )
+
+        if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
             logger.warning(
-                f"Invalid reversal_confirmation lookback_period {lookback_period!r}: must be >= 0. Using default {QuickAdapterV3.default_reversal_confirmation['lookback_period']!r}"
+                f"Invalid reversal_confirmation lookback_period_candles {lookback_period_candles!r}: must be >= 0. Using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
             )
-            lookback_period = QuickAdapterV3.default_reversal_confirmation[
-                "lookback_period"
+            lookback_period_candles = QuickAdapterV3.default_reversal_confirmation[
+                "lookback_period_candles"
             ]
 
-        if not isinstance(decay_ratio, (int, float)) or not (0.0 < decay_ratio <= 1.0):
+        if not isinstance(decay_fraction, (int, float)) or not (
+            0.0 < decay_fraction <= 1.0
+        ):
             logger.warning(
-                f"Invalid reversal_confirmation decay_ratio {decay_ratio!r}: must be in range (0, 1]. Using default {QuickAdapterV3.default_reversal_confirmation['decay_ratio']!r}"
+                f"Invalid reversal_confirmation decay_fraction {decay_fraction!r}: must be in range (0, 1]. Using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
             )
-            decay_ratio = QuickAdapterV3.default_reversal_confirmation["decay_ratio"]
+            decay_fraction = QuickAdapterV3.default_reversal_confirmation[
+                "decay_fraction"
+            ]
 
-        min_natr_ratio_percent, max_natr_ratio_percent = validate_range(
-            min_natr_ratio_percent,
-            max_natr_ratio_percent,
+        min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
+            min_natr_multiplier_fraction,
+            max_natr_multiplier_fraction,
             logger,
-            name="natr_ratio_percent",
+            name="natr_multiplier_fraction",
             default_min=QuickAdapterV3.default_reversal_confirmation[
-                "min_natr_ratio_percent"
+                "min_natr_multiplier_fraction"
             ],
             default_max=QuickAdapterV3.default_reversal_confirmation[
-                "max_natr_ratio_percent"
+                "max_natr_multiplier_fraction"
             ],
             allow_equal=False,
             non_negative=True,
             finite_only=True,
         )
 
-        self._reversal_lookback_period = int(lookback_period)
-        self._reversal_decay_ratio = float(decay_ratio)
-        self._reversal_min_natr_ratio_percent = float(min_natr_ratio_percent)
-        self._reversal_max_natr_ratio_percent = float(max_natr_ratio_percent)
+        self._reversal_lookback_period_candles = int(lookback_period_candles)
+        self._reversal_decay_fraction = float(decay_fraction)
+        self._reversal_min_natr_multiplier_fraction = float(
+            min_natr_multiplier_fraction
+        )
+        self._reversal_max_natr_multiplier_fraction = float(
+            max_natr_multiplier_fraction
+        )
 
     def feature_engineering_expand_all(
         self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs
@@ -710,27 +757,33 @@ class QuickAdapterV3(IStrategy):
         if isinstance(label_period_candles, int):
             self._label_params[pair]["label_period_candles"] = label_period_candles
 
-    def get_label_natr_ratio(self, pair: str) -> float:
-        label_natr_ratio = self._label_params.get(pair, {}).get("label_natr_ratio")
-        if label_natr_ratio and isinstance(label_natr_ratio, float):
-            return label_natr_ratio
+    def get_label_natr_multiplier(self, pair: str) -> float:
+        label_natr_multiplier = self._label_params.get(pair, {}).get(
+            "label_natr_multiplier"
+        )
+        if label_natr_multiplier and isinstance(label_natr_multiplier, float):
+            return label_natr_multiplier
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
         return float(
-            self.freqai_info.get("feature_parameters", {}).get(
-                "label_natr_ratio",
-                self._default_label_natr_ratio,
+            feature_parameters.get(
+                "label_natr_multiplier", self._default_label_natr_multiplier
             )
         )
 
-    def set_label_natr_ratio(self, pair: str, label_natr_ratio: float) -> None:
-        if isinstance(label_natr_ratio, float) and np.isfinite(label_natr_ratio):
-            self._label_params[pair]["label_natr_ratio"] = label_natr_ratio
+    def set_label_natr_multiplier(
+        self, pair: str, label_natr_multiplier: float
+    ) -> None:
+        if isinstance(label_natr_multiplier, float) and np.isfinite(
+            label_natr_multiplier
+        ):
+            self._label_params[pair]["label_natr_multiplier"] = label_natr_multiplier
 
-    def get_label_natr_ratio_percent(self, pair: str, percent: float) -> float:
-        if not isinstance(percent, float) or not (0.0 <= percent <= 1.0):
+    def get_label_natr_multiplier_fraction(self, pair: str, fraction: float) -> float:
+        if not isinstance(fraction, float) or not (0.0 <= fraction <= 1.0):
             raise ValueError(
-                f"Invalid percent {percent!r}: must be a float in range [0, 1]"
+                f"Invalid fraction {fraction!r}: must be a float in range [0, 1]"
             )
-        return self.get_label_natr_ratio(pair) * percent
+        return self.get_label_natr_multiplier(pair) * fraction
 
     @staticmethod
     def _get_extrema_weighting_params(
@@ -996,14 +1049,23 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
-        smoothing_window = extrema_smoothing.get(
-            "window", DEFAULTS_EXTREMA_SMOOTHING["window"]
+        smoothing_window_candles = get_config_value(
+            extrema_smoothing,
+            new_key="window_candles",
+            old_key="window",
+            default=DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
+            logger=logger,
+            new_path="freqai.extrema_smoothing.window_candles",
+            old_path="freqai.extrema_smoothing.window",
         )
-        if not isinstance(smoothing_window, int) or smoothing_window < 3:
+        if (
+            not isinstance(smoothing_window_candles, int)
+            or smoothing_window_candles < 3
+        ):
             logger.warning(
-                f"Invalid extrema_smoothing window {smoothing_window!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window']!r}"
+                f"Invalid extrema_smoothing window_candles {smoothing_window_candles!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
             )
-            smoothing_window = DEFAULTS_EXTREMA_SMOOTHING["window"]
+            smoothing_window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
 
         smoothing_beta = extrema_smoothing.get(
             "beta", DEFAULTS_EXTREMA_SMOOTHING["beta"]
@@ -1051,7 +1113,7 @@ class QuickAdapterV3(IStrategy):
 
         return {
             "method": smoothing_method,
-            "window": int(smoothing_window),
+            "window_candles": int(smoothing_window_candles),
             "beta": smoothing_beta,
             "polyorder": int(smoothing_polyorder),
             "mode": smoothing_mode,
@@ -1080,7 +1142,7 @@ class QuickAdapterV3(IStrategy):
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
         label_period_candles = self.get_label_period_candles(pair)
-        label_natr_ratio = self.get_label_natr_ratio(pair)
+        label_natr_multiplier = self.get_label_natr_multiplier(pair)
         (
             pivots_indices,
             _,
@@ -1094,7 +1156,7 @@ class QuickAdapterV3(IStrategy):
         ) = zigzag(
             dataframe,
             natr_period=label_period_candles,
-            natr_ratio=label_natr_ratio,
+            natr_multiplier=label_natr_multiplier,
         )
         label_period = datetime.timedelta(
             minutes=len(dataframe) * timeframe_to_minutes(self.config.get("timeframe"))
@@ -1105,11 +1167,11 @@ class QuickAdapterV3(IStrategy):
 
         if len(pivots_indices) == 0:
             logger.warning(
-                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_ratio: {format_number(label_natr_ratio)}"
+                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_multiplier: {format_number(label_natr_multiplier)}"
             )
         else:
             logger.info(
-                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_ratio: {format_number(label_natr_ratio)}"
+                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_multiplier: {format_number(label_natr_multiplier)}"
             )
             dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
 
@@ -1159,7 +1221,7 @@ class QuickAdapterV3(IStrategy):
         dataframe[EXTREMA_COLUMN] = smooth_extrema(
             weighted_extrema,
             self.extrema_smoothing["method"],
-            self.extrema_smoothing["window"],
+            self.extrema_smoothing["window_candles"],
             self.extrema_smoothing["beta"],
             self.extrema_smoothing["polyorder"],
             self.extrema_smoothing["mode"],
@@ -1173,18 +1235,21 @@ class QuickAdapterV3(IStrategy):
     ) -> DataFrame:
         dataframe = self.freqai.start(dataframe, metadata, self)
 
-        dataframe["DI_catch"] = np.where(
-            dataframe.get("DI_values") > dataframe.get("DI_cutoff"),
-            0,
-            1,
-        )
+        di_values = dataframe.get("DI_values")
+        di_cutoff = dataframe.get("DI_cutoff")
+        if di_values is not None and di_cutoff is not None:
+            dataframe["DI_catch"] = np.where(di_values > di_cutoff, 0, 1)
+        else:
+            dataframe["DI_catch"] = 1
 
         pair = str(metadata.get("pair"))
 
-        self.set_label_period_candles(
-            pair, dataframe.get("label_period_candles").iloc[-1]
-        )
-        self.set_label_natr_ratio(pair, dataframe.get("label_natr_ratio").iloc[-1])
+        label_period_candles_series = dataframe.get("label_period_candles")
+        if label_period_candles_series is not None:
+            self.set_label_period_candles(pair, label_period_candles_series.iloc[-1])
+        label_natr_multiplier_series = dataframe.get("label_natr_multiplier")
+        if label_natr_multiplier_series is not None:
+            self.set_label_natr_multiplier(pair, label_natr_multiplier_series.iloc[-1])
 
         dataframe["natr_label_period_candles"] = ta.NATR(
             dataframe, timeperiod=self.get_label_period_candles(pair)
@@ -1391,9 +1456,15 @@ class QuickAdapterV3(IStrategy):
     def get_trade_natr(
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
     ) -> Optional[float]:
-        trade_price_target = self.config.get("exit_pricing", {}).get(
-            "trade_price_target",
-            TRADE_PRICE_TARGETS[0],  # "moving_average"
+        exit_pricing = self.config.get("exit_pricing", {})
+        trade_price_target_method = get_config_value(
+            exit_pricing,
+            new_key="trade_price_target_method",
+            old_key="trade_price_target",
+            default=TRADE_PRICE_TARGETS[0],  # "moving_average"
+            logger=logger,
+            new_path="exit_pricing.trade_price_target_method",
+            old_path="exit_pricing.trade_price_target",
         )
         trade_price_target_methods: dict[str, Callable[[], Optional[float]]] = {
             # 0 - "moving_average"
@@ -1409,13 +1480,15 @@ class QuickAdapterV3(IStrategy):
                 df, trade
             ),
         }
-        trade_price_target_fn = trade_price_target_methods.get(trade_price_target)
-        if trade_price_target_fn is None:
+        trade_price_target_method_fn = trade_price_target_methods.get(
+            trade_price_target_method
+        )
+        if trade_price_target_method_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target {trade_price_target!r}. "
+                f"Invalid trade_price_target_method {trade_price_target_method!r}. "
                 f"Supported: {', '.join(TRADE_PRICE_TARGETS)}"
             )
-        return trade_price_target_fn()
+        return trade_price_target_method_fn()
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
@@ -1438,11 +1511,11 @@ class QuickAdapterV3(IStrategy):
         df: DataFrame,
         trade: Trade,
         current_rate: float,
-        natr_ratio_percent: float,
+        natr_multiplier_fraction: float,
     ) -> Optional[float]:
-        if not (0.0 <= natr_ratio_percent <= 1.0):
+        if not (0.0 <= natr_multiplier_fraction <= 1.0):
             raise ValueError(
-                f"Invalid natr_ratio_percent {natr_ratio_percent!r}: must be in range [0, 1]"
+                f"Invalid natr_multiplier_fraction {natr_multiplier_fraction!r}: must be in range [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1453,7 +1526,9 @@ class QuickAdapterV3(IStrategy):
         return (
             current_rate
             * (trade_natr / 100.0)
-            * self.get_label_natr_ratio_percent(trade.pair, natr_ratio_percent)
+            * self.get_label_natr_multiplier_fraction(
+                trade.pair, natr_multiplier_fraction
+            )
             * QuickAdapterV3.get_stoploss_factor(
                 trade_duration_candles + int(round(trade.nr_of_successful_exits**1.5))
             )
@@ -1465,11 +1540,11 @@ class QuickAdapterV3(IStrategy):
         return math.log10(9.75 + 0.25 * trade_duration_candles)
 
     def get_take_profit_distance(
-        self, df: DataFrame, trade: Trade, natr_ratio_percent: float
+        self, df: DataFrame, trade: Trade, natr_multiplier_fraction: float
     ) -> Optional[float]:
-        if not (0.0 <= natr_ratio_percent <= 1.0):
+        if not (0.0 <= natr_multiplier_fraction <= 1.0):
             raise ValueError(
-                f"Invalid natr_ratio_percent {natr_ratio_percent!r}: must be in range [0, 1]"
+                f"Invalid natr_multiplier_fraction {natr_multiplier_fraction!r}: must be in range [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1480,7 +1555,9 @@ class QuickAdapterV3(IStrategy):
         return (
             trade.open_rate
             * (trade_natr / 100.0)
-            * self.get_label_natr_ratio_percent(trade.pair, natr_ratio_percent)
+            * self.get_label_natr_multiplier_fraction(
+                trade.pair, natr_multiplier_fraction
+            )
             * QuickAdapterV3.get_take_profit_factor(trade_duration_candles)
         )
 
@@ -1533,7 +1610,10 @@ class QuickAdapterV3(IStrategy):
             return None
 
         stoploss_distance = self.get_stoploss_distance(
-            df, trade, current_rate, QuickAdapterV3._CUSTOM_STOPLOSS_NATR_RATIO_PERCENT
+            df,
+            trade,
+            current_rate,
+            QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION,
         )
         if isna(stoploss_distance) or stoploss_distance <= 0:
             return None
@@ -1555,13 +1635,13 @@ class QuickAdapterV3(IStrategy):
     def get_take_profit_price(
         self, df: DataFrame, trade: Trade, exit_stage: int
     ) -> Optional[float]:
-        natr_ratio_percent = (
+        natr_multiplier_fraction = (
             QuickAdapterV3.partial_exit_stages[exit_stage][0]
             if exit_stage in QuickAdapterV3.partial_exit_stages
             else QuickAdapterV3._FINAL_EXIT_STAGE[0]
         )
         take_profit_distance = self.get_take_profit_distance(
-            df, trade, natr_ratio_percent
+            df, trade, natr_multiplier_fraction
         )
         if isna(take_profit_distance) or take_profit_distance <= 0:
             return None
@@ -1754,8 +1834,8 @@ class QuickAdapterV3(IStrategy):
         self,
         df: DataFrame,
         pair: str,
-        min_natr_ratio_percent: float,
-        max_natr_ratio_percent: float,
+        min_natr_multiplier_fraction: float,
+        max_natr_multiplier_fraction: float,
         candle_idx: int = -1,
         interpolation_direction: InterpolationDirection = "direct",
         quantile_exponent: float = 1.5,
@@ -1770,8 +1850,8 @@ class QuickAdapterV3(IStrategy):
         cache_key: CandleDeviationCacheKey = (
             pair,
             df_signature,
-            float(min_natr_ratio_percent),
-            float(max_natr_ratio_percent),
+            float(min_natr_multiplier_fraction),
+            float(max_natr_multiplier_fraction),
             candle_idx,
             interpolation_direction,
             float(quantile_exponent),
@@ -1802,17 +1882,17 @@ class QuickAdapterV3(IStrategy):
         if (
             interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECTIONS[0]
         ):  # "direct"
-            natr_ratio_percent = (
-                min_natr_ratio_percent
-                + (max_natr_ratio_percent - min_natr_ratio_percent)
+            natr_multiplier_fraction = (
+                min_natr_multiplier_fraction
+                + (max_natr_multiplier_fraction - min_natr_multiplier_fraction)
                 * candle_label_natr_value_quantile**quantile_exponent
             )
         elif (
             interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECTIONS[1]
         ):  # "inverse"
-            natr_ratio_percent = (
-                max_natr_ratio_percent
-                - (max_natr_ratio_percent - min_natr_ratio_percent)
+            natr_multiplier_fraction = (
+                max_natr_multiplier_fraction
+                - (max_natr_multiplier_fraction - min_natr_multiplier_fraction)
                 * candle_label_natr_value_quantile**quantile_exponent
             )
         else:
@@ -1822,7 +1902,7 @@ class QuickAdapterV3(IStrategy):
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
-        ) * self.get_label_natr_ratio_percent(pair, natr_ratio_percent)
+        ) * self.get_label_natr_multiplier_fraction(pair, natr_multiplier_fraction)
         self._candle_deviation_cache[cache_key] = candle_deviation
         return self._candle_deviation_cache[cache_key]
 
@@ -1831,8 +1911,8 @@ class QuickAdapterV3(IStrategy):
         df: DataFrame,
         pair: str,
         side: TradeDirection,
-        min_natr_ratio_percent: float,
-        max_natr_ratio_percent: float,
+        min_natr_multiplier_fraction: float,
+        max_natr_multiplier_fraction: float,
         candle_idx: int = -1,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
@@ -1847,16 +1927,16 @@ class QuickAdapterV3(IStrategy):
             df_signature,
             side,
             candle_idx,
-            float(min_natr_ratio_percent),
-            float(max_natr_ratio_percent),
+            float(min_natr_multiplier_fraction),
+            float(max_natr_multiplier_fraction),
         )
         if cache_key in self._candle_threshold_cache:
             return self._candle_threshold_cache[cache_key]
         current_deviation = self._calculate_candle_deviation(
             df,
             pair,
-            min_natr_ratio_percent=min_natr_ratio_percent,
-            max_natr_ratio_percent=max_natr_ratio_percent,
+            min_natr_multiplier_fraction=min_natr_multiplier_fraction,
+            max_natr_multiplier_fraction=max_natr_multiplier_fraction,
             candle_idx=candle_idx,
             interpolation_direction=QuickAdapterV3._INTERPOLATION_DIRECTIONS[
                 0
@@ -1903,10 +1983,10 @@ class QuickAdapterV3(IStrategy):
         side: TradeDirection,
         order: OrderType,
         rate: float,
-        lookback_period: int,
-        decay_ratio: float,
-        min_natr_ratio_percent: float,
-        max_natr_ratio_percent: float,
+        lookback_period_candles: int,
+        decay_fraction: float,
+        min_natr_multiplier_fraction: float,
+        max_natr_multiplier_fraction: float,
     ) -> bool:
         """Confirm a directional reversal using a volatility-adaptive current-candle
         threshold and optionally a backward confirmation chain with geometric decay.
@@ -1915,9 +1995,9 @@ class QuickAdapterV3(IStrategy):
         --------
         1. Compute a deviation-based threshold on the latest candle (-1). The current
            rate must strictly break it (long: rate > threshold; short: rate < threshold).
-        2. If lookback_period > 0, for each k = 1..lookback_period:
-             - Decay (min_natr_ratio_percent, max_natr_ratio_percent) by (decay_ratio ** k),
-               clamped to [0, 1].
+        2. If lookback_period_candles > 0, for each k = 1..lookback_period_candles:
+             - Decay (min_natr_multiplier_fraction, max_natr_multiplier_fraction) by
+               (decay_fraction ** k), clamped to [0, 1].
              - Recompute the threshold on candle index -(k+1).
              - Require close[-k] to have strictly broken that historical threshold.
         3. If an intermediate close or threshold is non-finite, chain evaluation aborts
@@ -1935,14 +2015,14 @@ class QuickAdapterV3(IStrategy):
             Context (affects log wording only).
         rate : float
             Candidate execution price; must break the current threshold.
-        lookback_period : int
+        lookback_period_candles : int
             Number of historical confirmation steps requested; truncated to history.
-        decay_ratio : float
-            Geometric decay factor per step (0 < decay_ratio <= 1); 1.0 disables decay.
-        min_natr_ratio_percent : float
-            Lower bound fraction (e.g. 0.009 = 0.9%).
-        max_natr_ratio_percent : float
-            Upper bound fraction (>= lower bound).
+        decay_fraction : float
+            Geometric decay factor per step (0 < decay_fraction <= 1); 1.0 disables decay.
+        min_natr_multiplier_fraction : float
+            Lower-bound fraction (e.g. 0.009 = 0.9%).
+        max_natr_multiplier_fraction : float
+            Upper-bound fraction (>= lower bound).
 
         Returns
         -------
@@ -1952,22 +2032,22 @@ class QuickAdapterV3(IStrategy):
 
         Fallback Semantics
         ------------------
-        Missing / non-finite intermediate data ⇒ stop chain; return current candle result.
+        Missing / non-finite intermediate data -> stop chain; return current candle result.
         This may yield True on partial history, weakening strict multi-candle guarantees.
 
         Rejection Conditions
         --------------------
         Empty dataframe, invalid side/order, non-finite rate, negative lookback,
-        decay_ratio outside (0,1], invalid min/max ordering, failure to break current
+        decay_fraction outside (0,1], invalid min/max ordering, failure to break current
         threshold, or failed historical step comparison.
 
         Complexity
         ----------
-        O(lookback_period) threshold computations.
+        O(lookback_period_candles) threshold computations.
 
         Logging
         -------
-        Logs rejection reasons (invalid decay_ratio, threshold not broken, failed step).
+        Logs rejection reasons (invalid decay_fraction, threshold not broken, failed step).
         Fallback aborts are silent.
 
         Limitations
@@ -1983,29 +2063,28 @@ class QuickAdapterV3(IStrategy):
         if not isinstance(rate, (int, float)) or not np.isfinite(rate):
             return False
         if (
-            not isinstance(min_natr_ratio_percent, (int, float))
-            or not isinstance(max_natr_ratio_percent, (int, float))
-            or not np.isfinite(min_natr_ratio_percent)
-            or not np.isfinite(max_natr_ratio_percent)
-            or min_natr_ratio_percent < 0
-            or max_natr_ratio_percent < 0
-            or min_natr_ratio_percent > max_natr_ratio_percent
+            not isinstance(min_natr_multiplier_fraction, (int, float))
+            or not isinstance(max_natr_multiplier_fraction, (int, float))
+            or not np.isfinite(min_natr_multiplier_fraction)
+            or not np.isfinite(max_natr_multiplier_fraction)
+            or min_natr_multiplier_fraction < 0
+            or max_natr_multiplier_fraction < 0
+            or min_natr_multiplier_fraction > max_natr_multiplier_fraction
         ):
             return False
 
         trade_direction = side
 
         max_lookback_period = max(0, len(df) - 1)
-        if lookback_period > max_lookback_period:
-            lookback_period = max_lookback_period
-        if not isinstance(decay_ratio, (int, float)):
+        lookback_period_candles = min(lookback_period_candles, max_lookback_period)
+        if not isinstance(decay_fraction, (int, float)):
             logger.debug(
-                f"[{pair}] Denied {trade_direction} {order}: invalid decay_ratio type"
+                f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction type"
             )
             return False
-        if not (0.0 < decay_ratio <= 1.0):
+        if not (0.0 < decay_fraction <= 1.0):
             logger.debug(
-                f"[{pair}] Denied {trade_direction} {order}: invalid decay_ratio {decay_ratio}, must be in (0, 1]"
+                f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction {decay_fraction}, must be in (0, 1]"
             )
             return False
 
@@ -2013,8 +2092,8 @@ class QuickAdapterV3(IStrategy):
             df,
             pair,
             side,
-            min_natr_ratio_percent=min_natr_ratio_percent,
-            max_natr_ratio_percent=max_natr_ratio_percent,
+            min_natr_multiplier_fraction=min_natr_multiplier_fraction,
+            max_natr_multiplier_fraction=max_natr_multiplier_fraction,
             candle_idx=-1,
         )
         current_ok = np.isfinite(current_threshold) and (
@@ -2036,29 +2115,29 @@ class QuickAdapterV3(IStrategy):
             )
             return False
 
-        if lookback_period == 0:
+        if lookback_period_candles == 0:
             return current_ok
 
-        for k in range(1, lookback_period + 1):
+        for k in range(1, lookback_period_candles + 1):
             close_k = df.iloc[-k].get("close")
             if not isinstance(close_k, (int, float)) or not np.isfinite(close_k):
                 return current_ok
 
-            decay_factor = decay_ratio**k
-            decayed_min_natr_ratio_percent = max(
-                0.0, min(1.0, min_natr_ratio_percent * decay_factor)
+            decay_factor = decay_fraction**k
+            decayed_min_natr_multiplier_fraction = max(
+                0.0, min(1.0, min_natr_multiplier_fraction * decay_factor)
             )
-            decayed_max_natr_ratio_percent = max(
-                decayed_min_natr_ratio_percent,
-                min(1.0, max_natr_ratio_percent * decay_factor),
+            decayed_max_natr_multiplier_fraction = max(
+                decayed_min_natr_multiplier_fraction,
+                min(1.0, max_natr_multiplier_fraction * decay_factor),
             )
 
             threshold_k = self._calculate_candle_threshold(
                 df,
                 pair,
                 side,
-                min_natr_ratio_percent=decayed_min_natr_ratio_percent,
-                max_natr_ratio_percent=decayed_max_natr_ratio_percent,
+                min_natr_multiplier_fraction=decayed_min_natr_multiplier_fraction,
+                max_natr_multiplier_fraction=decayed_max_natr_multiplier_fraction,
                 candle_idx=-(k + 1),
             )
             if not isinstance(threshold_k, (int, float)) or not np.isfinite(
@@ -2077,7 +2156,7 @@ class QuickAdapterV3(IStrategy):
                     f"[{pair}] Denied {trade_direction} {order}: "
                     f"close_k[{-k}] {format_number(close_k)} "
                     f"did not break threshold_k[{-(k + 1)}] {format_number(threshold_k)} "
-                    f"(decayed natr_ratio_percent: min={format_number(decayed_min_natr_ratio_percent)}, max={format_number(decayed_max_natr_ratio_percent)})"
+                    f"(decayed natr_multiplier_fraction: min={format_number(decayed_min_natr_multiplier_fraction)}, max={format_number(decayed_max_natr_multiplier_fraction)})"
                 )
                 return False
 
@@ -2274,10 +2353,10 @@ class QuickAdapterV3(IStrategy):
                 QuickAdapterV3._TRADE_DIRECTIONS[0],  # "long"
                 QuickAdapterV3._ORDER_TYPES[1],  # "exit"
                 current_rate,
-                self._reversal_lookback_period,
-                self._reversal_decay_ratio,
-                self._reversal_min_natr_ratio_percent,
-                self._reversal_max_natr_ratio_percent,
+                self._reversal_lookback_period_candles,
+                self._reversal_decay_fraction,
+                self._reversal_min_natr_multiplier_fraction,
+                self._reversal_max_natr_multiplier_fraction,
             )
         ):
             return "minima_detected_short"
@@ -2292,10 +2371,10 @@ class QuickAdapterV3(IStrategy):
                 QuickAdapterV3._TRADE_DIRECTIONS[1],  # "short"
                 QuickAdapterV3._ORDER_TYPES[1],  # "exit"
                 current_rate,
-                self._reversal_lookback_period,
-                self._reversal_decay_ratio,
-                self._reversal_min_natr_ratio_percent,
-                self._reversal_max_natr_ratio_percent,
+                self._reversal_lookback_period_candles,
+                self._reversal_decay_fraction,
+                self._reversal_min_natr_multiplier_fraction,
+                self._reversal_max_natr_multiplier_fraction,
             )
         ):
             return "maxima_detected_long"
@@ -2455,10 +2534,10 @@ class QuickAdapterV3(IStrategy):
             side,
             QuickAdapterV3._ORDER_TYPES[0],  # "entry"
             rate,
-            self._reversal_lookback_period,
-            self._reversal_decay_ratio,
-            self._reversal_min_natr_ratio_percent,
-            self._reversal_max_natr_ratio_percent,
+            self._reversal_lookback_period_candles,
+            self._reversal_decay_fraction,
+            self._reversal_min_natr_multiplier_fraction,
+            self._reversal_max_natr_multiplier_fraction,
         ):
             return True
         return False

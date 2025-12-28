@@ -131,7 +131,7 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
 
 DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
     "method": SMOOTHING_METHODS[0],  # "gaussian"
-    "window": 5,
+    "window_candles": 5,
     "beta": 8.0,
     "polyorder": 3,
     "mode": SMOOTHING_MODES[0],  # "mirror"
@@ -167,7 +167,7 @@ def get_distance(p1: T, p2: T) -> T:
 
 
 def midpoint(value1: T, value2: T) -> T:
-    """Calculate the midpoint (geometric center) between two values."""
+    """Calculate the midpoint between two values."""
     return (value1 + value2) / 2
 
 
@@ -265,7 +265,7 @@ def zero_phase_filter(
 def smooth_extrema(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
-    window: int = DEFAULTS_EXTREMA_SMOOTHING["window"],
+    window: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
     beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
     polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
     mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
@@ -1462,7 +1462,7 @@ class TrendDirection(IntEnum):
 def zigzag(
     df: pd.DataFrame,
     natr_period: int = 14,
-    natr_ratio: float = 9.0,
+    natr_multiplier: float = 9.0,
 ) -> tuple[
     list[int],
     list[float],
@@ -1491,7 +1491,7 @@ def zigzag(
     natr_values = (ta.NATR(df, timeperiod=natr_period).bfill() / 100.0).to_numpy()
 
     indices: list[int] = df.index.tolist()
-    thresholds: NDArray[np.floating] = natr_values * natr_ratio
+    thresholds: NDArray[np.floating] = natr_values * natr_multiplier
     closes = df.get("close").to_numpy()
     log_closes = np.log(closes)
     highs = df.get("high").to_numpy()
@@ -2085,22 +2085,44 @@ def fit_regressor(
     return model
 
 
+def _build_int_range(
+    frange: tuple[float, float],
+    min_val: int = 1,
+) -> tuple[int, int]:
+    lo, hi = math.ceil(frange[0]), math.floor(frange[1])
+    if lo > hi:
+        lo = hi = max(min_val, int(round((frange[0] + frange[1]) / 2)))
+    return max(min_val, lo), max(min_val, hi)
+
+
+def _optuna_suggest_int_from_range(
+    trial: optuna.trial.Trial,
+    name: str,
+    frange: tuple[float, float],
+    *,
+    min_val: int = 1,
+    log: bool = False,
+) -> int:
+    int_range = _build_int_range(frange, min_val=min_val)
+    return trial.suggest_int(name, int_range[0], int_range[1], log=log)
+
+
 def get_optuna_study_model_parameters(
     trial: optuna.trial.Trial,
     regressor: Regressor,
     model_training_best_parameters: dict[str, Any],
     space_reduction: bool,
-    expansion_ratio: float,
+    space_fraction: float,
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
-    if not isinstance(expansion_ratio, (int, float)) or not (
-        0.0 <= expansion_ratio <= 1.0
+    if not isinstance(space_fraction, (int, float)) or not (
+        0.0 <= space_fraction <= 1.0
     ):
         raise ValueError(
-            f"Invalid expansion_ratio {expansion_ratio!r}: must be in range [0, 1]"
+            f"Invalid space_fraction {space_fraction!r}: must be in range [0, 1]"
         )
 
     def _build_ranges(
@@ -2128,11 +2150,12 @@ def get_optuna_study_model_parameters(
                 if param in log_scaled_params:
                     if center_value <= 0:
                         continue
-                    factor = 1 + expansion_ratio
+                    # Proportional reduction in log-space
+                    factor = math.pow(default_max / default_min, space_fraction / 2)
                     new_min = center_value / factor
                     new_max = center_value * factor
                 else:
-                    margin = (default_max - default_min) * expansion_ratio / 2
+                    margin = (default_max - default_min) * space_fraction / 2
                     new_min = center_value - margin
                     new_max = center_value + margin
                 param_min = max(default_min, new_min)
@@ -2175,18 +2198,19 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        tree_method = trial.suggest_categorical("tree_method", ["hist", "approx"])
         grow_policy = trial.suggest_categorical(
             "grow_policy", ["depthwise", "lossguide"]
+        )
+        tree_method = (
+            "hist"
+            if grow_policy == "lossguide"
+            else trial.suggest_categorical("tree_method", ["hist", "approx"])
         )
 
         return {
             # Boosting/Training
-            "n_estimators": trial.suggest_int(
-                "n_estimators",
-                int(ranges["n_estimators"][0]),
-                int(ranges["n_estimators"][1]),
-                log=True,
+            "n_estimators": _optuna_suggest_int_from_range(
+                trial, "n_estimators", ranges["n_estimators"], min_val=1, log=True
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
@@ -2200,19 +2224,14 @@ def get_optuna_study_model_parameters(
             **(
                 {
                     "max_depth": 0,
-                    "max_leaves": trial.suggest_int(
-                        "max_leaves",
-                        int(ranges["max_leaves"][0]),
-                        int(ranges["max_leaves"][1]),
-                        log=True,
+                    "max_leaves": _optuna_suggest_int_from_range(
+                        trial, "max_leaves", ranges["max_leaves"], min_val=2, log=True
                     ),
                 }
                 if grow_policy == "lossguide"
                 else {
-                    "max_depth": trial.suggest_int(
-                        "max_depth",
-                        int(ranges["max_depth"][0]),
-                        int(ranges["max_depth"][1]),
+                    "max_depth": _optuna_suggest_int_from_range(
+                        trial, "max_depth", ranges["max_depth"], min_val=1
                     ),
                 }
             ),
@@ -2290,11 +2309,8 @@ def get_optuna_study_model_parameters(
 
         return {
             # Boosting/Training
-            "n_estimators": trial.suggest_int(
-                "n_estimators",
-                int(ranges["n_estimators"][0]),
-                int(ranges["n_estimators"][1]),
-                log=True,
+            "n_estimators": _optuna_suggest_int_from_range(
+                trial, "n_estimators", ranges["n_estimators"], min_val=1, log=True
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
@@ -2303,10 +2319,8 @@ def get_optuna_study_model_parameters(
                 log=True,
             ),
             # Tree structure
-            "num_leaves": trial.suggest_int(
-                "num_leaves",
-                int(ranges["num_leaves"][0]),
-                int(ranges["num_leaves"][1]),
+            "num_leaves": _optuna_suggest_int_from_range(
+                trial, "num_leaves", ranges["num_leaves"], min_val=2
             ),
             # Leaf constraints
             "min_child_weight": trial.suggest_float(
@@ -2315,10 +2329,8 @@ def get_optuna_study_model_parameters(
                 ranges["min_child_weight"][1],
                 log=True,
             ),
-            "min_child_samples": trial.suggest_int(
-                "min_child_samples",
-                int(ranges["min_child_samples"][0]),
-                int(ranges["min_child_samples"][1]),
+            "min_child_samples": _optuna_suggest_int_from_range(
+                trial, "min_child_samples", ranges["min_child_samples"], min_val=1
             ),
             "min_split_gain": trial.suggest_float(
                 "min_split_gain",
@@ -2330,10 +2342,8 @@ def get_optuna_study_model_parameters(
             "subsample": trial.suggest_float(
                 "subsample", ranges["subsample"][0], ranges["subsample"][1]
             ),
-            "subsample_freq": trial.suggest_int(
-                "subsample_freq",
-                int(ranges["subsample_freq"][0]),
-                int(ranges["subsample_freq"][1]),
+            "subsample_freq": _optuna_suggest_int_from_range(
+                trial, "subsample_freq", ranges["subsample_freq"], min_val=1
             ),
             "colsample_bytree": trial.suggest_float(
                 "colsample_bytree",
@@ -2348,10 +2358,8 @@ def get_optuna_study_model_parameters(
                 "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
             ),
             # Binning
-            "max_bin": trial.suggest_int(
-                "max_bin",
-                int(ranges["max_bin"][0]),
-                int(ranges["max_bin"][1]),
+            "max_bin": _optuna_suggest_int_from_range(
+                trial, "max_bin", ranges["max_bin"], min_val=2
             ),
         }
 
@@ -2402,11 +2410,8 @@ def get_optuna_study_model_parameters(
 
         return {
             # Boosting/Training
-            "max_iter": trial.suggest_int(
-                "max_iter",
-                int(ranges["max_iter"][0]),
-                int(ranges["max_iter"][1]),
-                log=True,
+            "max_iter": _optuna_suggest_int_from_range(
+                trial, "max_iter", ranges["max_iter"], min_val=1, log=True
             ),
             "learning_rate": trial.suggest_float(
                 "learning_rate",
@@ -2418,17 +2423,15 @@ def get_optuna_study_model_parameters(
             "max_depth": trial.suggest_categorical(
                 "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
             ),
-            "max_leaf_nodes": trial.suggest_int(
-                "max_leaf_nodes",
-                int(ranges["max_leaf_nodes"][0]),
-                int(ranges["max_leaf_nodes"][1]),
-                log=True,
+            "max_leaf_nodes": _optuna_suggest_int_from_range(
+                trial, "max_leaf_nodes", ranges["max_leaf_nodes"], min_val=2, log=True
             ),
             # Leaf constraints
-            "min_samples_leaf": trial.suggest_int(
+            "min_samples_leaf": _optuna_suggest_int_from_range(
+                trial,
                 "min_samples_leaf",
-                int(ranges["min_samples_leaf"][0]),
-                int(ranges["min_samples_leaf"][1]),
+                ranges["min_samples_leaf"],
+                min_val=1,
                 log=True,
             ),
             # Sampling
@@ -2440,16 +2443,12 @@ def get_optuna_study_model_parameters(
             # Regularization
             "l2_regularization": l2_regularization,
             # Binning
-            "max_bins": trial.suggest_int(
-                "max_bins",
-                int(ranges["max_bins"][0]),
-                int(ranges["max_bins"][1]),
+            "max_bins": _optuna_suggest_int_from_range(
+                trial, "max_bins", ranges["max_bins"], min_val=2
             ),
             # Early stopping
-            "n_iter_no_change": trial.suggest_int(
-                "n_iter_no_change",
-                int(ranges["n_iter_no_change"][0]),
-                int(ranges["n_iter_no_change"][1]),
+            "n_iter_no_change": _optuna_suggest_int_from_range(
+                trial, "n_iter_no_change", ranges["n_iter_no_change"], min_val=1
             ),
             "tol": trial.suggest_float(
                 "tol",
@@ -2617,6 +2616,33 @@ def floor_to_step(value: float | int, step: int) -> int:
     return int(math.floor(float(value) / step) * step)
 
 
+def get_config_value(
+    config: Any,
+    *,
+    new_key: str,
+    old_key: str,
+    default: Any,
+    logger: Logger,
+    new_path: str,
+    old_path: str,
+) -> Any:
+    if not isinstance(config, dict):
+        return default
+
+    if new_key in config:
+        return config[new_key]
+
+    if old_key in config:
+        logger.warning(
+            f"Deprecated config key {old_path} detected; use {new_path} instead"
+        )
+        config[new_key] = config.pop(old_key)
+        return config[new_key]
+
+    config[new_key] = default
+    return default
+
+
 def validate_range(
     min_val: float | int,
     max_val: float | int,
@@ -2689,28 +2715,49 @@ def get_label_defaults(
     *,
     default_min_label_period_candles: int = 12,
     default_max_label_period_candles: int = 24,
-    default_min_label_natr_ratio: float = 9.0,
-    default_max_label_natr_ratio: float = 12.0,
+    default_min_label_natr_multiplier: float = 9.0,
+    default_max_label_natr_multiplier: float = 12.0,
 ) -> tuple[float, int]:
-    min_label_natr_ratio = feature_parameters.get(
-        "min_label_natr_ratio", default_min_label_natr_ratio
+    min_label_natr_multiplier = get_config_value(
+        feature_parameters,
+        new_key="min_label_natr_multiplier",
+        old_key="min_label_natr_ratio",
+        default=default_min_label_natr_multiplier,
+        logger=logger,
+        new_path="freqai.feature_parameters.min_label_natr_multiplier",
+        old_path="freqai.feature_parameters.min_label_natr_ratio",
     )
-    max_label_natr_ratio = feature_parameters.get(
-        "max_label_natr_ratio", default_max_label_natr_ratio
+    max_label_natr_multiplier = get_config_value(
+        feature_parameters,
+        new_key="max_label_natr_multiplier",
+        old_key="max_label_natr_ratio",
+        default=default_max_label_natr_multiplier,
+        logger=logger,
+        new_path="freqai.feature_parameters.max_label_natr_multiplier",
+        old_path="freqai.feature_parameters.max_label_natr_ratio",
     )
-    min_label_natr_ratio, max_label_natr_ratio = validate_range(
-        min_label_natr_ratio,
-        max_label_natr_ratio,
+    min_label_natr_multiplier, max_label_natr_multiplier = validate_range(
+        min_label_natr_multiplier,
+        max_label_natr_multiplier,
         logger,
-        name="label_natr_ratio",
-        default_min=default_min_label_natr_ratio,
-        default_max=default_max_label_natr_ratio,
+        name="label_natr_multiplier",
+        default_min=default_min_label_natr_multiplier,
+        default_max=default_max_label_natr_multiplier,
         allow_equal=False,
         non_negative=True,
         finite_only=True,
     )
-    default_label_natr_ratio = float(
-        midpoint(min_label_natr_ratio, max_label_natr_ratio)
+    default_label_natr_multiplier = float(
+        midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
+    )
+    get_config_value(
+        feature_parameters,
+        new_key="label_natr_multiplier",
+        old_key="label_natr_ratio",
+        default=default_label_natr_multiplier,
+        logger=logger,
+        new_path="freqai.feature_parameters.label_natr_multiplier",
+        old_path="freqai.feature_parameters.label_natr_ratio",
     )
 
     min_label_period_candles = feature_parameters.get(
@@ -2734,4 +2781,4 @@ def get_label_defaults(
         round(midpoint(min_label_period_candles, max_label_period_candles))
     )
 
-    return default_label_natr_ratio, default_label_period_candles
+    return default_label_natr_multiplier, default_label_period_candles
