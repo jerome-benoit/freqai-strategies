@@ -32,7 +32,7 @@ from Utils import (
     calculate_n_extrema,
     fit_regressor,
     format_number,
-    get_config_value_with_deprecated_alias,
+    get_config_value,
     get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_callbacks,
@@ -265,7 +265,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "seed": 1,
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        space_fraction = get_config_value_with_deprecated_alias(
+        space_fraction = get_config_value(
             optuna_hyperopt,
             new_key="space_fraction",
             old_key="expansion_ratio",
@@ -282,7 +282,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @cached_property
     def _min_label_natr_multiplier(self) -> float:
-        return get_config_value_with_deprecated_alias(
+        return get_config_value(
             self.ft_params,
             new_key="min_label_natr_multiplier",
             old_key="min_label_natr_ratio",
@@ -294,7 +294,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @cached_property
     def _max_label_natr_multiplier(self) -> float:
-        return get_config_value_with_deprecated_alias(
+        return get_config_value(
             self.ft_params,
             new_key="max_label_natr_multiplier",
             old_key="max_label_natr_ratio",
@@ -358,7 +358,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(predictions_extrema, dict):
             predictions_extrema = {}
 
-        outlier_threshold_quantile = get_config_value_with_deprecated_alias(
+        outlier_threshold_quantile = get_config_value(
             predictions_extrema,
             new_key="outlier_threshold_quantile",
             old_key="threshold_outlier",
@@ -387,7 +387,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
 
         threshold_smoothing_method = str(
-            get_config_value_with_deprecated_alias(
+            get_config_value(
                 predictions_extrema,
                 new_key="threshold_smoothing_method",
                 old_key="thresholds_smoothing",
@@ -405,7 +405,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 0
             ]  # "mean"
 
-        soft_extremum_alpha = get_config_value_with_deprecated_alias(
+        soft_extremum_alpha = get_config_value(
             predictions_extrema,
             new_key="soft_extremum_alpha",
             old_key="thresholds_alpha",
@@ -423,7 +423,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT
             )
 
-        keep_extrema_fraction = get_config_value_with_deprecated_alias(
+        keep_extrema_fraction = get_config_value(
             predictions_extrema,
             new_key="keep_extrema_fraction",
             old_key="extrema_fraction",
@@ -533,7 +533,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         self._default_label_period_candles,
                     ),
                     "label_natr_multiplier": float(
-                        get_config_value_with_deprecated_alias(
+                        get_config_value(
                             self.ft_params,
                             new_key="label_natr_multiplier",
                             old_key="label_natr_ratio",
@@ -1495,9 +1495,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
-            raise ValueError(
-                f"Invalid alpha {alpha!r}: must be >= 0 (alpha=0 uses the mean extremum)"
-            )
+            raise ValueError(f"Invalid alpha {alpha!r}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
             pred_extrema, extrema_selection, keep_extrema_fraction
         )

@@ -2616,7 +2616,7 @@ def floor_to_step(value: float | int, step: int) -> int:
     return int(math.floor(float(value) / step) * step)
 
 
-def get_config_value_with_deprecated_alias(
+def get_config_value(
     config: Any,
     *,
     new_key: str,
@@ -2724,7 +2724,7 @@ def get_label_defaults(
     default_min_label_natr_multiplier: float = 9.0,
     default_max_label_natr_multiplier: float = 12.0,
 ) -> tuple[float, int]:
-    min_label_natr_multiplier = get_config_value_with_deprecated_alias(
+    min_label_natr_multiplier = get_config_value(
         feature_parameters,
         new_key="min_label_natr_multiplier",
         old_key="min_label_natr_ratio",
@@ -2733,7 +2733,7 @@ def get_label_defaults(
         new_path="freqai.feature_parameters.min_label_natr_multiplier",
         old_path="freqai.feature_parameters.min_label_natr_ratio",
     )
-    max_label_natr_multiplier = get_config_value_with_deprecated_alias(
+    max_label_natr_multiplier = get_config_value(
         feature_parameters,
         new_key="max_label_natr_multiplier",
         old_key="max_label_natr_ratio",

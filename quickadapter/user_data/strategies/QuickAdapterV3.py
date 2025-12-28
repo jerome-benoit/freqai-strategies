@@ -48,7 +48,7 @@ from Utils import (
     ewo,
     format_number,
     get_callable_sha256,
-    get_config_value_with_deprecated_alias,
+    get_config_value,
     get_distance,
     get_label_defaults,
     get_weighted_extrema,
@@ -333,7 +333,7 @@ class QuickAdapterV3(IStrategy):
             get_label_defaults(feature_parameters, logger)
         )
         self._label_params: dict[str, dict[str, Any]] = {}
-        default_label_natr_multiplier = get_config_value_with_deprecated_alias(
+        default_label_natr_multiplier = get_config_value(
             feature_parameters,
             new_key="label_natr_multiplier",
             old_key="label_natr_ratio",
@@ -431,7 +431,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target_method = get_config_value_with_deprecated_alias(
+        trade_price_target_method = get_config_value(
             exit_pricing,
             new_key="trade_price_target_method",
             old_key="trade_price_target",
@@ -492,7 +492,7 @@ class QuickAdapterV3(IStrategy):
 
     def _init_reversal_confirmation_defaults(self) -> None:
         reversal_confirmation = self.config.get("reversal_confirmation", {})
-        lookback_period_candles = get_config_value_with_deprecated_alias(
+        lookback_period_candles = get_config_value(
             reversal_confirmation,
             new_key="lookback_period_candles",
             old_key="lookback_period",
@@ -503,7 +503,7 @@ class QuickAdapterV3(IStrategy):
             new_path="reversal_confirmation.lookback_period_candles",
             old_path="reversal_confirmation.lookback_period",
         )
-        decay_fraction = get_config_value_with_deprecated_alias(
+        decay_fraction = get_config_value(
             reversal_confirmation,
             new_key="decay_fraction",
             old_key="decay_ratio",
@@ -513,7 +513,7 @@ class QuickAdapterV3(IStrategy):
             old_path="reversal_confirmation.decay_ratio",
         )
 
-        min_natr_ratio_fraction = get_config_value_with_deprecated_alias(
+        min_natr_ratio_fraction = get_config_value(
             reversal_confirmation,
             new_key="min_natr_ratio_fraction",
             old_key="min_natr_ratio_percent",
@@ -524,7 +524,7 @@ class QuickAdapterV3(IStrategy):
             new_path="reversal_confirmation.min_natr_ratio_fraction",
             old_path="reversal_confirmation.min_natr_ratio_percent",
         )
-        max_natr_ratio_fraction = get_config_value_with_deprecated_alias(
+        max_natr_ratio_fraction = get_config_value(
             reversal_confirmation,
             new_key="max_natr_ratio_fraction",
             old_key="max_natr_ratio_percent",
@@ -765,7 +765,7 @@ class QuickAdapterV3(IStrategy):
             return label_natr_multiplier
         feature_parameters = self.freqai_info.get("feature_parameters", {})
         return float(
-            get_config_value_with_deprecated_alias(
+            get_config_value(
                 feature_parameters,
                 new_key="label_natr_multiplier",
                 old_key="label_natr_ratio",
@@ -1055,7 +1055,7 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
-        smoothing_window = get_config_value_with_deprecated_alias(
+        smoothing_window = get_config_value(
             extrema_smoothing,
             new_key="window_candles",
             old_key="window",
@@ -1459,7 +1459,7 @@ class QuickAdapterV3(IStrategy):
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
     ) -> Optional[float]:
         exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target = get_config_value_with_deprecated_alias(
+        trade_price_target = get_config_value(
             exit_pricing,
             new_key="trade_price_target_method",
             old_key="trade_price_target",
