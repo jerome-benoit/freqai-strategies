@@ -171,7 +171,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "jensenshannon",
     )
 
-    PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_FRACTION_DEFAULT: Final[float] = 0.999
+    PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT: Final[float] = 0.999
     PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT: Final[float] = 12.0
     PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
 
@@ -323,21 +323,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(predictions_extrema, dict):
             predictions_extrema = {}
 
-        outlier_threshold_fraction = get_config_value_with_deprecated_alias(
+        outlier_threshold_quantile = get_config_value_with_deprecated_alias(
             predictions_extrema,
-            new_key="outlier_threshold_fraction",
+            new_key="outlier_threshold_quantile",
             old_key="threshold_outlier",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_FRACTION_DEFAULT,
+            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT,
             logger=logger,
-            new_path="freqai.predictions_extrema.outlier_threshold_fraction",
+            new_path="freqai.predictions_extrema.outlier_threshold_quantile",
             old_path="freqai.predictions_extrema.threshold_outlier",
         )
         if (
-            not isinstance(outlier_threshold_fraction, (int, float))
-            or not np.isfinite(outlier_threshold_fraction)
-            or not (0 < outlier_threshold_fraction < 1)
+            not isinstance(outlier_threshold_quantile, (int, float))
+            or not np.isfinite(outlier_threshold_quantile)
+            or not (0 < outlier_threshold_quantile < 1)
         ):
-            outlier_threshold_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_FRACTION_DEFAULT
+            outlier_threshold_quantile = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT
 
         selection_method = str(
             predictions_extrema.get(
@@ -403,7 +403,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             keep_extrema_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT
 
         return {
-            "outlier_threshold_fraction": float(outlier_threshold_fraction),
+            "outlier_threshold_quantile": float(outlier_threshold_quantile),
             "selection_method": selection_method,
             "threshold_smoothing_method": threshold_smoothing_method,
             "soft_extremum_alpha": float(soft_extremum_alpha),
@@ -764,7 +764,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"  threshold_smoothing_method: {predictions_extrema.get('threshold_smoothing_method')}"
         )
         logger.info(
-            f"  outlier_threshold_fraction: {format_number(predictions_extrema.get('outlier_threshold_fraction'))}"
+            f"  outlier_threshold_quantile: {format_number(predictions_extrema.get('outlier_threshold_quantile'))}"
         )
         logger.info(
             f"  soft_extremum_alpha: {format_number(predictions_extrema.get('soft_extremum_alpha'))}"
@@ -1207,7 +1207,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
             )
             cutoff = sp.stats.weibull_min.ppf(
-                self.predictions_extrema["outlier_threshold_fraction"], *f
+                self.predictions_extrema["outlier_threshold_quantile"], *f
             )
 
         dk.data["DI_value_mean"] = di_values.mean()

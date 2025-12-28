@@ -32,7 +32,7 @@ Research, prototype, and refine advanced ML‑driven and RL‑driven trading str
   - Constants: `UPPER_SNAKE_CASE`.
   - Internal strategy transient labels/features use prefixes: `"%-"` for engineered feature columns; special markers like `"&s-"` / `"&-"` for internal prediction target(s).
   - Private helpers or internal state use leading underscore (`_exit_thresholds_calibration`).
-- Avoid one‑letter variable names; prefer descriptive one (e.g. `trade_duration_candles`, `natr_ratio_percent`).
+- Avoid one‑letter variable names; prefer descriptive one (e.g. `trade_duration_candles`, `natr_ratio_fraction`).
 - Prefer explicit type hints (Python 3.11+ built‑in generics: `list[str]`, `dict[str, float]`).
 - Logging: use module logger (`logger = logging.getLogger(__name__)`), info for decision denials, warning for anomalies, error for exceptions.
 - No non-English terms in code, docs, comments, logs.
