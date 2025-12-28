@@ -264,10 +264,45 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "min_resource": 3,
             "seed": 1,
         }
+        optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
+        space_fraction = get_config_value_with_deprecated_alias(
+            optuna_hyperopt,
+            new_key="space_fraction",
+            old_key="expansion_ratio",
+            default=optuna_default_config["space_fraction"],
+            logger=logger,
+            new_path="freqai.optuna_hyperopt.space_fraction",
+            old_path="freqai.optuna_hyperopt.expansion_ratio",
+        )
         return {
             **optuna_default_config,
-            **self.config.get("freqai", {}).get("optuna_hyperopt", {}),
+            **optuna_hyperopt,
+            "space_fraction": space_fraction,
         }
+
+    @cached_property
+    def _min_label_natr_multiplier(self) -> float:
+        return get_config_value_with_deprecated_alias(
+            self.ft_params,
+            new_key="min_label_natr_multiplier",
+            old_key="min_label_natr_ratio",
+            default=QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
+            logger=logger,
+            new_path="freqai.feature_parameters.min_label_natr_multiplier",
+            old_path="freqai.feature_parameters.min_label_natr_ratio",
+        )
+
+    @cached_property
+    def _max_label_natr_multiplier(self) -> float:
+        return get_config_value_with_deprecated_alias(
+            self.ft_params,
+            new_key="max_label_natr_multiplier",
+            old_key="max_label_natr_ratio",
+            default=QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
+            logger=logger,
+            new_path="freqai.feature_parameters.max_label_natr_multiplier",
+            old_path="freqai.feature_parameters.max_label_natr_ratio",
+        )
 
     @cached_property
     def _label_frequency_candles(self) -> int:
@@ -785,10 +820,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"  max_label_period_candles: {self.ft_params.get('max_label_period_candles', QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT)}"
         )
         logger.info(
-            f"  min_label_natr_multiplier: {format_number(self.ft_params.get('min_label_natr_multiplier', QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT))}"
+            f"  min_label_natr_multiplier: {format_number(self._min_label_natr_multiplier)}"
         )
         logger.info(
-            f"  max_label_natr_multiplier: {format_number(self.ft_params.get('max_label_natr_multiplier', QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT))}"
+            f"  max_label_natr_multiplier: {format_number(self._max_label_natr_multiplier)}"
         )
 
         if self._optuna_hyperopt:
@@ -1140,14 +1175,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             "max_label_period_candles",
                             QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
                         ),
-                        min_label_natr_multiplier=self.ft_params.get(
-                            "min_label_natr_multiplier",
-                            QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
-                        ),
-                        max_label_natr_multiplier=self.ft_params.get(
-                            "max_label_natr_multiplier",
-                            QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
-                        ),
+                        min_label_natr_multiplier=self._min_label_natr_multiplier,
+                        max_label_natr_multiplier=self._max_label_natr_multiplier,
                     ),
                     directions=list(QuickAdapterRegressorV3._OPTUNA_LABEL_DIRECTIONS),
                 ),
