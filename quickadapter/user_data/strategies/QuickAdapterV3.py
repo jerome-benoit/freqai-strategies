@@ -2032,7 +2032,7 @@ class QuickAdapterV3(IStrategy):
 
         Fallback Semantics
         ------------------
-        Missing / non-finite intermediate data - stop chain; return current candle result.
+        Missing / non-finite intermediate data -> stop chain; return current candle result.
         This may yield True on partial history, weakening strict multi-candle guarantees.
 
         Rejection Conditions
