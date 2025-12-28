@@ -174,8 +174,8 @@
         "4h"
       ],
       "label_period_candles": 18,
-      "label_metric": "kmedoids",
       "label_natr_multiplier": 10.5,
+      "label_metric": "kmedoids",
       "include_shifted_candles": 6,
       "DI_threshold": 10,
       "weight_factor": 0.9,
