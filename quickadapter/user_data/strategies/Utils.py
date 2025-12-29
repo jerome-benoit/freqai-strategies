@@ -2072,7 +2072,7 @@ def fit_regressor(
     Args:
         regressor: Type of regressor.
         model_training_parameters: Copied internally to avoid side effects.
-        callbacks: Additional callbacks (pruning callbacks added automatically when trial is set).
+        callbacks: Additional callbacks.
         trial: Optuna trial for pruning and random state offset.
     """
     model_training_parameters = model_training_parameters.copy()
@@ -2216,7 +2216,7 @@ def fit_regressor(
             model = pruning_callback(
                 model=model,
                 X=X,
-                y=y,
+                y=y.to_numpy().ravel(),
                 X_val=X_val,
                 y_val=y_val,
                 sample_weight=train_weights,
