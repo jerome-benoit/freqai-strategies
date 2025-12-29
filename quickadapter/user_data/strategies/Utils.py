@@ -2101,7 +2101,6 @@ def fit_regressor(
             scoring="neg_root_mean_squared_error",
             **model_training_parameters,
         )
-
         model.fit(
             X=X,
             y=y.to_numpy().ravel(),
