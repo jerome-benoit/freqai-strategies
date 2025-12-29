@@ -1953,105 +1953,6 @@ REGRESSORS: Final[tuple[Regressor, ...]] = (
 
 RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
 
-
-class HistGradientBoostingPruningCallback:
-    """Optuna pruning callback for HistGradientBoostingRegressor.
-
-    Uses warm_start to train incrementally since sklearn doesn't support
-    training callbacks.
-
-    Args:
-        trial: Optuna trial.
-        metric: Evaluation metric ("rmse").
-        n_iterations_per_step: Iterations between pruning checks.
-    """
-
-    def __init__(
-        self,
-        trial: optuna.trial.Trial,
-        metric: str = "rmse",
-        n_iterations_per_step: int = 10,
-    ) -> None:
-        self._trial = trial
-        self._metric = metric
-        self._n_iterations_per_step = n_iterations_per_step
-        self._is_higher_better = False  # RMSE is minimized
-
-    def _validate_study_direction(self) -> None:
-        """Raise ValueError if study direction doesn't match metric direction."""
-        if len(self._trial.study.directions) > 1:
-            return
-
-        direction = self._trial.study.direction
-        if self._is_higher_better:
-            if direction != optuna.study.StudyDirection.MAXIMIZE:
-                raise ValueError(
-                    "Metric is higher-better but study direction is MINIMIZE."
-                )
-        else:
-            if direction != optuna.study.StudyDirection.MINIMIZE:
-                raise ValueError(
-                    "Metric is lower-better but study direction is MAXIMIZE."
-                )
-
-    def __call__(
-        self,
-        model: Any,
-        X: np.ndarray | pd.DataFrame,
-        y: np.ndarray | pd.DataFrame,
-        X_val: np.ndarray | pd.DataFrame,
-        y_val: np.ndarray | pd.DataFrame,
-        sample_weight: Optional[NDArray[np.floating]] = None,
-        sample_weight_val: Optional[NDArray[np.floating]] = None,
-    ) -> Any:
-        """Train model incrementally with pruning checks.
-
-        Raises optuna.TrialPruned if trial should be pruned.
-        """
-        from sklearn.metrics import root_mean_squared_error
-
-        self._validate_study_direction()
-
-        if isinstance(y, pd.DataFrame):
-            y = y.to_numpy().ravel()
-        if isinstance(y_val, pd.DataFrame):
-            y_val = y_val.to_numpy().ravel()
-
-        max_iter = model.max_iter
-        current_iter = 0
-
-        # Enable warm_start for incremental training
-        model.warm_start = True
-        model.early_stopping = False  # Incompatible with warm_start pruning approach
-
-        while current_iter < max_iter:
-            # Set the target iteration for this step
-            next_iter = min(current_iter + self._n_iterations_per_step, max_iter)
-            model.max_iter = next_iter
-
-            model.fit(X, y, sample_weight=sample_weight)
-
-            y_pred = model.predict(X_val)
-            if self._metric == "rmse":
-                current_score = root_mean_squared_error(
-                    y_val, y_pred, sample_weight=sample_weight_val
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported metric: {self._metric!r}. Supported metrics: 'rmse'."
-                )
-
-            self._trial.report(current_score, step=next_iter)
-
-            if self._trial.should_prune():
-                message = f"Trial was pruned at iteration {next_iter}."
-                raise optuna.TrialPruned(message)
-
-            current_iter = next_iter
-
-        return model
-
-
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 
 
@@ -2067,15 +1968,7 @@ def fit_regressor(
     callbacks: Optional[list[RegressorCallback]] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
-    """Fit a regressor model.
-
-    Args:
-        regressor: Type of regressor.
-        model_training_parameters: Copied internally to avoid side effects.
-        callbacks: Additional callbacks.
-        trial: Optuna trial for pruning and random state offset.
-    """
-    model_training_parameters = model_training_parameters.copy()
+    """Fit a regressor model."""
     fit_callbacks = list(callbacks) if callbacks else []
 
     has_eval_set = eval_set is not None and len(eval_set) > 0
@@ -2176,14 +2069,13 @@ def fit_regressor(
         early_stopping_rounds = model_training_parameters.pop(
             "early_stopping_rounds", None
         )
-        if early_stopping_rounds is not None:
-            model_training_parameters.setdefault(
-                "n_iter_no_change", early_stopping_rounds
-            )
-        else:
-            model_training_parameters.setdefault(
-                "n_iter_no_change", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
+        if "n_iter_no_change" not in model_training_parameters:
+            if early_stopping_rounds is not None:
+                model_training_parameters["n_iter_no_change"] = early_stopping_rounds
+            else:
+                model_training_parameters["n_iter_no_change"] = (
+                    _EARLY_STOPPING_ROUNDS_DEFAULT
+                )
 
         verbosity = model_training_parameters.pop("verbosity", None)
         if "verbose" not in model_training_parameters and verbosity is not None:
@@ -2210,27 +2102,14 @@ def fit_regressor(
             **model_training_parameters,
         )
 
-        if trial is not None and X_val is not None and y_val is not None:
-            pruning_callback = HistGradientBoostingPruningCallback(trial, metric="rmse")
-            model.early_stopping = False
-            model = pruning_callback(
-                model=model,
-                X=X,
-                y=y.to_numpy().ravel(),
-                X_val=X_val,
-                y_val=y_val,
-                sample_weight=train_weights,
-                sample_weight_val=sample_weight_val,
-            )
-        else:
-            model.fit(
-                X=X,
-                y=y.to_numpy().ravel(),
-                sample_weight=train_weights,
-                X_val=X_val,
-                y_val=y_val,
-                sample_weight_val=sample_weight_val,
-            )
+        model.fit(
+            X=X,
+            y=y.to_numpy().ravel(),
+            sample_weight=train_weights,
+            X_val=X_val,
+            y_val=y_val,
+            sample_weight_val=sample_weight_val,
+        )
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
@@ -2547,7 +2426,7 @@ def get_optuna_study_model_parameters(
             # Regularization
             "l2_regularization": (1e-8, 10.0),
             # Binning
-            "max_bins": (64, 255),
+            "max_bins": (63, 255),
             # Early stopping
             "n_iter_no_change": (5, 20),
             "tol": (1e-7, 1e-3),
