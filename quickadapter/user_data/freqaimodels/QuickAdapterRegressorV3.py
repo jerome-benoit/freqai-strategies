@@ -4,7 +4,6 @@ import logging
 import random
 import time
 import warnings
-from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Final, Literal, Optional, Union
 
@@ -33,11 +32,11 @@ from Utils import (
     eval_set_and_weights,
     fit_regressor,
     format_number,
-    get_config_value,
     get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     soft_extremum,
+    update_config_value,
     zigzag,
 )
 
@@ -240,7 +239,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return 0.5
         return None
 
-    @cached_property
+    @property
     def _optuna_config(self) -> dict[str, Any]:
         optuna_default_config = {
             "enabled": False,
@@ -265,7 +264,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "seed": 1,
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        get_config_value(
+        update_config_value(
             optuna_hyperopt,
             new_key="space_fraction",
             old_key="expansion_ratio",
@@ -279,35 +278,35 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             **optuna_hyperopt,
         }
 
-    @cached_property
+    @property
     def _min_label_period_candles(self) -> int:
         return self.ft_params.get(
             "min_label_period_candles",
             QuickAdapterRegressorV3.MIN_LABEL_PERIOD_CANDLES_DEFAULT,
         )
 
-    @cached_property
+    @property
     def _max_label_period_candles(self) -> int:
         return self.ft_params.get(
             "max_label_period_candles",
             QuickAdapterRegressorV3.MAX_LABEL_PERIOD_CANDLES_DEFAULT,
         )
 
-    @cached_property
+    @property
     def _min_label_natr_multiplier(self) -> float:
         return self.ft_params.get(
             "min_label_natr_multiplier",
             QuickAdapterRegressorV3.MIN_LABEL_NATR_MULTIPLIER_DEFAULT,
         )
 
-    @cached_property
+    @property
     def _max_label_natr_multiplier(self) -> float:
         return self.ft_params.get(
             "max_label_natr_multiplier",
             QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
         )
 
-    @cached_property
+    @property
     def _label_frequency_candles(self) -> int:
         """
         Calculate label_frequency_candles.
@@ -355,13 +354,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return label_frequency_candles
 
-    @cached_property
+    @property
     def predictions_extrema(self) -> dict[str, Any]:
         predictions_extrema = self.freqai_info.get("predictions_extrema", {})
         if not isinstance(predictions_extrema, dict):
             predictions_extrema = {}
 
-        outlier_threshold_quantile = get_config_value(
+        outlier_threshold_quantile = update_config_value(
             predictions_extrema,
             new_key="outlier_threshold_quantile",
             old_key="threshold_outlier",
@@ -390,7 +389,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
 
         threshold_smoothing_method = str(
-            get_config_value(
+            update_config_value(
                 predictions_extrema,
                 new_key="threshold_smoothing_method",
                 old_key="thresholds_smoothing",
@@ -408,7 +407,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 0
             ]  # "mean"
 
-        soft_extremum_alpha = get_config_value(
+        soft_extremum_alpha = update_config_value(
             predictions_extrema,
             new_key="soft_extremum_alpha",
             old_key="thresholds_alpha",
@@ -426,7 +425,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT
             )
 
-        keep_extrema_fraction = get_config_value(
+        keep_extrema_fraction = update_config_value(
             predictions_extrema,
             new_key="keep_extrema_fraction",
             old_key="extrema_fraction",
@@ -447,6 +446,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "soft_extremum_alpha": float(soft_extremum_alpha),
             "keep_extrema_fraction": float(keep_extrema_fraction),
         }
+
+    @property
+    def _label_defaults(self) -> tuple[int, float]:
+        return get_label_defaults(self.ft_params, logger)
 
     @property
     def _optuna_label_candle_pool_full(self) -> list[int]:
@@ -496,8 +499,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
         self._optuna_label_incremented_pairs: list[str] = []
-        self._default_label_natr_multiplier, self._default_label_period_candles = (
-            get_label_defaults(self.ft_params, logger)
+        default_label_period_candles, default_label_natr_multiplier = (
+            self._label_defaults
         )
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
@@ -533,12 +536,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 else {
                     "label_period_candles": self.ft_params.get(
                         "label_period_candles",
-                        self._default_label_period_candles,
+                        default_label_period_candles,
                     ),
                     "label_natr_multiplier": float(
                         self.ft_params.get(
                             "label_natr_multiplier",
-                            self._default_label_natr_multiplier,
+                            default_label_natr_multiplier,
                         )
                     ),
                 }
@@ -830,12 +833,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}"
                     )
         else:
+            default_label_period_candles, default_label_natr_multiplier = (
+                self._label_defaults
+            )
             logger.info("Label Parameters:")
             logger.info(
-                f"  label_period_candles: {self.ft_params.get('label_period_candles', self._default_label_period_candles)}"
+                f"  label_period_candles: {self.ft_params.get('label_period_candles', default_label_period_candles)}"
             )
             logger.info(
-                f"  label_natr_multiplier: {format_number(float(self.ft_params.get('label_natr_multiplier', self._default_label_natr_multiplier)))}"
+                f"  label_natr_multiplier: {format_number(float(self.ft_params.get('label_natr_multiplier', default_label_natr_multiplier)))}"
             )
 
         logger.info("=" * 60)
@@ -1276,7 +1282,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> tuple[float, float]:
         if not isinstance(label_period_candles, int) or label_period_candles <= 0:
             label_period_candles = self.ft_params.get(
-                "label_period_candles", self._default_label_period_candles
+                "label_period_candles", self._label_defaults[0]
             )
         thresholds_candles = (
             max(2, int(fit_live_predictions_candles / label_period_candles))

@@ -48,7 +48,6 @@ from Utils import (
     ewo,
     format_number,
     get_callable_sha256,
-    get_config_value,
     get_distance,
     get_label_defaults,
     get_weighted_extrema,
@@ -58,6 +57,7 @@ from Utils import (
     price_retracement_percent,
     smooth_extrema,
     top_change_percent,
+    update_config_value,
     validate_range,
     vwapb,
     zigzag,
@@ -177,7 +177,7 @@ class QuickAdapterV3(IStrategy):
     def _order_types_set() -> set[OrderType]:
         return {QuickAdapterV3._ORDER_TYPES[0], QuickAdapterV3._ORDER_TYPES[1]}
 
-    @cached_property
+    @property
     def can_short(self) -> bool:
         return self.is_short_allowed()
 
@@ -202,7 +202,7 @@ class QuickAdapterV3(IStrategy):
             },
         }
 
-    @cached_property
+    @property
     def protections(self) -> list[dict[str, Any]]:
         fit_live_predictions_candles = int(
             self.config.get("freqai", {}).get(
@@ -277,14 +277,14 @@ class QuickAdapterV3(IStrategy):
 
     use_exit_signal = True
 
-    @cached_property
+    @property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
         return self.config.get("freqai", {}).get(
             "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
         )
 
-    @cached_property
+    @property
     def max_open_trades_per_side(self) -> int:
         max_open_trades = self.config.get("max_open_trades", 0)
         if max_open_trades < 0:
@@ -296,19 +296,134 @@ class QuickAdapterV3(IStrategy):
         else:
             return max_open_trades
 
-    @cached_property
+    @property
     def extrema_weighting(self) -> dict[str, Any]:
         extrema_weighting = self.freqai_info.get("extrema_weighting", {})
         if not isinstance(extrema_weighting, dict):
             extrema_weighting = {}
         return QuickAdapterV3._get_extrema_weighting_params(extrema_weighting)
 
-    @cached_property
+    @property
     def extrema_smoothing(self) -> dict[str, Any]:
         extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
         if not isinstance(extrema_smoothing, dict):
             extrema_smoothing = {}
         return QuickAdapterV3._get_extrema_smoothing_params(extrema_smoothing)
+
+    @property
+    def trade_price_target_method(self) -> str:
+        exit_pricing = self.config.get("exit_pricing", {})
+        trade_price_target_method = update_config_value(
+            exit_pricing,
+            new_key="trade_price_target_method",
+            old_key="trade_price_target",
+            default=TRADE_PRICE_TARGETS[0],  # "moving_average"
+            logger=logger,
+            new_path="exit_pricing.trade_price_target_method",
+            old_path="exit_pricing.trade_price_target",
+        )
+        if trade_price_target_method not in set(TRADE_PRICE_TARGETS):
+            logger.warning(
+                f"Invalid trade_price_target_method {trade_price_target_method!r}. "
+                f"Supported: {', '.join(TRADE_PRICE_TARGETS)}. "
+                f"Using default {TRADE_PRICE_TARGETS[0]!r}"
+            )
+            trade_price_target_method = TRADE_PRICE_TARGETS[0]
+        return str(trade_price_target_method)
+
+    @property
+    def reversal_confirmation(self) -> dict[str, int | float]:
+        reversal_confirmation = self.config.get("reversal_confirmation", {})
+
+        lookback_period_candles = update_config_value(
+            reversal_confirmation,
+            new_key="lookback_period_candles",
+            old_key="lookback_period",
+            default=QuickAdapterV3.default_reversal_confirmation[
+                "lookback_period_candles"
+            ],
+            logger=logger,
+            new_path="reversal_confirmation.lookback_period_candles",
+            old_path="reversal_confirmation.lookback_period",
+        )
+        decay_fraction = update_config_value(
+            reversal_confirmation,
+            new_key="decay_fraction",
+            old_key="decay_ratio",
+            default=QuickAdapterV3.default_reversal_confirmation["decay_fraction"],
+            logger=logger,
+            new_path="reversal_confirmation.decay_fraction",
+            old_path="reversal_confirmation.decay_ratio",
+        )
+
+        min_natr_multiplier_fraction = update_config_value(
+            reversal_confirmation,
+            new_key="min_natr_multiplier_fraction",
+            old_key="min_natr_ratio_percent",
+            default=QuickAdapterV3.default_reversal_confirmation[
+                "min_natr_multiplier_fraction"
+            ],
+            logger=logger,
+            new_path="reversal_confirmation.min_natr_multiplier_fraction",
+            old_path="reversal_confirmation.min_natr_ratio_percent",
+        )
+        max_natr_multiplier_fraction = update_config_value(
+            reversal_confirmation,
+            new_key="max_natr_multiplier_fraction",
+            old_key="max_natr_ratio_percent",
+            default=QuickAdapterV3.default_reversal_confirmation[
+                "max_natr_multiplier_fraction"
+            ],
+            logger=logger,
+            new_path="reversal_confirmation.max_natr_multiplier_fraction",
+            old_path="reversal_confirmation.max_natr_ratio_percent",
+        )
+
+        if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
+            logger.warning(
+                f"Invalid reversal_confirmation lookback_period_candles {lookback_period_candles!r}: must be >= 0. Using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
+            )
+            lookback_period_candles = QuickAdapterV3.default_reversal_confirmation[
+                "lookback_period_candles"
+            ]
+
+        if not isinstance(decay_fraction, (int, float)) or not (
+            0.0 < decay_fraction <= 1.0
+        ):
+            logger.warning(
+                f"Invalid reversal_confirmation decay_fraction {decay_fraction!r}: must be in range (0, 1]. Using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
+            )
+            decay_fraction = QuickAdapterV3.default_reversal_confirmation[
+                "decay_fraction"
+            ]
+
+        min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
+            min_natr_multiplier_fraction,
+            max_natr_multiplier_fraction,
+            logger,
+            name="natr_multiplier_fraction",
+            default_min=QuickAdapterV3.default_reversal_confirmation[
+                "min_natr_multiplier_fraction"
+            ],
+            default_max=QuickAdapterV3.default_reversal_confirmation[
+                "max_natr_multiplier_fraction"
+            ],
+            allow_equal=False,
+            non_negative=True,
+            finite_only=True,
+        )
+
+        return {
+            "lookback_period_candles": int(lookback_period_candles),
+            "decay_fraction": float(decay_fraction),
+            "min_natr_multiplier_fraction": float(min_natr_multiplier_fraction),
+            "max_natr_multiplier_fraction": float(max_natr_multiplier_fraction),
+        }
+
+    @property
+    def _label_defaults(self) -> tuple[int, float]:
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        return get_label_defaults(feature_parameters, logger)
 
     def bot_start(self, **kwargs) -> None:
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
@@ -329,8 +444,8 @@ class QuickAdapterV3(IStrategy):
             / self.freqai_info.get("identifier")
         )
         feature_parameters = self.freqai_info.get("feature_parameters", {})
-        self._default_label_natr_multiplier, self._default_label_period_candles = (
-            get_label_defaults(feature_parameters, logger)
+        default_label_period_candles, default_label_natr_multiplier = (
+            self._label_defaults
         )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
@@ -340,17 +455,16 @@ class QuickAdapterV3(IStrategy):
                 else {
                     "label_period_candles": feature_parameters.get(
                         "label_period_candles",
-                        self._default_label_period_candles,
+                        default_label_period_candles,
                     ),
                     "label_natr_multiplier": float(
                         feature_parameters.get(
                             "label_natr_multiplier",
-                            self._default_label_natr_multiplier,
+                            default_label_natr_multiplier,
                         )
                     ),
                 }
             )
-        self._init_reversal_confirmation_defaults()
         self._candle_duration_secs = int(
             timeframe_to_minutes(self.config.get("timeframe")) * 60
         )
@@ -416,28 +530,20 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Reversal Confirmation:")
         logger.info(
-            f"  lookback_period_candles: {self._reversal_lookback_period_candles}"
-        )
-        logger.info(f"  decay_fraction: {format_number(self._reversal_decay_fraction)}")
-        logger.info(
-            f"  min_natr_multiplier_fraction: {format_number(self._reversal_min_natr_multiplier_fraction)}"
+            f"  lookback_period_candles: {self.reversal_confirmation['lookback_period_candles']}"
         )
         logger.info(
-            f"  max_natr_multiplier_fraction: {format_number(self._reversal_max_natr_multiplier_fraction)}"
+            f"  decay_fraction: {format_number(self.reversal_confirmation['decay_fraction'])}"
+        )
+        logger.info(
+            f"  min_natr_multiplier_fraction: {format_number(self.reversal_confirmation['min_natr_multiplier_fraction'])}"
+        )
+        logger.info(
+            f"  max_natr_multiplier_fraction: {format_number(self.reversal_confirmation['max_natr_multiplier_fraction'])}"
         )
 
-        exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target_method = get_config_value(
-            exit_pricing,
-            new_key="trade_price_target_method",
-            old_key="trade_price_target",
-            default=TRADE_PRICE_TARGETS[0],  # "moving_average"
-            logger=logger,
-            new_path="exit_pricing.trade_price_target_method",
-            old_path="exit_pricing.trade_price_target",
-        )
         logger.info("Exit Pricing:")
-        logger.info(f"  trade_price_target_method: {trade_price_target_method}")
+        logger.info(f"  trade_price_target_method: {self.trade_price_target_method}")
         logger.info(f"  thresholds_calibration: {self._exit_thresholds_calibration}")
 
         logger.info("Custom Stoploss:")
@@ -485,95 +591,6 @@ class QuickAdapterV3(IStrategy):
             return (0, None)
         dates = df.get("date")
         return (n, dates.iloc[-1] if dates is not None and not dates.empty else None)
-
-    def _init_reversal_confirmation_defaults(self) -> None:
-        reversal_confirmation = self.config.get("reversal_confirmation", {})
-        lookback_period_candles = get_config_value(
-            reversal_confirmation,
-            new_key="lookback_period_candles",
-            old_key="lookback_period",
-            default=QuickAdapterV3.default_reversal_confirmation[
-                "lookback_period_candles"
-            ],
-            logger=logger,
-            new_path="reversal_confirmation.lookback_period_candles",
-            old_path="reversal_confirmation.lookback_period",
-        )
-        decay_fraction = get_config_value(
-            reversal_confirmation,
-            new_key="decay_fraction",
-            old_key="decay_ratio",
-            default=QuickAdapterV3.default_reversal_confirmation["decay_fraction"],
-            logger=logger,
-            new_path="reversal_confirmation.decay_fraction",
-            old_path="reversal_confirmation.decay_ratio",
-        )
-
-        min_natr_multiplier_fraction = get_config_value(
-            reversal_confirmation,
-            new_key="min_natr_multiplier_fraction",
-            old_key="min_natr_ratio_percent",
-            default=QuickAdapterV3.default_reversal_confirmation[
-                "min_natr_multiplier_fraction"
-            ],
-            logger=logger,
-            new_path="reversal_confirmation.min_natr_multiplier_fraction",
-            old_path="reversal_confirmation.min_natr_ratio_percent",
-        )
-        max_natr_multiplier_fraction = get_config_value(
-            reversal_confirmation,
-            new_key="max_natr_multiplier_fraction",
-            old_key="max_natr_ratio_percent",
-            default=QuickAdapterV3.default_reversal_confirmation[
-                "max_natr_multiplier_fraction"
-            ],
-            logger=logger,
-            new_path="reversal_confirmation.max_natr_multiplier_fraction",
-            old_path="reversal_confirmation.max_natr_ratio_percent",
-        )
-
-        if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
-            logger.warning(
-                f"Invalid reversal_confirmation lookback_period_candles {lookback_period_candles!r}: must be >= 0. Using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
-            )
-            lookback_period_candles = QuickAdapterV3.default_reversal_confirmation[
-                "lookback_period_candles"
-            ]
-
-        if not isinstance(decay_fraction, (int, float)) or not (
-            0.0 < decay_fraction <= 1.0
-        ):
-            logger.warning(
-                f"Invalid reversal_confirmation decay_fraction {decay_fraction!r}: must be in range (0, 1]. Using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
-            )
-            decay_fraction = QuickAdapterV3.default_reversal_confirmation[
-                "decay_fraction"
-            ]
-
-        min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
-            min_natr_multiplier_fraction,
-            max_natr_multiplier_fraction,
-            logger,
-            name="natr_multiplier_fraction",
-            default_min=QuickAdapterV3.default_reversal_confirmation[
-                "min_natr_multiplier_fraction"
-            ],
-            default_max=QuickAdapterV3.default_reversal_confirmation[
-                "max_natr_multiplier_fraction"
-            ],
-            allow_equal=False,
-            non_negative=True,
-            finite_only=True,
-        )
-
-        self._reversal_lookback_period_candles = int(lookback_period_candles)
-        self._reversal_decay_fraction = float(decay_fraction)
-        self._reversal_min_natr_multiplier_fraction = float(
-            min_natr_multiplier_fraction
-        )
-        self._reversal_max_natr_multiplier_fraction = float(
-            max_natr_multiplier_fraction
-        )
 
     def feature_engineering_expand_all(
         self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs
@@ -750,7 +767,7 @@ class QuickAdapterV3(IStrategy):
             return label_period_candles
         return self.freqai_info.get("feature_parameters", {}).get(
             "label_period_candles",
-            self._default_label_period_candles,
+            self._label_defaults[0],
         )
 
     def set_label_period_candles(self, pair: str, label_period_candles: int) -> None:
@@ -765,9 +782,7 @@ class QuickAdapterV3(IStrategy):
             return label_natr_multiplier
         feature_parameters = self.freqai_info.get("feature_parameters", {})
         return float(
-            feature_parameters.get(
-                "label_natr_multiplier", self._default_label_natr_multiplier
-            )
+            feature_parameters.get("label_natr_multiplier", self._label_defaults[1])
         )
 
     def set_label_natr_multiplier(
@@ -1049,7 +1064,7 @@ class QuickAdapterV3(IStrategy):
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
-        smoothing_window_candles = get_config_value(
+        smoothing_window_candles = update_config_value(
             extrema_smoothing,
             new_key="window_candles",
             old_key="window",
@@ -1456,16 +1471,6 @@ class QuickAdapterV3(IStrategy):
     def get_trade_natr(
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
     ) -> Optional[float]:
-        exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target_method = get_config_value(
-            exit_pricing,
-            new_key="trade_price_target_method",
-            old_key="trade_price_target",
-            default=TRADE_PRICE_TARGETS[0],  # "moving_average"
-            logger=logger,
-            new_path="exit_pricing.trade_price_target_method",
-            old_path="exit_pricing.trade_price_target",
-        )
         trade_price_target_methods: dict[str, Callable[[], Optional[float]]] = {
             # 0 - "moving_average"
             TRADE_PRICE_TARGETS[0]: lambda: self.get_trade_moving_average_natr(
@@ -1481,11 +1486,11 @@ class QuickAdapterV3(IStrategy):
             ),
         }
         trade_price_target_method_fn = trade_price_target_methods.get(
-            trade_price_target_method
+            self.trade_price_target_method
         )
         if trade_price_target_method_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target_method {trade_price_target_method!r}. "
+                f"Invalid trade_price_target_method {self.trade_price_target_method!r}. "
                 f"Supported: {', '.join(TRADE_PRICE_TARGETS)}"
             )
         return trade_price_target_method_fn()
@@ -2075,8 +2080,10 @@ class QuickAdapterV3(IStrategy):
 
         trade_direction = side
 
-        max_lookback_period = max(0, len(df) - 1)
-        lookback_period_candles = min(lookback_period_candles, max_lookback_period)
+        max_lookback_period_candles = max(0, len(df) - 1)
+        lookback_period_candles = min(
+            lookback_period_candles, max_lookback_period_candles
+        )
         if not isinstance(decay_fraction, (int, float)):
             logger.debug(
                 f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction type"
@@ -2353,10 +2360,10 @@ class QuickAdapterV3(IStrategy):
                 QuickAdapterV3._TRADE_DIRECTIONS[0],  # "long"
                 QuickAdapterV3._ORDER_TYPES[1],  # "exit"
                 current_rate,
-                self._reversal_lookback_period_candles,
-                self._reversal_decay_fraction,
-                self._reversal_min_natr_multiplier_fraction,
-                self._reversal_max_natr_multiplier_fraction,
+                self.reversal_confirmation["lookback_period_candles"],
+                self.reversal_confirmation["decay_fraction"],
+                self.reversal_confirmation["min_natr_multiplier_fraction"],
+                self.reversal_confirmation["max_natr_multiplier_fraction"],
             )
         ):
             return "minima_detected_short"
@@ -2371,10 +2378,10 @@ class QuickAdapterV3(IStrategy):
                 QuickAdapterV3._TRADE_DIRECTIONS[1],  # "short"
                 QuickAdapterV3._ORDER_TYPES[1],  # "exit"
                 current_rate,
-                self._reversal_lookback_period_candles,
-                self._reversal_decay_fraction,
-                self._reversal_min_natr_multiplier_fraction,
-                self._reversal_max_natr_multiplier_fraction,
+                self.reversal_confirmation["lookback_period_candles"],
+                self.reversal_confirmation["decay_fraction"],
+                self.reversal_confirmation["min_natr_multiplier_fraction"],
+                self.reversal_confirmation["max_natr_multiplier_fraction"],
             )
         ):
             return "maxima_detected_long"
@@ -2534,10 +2541,10 @@ class QuickAdapterV3(IStrategy):
             side,
             QuickAdapterV3._ORDER_TYPES[0],  # "entry"
             rate,
-            self._reversal_lookback_period_candles,
-            self._reversal_decay_fraction,
-            self._reversal_min_natr_multiplier_fraction,
-            self._reversal_max_natr_multiplier_fraction,
+            self.reversal_confirmation["lookback_period_candles"],
+            self.reversal_confirmation["decay_fraction"],
+            self.reversal_confirmation["min_natr_multiplier_fraction"],
+            self.reversal_confirmation["max_natr_multiplier_fraction"],
         ):
             return True
         return False

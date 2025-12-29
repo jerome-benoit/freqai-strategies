@@ -3371,7 +3371,8 @@ def _compute_pnl_duration_signal(
 
     t_pnl = apply_transform(transform_pnl, gain * pnl_ratio)
     t_dur = apply_transform(transform_duration, gain * duration_ratio)
-    value = scale * 0.5 * (t_pnl + np.sign(pnl_ratio) * duration_multiplier * t_dur)
+    pnl_sign = np.sign(pnl_ratio) if not np.isclose(pnl_ratio, 0.0) else 0.0
+    value = scale * 0.5 * (t_pnl + pnl_sign * duration_multiplier * t_dur)
     if not np.isfinite(value):
         return _fail_safely(non_finite_key)
     return float(value)

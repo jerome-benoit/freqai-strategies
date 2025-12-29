@@ -30,7 +30,7 @@ class RLAgentStrategy(IStrategy):
     _ACTION_ENTER_SHORT: Final[int] = 3
     _ACTION_EXIT_SHORT: Final[int] = 4
 
-    @cached_property
+    @property
     def can_short(self) -> bool:
         return self.is_short_allowed()
 

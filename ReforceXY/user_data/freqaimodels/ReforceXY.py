@@ -2140,11 +2140,8 @@ class MyRLEnv(Base5ActionRLEnv):
 
         pnl_term = self._potential_transform(transform_pnl, gain * pnl_ratio)
         dur_term = self._potential_transform(transform_duration, gain * duration_ratio)
-        value = (
-            scale
-            * 0.5
-            * (pnl_term + np.sign(pnl_ratio) * duration_multiplier * dur_term)
-        )
+        pnl_sign = np.sign(pnl_ratio) if not np.isclose(pnl_ratio, 0.0) else 0.0
+        value = scale * 0.5 * (pnl_term + pnl_sign * duration_multiplier * dur_term)
         return float(value) if np.isfinite(value) else 0.0
 
     def _compute_hold_potential(
