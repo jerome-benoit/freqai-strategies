@@ -332,12 +332,12 @@ across samples) and does not apply any drift correction in post-processing.
 
 #### Hold Potential Transforms
 
-| Parameter                           | Default  | Description          |
-| ----------------------------------- | -------- | -------------------- |
-| `hold_potential_ratio`              | 0.03125  | Hold potential ratio |
-| `hold_potential_gain`               | 1.0      | Gain multiplier      |
-| `hold_potential_transform_pnl`      | tanh     | PnL transform        |
-| `hold_potential_transform_duration` | tanh     | Duration transform   |
+| Parameter                           | Default | Description          |
+| ----------------------------------- | ------- | -------------------- |
+| `hold_potential_ratio`              | 0.03125 | Hold potential ratio |
+| `hold_potential_gain`               | 1.0     | Gain multiplier      |
+| `hold_potential_transform_pnl`      | tanh    | PnL transform        |
+| `hold_potential_transform_duration` | tanh    | Duration transform   |
 
 **Hold Potential Formula:**
 
