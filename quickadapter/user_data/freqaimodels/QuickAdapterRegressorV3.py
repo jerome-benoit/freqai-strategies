@@ -2302,7 +2302,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         except Exception as e:
             time_spent = time.time() - start_time
             logger.error(
-                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({format_number(time_spent)} secs): {e!r}",
+                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): {e!r}",
                 exc_info=True,
             )
             return
@@ -2311,7 +2311,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if is_study_single_objective:
             if not QuickAdapterRegressorV3.optuna_study_has_best_trial(study):
                 logger.error(
-                    f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({format_number(time_spent)} secs): no study best trial found"
+                    f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): no study best trial found"
                 )
                 return
             self.set_optuna_value(pair, namespace, study.best_value)
@@ -2328,13 +2328,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             except Exception as e:
                 logger.error(
-                    f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({format_number(time_spent)} secs): {e!r}",
+                    f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): {e!r}",
                     exc_info=True,
                 )
                 best_trial = None
             if not best_trial:
                 logger.error(
-                    f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({format_number(time_spent)} secs): no study best trial found"
+                    f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt failed ({time_spent:.2f} secs): no study best trial found"
                 )
                 return
             self.set_optuna_values(pair, namespace, best_trial.values)
@@ -2345,7 +2345,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             }
             metric_log_msg = f" using {self.ft_params.get('label_metric', QuickAdapterRegressorV3._SCIPY_METRICS[2])} metric"
         logger.info(
-            f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed{metric_log_msg} ({format_number(time_spent)} secs)"
+            f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed{metric_log_msg} ({time_spent:.2f} secs)"
+        )
+        max_study_results_key_length = (
+            max(len(str(key)) for key in study_best_results.keys())
+            if study_best_results
+            else 20
         )
         for key, value in study_best_results.items():
             if isinstance(value, list):
@@ -2357,7 +2362,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else:
                 formatted_value = repr(value)
             logger.info(
-                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt | {key:>20s} : {formatted_value}"
+                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt | {key:>{max_study_results_key_length}s} : {formatted_value}"
             )
         if not self.optuna_validate_params(pair, namespace, study):
             logger.warning(
