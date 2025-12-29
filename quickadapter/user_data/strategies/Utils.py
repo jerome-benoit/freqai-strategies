@@ -5,7 +5,16 @@ import math
 from enum import IntEnum
 from functools import lru_cache
 from logging import Logger
-from typing import Any, Callable, Final, Literal, Optional, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Final,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
+)
 
 import numpy as np
 import optuna
@@ -16,6 +25,11 @@ from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
 from scipy.stats import gmean, percentileofscore
 from technical import qtpylib
+
+if TYPE_CHECKING:
+    from xgboost.callback import TrainingCallback as XGBoostTrainingCallback
+else:
+    XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
 
@@ -1937,38 +1951,108 @@ REGRESSORS: Final[tuple[Regressor, ...]] = (
     "histgradientboostingregressor",
 )
 
+RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
 
-def get_optuna_callbacks(
-    trial: optuna.trial.Trial, regressor: Regressor
-) -> list[
-    Union[
-        optuna.integration.XGBoostPruningCallback,
-        optuna.integration.LightGBMPruningCallback,
-    ]
-]:
-    callbacks: list[
-        Union[
-            optuna.integration.XGBoostPruningCallback,
-            optuna.integration.LightGBMPruningCallback,
-        ]
-    ]
-    if regressor == REGRESSORS[0]:  # "xgboost"
-        callbacks = [
-            optuna.integration.XGBoostPruningCallback(trial, "validation_0-rmse")
-        ]
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
-        callbacks = [
-            optuna.integration.LightGBMPruningCallback(
-                trial, "rmse", valid_name="valid_0"
-            )
-        ]
-    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
-        callbacks = []
-    else:
-        raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
-        )
-    return callbacks
+
+class HistGradientBoostingPruningCallback:
+    """Optuna pruning callback for HistGradientBoostingRegressor.
+
+    Uses warm_start to train incrementally since sklearn doesn't support
+    training callbacks.
+
+    Args:
+        trial: Optuna trial.
+        metric: Evaluation metric ("rmse").
+        n_iterations_per_step: Iterations between pruning checks.
+    """
+
+    def __init__(
+        self,
+        trial: optuna.trial.Trial,
+        metric: str = "rmse",
+        n_iterations_per_step: int = 10,
+    ) -> None:
+        self._trial = trial
+        self._metric = metric
+        self._n_iterations_per_step = n_iterations_per_step
+        self._is_higher_better = False  # RMSE is minimized
+
+    def _validate_study_direction(self) -> None:
+        """Raise ValueError if study direction doesn't match metric direction."""
+        if len(self._trial.study.directions) > 1:
+            return
+
+        direction = self._trial.study.direction
+        if self._is_higher_better:
+            if direction != optuna.study.StudyDirection.MAXIMIZE:
+                raise ValueError(
+                    "Metric is higher-better but study direction is MINIMIZE."
+                )
+        else:
+            if direction != optuna.study.StudyDirection.MINIMIZE:
+                raise ValueError(
+                    "Metric is lower-better but study direction is MAXIMIZE."
+                )
+
+    def __call__(
+        self,
+        model: Any,
+        X: np.ndarray | pd.DataFrame,
+        y: np.ndarray | pd.DataFrame,
+        X_val: np.ndarray | pd.DataFrame,
+        y_val: np.ndarray | pd.DataFrame,
+        sample_weight: Optional[NDArray[np.floating]] = None,
+        sample_weight_val: Optional[NDArray[np.floating]] = None,
+    ) -> Any:
+        """Train model incrementally with pruning checks.
+
+        Raises optuna.TrialPruned if trial should be pruned.
+        """
+        from sklearn.metrics import root_mean_squared_error
+
+        self._validate_study_direction()
+
+        if isinstance(y, pd.DataFrame):
+            y = y.to_numpy().ravel()
+        if isinstance(y_val, pd.DataFrame):
+            y_val = y_val.to_numpy().ravel()
+
+        max_iter = model.max_iter
+        current_iter = 0
+
+        # Enable warm_start for incremental training
+        model.warm_start = True
+        model.early_stopping = False  # Incompatible with warm_start pruning approach
+
+        while current_iter < max_iter:
+            # Set the target iteration for this step
+            next_iter = min(current_iter + self._n_iterations_per_step, max_iter)
+            model.max_iter = next_iter
+
+            model.fit(X, y, sample_weight=sample_weight)
+
+            y_pred = model.predict(X_val)
+            if self._metric == "rmse":
+                current_score = root_mean_squared_error(
+                    y_val, y_pred, sample_weight=sample_weight_val
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported metric: {self._metric!r}. Supported metrics: 'rmse'."
+                )
+
+            self._trial.report(current_score, step=next_iter)
+
+            if self._trial.should_prune():
+                message = f"Trial was pruned at iteration {next_iter}."
+                raise optuna.TrialPruned(message)
+
+            current_iter = next_iter
+
+        return model
+
+
+_EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 
 
 def fit_regressor(
@@ -1980,30 +2064,52 @@ def fit_regressor(
     eval_weights: Optional[list[NDArray[np.floating]]],
     model_training_parameters: dict[str, Any],
     init_model: Any = None,
-    callbacks: Optional[
-        list[
-            Union[
-                optuna.integration.XGBoostPruningCallback,
-                optuna.integration.LightGBMPruningCallback,
-            ]
-        ]
-    ] = None,
+    callbacks: Optional[list[RegressorCallback]] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
+    """Fit a regressor model.
+
+    Args:
+        regressor: Type of regressor.
+        model_training_parameters: Copied internally to avoid side effects.
+        callbacks: Additional callbacks (pruning callbacks added automatically when trial is set).
+        trial: Optuna trial for pruning and random state offset.
+    """
+    model_training_parameters = model_training_parameters.copy()
+    fit_callbacks = list(callbacks) if callbacks else []
+
+    has_eval_set = eval_set is not None and len(eval_set) > 0
+    if not has_eval_set:
+        eval_set = None
+        eval_weights = None
+
     if regressor == REGRESSORS[0]:  # "xgboost"
         from xgboost import XGBRegressor
 
         model_training_parameters.setdefault("random_state", 1)
 
+        if has_eval_set:
+            model_training_parameters.setdefault(
+                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+            )
+        else:
+            model_training_parameters.pop("early_stopping_rounds", None)
+
         if trial is not None:
             model_training_parameters["random_state"] = (
                 model_training_parameters["random_state"] + trial.number
             )
+            if has_eval_set:
+                fit_callbacks.append(
+                    optuna.integration.XGBoostPruningCallback(
+                        trial, "validation_0-rmse"
+                    )
+                )
 
         model = XGBRegressor(
             objective="reg:squarederror",
             eval_metric="rmse",
-            callbacks=callbacks,
+            callbacks=fit_callbacks if fit_callbacks else None,
             **model_training_parameters,
         )
         model.fit(
@@ -2015,13 +2121,36 @@ def fit_regressor(
             xgb_model=init_model,
         )
     elif regressor == REGRESSORS[1]:  # "lightgbm"
-        from lightgbm import LGBMRegressor
+        from lightgbm import LGBMRegressor, early_stopping
 
         model_training_parameters.setdefault("seed", 1)
+
+        if has_eval_set:
+            early_stopping_rounds = model_training_parameters.pop(
+                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+            )
+        else:
+            model_training_parameters.pop("early_stopping_rounds", None)
+            early_stopping_rounds = None
 
         if trial is not None:
             model_training_parameters["seed"] = (
                 model_training_parameters["seed"] + trial.number
+            )
+            if has_eval_set:
+                fit_callbacks.append(
+                    optuna.integration.LightGBMPruningCallback(
+                        trial, "rmse", valid_name="valid_0"
+                    )
+                )
+
+        if early_stopping_rounds is not None:
+            fit_callbacks.append(
+                early_stopping(
+                    stopping_rounds=early_stopping_rounds,
+                    first_metric_only=True,
+                    verbose=False,
+                )
             )
 
         model = LGBMRegressor(objective="regression", **model_training_parameters)
@@ -2033,26 +2162,37 @@ def fit_regressor(
             eval_sample_weight=eval_weights,
             eval_metric="rmse",
             init_model=init_model,
-            callbacks=callbacks,
+            callbacks=fit_callbacks if fit_callbacks else None,
         )
     elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
         from sklearn.ensemble import HistGradientBoostingRegressor
 
         model_training_parameters.setdefault("random_state", 1)
         model_training_parameters.setdefault("loss", "squared_error")
+        model_training_parameters.pop("early_stopping", None)
+        model_training_parameters.pop("n_jobs", None)
+        model_training_parameters.pop("l2_regularization_zero", None)
+
+        early_stopping_rounds = model_training_parameters.pop(
+            "early_stopping_rounds", None
+        )
+        if early_stopping_rounds is not None:
+            model_training_parameters.setdefault(
+                "n_iter_no_change", early_stopping_rounds
+            )
+        else:
+            model_training_parameters.setdefault(
+                "n_iter_no_change", _EARLY_STOPPING_ROUNDS_DEFAULT
+            )
+
+        verbosity = model_training_parameters.pop("verbosity", None)
+        if "verbose" not in model_training_parameters and verbosity is not None:
+            model_training_parameters["verbose"] = verbosity
 
         if trial is not None:
             model_training_parameters["random_state"] = (
                 model_training_parameters["random_state"] + trial.number
             )
-
-        model_training_parameters.pop("early_stopping", None)
-        model_training_parameters.pop("n_jobs", None)
-        model_training_parameters.pop("l2_regularization_zero", None)
-
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
 
         X_val = None
         y_val = None
@@ -2070,19 +2210,47 @@ def fit_regressor(
             **model_training_parameters,
         )
 
-        model.fit(
-            X=X,
-            y=y.to_numpy().ravel(),
-            sample_weight=train_weights,
-            X_val=X_val,
-            y_val=y_val,
-            sample_weight_val=sample_weight_val,
-        )
+        if trial is not None and X_val is not None and y_val is not None:
+            pruning_callback = HistGradientBoostingPruningCallback(trial, metric="rmse")
+            model.early_stopping = False
+            model = pruning_callback(
+                model=model,
+                X=X,
+                y=y,
+                X_val=X_val,
+                y_val=y_val,
+                sample_weight=train_weights,
+                sample_weight_val=sample_weight_val,
+            )
+        else:
+            model.fit(
+                X=X,
+                y=y.to_numpy().ravel(),
+                sample_weight=train_weights,
+                X_val=X_val,
+                y_val=y_val,
+                sample_weight_val=sample_weight_val,
+            )
     else:
         raise ValueError(
             f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
     return model
+
+
+def eval_set_and_weights(
+    X_test: pd.DataFrame,
+    y_test: pd.DataFrame,
+    test_weights: NDArray[np.floating],
+    test_size: float,
+) -> tuple[
+    Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
+    Optional[list[NDArray[np.floating]]],
+]:
+    if test_size <= 0:
+        return None, None
+
+    return [(X_test, y_test)], [test_weights]
 
 
 def _build_int_range(

@@ -30,12 +30,12 @@ from Utils import (
     Regressor,
     calculate_min_extrema,
     calculate_n_extrema,
+    eval_set_and_weights,
     fit_regressor,
     format_number,
     get_config_value,
     get_label_defaults,
     get_min_max_label_period_candles,
-    get_optuna_callbacks,
     get_optuna_study_model_parameters,
     soft_extremum,
     zigzag,
@@ -72,7 +72,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.8.1"
+    version = "3.8.2"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -999,6 +999,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     X_test,
                     y_test,
                     test_weights,
+                    self.data_split_parameters.get(
+                        "test_size", QuickAdapterRegressorV3._TEST_SIZE
+                    ),
                     self.get_optuna_params(
                         dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
                     ),  # "hp"
@@ -1076,7 +1079,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"[{dk.pair}] Optuna {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]} RMSE {format_number(optuna_train_value)} is not better than {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]} RMSE {format_number(optuna_hp_value)}, skipping training sets sizing optimization"
                 )
 
-        eval_set, eval_weights = QuickAdapterRegressorV3.eval_set_and_weights(
+        eval_set, eval_weights = eval_set_and_weights(
             X_test,
             y_test,
             test_weights,
@@ -1264,25 +1267,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def optuna_validate_value(value: Any) -> Optional[float]:
         return value if isinstance(value, (int, float)) and np.isfinite(value) else None
-
-    @staticmethod
-    def eval_set_and_weights(
-        X_test: pd.DataFrame,
-        y_test: pd.DataFrame,
-        test_weights: NDArray[np.floating],
-        test_size: float,
-    ) -> tuple[
-        Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
-        Optional[list[NDArray[np.floating]]],
-    ]:
-        if test_size == 0:
-            eval_set = None
-            eval_weights = None
-        else:
-            eval_set = [(X_test, y_test)]
-            eval_weights = [test_weights]
-
-        return eval_set, eval_weights
 
     def min_max_pred(
         self,
@@ -2641,15 +2625,18 @@ def train_objective(
     if not test_ok or not train_ok:
         return np.inf
 
+    eval_set, eval_weights = eval_set_and_weights(
+        X_test, y_test, test_weights, test_size
+    )
+
     model = fit_regressor(
         regressor=regressor,
         X=X,
         y=y,
         train_weights=train_weights,
-        eval_set=[(X_test, y_test)],
-        eval_weights=[test_weights],
+        eval_set=eval_set,
+        eval_weights=eval_weights,
         model_training_parameters=model_training_parameters,
-        callbacks=get_optuna_callbacks(trial, regressor),
         trial=trial,
     )
     y_pred = model.predict(X_test)
@@ -2668,6 +2655,7 @@ def hp_objective(
     X_test: pd.DataFrame,
     y_test: pd.DataFrame,
     test_weights: NDArray[np.floating],
+    test_size: float,
     model_training_best_parameters: dict[str, Any],
     model_training_parameters: dict[str, Any],
     space_reduction: bool,
@@ -2682,15 +2670,18 @@ def hp_objective(
     )
     model_training_parameters = {**model_training_parameters, **study_model_parameters}
 
+    eval_set, eval_weights = eval_set_and_weights(
+        X_test, y_test, test_weights, test_size
+    )
+
     model = fit_regressor(
         regressor=regressor,
         X=X,
         y=y,
         train_weights=train_weights,
-        eval_set=[(X_test, y_test)],
-        eval_weights=[test_weights],
+        eval_set=eval_set,
+        eval_weights=eval_weights,
         model_training_parameters=model_training_parameters,
-        callbacks=get_optuna_callbacks(trial, regressor),
         trial=trial,
     )
     y_pred = model.predict(X_test)
