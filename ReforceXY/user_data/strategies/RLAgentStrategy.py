@@ -1,6 +1,6 @@
 import datetime
 import logging
-from functools import cached_property, reduce
+from functools import reduce
 from typing import Any, Final, Literal, Optional
 
 # import talib.abstract as ta

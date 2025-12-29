@@ -164,7 +164,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
     "hold_potential_enabled": True,
-    "hold_potential_ratio": 0.015625,
+    "hold_potential_ratio": 0.03125,
     "hold_potential_gain": 1.0,
     "hold_potential_transform_pnl": "tanh",
     "hold_potential_transform_duration": "tanh",

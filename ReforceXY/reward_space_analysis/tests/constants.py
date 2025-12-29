@@ -285,7 +285,7 @@ class TestParameters:
         ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
 
         # PBRS hold potential parameters
-        HOLD_POTENTIAL_RATIO_DEFAULT: Default hold potential ratio (0.015625)
+        HOLD_POTENTIAL_RATIO_DEFAULT: Default hold potential ratio (0.03125)
     """
 
     BASE_FACTOR: float = 90.0
@@ -315,7 +315,7 @@ class TestParameters:
     ADDITIVE_GAIN_DEFAULT: float = 1.0
 
     # PBRS hold potential parameters
-    HOLD_POTENTIAL_RATIO_DEFAULT: float = 0.015625
+    HOLD_POTENTIAL_RATIO_DEFAULT: float = 0.03125
 
 
 @dataclass(frozen=True)
