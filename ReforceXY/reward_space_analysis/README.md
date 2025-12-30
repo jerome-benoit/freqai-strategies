@@ -317,7 +317,7 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 | `potential_gamma`        | 0.95      | Discount factor γ for potential Φ    |
 | `exit_potential_mode`    | canonical | Potential release mode               |
 | `exit_potential_decay`   | 0.5       | Decay for progressive_release        |
-| `hold_potential_enabled` | true      | Enable hold potential Φ              |
+| `hold_potential_enabled` | false     | Enable hold potential Φ              |
 | `entry_fee_rate`         | 0.0       | Entry fee rate (`price · (1 + fee)`) |
 | `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
@@ -334,7 +334,7 @@ across samples) and does not apply any drift correction in post-processing.
 
 | Parameter                           | Default | Description          |
 | ----------------------------------- | ------- | -------------------- |
-| `hold_potential_ratio`              | 0.03125 | Hold potential ratio |
+| `hold_potential_ratio`              | 0.001   | Hold potential ratio |
 | `hold_potential_gain`               | 1.0     | Gain multiplier      |
 | `hold_potential_transform_pnl`      | tanh    | PnL transform        |
 | `hold_potential_transform_duration` | tanh    | Duration transform   |
@@ -367,7 +367,7 @@ losses compared to symmetric treatment.
 | Parameter                           | Default | Description           |
 | ----------------------------------- | ------- | --------------------- |
 | `entry_additive_enabled`            | false   | Enable entry additive |
-| `entry_additive_ratio`              | 0.125   | Ratio                 |
+| `entry_additive_ratio`              | 0.0625  | Ratio                 |
 | `entry_additive_gain`               | 1.0     | Gain                  |
 | `entry_additive_transform_pnl`      | tanh    | PnL transform         |
 | `entry_additive_transform_duration` | tanh    | Duration transform    |
@@ -377,7 +377,7 @@ losses compared to symmetric treatment.
 | Parameter                          | Default | Description          |
 | ---------------------------------- | ------- | -------------------- |
 | `exit_additive_enabled`            | false   | Enable exit additive |
-| `exit_additive_ratio`              | 0.125   | Ratio                |
+| `exit_additive_ratio`              | 0.0625  | Ratio                |
 | `exit_additive_gain`               | 1.0     | Gain                 |
 | `exit_additive_transform_pnl`      | tanh    | PnL transform        |
 | `exit_additive_transform_duration` | tanh    | Duration transform   |

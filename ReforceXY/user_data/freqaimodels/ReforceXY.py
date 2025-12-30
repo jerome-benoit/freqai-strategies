@@ -158,13 +158,13 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_EXIT_POTENTIAL_DECAY: Final[float] = 0.5
     DEFAULT_ENTRY_ADDITIVE_ENABLED: Final[bool] = False
-    DEFAULT_ENTRY_ADDITIVE_RATIO: Final[float] = 0.125
+    DEFAULT_ENTRY_ADDITIVE_RATIO: Final[float] = 0.0625
     DEFAULT_ENTRY_ADDITIVE_GAIN: Final[float] = 1.0
-    DEFAULT_HOLD_POTENTIAL_ENABLED: Final[bool] = True
-    DEFAULT_HOLD_POTENTIAL_RATIO: Final[float] = 0.03125
+    DEFAULT_HOLD_POTENTIAL_ENABLED: Final[bool] = False
+    DEFAULT_HOLD_POTENTIAL_RATIO: Final[float] = 0.001
     DEFAULT_HOLD_POTENTIAL_GAIN: Final[float] = 1.0
     DEFAULT_EXIT_ADDITIVE_ENABLED: Final[bool] = False
-    DEFAULT_EXIT_ADDITIVE_RATIO: Final[float] = 0.125
+    DEFAULT_EXIT_ADDITIVE_RATIO: Final[float] = 0.0625
     DEFAULT_EXIT_ADDITIVE_GAIN: Final[float] = 1.0
 
     DEFAULT_EXIT_PLATEAU: Final[bool] = True

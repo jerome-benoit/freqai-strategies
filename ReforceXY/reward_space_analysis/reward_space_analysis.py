@@ -163,14 +163,14 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_potential_mode": "canonical",
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
-    "hold_potential_enabled": True,
-    "hold_potential_ratio": 0.03125,
+    "hold_potential_enabled": False,
+    "hold_potential_ratio": 0.001,
     "hold_potential_gain": 1.0,
     "hold_potential_transform_pnl": "tanh",
     "hold_potential_transform_duration": "tanh",
     # Entry additive (non-PBRS additive term)
     "entry_additive_enabled": False,
-    "entry_additive_ratio": 0.125,
+    "entry_additive_ratio": 0.0625,
     "entry_additive_gain": 1.0,
     "entry_additive_transform_pnl": "tanh",
     "entry_additive_transform_duration": "tanh",
@@ -178,7 +178,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_fee_rate": 0.0,
     # Exit additive (non-PBRS additive term)
     "exit_additive_enabled": False,
-    "exit_additive_ratio": 0.125,
+    "exit_additive_ratio": 0.0625,
     "exit_additive_gain": 1.0,
     "exit_additive_transform_pnl": "tanh",
     "exit_additive_transform_duration": "tanh",

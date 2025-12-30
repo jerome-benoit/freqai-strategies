@@ -281,11 +281,11 @@ class TestParameters:
         MAX_TRADE_DURATION_HETEROSCEDASTICITY: Max trade duration used for heteroscedasticity tests (10)
 
         # Common additive parameters
-        ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.125)
+        ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.0625)
         ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
 
         # PBRS hold potential parameters
-        HOLD_POTENTIAL_RATIO_DEFAULT: Default hold potential ratio (0.03125)
+        HOLD_POTENTIAL_RATIO_DEFAULT: Default hold potential ratio (0.001)
     """
 
     BASE_FACTOR: float = 90.0
@@ -311,11 +311,11 @@ class TestParameters:
     MAX_TRADE_DURATION_HETEROSCEDASTICITY: int = 10
 
     # Additive parameters
-    ADDITIVE_RATIO_DEFAULT: float = 0.125
+    ADDITIVE_RATIO_DEFAULT: float = 0.0625
     ADDITIVE_GAIN_DEFAULT: float = 1.0
 
     # PBRS hold potential parameters
-    HOLD_POTENTIAL_RATIO_DEFAULT: float = 0.03125
+    HOLD_POTENTIAL_RATIO_DEFAULT: float = 0.001
 
 
 @dataclass(frozen=True)
