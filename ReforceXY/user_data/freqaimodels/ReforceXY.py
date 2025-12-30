@@ -2360,6 +2360,10 @@ class MyRLEnv(Base5ActionRLEnv):
         ----------------------
         R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
 
+        Non-Canonical PBRS Formula
+        --------------------------
+        R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
+
         where:
             Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
 
@@ -2966,7 +2970,7 @@ class MyRLEnv(Base5ActionRLEnv):
             3. Hold overtime penalty
             4. Exit reward
             5. Default fallback (0.0 if no specific reward)
-            6. PBRS computation and application: R'(s,a,s') = R_base + Δ(s,a,s') + optional_additives
+            6. PBRS computation and application: R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
 
         The final shaped reward is what the RL agent receives for learning.
         In canonical PBRS mode, the learned policy is theoretically equivalent
@@ -2980,7 +2984,15 @@ class MyRLEnv(Base5ActionRLEnv):
         Returns
         -------
         float
-            Shaped reward R'(s,a,s') = R_base + Δ(s,a,s') + optional_additives
+            Shaped reward R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
+
+            Implementation: base_reward + reward_shaping + entry_additive + exit_additive
+
+            where:
+            - R(s,a,s') / base_reward: Base reward (invalid/idle/hold penalty or exit reward)
+            - Δ(s,a,s') / reward_shaping: PBRS delta term = γ·Φ(s') - Φ(s)
+            - entry_additive: Optional entry bonus (breaks PBRS invariance)
+            - exit_additive: Optional exit bonus (breaks PBRS invariance)
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         base_reward: Optional[float] = None

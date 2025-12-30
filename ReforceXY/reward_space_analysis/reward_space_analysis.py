@@ -788,7 +788,7 @@ class RewardBreakdown:
     next_potential: float = 0.0
     # PBRS helpers
     base_reward: float = 0.0
-    pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') − Φ(s)  # noqa: RUF003
+    pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') - Φ(s)  # noqa: RUF003
     invariance_correction: float = 0.0
 
 
@@ -1173,6 +1173,60 @@ def calculate_reward(
     action_masking: bool,
     prev_potential: float = np.nan,
 ) -> RewardBreakdown:
+    """Calculate complete reward with base reward and PBRS shaping.
+
+    This function computes the full reward pipeline including base reward calculation,
+    PBRS (Potential-Based Reward Shaping), and optional additives.
+
+    Reward Formula
+    --------------
+    R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
+
+    where:
+        - R(s,a,s'): Base reward (invalid/idle/hold penalty or exit reward)
+        - Δ(s,a,s'): PBRS delta term = γ·Φ(s') - Φ(s)
+        - entry_additive: Optional entry bonus (disabled in canonical mode)
+        - exit_additive: Optional exit bonus (disabled in canonical mode)
+
+    Parameters
+    ----------
+    context : RewardContext
+        Current reward context (position, action, PnL, duration, etc.)
+    params : RewardParams
+        Reward parameter dictionary with configuration
+    base_factor : float
+        Base scaling factor for reward components
+    profit_aim : float
+        Target profit for normalization
+    risk_reward_ratio : float
+        Risk/reward ratio for trade evaluation
+    short_allowed : bool
+        Whether short positions are permitted
+    action_masking : bool
+        Whether to apply action masking (affects invalid action penalty)
+    prev_potential : float, optional
+        Previous state potential Φ(s), by default np.nan
+
+    Returns
+    -------
+    RewardBreakdown
+        Complete breakdown of reward components including:
+        - total: Final shaped reward R'(s,a,s')
+        - base_reward: R(s,a,s')
+        - reward_shaping: Δ(s,a,s')
+        - entry_additive: Entry bonus
+        - exit_additive: Exit bonus
+        - prev_potential: Φ(s)
+        - next_potential: Φ(s')
+        - pbrs_delta: Same as reward_shaping
+        - And component-specific values (invalid_penalty, idle_penalty, etc.)
+
+    Notes
+    -----
+    This is the reference implementation for the reward calculation used in testing
+    and analysis. It mirrors the logic in ReforceXY.calculate_reward() but returns
+    a detailed breakdown for diagnostic purposes.
+    """
     breakdown = RewardBreakdown()
 
     is_valid = _is_valid_action(
@@ -3196,8 +3250,12 @@ def compute_pbrs_components(
     ----------------------
     R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
 
+    Non Canonical PBRS Formula
+    --------------------------
+    R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
+
     where:
-        Δ(s,a,s') = gamma * Phi(s') - Phi(s)  (PBRS shaping term)
+        Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
 
     Hold Potential Formula
     ----------------------
@@ -3211,6 +3269,22 @@ def compute_pbrs_components(
 
     Then:
         Φ_hold(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
+
+    Returns
+    -------
+    tuple[float, float, float, float, float]
+        (reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive)
+
+        - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
+        - next_potential: Φ(s'), the potential function value for next state
+        - pbrs_delta: Same as reward_shaping (kept for backward compatibility)
+        - entry_additive: Optional non-PBRS entry bonus (0.0 if disabled or not entry)
+        - exit_additive: Optional non-PBRS exit bonus (0.0 if disabled or not exit)
+
+    Notes
+    -----
+    In canonical mode (exit_potential_mode='canonical'), entry_additive and exit_additive
+    are forced to 0.0 to preserve PBRS policy invariance.
     """
     gamma = _get_potential_gamma(params)
 
@@ -3935,10 +4009,10 @@ def write_complete_statistical_analysis(
                 f.write("|--------|-------|-------------|\n")
                 f.write(f"| Mean Base Reward | {mean_base:.6f} | Average reward before PBRS |\n")
                 f.write(f"| Std Base Reward | {std_base:.6f} | Variability of base reward |\n")
-                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s')−Φ(s) |\n")  # noqa: RUF001
+                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s') - Φ(s) |\n")  # noqa: RUF001
                 f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
                 f.write(
-                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping − pbrs_delta |\n"  # noqa: RUF001
+                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"  # noqa: RUF001
                 )
                 f.write(
                     f"| Std Invariance Correction | {std_inv_corr:.6f} | Variability of correction |\n"
