@@ -252,9 +252,9 @@ Let `pnl_target = profit_aim × risk_reward_ratio`, `pnl_ratio = pnl / pnl_targe
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
-  `pnl_target_coefficient = 1.0 + win_reward_factor × tanh(pnl_amplification_sensitivity × (pnl_ratio − 1.0))`
+  `pnl_target_coefficient = 1.0 + win_reward_factor * tanh(pnl_amplification_sensitivity * (pnl_ratio − 1.0))`
 - If `pnl_ratio < −(1.0 / risk_reward_ratio)`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor × risk_reward_ratio) × tanh(pnl_amplification_sensitivity × (|pnl_ratio| − 1.0))`
+  `pnl_target_coefficient = 1.0 + (win_reward_factor * risk_reward_ratio) * tanh(pnl_amplification_sensitivity * (|pnl_ratio| − 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -355,7 +355,7 @@ where:
 - `scale = base_factor · hold_potential_ratio`
 - `g = hold_potential_gain`
 - `T_pnl`, `T_dur` = configured transforms
-- `m_dur = 1.0` if `r_pnl >= 0` (profit side)
+- `m_dur = 1.0` if `r_pnl ≥ 0` (profit side)
 - `m_dur = risk_reward_ratio` if `r_pnl < 0` (loss side)
 
 The loss-side duration multiplier (`m_dur = risk_reward_ratio`) scales the
@@ -387,15 +387,15 @@ losses compared to symmetric treatment.
 `r` = duration ratio and `grace` = `exit_plateau_grace`.
 
 ```text
-r* = 0            if exit_plateau and r <= grace
-r* = r - grace    if exit_plateau and r >  grace
+r* = 0            if exit_plateau and r ≤ grace
+r* = r - grace    if exit_plateau and r > grace
 r* = r            if not exit_plateau
 ```
 
 | Mode      | Formula                         | Monotonic | Notes                                       | Use Case                             |
 | --------- | ------------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
 | legacy    | step: ×1.5 if r\* ≤ 1 else ×0.5 | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
-| sqrt      | 1 / sqrt(1 + r\*)               | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
+| sqrt      | 1 / √(1 + r\*)                  | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
 | linear    | 1 / (1 + slope \* r\*)          | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
 | power     | (1 + r\*)^(-alpha)              | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
 | half_life | 2^(- r\* / hl)                  | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor ×0.5 | Time-based exponential discount      |
@@ -408,7 +408,7 @@ r* = r            if not exit_plateau
 | `softsign` | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
 | `arctan`   | (2/π) \* arctan(x)               | (-1, 1) | Slower saturation | Wide dynamic range            |
 | `sigmoid`  | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
-| `asinh`    | x / sqrt(1 + x^2)                | (-1, 1) | Outlier robust    | Extreme stability             |
+| `asinh`    | x / √(1 + x²)                    | (-1, 1) | Outlier robust    | Extreme stability             |
 | `clip`     | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |
 
 ### Skipping Feature Analysis

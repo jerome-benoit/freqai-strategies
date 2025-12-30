@@ -2392,7 +2392,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         **Hold Potential Formula:**
             m_dur = 1.0 if r_pnl >= 0 else loss_duration_multiplier(r_pnl, rr)
-            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sgn(r_pnl)·m_dur·T_dur(g·r_dur)]
+            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
 
         PBRS Theory & Compliance
         ------------------------

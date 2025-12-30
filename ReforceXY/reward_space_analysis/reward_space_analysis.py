@@ -4012,7 +4012,7 @@ def write_complete_statistical_analysis(
                 f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s') - Φ(s) |\n")  # noqa: RUF001
                 f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
                 f.write(
-                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"  # noqa: RUF001
+                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"
                 )
                 f.write(
                     f"| Std Invariance Correction | {std_inv_corr:.6f} | Variability of correction |\n"
