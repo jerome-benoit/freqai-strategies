@@ -316,6 +316,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.optuna_eval_callback: Optional[MaskableTrialEvalCallback] = None
         self._model_params_cache: Optional[Dict[str, Any]] = None
+        self._lstm_states_cache: Dict[
+            str,
+            Tuple[
+                int,
+                Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]],
+                NDArray[np.bool_],
+            ],
+        ] = {}
         self.unset_unsupported()
 
     @staticmethod
@@ -452,6 +460,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.frame_stacking,
             )
             self.continual_learning = False
+        if self.recurrent and bool(self.frame_stacking):
+            logger.warning(
+                "Config [global]: RecurrentPPO with frame_stacking=%d is redundant; "
+                "LSTM already captures temporal dependencies. Consider setting frame_stacking=0",
+                self.frame_stacking,
+            )
 
     def pack_env_dict(
         self, pair: str, model_params: Optional[Dict[str, Any]] = None
@@ -1044,8 +1058,20 @@ class ReforceXY(BaseReinforcementLearningModel):
             maxlen=frame_stacking if frame_stacking_enabled else None
         )
         zero_frame: Optional[NDArray[np.float32]] = None
-        lstm_states: Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]] = None
-        episode_start = np.array([True], dtype=bool)
+        model_id = id(model)
+        lstm_states_cache_valid = (
+            self.live
+            and self.recurrent
+            and dk.pair in self._lstm_states_cache
+            and self._lstm_states_cache[dk.pair][0] == model_id
+        )
+        if lstm_states_cache_valid:
+            _, lstm_states, episode_start = self._lstm_states_cache[dk.pair]
+        else:
+            lstm_states: Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]] = (
+                None
+            )
+            episode_start = np.array([True], dtype=bool)
 
         def _predict(start_idx: int) -> int:
             nonlocal zero_frame, lstm_states, episode_start
@@ -1136,6 +1162,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         pad_count = max(0, n - len(predicted_actions))
         actions_list = ([np.nan] * pad_count) + predicted_actions
         actions_df = DataFrame({"action": actions_list}, index=dataframe.index)
+
+        if self.live and self.recurrent:
+            self._lstm_states_cache[dk.pair] = (model_id, lstm_states, episode_start)
 
         return DataFrame({label: actions_df["action"] for label in dk.label_list})
 
@@ -4512,6 +4541,10 @@ def convert_optuna_params_to_model_params(
                 optuna_params.get("lstm_hidden_size")
             )
             policy_kwargs["n_lstm_layers"] = int(optuna_params.get("n_lstm_layers"))
+            if optuna_params.get("enable_critic_lstm") is not None:
+                policy_kwargs["enable_critic_lstm"] = bool(
+                    optuna_params.get("enable_critic_lstm")
+                )
     elif ReforceXY._MODEL_TYPES[3] in model_type:  # "DQN"
         required_dqn_params = [
             "gamma",
@@ -4601,11 +4634,11 @@ def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]
         ),
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
-        "ent_coef": trial.suggest_float("ent_coef", 0.0005, 0.03, log=True),
+        "ent_coef": trial.suggest_float("ent_coef", 1e-8, 0.03, log=True),
         "clip_range": trial.suggest_float("clip_range", 0.1, 0.4, step=0.05),
-        "n_epochs": trial.suggest_int("n_epochs", 1, 5),
-        "gae_lambda": trial.suggest_float("gae_lambda", 0.9, 0.99, step=0.01),
-        "max_grad_norm": trial.suggest_float("max_grad_norm", 0.3, 1.0, step=0.05),
+        "n_epochs": trial.suggest_int("n_epochs", 1, 10),
+        "gae_lambda": trial.suggest_float("gae_lambda", 0.8, 1.0, step=0.01),
+        "max_grad_norm": trial.suggest_float("max_grad_norm", 0.3, 5.0, step=0.1),
         "vf_coef": trial.suggest_float("vf_coef", 0.0, 1.0, step=0.05),
         "lr_schedule": trial.suggest_categorical(
             "lr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
@@ -4614,7 +4647,7 @@ def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
             "cr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
         ),
         "target_kl": trial.suggest_categorical(
-            "target_kl", [None, 0.01, 0.015, 0.02, 0.03, 0.04]
+            "target_kl", [None, 0.003, 0.01, 0.015, 0.02, 0.03, 0.04, 0.1]
         ),
         "ortho_init": trial.suggest_categorical("ortho_init", [True, False]),
         "net_arch": trial.suggest_categorical(
@@ -4645,10 +4678,13 @@ def sample_params_recurrentppo(trial: Trial) -> Dict[str, Any]:
     ppo_optuna_params = get_common_ppo_optuna_params(trial)
     ppo_optuna_params.update(
         {
+            "n_lstm_layers": trial.suggest_int("n_lstm_layers", 1, 2),
             "lstm_hidden_size": trial.suggest_categorical(
                 "lstm_hidden_size", [64, 128, 256, 512]
             ),
-            "n_lstm_layers": trial.suggest_int("n_lstm_layers", 1, 2),
+            "enable_critic_lstm": trial.suggest_categorical(
+                "enable_critic_lstm", [True, False]
+            ),
         }
     )
     return convert_optuna_params_to_model_params("RecurrentPPO", ppo_optuna_params)
@@ -4683,7 +4719,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
             "lr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
         ),
         "buffer_size": trial.suggest_categorical(
-            "buffer_size", [int(1e4), int(5e4), int(1e5), int(2e5)]
+            "buffer_size", [int(1e4), int(5e4), int(1e5), int(5e5), int(1e6)]
         ),
         "exploration_initial_eps": exploration_initial_eps,
         "exploration_final_eps": exploration_final_eps,
@@ -4691,10 +4727,10 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
             "exploration_fraction", min_fraction, 0.9, step=0.02
         ),
         "target_update_interval": trial.suggest_categorical(
-            "target_update_interval", [1000, 2000, 5000, 7500, 10000]
+            "target_update_interval", [1, 1000, 2000, 5000, 7500, 10000]
         ),
         "learning_starts": trial.suggest_categorical(
-            "learning_starts", [500, 1000, 2000, 3000, 4000, 5000, 8000, 10000]
+            "learning_starts", [500, 1000, 2000, 5000, 10000, 25000, 50000]
         ),
         "net_arch": trial.suggest_categorical(
             "net_arch", list(ReforceXY._NET_ARCH_SIZES)
@@ -4722,7 +4758,7 @@ def sample_params_qrdqn(trial: Trial) -> Dict[str, Any]:
     Sampler for QRDQN hyperparams
     """
     dqn_optuna_params = get_common_dqn_optuna_params(trial)
-    dqn_optuna_params.update({"n_quantiles": trial.suggest_int("n_quantiles", 10, 160)})
+    dqn_optuna_params.update({"n_quantiles": trial.suggest_int("n_quantiles", 10, 250)})
     return convert_optuna_params_to_model_params(
         ReforceXY._MODEL_TYPES[4], dqn_optuna_params
     )
