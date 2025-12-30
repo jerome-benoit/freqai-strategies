@@ -233,7 +233,7 @@ be overridden via `--params`.
 
 The exit factor is computed as:
 
-`exit_factor` = `base_factor ` × `pnl_target_coefficient` × `efficiency_coefficient` × `time_attenuation_coefficient`
+`exit_factor` = `base_factor` · `pnl_target_coefficient` · `efficiency_coefficient` · `time_attenuation_coefficient`
 
 ##### PnL Target
 
@@ -248,13 +248,13 @@ The exit factor is computed as:
 
 **Formula:**
 
-Let `pnl_target = profit_aim × risk_reward_ratio`, `pnl_ratio = pnl / pnl_target`.
+Let `pnl_target = profit_aim · risk_reward_ratio`, `pnl_ratio = pnl / pnl_target`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
-  `pnl_target_coefficient = 1.0 + win_reward_factor * tanh(pnl_amplification_sensitivity * (pnl_ratio − 1.0))`
-- If `pnl_ratio < −(1.0 / risk_reward_ratio)`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor * risk_reward_ratio) * tanh(pnl_amplification_sensitivity * (|pnl_ratio| − 1.0))`
+  `pnl_target_coefficient = 1.0 + win_reward_factor · tanh(pnl_amplification_sensitivity · (pnl_ratio - 1.0))`
+- If `pnl_ratio < -(1.0 / risk_reward_ratio)`:
+  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (|pnl_ratio| - 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -270,9 +270,9 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 `range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
 
 - If `pnl > 0`:
-  `efficiency_coefficient = 1 + efficiency_weight * (ratio - efficiency_center)`
+  `efficiency_coefficient = 1 + efficiency_weight · (ratio - efficiency_center)`
 - If `pnl < 0`:
-  `efficiency_coefficient = 1 + efficiency_weight * (efficiency_center - ratio)`
+  `efficiency_coefficient = 1 + efficiency_weight · (efficiency_center - ratio)`
 - Else: `efficiency_coefficient = 1`
 
 ##### Exit Attenuation
@@ -318,7 +318,7 @@ where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuatio
 | `exit_potential_mode`    | canonical | Potential release mode               |
 | `exit_potential_decay`   | 0.5       | Decay for progressive_release        |
 | `hold_potential_enabled` | true      | Enable hold potential Φ              |
-| `entry_fee_rate`         | 0.0       | Entry fee rate (`price * (1 + fee)`) |
+| `entry_fee_rate`         | 0.0       | Entry fee rate (`price · (1 + fee)`) |
 | `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
 PBRS invariance holds when: `exit_potential_mode=canonical`.
@@ -392,13 +392,13 @@ r* = r - grace    if exit_plateau and r > grace
 r* = r            if not exit_plateau
 ```
 
-| Mode      | Formula                         | Monotonic | Notes                                       | Use Case                             |
-| --------- | ------------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
-| legacy    | step: ×1.5 if r\* ≤ 1 else ×0.5 | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
-| sqrt      | 1 / √(1 + r\*)                  | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
-| linear    | 1 / (1 + slope \* r\*)          | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
-| power     | (1 + r\*)^(-alpha)              | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
-| half_life | 2^(- r\* / hl)                  | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor ×0.5 | Time-based exponential discount      |
+| Mode      | Formula                       | Monotonic | Notes                                       | Use Case                             |
+| --------- | ----------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
+| legacy    | step: 1.5 if r\* ≤ 1 else 0.5 | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
+| sqrt      | 1 / √(1 + r\*)                | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
+| linear    | 1 / (1 + slope · r\*)         | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
+| power     | (1 + r\*)^(-alpha)            | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
+| half_life | 2^(-r\* / hl)                 | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor 0.5  | Time-based exponential discount      |
 
 ### Transform Functions
 
@@ -406,7 +406,7 @@ r* = r            if not exit_plateau
 | ---------- | -------------------------------- | ------- | ----------------- | ----------------------------- |
 | `tanh`     | tanh(x)                          | (-1, 1) | Smooth sigmoid    | Balanced transforms (default) |
 | `softsign` | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
-| `arctan`   | (2/π) \* arctan(x)               | (-1, 1) | Slower saturation | Wide dynamic range            |
+| `arctan`   | (2/π) · arctan(x)                | (-1, 1) | Slower saturation | Wide dynamic range            |
 | `sigmoid`  | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
 | `asinh`    | x / √(1 + x²)                    | (-1, 1) | Outlier robust    | Extreme stability             |
 | `clip`     | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |

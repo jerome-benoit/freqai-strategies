@@ -2918,7 +2918,7 @@ def _apply_transform_softsign(value: float) -> float:
 
 
 def _apply_transform_arctan(value: float) -> float:
-    """arctan: (2/pi) * arctan(x) in (-1, 1)."""
+    """arctan: (2/π) · arctan(x) in (-1, 1)."""
     return float((2.0 / math.pi) * math.atan(value))
 
 

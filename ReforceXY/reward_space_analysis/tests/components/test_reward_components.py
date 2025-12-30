@@ -352,7 +352,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
 
         # Verify exact values at bounds using the formula
-        # coefficient = 1.0 + weight * (ratio - center)
+        # coefficient = 1.0 + weight · (ratio - center)
         # ratio = (pnl - min_pnl) / range_pnl
         range_pnl = max_unrealized_profit - min_unrealized_profit
 
@@ -443,7 +443,7 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
 
         # Verify exact values at bounds using the INVERTED formula for losses
-        # coefficient = 1.0 + weight * (center - ratio)
+        # coefficient = 1.0 + weight · (center - ratio)
         range_pnl = max_unrealized_profit - min_unrealized_profit
 
         # Worst exit bound (first element: largest loss)

@@ -530,7 +530,7 @@ class TestPBRS(RewardSpaceTestBase):
             gamma = float(gamma_fallback)
         except Exception:
             gamma = 0.95
-        # PBRS shaping Δ = γ·Φ(next) − Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.  # noqa: RUF003
+        # PBRS shaping Δ = γ·Φ(next) - Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.
         self.assertLessEqual(
             abs(shaping - ((gamma - 1.0) * prev_potential)),
             TOLERANCE.GENERIC_EQ,

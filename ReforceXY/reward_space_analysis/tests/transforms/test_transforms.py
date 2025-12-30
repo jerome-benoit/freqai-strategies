@@ -33,7 +33,7 @@ class TestTransforms(RewardSpaceTestBase):
             ("softsign", [0.0, 1.0, -1.0], [0.0, 0.5, -0.5]),
             # asinh transform: x / sqrt(1 + x^2) in (-1, 1)
             ("asinh", [0.0], [0.0]),  # More complex calculations tested separately
-            # arctan transform: (2/pi) * arctan(x) in (-1, 1)
+            # arctan transform: (2/π) · arctan(x) in (-1, 1)
             ("arctan", [0.0, 1.0], [0.0, 2.0 / math.pi * math.atan(1.0)]),
             # sigmoid transform: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)  # noqa: RUF003
             ("sigmoid", [0.0], [0.0]),  # More complex calculations tested separately

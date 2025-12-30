@@ -2817,7 +2817,7 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters: Mapping[str, Any],
     ) -> float:
         """
-        Compute exit factor: base_factor × time_attenuation_coefficient × pnl_target_coefficient × efficiency_coefficient.
+        Compute exit factor: base_factor · time_attenuation_coefficient · pnl_target_coefficient · efficiency_coefficient.
         """
         if not (
             np.isfinite(base_factor)
