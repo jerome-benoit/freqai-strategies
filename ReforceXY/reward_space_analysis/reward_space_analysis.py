@@ -3250,7 +3250,7 @@ def compute_pbrs_components(
     ----------------------
     R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
 
-    Non Canonical PBRS Formula
+    Non-Canonical PBRS Formula
     --------------------------
     R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
 

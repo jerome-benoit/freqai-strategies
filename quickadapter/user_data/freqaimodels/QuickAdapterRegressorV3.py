@@ -72,7 +72,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.8.4"
+    version = "3.8.5"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -170,6 +170,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "knn_min",
         "knn_max",
         "medoid",
+        "topsis",
     )
 
     _METRICS: Final[tuple[str, ...]] = (
@@ -685,6 +686,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     label_p_order_reason = (
                         f"{label_metric} (via label_knn_metric={label_knn_metric})"
                     )
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[17]
+            ):  # "topsis"
+                label_topsis_metric = self.ft_params.get(
+                    "label_topsis_metric",
+                    QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean" default
+                )
+                if (
+                    label_topsis_metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]
+                ):  # "minkowski"
+                    label_p_order_is_used = True
+                    label_p_order_reason = f"{label_metric} (via label_topsis_metric={label_topsis_metric})"
 
             if label_p_order_config is not None:
                 logger.info(
@@ -806,6 +819,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 logger.info(
                     f"  label_knn_p_order: {format_number(label_knn_p_order_default)} (default for {label_metric})"
+                )
+
+            label_topsis_metric_config = self.ft_params.get("label_topsis_metric")
+            if label_topsis_metric_config is not None:
+                logger.info(f"  label_topsis_metric: {label_topsis_metric_config}")
+            elif (
+                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[17]
+            ):  # "topsis"
+                logger.info(
+                    f"  label_topsis_metric: {QuickAdapterRegressorV3._SCIPY_METRICS[2]} (default for {label_metric})"
                 )
 
         logger.info("Predictions Extrema Configuration:")
@@ -2191,6 +2214,39 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 return np.nanmin(neighbor_distances, axis=1)
             elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[15]:  # "knn_max"
                 return np.nanmax(neighbor_distances, axis=1)
+        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[17]:  # "topsis"
+            # TOPSIS (Hwang & Yoon, 1981): returns D+ / (D+ + D-) for argmin selection
+            # where D+ = distance to ideal [1,1,...], D- = distance to anti-ideal [0,0,...]
+            label_topsis_metric = self.ft_params.get(
+                "label_topsis_metric",
+                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
+            )
+            cdist_kwargs: dict[str, Any] = {
+                "metric": label_topsis_metric,
+                "w": np_weights,
+            }
+            if (
+                label_topsis_metric
+                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            ):
+                cdist_kwargs["p"] = (
+                    label_p_order
+                    if label_p_order is not None and np.isfinite(label_p_order)
+                    else self._get_label_p_order_default(label_topsis_metric)
+                )
+            dist_to_ideal = sp.spatial.distance.cdist(
+                normalized_matrix, ideal_point_2d, **cdist_kwargs
+            ).flatten()
+            dist_to_anti_ideal = sp.spatial.distance.cdist(
+                normalized_matrix, np.zeros((1, n_objectives)), **cdist_kwargs
+            ).flatten()
+
+            denominator = dist_to_ideal + dist_to_anti_ideal
+            zero_mask = np.isclose(denominator, 0.0)
+            denominator[zero_mask] = 1.0
+            topsis_score = dist_to_ideal / denominator
+            topsis_score[zero_mask] = 0.5
+            return topsis_score
         else:
             raise ValueError(
                 f"Invalid label metric {metric!r}. Supported: {', '.join(metrics)}"
