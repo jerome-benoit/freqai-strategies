@@ -14,7 +14,6 @@ from typing import (
     Optional,
     TypeVar,
     Union,
-    get_args,
 )
 
 import numpy as np
