@@ -2099,10 +2099,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if weights is not None:
                 knn_kwargs["metric_params"] = {"w": weights}
 
-        n_neighbors = min(n_neighbors, n_samples - 1) + 1
-
         nbrs = sklearn.neighbors.NearestNeighbors(
-            n_neighbors=n_neighbors, metric=distance_metric, **knn_kwargs
+            n_neighbors=min(n_neighbors, n_samples - 1) + 1,
+            metric=distance_metric,
+            **knn_kwargs,
         ).fit(normalized_matrix)
         distances, _ = nbrs.kneighbors(normalized_matrix)
         neighbor_distances = distances[:, 1:]
