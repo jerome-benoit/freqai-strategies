@@ -54,8 +54,6 @@ DistanceMethod = Literal["compromise_programming", "topsis"]
 ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
 DensityMethod = Literal["knn", "medoid"]
 SelectionMethod = Union[DistanceMethod, ClusterMethod, DensityMethod]
-ClusterSelectionMethod = Literal["medoid", "min", "topsis"]
-
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
@@ -137,11 +135,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "kmeans2",
         "kmedoids",
     )
-    _CLUSTER_SELECTION_METHODS: Final[tuple[ClusterSelectionMethod, ...]] = (
-        "medoid",
-        "min",
-        "topsis",
-    )
     _DENSITY_METHODS: Final[tuple[DensityMethod, ...]] = ("knn", "medoid")
 
     _SELECTION_CATEGORIES: Final[dict[str, tuple[SelectionMethod, ...]]] = {
@@ -206,8 +199,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     LABEL_DISTANCE_METRIC_DEFAULT: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
 
     LABEL_CLUSTER_METRIC_DEFAULT: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
-    LABEL_CLUSTER_SELECTION_METHOD_DEFAULT: Final[ClusterSelectionMethod] = (
-        _CLUSTER_SELECTION_METHODS[1]  # "min"
+    LABEL_CLUSTER_SELECTION_METHOD_DEFAULT: Final[DistanceMethod] = _DISTANCE_METHODS[
+        1
+    ]  # "topsis"
+    LABEL_CLUSTER_TRIAL_SELECTION_METHOD_DEFAULT: Final[DistanceMethod] = (
+        _DISTANCE_METHODS[1]  # "topsis"
     )
 
     LABEL_DENSITY_N_NEIGHBORS_DEFAULT: Final[int] = 5
@@ -252,8 +248,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     @lru_cache(maxsize=None)
-    def _cluster_selection_methods_set() -> set[ClusterSelectionMethod]:
-        return set(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)
+    def _distance_methods_set() -> set[DistanceMethod]:
+        return set(QuickAdapterRegressorV3._DISTANCE_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -423,10 +419,30 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "label_cluster_metric",
                 QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
             )
-            config["selection_method"] = self.ft_params.get(
+            selection_method = self.ft_params.get(
                 "label_cluster_selection_method",
                 QuickAdapterRegressorV3.LABEL_CLUSTER_SELECTION_METHOD_DEFAULT,
             )
+            if selection_method not in QuickAdapterRegressorV3._distance_methods_set():
+                raise ValueError(
+                    f"Invalid label_cluster_selection_method {selection_method!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                )
+            config["selection_method"] = selection_method
+
+            trial_selection_method = self.ft_params.get(
+                "label_cluster_trial_selection_method",
+                QuickAdapterRegressorV3.LABEL_CLUSTER_TRIAL_SELECTION_METHOD_DEFAULT,
+            )
+            if (
+                trial_selection_method
+                not in QuickAdapterRegressorV3._distance_methods_set()
+            ):
+                raise ValueError(
+                    f"Invalid label_cluster_trial_selection_method {trial_selection_method!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                )
+            config["trial_selection_method"] = trial_selection_method
         elif category == "density":
             density_method = cast(DensityMethod, label_method)
             distance_metric = self.ft_params.get(
@@ -1780,7 +1796,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if (
                 distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[15]
             ):  # "power_mean"
-                power = p if p is not None and np.isfinite(p) else 2.0
+                power = p if p is not None and np.isfinite(p) else 1.0
             else:
                 power_map: dict[str, float] = {
                     QuickAdapterRegressorV3._DISTANCE_METRICS[
@@ -1942,20 +1958,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _select_best_trial_from_cluster(
         self,
         normalized_matrix: NDArray[np.floating],
-        selection_method: ClusterSelectionMethod,
+        trial_selection_method: DistanceMethod,
         best_cluster_indices: NDArray[np.intp],
         ideal_point_2d: NDArray[np.floating],
         distance_metric: str,
         *,
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
-        known_medoid_index: Optional[int] = None,
-        known_medoid_distance: Optional[float] = None,
     ) -> tuple[int, float]:
         if best_cluster_indices.size == 1:
             best_trial_index = best_cluster_indices[0]
-            if known_medoid_distance is not None:
-                return best_trial_index, known_medoid_distance
             best_trial_distance = self._calculate_trial_distance_to_ideal(
                 normalized_matrix,
                 best_trial_index,
@@ -1966,80 +1978,37 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return best_trial_index, best_trial_distance
 
-        if (
-            selection_method
-            == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[0]  # "medoid"
-        ):
-            if known_medoid_index is not None and known_medoid_distance is not None:
-                return known_medoid_index, known_medoid_distance
-            best_medoid_position = np.nanargmin(
-                self._pairwise_distance_sums(
-                    normalized_matrix[best_cluster_indices],
-                    distance_metric,
-                    weights=weights,
-                    p=p,
-                )
-            )
-            best_trial_index = best_cluster_indices[best_medoid_position]
-            best_trial_distance = self._calculate_trial_distance_to_ideal(
-                normalized_matrix,
-                best_trial_index,
-                ideal_point_2d,
-                distance_metric,
-                weights=weights,
-                p=p,
-            )
-            return best_trial_index, best_trial_distance
-
-        if (
-            selection_method
-            == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]  # "min"
-        ):
-            cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-                distance_metric=distance_metric,
-                weights=weights,
-                p=p,
-                validate_p=True,
-                check_unsupported_metrics=False,
-                validation_context="select_best_trial_from_cluster minkowski p",
-            )
-
-            best_cluster_distances = sp.spatial.distance.cdist(
-                normalized_matrix[best_cluster_indices],
-                ideal_point_2d,
-                metric=distance_metric,
-                **cdist_kwargs,
-            ).flatten()
-            min_distance_position = np.nanargmin(best_cluster_distances)
-            best_trial_index = best_cluster_indices[min_distance_position]
-            return best_trial_index, best_cluster_distances[min_distance_position]
-
-        if (
-            selection_method
-            == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[2]  # "topsis"
-        ):
-            topsis_scores = QuickAdapterRegressorV3._topsis_scores(
+        if trial_selection_method == "topsis":
+            scores = QuickAdapterRegressorV3._topsis_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
                 weights=weights,
                 p=p,
             )
-            min_score_position = np.nanargmin(topsis_scores)
-            best_trial_index = best_cluster_indices[min_score_position]
-            best_trial_distance = self._calculate_trial_distance_to_ideal(
-                normalized_matrix,
-                best_trial_index,
-                ideal_point_2d,
+        elif trial_selection_method == "compromise_programming":
+            scores = QuickAdapterRegressorV3._compromise_programming_scores(
+                normalized_matrix[best_cluster_indices],
                 distance_metric,
                 weights=weights,
                 p=p,
             )
-            return best_trial_index, best_trial_distance
+        else:
+            raise ValueError(
+                f"Invalid trial_selection_method {trial_selection_method!r}. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+            )
 
-        raise ValueError(
-            f"Invalid selection_method {selection_method!r}. "
-            f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)}"
+        min_score_position = np.nanargmin(scores)
+        best_trial_index = best_cluster_indices[min_score_position]
+        best_trial_distance = self._calculate_trial_distance_to_ideal(
+            normalized_matrix,
+            best_trial_index,
+            ideal_point_2d,
+            distance_metric,
+            weights=weights,
+            p=p,
         )
+        return best_trial_index, best_trial_distance
 
     def _cluster_based_selection(
         self,
@@ -2047,7 +2016,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         cluster_method: ClusterMethod,
         *,
         distance_metric: str,
-        selection_method: ClusterSelectionMethod,
+        selection_method: DistanceMethod,
+        trial_selection_method: DistanceMethod,
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
     ) -> NDArray[np.floating]:
@@ -2059,15 +2029,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return np.array([0.0])
 
         ideal_point_2d = np.ones((1, n_objectives))
-
-        cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-            distance_metric=distance_metric,
-            weights=None,
-            p=p,
-            validate_p=True,
-            check_unsupported_metrics=False,
-            validation_context="select_trial_via_clustering minkowski p",
-        )
 
         n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
 
@@ -2088,13 +2049,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     normalized_matrix, n_clusters, rng=42, minit="++"
                 )
 
-            cluster_center_distances_to_ideal = sp.spatial.distance.cdist(
-                cluster_centers,
-                ideal_point_2d,
-                metric=distance_metric,
-                **cdist_kwargs,
-            ).flatten()
-            ordered_cluster_indices = np.argsort(cluster_center_distances_to_ideal)
+            if selection_method == "compromise_programming":
+                cluster_center_scores = (
+                    QuickAdapterRegressorV3._compromise_programming_scores(
+                        cluster_centers,
+                        distance_metric,
+                        p=p,
+                    )
+                )
+            elif selection_method == "topsis":
+                cluster_center_scores = QuickAdapterRegressorV3._topsis_scores(
+                    cluster_centers,
+                    distance_metric,
+                    p=p,
+                )
+            else:
+                raise ValueError(
+                    f"Invalid selection_method {selection_method!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                )
+            ordered_cluster_indices = np.argsort(cluster_center_scores)
 
             best_cluster_indices = None
             for cluster_index in ordered_cluster_indices:
@@ -2108,7 +2082,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 best_trial_index, best_trial_distance = (
                     self._select_best_trial_from_cluster(
                         normalized_matrix,
-                        selection_method,
+                        trial_selection_method,
                         best_cluster_indices,
                         ideal_point_2d,
                         distance_metric,
@@ -2132,14 +2106,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             cluster_labels = kmedoids.fit_predict(normalized_matrix)
             medoid_indices = kmedoids.medoid_indices_
 
-            medoid_distances_to_ideal = sp.spatial.distance.cdist(
-                normalized_matrix[medoid_indices],
-                ideal_point_2d,
-                metric=distance_metric,
-                **cdist_kwargs,
-            ).flatten()
-            best_medoid_distance_position = np.nanargmin(medoid_distances_to_ideal)
-            best_medoid_index = medoid_indices[best_medoid_distance_position]
+            if selection_method == "compromise_programming":
+                medoid_scores = QuickAdapterRegressorV3._compromise_programming_scores(
+                    normalized_matrix[medoid_indices],
+                    distance_metric,
+                    p=p,
+                )
+            elif selection_method == "topsis":
+                medoid_scores = QuickAdapterRegressorV3._topsis_scores(
+                    normalized_matrix[medoid_indices],
+                    distance_metric,
+                    p=p,
+                )
+            else:
+                raise ValueError(
+                    f"Invalid selection_method {selection_method!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                )
+            best_medoid_score_position = np.nanargmin(medoid_scores)
+            best_medoid_index = medoid_indices[best_medoid_score_position]
             cluster_index = cluster_labels[best_medoid_index]
             best_cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
 
@@ -2148,16 +2133,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 best_trial_index, best_trial_distance = (
                     self._select_best_trial_from_cluster(
                         normalized_matrix,
-                        selection_method,
+                        trial_selection_method,
                         best_cluster_indices,
                         ideal_point_2d,
                         distance_metric,
                         weights=weights,
                         p=p,
-                        known_medoid_index=best_medoid_index,
-                        known_medoid_distance=medoid_distances_to_ideal[
-                            best_medoid_distance_position
-                        ],
                     )
                 )
                 trial_distances[best_trial_index] = best_trial_distance
@@ -2433,6 +2414,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if category == "cluster":
             cluster_metric = label_config["distance_metric"]
             cluster_selection_method = label_config["selection_method"]
+            trial_selection_method = label_config["trial_selection_method"]
 
             QuickAdapterRegressorV3._validate_metric_supported(
                 cluster_metric, category="cluster"
@@ -2447,6 +2429,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 method,
                 distance_metric=cluster_metric,
                 selection_method=cluster_selection_method,
+                trial_selection_method=trial_selection_method,
                 weights=weights,
                 p=p,
             )
