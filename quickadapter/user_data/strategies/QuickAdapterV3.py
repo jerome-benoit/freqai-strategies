@@ -106,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.8.5"
+        return "3.9.0"
 
     timeframe = "5m"
 
