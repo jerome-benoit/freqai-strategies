@@ -2748,12 +2748,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_config = self._resolve_label_method_config(
                 self.ft_params.get("label_method", self.LABEL_METHOD_DEFAULT)
             )
-            metric_log_msg = (
-                f"{QuickAdapterRegressorV3._format_label_method_config(label_config)}"
-            )
+            metric_log_msg = f" ({QuickAdapterRegressorV3._format_label_method_config(label_config)})"
         logger.info(
             f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed"
-            f" ({metric_log_msg}) ({time_spent:.2f} secs)"
+            f"{metric_log_msg} ({time_spent:.2f} secs)"
         )
         max_study_results_key_length = (
             max(len(str(key)) for key in study_best_results.keys())
