@@ -284,7 +284,7 @@ def zero_phase_filter(
 def smooth_extrema(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
-    window: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
+    window_candles: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
     beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
     polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
     mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
@@ -293,14 +293,15 @@ def smooth_extrema(
     n = len(series)
     if n == 0:
         return series
-    if window < 3:
-        window = 3
-    if n < window:
+
+    if window_candles < 3:
+        window_candles = 3
+    if n < window_candles:
         return series
     if beta <= 0 or not np.isfinite(beta):
         beta = 1.0
 
-    odd_window = get_odd_window(window)
+    odd_window = get_odd_window(window_candles)
     std = get_gaussian_std(odd_window)
 
     if method == SMOOTHING_METHODS[0]:  # "gaussian"
