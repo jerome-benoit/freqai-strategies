@@ -410,10 +410,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }
 
         if category == "distance":
-            config["distance_metric"] = self.ft_params.get(
+            distance_metric = self.ft_params.get(
                 "label_distance_metric",
                 QuickAdapterRegressorV3.LABEL_DISTANCE_METRIC_DEFAULT,
             )
+            if distance_metric not in QuickAdapterRegressorV3._distance_metrics_set():
+                raise ValueError(
+                    f"Invalid label_distance_metric {distance_metric!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+                )
+            config["distance_metric"] = distance_metric
         elif category == "cluster":
             config["distance_metric"] = self.ft_params.get(
                 "label_cluster_metric",
@@ -486,12 +492,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
                 config["n_neighbors"] = n_neighbors
 
-                config["aggregation_param"] = self.ft_params.get(
+                aggregation_param = self.ft_params.get(
                     "label_density_aggregation_param",
                     QuickAdapterRegressorV3._get_label_density_aggregation_param_default(
                         aggregation
                     ),
                 )
+
+                if aggregation_param is not None:
+                    if aggregation == "quantile":
+                        QuickAdapterRegressorV3._validate_quantile_q(
+                            aggregation_param,
+                            ctx="label_density_aggregation_param",
+                        )
+                    elif aggregation == "power_mean":
+                        if not np.isfinite(aggregation_param):
+                            raise ValueError(
+                                f"Invalid label_density_aggregation_param p {aggregation_param!r}: must be finite"
+                            )
+
+                config["aggregation_param"] = aggregation_param
 
         return config
 
