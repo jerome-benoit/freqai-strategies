@@ -421,10 +421,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             config["distance_metric"] = distance_metric
         elif category == "cluster":
-            config["distance_metric"] = self.ft_params.get(
+            distance_metric = self.ft_params.get(
                 "label_cluster_metric",
                 QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
             )
+            if distance_metric not in QuickAdapterRegressorV3._distance_metrics_set():
+                raise ValueError(
+                    f"Invalid label_cluster_metric {distance_metric!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+                )
+            config["distance_metric"] = distance_metric
             selection_method = self.ft_params.get(
                 "label_cluster_selection_method",
                 QuickAdapterRegressorV3.LABEL_CLUSTER_SELECTION_METHOD_DEFAULT,
@@ -1922,24 +1928,117 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if n_samples == 1:
             return np.array([0.5])
 
+        if weights is None:
+            weights = np.ones(n_objectives)
+
         ideal_point = np.ones((1, n_objectives))
         anti_ideal_point = np.zeros((1, n_objectives))
 
-        cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-            distance_metric=distance_metric,
-            weights=weights,
-            p=p,
-            validate_p=True,
-            check_unsupported_metrics=False,
-            validation_context="topsis minkowski p",
-        )
+        if distance_metric in QuickAdapterRegressorV3._scipy_metrics_set():
+            cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+                distance_metric=distance_metric,
+                weights=weights,
+                p=p,
+                validate_p=True,
+                check_unsupported_metrics=True,
+                validation_context="topsis minkowski p",
+            )
 
-        dist_to_ideal = sp.spatial.distance.cdist(
-            normalized_matrix, ideal_point, metric=distance_metric, **cdist_kwargs
-        ).flatten()
-        dist_to_anti_ideal = sp.spatial.distance.cdist(
-            normalized_matrix, anti_ideal_point, metric=distance_metric, **cdist_kwargs
-        ).flatten()
+            dist_to_ideal = sp.spatial.distance.cdist(
+                normalized_matrix, ideal_point, metric=distance_metric, **cdist_kwargs
+            ).flatten()
+            dist_to_anti_ideal = sp.spatial.distance.cdist(
+                normalized_matrix,
+                anti_ideal_point,
+                metric=distance_metric,
+                **cdist_kwargs,
+            ).flatten()
+        elif distance_metric in {
+            QuickAdapterRegressorV3._DISTANCE_METRICS[8],  # "hellinger"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[9],  # "shellinger"
+        }:
+            np_sqrt_normalized_matrix = np.sqrt(normalized_matrix)
+            if (
+                distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[9]
+            ):  # "shellinger"
+                variances = np.nanvar(np_sqrt_normalized_matrix, axis=0, ddof=1)
+                if np.any(variances <= 0):
+                    raise ValueError(
+                        "Invalid data for shellinger metric: requires non-zero variance for all objectives"
+                    )
+                weights = 1 / variances
+            dist_to_ideal = (
+                np.sqrt(
+                    np.nansum(
+                        weights
+                        * (np_sqrt_normalized_matrix - np.sqrt(ideal_point)) ** 2,
+                        axis=1,
+                    )
+                )
+                / QuickAdapterRegressorV3._SQRT_2
+            )
+            dist_to_anti_ideal = (
+                np.sqrt(
+                    np.nansum(
+                        weights
+                        * (np_sqrt_normalized_matrix - np.sqrt(anti_ideal_point)) ** 2,
+                        axis=1,
+                    )
+                )
+                / QuickAdapterRegressorV3._SQRT_2
+            )
+        elif distance_metric in {
+            QuickAdapterRegressorV3._DISTANCE_METRICS[10],  # "harmonic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[11],  # "geometric_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[12],  # "arithmetic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[13],  # "quadratic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[14],  # "cubic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[15],  # "power_mean"
+        }:
+            if (
+                distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[15]
+            ):  # "power_mean"
+                power = p if p is not None and np.isfinite(p) else 1.0
+            else:
+                power_map: dict[str, float] = {
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        10
+                    ]: -1.0,  # "harmonic_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        11
+                    ]: 0.0,  # "geometric_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        12
+                    ]: 1.0,  # "arithmetic_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        13
+                    ]: 2.0,  # "quadratic_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[14]: 3.0,  # "cubic_mean"
+                }
+                power = power_map[distance_metric]
+            ideal_pmean = sp.stats.pmean(
+                ideal_point.flatten(), p=power, weights=weights
+            )
+            anti_ideal_pmean = sp.stats.pmean(
+                anti_ideal_point.flatten(), p=power, weights=weights
+            )
+            matrix_pmean = sp.stats.pmean(
+                normalized_matrix, p=power, weights=weights, axis=1
+            )
+            dist_to_ideal = np.abs(ideal_pmean - matrix_pmean)
+            dist_to_anti_ideal = np.abs(matrix_pmean - anti_ideal_pmean)
+        elif (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
+        ):  # "weighted_sum"
+            dist_to_ideal = np.abs((ideal_point - normalized_matrix) @ weights)
+            dist_to_anti_ideal = np.abs(
+                (normalized_matrix - anti_ideal_point) @ weights
+            )
+        else:
+            raise ValueError(
+                f"Invalid distance_metric {distance_metric!r} for topsis. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+            )
 
         denominator = dist_to_ideal + dist_to_anti_ideal
         zero_mask = np.isclose(denominator, 0.0)
