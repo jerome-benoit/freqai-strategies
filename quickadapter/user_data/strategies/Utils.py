@@ -55,7 +55,7 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "hybrid",
 )
 
-HybridWeightSource = Literal[
+WeightSource = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
     "volume_rate",
@@ -63,7 +63,7 @@ HybridWeightSource = Literal[
     "efficiency_ratio",
     "volume_weighted_efficiency_ratio",
 ]
-HYBRID_WEIGHT_SOURCES: Final[tuple[HybridWeightSource, ...]] = (
+WEIGHT_SOURCES: Final[tuple[WeightSource, ...]] = (
     "amplitude",
     "amplitude_threshold_ratio",
     "volume_rate",
@@ -72,8 +72,8 @@ HYBRID_WEIGHT_SOURCES: Final[tuple[HybridWeightSource, ...]] = (
     "volume_weighted_efficiency_ratio",
 )
 
-HybridAggregation = Literal["weighted_sum", "geometric_mean"]
-HYBRID_AGGREGATIONS: Final[tuple[HybridAggregation, ...]] = (
+WeightAggregation = Literal["weighted_sum", "geometric_mean"]
+WEIGHT_AGGREGATIONS: Final[tuple[WeightAggregation, ...]] = (
     "weighted_sum",
     "geometric_mean",
 )
@@ -159,8 +159,8 @@ DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
-    "source_weights": {s: 1.0 for s in HYBRID_WEIGHT_SOURCES},
-    "aggregation": HYBRID_AGGREGATIONS[0],  # "weighted_sum"
+    "source_weights": {s: 1.0 for s in WEIGHT_SOURCES},
+    "aggregation": WEIGHT_AGGREGATIONS[0],  # "weighted_sum"
     "aggregation_normalization": NORMALIZATION_TYPES[6],  # "none"
     # Phase 1: Standardization
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
@@ -703,7 +703,7 @@ def calculate_hybrid_extrema_weights(
     efficiency_ratios: list[float],
     volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
-    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "aggregation_normalization"
     ],
@@ -731,7 +731,7 @@ def calculate_hybrid_extrema_weights(
     if not isinstance(source_weights, dict):
         source_weights = {}
 
-    weights_array_by_source: dict[HybridWeightSource, NDArray[np.floating]] = {
+    weights_array_by_source: dict[WeightSource, NDArray[np.floating]] = {
         "amplitude": np.asarray(amplitudes, dtype=float),
         "amplitude_threshold_ratio": np.asarray(
             amplitude_threshold_ratios, dtype=float
@@ -744,9 +744,9 @@ def calculate_hybrid_extrema_weights(
         ),
     }
 
-    enabled_sources: list[HybridWeightSource] = []
+    enabled_sources: list[WeightSource] = []
     source_weights_list: list[float] = []
-    for source in HYBRID_WEIGHT_SOURCES:
+    for source in WEIGHT_SOURCES:
         source_weight = source_weights.get(source)
         if source_weight is None:
             continue
@@ -760,7 +760,7 @@ def calculate_hybrid_extrema_weights(
         source_weights_list.append(float(source_weight))
 
     if len(enabled_sources) == 0:
-        enabled_sources = list(HYBRID_WEIGHT_SOURCES)
+        enabled_sources = list(WEIGHT_SOURCES)
         source_weights_list = [1.0 for _ in enabled_sources]
 
     if any(weights_array_by_source[s].size != n for s in enabled_sources):
@@ -793,13 +793,13 @@ def calculate_hybrid_extrema_weights(
         )
         normalized_source_weights_array.append(normalized_source_weights)
 
-    if aggregation == HYBRID_AGGREGATIONS[0]:  # "weighted_sum"
+    if aggregation == WEIGHT_AGGREGATIONS[0]:  # "weighted_sum"
         combined_source_weights_array: NDArray[np.floating] = np.average(
             np.vstack(normalized_source_weights_array),
             axis=0,
             weights=source_weights_array,
         )
-    elif aggregation == HYBRID_AGGREGATIONS[1]:  # "geometric_mean"
+    elif aggregation == WEIGHT_AGGREGATIONS[1]:  # "geometric_mean"
         combined_source_weights_array: NDArray[np.floating] = gmean(
             np.vstack([np.abs(values) for values in normalized_source_weights_array]),
             axis=0,
@@ -808,7 +808,7 @@ def calculate_hybrid_extrema_weights(
     else:
         raise ValueError(
             f"Invalid hybrid aggregation method {aggregation!r}. "
-            f"Supported: {', '.join(HYBRID_AGGREGATIONS)}"
+            f"Supported: {', '.join(WEIGHT_AGGREGATIONS)}"
         )
 
     if aggregation_normalization != NORMALIZATION_TYPES[6]:  # "none"
@@ -884,7 +884,7 @@ def compute_extrema_weights(
     volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "aggregation_normalization"
     ],
@@ -1022,7 +1022,7 @@ def get_weighted_extrema(
     volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "aggregation_normalization"
     ],
