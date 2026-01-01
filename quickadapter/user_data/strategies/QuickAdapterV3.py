@@ -31,8 +31,6 @@ from Utils import (
     DEFAULTS_EXTREMA_SMOOTHING,
     DEFAULTS_EXTREMA_WEIGHTING,
     EXTREMA_COLUMN,
-    HYBRID_AGGREGATIONS,
-    HYBRID_WEIGHT_SOURCES,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
     NORMALIZATION_TYPES,
@@ -41,6 +39,8 @@ from Utils import (
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
     TRADE_PRICE_TARGETS,
+    WEIGHT_AGGREGATIONS,
+    WEIGHT_SOURCES,
     WEIGHT_STRATEGIES,
     alligator,
     bottom_change_percent,
@@ -106,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     def version(self) -> str:
-        return "3.8.5"
+        return "3.9.0"
 
     timeframe = "5m"
 
@@ -381,7 +381,7 @@ class QuickAdapterV3(IStrategy):
 
         if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
             logger.warning(
-                f"Invalid reversal_confirmation lookback_period_candles {lookback_period_candles!r}: must be >= 0. Using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
+                f"Invalid reversal_confirmation lookback_period_candles {lookback_period_candles!r}: must be >= 0, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
             )
             lookback_period_candles = QuickAdapterV3.default_reversal_confirmation[
                 "lookback_period_candles"
@@ -391,7 +391,7 @@ class QuickAdapterV3(IStrategy):
             0.0 < decay_fraction <= 1.0
         ):
             logger.warning(
-                f"Invalid reversal_confirmation decay_fraction {decay_fraction!r}: must be in range (0, 1]. Using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
+                f"Invalid reversal_confirmation decay_fraction {decay_fraction!r}: must be in range (0, 1], using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
             )
             decay_fraction = QuickAdapterV3.default_reversal_confirmation[
                 "decay_fraction"
@@ -429,14 +429,14 @@ class QuickAdapterV3(IStrategy):
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
-                "FreqAI strategy requires StaticPairList method defined in pairlists configuration and 'pair_whitelist' defined in exchange section configuration"
+                "Invalid configuration: FreqAI strategy requires StaticPairList method in pairlists and 'pair_whitelist' in exchange section"
             )
         if (
             not isinstance(self.freqai_info.get("identifier"), str)
             or not self.freqai_info.get("identifier", "").strip()
         ):
             raise ValueError(
-                "FreqAI strategy requires 'identifier' defined in the freqai section configuration"
+                "Invalid freqai configuration: 'identifier' must be defined in freqai section"
             )
         self.models_full_path = Path(
             self.config.get("user_data_dir")
@@ -805,80 +805,78 @@ class QuickAdapterV3(IStrategy):
         extrema_weighting: dict[str, Any],
     ) -> dict[str, Any]:
         # Strategy
-        weighting_strategy = str(
+        strategy = str(
             extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
         )
-        if weighting_strategy not in set(WEIGHT_STRATEGIES):
+        if strategy not in set(WEIGHT_STRATEGIES):
             logger.warning(
-                f"Invalid extrema_weighting strategy {weighting_strategy!r}. Supported: {', '.join(WEIGHT_STRATEGIES)}. Using default {WEIGHT_STRATEGIES[0]!r}"
+                f"Invalid extrema_weighting strategy {strategy!r}, supported: {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
             )
-            weighting_strategy = WEIGHT_STRATEGIES[0]
+            strategy = WEIGHT_STRATEGIES[0]
 
         # Phase 1: Standardization
-        weighting_standardization = str(
+        standardization = str(
             extrema_weighting.get(
                 "standardization", DEFAULTS_EXTREMA_WEIGHTING["standardization"]
             )
         )
-        if weighting_standardization not in set(STANDARDIZATION_TYPES):
+        if standardization not in set(STANDARDIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting standardization {weighting_standardization!r}. Supported: {', '.join(STANDARDIZATION_TYPES)}. Using default {STANDARDIZATION_TYPES[0]!r}"
+                f"Invalid extrema_weighting standardization {standardization!r}, supported: {', '.join(STANDARDIZATION_TYPES)}, using default {STANDARDIZATION_TYPES[0]!r}"
             )
-            weighting_standardization = STANDARDIZATION_TYPES[0]
+            standardization = STANDARDIZATION_TYPES[0]
 
-        weighting_robust_quantiles = extrema_weighting.get(
+        robust_quantiles = extrema_weighting.get(
             "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
         )
         if (
-            not isinstance(weighting_robust_quantiles, (list, tuple))
-            or len(weighting_robust_quantiles) != 2
+            not isinstance(robust_quantiles, (list, tuple))
+            or len(robust_quantiles) != 2
             or not all(
                 isinstance(q, (int, float)) and np.isfinite(q) and 0 <= q <= 1
-                for q in weighting_robust_quantiles
+                for q in robust_quantiles
             )
-            or weighting_robust_quantiles[0] >= weighting_robust_quantiles[1]
+            or robust_quantiles[0] >= robust_quantiles[1]
         ):
             logger.warning(
-                f"Invalid extrema_weighting robust_quantiles {weighting_robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1. Using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
+                f"Invalid extrema_weighting robust_quantiles {robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
             )
-            weighting_robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
+            robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
         else:
-            weighting_robust_quantiles = (
-                float(weighting_robust_quantiles[0]),
-                float(weighting_robust_quantiles[1]),
+            robust_quantiles = (
+                float(robust_quantiles[0]),
+                float(robust_quantiles[1]),
             )
 
-        weighting_mmad_scaling_factor = extrema_weighting.get(
+        mmad_scaling_factor = extrema_weighting.get(
             "mmad_scaling_factor", DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
         )
         if (
-            not isinstance(weighting_mmad_scaling_factor, (int, float))
-            or not np.isfinite(weighting_mmad_scaling_factor)
-            or weighting_mmad_scaling_factor <= 0
+            not isinstance(mmad_scaling_factor, (int, float))
+            or not np.isfinite(mmad_scaling_factor)
+            or mmad_scaling_factor <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting mmad_scaling_factor {weighting_mmad_scaling_factor!r}: must be a finite number > 0. Using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
+                f"Invalid extrema_weighting mmad_scaling_factor {mmad_scaling_factor!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
             )
-            weighting_mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING[
-                "mmad_scaling_factor"
-            ]
+            mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
 
         # Phase 2: Normalization
-        weighting_normalization = str(
+        normalization = str(
             extrema_weighting.get(
                 "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
             )
         )
-        if weighting_normalization not in set(NORMALIZATION_TYPES):
+        if normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting normalization {weighting_normalization!r}. Supported: {', '.join(NORMALIZATION_TYPES)}. Using default {NORMALIZATION_TYPES[0]!r}"
+                f"Invalid extrema_weighting normalization {normalization!r}, supported: {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[0]!r}"
             )
-            weighting_normalization = NORMALIZATION_TYPES[0]
+            normalization = NORMALIZATION_TYPES[0]
 
         if (
-            weighting_strategy != WEIGHT_STRATEGIES[0]  # "none"
-            and weighting_standardization != STANDARDIZATION_TYPES[0]  # "none"
-            and weighting_normalization
+            strategy != WEIGHT_STRATEGIES[0]  # "none"
+            and standardization != STANDARDIZATION_TYPES[0]  # "none"
+            and normalization
             in {
                 NORMALIZATION_TYPES[3],  # "l1"
                 NORMALIZATION_TYPES[4],  # "l2"
@@ -887,99 +885,94 @@ class QuickAdapterV3(IStrategy):
         ):
             raise ValueError(
                 f"Invalid extrema_weighting configuration: "
-                f"standardization='{weighting_standardization}' with normalization='{weighting_normalization}' "
+                f"standardization={standardization!r} with normalization={normalization!r} "
                 "can produce negative weights and flip ternary extrema labels. "
-                f"Use normalization in {{'{NORMALIZATION_TYPES[0]}','{NORMALIZATION_TYPES[1]}','{NORMALIZATION_TYPES[2]}','{NORMALIZATION_TYPES[5]}'}} "
-                f"or set standardization='{STANDARDIZATION_TYPES[0]}'."
+                f"Use normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r},{NORMALIZATION_TYPES[2]!r},{NORMALIZATION_TYPES[5]!r}}} "
+                f"or set standardization={STANDARDIZATION_TYPES[0]!r}"
             )
 
-        weighting_minmax_range = extrema_weighting.get(
+        minmax_range = extrema_weighting.get(
             "minmax_range", DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
         )
         if (
-            not isinstance(weighting_minmax_range, (list, tuple))
-            or len(weighting_minmax_range) != 2
+            not isinstance(minmax_range, (list, tuple))
+            or len(minmax_range) != 2
             or not all(
-                isinstance(x, (int, float)) and np.isfinite(x)
-                for x in weighting_minmax_range
+                isinstance(x, (int, float)) and np.isfinite(x) for x in minmax_range
             )
-            or weighting_minmax_range[0] >= weighting_minmax_range[1]
+            or minmax_range[0] >= minmax_range[1]
         ):
             logger.warning(
-                f"Invalid extrema_weighting minmax_range {weighting_minmax_range!r}: must be (min, max) with min < max. Using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
+                f"Invalid extrema_weighting minmax_range {minmax_range!r}: must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
             )
-            weighting_minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
+            minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
         else:
-            weighting_minmax_range = (
-                float(weighting_minmax_range[0]),
-                float(weighting_minmax_range[1]),
+            minmax_range = (
+                float(minmax_range[0]),
+                float(minmax_range[1]),
             )
 
-        weighting_sigmoid_scale = extrema_weighting.get(
+        sigmoid_scale = extrema_weighting.get(
             "sigmoid_scale", DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
         )
         if (
-            not isinstance(weighting_sigmoid_scale, (int, float))
-            or not np.isfinite(weighting_sigmoid_scale)
-            or weighting_sigmoid_scale <= 0
+            not isinstance(sigmoid_scale, (int, float))
+            or not np.isfinite(sigmoid_scale)
+            or sigmoid_scale <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting sigmoid_scale {weighting_sigmoid_scale!r}: must be a finite number > 0. Using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
+                f"Invalid extrema_weighting sigmoid_scale {sigmoid_scale!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
             )
-            weighting_sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
+            sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
 
-        weighting_softmax_temperature = extrema_weighting.get(
+        softmax_temperature = extrema_weighting.get(
             "softmax_temperature", DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
         )
         if (
-            not isinstance(weighting_softmax_temperature, (int, float))
-            or not np.isfinite(weighting_softmax_temperature)
-            or weighting_softmax_temperature <= 0
+            not isinstance(softmax_temperature, (int, float))
+            or not np.isfinite(softmax_temperature)
+            or softmax_temperature <= 0
         ):
             logger.warning(
-                f"Invalid extrema_weighting softmax_temperature {weighting_softmax_temperature!r}: must be a finite number > 0. Using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
+                f"Invalid extrema_weighting softmax_temperature {softmax_temperature!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
             )
-            weighting_softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING[
-                "softmax_temperature"
-            ]
+            softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
 
-        weighting_rank_method = str(
+        rank_method = str(
             extrema_weighting.get(
                 "rank_method", DEFAULTS_EXTREMA_WEIGHTING["rank_method"]
             )
         )
-        if weighting_rank_method not in set(RANK_METHODS):
+        if rank_method not in set(RANK_METHODS):
             logger.warning(
-                f"Invalid extrema_weighting rank_method {weighting_rank_method!r}. Supported: {', '.join(RANK_METHODS)}. Using default {RANK_METHODS[0]!r}"
+                f"Invalid extrema_weighting rank_method {rank_method!r}, supported: {', '.join(RANK_METHODS)}, using default {RANK_METHODS[0]!r}"
             )
-            weighting_rank_method = RANK_METHODS[0]
+            rank_method = RANK_METHODS[0]
 
         # Phase 3: Post-processing
-        weighting_gamma = extrema_weighting.get(
-            "gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"]
-        )
+        gamma = extrema_weighting.get("gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"])
         if (
-            not isinstance(weighting_gamma, (int, float))
-            or not np.isfinite(weighting_gamma)
-            or not (0 < weighting_gamma <= 10.0)
+            not isinstance(gamma, (int, float))
+            or not np.isfinite(gamma)
+            or not (0 < gamma <= 10.0)
         ):
             logger.warning(
-                f"Invalid extrema_weighting gamma {weighting_gamma!r}: must be in range (0, 10]. Using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
+                f"Invalid extrema_weighting gamma {gamma!r}: must be in range (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
             )
-            weighting_gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
+            gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
 
-        weighting_source_weights = extrema_weighting.get(
+        source_weights = extrema_weighting.get(
             "source_weights", DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
         )
-        if not isinstance(weighting_source_weights, dict):
+        if not isinstance(source_weights, dict):
             logger.warning(
-                f"Invalid extrema_weighting source_weights {weighting_source_weights!r}: must be a dict of source name to weight. Using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
+                f"Invalid extrema_weighting source_weights {source_weights!r}: must be a dict of source name to weight, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
             )
-            weighting_source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
+            source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
         else:
             sanitized_source_weights: dict[str, float] = {}
-            for source, weight in weighting_source_weights.items():
-                if source not in set(HYBRID_WEIGHT_SOURCES):
+            for source, weight in source_weights.items():
+                if source not in set(WEIGHT_SOURCES):
                     continue
                 if (
                     not isinstance(weight, (int, float))
@@ -990,65 +983,63 @@ class QuickAdapterV3(IStrategy):
                 sanitized_source_weights[str(source)] = float(weight)
             if not sanitized_source_weights:
                 logger.warning(
-                    f"Invalid extrema_weighting source_weights {weighting_source_weights!r}: empty after sanitization. Using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
+                    f"Invalid extrema_weighting source_weights {source_weights!r}: empty after sanitization, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
                 )
-                weighting_source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
+                source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
             else:
-                weighting_source_weights = sanitized_source_weights
-        weighting_aggregation = str(
+                source_weights = sanitized_source_weights
+        aggregation = str(
             extrema_weighting.get(
                 "aggregation",
                 DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
             )
         )
-        if weighting_aggregation not in set(HYBRID_AGGREGATIONS):
+        if aggregation not in set(WEIGHT_AGGREGATIONS):
             logger.warning(
-                f"Invalid extrema_weighting aggregation {weighting_aggregation!r}. Supported: {', '.join(HYBRID_AGGREGATIONS)}. Using default {HYBRID_AGGREGATIONS[0]!r}"
+                f"Invalid extrema_weighting aggregation {aggregation!r}, supported: {', '.join(WEIGHT_AGGREGATIONS)}, using default {WEIGHT_AGGREGATIONS[0]!r}"
             )
-            weighting_aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
-        weighting_aggregation_normalization = str(
+            aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
+        aggregation_normalization = str(
             extrema_weighting.get(
                 "aggregation_normalization",
                 DEFAULTS_EXTREMA_WEIGHTING["aggregation_normalization"],
             )
         )
-        if weighting_aggregation_normalization not in set(NORMALIZATION_TYPES):
+        if aggregation_normalization not in set(NORMALIZATION_TYPES):
             logger.warning(
-                f"Invalid extrema_weighting aggregation_normalization {weighting_aggregation_normalization!r}. Supported: {', '.join(NORMALIZATION_TYPES)}. Using default {NORMALIZATION_TYPES[6]!r}"
+                f"Invalid extrema_weighting aggregation_normalization {aggregation_normalization!r}, supported: {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[6]!r}"
             )
-            weighting_aggregation_normalization = DEFAULTS_EXTREMA_WEIGHTING[
+            aggregation_normalization = DEFAULTS_EXTREMA_WEIGHTING[
                 "aggregation_normalization"
             ]
 
-        if weighting_aggregation == HYBRID_AGGREGATIONS[
-            1
-        ] and weighting_normalization in {
+        if aggregation == WEIGHT_AGGREGATIONS[1] and normalization in {
             NORMALIZATION_TYPES[0],  # "minmax"
             NORMALIZATION_TYPES[5],  # "rank"
         }:
             logger.warning(
-                f"extrema_weighting aggregation='{weighting_aggregation}' with normalization='{weighting_normalization}' "
+                f"extrema_weighting aggregation='{aggregation}' with normalization='{normalization}' "
                 "can produce zero weights (gmean collapses to 0 when any source has min value). "
-                f"Consider using normalization='{NORMALIZATION_TYPES[1]}' (sigmoid) or aggregation='{HYBRID_AGGREGATIONS[0]}' (weighted_sum)."
+                f"Consider using normalization='{NORMALIZATION_TYPES[1]}' (sigmoid) or aggregation='{WEIGHT_AGGREGATIONS[0]}' (weighted_sum)."
             )
 
         return {
-            "strategy": weighting_strategy,
-            "source_weights": weighting_source_weights,
-            "aggregation": weighting_aggregation,
-            "aggregation_normalization": weighting_aggregation_normalization,
+            "strategy": strategy,
+            "source_weights": source_weights,
+            "aggregation": aggregation,
+            "aggregation_normalization": aggregation_normalization,
             # Phase 1: Standardization
-            "standardization": weighting_standardization,
-            "robust_quantiles": weighting_robust_quantiles,
-            "mmad_scaling_factor": weighting_mmad_scaling_factor,
+            "standardization": standardization,
+            "robust_quantiles": robust_quantiles,
+            "mmad_scaling_factor": mmad_scaling_factor,
             # Phase 2: Normalization
-            "normalization": weighting_normalization,
-            "minmax_range": weighting_minmax_range,
-            "sigmoid_scale": weighting_sigmoid_scale,
-            "softmax_temperature": weighting_softmax_temperature,
-            "rank_method": weighting_rank_method,
+            "normalization": normalization,
+            "minmax_range": minmax_range,
+            "sigmoid_scale": sigmoid_scale,
+            "softmax_temperature": softmax_temperature,
+            "rank_method": rank_method,
             # Phase 3: Post-processing
-            "gamma": weighting_gamma,
+            "gamma": gamma,
         }
 
     @staticmethod
@@ -1060,7 +1051,7 @@ class QuickAdapterV3(IStrategy):
         )
         if smoothing_method not in set(SMOOTHING_METHODS):
             logger.warning(
-                f"Invalid extrema_smoothing method {smoothing_method!r}. Supported: {', '.join(SMOOTHING_METHODS)}. Using default {SMOOTHING_METHODS[0]!r}"
+                f"Invalid extrema_smoothing method {smoothing_method!r}, supported: {', '.join(SMOOTHING_METHODS)}, using default {SMOOTHING_METHODS[0]!r}"
             )
             smoothing_method = SMOOTHING_METHODS[0]
 
@@ -1078,7 +1069,7 @@ class QuickAdapterV3(IStrategy):
             or smoothing_window_candles < 3
         ):
             logger.warning(
-                f"Invalid extrema_smoothing window_candles {smoothing_window_candles!r}: must be an integer >= 3. Using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
+                f"Invalid extrema_smoothing window_candles {smoothing_window_candles!r}: must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
             )
             smoothing_window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
 
@@ -1091,7 +1082,7 @@ class QuickAdapterV3(IStrategy):
             or smoothing_beta <= 0
         ):
             logger.warning(
-                f"Invalid extrema_smoothing beta {smoothing_beta!r}: must be a finite number > 0. Using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
+                f"Invalid extrema_smoothing beta {smoothing_beta!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
             )
             smoothing_beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
 
@@ -1100,7 +1091,7 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(smoothing_polyorder, int) or smoothing_polyorder < 1:
             logger.warning(
-                f"Invalid extrema_smoothing polyorder {smoothing_polyorder!r}: must be an integer >= 1. Using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
+                f"Invalid extrema_smoothing polyorder {smoothing_polyorder!r}: must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
             )
             smoothing_polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
 
@@ -1109,7 +1100,7 @@ class QuickAdapterV3(IStrategy):
         )
         if smoothing_mode not in set(SMOOTHING_MODES):
             logger.warning(
-                f"Invalid extrema_smoothing mode {smoothing_mode!r}. Supported: {', '.join(SMOOTHING_MODES)}. Using default {SMOOTHING_MODES[0]!r}"
+                f"Invalid extrema_smoothing mode {smoothing_mode!r}, supported: {', '.join(SMOOTHING_MODES)}, using default {SMOOTHING_MODES[0]!r}"
             )
             smoothing_mode = SMOOTHING_MODES[0]
 
@@ -1122,7 +1113,7 @@ class QuickAdapterV3(IStrategy):
             or not np.isfinite(smoothing_sigma)
         ):
             logger.warning(
-                f"Invalid extrema_smoothing sigma {smoothing_sigma!r}: must be a finite number > 0. Using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
+                f"Invalid extrema_smoothing sigma {smoothing_sigma!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
             )
             smoothing_sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
 
@@ -1150,7 +1141,9 @@ class QuickAdapterV3(IStrategy):
         try:
             return pattern.format(**duration)
         except (KeyError, ValueError) as e:
-            raise ValueError(f"Invalid pattern {pattern!r}: {e!r}")
+            raise ValueError(
+                f"Invalid pattern {pattern!r}: failed to format with {e!r}"
+            )
 
     def set_freqai_targets(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
@@ -1573,7 +1566,7 @@ class QuickAdapterV3(IStrategy):
         callback: Callable[[], None],
     ) -> None:
         if not callable(callback):
-            raise ValueError("Invalid callback: must be callable")
+            raise ValueError(f"Invalid callback {callback!r}: must be callable")
         timestamp = int(current_time.timestamp())
         candle_duration_secs = max(1, int(self._candle_duration_secs))
         candle_start_secs = (timestamp // candle_duration_secs) * candle_duration_secs
@@ -1976,7 +1969,7 @@ class QuickAdapterV3(IStrategy):
             candle_threshold = base_price * (1 - current_deviation)
         else:
             raise ValueError(
-                f"Invalid side {side!r}. Supported: {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
+                f"Invalid side {side!r}, supported: {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
             )
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]

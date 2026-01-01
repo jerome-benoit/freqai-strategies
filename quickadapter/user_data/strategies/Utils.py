@@ -55,7 +55,7 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "hybrid",
 )
 
-HybridWeightSource = Literal[
+WeightSource = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
     "volume_rate",
@@ -63,7 +63,7 @@ HybridWeightSource = Literal[
     "efficiency_ratio",
     "volume_weighted_efficiency_ratio",
 ]
-HYBRID_WEIGHT_SOURCES: Final[tuple[HybridWeightSource, ...]] = (
+WEIGHT_SOURCES: Final[tuple[WeightSource, ...]] = (
     "amplitude",
     "amplitude_threshold_ratio",
     "volume_rate",
@@ -72,8 +72,8 @@ HYBRID_WEIGHT_SOURCES: Final[tuple[HybridWeightSource, ...]] = (
     "volume_weighted_efficiency_ratio",
 )
 
-HybridAggregation = Literal["weighted_sum", "geometric_mean"]
-HYBRID_AGGREGATIONS: Final[tuple[HybridAggregation, ...]] = (
+WeightAggregation = Literal["weighted_sum", "geometric_mean"]
+WEIGHT_AGGREGATIONS: Final[tuple[WeightAggregation, ...]] = (
     "weighted_sum",
     "geometric_mean",
 )
@@ -111,6 +111,11 @@ RANK_METHODS: Final[tuple[RankMethod, ...]] = (
 )
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
+SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
+    "gaussian",
+    "kaiser",
+    "triang",
+)
 SmoothingMethod = Union[
     SmoothingKernel, Literal["smm", "sma", "savgol", "gaussian_filter1d"]
 ]
@@ -154,8 +159,8 @@ DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
-    "source_weights": {s: 1.0 for s in HYBRID_WEIGHT_SOURCES},
-    "aggregation": HYBRID_AGGREGATIONS[0],  # "weighted_sum"
+    "source_weights": {s: 1.0 for s in WEIGHT_SOURCES},
+    "aggregation": WEIGHT_AGGREGATIONS[0],  # "weighted_sum"
     "aggregation_normalization": NORMALIZATION_TYPES[6],  # "none"
     # Phase 1: Standardization
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
@@ -248,7 +253,7 @@ def _calculate_coeffs(
     else:
         raise ValueError(
             f"Invalid window type {win_type!r}. "
-            f"Supported: {', '.join(SMOOTHING_METHODS[:3])}"
+            f"Supported: {', '.join(SMOOTHING_KERNELS)}"
         )
     return coeffs / np.sum(coeffs)
 
@@ -279,7 +284,7 @@ def zero_phase_filter(
 def smooth_extrema(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
-    window: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
+    window_candles: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
     beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
     polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
     mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
@@ -288,14 +293,15 @@ def smooth_extrema(
     n = len(series)
     if n == 0:
         return series
-    if window < 3:
-        window = 3
-    if n < window:
+
+    if window_candles < 3:
+        window_candles = 3
+    if n < window_candles:
         return series
     if beta <= 0 or not np.isfinite(beta):
         beta = 1.0
 
-    odd_window = get_odd_window(window)
+    odd_window = get_odd_window(window_candles)
     std = get_gaussian_std(odd_window)
 
     if method == SMOOTHING_METHODS[0]:  # "gaussian"
@@ -673,7 +679,7 @@ def _build_weights_array(
 
     if len(indices) != weights.size:
         raise ValueError(
-            f"Invalid indices/weights: length mismatch ({len(indices)} indices but {weights.size} weights)"
+            f"Invalid indices/weights: length mismatch, got {len(indices)} indices but {weights.size} weights"
         )
 
     weights_array = np.full(n_extrema, default_weight, dtype=float)
@@ -698,7 +704,7 @@ def calculate_hybrid_extrema_weights(
     efficiency_ratios: list[float],
     volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
-    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "aggregation_normalization"
     ],
@@ -726,7 +732,7 @@ def calculate_hybrid_extrema_weights(
     if not isinstance(source_weights, dict):
         source_weights = {}
 
-    weights_array_by_source: dict[HybridWeightSource, NDArray[np.floating]] = {
+    weights_array_by_source: dict[WeightSource, NDArray[np.floating]] = {
         "amplitude": np.asarray(amplitudes, dtype=float),
         "amplitude_threshold_ratio": np.asarray(
             amplitude_threshold_ratios, dtype=float
@@ -739,9 +745,9 @@ def calculate_hybrid_extrema_weights(
         ),
     }
 
-    enabled_sources: list[HybridWeightSource] = []
+    enabled_sources: list[WeightSource] = []
     source_weights_list: list[float] = []
-    for source in HYBRID_WEIGHT_SOURCES:
+    for source in WEIGHT_SOURCES:
         source_weight = source_weights.get(source)
         if source_weight is None:
             continue
@@ -755,12 +761,12 @@ def calculate_hybrid_extrema_weights(
         source_weights_list.append(float(source_weight))
 
     if len(enabled_sources) == 0:
-        enabled_sources = list(HYBRID_WEIGHT_SOURCES)
+        enabled_sources = list(WEIGHT_SOURCES)
         source_weights_list = [1.0 for _ in enabled_sources]
 
     if any(weights_array_by_source[s].size != n for s in enabled_sources):
         raise ValueError(
-            f"Invalid hybrid weights: length mismatch ({n} indices but inconsistent weights lengths)"
+            f"Invalid hybrid weights: length mismatch, got {n} indices but inconsistent weights lengths"
         )
 
     source_weights_array: NDArray[np.floating] = np.asarray(
@@ -788,13 +794,13 @@ def calculate_hybrid_extrema_weights(
         )
         normalized_source_weights_array.append(normalized_source_weights)
 
-    if aggregation == HYBRID_AGGREGATIONS[0]:  # "weighted_sum"
+    if aggregation == WEIGHT_AGGREGATIONS[0]:  # "weighted_sum"
         combined_source_weights_array: NDArray[np.floating] = np.average(
             np.vstack(normalized_source_weights_array),
             axis=0,
             weights=source_weights_array,
         )
-    elif aggregation == HYBRID_AGGREGATIONS[1]:  # "geometric_mean"
+    elif aggregation == WEIGHT_AGGREGATIONS[1]:  # "geometric_mean"
         combined_source_weights_array: NDArray[np.floating] = gmean(
             np.vstack([np.abs(values) for values in normalized_source_weights_array]),
             axis=0,
@@ -803,7 +809,7 @@ def calculate_hybrid_extrema_weights(
     else:
         raise ValueError(
             f"Invalid hybrid aggregation method {aggregation!r}. "
-            f"Supported: {', '.join(HYBRID_AGGREGATIONS)}"
+            f"Supported: {', '.join(WEIGHT_AGGREGATIONS)}"
         )
 
     if aggregation_normalization != NORMALIZATION_TYPES[6]:  # "none"
@@ -879,7 +885,7 @@ def compute_extrema_weights(
     volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "aggregation_normalization"
     ],
@@ -1017,7 +1023,7 @@ def get_weighted_extrema(
     volume_weighted_efficiency_ratios: list[float],
     source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    aggregation: HybridAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
+    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     aggregation_normalization: NormalizationType = DEFAULTS_EXTREMA_WEIGHTING[
         "aggregation_normalization"
     ],
@@ -1073,7 +1079,7 @@ def get_weighted_extrema(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise ValueError("Invalid fn: must be callable")
+        raise ValueError(f"Invalid fn {type(fn).__name__!r}: must be callable")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -1085,7 +1091,9 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if code is None and hasattr(fn, "__call__"):
         code = getattr(fn.__call__, "__code__", None)
     if code is None:
-        raise ValueError("Invalid fn: unable to retrieve code object")
+        raise ValueError(
+            f"Invalid fn: unable to retrieve code object, got {type(fn).__name__!r}"
+        )
     return hashlib.sha256(code.co_code).hexdigest()
 
 
@@ -2168,7 +2176,7 @@ def get_optuna_study_model_parameters(
         0.0 <= space_fraction <= 1.0
     ):
         raise ValueError(
-            f"Invalid space_fraction {space_fraction!r}: must be in range [0, 1]"
+            f"Invalid space_fraction: must be in range [0, 1], got {space_fraction!r}"
         )
 
     def _build_ranges(
@@ -2576,8 +2584,8 @@ def get_min_max_label_period_candles(
 ) -> tuple[int, int, int]:
     if min_label_period_candles > max_label_period_candles:
         raise ValueError(
-            f"Invalid label_period_candles range: min ({min_label_period_candles}) "
-            f"must be <= max ({max_label_period_candles})"
+            f"Invalid label_period_candles range: min must be <= max, "
+            f"got min={min_label_period_candles!r}, max={max_label_period_candles!r}"
         )
 
     capped_period_candles = max(1, floor_to_step(max_period_candles, candles_step))
@@ -2716,9 +2724,15 @@ def validate_range(
     if not isinstance(default_min, (int, float)) or not isinstance(
         default_max, (int, float)
     ):
-        raise ValueError(f"Invalid {name}: defaults must be numeric")
+        raise ValueError(
+            f"Invalid {name}: defaults must be numeric, "
+            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
+        )
     if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(f"Invalid {name}: defaults ordering must have min < max")
+        raise ValueError(
+            f"Invalid {name}: defaults ordering must have min < max, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
 
     def _validate_component(
         value: float | int | None, name: str, default_value: float | int
@@ -2737,7 +2751,7 @@ def validate_range(
             or (non_negative and value < 0)
         ):
             logger.warning(
-                f"Invalid {name} {value!r}: must be {constraint_str}. Using default {default_value!r}"
+                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
             )
             return default_value
         return value
@@ -2752,7 +2766,9 @@ def validate_range(
     )
     if not ordering_ok:
         logger.warning(
-            f"Invalid {name} ordering ({min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}), must have {min_name} < {max_name}, using defaults ({default_min!r}, {default_max!r})"
+            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
+            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
+            f"using defaults {default_min!r}, {default_max!r}"
         )
         sanitized_min, sanitized_max = default_min, default_max
 
