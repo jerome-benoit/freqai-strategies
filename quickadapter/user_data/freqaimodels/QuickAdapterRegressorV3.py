@@ -494,7 +494,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 if not isinstance(n_neighbors, int) or n_neighbors < 1:
                     raise ValueError(
-                        f"Invalid label_density_n_neighbors: must be positive integer, got {n_neighbors!r}"
+                        f"Invalid label_density_n_neighbors: must be >= 1, got {n_neighbors!r}"
                     )
                 config["n_neighbors"] = n_neighbors
 
