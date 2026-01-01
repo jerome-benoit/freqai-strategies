@@ -325,6 +325,40 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return float(p)
 
     @staticmethod
+    def _prepare_distance_kwargs(
+        distance_metric: str,
+        weights: Optional[NDArray[np.floating]] = None,
+        p: Optional[float] = None,
+        validate_p: bool = True,
+        check_unsupported_metrics: bool = False,
+        validation_context: str = "distance calculation",
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+
+        if weights is not None:
+            if check_unsupported_metrics:
+                if (
+                    distance_metric
+                    not in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
+                ):
+                    kwargs["w"] = weights
+            else:
+                kwargs["w"] = weights
+
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]
+        ):  # "minkowski"
+            if p is not None and np.isfinite(p):
+                if validate_p:
+                    kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
+                        p, ctx=validation_context
+                    )
+                else:
+                    kwargs["p"] = p
+
+        return kwargs
+
+    @staticmethod
     def _validate_quantile_q(q: Optional[float], *, ctx: str) -> Optional[float]:
         if q is None:
             return None
@@ -1639,7 +1673,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _compromise_programming_scores(
         normalized_matrix: NDArray[np.floating],
-        metric: str,
+        distance_metric: str,
         *,
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
@@ -1659,29 +1693,30 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point = np.ones(n_objectives)
         ideal_point_2d = ideal_point.reshape(1, -1)
 
-        if metric in QuickAdapterRegressorV3._scipy_metrics_set():
-            cdist_kwargs: dict[str, Any] = {}
-            if metric not in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
-                cdist_kwargs["w"] = weights
-            if metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]:  # "minkowski"
-                if np.isfinite(p):
-                    cdist_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
-                        p,
-                        ctx="compromise_programming minkowski p",
-                    )
+        if distance_metric in QuickAdapterRegressorV3._scipy_metrics_set():
+            cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+                distance_metric=distance_metric,
+                weights=weights,
+                p=p,
+                validate_p=True,
+                check_unsupported_metrics=True,
+                validation_context="compromise_programming minkowski p",
+            )
             return sp.spatial.distance.cdist(
                 normalized_matrix,
                 ideal_point_2d,
-                metric=metric,
+                metric=distance_metric,
                 **cdist_kwargs,
             ).flatten()
 
-        if metric in {
+        if distance_metric in {
             QuickAdapterRegressorV3._DISTANCE_METRICS[8],  # "hellinger"
             QuickAdapterRegressorV3._DISTANCE_METRICS[9],  # "shellinger"
         }:
             np_sqrt_normalized_matrix = np.sqrt(normalized_matrix)
-            if metric == QuickAdapterRegressorV3._DISTANCE_METRICS[9]:  # "shellinger"
+            if (
+                distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[9]
+            ):  # "shellinger"
                 variances = np.nanvar(np_sqrt_normalized_matrix, axis=0, ddof=1)
                 if np.any(variances <= 0):
                     raise ValueError(
@@ -1699,7 +1734,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 / QuickAdapterRegressorV3._SQRT_2
             )
 
-        if metric in {
+        if distance_metric in {
             QuickAdapterRegressorV3._DISTANCE_METRICS[10],  # "harmonic_mean"
             QuickAdapterRegressorV3._DISTANCE_METRICS[11],  # "geometric_mean"
             QuickAdapterRegressorV3._DISTANCE_METRICS[12],  # "arithmetic_mean"
@@ -1715,24 +1750,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3._DISTANCE_METRICS[14]: 3.0,  # "cubic_mean"
                 QuickAdapterRegressorV3._DISTANCE_METRICS[15]: p,  # "power_mean"
             }
-            power = power_map[metric]
+            power = power_map[distance_metric]
             if not np.isfinite(power):
                 power = 2.0
             return sp.stats.pmean(
                 ideal_point, p=power, weights=weights
             ) - sp.stats.pmean(normalized_matrix, p=power, weights=weights, axis=1)
 
-        if metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]:  # "weighted_sum"
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
+        ):  # "weighted_sum"
             return (ideal_point - normalized_matrix) @ weights
 
         raise ValueError(
-            f"Invalid metric {metric!r} for compromise programming scores, supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+            f"Invalid distance_metric {distance_metric!r} for compromise programming scores, supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
         )
 
     @staticmethod
     def _pairwise_distance_sums(
         matrix: NDArray[np.floating],
-        metric: str,
+        distance_metric: str,
         *,
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
@@ -1749,9 +1786,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if (
             weights is not None
-            and metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
+            and distance_metric
+            in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
         ):
-            raise ValueError(f"Invalid weights: unsupported for metric {metric!r}")
+            raise ValueError(
+                f"Invalid weights: unsupported for distance_metric {distance_metric!r}"
+            )
 
         n = matrix.shape[0]
         if n == 0:
@@ -1759,21 +1799,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if n == 1:
             return np.array([0.0])
 
-        pdist_kwargs = {}
-        if weights is not None:
-            pdist_kwargs["w"] = weights
-        if (
-            metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
-            and p is not None
-            and np.isfinite(p)
-        ):
-            pdist_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
-                p,
-                ctx="pairwise_distance_sums minkowski p",
-            )
+        pdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+            distance_metric=distance_metric,
+            weights=weights,
+            p=p,
+            validate_p=True,
+            check_unsupported_metrics=False,
+            validation_context="pairwise_distance_sums minkowski p",
+        )
 
         pairwise_distances_vector = sp.spatial.distance.pdist(
-            matrix, metric=metric, **pdist_kwargs
+            matrix, metric=distance_metric, **pdist_kwargs
         )
 
         sums = np.zeros(n, dtype=float)
@@ -1787,7 +1823,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _topsis_scores(
         normalized_matrix: NDArray[np.floating],
-        metric: str,
+        distance_metric: str,
         *,
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
@@ -1802,24 +1838,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point = np.ones((1, n_objectives))
         anti_ideal_point = np.zeros((1, n_objectives))
 
-        cdist_kwargs: dict[str, Any] = {}
-        if weights is not None:
-            cdist_kwargs["w"] = weights
-        if (
-            metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
-            and p is not None
-            and np.isfinite(p)
-        ):
-            cdist_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
-                p,
-                ctx="topsis minkowski p",
-            )
+        cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+            distance_metric=distance_metric,
+            weights=weights,
+            p=p,
+            validate_p=True,
+            check_unsupported_metrics=False,
+            validation_context="topsis minkowski p",
+        )
 
         dist_to_ideal = sp.spatial.distance.cdist(
-            normalized_matrix, ideal_point, metric=metric, **cdist_kwargs
+            normalized_matrix, ideal_point, metric=distance_metric, **cdist_kwargs
         ).flatten()
         dist_to_anti_ideal = sp.spatial.distance.cdist(
-            normalized_matrix, anti_ideal_point, metric=metric, **cdist_kwargs
+            normalized_matrix, anti_ideal_point, metric=distance_metric, **cdist_kwargs
         ).flatten()
 
         denominator = dist_to_ideal + dist_to_anti_ideal
@@ -1835,34 +1867,40 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         normalized_matrix: NDArray[np.floating],
         trial_index: int,
         ideal_point_2d: NDArray[np.floating],
-        metric: str,
-        cdist_kwargs: dict[str, Any],
+        distance_metric: str,
+        *,
+        weights: Optional[NDArray[np.floating]] = None,
+        p: Optional[float] = None,
     ) -> float:
-        """Calculate distance from a single trial to the ideal point."""
+        cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+            distance_metric=distance_metric,
+            weights=weights,
+            p=p,
+            validate_p=True,
+            check_unsupported_metrics=False,
+            validation_context="calculate_trial_distance_to_ideal minkowski p",
+        )
+
         return sp.spatial.distance.cdist(
             normalized_matrix[[trial_index]],
             ideal_point_2d,
-            metric=metric,
+            metric=distance_metric,
             **cdist_kwargs,
         ).item()
 
     def _select_best_trial_from_cluster(
         self,
+        normalized_matrix: NDArray[np.floating],
         selection_method: ClusterSelectionMethod,
         best_cluster_indices: NDArray[np.intp],
-        normalized_matrix: NDArray[np.floating],
         ideal_point_2d: NDArray[np.floating],
-        metric: str,
-        cdist_kwargs: dict[str, Any],
-        np_weights: Optional[NDArray[np.floating]],
+        distance_metric: str,
         *,
+        weights: Optional[NDArray[np.floating]] = None,
+        p: Optional[float] = None,
         known_medoid_index: Optional[int] = None,
         known_medoid_distance: Optional[float] = None,
     ) -> tuple[int, float]:
-        local_cdist_kwargs = dict(cdist_kwargs)
-        if np_weights is not None:
-            local_cdist_kwargs["w"] = np_weights
-
         if best_cluster_indices.size == 1:
             best_trial_index = best_cluster_indices[0]
             if known_medoid_distance is not None:
@@ -1871,8 +1909,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 normalized_matrix,
                 best_trial_index,
                 ideal_point_2d,
-                metric,
-                local_cdist_kwargs,
+                distance_metric,
+                weights=weights,
+                p=p,
             )
             return best_trial_index, best_trial_distance
 
@@ -1882,12 +1921,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ):
             if known_medoid_index is not None and known_medoid_distance is not None:
                 return known_medoid_index, known_medoid_distance
-            p = cdist_kwargs.get("p")
             best_medoid_position = np.nanargmin(
                 self._pairwise_distance_sums(
                     normalized_matrix[best_cluster_indices],
-                    metric,
-                    weights=np_weights,
+                    distance_metric,
+                    weights=weights,
                     p=p,
                 )
             )
@@ -1896,8 +1934,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 normalized_matrix,
                 best_trial_index,
                 ideal_point_2d,
-                metric,
-                cdist_kwargs,
+                distance_metric,
+                weights=weights,
+                p=p,
             )
             return best_trial_index, best_trial_distance
 
@@ -1905,11 +1944,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             selection_method
             == QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]  # "min"
         ):
+            cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+                distance_metric=distance_metric,
+                weights=weights,
+                p=p,
+                validate_p=True,
+                check_unsupported_metrics=False,
+                validation_context="select_best_trial_from_cluster minkowski p",
+            )
+
             best_cluster_distances = sp.spatial.distance.cdist(
                 normalized_matrix[best_cluster_indices],
                 ideal_point_2d,
-                metric=metric,
-                **local_cdist_kwargs,
+                metric=distance_metric,
+                **cdist_kwargs,
             ).flatten()
             min_distance_position = np.nanargmin(best_cluster_distances)
             best_trial_index = best_cluster_indices[min_distance_position]
@@ -1921,9 +1969,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ):
             topsis_scores = QuickAdapterRegressorV3._topsis_scores(
                 normalized_matrix[best_cluster_indices],
-                metric,
-                weights=np_weights,
-                p=cdist_kwargs.get("p"),
+                distance_metric,
+                weights=weights,
+                p=p,
             )
             min_score_position = np.nanargmin(topsis_scores)
             best_trial_index = best_cluster_indices[min_score_position]
@@ -1931,8 +1979,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 normalized_matrix,
                 best_trial_index,
                 ideal_point_2d,
-                metric,
-                cdist_kwargs,
+                distance_metric,
+                weights=weights,
+                p=p,
             )
             return best_trial_index, best_trial_distance
 
@@ -1960,14 +2009,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         ideal_point_2d = np.ones((1, n_objectives))
 
-        cdist_kwargs: dict[str, Any] = {}
-        if (
-            distance_metric
-            == QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
-            and p is not None
-            and np.isfinite(p)
-        ):
-            cdist_kwargs["p"] = p
+        cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
+            distance_metric=distance_metric,
+            weights=None,
+            p=p,
+            validate_p=True,
+            check_unsupported_metrics=False,
+            validation_context="select_trial_via_clustering minkowski p",
+        )
 
         n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
 
@@ -2007,13 +2056,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if best_cluster_indices is not None and best_cluster_indices.size > 0:
                 best_trial_index, best_trial_distance = (
                     self._select_best_trial_from_cluster(
+                        normalized_matrix,
                         selection_method,
                         best_cluster_indices,
-                        normalized_matrix,
                         ideal_point_2d,
                         distance_metric,
-                        cdist_kwargs,
-                        weights,
+                        weights=weights,
+                        p=p,
                     )
                 )
                 trial_distances[best_trial_index] = best_trial_distance
@@ -2047,13 +2096,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if best_cluster_indices is not None and best_cluster_indices.size > 0:
                 best_trial_index, best_trial_distance = (
                     self._select_best_trial_from_cluster(
+                        normalized_matrix,
                         selection_method,
                         best_cluster_indices,
-                        normalized_matrix,
                         ideal_point_2d,
                         distance_metric,
-                        cdist_kwargs,
-                        weights,
+                        weights=weights,
+                        p=p,
                         known_medoid_index=best_medoid_index,
                         known_medoid_distance=medoid_distances_to_ideal[
                             best_medoid_distance_position
@@ -2278,12 +2327,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise ValueError(
                 f"Invalid label_weights: must be a list, tuple, or array, got {type(label_weights).__name__}"
             )
-        np_weights = (
+        weights = (
             np.array(label_weights, dtype=float) if label_weights is not None else None
         )
-        np_weights = QuickAdapterRegressorV3._normalize_weights(
-            np_weights, n_objectives
-        )
+        weights = QuickAdapterRegressorV3._normalize_weights(weights, n_objectives)
 
         if n_samples == 1:
             if method in {
@@ -2309,14 +2356,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 return QuickAdapterRegressorV3._compromise_programming_scores(
                     normalized_matrix,
                     distance_metric,
-                    weights=np_weights,
+                    weights=weights,
                     p=p,
                 )
             if method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]:  # "topsis"
                 return QuickAdapterRegressorV3._topsis_scores(
                     normalized_matrix,
                     distance_metric,
-                    weights=np_weights,
+                    weights=weights,
                     p=p,
                 )
 
@@ -2337,7 +2384,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 method,
                 distance_metric=cluster_metric,
                 selection_method=cluster_selection,
-                weights=np_weights,
+                weights=weights,
                 p=p,
             )
 
@@ -2362,7 +2409,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     knn_aggregation,
                     distance_metric=density_metric,
                     n_neighbors=knn_n_neighbors,
-                    weights=np_weights,
+                    weights=weights,
                     p=p,
                     aggregation_param=knn_aggregation_param,
                 )
@@ -2373,7 +2420,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 return QuickAdapterRegressorV3._pairwise_distance_sums(
                     normalized_matrix,
                     density_metric,
-                    weights=np_weights,
+                    weights=weights,
                     p=p,
                 )
 
