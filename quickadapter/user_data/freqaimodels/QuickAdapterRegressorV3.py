@@ -1,11 +1,12 @@
 import copy
+import functools
 import json
 import logging
 import random
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Callable, Final, Literal, Optional, Union
+from typing import Any, Callable, Final, Literal, Optional, Union, cast
 
 import numpy as np
 import optuna
@@ -43,12 +44,17 @@ from Utils import (
 ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
 OptunaNamespace = Literal["hp", "train", "label"]
 OptunaSampler = Literal["tpe", "auto", "nsgaii", "nsgaiii"]
-ClusterSelectionMethod = Literal["medoid", "min", "topsis"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
     "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
 ]
 ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
+DensityAggregation = Literal["power_mean", "quantile", "min", "max"]
+DistanceMethod = Literal["compromise_programming", "topsis"]
+ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
+DensityMethod = Literal["knn", "medoid"]
+SelectionMethod = Union[DistanceMethod, ClusterMethod, DensityMethod]
+ClusterSelectionMethod = Literal["medoid", "min", "topsis"]
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -101,59 +107,64 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_CUSTOM_THRESHOLD_METHODS,
     )
 
-    _CLUSTER_SELECTION_METHODS: Final[tuple[ClusterSelectionMethod, ...]] = (
-        "medoid",
-        "min",
-        "topsis",
-    )
-
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
 
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
-    _OPTUNA_HPO_SAMPLERS: Final[tuple[OptunaSampler, ...]] = ("tpe", "auto")
-    _OPTUNA_LABEL_SAMPLERS: Final[tuple[OptunaSampler, ...]] = (
-        "auto",
-        "tpe",
-        "nsgaii",
-        "nsgaiii",
-    )
     _OPTUNA_SAMPLERS: Final[tuple[OptunaSampler, ...]] = (
         "tpe",
         "auto",
         "nsgaii",
         "nsgaiii",
     )
+    _OPTUNA_HPO_SAMPLERS: Final[tuple[OptunaSampler, ...]] = _OPTUNA_SAMPLERS[:2]
+    _OPTUNA_LABEL_SAMPLERS: Final[tuple[OptunaSampler, ...]] = (
+        _OPTUNA_SAMPLERS[1],  # "auto"
+        _OPTUNA_SAMPLERS[0],  # "tpe"
+        _OPTUNA_SAMPLERS[2],  # "nsgaii"
+        _OPTUNA_SAMPLERS[3],  # "nsgaiii"
+    )
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "train", "label")
 
-    _SCIPY_METRICS: Final[tuple[str, ...]] = (
-        # "braycurtis",
-        # "canberra",
-        "chebyshev",
-        "cityblock",
-        # "correlation",
-        # "cosine",
-        # "dice",
-        "euclidean",
-        # "hamming",
-        # "jaccard",
-        "jensenshannon",
-        # "kulczynski1",  # Deprecated in SciPy ≥ 1.15.0; do not use.
-        "mahalanobis",
-        # "matching",
-        "minkowski",
-        # "rogerstanimoto",
-        # "russellrao",
-        "seuclidean",
-        # "sokalmichener",  # Deprecated in SciPy ≥ 1.15.0; do not use.
-        # "sokalsneath",
-        "sqeuclidean",
-        # "yule",
+    _DISTANCE_METHODS: Final[tuple[DistanceMethod, ...]] = (
+        "compromise_programming",
+        "topsis",
+    )
+    _CLUSTER_METHODS: Final[tuple[ClusterMethod, ...]] = (
+        "kmeans",
+        "kmeans2",
+        "kmedoids",
+    )
+    _CLUSTER_SELECTION_METHODS: Final[tuple[ClusterSelectionMethod, ...]] = (
+        "medoid",
+        "min",
+        "topsis",
+    )
+    _DENSITY_METHODS: Final[tuple[DensityMethod, ...]] = ("knn", "medoid")
+
+    _SELECTION_CATEGORIES: Final[dict[str, tuple[SelectionMethod, ...]]] = {
+        "distance": _DISTANCE_METHODS,
+        "cluster": _CLUSTER_METHODS,
+        "density": _DENSITY_METHODS,
+    }
+
+    _SELECTION_METHODS: Final[tuple[SelectionMethod, ...]] = (
+        *_DISTANCE_METHODS,
+        *_CLUSTER_METHODS,
+        *_DENSITY_METHODS,
     )
 
-    _CUSTOM_METRICS: Final[tuple[str, ...]] = (
+    _DISTANCE_METRICS: Final[tuple[str, ...]] = (
+        "euclidean",
+        "minkowski",
+        "chebyshev",
+        "cityblock",
+        "sqeuclidean",
+        "seuclidean",
+        "mahalanobis",
+        "jensenshannon",
         "hellinger",
         "shellinger",
         "harmonic_mean",
@@ -163,26 +174,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "cubic_mean",
         "power_mean",
         "weighted_sum",
-        "kmeans",
-        "kmeans2",
-        "kmedoids",
-        "knn_power_mean",
-        "knn_quantile",
-        "knn_min",
-        "knn_max",
-        "medoid",
-        "topsis",
-    )
-
-    _METRICS: Final[tuple[str, ...]] = (
-        *_SCIPY_METRICS,
-        *_CUSTOM_METRICS,
     )
 
     _UNSUPPORTED_CLUSTER_METRICS: Final[tuple[str, ...]] = (
-        "mahalanobis",
-        "seuclidean",
-        "jensenshannon",
+        _DISTANCE_METRICS[6],  # "mahalanobis"
+        _DISTANCE_METRICS[5],  # "seuclidean"
+        _DISTANCE_METRICS[7],  # "jensenshannon"
+    )
+
+    _DENSITY_AGGREGATIONS: Final[tuple[DensityAggregation, ...]] = (
+        "power_mean",
+        "quantile",
+        "min",
+        "max",
     )
 
     PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT: Final[float] = 0.999
@@ -196,120 +200,244 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 24
     MIN_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = 9.0
     MAX_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = 12.0
-    LABEL_KNN_N_NEIGHBORS_DEFAULT: Final[int] = 5
+
+    LABEL_METHOD_DEFAULT: Final[str] = _SELECTION_METHODS[0]  # "compromise_programming"
+
+    LABEL_DISTANCE_METRIC_DEFAULT: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
+
+    LABEL_CLUSTER_METRIC_DEFAULT: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
+    LABEL_CLUSTER_SELECTION_DEFAULT: Final[ClusterSelectionMethod] = (
+        _CLUSTER_SELECTION_METHODS[1]  # "min"
+    )
+
+    LABEL_DENSITY_N_NEIGHBORS_DEFAULT: Final[int] = 5
+    LABEL_DENSITY_AGGREGATION_DEFAULT: Final[DensityAggregation] = (
+        _DENSITY_AGGREGATIONS[0]
+    )  # "power_mean"
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
         return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _custom_threshold_methods_set() -> set[CustomThresholdMethod]:
         return set(QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS)
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _skimage_threshold_methods_set() -> set[SkimageThresholdMethod]:
         return set(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _threshold_methods_set() -> set[ThresholdMethod]:
         return set(QuickAdapterRegressorV3._THRESHOLD_METHODS)
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _optuna_namespaces_set() -> set[OptunaNamespace]:
         return set(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _scipy_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._SCIPY_METRICS)
+        return set(QuickAdapterRegressorV3._DISTANCE_METRICS[:8])
 
     @staticmethod
-    def _custom_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._CUSTOM_METRICS)
-
-    @staticmethod
-    def _metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._METRICS)
-
-    @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _unsupported_cluster_metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def _cluster_selection_methods_set() -> set[ClusterSelectionMethod]:
         return set(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)
 
     @staticmethod
-    def _get_label_p_order_default(metric: str) -> Optional[float]:
-        if metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]:  # "minkowski"
+    @functools.lru_cache(maxsize=1)
+    def _selection_methods_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._SELECTION_METHODS)
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _distance_metrics_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._DISTANCE_METRICS)
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _density_aggregations_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)
+
+    @staticmethod
+    def _get_selection_category(method: str) -> Optional[str]:
+        for (
+            category,
+            methods,
+        ) in QuickAdapterRegressorV3._SELECTION_CATEGORIES.items():
+            if method in methods:
+                return category
+        return None
+
+    @staticmethod
+    def _get_label_p_order_default(distance_metric: str) -> Optional[float]:
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]
+        ):  # "minkowski"
             return 2.0
-        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[7]:  # "power_mean"
+        elif (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[15]
+        ):  # "power_mean"
             return 1.0
         return None
 
     @staticmethod
-    def _get_label_knn_p_order_default(metric: str) -> Optional[float]:
-        if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[12]:  # "knn_power_mean"
+    def _get_label_density_metric_default(method: DensityMethod) -> Optional[str]:
+        if method == QuickAdapterRegressorV3._DENSITY_METHODS[1]:  # "medoid"
+            return QuickAdapterRegressorV3._DISTANCE_METRICS[0]  # "euclidean"
+        elif method == QuickAdapterRegressorV3._DENSITY_METHODS[0]:  # "knn"
+            return QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
+        return None
+
+    @staticmethod
+    def _get_label_density_aggregation_param_default(
+        aggregation: DensityAggregation,
+    ) -> Optional[float]:
+        if (
+            aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[0]
+        ):  # "power_mean"
             return 1.0
-        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[13]:  # "knn_quantile"
+        elif (
+            aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[1]
+        ):  # "quantile"
             return 0.5
         return None
 
-    def _get_distance_metric(self, label_metric: str) -> tuple[str, str, str]:
-        """Resolve distance metric for composite label metrics.
+    @staticmethod
+    def _validate_minkowski_p(p: Optional[float], *, ctx: str) -> Optional[float]:
+        if p is None:
+            return None
+        if not np.isfinite(p):
+            raise ValueError(f"Invalid {ctx}: p must be finite, got {p!r}")
+        if p <= 0:
+            raise ValueError(f"Invalid {ctx}: p must be > 0, got {p!r}")
+        return float(p)
 
-        Args:
-            label_metric: Label metric name.
+    @staticmethod
+    def _validate_quantile_q(q: Optional[float], *, ctx: str) -> Optional[float]:
+        if q is None:
+            return None
+        if not np.isfinite(q):
+            raise ValueError(f"Invalid {ctx}: q must be finite, got {q!r}")
+        if q < 0.0 or q > 1.0:
+            raise ValueError(f"Invalid {ctx}: q must be in [0, 1], got {q!r}")
+        return float(q)
 
-        Returns:
-            Tuple (distance_metric, param_name, default_metric).
-            Returns (label_metric, "", "") when label_metric is not composite.
-        """
-        # Mapping: label_metric -> (param_name, default_metric)
-        composite_metrics: dict[str, tuple[str, str]] = {
-            QuickAdapterRegressorV3._CUSTOM_METRICS[16]: (  # "medoid"
-                "label_medoid_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[9]: (  # "kmeans"
-                "label_kmeans_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[10]: (  # "kmeans2"
-                "label_kmeans_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[11]: (  # "kmedoids"
-                "label_kmedoids_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[12]: (  # "knn_power_mean"
-                "label_knn_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[13]: (  # "knn_quantile"
-                "label_knn_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[14]: (  # "knn_min"
-                "label_knn_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[15]: (  # "knn_max"
-                "label_knn_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
-            ),
-            QuickAdapterRegressorV3._CUSTOM_METRICS[17]: (  # "topsis"
-                "label_topsis_metric",
-                QuickAdapterRegressorV3._SCIPY_METRICS[2],  # "euclidean"
-            ),
+    @staticmethod
+    def _validate_metric_supported(metric: str, *, category: str) -> None:
+        if metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
+            raise ValueError(
+                f"Invalid label_{category}_metric {metric!r}. "
+                f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
+            )
+
+    @staticmethod
+    def _resolve_p_order(
+        distance_metric: str,
+        label_p_order: Optional[float],
+        *,
+        ctx: str,
+    ) -> Optional[float]:
+        p = (
+            label_p_order
+            if label_p_order is not None
+            else QuickAdapterRegressorV3._get_label_p_order_default(distance_metric)
+        )
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]
+        ):  # "minkowski"
+            p = QuickAdapterRegressorV3._validate_minkowski_p(p, ctx=ctx)
+        return p
+
+    def _resolve_label_method_config(self, label_method: str) -> dict[str, Any]:
+        if label_method not in self._selection_methods_set():
+            raise ValueError(
+                f"Invalid label_method {label_method!r}. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._SELECTION_METHODS)}"
+            )
+
+        category = QuickAdapterRegressorV3._get_selection_category(label_method)
+        config: dict[str, Any] = {
+            "category": category,
+            "method": label_method,
         }
 
-        if label_metric not in composite_metrics:
-            return (label_metric, "", "")
+        if category == "distance":
+            config["distance_metric"] = self.ft_params.get(
+                "label_distance_metric",
+                QuickAdapterRegressorV3.LABEL_DISTANCE_METRIC_DEFAULT,
+            )
+        elif category == "cluster":
+            config["distance_metric"] = self.ft_params.get(
+                "label_cluster_metric",
+                QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
+            )
+            config["selection"] = self.ft_params.get(
+                "label_cluster_selection",
+                QuickAdapterRegressorV3.LABEL_CLUSTER_SELECTION_DEFAULT,
+            )
+        elif category == "density":
+            density_method = cast(DensityMethod, label_method)
+            config["distance_metric"] = self.ft_params.get(
+                "label_density_metric",
+                QuickAdapterRegressorV3._get_label_density_metric_default(
+                    density_method
+                ),
+            )
+            if density_method == QuickAdapterRegressorV3._DENSITY_METHODS[0]:  # "knn"
+                aggregation = cast(
+                    DensityAggregation,
+                    self.ft_params.get(
+                        "label_density_aggregation",
+                        QuickAdapterRegressorV3.LABEL_DENSITY_AGGREGATION_DEFAULT,
+                    ),
+                )
+                config["aggregation"] = aggregation
+                config["n_neighbors"] = self.ft_params.get(
+                    "label_density_n_neighbors",
+                    QuickAdapterRegressorV3.LABEL_DENSITY_N_NEIGHBORS_DEFAULT,
+                )
+                config["aggregation_param"] = self.ft_params.get(
+                    "label_density_aggregation_param",
+                    QuickAdapterRegressorV3._get_label_density_aggregation_param_default(
+                        aggregation
+                    ),
+                )
 
-        param_name, default_metric = composite_metrics[label_metric]
-        distance_metric = self.ft_params.get(param_name, default_metric)
-        return (distance_metric, param_name, default_metric)
+        return config
+
+    @staticmethod
+    def _format_label_method_config(config: dict[str, Any]) -> str:
+        return ", ".join(f"{k}={v}" for k, v in config.items())
+
+    _CONFIG_KEY_TO_TUNABLE_SUFFIX: Final[dict[str, str]] = {
+        "distance_metric": "metric",
+    }
+
+    @staticmethod
+    def _log_label_method_config(config: dict[str, Any]) -> None:
+        category = config.get("category", "")
+        for key, value in config.items():
+            if key in ("category", "method"):
+                continue
+            suffix = QuickAdapterRegressorV3._CONFIG_KEY_TO_TUNABLE_SUFFIX.get(key, key)
+            tunable_name = f"label_{category}_{suffix}"
+            if isinstance(value, float):
+                formatted_value = format_number(value)
+            else:
+                formatted_value = value
+            logger.info(f"  {tunable_name}: {formatted_value}")
 
     @property
     def _optuna_config(self) -> dict[str, Any]:
@@ -383,20 +511,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @property
     def _label_frequency_candles(self) -> int:
-        """
-        Calculate label_frequency_candles.
-
-        Default behavior is 'auto' which equals max(2, 2 * number_of_pairs).
-        User can override with:
-        - "auto" string value
-        - Integer value between 2 and 10000
-
-        Returns:
-            int: The calculated label_frequency_candles value
-
-        Raises:
-            ValueError: If no trading pairs are configured
-        """
         default_label_frequency_candles = max(2, 2 * len(self.pairs))
 
         label_frequency_candles = self.config.get("feature_parameters", {}).get(
@@ -410,7 +524,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = default_label_frequency_candles
             else:
                 logger.warning(
-                    f"Invalid label_frequency_candles {label_frequency_candles!r}: only 'auto' is supported for string values. Using default {default_label_frequency_candles!r}"
+                    f"Invalid label_frequency_candles {label_frequency_candles!r}: only 'auto' is supported for string values, using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         elif isinstance(label_frequency_candles, (int, float)):
@@ -418,12 +532,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = int(label_frequency_candles)
             else:
                 logger.warning(
-                    f"Invalid label_frequency_candles {label_frequency_candles!r}: must be in range [2, 10000]. Using default {default_label_frequency_candles!r}"
+                    f"Invalid label_frequency_candles {label_frequency_candles!r}: must be in range [2, 10000], using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         else:
             logger.warning(
-                f"Invalid label_frequency_candles {label_frequency_candles!r}: expected int, float, or 'auto'. Using default {default_label_frequency_candles!r}"
+                f"Invalid label_frequency_candles {label_frequency_candles!r}: expected int, float, or 'auto', using default {default_label_frequency_candles!r}"
             )
             label_frequency_candles = default_label_frequency_candles
 
@@ -545,14 +659,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
-                "FreqAI model requires StaticPairList method defined in pairlists configuration and 'pair_whitelist' defined in exchange section configuration"
+                "Invalid configuration: 'pair_whitelist' must be defined in exchange section and StaticPairList must be configured in pairlists"
             )
         if (
             not isinstance(self.freqai_info.get("identifier"), str)
             or not self.freqai_info.get("identifier", "").strip()
         ):
             raise ValueError(
-                "FreqAI model requires 'identifier' defined in the freqai section configuration"
+                "Invalid freqai configuration: 'identifier' must be a non-empty string"
             )
         self._optuna_hyperopt: Optional[bool] = (
             self.freqai_info.get("enabled", False)
@@ -663,9 +777,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"  min_resource: {optuna_config.get('min_resource')}")
             logger.info(f"  seed: {optuna_config.get('seed')}")
-            logger.info(
-                f"  label_metric: {self.ft_params.get('label_metric', QuickAdapterRegressorV3._SCIPY_METRICS[2])}"
+
+            label_method = self.ft_params.get(
+                "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
             )
+            logger.info(f"  label_method: {label_method}")
+
+            label_config = self._resolve_label_method_config(label_method)
+            self._log_label_method_config(label_config)
 
             label_weights = self.ft_params.get("label_weights")
             if label_weights is not None:
@@ -677,120 +796,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
 
             label_p_order_config = self.ft_params.get("label_p_order")
-            label_metric = self.ft_params.get(
-                "label_metric", QuickAdapterRegressorV3._SCIPY_METRICS[2]
-            )
-
-            label_p_order_is_used = False
-            label_p_order_reason = None
-
-            if label_metric in {
-                QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[7],  # "power_mean"
-            }:
-                label_p_order_is_used = True
-                label_p_order_reason = label_metric
-            else:
-                distance_metric, param_name, _ = self._get_distance_metric(label_metric)
-                if (
-                    param_name
-                    and distance_metric
-                    == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
-                ):
-                    label_p_order_is_used = True
-                    label_p_order_reason = (
-                        f"{label_metric} (via {param_name}={distance_metric})"
-                    )
-
             if label_p_order_config is not None:
                 logger.info(
                     f"  label_p_order: {format_number(float(label_p_order_config))}"
                 )
-            elif label_p_order_is_used:
-                if label_metric in {
-                    QuickAdapterRegressorV3._SCIPY_METRICS[5],  # "minkowski"
-                    QuickAdapterRegressorV3._CUSTOM_METRICS[7],  # "power_mean"
+            else:
+                distance_metric = label_config["distance_metric"]
+                if distance_metric in {
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[1],  # "minkowski"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[15],  # "power_mean"
                 }:
                     label_p_order_default = (
-                        QuickAdapterRegressorV3._get_label_p_order_default(label_metric)
-                    )
-                else:
-                    label_p_order_default = (
                         QuickAdapterRegressorV3._get_label_p_order_default(
-                            QuickAdapterRegressorV3._SCIPY_METRICS[
-                                5
-                            ]  # "minkowski" default
+                            distance_metric
                         )
                     )
-                logger.info(
-                    f"  label_p_order: {format_number(label_p_order_default)} (default for {label_p_order_reason})"
-                )
-
-            _, param_name, default_metric = self._get_distance_metric(label_metric)
-            if param_name:
-                config_value = self.ft_params.get(param_name)
-                if config_value is not None:
-                    logger.info(f"  {param_name}: {config_value}")
-                else:
                     logger.info(
-                        f"  {param_name}: {default_metric} (default for {label_metric})"
+                        f"  label_p_order: {format_number(label_p_order_default)} (default for {distance_metric})"
                     )
-
-            label_kmeans_selection_config = self.ft_params.get("label_kmeans_selection")
-            if label_kmeans_selection_config is not None:
-                logger.info(
-                    f"  label_kmeans_selection: {label_kmeans_selection_config}"
-                )
-            elif label_metric in {
-                QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
-            }:
-                logger.info(
-                    f"  label_kmeans_selection: {QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]} (default for {label_metric})"
-                )
-
-            label_kmedoids_selection_config = self.ft_params.get(
-                "label_kmedoids_selection"
-            )
-            if label_kmedoids_selection_config is not None:
-                logger.info(
-                    f"  label_kmedoids_selection: {label_kmedoids_selection_config}"
-                )
-            elif (
-                label_metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]
-            ):  # "kmedoids"
-                logger.info(
-                    f"  label_kmedoids_selection: {QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1]} (default for {label_metric})"
-                )
-
-            label_knn_n_neighbors = self.ft_params.get("label_knn_n_neighbors")
-            if label_knn_n_neighbors is not None:
-                logger.info(f"  label_knn_n_neighbors: {label_knn_n_neighbors}")
-            elif label_metric in {
-                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
-            }:
-                logger.info(
-                    f"  label_knn_n_neighbors: {QuickAdapterRegressorV3.LABEL_KNN_N_NEIGHBORS_DEFAULT} (default for {label_metric})"
-                )
-
-            label_knn_p_order_config = self.ft_params.get("label_knn_p_order")
-            if label_knn_p_order_config is not None:
-                logger.info(
-                    f"  label_knn_p_order: {format_number(float(label_knn_p_order_config))}"
-                )
-            elif label_metric in {
-                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
-            }:
-                label_knn_p_order_default = (
-                    QuickAdapterRegressorV3._get_label_knn_p_order_default(label_metric)
-                )
-                logger.info(
-                    f"  label_knn_p_order: {format_number(label_knn_p_order_default)} (default for {label_metric})"
-                )
 
         logger.info("Predictions Extrema Configuration:")
         predictions_extrema = self.predictions_extrema
@@ -897,7 +920,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only "hp" and "train"
             )
         return value
 
@@ -911,7 +934,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only hp and train
+                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES[:2])}"  # Only "hp" and "train"
             )
 
     def get_optuna_values(
@@ -922,7 +945,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only "label"
             )
         return values
 
@@ -934,17 +957,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only "label"
             )
 
     def init_optuna_label_candle_pool(self) -> None:
         optuna_label_candle_pool_full = self._optuna_label_candle_pool_full
         if len(optuna_label_candle_pool_full) == 0:
-            raise RuntimeError("Failed to initialize optuna label candle pool full")
+            raise RuntimeError(
+                "Failed to initialize optuna label candle pool: initial pool is empty"
+            )
         self._optuna_label_candle_pool = optuna_label_candle_pool_full
         self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
         if len(self._optuna_label_candle_pool) == 0:
-            raise RuntimeError("Failed to initialize optuna label candle pool")
+            raise RuntimeError(
+                "Failed to initialize optuna label candle pool: pool became empty after shuffle"
+            )
 
     def set_optuna_label_candle(self, pair: str) -> None:
         if len(self._optuna_label_candle_pool) == 0:
@@ -1138,10 +1165,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }:  # Only "label"
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only "label"
             )
         if not callable(callback):
-            raise ValueError("Invalid callback: must be callable")
+            raise ValueError(
+                f"Invalid callback: must be callable, got {type(callback).__name__}"
+            )
         self._optuna_label_candles[pair] += 1
         if pair not in self._optuna_label_incremented_pairs:
             self._optuna_label_incremented_pairs.append(pair)
@@ -1280,7 +1309,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             hp_rmse if hp_rmse is not None else np.inf
         )
         train_rmse = self.optuna_validate_value(
-            self.get_optuna_value(pair, self._OPTUNA_NAMESPACES[1])
+            self.get_optuna_value(pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1])
         )  # "train"
         dk.data["extra_returns_per_train"]["train_rmse"] = (
             train_rmse
@@ -1531,7 +1560,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def skimage_min_max(
         pred_extrema: pd.Series,
-        method: str,
+        method: SkimageThresholdMethod,
         extrema_selection: ExtremaSelectionMethod,
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
@@ -1584,6 +1613,123 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return np.nanmedian(values)
 
     @staticmethod
+    def _normalize_weights(
+        weights: Optional[NDArray[np.floating]],
+        n_objectives: int,
+    ) -> NDArray[np.floating]:
+        if weights is None:
+            return np.full(n_objectives, 1.0 / n_objectives)
+
+        np_weights = np.asarray(weights, dtype=float)
+        if np_weights.size != n_objectives:
+            raise ValueError(
+                "Invalid label_weights: length must match number of objectives"
+            )
+        if not np.all(np.isfinite(np_weights)):
+            raise ValueError("Invalid label_weights: must contain only finite values")
+        if np.any(np_weights < 0):
+            raise ValueError("Invalid label_weights: values must be non-negative")
+
+        weights_sum = np.nansum(np_weights)
+        if np.isclose(weights_sum, 0.0):
+            raise ValueError("Invalid label_weights: sum cannot be zero")
+
+        return np_weights / weights_sum
+
+    @staticmethod
+    def _compromise_programming_scores(
+        normalized_matrix: NDArray[np.floating],
+        metric: str,
+        *,
+        weights: Optional[NDArray[np.floating]] = None,
+        p: Optional[float] = None,
+    ) -> NDArray[np.floating]:
+        n_samples, n_objectives = normalized_matrix.shape
+
+        if n_samples == 0:
+            return np.array([])
+        if n_samples == 1:
+            return np.array([0.0])
+
+        if weights is None:
+            weights = np.ones(n_objectives)
+        if p is None:
+            p = np.nan
+
+        ideal_point = np.ones(n_objectives)
+        ideal_point_2d = ideal_point.reshape(1, -1)
+
+        if metric in QuickAdapterRegressorV3._scipy_metrics_set():
+            cdist_kwargs: dict[str, Any] = {}
+            if metric not in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
+                cdist_kwargs["w"] = weights
+            if metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]:  # "minkowski"
+                if np.isfinite(p):
+                    cdist_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
+                        p,
+                        ctx="compromise_programming minkowski p",
+                    )
+            return sp.spatial.distance.cdist(
+                normalized_matrix,
+                ideal_point_2d,
+                metric=metric,
+                **cdist_kwargs,
+            ).flatten()
+
+        if metric in {
+            QuickAdapterRegressorV3._DISTANCE_METRICS[8],  # "hellinger"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[9],  # "shellinger"
+        }:
+            np_sqrt_normalized_matrix = np.sqrt(normalized_matrix)
+            if metric == QuickAdapterRegressorV3._DISTANCE_METRICS[9]:  # "shellinger"
+                variances = np.nanvar(np_sqrt_normalized_matrix, axis=0, ddof=1)
+                if np.any(variances <= 0):
+                    raise ValueError(
+                        "Invalid data for shellinger metric: requires non-zero variance for all objectives"
+                    )
+                weights = 1 / variances
+            return (
+                np.sqrt(
+                    np.nansum(
+                        weights
+                        * (np_sqrt_normalized_matrix - np.sqrt(ideal_point)) ** 2,
+                        axis=1,
+                    )
+                )
+                / QuickAdapterRegressorV3._SQRT_2
+            )
+
+        if metric in {
+            QuickAdapterRegressorV3._DISTANCE_METRICS[10],  # "harmonic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[11],  # "geometric_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[12],  # "arithmetic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[13],  # "quadratic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[14],  # "cubic_mean"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[15],  # "power_mean"
+        }:
+            power_map: dict[str, float] = {
+                QuickAdapterRegressorV3._DISTANCE_METRICS[10]: -1.0,  # "harmonic_mean"
+                QuickAdapterRegressorV3._DISTANCE_METRICS[11]: 0.0,  # "geometric_mean"
+                QuickAdapterRegressorV3._DISTANCE_METRICS[12]: 1.0,  # "arithmetic_mean"
+                QuickAdapterRegressorV3._DISTANCE_METRICS[13]: 2.0,  # "quadratic_mean"
+                QuickAdapterRegressorV3._DISTANCE_METRICS[14]: 3.0,  # "cubic_mean"
+                QuickAdapterRegressorV3._DISTANCE_METRICS[15]: p,  # "power_mean"
+            }
+            power = power_map[metric]
+            if not np.isfinite(power):
+                power = 2.0
+            return sp.stats.pmean(
+                ideal_point, p=power, weights=weights
+            ) - sp.stats.pmean(normalized_matrix, p=power, weights=weights, axis=1)
+
+        if metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]:  # "weighted_sum"
+            return (ideal_point - normalized_matrix) @ weights
+
+        raise ValueError(
+            f"Invalid metric {metric!r} for compromise programming scores, supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+        )
+
+    @staticmethod
     def _pairwise_distance_sums(
         matrix: NDArray[np.floating],
         metric: str,
@@ -1591,20 +1737,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
     ) -> NDArray[np.floating]:
-        """Compute sum of pairwise distances per row.
-
-        Args:
-            matrix: 2D array, shape (n_samples, n_features).
-                Must contain only finite values (no NaN or inf).
-            metric: scipy.spatial.distance.pdist metric name.
-            weights: Optional 1D array, shape (n_features,).
-                Must be finite and non-negative.
-            p: Minkowski order, used only when metric == 'minkowski'.
-
-        Returns:
-            1D array, shape (n_samples,). Returns [] when n_samples == 0, [0.0] when n_samples == 1.
-        """
-
         if matrix.ndim != 2:
             raise ValueError("Invalid matrix: must be 2-dimensional")
         if matrix.shape[1] == 0:
@@ -1615,21 +1747,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "Invalid matrix: must contain only finite values (no NaN or inf)"
             )
 
-        if weights is not None:
-            if weights.size != matrix.shape[1]:
-                raise ValueError(
-                    f"Invalid weights: size {weights.size} must match number of features {matrix.shape[1]}"
-                )
-            if not np.all(np.isfinite(weights)) or np.any(weights < 0):
-                raise ValueError("Invalid weights: must be finite and non-negative")
-            if metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
-                raise ValueError(
-                    f"Invalid weights: not supported for metric {metric!r}"
-                )
-
-        matrix = np.asarray(matrix, dtype=np.float64)
-        if weights is not None:
-            weights = np.asarray(weights, dtype=np.float64)
+        if (
+            weights is not None
+            and metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
+        ):
+            raise ValueError(f"Invalid weights: unsupported for metric {metric!r}")
 
         n = matrix.shape[0]
         if n == 0:
@@ -1641,11 +1763,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if weights is not None:
             pdist_kwargs["w"] = weights
         if (
-            metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
             and p is not None
             and np.isfinite(p)
         ):
-            pdist_kwargs["p"] = p
+            pdist_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
+                p,
+                ctx="pairwise_distance_sums minkowski p",
+            )
 
         pairwise_distances_vector = sp.spatial.distance.pdist(
             matrix, metric=metric, **pdist_kwargs
@@ -1667,45 +1792,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         weights: Optional[NDArray[np.floating]] = None,
         p: Optional[float] = None,
     ) -> NDArray[np.floating]:
-        """Compute TOPSIS score S = D+ / (D+ + D-) per row.
-
-        Args:
-            normalized_matrix: 2D array, shape (n_samples, n_objectives), values in [0, 1].
-                Must contain only finite values (no NaN or inf).
-            metric: scipy.spatial.distance.cdist metric name.
-            weights: Optional 1D array, shape (n_objectives,).
-                Must be finite and non-negative.
-            p: Minkowski order, used only when metric == 'minkowski'.
-
-        Returns:
-            1D array, shape (n_samples,), values in [0, 1]. Lower is better.
-            Returns [] when n_samples == 0, [0.5] when n_samples == 1.
-        """
-        if normalized_matrix.ndim != 2:
-            raise ValueError("Invalid normalized_matrix: must be 2-dimensional")
-
         n_samples, n_objectives = normalized_matrix.shape
-        if n_objectives == 0:
-            raise ValueError(
-                "Invalid normalized_matrix: must have at least one objective"
-            )
-
-        if not np.all(np.isfinite(normalized_matrix)):
-            raise ValueError(
-                "Invalid normalized_matrix: must contain only finite values (no NaN or inf)"
-            )
-
-        if weights is not None:
-            if weights.size != n_objectives:
-                raise ValueError(
-                    f"Invalid weights: size {weights.size} must match number of objectives {n_objectives}"
-                )
-            if not np.all(np.isfinite(weights)) or np.any(weights < 0):
-                raise ValueError("Invalid weights: must be finite and non-negative")
-
-        normalized_matrix = np.asarray(normalized_matrix, dtype=np.float64)
-        if weights is not None:
-            weights = np.asarray(weights, dtype=np.float64)
 
         if n_samples == 0:
             return np.array([])
@@ -1719,11 +1806,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if weights is not None:
             cdist_kwargs["w"] = weights
         if (
-            metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
+            metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
             and p is not None
             and np.isfinite(p)
         ):
-            cdist_kwargs["p"] = p
+            cdist_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
+                p,
+                ctx="topsis minkowski p",
+            )
 
         dist_to_ideal = sp.spatial.distance.cdist(
             normalized_matrix, ideal_point, metric=metric, **cdist_kwargs
@@ -1740,6 +1830,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return scores
 
+    @staticmethod
+    def _calculate_trial_distance_to_ideal(
+        normalized_matrix: NDArray[np.floating],
+        trial_index: int,
+        ideal_point_2d: NDArray[np.floating],
+        metric: str,
+        cdist_kwargs: dict[str, Any],
+    ) -> float:
+        """Calculate distance from a single trial to the ideal point."""
+        return sp.spatial.distance.cdist(
+            normalized_matrix[[trial_index]],
+            ideal_point_2d,
+            metric=metric,
+            **cdist_kwargs,
+        ).item()
+
     def _select_best_trial_from_cluster(
         self,
         selection_method: ClusterSelectionMethod,
@@ -1753,22 +1859,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         known_medoid_index: Optional[int] = None,
         known_medoid_distance: Optional[float] = None,
     ) -> tuple[int, float]:
-        """Select one trial from a cluster.
-
-        Args:
-            selection_method: Cluster selection method ("medoid", "min", "topsis").
-            best_cluster_indices: 1D array of trial indices belonging to the cluster.
-            normalized_matrix: Normalized objective matrix, shape (n_trials, n_objectives).
-            ideal_point_2d: Ideal objective point, shape (1, n_objectives).
-            metric: Distance metric used for scoring (scipy.cdist/pdist).
-            cdist_kwargs: Optional metric parameters for distance scoring (e.g., Minkowski p).
-            np_weights: Optional objective weights (used for weighted distances and TOPSIS).
-            known_medoid_index: Optional precomputed cluster medoid index.
-            known_medoid_distance: Optional precomputed medoid distance to the ideal point.
-
-        Returns:
-            (trial_index, distance_to_ideal) for the selected trial.
-        """
         local_cdist_kwargs = dict(cdist_kwargs)
         if np_weights is not None:
             local_cdist_kwargs["w"] = np_weights
@@ -1777,13 +1867,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             best_trial_index = best_cluster_indices[0]
             if known_medoid_distance is not None:
                 return best_trial_index, known_medoid_distance
-            best_trial_distance = sp.spatial.distance.cdist(
-                normalized_matrix[[best_trial_index]],
+            best_trial_distance = self._calculate_trial_distance_to_ideal(
+                normalized_matrix,
+                best_trial_index,
                 ideal_point_2d,
-                metric=metric,
-                **local_cdist_kwargs,
-            ).item()
-
+                metric,
+                local_cdist_kwargs,
+            )
             return best_trial_index, best_trial_distance
 
         if (
@@ -1802,12 +1892,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             )
             best_trial_index = best_cluster_indices[best_medoid_position]
-            best_trial_distance = sp.spatial.distance.cdist(
-                normalized_matrix[[best_trial_index]],
+            best_trial_distance = self._calculate_trial_distance_to_ideal(
+                normalized_matrix,
+                best_trial_index,
                 ideal_point_2d,
-                metric=metric,
-                **cdist_kwargs,
-            ).item()
+                metric,
+                cdist_kwargs,
+            )
             return best_trial_index, best_trial_distance
 
         if (
@@ -1836,18 +1927,228 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             min_score_position = np.nanargmin(topsis_scores)
             best_trial_index = best_cluster_indices[min_score_position]
-            best_trial_distance = sp.spatial.distance.cdist(
-                normalized_matrix[[best_trial_index]],
+            best_trial_distance = self._calculate_trial_distance_to_ideal(
+                normalized_matrix,
+                best_trial_index,
                 ideal_point_2d,
-                metric=metric,
-                **cdist_kwargs,
-            ).item()
+                metric,
+                cdist_kwargs,
+            )
             return best_trial_index, best_trial_distance
 
         raise ValueError(
             f"Invalid selection_method {selection_method!r}. "
             f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)}"
         )
+
+    def _cluster_based_selection(
+        self,
+        normalized_matrix: NDArray[np.floating],
+        cluster_method: ClusterMethod,
+        *,
+        distance_metric: str,
+        selection_method: ClusterSelectionMethod,
+        weights: Optional[NDArray[np.floating]] = None,
+        p: Optional[float] = None,
+    ) -> NDArray[np.floating]:
+        n_samples, n_objectives = normalized_matrix.shape
+
+        if n_samples == 0:
+            return np.array([])
+        if n_samples == 1:
+            return np.array([0.0])
+
+        ideal_point_2d = np.ones((1, n_objectives))
+
+        cdist_kwargs: dict[str, Any] = {}
+        if (
+            distance_metric
+            == QuickAdapterRegressorV3._DISTANCE_METRICS[1]  # "minkowski"
+            and p is not None
+            and np.isfinite(p)
+        ):
+            cdist_kwargs["p"] = p
+
+        n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
+
+        if cluster_method in {
+            QuickAdapterRegressorV3._SELECTION_METHODS[2],  # "kmeans"
+            QuickAdapterRegressorV3._SELECTION_METHODS[3],  # kmeans2
+        }:
+            if (
+                cluster_method == QuickAdapterRegressorV3._SELECTION_METHODS[2]
+            ):  # "kmeans"
+                kmeans = sklearn.cluster.KMeans(
+                    n_clusters=n_clusters, random_state=42, n_init=10
+                )
+                cluster_labels = kmeans.fit_predict(normalized_matrix)
+                cluster_centers = kmeans.cluster_centers_
+            else:  # kmeans2
+                cluster_centers, cluster_labels = sp.cluster.vq.kmeans2(
+                    normalized_matrix, n_clusters, rng=42, minit="++"
+                )
+
+            cluster_center_distances_to_ideal = sp.spatial.distance.cdist(
+                cluster_centers,
+                ideal_point_2d,
+                metric=distance_metric,
+                **cdist_kwargs,
+            ).flatten()
+            ordered_cluster_indices = np.argsort(cluster_center_distances_to_ideal)
+
+            best_cluster_indices = None
+            for cluster_index in ordered_cluster_indices:
+                cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
+                if cluster_indices.size > 0:
+                    best_cluster_indices = cluster_indices
+                    break
+
+            trial_distances = np.full(n_samples, np.inf)
+            if best_cluster_indices is not None and best_cluster_indices.size > 0:
+                best_trial_index, best_trial_distance = (
+                    self._select_best_trial_from_cluster(
+                        selection_method,
+                        best_cluster_indices,
+                        normalized_matrix,
+                        ideal_point_2d,
+                        distance_metric,
+                        cdist_kwargs,
+                        weights,
+                    )
+                )
+                trial_distances[best_trial_index] = best_trial_distance
+            return trial_distances
+
+        elif (
+            cluster_method == QuickAdapterRegressorV3._SELECTION_METHODS[4]
+        ):  # "kmedoids"
+            kmedoids_kwargs: dict[str, Any] = {
+                "metric": distance_metric,
+                "random_state": 42,
+                "init": "k-medoids++",
+                "method": "pam",
+            }
+            kmedoids = KMedoids(n_clusters=n_clusters, **kmedoids_kwargs)
+            cluster_labels = kmedoids.fit_predict(normalized_matrix)
+            medoid_indices = kmedoids.medoid_indices_
+
+            medoid_distances_to_ideal = sp.spatial.distance.cdist(
+                normalized_matrix[medoid_indices],
+                ideal_point_2d,
+                metric=distance_metric,
+                **cdist_kwargs,
+            ).flatten()
+            best_medoid_distance_position = np.nanargmin(medoid_distances_to_ideal)
+            best_medoid_index = medoid_indices[best_medoid_distance_position]
+            cluster_index = cluster_labels[best_medoid_index]
+            best_cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
+
+            trial_distances = np.full(n_samples, np.inf)
+            if best_cluster_indices is not None and best_cluster_indices.size > 0:
+                best_trial_index, best_trial_distance = (
+                    self._select_best_trial_from_cluster(
+                        selection_method,
+                        best_cluster_indices,
+                        normalized_matrix,
+                        ideal_point_2d,
+                        distance_metric,
+                        cdist_kwargs,
+                        weights,
+                        known_medoid_index=best_medoid_index,
+                        known_medoid_distance=medoid_distances_to_ideal[
+                            best_medoid_distance_position
+                        ],
+                    )
+                )
+                trial_distances[best_trial_index] = best_trial_distance
+            return trial_distances
+
+        else:
+            raise ValueError(
+                f"Invalid cluster_method {cluster_method!r}. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_METHODS)}"
+            )
+
+    @staticmethod
+    def _knn_based_selection(
+        normalized_matrix: NDArray[np.floating],
+        aggregation: DensityAggregation,
+        *,
+        distance_metric: str,
+        n_neighbors: int,
+        weights: Optional[NDArray[np.floating]] = None,
+        p: Optional[float] = None,
+        aggregation_param: Optional[float] = None,
+    ) -> NDArray[np.floating]:
+        n_samples, _ = normalized_matrix.shape
+
+        if n_samples == 0:
+            return np.array([])
+        if n_samples == 1:
+            return np.array([0.0])
+
+        knn_kwargs: dict[str, Any] = {}
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]
+        ):  # "minkowski"
+            if p is not None and np.isfinite(p):
+                knn_kwargs["p"] = QuickAdapterRegressorV3._validate_minkowski_p(
+                    p,
+                    ctx="knn minkowski p",
+                )
+            if weights is not None:
+                knn_kwargs["metric_params"] = {"w": weights}
+
+        n_neighbors = min(n_neighbors, n_samples - 1) + 1
+
+        nbrs = sklearn.neighbors.NearestNeighbors(
+            n_neighbors=n_neighbors, metric=distance_metric, **knn_kwargs
+        ).fit(normalized_matrix)
+        distances, _ = nbrs.kneighbors(normalized_matrix)
+        neighbor_distances = distances[:, 1:]
+
+        if neighbor_distances.shape[1] < 1:
+            return np.full(n_samples, np.inf)
+
+        if (
+            aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[0]
+        ):  # "power_mean"
+            power = (
+                aggregation_param
+                if aggregation_param is not None and np.isfinite(aggregation_param)
+                else QuickAdapterRegressorV3._get_label_density_aggregation_param_default(
+                    aggregation
+                )
+            )
+            if power is None:
+                power = 1.0
+            return sp.stats.pmean(neighbor_distances, p=power, axis=1)
+        elif (
+            aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[1]
+        ):  # "quantile"
+            quantile = (
+                aggregation_param
+                if aggregation_param is not None
+                else QuickAdapterRegressorV3._get_label_density_aggregation_param_default(
+                    aggregation
+                )
+            )
+            if quantile is None:
+                quantile = 0.5
+            quantile = QuickAdapterRegressorV3._validate_quantile_q(
+                quantile,
+                ctx="knn quantile q",
+            )
+            return np.nanquantile(neighbor_distances, quantile, axis=1)
+        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[2]:  # "min"
+            return np.nanmin(neighbor_distances, axis=1)
+        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[3]:  # "max"
+            return np.nanmax(neighbor_distances, axis=1)
+        else:
+            raise ValueError(
+                f"Invalid aggregation {aggregation!r}. "
+                f"Supported: {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
+            )
 
     @staticmethod
     def _normalize_objective_values(
@@ -1946,16 +2247,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         n_clusters = int(round((np.log2(n_uniques) + np.sqrt(n_uniques)) / 2.0))
         return min(max(lower_bound, n_clusters), upper_bound)
 
-    def _calculate_distances_to_ideal(
+    def _calculate_distances(
         self,
         normalized_matrix: NDArray[np.floating],
-        metric: str,
-        metrics: set[str],
+        selection_method: SelectionMethod,
     ) -> NDArray[np.floating]:
         if normalized_matrix.ndim != 2:
             raise ValueError("Invalid normalized_matrix: must be 2-dimensional")
-        n_objectives = normalized_matrix.shape[1]
-        n_samples = normalized_matrix.shape[0]
+
+        n_samples, n_objectives = normalized_matrix.shape
         if n_samples == 0 or n_objectives == 0:
             raise ValueError(
                 "Invalid normalized_matrix: must have at least one sample and one objective"
@@ -1964,347 +2264,123 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise ValueError(
                 "Invalid normalized_matrix: must contain only finite values (no NaN or inf)"
             )
+
+        label_config = self._resolve_label_method_config(selection_method)
+        method = label_config["method"]
+        category = label_config["category"]
+
         label_p_order = self.ft_params.get("label_p_order")
         label_weights = self.ft_params.get("label_weights")
-        if label_weights is None:
-            np_weights = np.array([1.0] * n_objectives)
-        elif isinstance(label_weights, (list, tuple, np.ndarray)):
-            np_weights = np.array(label_weights, dtype=float)
-        else:
+
+        if label_weights is not None and not isinstance(
+            label_weights, (list, tuple, np.ndarray)
+        ):
             raise ValueError(
                 f"Invalid label_weights: must be a list, tuple, or array, got {type(label_weights).__name__}"
             )
-        if np_weights.size != n_objectives:
-            raise ValueError(
-                "Invalid label_weights: length must match number of objectives"
-            )
-        if not np.all(np.isfinite(np_weights)):
-            raise ValueError("Invalid label_weights: must contain only finite values")
-        if np.any(np_weights < 0):
-            raise ValueError("Invalid label_weights: values must be non-negative")
-        label_weights_sum = np.nansum(np.abs(np_weights))
-        if np.isclose(label_weights_sum, 0.0):
-            raise ValueError("Invalid label_weights: sum cannot be zero")
-        np_weights = np_weights / label_weights_sum
+        np_weights = (
+            np.array(label_weights, dtype=float) if label_weights is not None else None
+        )
+        np_weights = QuickAdapterRegressorV3._normalize_weights(
+            np_weights, n_objectives
+        )
 
-        ideal_point = np.ones(n_objectives)
-        ideal_point_2d = ideal_point.reshape(1, -1)
-
-        if n_samples == 0:
-            return np.array([])
         if n_samples == 1:
-            if metric in {
-                QuickAdapterRegressorV3._CUSTOM_METRICS[16],  # "medoid"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[11],  # "kmedoids"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
+            if method in {
+                QuickAdapterRegressorV3._SELECTION_METHODS[6],  # "medoid"
+                QuickAdapterRegressorV3._SELECTION_METHODS[2],  # "kmeans"
+                QuickAdapterRegressorV3._SELECTION_METHODS[3],  # "kmeans2"
+                QuickAdapterRegressorV3._SELECTION_METHODS[4],  # "kmedoids"
+                QuickAdapterRegressorV3._SELECTION_METHODS[5],  # "knn"
             }:
                 return np.array([0.0])
 
-        if metric in QuickAdapterRegressorV3._scipy_metrics_set():
-            cdist_kwargs: dict[str, Any] = {}
-            if metric not in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
-                cdist_kwargs["w"] = np_weights
-            if metric == QuickAdapterRegressorV3._SCIPY_METRICS[5]:  # "minkowski"
-                cdist_kwargs["p"] = (
-                    label_p_order
-                    if label_p_order is not None and np.isfinite(label_p_order)
-                    else self._get_label_p_order_default(metric)
-                )
-            return sp.spatial.distance.cdist(
-                normalized_matrix,
-                ideal_point_2d,
-                metric=metric,
-                **cdist_kwargs,
-            ).flatten()
-        elif metric in {
-            QuickAdapterRegressorV3._CUSTOM_METRICS[0],  # "hellinger"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[1],  # "shellinger"
-        }:
-            np_sqrt_normalized_matrix = np.sqrt(normalized_matrix)
-            if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[1]:  # "shellinger"
-                variances = np.nanvar(np_sqrt_normalized_matrix, axis=0, ddof=1)
-                if np.any(variances <= 0):
-                    raise ValueError(
-                        "Invalid data for shellinger metric: requires non-zero variance for all objectives"
-                    )
-                np_weights = 1 / variances
-            return (
-                np.sqrt(
-                    np.nansum(
-                        np_weights
-                        * (np_sqrt_normalized_matrix - np.sqrt(ideal_point)) ** 2,
-                        axis=1,
-                    )
-                )
-                / QuickAdapterRegressorV3._SQRT_2
+        if category == "distance":
+            distance_metric = label_config["distance_metric"]
+            p = QuickAdapterRegressorV3._resolve_p_order(
+                distance_metric,
+                label_p_order,
+                ctx=f"label_p_order for {method}",
             )
-        elif metric in {
-            QuickAdapterRegressorV3._CUSTOM_METRICS[2],  # "harmonic_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[3],  # "geometric_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[4],  # "arithmetic_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[5],  # "quadratic_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[6],  # "cubic_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[7],  # "power_mean"
-        }:
-            p = {
-                QuickAdapterRegressorV3._CUSTOM_METRICS[2]: -1.0,  # "harmonic_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[3]: 0.0,  # "geometric_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[4]: 1.0,  # "arithmetic_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[5]: 2.0,  # "quadratic_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[6]: 3.0,  # "cubic_mean"
-                QuickAdapterRegressorV3._CUSTOM_METRICS[
-                    7
-                ]: label_p_order  # "power_mean"
-                if label_p_order is not None and np.isfinite(label_p_order)
-                else self._get_label_p_order_default(metric),
-            }[metric]
-            return sp.stats.pmean(
-                ideal_point, p=p, weights=np_weights
-            ) - sp.stats.pmean(normalized_matrix, p=p, weights=np_weights, axis=1)
-        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[8]:  # "weighted_sum"
-            return (ideal_point - normalized_matrix) @ np_weights
-        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[16]:  # "medoid"
-            label_medoid_metric, _, _ = self._get_distance_metric(metric)
+
             if (
-                label_medoid_metric
-                in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
-            ):
-                raise ValueError(
-                    f"Invalid label_medoid_metric {label_medoid_metric!r}. "
-                    f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
+                method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
+            ):  # "compromise_programming"
+                return QuickAdapterRegressorV3._compromise_programming_scores(
+                    normalized_matrix,
+                    distance_metric,
+                    weights=np_weights,
+                    p=p,
                 )
-            p = None
-            if (
-                label_medoid_metric
-                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
-            ):
-                p = (
-                    label_p_order
-                    if label_p_order is not None and np.isfinite(label_p_order)
-                    else self._get_label_p_order_default(label_medoid_metric)
+            if method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]:  # "topsis"
+                return QuickAdapterRegressorV3._topsis_scores(
+                    normalized_matrix,
+                    distance_metric,
+                    weights=np_weights,
+                    p=p,
                 )
-            return self._pairwise_distance_sums(
+
+        if category == "cluster":
+            cluster_metric = label_config["distance_metric"]
+            cluster_selection = label_config["selection"]
+
+            QuickAdapterRegressorV3._validate_metric_supported(
+                cluster_metric, category="cluster"
+            )
+            p = QuickAdapterRegressorV3._resolve_p_order(
+                cluster_metric,
+                label_p_order,
+                ctx=f"label_p_order for {method}",
+            )
+            return self._cluster_based_selection(
                 normalized_matrix,
-                label_medoid_metric,
+                method,
+                distance_metric=cluster_metric,
+                selection_method=cluster_selection,
                 weights=np_weights,
                 p=p,
             )
-        elif metric in {
-            QuickAdapterRegressorV3._CUSTOM_METRICS[9],  # "kmeans"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[10],  # "kmeans2"
-        }:
-            n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
-            if metric == QuickAdapterRegressorV3._CUSTOM_METRICS[9]:  # "kmeans"
-                kmeans = sklearn.cluster.KMeans(
-                    n_clusters=n_clusters, random_state=42, n_init=10
-                )
-                cluster_labels = kmeans.fit_predict(normalized_matrix)
-                cluster_centers = kmeans.cluster_centers_
-            elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[10]:  # "kmeans2"
-                cluster_centers, cluster_labels = sp.cluster.vq.kmeans2(
-                    normalized_matrix, n_clusters, rng=42, minit="++"
-                )
-            label_kmeans_metric, _, _ = self._get_distance_metric(metric)
-            if (
-                label_kmeans_metric
-                in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
-            ):
-                raise ValueError(
-                    f"Invalid label_kmeans_metric {label_kmeans_metric!r}. "
-                    f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
-                )
-            cdist_kwargs: dict[str, Any] = {}
-            if (
-                label_kmeans_metric
-                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
-            ):
-                cdist_kwargs["p"] = (
-                    label_p_order
-                    if label_p_order is not None and np.isfinite(label_p_order)
-                    else self._get_label_p_order_default(label_kmeans_metric)
-                )
-            cluster_center_distances_to_ideal = sp.spatial.distance.cdist(
-                cluster_centers,
-                ideal_point_2d,
-                metric=label_kmeans_metric,
-                **cdist_kwargs,
-            ).flatten()
-            label_kmeans_selection = self.ft_params.get(
-                "label_kmeans_selection",
-                QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1],  # "min"
+
+        if category == "density":
+            density_method = cast(DensityMethod, method)
+            density_metric = label_config["distance_metric"]
+            QuickAdapterRegressorV3._validate_metric_supported(
+                density_metric, category="density"
             )
-            ordered_cluster_indices = np.argsort(cluster_center_distances_to_ideal)
-            best_cluster_indices = None
-            for cluster_index in ordered_cluster_indices:
-                cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
-                if cluster_indices.size > 0:
-                    best_cluster_indices = cluster_indices
-                    break
-            trial_distances = np.full(n_samples, np.inf)
-            if best_cluster_indices is not None and best_cluster_indices.size > 0:
-                best_trial_index, best_trial_distance = (
-                    self._select_best_trial_from_cluster(
-                        label_kmeans_selection,
-                        best_cluster_indices,
-                        normalized_matrix,
-                        ideal_point_2d,
-                        label_kmeans_metric,
-                        cdist_kwargs,
-                        np_weights,
-                    )
-                )
-                trial_distances[best_trial_index] = best_trial_distance
-            return trial_distances
-        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[11]:  # "kmedoids"
-            n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
-            label_kmedoids_metric, _, _ = self._get_distance_metric(metric)
-            if (
-                label_kmedoids_metric
-                in QuickAdapterRegressorV3._unsupported_cluster_metrics_set()
-            ):
-                raise ValueError(
-                    f"Invalid label_kmedoids_metric {label_kmedoids_metric!r}. "
-                    f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
-                )
-            kmedoids_kwargs: dict[str, Any] = {
-                "metric": label_kmedoids_metric,
-                "random_state": 42,
-                "init": "k-medoids++",
-                "method": "pam",
-            }
-            kmedoids = KMedoids(n_clusters=n_clusters, **kmedoids_kwargs)
-            cluster_labels = kmedoids.fit_predict(normalized_matrix)
-            medoid_indices = kmedoids.medoid_indices_
-            cdist_kwargs: dict[str, Any] = {}
-            if (
-                label_kmedoids_metric
-                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
-            ):
-                cdist_kwargs["p"] = (
-                    label_p_order
-                    if label_p_order is not None and np.isfinite(label_p_order)
-                    else self._get_label_p_order_default(label_kmedoids_metric)
-                )
-            medoid_distances_to_ideal = sp.spatial.distance.cdist(
-                normalized_matrix[medoid_indices],
-                ideal_point_2d,
-                metric=label_kmedoids_metric,
-                **cdist_kwargs,
-            ).flatten()
-            label_kmedoids_selection = self.ft_params.get(
-                "label_kmedoids_selection",
-                QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS[1],  # "min"
+            p = QuickAdapterRegressorV3._resolve_p_order(
+                density_metric,
+                label_p_order,
+                ctx=f"label_p_order for {density_method}",
             )
-            best_medoid_distance_position = np.nanargmin(medoid_distances_to_ideal)
-            best_medoid_index = medoid_indices[best_medoid_distance_position]
-            cluster_index = cluster_labels[best_medoid_index]
-            best_cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
-            trial_distances = np.full(n_samples, np.inf)
-            if best_cluster_indices is not None and best_cluster_indices.size > 0:
-                best_trial_index, best_trial_distance = (
-                    self._select_best_trial_from_cluster(
-                        label_kmedoids_selection,
-                        best_cluster_indices,
-                        normalized_matrix,
-                        ideal_point_2d,
-                        label_kmedoids_metric,
-                        cdist_kwargs,
-                        np_weights,
-                        known_medoid_index=best_medoid_index,
-                        known_medoid_distance=medoid_distances_to_ideal[
-                            best_medoid_distance_position
-                        ],
-                    )
+
+            if density_method == QuickAdapterRegressorV3._DENSITY_METHODS[0]:  # "knn"
+                knn_n_neighbors = int(label_config["n_neighbors"])
+                knn_aggregation = cast(DensityAggregation, label_config["aggregation"])
+                knn_aggregation_param = label_config["aggregation_param"]
+                return QuickAdapterRegressorV3._knn_based_selection(
+                    normalized_matrix,
+                    knn_aggregation,
+                    distance_metric=density_metric,
+                    n_neighbors=knn_n_neighbors,
+                    weights=np_weights,
+                    p=p,
+                    aggregation_param=knn_aggregation_param,
                 )
-                trial_distances[best_trial_index] = best_trial_distance
-            return trial_distances
-        elif metric in {
-            QuickAdapterRegressorV3._CUSTOM_METRICS[12],  # "knn_power_mean"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[13],  # "knn_quantile"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[14],  # "knn_min"
-            QuickAdapterRegressorV3._CUSTOM_METRICS[15],  # "knn_max"
-        }:
-            label_knn_metric, _, _ = self._get_distance_metric(metric)
-            knn_kwargs: dict[str, Any] = {}
+
             if (
-                label_knn_metric
-                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
-            ):
-                knn_kwargs["p"] = (
-                    label_p_order
-                    if label_p_order is not None and np.isfinite(label_p_order)
-                    else self._get_label_p_order_default(label_knn_metric)
+                density_method == QuickAdapterRegressorV3._DENSITY_METHODS[1]
+            ):  # "medoid"
+                return QuickAdapterRegressorV3._pairwise_distance_sums(
+                    normalized_matrix,
+                    density_metric,
+                    weights=np_weights,
+                    p=p,
                 )
-                knn_kwargs["metric_params"] = {"w": np_weights}
-            label_knn_p_order = self.ft_params.get("label_knn_p_order")
-            n_neighbors = (
-                min(
-                    int(
-                        self.ft_params.get(
-                            "label_knn_n_neighbors",
-                            QuickAdapterRegressorV3.LABEL_KNN_N_NEIGHBORS_DEFAULT,
-                        )
-                    ),
-                    n_samples - 1,
-                )
-                + 1
-            )
-            nbrs = sklearn.neighbors.NearestNeighbors(
-                n_neighbors=n_neighbors, metric=label_knn_metric, **knn_kwargs
-            ).fit(normalized_matrix)
-            distances, _ = nbrs.kneighbors(normalized_matrix)
-            neighbor_distances = distances[:, 1:]
-            if neighbor_distances.shape[1] < 1:
-                return np.full(n_samples, np.inf)
-            if (
-                metric == QuickAdapterRegressorV3._CUSTOM_METRICS[12]
-            ):  # "knn_power_mean"
-                label_knn_p_order = (
-                    label_knn_p_order
-                    if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
-                    else self._get_label_knn_p_order_default(metric)
-                )
-                return sp.stats.pmean(neighbor_distances, p=label_knn_p_order, axis=1)
-            elif (
-                metric == QuickAdapterRegressorV3._CUSTOM_METRICS[13]
-            ):  # "knn_quantile"
-                label_knn_p_order = (
-                    label_knn_p_order
-                    if label_knn_p_order is not None and np.isfinite(label_knn_p_order)
-                    else self._get_label_knn_p_order_default(metric)
-                )
-                return np.nanquantile(neighbor_distances, label_knn_p_order, axis=1)
-            elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[14]:  # "knn_min"
-                return np.nanmin(neighbor_distances, axis=1)
-            elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[15]:  # "knn_max"
-                return np.nanmax(neighbor_distances, axis=1)
-        elif metric == QuickAdapterRegressorV3._CUSTOM_METRICS[17]:  # "topsis"
-            label_topsis_metric, _, _ = self._get_distance_metric(metric)
-            p = None
-            if (
-                label_topsis_metric
-                == QuickAdapterRegressorV3._SCIPY_METRICS[5]  # "minkowski"
-            ):
-                p = (
-                    label_p_order
-                    if label_p_order is not None and np.isfinite(label_p_order)
-                    else self._get_label_p_order_default(label_topsis_metric)
-                )
-            return QuickAdapterRegressorV3._topsis_scores(
-                normalized_matrix,
-                label_topsis_metric,
-                weights=np_weights,
-                p=p,
-            )
-        else:
-            raise ValueError(
-                f"Invalid label metric {metric!r}. Supported: {', '.join(metrics)}"
-            )
+
+        raise ValueError(
+            f"Invalid label_method {selection_method!r}. "
+            f"Supported: {', '.join(QuickAdapterRegressorV3._SELECTION_METHODS)}"
+        )
 
     def _get_multi_objective_study_best_trial(
         self, namespace: OptunaNamespace, study: optuna.study.Study
@@ -2314,7 +2390,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }:  # Only "label"
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only label
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[2]}"  # Only "label"
             )
         n_objectives = len(study.directions)
         if n_objectives < 2:
@@ -2324,14 +2400,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not QuickAdapterRegressorV3.optuna_study_has_best_trials(study):
             return None
 
-        metrics = QuickAdapterRegressorV3._metrics_set()
-        label_metric = self.ft_params.get(
-            "label_metric", QuickAdapterRegressorV3._SCIPY_METRICS[2]
-        )  # "euclidean"
-        if label_metric not in metrics:
-            raise ValueError(
-                f"Invalid label_metric {label_metric!r}. Supported: {', '.join(metrics)}"
-            )
+        label_method = self.ft_params.get(
+            "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
+        )  # "compromise_programming"
 
         best_trials = [
             trial
@@ -2356,8 +2427,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             objective_values_matrix, study.directions
         )
 
-        trial_distances = self._calculate_distances_to_ideal(
-            normalized_matrix, metric=label_metric, metrics=metrics
+        trial_distances = self._calculate_distances(
+            normalized_matrix,
+            selection_method=label_method,
         )
 
         return best_trials[np.nanargmin(trial_distances)]
@@ -2453,18 +2525,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "values": self.get_optuna_values(pair, namespace),
                 **self.get_optuna_params(pair, namespace),
             }
-            label_metric = self.ft_params.get(
-                "label_metric", QuickAdapterRegressorV3._SCIPY_METRICS[2]
+            label_config = self._resolve_label_method_config(
+                self.ft_params.get("label_method", self.LABEL_METHOD_DEFAULT)
             )
-            distance_metric, param_name, _ = self._get_distance_metric(label_metric)
-            if param_name:
-                metric_log_msg = (
-                    f" using {label_metric} metric ({distance_metric} distance)"
-                )
-            else:
-                metric_log_msg = f" using {label_metric} metric"
+            metric_log_msg = (
+                f"{QuickAdapterRegressorV3._format_label_method_config(label_config)}"
+            )
         logger.info(
-            f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed{metric_log_msg} ({time_spent:.2f} secs)"
+            f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed"
+            f" ({metric_log_msg}) ({time_spent:.2f} secs)"
         )
         max_study_results_key_length = (
             max(len(str(key)) for key in study_best_results.keys())

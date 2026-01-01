@@ -14,6 +14,7 @@ from typing import (
     Optional,
     TypeVar,
     Union,
+    get_args,
 )
 
 import numpy as np
@@ -111,6 +112,11 @@ RANK_METHODS: Final[tuple[RankMethod, ...]] = (
 )
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
+SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
+    "gaussian",
+    "kaiser",
+    "triang",
+)
 SmoothingMethod = Union[
     SmoothingKernel, Literal["smm", "sma", "savgol", "gaussian_filter1d"]
 ]
@@ -247,8 +253,8 @@ def _calculate_coeffs(
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(
-            f"Invalid window type {win_type!r}. "
-            f"Supported: {', '.join(SMOOTHING_METHODS[:3])}"
+            f"Invalid window type {win_type!r}, supported: "
+            f"{', '.join(SMOOTHING_KERNELS)}"
         )
     return coeffs / np.sum(coeffs)
 
@@ -673,7 +679,7 @@ def _build_weights_array(
 
     if len(indices) != weights.size:
         raise ValueError(
-            f"Invalid indices/weights: length mismatch ({len(indices)} indices but {weights.size} weights)"
+            f"Invalid indices/weights: length mismatch, got {len(indices)} indices but {weights.size} weights"
         )
 
     weights_array = np.full(n_extrema, default_weight, dtype=float)
@@ -760,7 +766,7 @@ def calculate_hybrid_extrema_weights(
 
     if any(weights_array_by_source[s].size != n for s in enabled_sources):
         raise ValueError(
-            f"Invalid hybrid weights: length mismatch ({n} indices but inconsistent weights lengths)"
+            f"Invalid hybrid weights: length mismatch, got {n} indices but inconsistent weights lengths"
         )
 
     source_weights_array: NDArray[np.floating] = np.asarray(
@@ -1073,7 +1079,7 @@ def get_weighted_extrema(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise ValueError("Invalid fn: must be callable")
+        raise ValueError(f"Invalid fn: must be callable, got {type(fn).__name__!r}")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -1085,7 +1091,9 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if code is None and hasattr(fn, "__call__"):
         code = getattr(fn.__call__, "__code__", None)
     if code is None:
-        raise ValueError("Invalid fn: unable to retrieve code object")
+        raise ValueError(
+            f"Invalid fn: unable to retrieve code object, got {type(fn).__name__!r}"
+        )
     return hashlib.sha256(code.co_code).hexdigest()
 
 
@@ -2111,7 +2119,7 @@ def fit_regressor(
         )
     else:
         raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}, supported: {', '.join(REGRESSORS)}"
         )
     return model
 
@@ -2162,13 +2170,13 @@ def get_optuna_study_model_parameters(
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}, supported: {', '.join(REGRESSORS)}"
         )
     if not isinstance(space_fraction, (int, float)) or not (
         0.0 <= space_fraction <= 1.0
     ):
         raise ValueError(
-            f"Invalid space_fraction {space_fraction!r}: must be in range [0, 1]"
+            f"Invalid space_fraction: must be in range [0, 1], got {space_fraction!r}"
         )
 
     def _build_ranges(
@@ -2515,7 +2523,7 @@ def get_optuna_study_model_parameters(
 
     else:
         raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}, supported: {', '.join(REGRESSORS)}"
         )
 
 
@@ -2576,8 +2584,8 @@ def get_min_max_label_period_candles(
 ) -> tuple[int, int, int]:
     if min_label_period_candles > max_label_period_candles:
         raise ValueError(
-            f"Invalid label_period_candles range: min ({min_label_period_candles}) "
-            f"must be <= max ({max_label_period_candles})"
+            f"Invalid label_period_candles range: min must be <= max, "
+            f"got min={min_label_period_candles!r}, max={max_label_period_candles!r}"
         )
 
     capped_period_candles = max(1, floor_to_step(max_period_candles, candles_step))
@@ -2716,9 +2724,15 @@ def validate_range(
     if not isinstance(default_min, (int, float)) or not isinstance(
         default_max, (int, float)
     ):
-        raise ValueError(f"Invalid {name}: defaults must be numeric")
+        raise ValueError(
+            f"Invalid {name}: defaults must be numeric, "
+            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
+        )
     if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(f"Invalid {name}: defaults ordering must have min < max")
+        raise ValueError(
+            f"Invalid {name}: defaults ordering must have min < max, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
 
     def _validate_component(
         value: float | int | None, name: str, default_value: float | int
@@ -2737,7 +2751,7 @@ def validate_range(
             or (non_negative and value < 0)
         ):
             logger.warning(
-                f"Invalid {name} {value!r}: must be {constraint_str}. Using default {default_value!r}"
+                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
             )
             return default_value
         return value
@@ -2752,7 +2766,9 @@ def validate_range(
     )
     if not ordering_ok:
         logger.warning(
-            f"Invalid {name} ordering ({min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}), must have {min_name} < {max_name}, using defaults ({default_min!r}, {default_max!r})"
+            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
+            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
+            f"using defaults {default_min!r}, {default_max!r}"
         )
         sanitized_min, sanitized_max = default_min, default_max
 
