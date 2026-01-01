@@ -216,57 +216,57 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     )  # "power_mean"
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
         return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _custom_threshold_methods_set() -> set[CustomThresholdMethod]:
         return set(QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _skimage_threshold_methods_set() -> set[SkimageThresholdMethod]:
         return set(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _threshold_methods_set() -> set[ThresholdMethod]:
         return set(QuickAdapterRegressorV3._THRESHOLD_METHODS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _optuna_namespaces_set() -> set[OptunaNamespace]:
         return set(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _scipy_metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._DISTANCE_METRICS[:8])
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _unsupported_cluster_metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _cluster_selection_methods_set() -> set[ClusterSelectionMethod]:
         return set(QuickAdapterRegressorV3._CLUSTER_SELECTION_METHODS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _selection_methods_set() -> set[str]:
         return set(QuickAdapterRegressorV3._SELECTION_METHODS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _distance_metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._DISTANCE_METRICS)
 
     @staticmethod
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=None)
     def _density_aggregations_set() -> set[str]:
         return set(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)
 
