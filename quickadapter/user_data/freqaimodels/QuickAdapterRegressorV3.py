@@ -206,7 +206,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     LABEL_DISTANCE_METRIC_DEFAULT: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
 
     LABEL_CLUSTER_METRIC_DEFAULT: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
-    LABEL_CLUSTER_SELECTION_DEFAULT: Final[ClusterSelectionMethod] = (
+    LABEL_CLUSTER_SELECTION_METHOD_DEFAULT: Final[ClusterSelectionMethod] = (
         _CLUSTER_SELECTION_METHODS[1]  # "min"
     )
 
@@ -417,9 +417,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "label_cluster_metric",
                 QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
             )
-            config["selection"] = self.ft_params.get(
-                "label_cluster_selection",
-                QuickAdapterRegressorV3.LABEL_CLUSTER_SELECTION_DEFAULT,
+            config["selection_method"] = self.ft_params.get(
+                "label_cluster_selection_method",
+                QuickAdapterRegressorV3.LABEL_CLUSTER_SELECTION_METHOD_DEFAULT,
             )
         elif category == "density":
             density_method = cast(DensityMethod, label_method)
@@ -2369,7 +2369,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if category == "cluster":
             cluster_metric = label_config["distance_metric"]
-            cluster_selection = label_config["selection"]
+            cluster_selection_method = label_config["selection_method"]
 
             QuickAdapterRegressorV3._validate_metric_supported(
                 cluster_metric, category="cluster"
@@ -2383,7 +2383,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 normalized_matrix,
                 method,
                 distance_metric=cluster_metric,
-                selection_method=cluster_selection,
+                selection_method=cluster_selection_method,
                 weights=weights,
                 p=p,
             )
