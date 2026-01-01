@@ -1566,7 +1566,7 @@ class QuickAdapterV3(IStrategy):
         callback: Callable[[], None],
     ) -> None:
         if not callable(callback):
-            raise ValueError(f"Invalid callback: must be callable, got {callback!r}")
+            raise ValueError(f"Invalid callback {callback!r}: must be callable")
         timestamp = int(current_time.timestamp())
         candle_duration_secs = max(1, int(self._candle_duration_secs))
         candle_start_secs = (timestamp // candle_duration_secs) * candle_duration_secs

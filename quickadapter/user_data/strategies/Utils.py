@@ -252,8 +252,8 @@ def _calculate_coeffs(
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(
-            f"Invalid window type {win_type!r}, supported: "
-            f"{', '.join(SMOOTHING_KERNELS)}"
+            f"Invalid window type {win_type!r}. "
+            f"Supported: {', '.join(SMOOTHING_KERNELS)}"
         )
     return coeffs / np.sum(coeffs)
 
@@ -1079,7 +1079,7 @@ def get_weighted_extrema(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise ValueError(f"Invalid fn: must be callable, got {type(fn).__name__!r}")
+        raise ValueError(f"Invalid fn {type(fn).__name__!r}: must be callable")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -2119,7 +2119,7 @@ def fit_regressor(
         )
     else:
         raise ValueError(
-            f"Invalid regressor {regressor!r}, supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
     return model
 
@@ -2170,7 +2170,7 @@ def get_optuna_study_model_parameters(
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(
-            f"Invalid regressor {regressor!r}, supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
     if not isinstance(space_fraction, (int, float)) or not (
         0.0 <= space_fraction <= 1.0
@@ -2523,7 +2523,7 @@ def get_optuna_study_model_parameters(
 
     else:
         raise ValueError(
-            f"Invalid regressor {regressor!r}, supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
         )
 
 

@@ -212,8 +212,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     LABEL_DENSITY_N_NEIGHBORS_DEFAULT: Final[int] = 5
     LABEL_DENSITY_AGGREGATION_DEFAULT: Final[DensityAggregation] = (
-        _DENSITY_AGGREGATIONS[0]
-    )  # "power_mean"
+        _DENSITY_AGGREGATIONS[0]  # "power_mean"
+    )
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -319,9 +319,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if p is None:
             return None
         if not np.isfinite(p):
-            raise ValueError(f"Invalid {ctx}: p must be finite, got {p!r}")
+            raise ValueError(f"Invalid {ctx} p {p!r}: must be finite")
         if p <= 0:
-            raise ValueError(f"Invalid {ctx}: p must be > 0, got {p!r}")
+            raise ValueError(f"Invalid {ctx} p {p!r}: must be > 0")
         return float(p)
 
     @staticmethod
@@ -363,17 +363,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if q is None:
             return None
         if not np.isfinite(q):
-            raise ValueError(f"Invalid {ctx}: q must be finite, got {q!r}")
+            raise ValueError(f"Invalid {ctx} q {q!r}: must be finite")
         if q < 0.0 or q > 1.0:
-            raise ValueError(f"Invalid {ctx}: q must be in [0, 1], got {q!r}")
+            raise ValueError(f"Invalid {ctx} q {q!r}: must be in [0, 1]")
         return float(q)
 
     @staticmethod
     def _validate_metric_supported(metric: str, *, category: str) -> None:
         if metric in QuickAdapterRegressorV3._unsupported_cluster_metrics_set():
+            supported_metrics = [
+                m
+                for m in QuickAdapterRegressorV3._DISTANCE_METRICS
+                if m not in QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS
+            ]
             raise ValueError(
                 f"Invalid label_{category}_metric {metric!r}. "
-                f"Unsupported: {', '.join(QuickAdapterRegressorV3._UNSUPPORTED_CLUSTER_METRICS)}"
+                f"This metric does not support weighted distance calculations. "
+                f"Supported: {', '.join(supported_metrics)}"
             )
 
     @staticmethod
@@ -423,12 +429,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         elif category == "density":
             density_method = cast(DensityMethod, label_method)
-            config["distance_metric"] = self.ft_params.get(
+            distance_metric = self.ft_params.get(
                 "label_density_metric",
                 QuickAdapterRegressorV3._get_label_density_metric_default(
                     density_method
                 ),
             )
+            if distance_metric not in QuickAdapterRegressorV3._distance_metrics_set():
+                raise ValueError(
+                    f"Invalid label_density_metric {distance_metric!r}. "
+                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+                )
+            config["distance_metric"] = distance_metric
+
             if density_method == QuickAdapterRegressorV3._DENSITY_METHODS[0]:  # "knn"
                 aggregation = cast(
                     DensityAggregation,
@@ -437,11 +450,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         QuickAdapterRegressorV3.LABEL_DENSITY_AGGREGATION_DEFAULT,
                     ),
                 )
+                if (
+                    aggregation
+                    not in QuickAdapterRegressorV3._density_aggregations_set()
+                ):
+                    raise ValueError(
+                        f"Invalid label_density_aggregation {aggregation!r}. "
+                        f"Supported: {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
+                    )
                 config["aggregation"] = aggregation
-                config["n_neighbors"] = self.ft_params.get(
+
+                n_neighbors = self.ft_params.get(
                     "label_density_n_neighbors",
                     QuickAdapterRegressorV3.LABEL_DENSITY_N_NEIGHBORS_DEFAULT,
                 )
+                if not isinstance(n_neighbors, int) or n_neighbors < 1:
+                    raise ValueError(
+                        f"Invalid label_density_n_neighbors: must be positive integer, got {n_neighbors!r}"
+                    )
+                config["n_neighbors"] = n_neighbors
+
                 config["aggregation_param"] = self.ft_params.get(
                     "label_density_aggregation_param",
                     QuickAdapterRegressorV3._get_label_density_aggregation_param_default(
@@ -1203,7 +1231,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         if not callable(callback):
             raise ValueError(
-                f"Invalid callback: must be callable, got {type(callback).__name__}"
+                f"Invalid callback {type(callback).__name__!r}: must be callable"
             )
         self._optuna_label_candles[pair] += 1
         if pair not in self._optuna_label_incremented_pairs:
@@ -1660,13 +1688,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "Invalid label_weights: length must match number of objectives"
             )
         if not np.all(np.isfinite(np_weights)):
-            raise ValueError("Invalid label_weights: must contain only finite values")
+            raise ValueError(
+                f"Invalid label_weights (shape={np_weights.shape}, dtype={np_weights.dtype}): "
+                f"must contain only finite values"
+            )
         if np.any(np_weights < 0):
-            raise ValueError("Invalid label_weights: values must be non-negative")
+            raise ValueError(
+                f"Invalid label_weights (shape={np_weights.shape}, dtype={np_weights.dtype}): "
+                f"values must be non-negative"
+            )
 
         weights_sum = np.nansum(np_weights)
         if np.isclose(weights_sum, 0.0):
-            raise ValueError("Invalid label_weights: sum cannot be zero")
+            raise ValueError(
+                f"Invalid label_weights (shape={np_weights.shape}, sum={weights_sum}): "
+                f"sum cannot be zero"
+            )
 
         return np_weights / weights_sum
 
@@ -1687,8 +1724,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if weights is None:
             weights = np.ones(n_objectives)
-        if p is None:
-            p = np.nan
 
         ideal_point = np.ones(n_objectives)
         ideal_point_2d = ideal_point.reshape(1, -1)
@@ -1742,17 +1777,27 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._DISTANCE_METRICS[14],  # "cubic_mean"
             QuickAdapterRegressorV3._DISTANCE_METRICS[15],  # "power_mean"
         }:
-            power_map: dict[str, float] = {
-                QuickAdapterRegressorV3._DISTANCE_METRICS[10]: -1.0,  # "harmonic_mean"
-                QuickAdapterRegressorV3._DISTANCE_METRICS[11]: 0.0,  # "geometric_mean"
-                QuickAdapterRegressorV3._DISTANCE_METRICS[12]: 1.0,  # "arithmetic_mean"
-                QuickAdapterRegressorV3._DISTANCE_METRICS[13]: 2.0,  # "quadratic_mean"
-                QuickAdapterRegressorV3._DISTANCE_METRICS[14]: 3.0,  # "cubic_mean"
-                QuickAdapterRegressorV3._DISTANCE_METRICS[15]: p,  # "power_mean"
-            }
-            power = power_map[distance_metric]
-            if not np.isfinite(power):
-                power = 2.0
+            if (
+                distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[15]
+            ):  # "power_mean"
+                power = p if p is not None and np.isfinite(p) else 2.0
+            else:
+                power_map: dict[str, float] = {
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        10
+                    ]: -1.0,  # "harmonic_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        11
+                    ]: 0.0,  # "geometric_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        12
+                    ]: 1.0,  # "arithmetic_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[
+                        13
+                    ]: 2.0,  # "quadratic_mean"
+                    QuickAdapterRegressorV3._DISTANCE_METRICS[14]: 3.0,  # "cubic_mean"
+                }
+                power = power_map[distance_metric]
             return sp.stats.pmean(
                 ideal_point, p=power, weights=weights
             ) - sp.stats.pmean(normalized_matrix, p=power, weights=weights, axis=1)
@@ -1763,7 +1808,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return (ideal_point - normalized_matrix) @ weights
 
         raise ValueError(
-            f"Invalid distance_metric {distance_metric!r} for compromise programming scores, supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+            f"Invalid distance_metric {distance_metric!r} for compromise_programming. "
+            f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
         )
 
     @staticmethod
@@ -1775,9 +1821,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         p: Optional[float] = None,
     ) -> NDArray[np.floating]:
         if matrix.ndim != 2:
-            raise ValueError("Invalid matrix: must be 2-dimensional")
+            raise ValueError(
+                f"Invalid matrix (shape={matrix.shape}, ndim={matrix.ndim}): "
+                f"must be 2-dimensional"
+            )
         if matrix.shape[1] == 0:
-            raise ValueError("Invalid matrix: must have at least one feature")
+            raise ValueError(
+                f"Invalid matrix (shape={matrix.shape}): must have at least one feature"
+            )
 
         if not np.all(np.isfinite(matrix)):
             raise ValueError(
@@ -2147,6 +2198,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             if weights is not None:
                 knn_kwargs["metric_params"] = {"w": weights}
+        else:
+            if weights is not None and not np.allclose(weights, weights[0]):
+                raise ValueError(
+                    f"Invalid configuration: weights are only supported for Minkowski distance metric, "
+                    f"but got distance_metric={distance_metric!r}"
+                )
 
         nbrs = sklearn.neighbors.NearestNeighbors(
             n_neighbors=min(n_neighbors, n_samples - 1) + 1,
@@ -2205,7 +2262,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         directions: list[optuna.study.StudyDirection],
     ) -> NDArray[np.floating]:
         if objective_values_matrix.ndim != 2:
-            raise ValueError("Invalid objective_values_matrix: must be 2-dimensional")
+            raise ValueError(
+                f"Invalid objective_values_matrix (shape={objective_values_matrix.shape}, "
+                f"ndim={objective_values_matrix.ndim}): must be 2-dimensional"
+            )
 
         n_samples, n_objectives = objective_values_matrix.shape
         if n_samples == 0 or n_objectives == 0:
@@ -2302,7 +2362,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         selection_method: SelectionMethod,
     ) -> NDArray[np.floating]:
         if normalized_matrix.ndim != 2:
-            raise ValueError("Invalid normalized_matrix: must be 2-dimensional")
+            raise ValueError(
+                f"Invalid normalized_matrix (shape={normalized_matrix.shape}, "
+                f"ndim={normalized_matrix.ndim}): must be 2-dimensional"
+            )
 
         n_samples, n_objectives = normalized_matrix.shape
         if n_samples == 0 or n_objectives == 0:
@@ -2327,10 +2390,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise ValueError(
                 f"Invalid label_weights: must be a list, tuple, or array, got {type(label_weights).__name__}"
             )
-        weights = (
-            np.array(label_weights, dtype=float) if label_weights is not None else None
+        weights = QuickAdapterRegressorV3._normalize_weights(
+            np.array(label_weights, dtype=float) if label_weights is not None else None,
+            n_objectives,
         )
-        weights = QuickAdapterRegressorV3._normalize_weights(weights, n_objectives)
 
         if n_samples == 1:
             if method in {
@@ -2403,6 +2466,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if density_method == QuickAdapterRegressorV3._DENSITY_METHODS[0]:  # "knn"
                 knn_n_neighbors = int(label_config["n_neighbors"])
                 knn_aggregation = cast(DensityAggregation, label_config["aggregation"])
+                if (
+                    knn_aggregation
+                    not in QuickAdapterRegressorV3._density_aggregations_set()
+                ):
+                    raise ValueError(
+                        f"Invalid aggregation in label_config {knn_aggregation!r}. "
+                        f"Supported: {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
+                    )
                 knn_aggregation_param = label_config["aggregation_param"]
                 return QuickAdapterRegressorV3._knn_based_selection(
                     normalized_matrix,
