@@ -1480,6 +1480,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
         minima_indices = sp.signal.find_peaks(-pred_extrema)[0]
         maxima_indices = sp.signal.find_peaks(pred_extrema)[0]
+        logger.debug(
+            f"Extrema detection | find_peaks detected: "
+            f"{minima_indices.size} minima, {maxima_indices.size} maxima, "
+            f"total={minima_indices.size + maxima_indices.size}"
+        )
         return minima_indices, maxima_indices
 
     @staticmethod
@@ -1489,12 +1494,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         maxima_indices: NDArray[np.intp],
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
-        n_minima = (
+        n_kept_minima = (
             max(1, int(round(minima_indices.size * keep_extrema_fraction)))
             if minima_indices.size > 0
             else 0
         )
-        n_maxima = (
+        n_kept_maxima = (
             max(1, int(round(maxima_indices.size * keep_extrema_fraction)))
             if maxima_indices.size > 0
             else 0
@@ -1502,17 +1507,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         pred_minima = (
             pred_extrema.loc[
-                pred_extrema.iloc[minima_indices].nsmallest(n_minima).index
+                pred_extrema.iloc[minima_indices].nsmallest(n_kept_minima).index
             ]
-            if n_minima > 0
+            if n_kept_minima > 0
             else pd.Series(dtype=float)
         )
         pred_maxima = (
-            pred_extrema.loc[pred_extrema.iloc[maxima_indices].nlargest(n_maxima).index]
-            if n_maxima > 0
+            pred_extrema.loc[
+                pred_extrema.iloc[maxima_indices].nlargest(n_kept_maxima).index
+            ]
+            if n_kept_maxima > 0
             else pd.Series(dtype=float)
         )
 
+        logger.debug(
+            f"Extrema filtering | rank_peaks: kept {n_kept_minima}/{minima_indices.size} minima, "
+            f"{n_kept_maxima}/{maxima_indices.size} maxima with keep_fraction={keep_extrema_fraction}"
+        )
         return pred_minima, pred_maxima
 
     @staticmethod
@@ -1522,17 +1533,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         n_maxima: int,
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
+        n_kept_minima = (
+            max(1, int(round(n_minima * keep_extrema_fraction))) if n_minima > 0 else 0
+        )
+        n_kept_maxima = (
+            max(1, int(round(n_maxima * keep_extrema_fraction))) if n_maxima > 0 else 0
+        )
+
         pred_minima = (
-            pred_extrema.nsmallest(max(1, int(round(n_minima * keep_extrema_fraction))))
-            if n_minima > 0
+            pred_extrema.nsmallest(n_kept_minima)
+            if n_kept_minima > 0
             else pd.Series(dtype=float)
         )
         pred_maxima = (
-            pred_extrema.nlargest(max(1, int(round(n_maxima * keep_extrema_fraction))))
-            if n_maxima > 0
+            pred_extrema.nlargest(n_kept_maxima)
+            if n_kept_maxima > 0
             else pd.Series(dtype=float)
         )
 
+        logger.debug(
+            f"Extrema filtering | rank_extrema: kept {n_kept_minima}/{n_minima} minima, "
+            f"{n_kept_maxima}/{n_maxima} maxima with keep_fraction={keep_extrema_fraction}"
+        )
         return pred_minima, pred_maxima
 
     @staticmethod
