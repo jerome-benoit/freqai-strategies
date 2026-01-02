@@ -192,7 +192,6 @@ class QuickAdapterV3(IStrategy):
             "subplots": {
                 "accuracy": {
                     "hp_rmse": {"color": "violet", "type": "line"},
-                    "train_rmse": {"color": "purple", "type": "line"},
                 },
                 "extrema": {
                     MAXIMA_THRESHOLD_COLUMN: {"color": "blue", "type": "line"},

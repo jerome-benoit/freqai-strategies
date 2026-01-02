@@ -125,13 +125,7 @@
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
     "extrema_weighting": {
-      "strategy": "amplitude",
-      // "strategy": "hybrid",
-      // "source_weights": {
-      //   "amplitude": 0.8,
-      //   "amplitude_threshold_ratio": 0.2
-      // },
-      "gamma": 1.5
+      "strategy": "none"
     },
     "extrema_smoothing": {
       "method": "kaiser",
@@ -147,7 +141,6 @@
       "n_trials": 50,
       "timeout": 7200,
       "label_candles_step": 1,
-      "train_candles_step": 10,
       "storage": "file"
     },
     "extra_returns_per_train": {
@@ -159,8 +152,7 @@
       "&s-maxima_threshold": 2,
       "label_period_candles": 18,
       "label_natr_multiplier": 10.5,
-      "hp_rmse": -1,
-      "train_rmse": -1
+      "hp_rmse": -1
     },
     "feature_parameters": {
       "include_corr_pairlist": [
