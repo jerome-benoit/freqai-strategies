@@ -1184,7 +1184,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # Only "hp"
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # "hp"
             )
         return value
 
@@ -1196,7 +1196,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # Only "hp"
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # "hp"
             )
 
     def get_optuna_values(
@@ -1207,7 +1207,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # Only "label"
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
         return values
 
@@ -1219,7 +1219,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # Only "label"
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
 
     def init_optuna_label_candle_pool(self) -> None:
@@ -1364,12 +1364,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         namespace: OptunaNamespace,
         callback: Callable[[], Optional[optuna.study.Study]],
     ) -> None:
-        if namespace not in {
-            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
-        }:  # Only "label"
+        if namespace not in {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}:  # "label"
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # Only "label"
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
         if not callable(callback):
             raise ValueError(
@@ -2688,12 +2686,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _get_multi_objective_study_best_trial(
         self, namespace: OptunaNamespace, study: optuna.study.Study
     ) -> Optional[optuna.trial.FrozenTrial]:
-        if namespace not in {
-            QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
-        }:  # Only "label"
+        if namespace not in {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}:  # "label"
             raise ValueError(
                 f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # Only "label"
+                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
         n_objectives = len(study.directions)
         if n_objectives < 2:
