@@ -2220,7 +2220,7 @@ def get_optuna_study_model_parameters(
 
     if regressor == REGRESSORS[0]:  # "xgboost"
         # Parameter order: boosting -> tree structure -> leaf constraints ->
-        #                  sampling -> regularization
+        #                  sampling -> regularization -> binning
         default_ranges: dict[str, tuple[float, float]] = {
             # Boosting/Training
             "n_estimators": (50, 3000),
