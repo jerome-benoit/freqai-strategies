@@ -538,22 +538,6 @@ def compute_extrema_weights(
         f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
     )
 
-    if weights is not None:
-        if weights.size == 0:
-            return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
-
-        return _build_weights_array(
-            n_extrema=n_extrema,
-            indices=indices,
-            weights=weights,
-            default_weight=np.nanmedian(weights),
-        )
-
-    raise ValueError(
-        f"Invalid extrema weighting strategy {strategy!r}. "
-        f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
-    )
-
 
 def _apply_weights(
     extrema: NDArray[np.floating], weights: NDArray[np.floating]
