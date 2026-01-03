@@ -159,7 +159,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
         else:
             raise ValueError(
-                f"Unsupported standardization: {method!r}. "
+                f"Invalid standardization {method!r}. "
                 f"Supported: {', '.join(STANDARDIZATION_TYPES)}"
             )
         return out
@@ -184,7 +184,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             out[mask] = sp.special.expit(sigmoid_scale * values[mask])
         else:
             raise ValueError(
-                f"Unsupported normalization: {method!r}. "
+                f"Invalid normalization {method!r}. "
                 f"Supported: {', '.join(NORMALIZATION_TYPES)}"
             )
         return out
@@ -280,7 +280,7 @@ class ExtremaWeightingTransformer(BaseTransform):
         self._n_train = int(nonzero_values.size)
         self._mean = float(np.mean(nonzero_values))
         std = float(np.std(nonzero_values))
-        self._std = std if np.isfinite(std) and std > 0 else 1.0
+        self._std = std if np.isfinite(std) and not np.isclose(std, 0.0) else 1.0
         self._min = float(np.min(nonzero_values))
         self._max = float(np.max(nonzero_values))
         if np.isclose(self._max, self._min):
@@ -291,9 +291,9 @@ class ExtremaWeightingTransformer(BaseTransform):
             float(np.percentile(nonzero_values, robust_quantiles[1] * 100)),
         )
         iqr = q3 - q1
-        self._iqr = iqr if np.isfinite(iqr) and iqr > 0 else 1.0
+        self._iqr = iqr if np.isfinite(iqr) and not np.isclose(iqr, 0.0) else 1.0
         mad = float(np.median(np.abs(nonzero_values - self._median)))
-        self._mad = mad if np.isfinite(mad) and mad > 0 else 1.0
+        self._mad = mad if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
 
         self._fitted = True
         return self
