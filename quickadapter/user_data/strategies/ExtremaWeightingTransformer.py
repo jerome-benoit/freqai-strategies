@@ -208,7 +208,7 @@ class ExtremaWeightingTransformer(BaseTransform):
         if np.isclose(gamma, 1.0) or not np.isfinite(gamma) or gamma <= 0:
             return values
         out = values.copy()
-        out[mask] = np.power(np.abs(values[mask]), 1.0 / gamma) * np.sign(values[mask])
+        out[mask] = np.sign(values[mask]) * np.power(np.abs(values[mask]), 1.0 / gamma)
         return out
 
     def fit(

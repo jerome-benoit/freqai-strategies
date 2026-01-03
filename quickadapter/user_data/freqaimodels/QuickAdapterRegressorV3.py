@@ -2973,6 +2973,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
             )
 
+    @lru_cache(maxsize=8)
     def optuna_samplers_by_namespace(
         self, namespace: OptunaNamespace
     ) -> tuple[tuple[OptunaSampler, ...], OptunaSampler]:
