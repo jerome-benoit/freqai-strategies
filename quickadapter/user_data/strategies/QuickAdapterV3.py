@@ -506,7 +506,6 @@ class QuickAdapterV3(IStrategy):
         logger.info(
             f"  sigmoid_scale: {format_number(self.extrema_weighting['sigmoid_scale'])}"
         )
-        logger.info(f"  rank_method: {self.extrema_weighting['rank_method']}")
         logger.info(f"  gamma: {format_number(self.extrema_weighting['gamma'])}")
 
         logger.info("Extrema Smoothing:")
