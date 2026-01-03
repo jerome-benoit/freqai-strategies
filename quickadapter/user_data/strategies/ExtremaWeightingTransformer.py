@@ -103,6 +103,7 @@ class ExtremaWeightingTransformer(BaseTransform):
         tuple[float, float],
         float,
         float,
+        tuple[float, float],
     ]:
         """Extract and validate configuration parameters."""
         config = self.extrema_weighting
@@ -124,6 +125,9 @@ class ExtremaWeightingTransformer(BaseTransform):
                 "mmad_scaling_factor", DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
             )
         )
+        robust_quantiles: tuple[float, float] = config.get(
+            "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
+        )
         return (
             standardization,
             normalization,
@@ -131,6 +135,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range,
             sigmoid_scale,
             mmad_scaling_factor,
+            robust_quantiles,
         )
 
     def _standardize(
@@ -267,6 +272,11 @@ class ExtremaWeightingTransformer(BaseTransform):
             self._fitted = True
             return self
 
+        # Get robust_quantiles from config
+        robust_quantiles: tuple[float, float] = self.extrema_weighting.get(
+            "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
+        )
+
         self._n_train = int(nonzero_values.size)
         self._mean = float(np.mean(nonzero_values))
         std = float(np.std(nonzero_values))
@@ -277,8 +287,8 @@ class ExtremaWeightingTransformer(BaseTransform):
             self._max = self._min + 1.0
         self._median = float(np.median(nonzero_values))
         q1, q3 = (
-            float(np.percentile(nonzero_values, 25)),
-            float(np.percentile(nonzero_values, 75)),
+            float(np.percentile(nonzero_values, robust_quantiles[0] * 100)),
+            float(np.percentile(nonzero_values, robust_quantiles[1] * 100)),
         )
         iqr = q3 - q1
         self._iqr = iqr if np.isfinite(iqr) and iqr > 0 else 1.0
@@ -310,6 +320,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range,
             sigmoid_scale,
             mmad_scaling_factor,
+            _robust_quantiles,
         ) = self._get_config()
 
         arr = np.asarray(X, dtype=float)
@@ -365,6 +376,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range,
             sigmoid_scale,
             mmad_scaling_factor,
+            _robust_quantiles,
         ) = self._get_config()
 
         arr = np.asarray(X, dtype=float)
