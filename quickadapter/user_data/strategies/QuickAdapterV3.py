@@ -545,12 +545,6 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Extrema Weighting:")
         logger.info(f"  strategy: {self.extrema_weighting['strategy']}")
-        formatted_source_weights = {
-            k: format_number(v)
-            for k, v in self.extrema_weighting["source_weights"].items()
-        }
-        logger.info(f"  source_weights: {formatted_source_weights}")
-        logger.info(f"  aggregation: {self.extrema_weighting['aggregation']}")
         logger.info(f"  standardization: {self.extrema_weighting['standardization']}")
         logger.info(
             f"  robust_quantiles: ({format_number(self.extrema_weighting['robust_quantiles'][0])}, {format_number(self.extrema_weighting['robust_quantiles'][1])})"
@@ -915,9 +909,7 @@ class QuickAdapterV3(IStrategy):
             speeds=pivots_speeds,
             efficiency_ratios=pivots_efficiency_ratios,
             volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
-            source_weights=self.extrema_weighting["source_weights"],
             strategy=self.extrema_weighting["strategy"],
-            aggregation=self.extrema_weighting["aggregation"],
         )
 
         plot_eps = weighted_extrema.abs().where(weighted_extrema.ne(0.0)).min()

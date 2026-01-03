@@ -21,22 +21,17 @@ import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
-from numpy.typing import NDArray
-from scipy.ndimage import gaussian_filter1d
-from scipy.stats import gmean, percentileofscore
-from technical import qtpylib
-
 from ExtremaWeightingTransformer import (
     DEFAULTS_EXTREMA_WEIGHTING,
     NORMALIZATION_TYPES,
     STANDARDIZATION_TYPES,
-    WEIGHT_AGGREGATIONS,
-    WEIGHT_SOURCES,
     WEIGHT_STRATEGIES,
-    WeightAggregation,
-    WeightSource,
     WeightStrategy,
 )
+from numpy.typing import NDArray
+from scipy.ndimage import gaussian_filter1d
+from scipy.stats import percentileofscore
+from technical import qtpylib
 
 if TYPE_CHECKING:
     from xgboost.callback import TrainingCallback as XGBoostTrainingCallback
@@ -224,48 +219,8 @@ def get_extrema_weighting_config(
         )
         gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
 
-    source_weights = extrema_weighting.get(
-        "source_weights", DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
-    )
-    if not isinstance(source_weights, dict):
-        logger.warning(
-            f"Invalid extrema_weighting source_weights {source_weights!r}: must be a dict of source name to weight, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
-        )
-        source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
-    else:
-        sanitized_source_weights: dict[str, float] = {}
-        for source, weight in source_weights.items():
-            if source not in set(WEIGHT_SOURCES):
-                continue
-            if (
-                not isinstance(weight, (int, float))
-                or not np.isfinite(weight)
-                or weight < 0
-            ):
-                continue
-            sanitized_source_weights[str(source)] = float(weight)
-        if not sanitized_source_weights:
-            logger.warning(
-                f"Invalid extrema_weighting source_weights {source_weights!r}: empty after sanitization, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
-            )
-            source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
-        else:
-            source_weights = sanitized_source_weights
-
-    aggregation = extrema_weighting.get(
-        "aggregation",
-        DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
-    )
-    if aggregation not in set(WEIGHT_AGGREGATIONS):
-        logger.warning(
-            f"Invalid extrema_weighting aggregation {aggregation!r}, supported: {', '.join(WEIGHT_AGGREGATIONS)}, using default {WEIGHT_AGGREGATIONS[0]!r}"
-        )
-        aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
-
     return {
         "strategy": strategy,
-        "source_weights": source_weights,
-        "aggregation": aggregation,
         # Phase 1: Standardization
         "standardization": standardization,
         "robust_quantiles": robust_quantiles,
@@ -518,102 +473,6 @@ def _build_weights_array(
     return weights_array
 
 
-def compute_hybrid_extrema_weights(
-    indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
-    source_weights: dict[str, float],
-    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
-) -> NDArray[np.floating]:
-    n = len(indices)
-    if n == 0:
-        return np.array([], dtype=float)
-
-    if not isinstance(source_weights, dict):
-        source_weights = {}
-
-    weights_array_by_source: dict[WeightSource, NDArray[np.floating]] = {
-        "amplitude": np.asarray(amplitudes, dtype=float),
-        "amplitude_threshold_ratio": np.asarray(
-            amplitude_threshold_ratios, dtype=float
-        ),
-        "volume_rate": np.asarray(volume_rates, dtype=float),
-        "speed": np.asarray(speeds, dtype=float),
-        "efficiency_ratio": np.asarray(efficiency_ratios, dtype=float),
-        "volume_weighted_efficiency_ratio": np.asarray(
-            volume_weighted_efficiency_ratios, dtype=float
-        ),
-    }
-
-    enabled_sources: list[WeightSource] = []
-    source_weights_list: list[float] = []
-    for source in WEIGHT_SOURCES:
-        source_weight = source_weights.get(source)
-        if source_weight is None:
-            continue
-        if (
-            not isinstance(source_weight, (int, float))
-            or not np.isfinite(source_weight)
-            or source_weight <= 0
-        ):
-            continue
-        enabled_sources.append(source)
-        source_weights_list.append(float(source_weight))
-
-    if len(enabled_sources) == 0:
-        enabled_sources = list(WEIGHT_SOURCES)
-        source_weights_list = [1.0 for _ in enabled_sources]
-
-    if any(weights_array_by_source[s].size != n for s in enabled_sources):
-        raise ValueError(
-            f"Invalid hybrid weights: length mismatch, got {n} indices but inconsistent weights lengths"
-        )
-
-    source_weights_array: NDArray[np.floating] = np.asarray(
-        source_weights_list, dtype=float
-    )
-    source_weights_array_sum = np.nansum(np.abs(source_weights_array))
-    if not np.isfinite(source_weights_array_sum) or source_weights_array_sum <= 0:
-        return np.array([], dtype=float)
-    source_weights_array = source_weights_array / source_weights_array_sum
-
-    imputed_source_weights_array: list[NDArray[np.floating]] = []
-    for source in enabled_sources:
-        source_weights_arr = weights_array_by_source[source]
-        imputed_source_weights = _impute_weights(source_weights_arr)
-        imputed_source_weights_array.append(imputed_source_weights)
-
-    if aggregation == WEIGHT_AGGREGATIONS[0]:  # "weighted_sum"
-        combined_source_weights_array: NDArray[np.floating] = np.average(
-            np.vstack(imputed_source_weights_array),
-            axis=0,
-            weights=source_weights_array,
-        )
-    elif aggregation == WEIGHT_AGGREGATIONS[1]:  # "geometric_mean"
-        combined_source_weights_array: NDArray[np.floating] = gmean(
-            np.vstack([np.abs(values) for values in imputed_source_weights_array]),
-            axis=0,
-            weights=source_weights_array[:, np.newaxis],
-        )
-    else:
-        raise ValueError(
-            f"Invalid hybrid aggregation method {aggregation!r}. "
-            f"Supported: {', '.join(WEIGHT_AGGREGATIONS)}"
-        )
-
-    if (
-        combined_source_weights_array.size == 0
-        or not np.isfinite(combined_source_weights_array).all()
-    ):
-        return np.array([], dtype=float)
-
-    return combined_source_weights_array
-
-
 def compute_extrema_weights(
     n_extrema: int,
     indices: list[int],
@@ -623,9 +482,7 @@ def compute_extrema_weights(
     speeds: list[float],
     efficiency_ratios: list[float],
     volume_weighted_efficiency_ratios: list[float],
-    source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
 ) -> NDArray[np.floating]:
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
         return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
@@ -665,18 +522,21 @@ def compute_extrema_weights(
             weights=weights,
         )
 
-    if strategy == WEIGHT_STRATEGIES[7]:  # "hybrid"
-        weights = compute_hybrid_extrema_weights(
+    if weights is not None:
+        if weights.size == 0:
+            return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+
+        return _build_weights_array(
+            n_extrema=n_extrema,
             indices=indices,
-            amplitudes=amplitudes,
-            amplitude_threshold_ratios=amplitude_threshold_ratios,
-            volume_rates=volume_rates,
-            speeds=speeds,
-            efficiency_ratios=efficiency_ratios,
-            volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
-            source_weights=source_weights,
-            aggregation=aggregation,
+            weights=weights,
+            default_weight=np.nanmedian(weights),
         )
+
+    raise ValueError(
+        f"Invalid extrema weighting strategy {strategy!r}. "
+        f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
+    )
 
     if weights is not None:
         if weights.size == 0:
@@ -722,9 +582,7 @@ def get_weighted_extrema(
     speeds: list[float],
     efficiency_ratios: list[float],
     volume_weighted_efficiency_ratios: list[float],
-    source_weights: dict[str, float],
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
-    aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
 ) -> tuple[pd.Series, pd.Series]:
     extrema_values = extrema.to_numpy(dtype=float)
     extrema_index = extrema.index
@@ -739,9 +597,7 @@ def get_weighted_extrema(
         speeds=speeds,
         efficiency_ratios=efficiency_ratios,
         volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
-        source_weights=source_weights,
         strategy=strategy,
-        aggregation=aggregation,
     )
 
     return pd.Series(
