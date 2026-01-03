@@ -99,6 +99,12 @@ class QuickAdapterV3(IStrategy):
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
+    _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
+
+    _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
+
+    _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
+
     def version(self) -> str:
         return "3.9.2"
 
@@ -135,12 +141,6 @@ class QuickAdapterV3(IStrategy):
 
     # (natr_multiplier_fraction, stake_percent, color)
     _FINAL_EXIT_STAGE: Final[tuple[float, float, str]] = (1.0, 1.0, "deepskyblue")
-
-    _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
-
-    _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
-
-    _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
