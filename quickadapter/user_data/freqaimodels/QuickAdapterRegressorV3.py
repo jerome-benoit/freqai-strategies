@@ -15,22 +15,28 @@ import pandas as pd
 import scipy as sp
 import skimage
 import sklearn
+from datasieve.pipeline import Pipeline
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
 from sklearn_extra.cluster import KMedoids
 
+from ExtremaWeightingTransformer import (
+    ExtremaWeightingTransformer,
+)
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
     REGRESSORS,
+    WEIGHT_STRATEGIES,
     Regressor,
     eval_set_and_weights,
     fit_regressor,
     format_number,
+    get_extrema_weighting_config,
     get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
@@ -75,7 +81,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.9.2"
+    version = "3.10.0"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -1277,6 +1283,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 sorted(optuna_label_available_candles)
             )
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
+
+    def define_label_pipeline(self, threads: int = -1) -> Pipeline:
+        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
+        if not isinstance(extrema_weighting, dict):
+            extrema_weighting = {}
+        extrema_weighting_config = get_extrema_weighting_config(
+            extrema_weighting, logger
+        )
+
+        if extrema_weighting_config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+            return super().define_label_pipeline(threads)
+
+        return Pipeline(
+            [
+                (
+                    "extrema_weighting",
+                    ExtremaWeightingTransformer(
+                        extrema_weighting=extrema_weighting_config
+                    ),
+                ),
+            ]
+        )
 
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs

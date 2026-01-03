@@ -127,6 +127,10 @@
     "extrema_weighting": {
       "strategy": "none"
     },
+    // "extrema_weighting": {
+    //   "strategy": "amplitude",
+    //   "gamma": 1.5
+    // },
     "extrema_smoothing": {
       "method": "kaiser",
       "window_candles": 5,
