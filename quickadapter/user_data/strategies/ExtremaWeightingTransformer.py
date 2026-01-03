@@ -221,6 +221,14 @@ class ExtremaWeightingTransformer(BaseTransform):
         nonzero_values = values[~np.isclose(values, 0.0) & np.isfinite(values)]
 
         if nonzero_values.size == 0:
+            self._n_train = 0
+            self._mean = 0.0
+            self._std = 1.0
+            self._min = 0.0
+            self._max = 1.0
+            self._median = 0.0
+            self._iqr = 1.0
+            self._mad = 1.0
             self._fitted = True
             return X, y, sample_weight, feature_list
 

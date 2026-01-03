@@ -662,7 +662,6 @@ def compute_extrema_weights(
             return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
         weights = _impute_weights(
-            indices=indices,
             weights=weights,
         )
 
