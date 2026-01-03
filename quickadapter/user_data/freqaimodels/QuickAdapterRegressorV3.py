@@ -65,28 +65,6 @@ logger = logging.getLogger(__name__)
 
 
 class QuickAdapterRegressorV3(BaseRegressionModel):
-    def define_label_pipeline(self, threads: int = -1) -> Pipeline:
-        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
-        if not isinstance(extrema_weighting, dict):
-            extrema_weighting = {}
-
-        # Validate and normalize the config (same validation as strategy)
-        config = get_extrema_weighting_config(extrema_weighting, logger)
-
-        if config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
-            return super().define_label_pipeline(threads)
-
-        # ExtremaWeightingTransformer replaces FreqAI's default MinMaxScaler
-        # It outputs directly in [-1, 1] range per FreqAI convention
-        return Pipeline(
-            [
-                (
-                    "extrema_weighting",
-                    ExtremaWeightingTransformer(extrema_weighting=config),
-                ),
-            ]
-        )
-
     """
     The following freqaimodel is released to sponsors of the non-profit FreqAI open-source project.
     If you find the FreqAI project useful, please consider supporting it by becoming a sponsor.
@@ -1305,6 +1283,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 sorted(optuna_label_available_candles)
             )
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
+
+    def define_label_pipeline(self, threads: int = -1) -> Pipeline:
+        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
+        if not isinstance(extrema_weighting, dict):
+            extrema_weighting = {}
+
+        config = get_extrema_weighting_config(extrema_weighting, logger)
+
+        if config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+            return super().define_label_pipeline(threads)
+
+        return Pipeline(
+            [
+                (
+                    "extrema_weighting",
+                    ExtremaWeightingTransformer(extrema_weighting=config),
+                ),
+            ]
+        )
 
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs

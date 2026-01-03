@@ -1,5 +1,3 @@
-"""Leakage-safe label transformer for extrema weights."""
-
 from typing import Any, Final, Literal
 
 import numpy as np
@@ -84,19 +82,9 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
 
 
 class ExtremaWeightingTransformer(BaseTransform):
-    """Leakage-safe label transformer for extrema weights.
-
-    This transformer runs in the FreqAI label pipeline (post-split).
-    It applies standardization/normalization using statistics computed
-    during fit() on training data only.
-
-    The strategy must generate raw weights without any fitted scaling.
-    """
-
     def __init__(self, *, extrema_weighting: dict[str, Any]) -> None:
         self.extrema_weighting = extrema_weighting or {}
         self._fitted = False
-        # Fit statistics
         self._mean: float = 0.0
         self._std: float = 1.0
         self._min: float = 0.0

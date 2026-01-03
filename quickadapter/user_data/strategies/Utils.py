@@ -26,7 +26,6 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.stats import gmean, percentileofscore
 from technical import qtpylib
 
-
 from user_data.strategies.ExtremaWeightingTransformer import (
     DEFAULTS_EXTREMA_WEIGHTING,
     NORMALIZATION_TYPES,
@@ -34,9 +33,6 @@ from user_data.strategies.ExtremaWeightingTransformer import (
     WEIGHT_AGGREGATIONS,
     WEIGHT_SOURCES,
     WEIGHT_STRATEGIES,
-    ExtremaWeightingTransformer,
-    NormalizationType,
-    StandardizationType,
     WeightAggregation,
     WeightSource,
     WeightStrategy,
