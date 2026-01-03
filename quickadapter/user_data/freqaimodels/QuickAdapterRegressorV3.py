@@ -15,22 +15,28 @@ import pandas as pd
 import scipy as sp
 import skimage
 import sklearn
+from datasieve.pipeline import Pipeline
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
 from sklearn_extra.cluster import KMedoids
 
-from Utils import (
+from user_data.strategies.ExtremaWeightingTransformer import (
+    ExtremaWeightingTransformer,
+)
+from user_data.strategies.Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
     REGRESSORS,
+    WEIGHT_STRATEGIES,
     Regressor,
     eval_set_and_weights,
     fit_regressor,
     format_number,
+    get_extrema_weighting_config,
     get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
@@ -59,6 +65,28 @@ logger = logging.getLogger(__name__)
 
 
 class QuickAdapterRegressorV3(BaseRegressionModel):
+    def define_label_pipeline(self, threads: int = -1) -> Pipeline:
+        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
+        if not isinstance(extrema_weighting, dict):
+            extrema_weighting = {}
+
+        # Validate and normalize the config (same validation as strategy)
+        config = get_extrema_weighting_config(extrema_weighting, logger)
+
+        if config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+            return super().define_label_pipeline(threads)
+
+        # ExtremaWeightingTransformer replaces FreqAI's default MinMaxScaler
+        # It outputs directly in [-1, 1] range per FreqAI convention
+        return Pipeline(
+            [
+                (
+                    "extrema_weighting",
+                    ExtremaWeightingTransformer(extrema_weighting=config),
+                ),
+            ]
+        )
+
     """
     The following freqaimodel is released to sponsors of the non-profit FreqAI open-source project.
     If you find the FreqAI project useful, please consider supporting it by becoming a sponsor.
