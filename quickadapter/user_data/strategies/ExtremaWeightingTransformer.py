@@ -218,7 +218,7 @@ class ExtremaWeightingTransformer(BaseTransform):
         **kwargs,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         values = np.asarray(X, dtype=float)
-        nonzero_values = values[~np.isclose(values, 0.0) & np.isfinite(values)]
+        nonzero_values = values[np.isfinite(values) & ~np.isclose(values, 0.0)]
 
         if nonzero_values.size == 0:
             self._n_train = 0
