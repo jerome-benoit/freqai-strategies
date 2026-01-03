@@ -305,7 +305,66 @@ class QuickAdapterV3(IStrategy):
         extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
         if not isinstance(extrema_smoothing, dict):
             extrema_smoothing = {}
-        return QuickAdapterV3._get_extrema_smoothing_config(extrema_smoothing)
+        method = extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
+        if method not in set(SMOOTHING_METHODS):
+            logger.warning(
+                f"Invalid extrema_smoothing method {method!r}, supported: {', '.join(SMOOTHING_METHODS)}, using default {SMOOTHING_METHODS[0]!r}"
+            )
+            method = SMOOTHING_METHODS[0]
+
+        window_candles = update_config_value(
+            extrema_smoothing,
+            new_key="window_candles",
+            old_key="window",
+            default=DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
+            logger=logger,
+            new_path="freqai.extrema_smoothing.window_candles",
+            old_path="freqai.extrema_smoothing.window",
+        )
+        if not isinstance(window_candles, int) or window_candles < 3:
+            logger.warning(
+                f"Invalid extrema_smoothing window_candles {window_candles!r}: must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
+            )
+            window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
+
+        beta = extrema_smoothing.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
+        if not isinstance(beta, (int, float)) or not np.isfinite(beta) or beta <= 0:
+            logger.warning(
+                f"Invalid extrema_smoothing beta {beta!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
+            )
+            beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
+
+        polyorder = extrema_smoothing.get(
+            "polyorder", DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
+        )
+        if not isinstance(polyorder, int) or polyorder < 1:
+            logger.warning(
+                f"Invalid extrema_smoothing polyorder {polyorder!r}: must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
+            )
+            polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
+
+        mode = str(extrema_smoothing.get("mode", DEFAULTS_EXTREMA_SMOOTHING["mode"]))
+        if mode not in set(SMOOTHING_MODES):
+            logger.warning(
+                f"Invalid extrema_smoothing mode {mode!r}, supported: {', '.join(SMOOTHING_MODES)}, using default {SMOOTHING_MODES[0]!r}"
+            )
+            mode = SMOOTHING_MODES[0]
+
+        sigma = extrema_smoothing.get("sigma", DEFAULTS_EXTREMA_SMOOTHING["sigma"])
+        if not isinstance(sigma, (int, float)) or sigma <= 0 or not np.isfinite(sigma):
+            logger.warning(
+                f"Invalid extrema_smoothing sigma {sigma!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
+            )
+            sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
+
+        return {
+            "method": method,
+            "window_candles": window_candles,
+            "beta": beta,
+            "polyorder": polyorder,
+            "mode": mode,
+            "sigma": sigma,
+        }
 
     @property
     def trade_price_target_method(self) -> str:
@@ -787,90 +846,6 @@ class QuickAdapterV3(IStrategy):
                 f"Invalid fraction {fraction!r}: must be a float in range [0, 1]"
             )
         return self.get_label_natr_multiplier(pair) * fraction
-
-    @staticmethod
-    def _get_extrema_smoothing_config(
-        extrema_smoothing: dict[str, Any],
-    ) -> dict[str, Any]:
-        smoothing_method = str(
-            extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
-        )
-        if smoothing_method not in set(SMOOTHING_METHODS):
-            logger.warning(
-                f"Invalid extrema_smoothing method {smoothing_method!r}, supported: {', '.join(SMOOTHING_METHODS)}, using default {SMOOTHING_METHODS[0]!r}"
-            )
-            smoothing_method = SMOOTHING_METHODS[0]
-
-        smoothing_window_candles = update_config_value(
-            extrema_smoothing,
-            new_key="window_candles",
-            old_key="window",
-            default=DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
-            logger=logger,
-            new_path="freqai.extrema_smoothing.window_candles",
-            old_path="freqai.extrema_smoothing.window",
-        )
-        if (
-            not isinstance(smoothing_window_candles, int)
-            or smoothing_window_candles < 3
-        ):
-            logger.warning(
-                f"Invalid extrema_smoothing window_candles {smoothing_window_candles!r}: must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
-            )
-            smoothing_window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
-
-        smoothing_beta = extrema_smoothing.get(
-            "beta", DEFAULTS_EXTREMA_SMOOTHING["beta"]
-        )
-        if (
-            not isinstance(smoothing_beta, (int, float))
-            or not np.isfinite(smoothing_beta)
-            or smoothing_beta <= 0
-        ):
-            logger.warning(
-                f"Invalid extrema_smoothing beta {smoothing_beta!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
-            )
-            smoothing_beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
-
-        smoothing_polyorder = extrema_smoothing.get(
-            "polyorder", DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
-        )
-        if not isinstance(smoothing_polyorder, int) or smoothing_polyorder < 1:
-            logger.warning(
-                f"Invalid extrema_smoothing polyorder {smoothing_polyorder!r}: must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
-            )
-            smoothing_polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
-
-        smoothing_mode = str(
-            extrema_smoothing.get("mode", DEFAULTS_EXTREMA_SMOOTHING["mode"])
-        )
-        if smoothing_mode not in set(SMOOTHING_MODES):
-            logger.warning(
-                f"Invalid extrema_smoothing mode {smoothing_mode!r}, supported: {', '.join(SMOOTHING_MODES)}, using default {SMOOTHING_MODES[0]!r}"
-            )
-            smoothing_mode = SMOOTHING_MODES[0]
-
-        smoothing_sigma = extrema_smoothing.get(
-            "sigma", DEFAULTS_EXTREMA_SMOOTHING["sigma"]
-        )
-        if (
-            not isinstance(smoothing_sigma, (int, float))
-            or smoothing_sigma <= 0
-            or not np.isfinite(smoothing_sigma)
-        ):
-            logger.warning(
-                f"Invalid extrema_smoothing sigma {smoothing_sigma!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
-            )
-            smoothing_sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
-
-        return {
-            "method": smoothing_method,
-            "window_candles": int(smoothing_window_candles),
-            "beta": smoothing_beta,
-            "polyorder": int(smoothing_polyorder),
-            "mode": smoothing_mode,
-            "sigma": float(smoothing_sigma),
-        }
 
     @staticmethod
     @lru_cache(maxsize=128)

@@ -1288,7 +1288,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         extrema_weighting = self.freqai_info.get("extrema_weighting", {})
         if not isinstance(extrema_weighting, dict):
             extrema_weighting = {}
-
         extrema_weighting_config = get_extrema_weighting_config(
             extrema_weighting, logger
         )
