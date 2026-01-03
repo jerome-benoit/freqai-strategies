@@ -22,10 +22,10 @@ from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
 from sklearn_extra.cluster import KMedoids
 
-from user_data.strategies.ExtremaWeightingTransformer import (
+from ExtremaWeightingTransformer import (
     ExtremaWeightingTransformer,
 )
-from user_data.strategies.Utils import (
+from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,

@@ -26,7 +26,7 @@ from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 
-from user_data.strategies.Utils import (
+from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_EXTREMA_SMOOTHING,
     EXTREMA_COLUMN,
