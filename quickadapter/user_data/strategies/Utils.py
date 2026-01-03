@@ -104,33 +104,13 @@ DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
 def get_extrema_weighting_config(
     extrema_weighting: dict[str, Any],
-    logger: Optional[Logger] = None,
+    logger: Logger,
 ) -> dict[str, Any]:
-    """Validate and normalize extrema weighting configuration.
-
-    This function validates user-provided extrema weighting configuration,
-    applying defaults for missing or invalid values. It is used by both
-    the strategy (QuickAdapterV3) and model (QuickAdapterRegressorV3) to
-    ensure consistent configuration handling.
-
-    Args:
-        extrema_weighting: Raw configuration dict from freqai.extrema_weighting
-        logger: Optional logger for warning messages
-
-    Returns:
-        Validated configuration dict with all keys present and valid values
-    """
-
-    def _warn(msg: str) -> None:
-        if logger is not None:
-            logger.warning(msg)
-
-    # Strategy
     strategy = str(
         extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
     )
     if strategy not in set(WEIGHT_STRATEGIES):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting strategy {strategy!r}, supported: {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
         )
         strategy = WEIGHT_STRATEGIES[0]
@@ -142,7 +122,7 @@ def get_extrema_weighting_config(
         )
     )
     if standardization not in set(STANDARDIZATION_TYPES):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting standardization {standardization!r}, supported: {', '.join(STANDARDIZATION_TYPES)}, using default {STANDARDIZATION_TYPES[0]!r}"
         )
         standardization = STANDARDIZATION_TYPES[0]
@@ -159,7 +139,7 @@ def get_extrema_weighting_config(
         )
         or robust_quantiles[0] >= robust_quantiles[1]
     ):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting robust_quantiles {robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
         )
         robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
@@ -177,7 +157,7 @@ def get_extrema_weighting_config(
         or not np.isfinite(mmad_scaling_factor)
         or mmad_scaling_factor <= 0
     ):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting mmad_scaling_factor {mmad_scaling_factor!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
         )
         mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
@@ -189,7 +169,7 @@ def get_extrema_weighting_config(
         )
     )
     if normalization not in set(NORMALIZATION_TYPES):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting normalization {normalization!r}, supported: {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[0]!r}"
         )
         normalization = NORMALIZATION_TYPES[0]
@@ -216,7 +196,7 @@ def get_extrema_weighting_config(
         or not all(isinstance(x, (int, float)) and np.isfinite(x) for x in minmax_range)
         or minmax_range[0] >= minmax_range[1]
     ):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting minmax_range {minmax_range!r}: must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
         )
         minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
@@ -234,7 +214,7 @@ def get_extrema_weighting_config(
         or not np.isfinite(sigmoid_scale)
         or sigmoid_scale <= 0
     ):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting sigmoid_scale {sigmoid_scale!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
         )
         sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
@@ -246,7 +226,7 @@ def get_extrema_weighting_config(
         or not np.isfinite(gamma)
         or not (0 < gamma <= 10.0)
     ):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting gamma {gamma!r}: must be in range (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
         )
         gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
@@ -255,7 +235,7 @@ def get_extrema_weighting_config(
         "source_weights", DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
     )
     if not isinstance(source_weights, dict):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting source_weights {source_weights!r}: must be a dict of source name to weight, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
         )
         source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
@@ -272,7 +252,7 @@ def get_extrema_weighting_config(
                 continue
             sanitized_source_weights[str(source)] = float(weight)
         if not sanitized_source_weights:
-            _warn(
+            logger.warning(
                 f"Invalid extrema_weighting source_weights {source_weights!r}: empty after sanitization, using default {DEFAULTS_EXTREMA_WEIGHTING['source_weights']!r}"
             )
             source_weights = DEFAULTS_EXTREMA_WEIGHTING["source_weights"]
@@ -286,7 +266,7 @@ def get_extrema_weighting_config(
         )
     )
     if aggregation not in set(WEIGHT_AGGREGATIONS):
-        _warn(
+        logger.warning(
             f"Invalid extrema_weighting aggregation {aggregation!r}, supported: {', '.join(WEIGHT_AGGREGATIONS)}, using default {WEIGHT_AGGREGATIONS[0]!r}"
         )
         aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
@@ -295,7 +275,7 @@ def get_extrema_weighting_config(
         aggregation == WEIGHT_AGGREGATIONS[1]
         and normalization == NORMALIZATION_TYPES[0]
     ):  # "minmax"
-        _warn(
+        logger.warning(
             f"extrema_weighting aggregation='{aggregation}' with normalization='{normalization}' "
             "can produce zero weights (gmean collapses to 0 when any source has min value). "
             f"Consider using normalization='{NORMALIZATION_TYPES[1]}' (sigmoid) or aggregation='{WEIGHT_AGGREGATIONS[0]}' (weighted_sum)."
@@ -508,8 +488,11 @@ def _impute_weights(
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
 
+    if weights.size == 0:
+        return np.full_like(weights, default_weight, dtype=float)
+
     # Weights computed by `zigzag` can be NaN on boundary pivots
-    if len(weights) > 0:
+    if weights.size > 0:
         if not np.isfinite(weights[0]):
             weights[0] = 0.0
         if not np.isfinite(weights[-1]):
@@ -526,21 +509,6 @@ def _impute_weights(
     weights[~finite_mask] = median_weight
 
     return weights
-
-
-def impute_weights(
-    weights: NDArray[np.floating],
-) -> NDArray[np.floating]:
-    """Impute NaN/Inf values in weights array.
-
-    NOTE: Standardization/normalization/gamma are now handled by
-    ExtremaWeightingTransformer in the FreqAI label pipeline (post-split).
-    This function only handles NaN/Inf imputation for raw weights.
-    """
-    if weights.size == 0:
-        return weights
-
-    return _impute_weights(weights, default_weight=DEFAULT_EXTREMA_WEIGHT)
 
 
 def _build_weights_array(
@@ -570,7 +538,7 @@ def _build_weights_array(
     return weights_array
 
 
-def calculate_hybrid_extrema_weights(
+def compute_hybrid_extrema_weights(
     indices: list[int],
     amplitudes: list[float],
     amplitude_threshold_ratios: list[float],
@@ -581,12 +549,6 @@ def calculate_hybrid_extrema_weights(
     source_weights: dict[str, float],
     aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
 ) -> NDArray[np.floating]:
-    """Compute hybrid extrema weights by aggregating multiple weight sources.
-
-    NOTE: Standardization/normalization/gamma are now handled by
-    ExtremaWeightingTransformer in the FreqAI label pipeline (post-split).
-    This function only handles imputation and aggregation for raw weights.
-    """
     n = len(indices)
     if n == 0:
         return np.array([], dtype=float)
@@ -642,7 +604,7 @@ def calculate_hybrid_extrema_weights(
     imputed_source_weights_array: list[NDArray[np.floating]] = []
     for source in enabled_sources:
         source_weights_arr = weights_array_by_source[source]
-        imputed_source_weights = impute_weights(source_weights_arr)
+        imputed_source_weights = _impute_weights(source_weights_arr)
         imputed_source_weights_array.append(imputed_source_weights)
 
     if aggregation == WEIGHT_AGGREGATIONS[0]:  # "weighted_sum"
@@ -672,22 +634,6 @@ def calculate_hybrid_extrema_weights(
     return combined_source_weights_array
 
 
-def calculate_extrema_weights(
-    indices: list[int],
-    weights: NDArray[np.floating],
-) -> NDArray[np.floating]:
-    """Calculate extrema weights with imputation only.
-
-    NOTE: Standardization/normalization/gamma are now handled by
-    ExtremaWeightingTransformer in the FreqAI label pipeline (post-split).
-    This function only handles imputation for raw weights.
-    """
-    if len(indices) == 0 or len(weights) == 0:
-        return np.array([], dtype=float)
-
-    return impute_weights(weights)
-
-
 def compute_extrema_weights(
     n_extrema: int,
     indices: list[int],
@@ -701,16 +647,10 @@ def compute_extrema_weights(
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
     aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
 ) -> NDArray[np.floating]:
-    """Compute extrema weights based on the selected strategy.
-
-    NOTE: Standardization/normalization/gamma are now handled by
-    ExtremaWeightingTransformer in the FreqAI label pipeline (post-split).
-    This function computes raw (imputed) weights only.
-    """
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
         return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
-    imputed_weights: Optional[NDArray[np.floating]] = None
+    weights: Optional[NDArray[np.floating]] = None
 
     if (
         strategy
@@ -741,13 +681,13 @@ def compute_extrema_weights(
         if weights.size == 0:
             return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
-        imputed_weights = calculate_extrema_weights(
+        weights = _impute_weights(
             indices=indices,
             weights=weights,
         )
 
     if strategy == WEIGHT_STRATEGIES[7]:  # "hybrid"
-        imputed_weights = calculate_hybrid_extrema_weights(
+        weights = compute_hybrid_extrema_weights(
             indices=indices,
             amplitudes=amplitudes,
             amplitude_threshold_ratios=amplitude_threshold_ratios,
@@ -759,15 +699,15 @@ def compute_extrema_weights(
             aggregation=aggregation,
         )
 
-    if imputed_weights is not None:
-        if imputed_weights.size == 0:
+    if weights is not None:
+        if weights.size == 0:
             return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
         return _build_weights_array(
             n_extrema=n_extrema,
             indices=indices,
-            weights=imputed_weights,
-            default_weight=float(np.nanmedian(imputed_weights)),
+            weights=weights,
+            default_weight=np.nanmedian(weights),
         )
 
     raise ValueError(
@@ -807,12 +747,6 @@ def get_weighted_extrema(
     strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
     aggregation: WeightAggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
 ) -> tuple[pd.Series, pd.Series]:
-    """Apply weights to extrema based on the selected strategy.
-
-    NOTE: Standardization/normalization/gamma are handled by
-    ExtremaWeightingTransformer in the FreqAI label pipeline (post-split).
-    This function computes and returns raw (imputed) weights only.
-    """
     extrema_values = extrema.to_numpy(dtype=float)
     extrema_index = extrema.index
     n_extrema = len(extrema_values)

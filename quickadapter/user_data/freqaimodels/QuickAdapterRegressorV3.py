@@ -1289,16 +1289,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not isinstance(extrema_weighting, dict):
             extrema_weighting = {}
 
-        config = get_extrema_weighting_config(extrema_weighting, logger)
+        extrema_weighting_config = get_extrema_weighting_config(
+            extrema_weighting, logger
+        )
 
-        if config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+        if extrema_weighting_config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
             return super().define_label_pipeline(threads)
 
         return Pipeline(
             [
                 (
                     "extrema_weighting",
-                    ExtremaWeightingTransformer(extrema_weighting=config),
+                    ExtremaWeightingTransformer(
+                        extrema_weighting=extrema_weighting_config
+                    ),
                 ),
             ]
         )
