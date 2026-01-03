@@ -157,7 +157,7 @@ class ExtremaWeightingTransformer(BaseTransform):
         if np.isclose(gamma, 1.0) or not np.isfinite(gamma) or gamma <= 0:
             return values
         out = values.copy()
-        out[mask] = np.power(np.abs(values[mask]), gamma) * np.sign(values[mask])
+        out[mask] = np.sign(values[mask]) * np.power(np.abs(values[mask]), gamma)
         return out
 
     def _inverse_standardize(
@@ -217,7 +217,7 @@ class ExtremaWeightingTransformer(BaseTransform):
         feature_list: ListOrNone = None,
         **kwargs,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
-        values = np.asarray(X, dtype=float).ravel()
+        values = np.asarray(X, dtype=float)
         nonzero_values = values[~np.isclose(values, 0.0) & np.isfinite(values)]
 
         if nonzero_values.size == 0:
@@ -262,7 +262,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
 
         arr = np.asarray(X, dtype=float)
-        nonzero_mask = arr != 0.0
+        nonzero_mask = ~np.isclose(arr, 0.0)
 
         standardized = self._standardize(arr, nonzero_mask)
         normalized = self._normalize(standardized, nonzero_mask)
@@ -295,7 +295,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
 
         arr = np.asarray(X, dtype=float)
-        nonzero_mask = arr != 0.0
+        nonzero_mask = ~np.isclose(arr, 0.0)
 
         degammaized = self._inverse_gamma(arr, nonzero_mask)
         denormalized = self._inverse_normalize(degammaized, nonzero_mask)
