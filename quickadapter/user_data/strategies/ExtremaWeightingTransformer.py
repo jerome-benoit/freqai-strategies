@@ -88,7 +88,7 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
 class ExtremaWeightingTransformer(BaseTransform):
     def __init__(self, *, extrema_weighting: dict[str, Any]) -> None:
         super().__init__(name="ExtremaWeightingTransformer")
-        self.extrema_weighting = extrema_weighting
+        self.extrema_weighting = {**DEFAULTS_EXTREMA_WEIGHTING, **extrema_weighting}
         self._fitted = False
         self._mean = 0.0
         self._std = 1.0
@@ -137,7 +137,17 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range = self.extrema_weighting["minmax_range"]
             value_range = self._max - self._min
             low, high = minmax_range
-            out[mask] = low + (values[mask] - self._min) / value_range * (high - low)
+            scale_range = high - low
+
+            if (
+                not np.isfinite(value_range)
+                or np.isclose(value_range, 0.0)
+                or not np.isfinite(scale_range)
+                or np.isclose(scale_range, 0.0)
+            ):
+                return values
+
+            out[mask] = low + (values[mask] - self._min) / value_range * scale_range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             sigmoid_scale = self.extrema_weighting["sigmoid_scale"]
             out[mask] = sp.special.expit(sigmoid_scale * values[mask])
@@ -191,7 +201,17 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range = self.extrema_weighting["minmax_range"]
             low, high = minmax_range
             value_range = self._max - self._min
-            out[mask] = self._min + (values[mask] - low) / (high - low) * value_range
+            scale_range = high - low
+
+            if (
+                not np.isfinite(value_range)
+                or np.isclose(value_range, 0.0)
+                or not np.isfinite(scale_range)
+                or np.isclose(scale_range, 0.0)
+            ):
+                return values
+
+            out[mask] = self._min + (values[mask] - low) / scale_range * value_range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             sigmoid_scale = self.extrema_weighting["sigmoid_scale"]
             out[mask] = -np.log(1.0 / values[mask] - 1.0) / sigmoid_scale
@@ -270,11 +290,11 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
 
         arr = np.asarray(X, dtype=float)
-        nonzero_mask = ~np.isclose(arr, 0.0)
+        mask = np.isfinite(arr) & ~np.isclose(arr, 0.0)
 
-        standardized = self._standardize(arr, nonzero_mask)
-        normalized = self._normalize(standardized, nonzero_mask)
-        gammaized = self._apply_gamma(normalized, nonzero_mask)
+        standardized = self._standardize(arr, mask)
+        normalized = self._normalize(standardized, mask)
+        gammaized = self._apply_gamma(normalized, mask)
 
         return gammaized, y, sample_weight, feature_list
 
@@ -303,10 +323,10 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
 
         arr = np.asarray(X, dtype=float)
-        nonzero_mask = ~np.isclose(arr, 0.0)
+        mask = np.isfinite(arr) & ~np.isclose(arr, 0.0)
 
-        degammaized = self._inverse_gamma(arr, nonzero_mask)
-        denormalized = self._inverse_normalize(degammaized, nonzero_mask)
-        destandardized = self._inverse_standardize(denormalized, nonzero_mask)
+        degammaized = self._inverse_gamma(arr, mask)
+        denormalized = self._inverse_normalize(degammaized, mask)
+        destandardized = self._inverse_standardize(denormalized, mask)
 
         return destandardized, y, sample_weight, feature_list
