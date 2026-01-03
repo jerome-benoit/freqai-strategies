@@ -55,7 +55,7 @@ WEIGHT_AGGREGATIONS: Final[tuple[WeightAggregation, ...]] = (
 
 StandardizationType = Literal["none", "zscore", "robust", "mmad"]
 STANDARDIZATION_TYPES: Final[tuple[StandardizationType, ...]] = (
-    "none",  # 0 - No standardization
+    "none",  # 0 - w (identity)
     "zscore",  # 1 - (w - μ) / σ
     "robust",  # 2 - (w - median) / IQR
     "mmad",  # 3 - (w - median) / MAD
@@ -214,7 +214,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             out[mask] = self._min + (values[mask] - low) / scale_range * value_range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             sigmoid_scale = self.extrema_weighting["sigmoid_scale"]
-            out[mask] = -np.log(1.0 / values[mask] - 1.0) / sigmoid_scale
+            out[mask] = sp.special.logit(values[mask]) / sigmoid_scale
         return out
 
     def _inverse_gamma(
