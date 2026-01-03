@@ -179,11 +179,10 @@ def get_extrema_weighting_config(
         and standardization != STANDARDIZATION_TYPES[0]  # "none"
         and normalization == NORMALIZATION_TYPES[2]  # "none"
     ):
-        raise ValueError(
-            f"Invalid extrema_weighting configuration: "
-            f"standardization={standardization!r} with normalization={normalization!r} "
+        logger.warning(
+            f"extrema_weighting standardization={standardization!r} with normalization={normalization!r} "
             "can produce negative weights and flip ternary extrema labels. "
-            f"Use normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r}}} "
+            f"Consider using normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r}}} "
             f"or set standardization={STANDARDIZATION_TYPES[0]!r}"
         )
 
@@ -202,8 +201,8 @@ def get_extrema_weighting_config(
         minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
     else:
         minmax_range = (
-            float(minmax_range[0]),
-            float(minmax_range[1]),
+            minmax_range[0],
+            minmax_range[1],
         )
 
     sigmoid_scale = extrema_weighting.get(
@@ -270,16 +269,6 @@ def get_extrema_weighting_config(
             f"Invalid extrema_weighting aggregation {aggregation!r}, supported: {', '.join(WEIGHT_AGGREGATIONS)}, using default {WEIGHT_AGGREGATIONS[0]!r}"
         )
         aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
-
-    if (
-        aggregation == WEIGHT_AGGREGATIONS[1]
-        and normalization == NORMALIZATION_TYPES[0]
-    ):  # "minmax"
-        logger.warning(
-            f"extrema_weighting aggregation='{aggregation}' with normalization='{normalization}' "
-            "can produce zero weights (gmean collapses to 0 when any source has min value). "
-            f"Consider using normalization='{NORMALIZATION_TYPES[1]}' (sigmoid) or aggregation='{WEIGHT_AGGREGATIONS[0]}' (weighted_sum)."
-        )
 
     return {
         "strategy": strategy,
