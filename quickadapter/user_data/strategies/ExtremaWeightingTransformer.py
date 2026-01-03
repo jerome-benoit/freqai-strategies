@@ -185,6 +185,11 @@ class ExtremaWeightingTransformer(BaseTransform):
         elif method == STANDARDIZATION_TYPES[3]:  # "mmad"
             mmad_scaling_factor = self.extrema_weighting["mmad_scaling_factor"]
             out[mask] = values[mask] * (self._mad * mmad_scaling_factor) + self._median
+        else:
+            raise ValueError(
+                f"Invalid standardization {method!r}. "
+                f"Supported: {', '.join(STANDARDIZATION_TYPES)}"
+            )
         return out
 
     def _inverse_normalize(
@@ -214,6 +219,11 @@ class ExtremaWeightingTransformer(BaseTransform):
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             sigmoid_scale = self.extrema_weighting["sigmoid_scale"]
             out[mask] = sp.special.logit(values[mask]) / sigmoid_scale
+        else:
+            raise ValueError(
+                f"Invalid normalization {method!r}. "
+                f"Supported: {', '.join(NORMALIZATION_TYPES)}"
+            )
         return out
 
     def _inverse_gamma(
@@ -237,9 +247,9 @@ class ExtremaWeightingTransformer(BaseTransform):
         **kwargs,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         values = np.asarray(X, dtype=float)
-        nonzero_values = values[np.isfinite(values) & ~np.isclose(values, 0.0)]
+        non_zero_finite_values = values[np.isfinite(values) & ~np.isclose(values, 0.0)]
 
-        if nonzero_values.size == 0:
+        if non_zero_finite_values.size == 0:
             self._mean = 0.0
             self._std = 1.0
             self._min = 0.0
@@ -252,21 +262,21 @@ class ExtremaWeightingTransformer(BaseTransform):
 
         robust_quantiles = self.extrema_weighting["robust_quantiles"]
 
-        self._mean = np.mean(nonzero_values)
-        std = np.std(nonzero_values)
+        self._mean = np.mean(non_zero_finite_values)
+        std = np.std(non_zero_finite_values, ddof=1)
         self._std = std if np.isfinite(std) and not np.isclose(std, 0.0) else 1.0
-        self._min = np.min(nonzero_values)
-        self._max = np.max(nonzero_values)
+        self._min = np.min(non_zero_finite_values)
+        self._max = np.max(non_zero_finite_values)
         if np.isclose(self._max, self._min):
             self._max = self._min + 1.0
-        self._median = np.median(nonzero_values)
+        self._median = np.median(non_zero_finite_values)
         q1, q3 = (
-            np.quantile(nonzero_values, robust_quantiles[0]),
-            np.quantile(nonzero_values, robust_quantiles[1]),
+            np.quantile(non_zero_finite_values, robust_quantiles[0]),
+            np.quantile(non_zero_finite_values, robust_quantiles[1]),
         )
         iqr = q3 - q1
         self._iqr = iqr if np.isfinite(iqr) and not np.isclose(iqr, 0.0) else 1.0
-        mad = np.median(np.abs(nonzero_values - self._median))
+        mad = np.median(np.abs(non_zero_finite_values - self._median))
         self._mad = mad if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
 
         self._fitted = True
