@@ -97,7 +97,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         self._median = 0.0
         self._iqr = 1.0
         self._mad = 1.0
-        self._n_train = 0
 
     def _standardize(
         self,
@@ -241,7 +240,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         nonzero_values = values[np.isfinite(values) & ~np.isclose(values, 0.0)]
 
         if nonzero_values.size == 0:
-            self._n_train = 0
             self._mean = 0.0
             self._std = 1.0
             self._min = 0.0
@@ -254,7 +252,6 @@ class ExtremaWeightingTransformer(BaseTransform):
 
         robust_quantiles = self.extrema_weighting["robust_quantiles"]
 
-        self._n_train = nonzero_values.size
         self._mean = np.mean(nonzero_values)
         std = np.std(nonzero_values)
         self._std = std if np.isfinite(std) and not np.isclose(std, 0.0) else 1.0
