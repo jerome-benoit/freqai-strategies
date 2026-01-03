@@ -126,6 +126,8 @@
     "track_performance": false,
     "extrema_weighting": {
       "strategy": "none"
+      // "strategy": "amplitude",
+      // "gamma": 1.5
     },
     "extrema_smoothing": {
       "method": "kaiser",
