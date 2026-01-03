@@ -175,9 +175,9 @@ class ExtremaWeightingTransformer(BaseTransform):
             return values
         out = values.copy()
         if method == NORMALIZATION_TYPES[0]:  # "minmax"
-            denom = self._max - self._min
+            range = self._max - self._min
             low, high = minmax_range
-            out[mask] = low + (values[mask] - self._min) / denom * (high - low)
+            out[mask] = low + (values[mask] - self._min) / range * (high - low)
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             out[mask] = sp.special.expit(sigmoid_scale * values[mask])
         else:
@@ -193,7 +193,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         mask: NDArray[np.bool_],
         gamma: float,
     ) -> NDArray[np.floating]:
-        """Apply gamma correction to non-zero values."""
         if np.isclose(gamma, 1.0) or not np.isfinite(gamma) or gamma <= 0:
             return values
         out = values.copy()
@@ -234,8 +233,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             range = self._max - self._min
             out[mask] = self._min + (values[mask] - low) / (high - low) * range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
-            clipped = np.clip(values[mask], 1e-7, 1.0 - 1e-7)
-            out[mask] = -np.log(1.0 / clipped - 1.0) / sigmoid_scale
+            out[mask] = -np.log(1.0 / values[mask] - 1.0) / sigmoid_scale
         return out
 
     def _inverse_gamma(
@@ -244,7 +242,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         mask: NDArray[np.bool_],
         gamma: float,
     ) -> NDArray[np.floating]:
-        """Inverse gamma correction."""
         if np.isclose(gamma, 1.0) or not np.isfinite(gamma) or gamma <= 0:
             return values
         out = values.copy()
