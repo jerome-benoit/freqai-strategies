@@ -694,12 +694,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
 
                 if aggregation_param is not None:
-                    if aggregation == "quantile":
+                    if (
+                        aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[1]
+                    ):  # "quantile"
                         QuickAdapterRegressorV3._validate_quantile_q(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
                         )
-                    elif aggregation == "power_mean":
+                    elif (
+                        aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[0]
+                    ):  # "power_mean"
                         QuickAdapterRegressorV3._validate_power_mean_p(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
@@ -2219,14 +2223,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return best_trial_index, best_trial_distance
 
-        if trial_selection_method == "topsis":
+        if (
+            trial_selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]
+        ):  # "topsis"
             scores = QuickAdapterRegressorV3._topsis_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
                 weights=weights,
                 p=p,
             )
-        elif trial_selection_method == "compromise_programming":
+        elif (
+            trial_selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
+        ):  # "compromise_programming"
             scores = QuickAdapterRegressorV3._compromise_programming_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
@@ -2290,7 +2298,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     normalized_matrix, n_clusters, rng=42, minit="++"
                 )
 
-            if selection_method == "compromise_programming":
+            if (
+                selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
+            ):  # "compromise_programming"
                 cluster_center_scores = (
                     QuickAdapterRegressorV3._compromise_programming_scores(
                         cluster_centers,
@@ -2298,7 +2308,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         p=p,
                     )
                 )
-            elif selection_method == "topsis":
+            elif (
+                selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]
+            ):  # "topsis"
                 cluster_center_scores = QuickAdapterRegressorV3._topsis_scores(
                     cluster_centers,
                     distance_metric,
@@ -2347,13 +2359,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             cluster_labels = kmedoids.fit_predict(normalized_matrix)
             medoid_indices = kmedoids.medoid_indices_
 
-            if selection_method == "compromise_programming":
+            if (
+                selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
+            ):  # "compromise_programming"
                 medoid_scores = QuickAdapterRegressorV3._compromise_programming_scores(
                     normalized_matrix[medoid_indices],
                     distance_metric,
                     p=p,
                 )
-            elif selection_method == "topsis":
+            elif (
+                selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]
+            ):  # "topsis"
                 medoid_scores = QuickAdapterRegressorV3._topsis_scores(
                     normalized_matrix[medoid_indices],
                     distance_metric,
