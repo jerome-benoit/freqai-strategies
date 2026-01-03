@@ -2,8 +2,12 @@ from typing import Any, Final, Literal
 
 import numpy as np
 import scipy as sp
-from datasieve.transforms.base_transform import BaseTransform
-from numpy.typing import NDArray
+from datasieve.transforms.base_transform import (
+    ArrayOrNone,
+    BaseTransform,
+    ListOrNone,
+)
+from numpy.typing import ArrayLike, NDArray
 
 WeightStrategy = Literal[
     "none",
@@ -83,6 +87,7 @@ DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
 
 class ExtremaWeightingTransformer(BaseTransform):
     def __init__(self, *, extrema_weighting: dict[str, Any]) -> None:
+        super().__init__(name="ExtremaWeightingTransformer")
         self.extrema_weighting = extrema_weighting
         self._fitted = False
         self._mean: float = 0.0
@@ -206,18 +211,18 @@ class ExtremaWeightingTransformer(BaseTransform):
 
     def fit(
         self,
-        X: NDArray[np.floating],
-        y: Any = None,
-        sample_weight: Any = None,
-        feature_list: Any = None,
-        **kwargs: Any,
-    ) -> "ExtremaWeightingTransformer":
+        X: ArrayLike,
+        y: ArrayOrNone = None,
+        sample_weight: ArrayOrNone = None,
+        feature_list: ListOrNone = None,
+        **kwargs,
+    ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         values = np.asarray(X, dtype=float).ravel()
         nonzero_values = values[~np.isclose(values, 0.0) & np.isfinite(values)]
 
         if nonzero_values.size == 0:
             self._fitted = True
-            return self
+            return X, y, sample_weight, feature_list
 
         robust_quantiles = self.extrema_weighting["robust_quantiles"]
 
@@ -240,17 +245,17 @@ class ExtremaWeightingTransformer(BaseTransform):
         self._mad = mad if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
 
         self._fitted = True
-        return self
+        return X, y, sample_weight, feature_list
 
     def transform(
         self,
-        X: NDArray[np.floating],
-        y: Any = None,
-        sample_weight: Any = None,
-        feature_list: Any = None,
+        X: ArrayLike,
+        y: ArrayOrNone = None,
+        sample_weight: ArrayOrNone = None,
+        feature_list: ListOrNone = None,
         outlier_check: bool = False,
-        **kwargs: Any,
-    ) -> tuple[NDArray[np.floating], Any, Any, Any]:
+        **kwargs,
+    ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         if not self._fitted:
             raise RuntimeError(
                 "ExtremaWeightingTransformer must be fitted before transform"
@@ -267,23 +272,23 @@ class ExtremaWeightingTransformer(BaseTransform):
 
     def fit_transform(
         self,
-        X: NDArray[np.floating],
-        y: Any = None,
-        sample_weight: Any = None,
-        feature_list: Any = None,
-        **kwargs: Any,
-    ) -> tuple[NDArray[np.floating], Any, Any, Any]:
+        X: ArrayLike,
+        y: ArrayOrNone = None,
+        sample_weight: ArrayOrNone = None,
+        feature_list: ListOrNone = None,
+        **kwargs,
+    ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         self.fit(X, y, sample_weight, feature_list, **kwargs)
         return self.transform(X, y, sample_weight, feature_list, **kwargs)
 
     def inverse_transform(
         self,
-        X: NDArray[np.floating],
-        y: Any = None,
-        sample_weight: Any = None,
-        feature_list: Any = None,
-        **kwargs: Any,
-    ) -> tuple[NDArray[np.floating], Any, Any, Any]:
+        X: ArrayLike,
+        y: ArrayOrNone = None,
+        sample_weight: ArrayOrNone = None,
+        feature_list: ListOrNone = None,
+        **kwargs,
+    ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         if not self._fitted:
             raise RuntimeError(
                 "ExtremaWeightingTransformer must be fitted before inverse_transform"
