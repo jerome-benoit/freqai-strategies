@@ -106,9 +106,7 @@ def get_extrema_weighting_config(
     extrema_weighting: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    strategy = str(
-        extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
-    )
+    strategy = extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
     if strategy not in set(WEIGHT_STRATEGIES):
         logger.warning(
             f"Invalid extrema_weighting strategy {strategy!r}, supported: {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
@@ -116,10 +114,8 @@ def get_extrema_weighting_config(
         strategy = WEIGHT_STRATEGIES[0]
 
     # Phase 1: Standardization
-    standardization = str(
-        extrema_weighting.get(
-            "standardization", DEFAULTS_EXTREMA_WEIGHTING["standardization"]
-        )
+    standardization = extrema_weighting.get(
+        "standardization", DEFAULTS_EXTREMA_WEIGHTING["standardization"]
     )
     if standardization not in set(STANDARDIZATION_TYPES):
         logger.warning(
@@ -163,10 +159,8 @@ def get_extrema_weighting_config(
         mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
 
     # Phase 2: Normalization
-    normalization = str(
-        extrema_weighting.get(
-            "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
-        )
+    normalization = extrema_weighting.get(
+        "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
     )
     if normalization not in set(NORMALIZATION_TYPES):
         logger.warning(
@@ -258,11 +252,9 @@ def get_extrema_weighting_config(
         else:
             source_weights = sanitized_source_weights
 
-    aggregation = str(
-        extrema_weighting.get(
-            "aggregation",
-            DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
-        )
+    aggregation = extrema_weighting.get(
+        "aggregation",
+        DEFAULTS_EXTREMA_WEIGHTING["aggregation"],
     )
     if aggregation not in set(WEIGHT_AGGREGATIONS):
         logger.warning(
