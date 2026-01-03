@@ -145,7 +145,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         method: StandardizationType,
         mmad_scaling_factor: float,
     ) -> NDArray[np.floating]:
-        """Apply standardization to non-zero values using fitted statistics."""
         if method == STANDARDIZATION_TYPES[0]:  # "none"
             return values
         out = values.copy()
@@ -172,7 +171,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         minmax_range: tuple[float, float],
         sigmoid_scale: float,
     ) -> NDArray[np.floating]:
-        """Apply normalization to non-zero values using fitted statistics."""
         if method == NORMALIZATION_TYPES[2]:  # "none"
             return values
         out = values.copy()
@@ -209,7 +207,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         method: StandardizationType,
         mmad_scaling_factor: float,
     ) -> NDArray[np.floating]:
-        """Inverse standardization."""
         if method == STANDARDIZATION_TYPES[0]:  # "none"
             return values
         out = values.copy()
@@ -229,14 +226,13 @@ class ExtremaWeightingTransformer(BaseTransform):
         minmax_range: tuple[float, float],
         sigmoid_scale: float,
     ) -> NDArray[np.floating]:
-        """Inverse normalization."""
         if method == NORMALIZATION_TYPES[2]:  # "none"
             return values
         out = values.copy()
         if method == NORMALIZATION_TYPES[0]:  # "minmax"
             low, high = minmax_range
-            denom = self._max - self._min
-            out[mask] = self._min + (values[mask] - low) / (high - low) * denom
+            range = self._max - self._min
+            out[mask] = self._min + (values[mask] - low) / (high - low) * range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             clipped = np.clip(values[mask], 1e-7, 1.0 - 1e-7)
             out[mask] = -np.log(1.0 / clipped - 1.0) / sigmoid_scale
@@ -263,7 +259,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         feature_list: Any = None,
         **kwargs: Any,
     ) -> "ExtremaWeightingTransformer":
-        """Fit transformer on training labels (non-zero values only)."""
         values = np.asarray(X, dtype=float).ravel()
         nonzero_mask = values != 0.0
         nonzero_values = values[nonzero_mask & np.isfinite(values)]
@@ -272,7 +267,6 @@ class ExtremaWeightingTransformer(BaseTransform):
             self._fitted = True
             return self
 
-        # Get robust_quantiles from config
         robust_quantiles: tuple[float, float] = self.extrema_weighting.get(
             "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
         )
@@ -287,8 +281,8 @@ class ExtremaWeightingTransformer(BaseTransform):
             self._max = self._min + 1.0
         self._median = float(np.median(nonzero_values))
         q1, q3 = (
-            float(np.percentile(nonzero_values, robust_quantiles[0] * 100)),
-            float(np.percentile(nonzero_values, robust_quantiles[1] * 100)),
+            float(np.quantile(nonzero_values, robust_quantiles[0])),
+            float(np.quantile(nonzero_values, robust_quantiles[1])),
         )
         iqr = q3 - q1
         self._iqr = iqr if np.isfinite(iqr) and not np.isclose(iqr, 0.0) else 1.0
@@ -307,7 +301,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         outlier_check: bool = False,
         **kwargs: Any,
     ) -> tuple[NDArray[np.floating], Any, Any, Any]:
-        """Transform labels using fitted statistics."""
         if not self._fitted:
             raise RuntimeError(
                 "ExtremaWeightingTransformer must be fitted before transform"
@@ -320,7 +313,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range,
             sigmoid_scale,
             mmad_scaling_factor,
-            _robust_quantiles,
+            _,
         ) = self._get_config()
 
         arr = np.asarray(X, dtype=float)
@@ -338,7 +331,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range,
             sigmoid_scale,
         )
-        # Phase 3: Gamma correction
+        # Phase 3: Post-processing
         result = self._apply_gamma(normalized, nonzero_mask, gamma)
 
         return result, y, sample_weight, feature_list
@@ -351,7 +344,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         feature_list: Any = None,
         **kwargs: Any,
     ) -> tuple[NDArray[np.floating], Any, Any, Any]:
-        """Fit and transform in one step."""
         self.fit(X, y, sample_weight, feature_list, **kwargs)
         return self.transform(X, y, sample_weight, feature_list, **kwargs)
 
@@ -363,7 +355,6 @@ class ExtremaWeightingTransformer(BaseTransform):
         feature_list: Any = None,
         **kwargs: Any,
     ) -> tuple[NDArray[np.floating], Any, Any, Any]:
-        """Inverse transform to recover original scale."""
         if not self._fitted:
             raise RuntimeError(
                 "ExtremaWeightingTransformer must be fitted before inverse_transform"
@@ -376,13 +367,12 @@ class ExtremaWeightingTransformer(BaseTransform):
             minmax_range,
             sigmoid_scale,
             mmad_scaling_factor,
-            _robust_quantiles,
+            _,
         ) = self._get_config()
 
         arr = np.asarray(X, dtype=float)
         nonzero_mask = arr != 0.0
 
-        # Inverse in reverse order: gamma -> normalization -> standardization
         degamma = self._inverse_gamma(arr, nonzero_mask, gamma)
         denormalized = self._inverse_normalize(
             degamma, nonzero_mask, normalization, minmax_range, sigmoid_scale

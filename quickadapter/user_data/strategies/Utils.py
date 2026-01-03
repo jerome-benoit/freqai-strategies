@@ -145,8 +145,8 @@ def get_extrema_weighting_config(
         robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
     else:
         robust_quantiles = (
-            float(robust_quantiles[0]),
-            float(robust_quantiles[1]),
+            robust_quantiles[0],
+            robust_quantiles[1],
         )
 
     mmad_scaling_factor = extrema_weighting.get(
