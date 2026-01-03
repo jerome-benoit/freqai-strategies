@@ -135,9 +135,9 @@ class ExtremaWeightingTransformer(BaseTransform):
         out = values.copy()
         if method == NORMALIZATION_TYPES[0]:  # "minmax"
             minmax_range = self.extrema_weighting["minmax_range"]
-            range = self._max - self._min
+            value_range = self._max - self._min
             low, high = minmax_range
-            out[mask] = low + (values[mask] - self._min) / range * (high - low)
+            out[mask] = low + (values[mask] - self._min) / value_range * (high - low)
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             sigmoid_scale = self.extrema_weighting["sigmoid_scale"]
             out[mask] = sp.special.expit(sigmoid_scale * values[mask])
@@ -190,8 +190,8 @@ class ExtremaWeightingTransformer(BaseTransform):
         if method == NORMALIZATION_TYPES[0]:  # "minmax"
             minmax_range = self.extrema_weighting["minmax_range"]
             low, high = minmax_range
-            range = self._max - self._min
-            out[mask] = self._min + (values[mask] - low) / (high - low) * range
+            value_range = self._max - self._min
+            out[mask] = self._min + (values[mask] - low) / (high - low) * value_range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
             sigmoid_scale = self.extrema_weighting["sigmoid_scale"]
             out[mask] = -np.log(1.0 / values[mask] - 1.0) / sigmoid_scale
