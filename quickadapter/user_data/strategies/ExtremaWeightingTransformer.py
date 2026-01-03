@@ -90,14 +90,14 @@ class ExtremaWeightingTransformer(BaseTransform):
         super().__init__(name="ExtremaWeightingTransformer")
         self.extrema_weighting = extrema_weighting
         self._fitted = False
-        self._mean: float = 0.0
-        self._std: float = 1.0
-        self._min: float = 0.0
-        self._max: float = 1.0
-        self._median: float = 0.0
-        self._iqr: float = 1.0
-        self._mad: float = 1.0
-        self._n_train: int = 0
+        self._mean = 0.0
+        self._std = 1.0
+        self._min = 0.0
+        self._max = 1.0
+        self._median = 0.0
+        self._iqr = 1.0
+        self._mad = 1.0
+        self._n_train = 0
 
     def _standardize(
         self,
@@ -226,22 +226,22 @@ class ExtremaWeightingTransformer(BaseTransform):
 
         robust_quantiles = self.extrema_weighting["robust_quantiles"]
 
-        self._n_train = int(nonzero_values.size)
-        self._mean = float(np.mean(nonzero_values))
-        std = float(np.std(nonzero_values))
+        self._n_train = nonzero_values.size
+        self._mean = np.mean(nonzero_values)
+        std = np.std(nonzero_values)
         self._std = std if np.isfinite(std) and not np.isclose(std, 0.0) else 1.0
-        self._min = float(np.min(nonzero_values))
-        self._max = float(np.max(nonzero_values))
+        self._min = np.min(nonzero_values)
+        self._max = np.max(nonzero_values)
         if np.isclose(self._max, self._min):
             self._max = self._min + 1.0
-        self._median = float(np.median(nonzero_values))
+        self._median = np.median(nonzero_values)
         q1, q3 = (
-            float(np.quantile(nonzero_values, robust_quantiles[0])),
-            float(np.quantile(nonzero_values, robust_quantiles[1])),
+            np.quantile(nonzero_values, robust_quantiles[0]),
+            np.quantile(nonzero_values, robust_quantiles[1]),
         )
         iqr = q3 - q1
         self._iqr = iqr if np.isfinite(iqr) and not np.isclose(iqr, 0.0) else 1.0
-        mad = float(np.median(np.abs(nonzero_values - self._median)))
+        mad = np.median(np.abs(nonzero_values - self._median))
         self._mad = mad if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
 
         self._fitted = True
