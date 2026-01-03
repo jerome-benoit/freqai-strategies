@@ -374,7 +374,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if validated_metric is not None:
                 kwargs["w"] = weights
 
-        if distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]:
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[1]
+        ):  # "minkowski"
             validated_p = QuickAdapterRegressorV3._validate_minkowski_p(
                 p, ctx=p_ctx, mode=mode
             )
@@ -870,7 +872,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             selection_method
             not in QuickAdapterRegressorV3._extrema_selection_methods_set()
         ):
-            selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
+            selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[
+                0
+            ]  # "rank_extrema"
 
         threshold_smoothing_method = str(
             update_config_value(
@@ -1998,7 +2002,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         raise ValueError(
-            f"Invalid distance_metric {distance_metric!r} for compromise_programming. "
+            f"Invalid distance_metric {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[0]}. "
             f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
         )
 
@@ -2162,7 +2166,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid distance_metric {distance_metric!r} for topsis. "
+                f"Invalid distance_metric {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[1]}. "
                 f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
             )
 
@@ -2224,18 +2228,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return best_trial_index, best_trial_distance
 
         if (
-            trial_selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]
-        ):  # "topsis"
-            scores = QuickAdapterRegressorV3._topsis_scores(
+            trial_selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
+        ):  # "compromise_programming"
+            scores = QuickAdapterRegressorV3._compromise_programming_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
                 weights=weights,
                 p=p,
             )
         elif (
-            trial_selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
-        ):  # "compromise_programming"
-            scores = QuickAdapterRegressorV3._compromise_programming_scores(
+            trial_selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]
+        ):  # "topsis"
+            scores = QuickAdapterRegressorV3._topsis_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
                 weights=weights,
@@ -2282,11 +2286,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         n_clusters = QuickAdapterRegressorV3._get_n_clusters(normalized_matrix)
 
         if cluster_method in {
-            QuickAdapterRegressorV3._SELECTION_METHODS[2],  # "kmeans"
-            QuickAdapterRegressorV3._SELECTION_METHODS[3],  # kmeans2
+            QuickAdapterRegressorV3._CLUSTER_METHODS[0],  # "kmeans"
+            QuickAdapterRegressorV3._CLUSTER_METHODS[1],  # "kmeans2"
         }:
             if (
-                cluster_method == QuickAdapterRegressorV3._SELECTION_METHODS[2]
+                cluster_method == QuickAdapterRegressorV3._CLUSTER_METHODS[0]
             ):  # "kmeans"
                 kmeans = sklearn.cluster.KMeans(
                     n_clusters=n_clusters, random_state=42, n_init=10
@@ -2347,7 +2351,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return trial_distances
 
         elif (
-            cluster_method == QuickAdapterRegressorV3._SELECTION_METHODS[4]
+            cluster_method == QuickAdapterRegressorV3._CLUSTER_METHODS[2]
         ):  # "kmedoids"
             kmedoids_kwargs: dict[str, Any] = {
                 "metric": distance_metric,
@@ -2459,8 +2463,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 power,
                 ctx="label_density_aggregation_param",
             )
-            if power is None:
-                power = 1.0
             return sp.stats.pmean(neighbor_distances, p=power, axis=1)
         elif (
             aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[1]
