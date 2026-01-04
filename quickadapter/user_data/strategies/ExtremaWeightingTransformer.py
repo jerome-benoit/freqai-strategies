@@ -157,7 +157,7 @@ class ExtremaWeightingTransformer(BaseTransform):
                 f"Invalid standardization {method!r}. "
                 f"Supported: {', '.join(STANDARDIZATION_TYPES)}"
             )
-        scaler = getattr(self, scaler_attr)
+        scaler = getattr(self, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr[1:]} not fitted")
         return self._apply_scaler(values, mask, scaler, inverse=False)
@@ -179,7 +179,7 @@ class ExtremaWeightingTransformer(BaseTransform):
                 f"Invalid normalization {method!r}. "
                 f"Supported: {', '.join(NORMALIZATION_TYPES)}"
             )
-        scaler = getattr(self, scaler_attr)
+        scaler = getattr(self, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr[1:]} not fitted")
         return self._apply_scaler(values, mask, scaler, inverse=False)
@@ -213,7 +213,7 @@ class ExtremaWeightingTransformer(BaseTransform):
                 f"Invalid standardization {method!r}. "
                 f"Supported: {', '.join(STANDARDIZATION_TYPES)}"
             )
-        scaler = getattr(self, scaler_attr)
+        scaler = getattr(self, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr[1:]} not fitted")
         return self._apply_scaler(values, mask, scaler, inverse=True)
@@ -235,7 +235,7 @@ class ExtremaWeightingTransformer(BaseTransform):
                 f"Invalid normalization {method!r}. "
                 f"Supported: {', '.join(NORMALIZATION_TYPES)}"
             )
-        scaler = getattr(self, scaler_attr)
+        scaler = getattr(self, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr[1:]} not fitted")
         return self._apply_scaler(values, mask, scaler, inverse=True)
