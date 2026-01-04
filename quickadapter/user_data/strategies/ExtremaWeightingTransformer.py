@@ -117,7 +117,7 @@ class ExtremaWeightingTransformer(BaseTransform):
                 or not np.isfinite(scale_range)
                 or np.isclose(scale_range, 0.0)
             ):
-                return values
+                return out
 
             out[mask] = low + (values[mask] - self._min) / value_range * scale_range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
@@ -186,7 +186,7 @@ class ExtremaWeightingTransformer(BaseTransform):
                 or not np.isfinite(scale_range)
                 or np.isclose(scale_range, 0.0)
             ):
-                return values
+                return out
 
             out[mask] = self._min + (values[mask] - low) / scale_range * value_range
         elif method == NORMALIZATION_TYPES[1]:  # "sigmoid"
@@ -270,6 +270,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
 
         arr = np.asarray(X, dtype=float)
+        # Exclude non-finite values and zeros (NEUTRAL extrema label) from transformation
         mask = np.isfinite(arr) & ~np.isclose(arr, 0.0)
 
         standardized = self._standardize(arr, mask)
@@ -303,6 +304,7 @@ class ExtremaWeightingTransformer(BaseTransform):
             )
 
         arr = np.asarray(X, dtype=float)
+        # Exclude non-finite values and zeros (NEUTRAL extrema label) from transformation
         mask = np.isfinite(arr) & ~np.isclose(arr, 0.0)
 
         degammaized = self._inverse_gamma(arr, mask)
