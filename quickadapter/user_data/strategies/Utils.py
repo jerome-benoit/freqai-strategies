@@ -166,12 +166,11 @@ def get_extrema_weighting_config(
     if (
         strategy != WEIGHT_STRATEGIES[0]  # "none"
         and standardization != STANDARDIZATION_TYPES[0]  # "none"
-        and normalization == NORMALIZATION_TYPES[2]  # "none"
+        and normalization == NORMALIZATION_TYPES[3]  # "none"
     ):
         logger.warning(
-            f"extrema_weighting standardization={standardization!r} with normalization={normalization!r} "
-            "can produce negative weights and flip ternary extrema labels. "
-            f"Consider using normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r}}} "
+            f"extrema_weighting standardization={standardization!r} with normalization={normalization!r} can shift/flip ternary extrema labels. "
+            f"Consider using normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r},{NORMALIZATION_TYPES[2]!r}}} "
             f"or set standardization={STANDARDIZATION_TYPES[0]!r}"
         )
 
