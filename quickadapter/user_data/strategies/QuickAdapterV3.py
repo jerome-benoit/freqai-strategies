@@ -106,7 +106,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.10.1"
+        return "3.10.2"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -545,6 +545,10 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Extrema Weighting:")
         logger.info(f"  strategy: {self.extrema_weighting['strategy']}")
+        logger.info(
+            f"  metric_coefficients: {self.extrema_weighting['metric_coefficients']}"
+        )
+        logger.info(f"  aggregation: {self.extrema_weighting['aggregation']}")
         logger.info(f"  standardization: {self.extrema_weighting['standardization']}")
         logger.info(
             f"  robust_quantiles: ({format_number(self.extrema_weighting['robust_quantiles'][0])}, {format_number(self.extrema_weighting['robust_quantiles'][1])})"
@@ -909,7 +913,7 @@ class QuickAdapterV3(IStrategy):
             speeds=pivots_speeds,
             efficiency_ratios=pivots_efficiency_ratios,
             volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
-            strategy=self.extrema_weighting["strategy"],
+            extrema_weighting=self.extrema_weighting,
         )
 
         plot_eps = weighted_extrema.abs().where(weighted_extrema.ne(0.0)).min()

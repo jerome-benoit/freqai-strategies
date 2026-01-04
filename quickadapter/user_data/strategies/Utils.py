@@ -22,11 +22,14 @@ import pandas as pd
 import scipy as sp
 import talib.abstract as ta
 from ExtremaWeightingTransformer import (
+    COMBINED_AGGREGATIONS,
+    COMBINED_METRICS,
     DEFAULTS_EXTREMA_WEIGHTING,
     NORMALIZATION_TYPES,
     STANDARDIZATION_TYPES,
     WEIGHT_STRATEGIES,
-    WeightStrategy,
+    CombinedAggregation,
+    CombinedMetric,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -51,6 +54,7 @@ SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
     "kaiser",
     "triang",
 )
+
 SmoothingMethod = Union[
     SmoothingKernel, Literal["smm", "sma", "savgol", "gaussian_filter1d"]
 ]
@@ -107,6 +111,30 @@ def get_extrema_weighting_config(
             f"Invalid extrema_weighting strategy {strategy!r}, supported: {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
         )
         strategy = WEIGHT_STRATEGIES[0]
+    metric_coefficients = extrema_weighting.get(
+        "metric_coefficients", DEFAULTS_EXTREMA_WEIGHTING["metric_coefficients"]
+    )
+    if not isinstance(metric_coefficients, dict):
+        logger.warning(
+            f"Invalid extrema_weighting metric_coefficients {metric_coefficients!r}: must be a mapping, using default {DEFAULTS_EXTREMA_WEIGHTING['metric_coefficients']!r}"
+        )
+        metric_coefficients = DEFAULTS_EXTREMA_WEIGHTING["metric_coefficients"]
+    elif invalid_keys := set(metric_coefficients.keys()) - set(COMBINED_METRICS):
+        logger.warning(
+            f"Invalid extrema_weighting metric_coefficients keys {sorted(invalid_keys)!r}, valid keys: {', '.join(COMBINED_METRICS)}"
+        )
+        metric_coefficients = {
+            k: v for k, v in metric_coefficients.items() if k in set(COMBINED_METRICS)
+        }
+
+    aggregation: CombinedAggregation = extrema_weighting.get(
+        "aggregation", DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
+    )
+    if aggregation not in set(COMBINED_AGGREGATIONS):
+        logger.warning(
+            f"Invalid extrema_weighting aggregation {aggregation!r}, supported: {', '.join(COMBINED_AGGREGATIONS)}, using default {DEFAULTS_EXTREMA_WEIGHTING['aggregation']!r}"
+        )
+        aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
 
     # Phase 1: Standardization
     standardization = extrema_weighting.get(
@@ -220,6 +248,8 @@ def get_extrema_weighting_config(
 
     return {
         "strategy": strategy,
+        "metric_coefficients": metric_coefficients,
+        "aggregation": aggregation,
         # Phase 1: Standardization
         "standardization": standardization,
         "robust_quantiles": robust_quantiles,
@@ -472,6 +502,92 @@ def _build_weights_array(
     return weights_array
 
 
+def _parse_metric_coefficients(
+    metric_coefficients: dict[str, Any],
+) -> dict[CombinedMetric, float]:
+    out: dict[CombinedMetric, float] = {}
+    for metric in COMBINED_METRICS:
+        value = metric_coefficients.get(metric)
+        if not isinstance(value, (int, float)):
+            continue
+        if not np.isfinite(value) or value <= 0:
+            continue
+        out[metric] = float(value)
+
+    return out
+
+
+def _aggregate_metrics(
+    stacked_metrics: NDArray[np.floating],
+    coefficients: NDArray[np.floating],
+    aggregation: CombinedAggregation,
+) -> NDArray[np.floating]:
+    if aggregation == COMBINED_AGGREGATIONS[0]:  # "weighted_average"
+        return np.average(stacked_metrics, axis=0, weights=coefficients)
+    elif aggregation == COMBINED_AGGREGATIONS[1]:  # "geometric_mean"
+        return np.asarray(
+            sp.stats.gmean(stacked_metrics.T, weights=coefficients, axis=1),
+            dtype=float,
+        )
+    else:
+        raise ValueError(
+            f"Invalid aggregation {aggregation!r}. Supported: {', '.join(COMBINED_AGGREGATIONS)}"
+        )
+
+
+def _compute_combined_weights(
+    indices: list[int],
+    amplitudes: list[float],
+    amplitude_threshold_ratios: list[float],
+    volume_rates: list[float],
+    speeds: list[float],
+    efficiency_ratios: list[float],
+    volume_weighted_efficiency_ratios: list[float],
+    metric_coefficients: dict[str, Any],
+    aggregation: CombinedAggregation,
+) -> NDArray[np.floating]:
+    if len(indices) == 0:
+        return np.asarray([], dtype=float)
+
+    coefficients = _parse_metric_coefficients(metric_coefficients)
+    if len(coefficients) == 0:
+        coefficients = dict.fromkeys(COMBINED_METRICS, DEFAULT_EXTREMA_WEIGHT)
+
+    metrics: dict[CombinedMetric, NDArray[np.floating]] = {
+        "amplitude": np.asarray(amplitudes, dtype=float),
+        "amplitude_threshold_ratio": np.asarray(
+            amplitude_threshold_ratios, dtype=float
+        ),
+        "volume_rate": np.asarray(volume_rates, dtype=float),
+        "speed": np.asarray(speeds, dtype=float),
+        "efficiency_ratio": np.asarray(efficiency_ratios, dtype=float),
+        "volume_weighted_efficiency_ratio": np.asarray(
+            volume_weighted_efficiency_ratios, dtype=float
+        ),
+    }
+
+    imputed_metrics: list[NDArray[np.floating]] = []
+    coefficients_list: list[float] = []
+
+    for metric_name in COMBINED_METRICS:
+        if metric_name not in coefficients:
+            continue
+        coefficient = coefficients[metric_name]
+        metric_values = metrics[metric_name]
+        if metric_values.size == 0:
+            continue
+        imputed_metrics.append(_impute_weights(weights=metric_values))
+        coefficients_list.append(float(coefficient))
+
+    if len(imputed_metrics) == 0:
+        return np.asarray([], dtype=float)
+
+    stacked_metrics = np.vstack(imputed_metrics)
+    coefficients_array = np.asarray(coefficients_list, dtype=float)
+
+    return _aggregate_metrics(stacked_metrics, coefficients_array, aggregation)
+
+
 def compute_extrema_weights(
     n_extrema: int,
     indices: list[int],
@@ -481,60 +597,56 @@ def compute_extrema_weights(
     speeds: list[float],
     efficiency_ratios: list[float],
     volume_weighted_efficiency_ratios: list[float],
-    strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
+    extrema_weighting: dict[str, Any],
 ) -> NDArray[np.floating]:
+    extrema_weighting = {**DEFAULTS_EXTREMA_WEIGHTING, **extrema_weighting}
+    strategy = extrema_weighting["strategy"]
+
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
         return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     weights: Optional[NDArray[np.floating]] = None
 
-    if (
-        strategy
-        in {
-            WEIGHT_STRATEGIES[1],
-            WEIGHT_STRATEGIES[2],
-            WEIGHT_STRATEGIES[3],
-            WEIGHT_STRATEGIES[4],
-            WEIGHT_STRATEGIES[5],
-            WEIGHT_STRATEGIES[6],
-        }
-    ):  # "amplitude" / "amplitude_threshold_ratio" / "volume_rate" / "speed" / "efficiency_ratio" / "volume_weighted_efficiency_ratio"
-        if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
-            weights = np.asarray(amplitudes, dtype=float)
-        elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
-            weights = np.asarray(amplitude_threshold_ratios, dtype=float)
-        elif strategy == WEIGHT_STRATEGIES[3]:  # "volume_rate"
-            weights = np.asarray(volume_rates, dtype=float)
-        elif strategy == WEIGHT_STRATEGIES[4]:  # "speed"
-            weights = np.asarray(speeds, dtype=float)
-        elif strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
-            weights = np.asarray(efficiency_ratios, dtype=float)
-        elif strategy == WEIGHT_STRATEGIES[6]:  # "volume_weighted_efficiency_ratio"
-            weights = np.asarray(volume_weighted_efficiency_ratios, dtype=float)
-        else:
-            weights = np.asarray([], dtype=float)
-
-        if weights.size == 0:
-            return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
-
-        weights = _impute_weights(
-            weights=weights,
-        )
-
-    if weights is not None:
-        if weights.size == 0:
-            return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
-
-        return _build_weights_array(
-            n_extrema=n_extrema,
+    if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
+        weights = np.asarray(amplitudes, dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
+        weights = np.asarray(amplitude_threshold_ratios, dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[3]:  # "volume_rate"
+        weights = np.asarray(volume_rates, dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[4]:  # "speed"
+        weights = np.asarray(speeds, dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
+        weights = np.asarray(efficiency_ratios, dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[6]:  # "volume_weighted_efficiency_ratio"
+        weights = np.asarray(volume_weighted_efficiency_ratios, dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
+        weights = _compute_combined_weights(
             indices=indices,
-            weights=weights,
-            default_weight=np.nanmedian(weights),
+            amplitudes=amplitudes,
+            amplitude_threshold_ratios=amplitude_threshold_ratios,
+            volume_rates=volume_rates,
+            speeds=speeds,
+            efficiency_ratios=efficiency_ratios,
+            volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
+            metric_coefficients=extrema_weighting["metric_coefficients"],
+            aggregation=extrema_weighting["aggregation"],
         )
 
-    raise ValueError(
-        f"Invalid extrema weighting strategy {strategy!r}. "
-        f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
+    else:
+        raise ValueError(
+            f"Invalid extrema weighting strategy {strategy!r}. "
+            f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
+        )
+
+    weights = _impute_weights(
+        weights=weights,
+    )
+
+    return _build_weights_array(
+        n_extrema=n_extrema,
+        indices=indices,
+        weights=weights,
+        default_weight=float(np.nanmedian(weights)),
     )
 
 
@@ -565,7 +677,7 @@ def get_weighted_extrema(
     speeds: list[float],
     efficiency_ratios: list[float],
     volume_weighted_efficiency_ratios: list[float],
-    strategy: WeightStrategy = DEFAULTS_EXTREMA_WEIGHTING["strategy"],
+    extrema_weighting: dict[str, Any],
 ) -> tuple[pd.Series, pd.Series]:
     extrema_values = extrema.to_numpy(dtype=float)
     extrema_index = extrema.index
@@ -580,7 +692,7 @@ def get_weighted_extrema(
         speeds=speeds,
         efficiency_ratios=efficiency_ratios,
         volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
-        strategy=strategy,
+        extrema_weighting=extrema_weighting,
     )
 
     return pd.Series(
@@ -1101,21 +1213,20 @@ def zigzag(
             return np.nan, np.nan
 
         amplitude = abs(current_value - previous_value) / abs(previous_value)
+        if not (np.isfinite(amplitude) and amplitude >= 0):
+            return np.nan, np.nan
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
         median_threshold = np.nanmedian(thresholds[start_pos:end_pos])
 
-        if (
-            np.isfinite(median_threshold)
-            and median_threshold > 0
-            and np.isfinite(amplitude)
-        ):
-            amplitude_threshold_ratio = amplitude / median_threshold
-        else:
-            amplitude_threshold_ratio = np.nan
+        amplitude_threshold_ratio = (
+            amplitude / (amplitude + median_threshold)
+            if np.isfinite(median_threshold) and median_threshold > 0
+            else np.nan
+        )
 
-        return amplitude, amplitude_threshold_ratio
+        return amplitude / (1.0 + amplitude), amplitude_threshold_ratio
 
     def calculate_pivot_duration(
         *,
@@ -1143,37 +1254,50 @@ def zigzag(
             previous_pos=previous_pos,
             current_pos=current_pos,
         )
-
         if not np.isfinite(duration) or duration == 0:
             return np.nan
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
-        total_volume = np.nansum(volumes[start_pos:end_pos])
-        return total_volume / duration
+        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / duration
+        median_volume = np.nanmedian(volumes[start_pos:end_pos])
+        if (
+            np.isfinite(avg_volume_per_candle)
+            and avg_volume_per_candle >= 0
+            and np.isfinite(median_volume)
+            and median_volume > 0
+        ):
+            return avg_volume_per_candle / (avg_volume_per_candle + median_volume)
+        return np.nan
 
     def calculate_pivot_speed(
         *,
         previous_pos: int,
+        previous_value: float,
         current_pos: int,
-        amplitude: float,
+        current_value: float,
     ) -> float:
         if previous_pos < 0 or current_pos < 0:
             return np.nan
         if previous_pos >= n or current_pos >= n:
             return np.nan
-        if not np.isfinite(amplitude):
+
+        if np.isclose(previous_value, 0.0):
             return np.nan
 
         duration = calculate_pivot_duration(
             previous_pos=previous_pos,
             current_pos=current_pos,
         )
-
         if not np.isfinite(duration) or duration == 0:
             return np.nan
 
-        return amplitude / duration
+        amplitude = abs(current_value - previous_value) / abs(previous_value)
+        if not (np.isfinite(amplitude) and amplitude >= 0):
+            return np.nan
+
+        speed = amplitude / duration
+        return speed / (1.0 + speed) if np.isfinite(speed) and speed >= 0 else np.nan
 
     def calculate_pivot_efficiency_ratio(
         *,
@@ -1259,8 +1383,9 @@ def zigzag(
             )
             speed = calculate_pivot_speed(
                 previous_pos=last_pivot_pos,
+                previous_value=pivots_values[-1],
                 current_pos=pos,
-                amplitude=amplitude,
+                current_value=value,
             )
             efficiency_ratio = calculate_pivot_efficiency_ratio(
                 previous_pos=last_pivot_pos,

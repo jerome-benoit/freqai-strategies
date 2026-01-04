@@ -24,7 +24,32 @@ WeightStrategy = Literal[
     "speed",
     "efficiency_ratio",
     "volume_weighted_efficiency_ratio",
+    "combined",
 ]
+
+CombinedMetric = Literal[
+    "amplitude",
+    "amplitude_threshold_ratio",
+    "volume_rate",
+    "speed",
+    "efficiency_ratio",
+    "volume_weighted_efficiency_ratio",
+]
+COMBINED_METRICS: Final[tuple[CombinedMetric, ...]] = (
+    "amplitude",
+    "amplitude_threshold_ratio",
+    "volume_rate",
+    "speed",
+    "efficiency_ratio",
+    "volume_weighted_efficiency_ratio",
+)
+
+CombinedAggregation = Literal["weighted_average", "geometric_mean"]
+COMBINED_AGGREGATIONS: Final[tuple[CombinedAggregation, ...]] = (
+    "weighted_average",
+    "geometric_mean",
+)
+
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
     "amplitude",
@@ -33,6 +58,7 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "speed",
     "efficiency_ratio",
     "volume_weighted_efficiency_ratio",
+    "combined",
 )
 
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
@@ -54,6 +80,8 @@ NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = (
 
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
+    "metric_coefficients": {},
+    "aggregation": COMBINED_AGGREGATIONS[0],  # "weighted_average"
     # Phase 1: Standardization
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
