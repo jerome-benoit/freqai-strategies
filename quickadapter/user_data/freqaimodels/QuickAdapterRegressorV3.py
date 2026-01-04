@@ -8,7 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import AbstractSet, Any, Callable, Final, Literal, Optional, Union, cast
 
-import datasieve as ds
 import numpy as np
 import optuna
 import optunahub
@@ -1305,26 +1304,48 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def define_data_pipeline(self, threads: int = -1) -> Pipeline:
         normalization = self.ft_params.get("normalization", "minmax")
 
-        if normalization == "minmax":
-            feature_range = self.ft_params.get("normalization_range", (-1, 1))
-            if feature_range == (-1, 1):
-                return super().define_data_pipeline(threads)
+        QuickAdapterRegressorV3._validate_enum_value(
+            normalization,
+            {"minmax", "maxabs", "standard", "robust"},
+            ("minmax", "maxabs", "standard", "robust"),
+            ctx="normalization",
+        )
+
+        feature_range = self.ft_params.get("normalization_range", (-1, 1))
+
+        if feature_range is not None:
+            if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
+                raise ValueError(
+                    f"normalization_range must be a tuple/list of 2 numbers, got {feature_range!r}"
+                )
+            try:
+                min_val, max_val = float(feature_range[0]), float(feature_range[1])
+                if min_val >= max_val:
+                    raise ValueError(
+                        f"normalization_range min ({min_val}) must be < max ({max_val})"
+                    )
+                feature_range = (min_val, max_val)
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"normalization_range must contain numeric values: {e}"
+                ) from e
+
+        if normalization == "minmax" and tuple(feature_range) == (-1, 1):
+            return super().define_data_pipeline(threads)
 
         pipeline = super().define_data_pipeline(threads)
 
-        def get_scaler():
-            if normalization == "maxabs":
-                return SKLearnWrapper(MaxAbsScaler())
-            elif normalization == "standard":
-                return SKLearnWrapper(StandardScaler())
-            elif normalization == "robust":
-                return SKLearnWrapper(RobustScaler())
-            else:
-                feature_range = self.ft_params.get("normalization_range", (-1, 1))
-                return SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
+        if normalization == "maxabs":
+            scaler = SKLearnWrapper(MaxAbsScaler())
+        elif normalization == "standard":
+            scaler = SKLearnWrapper(StandardScaler())
+        elif normalization == "robust":
+            scaler = SKLearnWrapper(RobustScaler())
+        else:
+            scaler = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
 
         steps = [
-            (name, get_scaler())
+            (name, scaler)
             if name in ("scaler", "post-pca-scaler")
             else (name, transformer)
             for name, transformer in pipeline.steps
