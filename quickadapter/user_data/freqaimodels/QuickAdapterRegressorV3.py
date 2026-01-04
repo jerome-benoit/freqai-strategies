@@ -1316,19 +1316,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if feature_range is not None:
             if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
                 raise ValueError(
-                    f"normalization_range must be a tuple/list of 2 numbers, got {feature_range!r}"
+                    f"Invalid normalization_range {type(feature_range).__name__!r}: "
+                    f"must be a list or tuple of 2 numbers"
                 )
-            try:
-                min_val, max_val = float(feature_range[0]), float(feature_range[1])
-                if min_val >= max_val:
-                    raise ValueError(
-                        f"normalization_range min ({min_val}) must be < max ({max_val})"
-                    )
-                feature_range = (min_val, max_val)
-            except (TypeError, ValueError) as e:
+            min_val, max_val = float(feature_range[0]), float(feature_range[1])
+            if min_val >= max_val:
                 raise ValueError(
-                    f"normalization_range must contain numeric values: {e}"
-                ) from e
+                    f"Invalid normalization_range [{min_val}, {max_val}]: "
+                    f"min must be < max"
+                )
+            feature_range = (min_val, max_val)
 
         if normalization == "minmax" and tuple(feature_range) == (-1, 1):
             return super().define_data_pipeline(threads)
