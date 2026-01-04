@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import AbstractSet, Any, Callable, Final, Literal, Optional, Union, cast
 
+import datasieve as ds
 import numpy as np
 import optuna
 import optunahub
@@ -16,10 +17,17 @@ import scipy as sp
 import skimage
 import sklearn
 from datasieve.pipeline import Pipeline
+from datasieve.transforms import SKLearnWrapper
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
+from sklearn.preprocessing import (
+    MaxAbsScaler,
+    MinMaxScaler,
+    RobustScaler,
+    StandardScaler,
+)
 from sklearn_extra.cluster import KMedoids
 
 from ExtremaWeightingTransformer import (
@@ -1293,6 +1301,36 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 sorted(optuna_label_available_candles)
             )
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
+
+    def define_data_pipeline(self, threads: int = -1) -> Pipeline:
+        normalization = self.ft_params.get("normalization", "minmax")
+
+        if normalization == "minmax":
+            feature_range = self.ft_params.get("normalization_range", (-1, 1))
+            if feature_range == (-1, 1):
+                return super().define_data_pipeline(threads)
+
+        pipeline = super().define_data_pipeline(threads)
+
+        def get_scaler():
+            if normalization == "maxabs":
+                return SKLearnWrapper(MaxAbsScaler())
+            elif normalization == "standard":
+                return SKLearnWrapper(StandardScaler())
+            elif normalization == "robust":
+                return SKLearnWrapper(RobustScaler())
+            else:
+                feature_range = self.ft_params.get("normalization_range", (-1, 1))
+                return SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
+
+        steps = [
+            (name, get_scaler())
+            if name in ("scaler", "post-pca-scaler")
+            else (name, transformer)
+            for name, transformer in pipeline.steps
+        ]
+
+        return Pipeline(steps)
 
     def define_label_pipeline(self, threads: int = -1) -> Pipeline:
         extrema_weighting = self.freqai_info.get("extrema_weighting", {})
