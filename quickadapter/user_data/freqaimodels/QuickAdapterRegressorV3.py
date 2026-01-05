@@ -1326,18 +1326,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "range", QuickAdapterRegressorV3.RANGE_DEFAULT
         )
 
-        if feature_range is not None:
-            if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
-                raise ValueError(
-                    f"Invalid range {type(feature_range).__name__!r}: "
-                    f"must be a list or tuple of 2 numbers"
-                )
-            min_val, max_val = float(feature_range[0]), float(feature_range[1])
-            if min_val >= max_val:
-                raise ValueError(
-                    f"Invalid range [{min_val}, {max_val}]: min must be < max"
-                )
-            feature_range = (min_val, max_val)
+        if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
+            raise ValueError(
+                f"Invalid range {type(feature_range).__name__!r}: "
+                f"must be a list or tuple of 2 numbers"
+            )
+        min_val, max_val = float(feature_range[0]), float(feature_range[1])
+        if min_val >= max_val:
+            raise ValueError(
+                f"Invalid range [{min_val}, {max_val}]: min must be < max"
+            )
+        feature_range = (min_val, max_val)
 
         if (
             scaler == QuickAdapterRegressorV3.SCALER_DEFAULT
