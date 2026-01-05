@@ -16,15 +16,20 @@ import scipy as sp
 import skimage
 import sklearn
 from datasieve.pipeline import Pipeline
+from datasieve.transforms import SKLearnWrapper
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
+from sklearn.preprocessing import (
+    MaxAbsScaler,
+    MinMaxScaler,
+    RobustScaler,
+    StandardScaler,
+)
 from sklearn_extra.cluster import KMedoids
 
-from ExtremaWeightingTransformer import (
-    ExtremaWeightingTransformer,
-)
+from ExtremaWeightingTransformer import ExtremaWeightingTransformer
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
@@ -46,8 +51,9 @@ from Utils import (
 )
 
 ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
-OptunaNamespace = Literal["hp", "label"]
 OptunaSampler = Literal["tpe", "auto", "nsgaii", "nsgaiii"]
+OptunaNamespace = Literal["hp", "label"]
+ScalerType = Literal["minmax", "maxabs", "standard", "robust"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
     "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
@@ -81,7 +87,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.10.2"
+    version = "3.10.3"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -130,6 +136,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         _OPTUNA_SAMPLERS[3],  # "nsgaiii"
     )
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "label")
+
+    _SCALER_TYPES: Final[tuple[ScalerType, ...]] = (
+        "minmax",
+        "maxabs",
+        "standard",
+        "robust",
+    )
+
+    SCALER_DEFAULT: Final[ScalerType] = _SCALER_TYPES[0]  # "minmax"
+    RANGE_DEFAULT: Final[tuple[float, float]] = (-1.0, 1.0)
 
     _DISTANCE_METHODS: Final[tuple[DistanceMethod, ...]] = (
         "compromise_programming",
@@ -248,6 +264,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @lru_cache(maxsize=None)
     def _optuna_namespaces_set() -> set[OptunaNamespace]:
         return set(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _scaler_types_set() -> set[ScalerType]:
+        return set(QuickAdapterRegressorV3._SCALER_TYPES)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -1293,6 +1314,56 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 sorted(optuna_label_available_candles)
             )
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
+
+    def define_data_pipeline(self, threads: int = -1) -> Pipeline:
+        scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
+
+        QuickAdapterRegressorV3._validate_enum_value(
+            scaler,
+            QuickAdapterRegressorV3._scaler_types_set(),
+            QuickAdapterRegressorV3._SCALER_TYPES,
+            ctx="scaler",
+        )
+
+        feature_range = self.ft_params.get(
+            "range", QuickAdapterRegressorV3.RANGE_DEFAULT
+        )
+
+        if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
+            raise ValueError(
+                f"Invalid range {type(feature_range).__name__!r}: "
+                f"must be a list or tuple of 2 numbers"
+            )
+        min_val, max_val = float(feature_range[0]), float(feature_range[1])
+        if min_val >= max_val:
+            raise ValueError(f"Invalid range [{min_val}, {max_val}]: min must be < max")
+        feature_range = (min_val, max_val)
+
+        if (
+            scaler == QuickAdapterRegressorV3.SCALER_DEFAULT
+            and feature_range == QuickAdapterRegressorV3.RANGE_DEFAULT
+        ):
+            return super().define_data_pipeline(threads)
+
+        pipeline = super().define_data_pipeline(threads)
+
+        if scaler == QuickAdapterRegressorV3._SCALER_TYPES[1]:  # "maxabs"
+            scaler_obj = SKLearnWrapper(MaxAbsScaler())
+        elif scaler == QuickAdapterRegressorV3._SCALER_TYPES[2]:  # "standard"
+            scaler_obj = SKLearnWrapper(StandardScaler())
+        elif scaler == QuickAdapterRegressorV3._SCALER_TYPES[3]:  # "robust"
+            scaler_obj = SKLearnWrapper(RobustScaler())
+        else:
+            scaler_obj = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
+
+        steps = [
+            (name, scaler_obj)
+            if name in ("scaler", "post-pca-scaler")
+            else (name, transformer)
+            for name, transformer in pipeline.steps
+        ]
+
+        return Pipeline(steps)
 
     def define_label_pipeline(self, threads: int = -1) -> Pipeline:
         extrema_weighting = self.freqai_info.get("extrema_weighting", {})
