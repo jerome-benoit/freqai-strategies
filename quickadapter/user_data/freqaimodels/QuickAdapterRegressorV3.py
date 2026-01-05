@@ -1186,6 +1186,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"  label_natr_multiplier: {format_number(label_natr_multiplier)}"
             )
 
+        scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
+        feature_range = self.ft_params.get(
+            "range", QuickAdapterRegressorV3.RANGE_DEFAULT
+        )
+        logger.info("Feature Parameters Configuration:")
+        logger.info(f"  scaler: {scaler}")
+        logger.info(f"  range: {feature_range}")
+
         logger.info("=" * 60)
 
     def get_optuna_params(
