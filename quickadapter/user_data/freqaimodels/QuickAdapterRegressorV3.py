@@ -53,8 +53,9 @@ from Utils import (
 )
 
 ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
-OptunaNamespace = Literal["hp", "label"]
 OptunaSampler = Literal["tpe", "auto", "nsgaii", "nsgaiii"]
+OptunaNamespace = Literal["hp", "label"]
+ScalerType = Literal["minmax", "maxabs", "standard", "robust"]
 CustomThresholdMethod = Literal["median", "soft_extremum"]
 SkimageThresholdMethod = Literal[
     "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
@@ -137,6 +138,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         _OPTUNA_SAMPLERS[3],  # "nsgaiii"
     )
     _OPTUNA_NAMESPACES: Final[tuple[OptunaNamespace, ...]] = ("hp", "label")
+
+    _SCALER_TYPES: Final[tuple[ScalerType, ...]] = (
+        "minmax",
+        "maxabs",
+        "standard",
+        "robust",
+    )
 
     _DISTANCE_METHODS: Final[tuple[DistanceMethod, ...]] = (
         "compromise_programming",
@@ -1302,47 +1310,48 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
 
     def define_data_pipeline(self, threads: int = -1) -> Pipeline:
-        normalization = self.ft_params.get("normalization", "minmax")
+        scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3._SCALER_TYPES[0])
 
         QuickAdapterRegressorV3._validate_enum_value(
-            normalization,
-            {"minmax", "maxabs", "standard", "robust"},
-            ("minmax", "maxabs", "standard", "robust"),
-            ctx="normalization",
+            scaler,
+            set(QuickAdapterRegressorV3._SCALER_TYPES),
+            QuickAdapterRegressorV3._SCALER_TYPES,
+            ctx="scaler",
         )
 
-        feature_range = self.ft_params.get("normalization_range", (-1, 1))
+        feature_range = self.ft_params.get("range", (-1, 1))
 
         if feature_range is not None:
             if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
                 raise ValueError(
-                    f"Invalid normalization_range {type(feature_range).__name__!r}: "
+                    f"Invalid range {type(feature_range).__name__!r}: "
                     f"must be a list or tuple of 2 numbers"
                 )
             min_val, max_val = float(feature_range[0]), float(feature_range[1])
             if min_val >= max_val:
                 raise ValueError(
-                    f"Invalid normalization_range [{min_val}, {max_val}]: "
-                    f"min must be < max"
+                    f"Invalid range [{min_val}, {max_val}]: min must be < max"
                 )
             feature_range = (min_val, max_val)
 
-        if normalization == "minmax" and tuple(feature_range) == (-1, 1):
+        if scaler == QuickAdapterRegressorV3._SCALER_TYPES[0] and tuple(
+            feature_range
+        ) == (-1, 1):
             return super().define_data_pipeline(threads)
 
         pipeline = super().define_data_pipeline(threads)
 
-        if normalization == "maxabs":
-            scaler = SKLearnWrapper(MaxAbsScaler())
-        elif normalization == "standard":
-            scaler = SKLearnWrapper(StandardScaler())
-        elif normalization == "robust":
-            scaler = SKLearnWrapper(RobustScaler())
+        if scaler == QuickAdapterRegressorV3._SCALER_TYPES[1]:  # "maxabs"
+            scaler_obj = SKLearnWrapper(MaxAbsScaler())
+        elif scaler == QuickAdapterRegressorV3._SCALER_TYPES[2]:  # "standard"
+            scaler_obj = SKLearnWrapper(StandardScaler())
+        elif scaler == QuickAdapterRegressorV3._SCALER_TYPES[3]:  # "robust"
+            scaler_obj = SKLearnWrapper(RobustScaler())
         else:
-            scaler = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
+            scaler_obj = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
 
         steps = [
-            (name, scaler)
+            (name, scaler_obj)
             if name in ("scaler", "post-pca-scaler")
             else (name, transformer)
             for name, transformer in pipeline.steps
