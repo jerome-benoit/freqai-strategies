@@ -352,6 +352,11 @@ class ReforceXY(BaseReinforcementLearningModel):
             float(position.value),
         )
         if cache_key in ReforceXY._action_masks_cache:
+            logger.debug(
+                "ActionMask: cache hit for can_short=%s position=%s",
+                can_short,
+                position.name,
+            )
             return ReforceXY._action_masks_cache[cache_key]
 
         action_masks = np.zeros(len(Actions), dtype=np.bool_)
@@ -367,6 +372,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             action_masks[Actions.Short_exit.value] = True
 
         ReforceXY._action_masks_cache[cache_key] = action_masks
+        logger.debug(
+            "ActionMask: cache miss for can_short=%s position=%s, computed=%s",
+            can_short,
+            position.name,
+            action_masks,
+        )
         return ReforceXY._action_masks_cache[cache_key]
 
     def unset_unsupported(self) -> None:
@@ -964,7 +975,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
         callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
         try:
+            logger.debug(
+                "Training [%s]: starting model.learn with total_timesteps=%d, eval_freq=%d",
+                dk.pair,
+                total_timesteps,
+                eval_freq,
+            )
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
+            logger.debug("Training [%s]: model.learn completed", dk.pair)
         except KeyboardInterrupt:
             pass
         finally:
@@ -1067,7 +1085,20 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if lstm_states_cache_valid:
             _, lstm_states, episode_start = self._lstm_states_cache[dk.pair]
+            logger.debug(
+                "Predict [%s]: using cached LSTM states (model_id=%d, episode_start=%s)",
+                dk.pair,
+                model_id,
+                episode_start,
+            )
         else:
+            logger.debug(
+                "Predict [%s]: initializing new LSTM states (cache_valid=%s, live=%s, recurrent=%s)",
+                dk.pair,
+                lstm_states_cache_valid,
+                self.live,
+                self.recurrent,
+            )
             lstm_states: Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]] = (
                 None
             )
@@ -1132,6 +1163,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
 
             if self.recurrent:
+                logger.debug(
+                    "Predict [%s]: model.predict with LSTM (observations.shape=%s, episode_start=%s)",
+                    dk.pair,
+                    observations.shape,
+                    episode_start,
+                )
                 action, lstm_states = model.predict(
                     observations,
                     state=lstm_states,
@@ -1140,10 +1177,17 @@ class ReforceXY(BaseReinforcementLearningModel):
                     **action_masks_param,
                 )
                 episode_start[:] = False
+                logger.debug("Predict [%s]: predicted action=%d", dk.pair, int(action))
             else:
+                logger.debug(
+                    "Predict [%s]: model.predict (observations.shape=%s)",
+                    dk.pair,
+                    observations.shape,
+                )
                 action, _ = model.predict(
                     observations, deterministic=True, **action_masks_param
                 )
+                logger.debug("Predict [%s]: predicted action=%d", dk.pair, int(action))
 
             return int(action)
 
@@ -2011,7 +2055,7 @@ class MyRLEnv(Base5ActionRLEnv):
         # "canonical"
         if self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]:
             if self._entry_additive_enabled or self._exit_additive_enabled:
-                logger.info(
+                logger.warning(
                     "PBRS [%s]: canonical mode, additive disabled (use exit_potential_mode=%s to enable)",
                     self.id,
                     ReforceXY._EXIT_POTENTIAL_MODES[1],
@@ -2021,7 +2065,9 @@ class MyRLEnv(Base5ActionRLEnv):
         # "non_canonical"
         elif self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]:
             if self._entry_additive_enabled or self._exit_additive_enabled:
-                logger.info("PBRS [%s]: non-canonical mode, additive enabled", self.id)
+                logger.warning(
+                    "PBRS [%s]: non-canonical mode, additive enabled", self.id
+                )
 
         if MyRLEnv.is_unsupported_pbrs_config(
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
@@ -2564,6 +2610,9 @@ class MyRLEnv(Base5ActionRLEnv):
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
+            logger.debug(
+                "PBRS [%s]: all PBRS features disabled, returning zeros", self.id
+            )
             self._last_prev_potential = float(prev_potential)
             self._last_next_potential = float(prev_potential)
             self._last_entry_additive = 0.0
@@ -3496,12 +3545,12 @@ class MyRLEnv(Base5ActionRLEnv):
         Get environment data aligned on ticks, including optional trade events
         """
         if not self.history:
-            logger.info("Env [%s]: history is empty", self.id)
+            logger.warning("Env [%s]: history is empty", self.id)
             return DataFrame()
 
         _history_df = DataFrame(self.history)
         if "tick" not in _history_df.columns:
-            logger.error("Env [%s]: 'tick' column missing from history", self.id)
+            logger.warning("Env [%s]: 'tick' column missing from history", self.id)
             return DataFrame()
 
         _rollout_history = _history_df.copy()
@@ -3521,7 +3570,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 how="left",
             )
         except Exception as e:
-            logger.error(
+            logger.warning(
                 "Env [%s]: failed to merge history with prices: %r",
                 self.id,
                 e,
@@ -4130,7 +4179,7 @@ class RolloutPlotCallback(BaseCallback):
                     exclude=("stdout", "log", "json", "csv"),
                 )
             except Exception as e:
-                logger.error(
+                logger.warning(
                     "Tensorboard [global]: logger.record failed at best/train_env%d: %r",
                     i,
                     e,
