@@ -136,6 +136,19 @@ def get_extrema_weighting_config(
         )
         aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
 
+    softmax_temperature = extrema_weighting.get(
+        "softmax_temperature", DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
+    )
+    if (
+        not isinstance(softmax_temperature, (int, float))
+        or not np.isfinite(softmax_temperature)
+        or softmax_temperature <= 0
+    ):
+        logger.warning(
+            f"Invalid extrema_weighting softmax_temperature value {softmax_temperature!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
+        )
+        softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
+
     # Phase 1: Standardization
     standardization = extrema_weighting.get(
         "standardization", DEFAULTS_EXTREMA_WEIGHTING["standardization"]
@@ -250,6 +263,7 @@ def get_extrema_weighting_config(
         "strategy": strategy,
         "metric_coefficients": metric_coefficients,
         "aggregation": aggregation,
+        "softmax_temperature": softmax_temperature,
         # Phase 1: Standardization
         "standardization": standardization,
         "robust_quantiles": robust_quantiles,
@@ -521,14 +535,36 @@ def _aggregate_metrics(
     stacked_metrics: NDArray[np.floating],
     coefficients: NDArray[np.floating],
     aggregation: CombinedAggregation,
+    softmax_temperature: float,
 ) -> NDArray[np.floating]:
-    if aggregation == COMBINED_AGGREGATIONS[0]:  # "weighted_average"
-        return np.average(stacked_metrics, axis=0, weights=coefficients)
+    if aggregation == COMBINED_AGGREGATIONS[0]:  # "arithmetic_mean"
+        return sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
     elif aggregation == COMBINED_AGGREGATIONS[1]:  # "geometric_mean"
-        return np.asarray(
-            sp.stats.gmean(stacked_metrics.T, weights=coefficients, axis=1),
-            dtype=float,
+        return sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
+    elif aggregation == COMBINED_AGGREGATIONS[2]:  # "harmonic_mean"
+        return sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
+    elif aggregation == COMBINED_AGGREGATIONS[3]:  # "quadratic_mean"
+        return sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1)
+    elif aggregation == COMBINED_AGGREGATIONS[4]:  # "weighted_median"
+        return np.array(
+            [
+                np.quantile(
+                    stacked_metrics[:, i],
+                    0.5,
+                    weights=coefficients,
+                    method="inverted_cdf",
+                )
+                for i in range(stacked_metrics.shape[1])
+            ]
         )
+    elif aggregation == COMBINED_AGGREGATIONS[5]:  # "softmax"
+        scaled_metrics = stacked_metrics / softmax_temperature
+        softmax_weights = sp.special.softmax(scaled_metrics, axis=0)
+        combined_weights = softmax_weights * coefficients[:, np.newaxis]
+        combined_weights = combined_weights / np.sum(
+            combined_weights, axis=0, keepdims=True
+        )
+        return np.sum(stacked_metrics * combined_weights, axis=0)
     else:
         raise ValueError(
             f"Invalid aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}"
@@ -545,6 +581,7 @@ def _compute_combined_weights(
     volume_weighted_efficiency_ratios: list[float],
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
+    softmax_temperature: float,
 ) -> NDArray[np.floating]:
     if len(indices) == 0:
         return np.asarray([], dtype=float)
@@ -585,7 +622,9 @@ def _compute_combined_weights(
     stacked_metrics = np.vstack(imputed_metrics)
     coefficients_array = np.asarray(coefficients_list, dtype=float)
 
-    return _aggregate_metrics(stacked_metrics, coefficients_array, aggregation)
+    return _aggregate_metrics(
+        stacked_metrics, coefficients_array, aggregation, softmax_temperature
+    )
 
 
 def compute_extrema_weights(
@@ -630,6 +669,7 @@ def compute_extrema_weights(
             volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
             metric_coefficients=extrema_weighting["metric_coefficients"],
             aggregation=extrema_weighting["aggregation"],
+            softmax_temperature=extrema_weighting["softmax_temperature"],
         )
 
     else:

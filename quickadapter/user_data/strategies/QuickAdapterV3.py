@@ -57,6 +57,7 @@ from Utils import (
     zigzag,
     zlema,
 )
+from ExtremaWeightingTransformer import COMBINED_AGGREGATIONS
 
 TradeDirection = Literal["long", "short"]
 InterpolationDirection = Literal["direct", "inverse"]
@@ -106,7 +107,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.10.3"
+        return "3.10.4"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -564,6 +565,12 @@ class QuickAdapterV3(IStrategy):
             f"  sigmoid_scale: {format_number(self.extrema_weighting['sigmoid_scale'])}"
         )
         logger.info(f"  gamma: {format_number(self.extrema_weighting['gamma'])}")
+        if (
+            self.extrema_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]
+        ):  # "softmax"
+            logger.info(
+                f"  softmax_temperature: {format_number(self.extrema_weighting['softmax_temperature'])}"
+            )
 
         logger.info("Extrema Smoothing:")
         logger.info(f"  method: {self.extrema_smoothing['method']}")

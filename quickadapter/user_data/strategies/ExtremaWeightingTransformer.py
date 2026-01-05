@@ -44,10 +44,21 @@ COMBINED_METRICS: Final[tuple[CombinedMetric, ...]] = (
     "volume_weighted_efficiency_ratio",
 )
 
-CombinedAggregation = Literal["weighted_average", "geometric_mean"]
-COMBINED_AGGREGATIONS: Final[tuple[CombinedAggregation, ...]] = (
-    "weighted_average",
+CombinedAggregation = Literal[
+    "arithmetic_mean",
     "geometric_mean",
+    "harmonic_mean",
+    "quadratic_mean",
+    "weighted_median",
+    "softmax",
+]
+COMBINED_AGGREGATIONS: Final[tuple[CombinedAggregation, ...]] = (
+    "arithmetic_mean",
+    "geometric_mean",
+    "harmonic_mean",
+    "quadratic_mean",
+    "weighted_median",
+    "softmax",
 )
 
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
@@ -81,7 +92,8 @@ NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = (
 DEFAULTS_EXTREMA_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
     "metric_coefficients": {},
-    "aggregation": COMBINED_AGGREGATIONS[0],  # "weighted_average"
+    "aggregation": COMBINED_AGGREGATIONS[0],  # "arithmetic_mean"
+    "softmax_temperature": 1.0,
     # Phase 1: Standardization
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
