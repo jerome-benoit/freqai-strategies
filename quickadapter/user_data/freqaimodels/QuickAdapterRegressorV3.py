@@ -146,6 +146,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "robust",
     )
 
+    SCALER_DEFAULT: Final[ScalerType] = _SCALER_TYPES[0]  # "minmax"
+    RANGE_DEFAULT: Final[tuple[float, float]] = (-1.0, 1.0)
+
     _DISTANCE_METHODS: Final[tuple[DistanceMethod, ...]] = (
         "compromise_programming",
         "topsis",
@@ -1310,7 +1313,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
 
     def define_data_pipeline(self, threads: int = -1) -> Pipeline:
-        scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3._SCALER_TYPES[0])
+        scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
 
         QuickAdapterRegressorV3._validate_enum_value(
             scaler,
@@ -1319,7 +1322,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ctx="scaler",
         )
 
-        feature_range = self.ft_params.get("range", (-1, 1))
+        feature_range = self.ft_params.get(
+            "range", QuickAdapterRegressorV3.RANGE_DEFAULT
+        )
 
         if feature_range is not None:
             if not isinstance(feature_range, (list, tuple)) or len(feature_range) != 2:
@@ -1334,9 +1339,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             feature_range = (min_val, max_val)
 
-        if scaler == QuickAdapterRegressorV3._SCALER_TYPES[0] and tuple(
-            feature_range
-        ) == (-1, 1):
+        if (
+            scaler == QuickAdapterRegressorV3.SCALER_DEFAULT
+            and feature_range == QuickAdapterRegressorV3.RANGE_DEFAULT
+        ):
             return super().define_data_pipeline(threads)
 
         pipeline = super().define_data_pipeline(threads)
