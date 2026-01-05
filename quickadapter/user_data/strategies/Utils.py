@@ -108,7 +108,7 @@ def get_extrema_weighting_config(
     strategy = extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
     if strategy not in set(WEIGHT_STRATEGIES):
         logger.warning(
-            f"Invalid extrema_weighting strategy {strategy!r}, supported: {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
+            f"Invalid extrema_weighting strategy value {strategy!r}: supported values are {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
         )
         strategy = WEIGHT_STRATEGIES[0]
     metric_coefficients = extrema_weighting.get(
@@ -116,7 +116,7 @@ def get_extrema_weighting_config(
     )
     if not isinstance(metric_coefficients, dict):
         logger.warning(
-            f"Invalid extrema_weighting metric_coefficients {metric_coefficients!r}: must be a mapping, using default {DEFAULTS_EXTREMA_WEIGHTING['metric_coefficients']!r}"
+            f"Invalid extrema_weighting metric_coefficients value value {metric_coefficients!r}: must be a mapping, using default {DEFAULTS_EXTREMA_WEIGHTING['metric_coefficients']!r}"
         )
         metric_coefficients = DEFAULTS_EXTREMA_WEIGHTING["metric_coefficients"]
     elif invalid_keys := set(metric_coefficients.keys()) - set(COMBINED_METRICS):
@@ -132,7 +132,7 @@ def get_extrema_weighting_config(
     )
     if aggregation not in set(COMBINED_AGGREGATIONS):
         logger.warning(
-            f"Invalid extrema_weighting aggregation {aggregation!r}, supported: {', '.join(COMBINED_AGGREGATIONS)}, using default {DEFAULTS_EXTREMA_WEIGHTING['aggregation']!r}"
+            f"Invalid extrema_weighting aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}, using default {DEFAULTS_EXTREMA_WEIGHTING['aggregation']!r}"
         )
         aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
 
@@ -142,7 +142,7 @@ def get_extrema_weighting_config(
     )
     if standardization not in set(STANDARDIZATION_TYPES):
         logger.warning(
-            f"Invalid extrema_weighting standardization {standardization!r}, supported: {', '.join(STANDARDIZATION_TYPES)}, using default {STANDARDIZATION_TYPES[0]!r}"
+            f"Invalid extrema_weighting standardization value {standardization!r}: supported values are {', '.join(STANDARDIZATION_TYPES)}, using default {STANDARDIZATION_TYPES[0]!r}"
         )
         standardization = STANDARDIZATION_TYPES[0]
 
@@ -159,7 +159,7 @@ def get_extrema_weighting_config(
         or robust_quantiles[0] >= robust_quantiles[1]
     ):
         logger.warning(
-            f"Invalid extrema_weighting robust_quantiles {robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
+            f"Invalid extrema_weighting robust_quantiles value {robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
         )
         robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
     else:
@@ -177,7 +177,7 @@ def get_extrema_weighting_config(
         or mmad_scaling_factor <= 0
     ):
         logger.warning(
-            f"Invalid extrema_weighting mmad_scaling_factor {mmad_scaling_factor!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
+            f"Invalid extrema_weighting mmad_scaling_factor value {mmad_scaling_factor!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
         )
         mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
 
@@ -187,7 +187,7 @@ def get_extrema_weighting_config(
     )
     if normalization not in set(NORMALIZATION_TYPES):
         logger.warning(
-            f"Invalid extrema_weighting normalization {normalization!r}, supported: {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[0]!r}"
+            f"Invalid extrema_weighting normalization value {normalization!r}: supported values are {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[0]!r}"
         )
         normalization = NORMALIZATION_TYPES[0]
 
@@ -212,7 +212,7 @@ def get_extrema_weighting_config(
         or minmax_range[0] >= minmax_range[1]
     ):
         logger.warning(
-            f"Invalid extrema_weighting minmax_range {minmax_range!r}: must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
+            f"Invalid extrema_weighting minmax_range value {minmax_range!r}: must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
         )
         minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
     else:
@@ -230,7 +230,7 @@ def get_extrema_weighting_config(
         or sigmoid_scale <= 0
     ):
         logger.warning(
-            f"Invalid extrema_weighting sigmoid_scale {sigmoid_scale!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
+            f"Invalid extrema_weighting sigmoid_scale value {sigmoid_scale!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
         )
         sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
 
@@ -242,7 +242,7 @@ def get_extrema_weighting_config(
         or not (0 < gamma <= 10.0)
     ):
         logger.warning(
-            f"Invalid extrema_weighting gamma {gamma!r}: must be in range (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
+            f"Invalid extrema_weighting gamma value {gamma!r}: must be in range (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
         )
         gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
 
@@ -300,7 +300,7 @@ def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
 @lru_cache(maxsize=8)
 def get_odd_window(window: int) -> int:
     if window < 1:
-        raise ValueError(f"Invalid window {window!r}: must be > 0")
+        raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 1 else window + 1
 
 
@@ -334,8 +334,8 @@ def _calculate_coeffs(
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(
-            f"Invalid window type {win_type!r}. "
-            f"Supported: {', '.join(SMOOTHING_KERNELS)}"
+            f"Invalid window type value {win_type!r}: "
+            f"supported values are {', '.join(SMOOTHING_KERNELS)}"
         )
     return coeffs / np.sum(coeffs)
 
@@ -486,7 +486,7 @@ def _build_weights_array(
 
     if len(indices) != weights.size:
         raise ValueError(
-            f"Invalid indices/weights: length mismatch, got {len(indices)} indices but {weights.size} weights"
+            f"Invalid indices/weights values: length mismatch, got {len(indices)} indices but {weights.size} weights"
         )
 
     weights_array = np.full(n_extrema, default_weight, dtype=float)
@@ -531,7 +531,7 @@ def _aggregate_metrics(
         )
     else:
         raise ValueError(
-            f"Invalid aggregation {aggregation!r}. Supported: {', '.join(COMBINED_AGGREGATIONS)}"
+            f"Invalid aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}"
         )
 
 
@@ -634,8 +634,8 @@ def compute_extrema_weights(
 
     else:
         raise ValueError(
-            f"Invalid extrema weighting strategy {strategy!r}. "
-            f"Supported: {', '.join(WEIGHT_STRATEGIES)}"
+            f"Invalid extrema weighting strategy value {strategy!r}: "
+            f"supported values are {', '.join(WEIGHT_STRATEGIES)}"
         )
 
     weights = _impute_weights(
@@ -702,7 +702,7 @@ def get_weighted_extrema(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise ValueError(f"Invalid fn {type(fn).__name__!r}: must be callable")
+        raise ValueError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -715,7 +715,7 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
         code = getattr(fn.__call__, "__code__", None)
     if code is None:
         raise ValueError(
-            f"Invalid fn: unable to retrieve code object, got {type(fn).__name__!r}"
+            f"Invalid fn value: unable to retrieve code object, got {type(fn).__name__!r}"
         )
     return hashlib.sha256(code.co_code).hexdigest()
 
@@ -775,7 +775,7 @@ def top_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
     :return: The top change percentage series
     """
     if period < 1:
-        raise ValueError(f"Invalid period {period!r}: must be >= 1")
+        raise ValueError(f"Invalid period value {period!r}: must be >= 1")
 
     previous_close_top = (
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
@@ -793,7 +793,7 @@ def bottom_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
     :return: The bottom change percentage series
     """
     if period < 1:
-        raise ValueError(f"Invalid period {period!r}: must be >= 1")
+        raise ValueError(f"Invalid period value {period!r}: must be >= 1")
 
     previous_close_bottom = (
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
@@ -812,7 +812,7 @@ def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series
     :return: Retracement percentage series
     """
     if period < 1:
-        raise ValueError(f"Invalid period {period!r}: must be >= 1")
+        raise ValueError(f"Invalid period value {period!r}: must be >= 1")
 
     previous_close_low = (
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
@@ -894,7 +894,7 @@ def _fractal_dimension(
 ) -> float:
     """Original fractal dimension computation implementation per Ehlers' paper."""
     if period % 2 != 0:
-        raise ValueError(f"Invalid period {period!r}: must be even")
+        raise ValueError(f"Invalid period value {period!r}: must be even")
 
     half_period = period // 2
 
@@ -923,7 +923,7 @@ def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Seri
     Original FRAMA implementation per Ehlers' paper with optional zero lag.
     """
     if period % 2 != 0:
-        raise ValueError(f"Invalid period {period!r}: must be even")
+        raise ValueError(f"Invalid period value {period!r}: must be even")
 
     n = len(df)
 
@@ -965,7 +965,7 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     https://www.sierrachart.com/index.php?page=doc/StudiesReference.php&ID=173&Name=Moving_Average_-_Smoothed
     """
     if period <= 0:
-        raise ValueError(f"Invalid period {period!r}: must be > 0")
+        raise ValueError(f"Invalid period value {period!r}: must be > 0")
     n = len(series)
     if n < period:
         return pd.Series(index=series.index, dtype=float)
@@ -1755,7 +1755,7 @@ def fit_regressor(
         )
     else:
         raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
         )
     return model
 
@@ -1806,7 +1806,7 @@ def get_optuna_study_model_parameters(
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
         )
     if not isinstance(space_fraction, (int, float)) or not (
         0.0 <= space_fraction <= 1.0
@@ -2159,16 +2159,18 @@ def get_optuna_study_model_parameters(
 
     else:
         raise ValueError(
-            f"Invalid regressor {regressor!r}. Supported: {', '.join(REGRESSORS)}"
+            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
         )
 
 
 @lru_cache(maxsize=128)
 def largest_divisor_to_step(integer: int, step: int) -> Optional[int]:
     if not isinstance(integer, int) or integer <= 0:
-        raise ValueError(f"Invalid integer {integer!r}: must be a positive integer")
+        raise ValueError(
+            f"Invalid integer value {integer!r}: must be a positive integer"
+        )
     if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
+        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
     if step == 1 or integer % step == 0:
         return integer
@@ -2275,7 +2277,7 @@ def round_to_step(value: float | int, step: int) -> int:
     if not isinstance(value, (int, float)):
         raise ValueError(f"Invalid value {value!r}: must be an integer or float")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
+        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
     if isinstance(value, (int, np.integer)):
         q, r = divmod(value, step)
         twice_r = r * 2
@@ -2294,7 +2296,7 @@ def ceil_to_step(value: float | int, step: int) -> int:
     if not isinstance(value, (int, float)):
         raise ValueError(f"Invalid value {value!r}: must be an integer or float")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
+        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
     if isinstance(value, (int, np.integer)):
         return int(-(-int(value) // step) * step)
     if not np.isfinite(value):
@@ -2307,7 +2309,7 @@ def floor_to_step(value: float | int, step: int) -> int:
     if not isinstance(value, (int, float)):
         raise ValueError(f"Invalid value {value!r}: must be an integer or float")
     if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step {step!r}: must be a positive integer")
+        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
     if isinstance(value, (int, np.integer)):
         return int((int(value) // step) * step)
     if not np.isfinite(value):

@@ -341,14 +341,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return float(p) if (np.isfinite(p) and p > 0) else None
 
         if not np.isfinite(p):
-            msg = f"Invalid {ctx} {p!r}: must be finite"
+            msg = f"Invalid {ctx} value {p!r}: must be finite"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
             return None
 
         if p <= 0:
-            msg = f"Invalid {ctx} {p!r}: must be > 0"
+            msg = f"Invalid {ctx} value {p!r}: must be > 0"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
@@ -395,14 +395,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return float(q) if (np.isfinite(q) and 0.0 <= q <= 1.0) else None
 
         if not np.isfinite(q):
-            msg = f"Invalid {ctx} {q!r}: must be finite"
+            msg = f"Invalid {ctx} value {q!r}: must be finite"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
             return None
 
         if q < 0.0 or q > 1.0:
-            msg = f"Invalid {ctx} {q!r}: must be in [0, 1]"
+            msg = f"Invalid {ctx} value {q!r}: must be in [0, 1]"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
@@ -420,7 +420,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return float(p) if np.isfinite(p) else None
 
         if not np.isfinite(p):
-            msg = f"Invalid {ctx} {p!r}: must be finite"
+            msg = f"Invalid {ctx} value {p!r}: must be finite"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
@@ -438,7 +438,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if mode == "none":
             return None
 
-        msg = f"Invalid {ctx} {metric!r}: does not support custom weights"
+        msg = f"Invalid {ctx} value {metric!r}: does not support custom weights"
         if mode == "raise":
             raise ValueError(msg)
         logger.warning(f"{msg}, using uniform weights")
@@ -498,14 +498,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return uniform_weights
 
         if not np.all(np.isfinite(np_weights)):
-            msg = f"Invalid {ctx}: contains non-finite values"
+            msg = f"Invalid {ctx} value: contains non-finite values"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using uniform weights")
             return uniform_weights
 
         if np.any(np_weights < 0):
-            msg = f"Invalid {ctx}: contains negative values"
+            msg = f"Invalid {ctx} value: contains negative values"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using uniform weights")
@@ -513,7 +513,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         weights_sum = np.nansum(np_weights)
         if np.isclose(weights_sum, 0.0):
-            msg = f"Invalid {ctx}: sum is zero"
+            msg = f"Invalid {ctx} value: sum is zero"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using uniform weights")
@@ -537,7 +537,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if mode == "none":
             return default
 
-        msg = f"Invalid {ctx} {value!r}. Supported: {', '.join(valid_options)}"
+        msg = (
+            f"Invalid {ctx} {value!r}: supported values are {', '.join(valid_options)}"
+        )
         if mode == "raise":
             raise ValueError(msg)
         logger.warning(f"{msg}, using {default!r}")
@@ -684,7 +686,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 if not isinstance(n_neighbors, int) or n_neighbors < 1:
                     raise ValueError(
-                        f"Invalid label_density_n_neighbors {n_neighbors!r}: must be int >= 1"
+                        f"Invalid label_density_n_neighbors value {n_neighbors!r}: must be int >= 1"
                     )
                 config["n_neighbors"] = n_neighbors
 
@@ -821,7 +823,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = default_label_frequency_candles
             else:
                 logger.warning(
-                    f"Invalid label_frequency_candles {label_frequency_candles!r}: only 'auto' is supported for string values, using default {default_label_frequency_candles!r}"
+                    f"Invalid label_frequency_candles value {label_frequency_candles!r}: only 'auto' is supported for string values, using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         elif isinstance(label_frequency_candles, (int, float)):
@@ -829,12 +831,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_frequency_candles = int(label_frequency_candles)
             else:
                 logger.warning(
-                    f"Invalid label_frequency_candles {label_frequency_candles!r}: must be in range [2, 10000], using default {default_label_frequency_candles!r}"
+                    f"Invalid label_frequency_candles value {label_frequency_candles!r}: must be in range [2, 10000], using default {default_label_frequency_candles!r}"
                 )
                 label_frequency_candles = default_label_frequency_candles
         else:
             logger.warning(
-                f"Invalid label_frequency_candles {label_frequency_candles!r}: expected int, float, or 'auto', using default {default_label_frequency_candles!r}"
+                f"Invalid label_frequency_candles value {label_frequency_candles!r}: expected int, float, or 'auto', using default {default_label_frequency_candles!r}"
             )
             label_frequency_candles = default_label_frequency_candles
 
@@ -1174,8 +1176,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             params = self._optuna_label_params.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
         return params
 
@@ -1188,8 +1190,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_params[pair] = params
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
 
     def get_optuna_value(self, pair: str, namespace: OptunaNamespace) -> float:
@@ -1197,8 +1199,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             value = self._optuna_hp_value.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # "hp"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # "hp"
             )
         return value
 
@@ -1209,8 +1211,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_hp_value[pair] = value
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # "hp"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]!r}"  # "hp"
             )
 
     def get_optuna_values(
@@ -1220,8 +1222,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             values = self._optuna_label_values.get(pair)
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
         return values
 
@@ -1232,8 +1234,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_values[pair] = values
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
 
     def init_optuna_label_candle_pool(self) -> None:
@@ -1402,12 +1404,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> None:
         if namespace not in {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}:  # "label"
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
         if not callable(callback):
             raise ValueError(
-                f"Invalid callback {type(callback).__name__!r}: must be callable"
+                f"Invalid callback value {type(callback).__name__!r}: must be callable"
             )
         self._optuna_label_candles[pair] += 1
         if pair not in self._optuna_label_incremented_pairs:
@@ -1729,8 +1731,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pred_minima = pred_extrema[pred_extrema < -eps]
         else:
             raise ValueError(
-                f"Invalid extrema_selection {extrema_selection!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
+                f"Invalid extrema_selection value {extrema_selection!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
             )
 
         return pred_minima, pred_maxima
@@ -1771,7 +1773,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
-            raise ValueError(f"Invalid alpha {alpha!r}: must be >= 0")
+            raise ValueError(f"Invalid alpha value {alpha!r}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
             pred_extrema, extrema_selection, keep_extrema_fraction
         )
@@ -1824,8 +1826,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             threshold_func = getattr(skimage.filters, f"threshold_{method}")
         except AttributeError:
             raise ValueError(
-                f"Invalid skimage threshold method {method!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)}"
+                f"Invalid skimage threshold method value {method!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)}"
             )
 
         min_func = QuickAdapterRegressorV3.apply_skimage_threshold
@@ -2002,8 +2004,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         raise ValueError(
-            f"Invalid distance_metric {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[0]}. "
-            f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+            f"Invalid distance_metric value {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[0]}: "
+            f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
         )
 
     @staticmethod
@@ -2166,8 +2168,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid distance_metric {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[1]}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+                f"Invalid distance_metric value {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[1]}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
             )
 
         denominator = dist_to_ideal + dist_to_anti_ideal
@@ -2247,8 +2249,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid trial_selection_method {trial_selection_method!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                f"Invalid trial_selection_method value {trial_selection_method!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
             )
 
         min_score_position = np.nanargmin(scores)
@@ -2322,8 +2324,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             else:
                 raise ValueError(
-                    f"Invalid selection_method {selection_method!r}. "
-                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                    f"Invalid selection_method value {selection_method!r}: "
+                    f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
                 )
             ordered_cluster_indices = np.argsort(cluster_center_scores)
 
@@ -2381,8 +2383,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             else:
                 raise ValueError(
-                    f"Invalid selection_method {selection_method!r}. "
-                    f"Supported: {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                    f"Invalid selection_method value {selection_method!r}: "
+                    f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
                 )
             best_medoid_score_position = np.nanargmin(medoid_scores)
             best_medoid_index = medoid_indices[best_medoid_score_position]
@@ -2407,8 +2409,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         else:
             raise ValueError(
-                f"Invalid cluster_method {cluster_method!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._CLUSTER_METHODS)}"
+                f"Invalid cluster_method value {cluster_method!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._CLUSTER_METHODS)}"
             )
 
     @staticmethod
@@ -2487,8 +2489,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return np.nanmax(neighbor_distances, axis=1)
         else:
             raise ValueError(
-                f"Invalid aggregation {aggregation!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
+                f"Invalid aggregation value {aggregation!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
             )
 
     @staticmethod
@@ -2700,8 +2702,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     not in QuickAdapterRegressorV3._density_aggregations_set()
                 ):
                     raise ValueError(
-                        f"Invalid aggregation in label_config {knn_aggregation!r}. "
-                        f"Supported: {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
+                        f"Invalid aggregation value in label_config {knn_aggregation!r}: "
+                        f"supported values are {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
                     )
                 knn_aggregation_param = label_config["aggregation_param"]
                 return QuickAdapterRegressorV3._knn_based_selection(
@@ -2725,8 +2727,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
 
         raise ValueError(
-            f"Invalid label_method {selection_method!r}. "
-            f"Supported: {', '.join(QuickAdapterRegressorV3._SELECTION_METHODS)}"
+            f"Invalid label_method value {selection_method!r}: "
+            f"supported values are {', '.join(QuickAdapterRegressorV3._SELECTION_METHODS)}"
         )
 
     def _get_multi_objective_study_best_trial(
@@ -2734,8 +2736,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> Optional[optuna.trial.FrozenTrial]:
         if namespace not in {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}:  # "label"
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]}"  # "label"
             )
         n_objectives = len(study.directions)
         if n_objectives < 2:
@@ -2926,8 +2928,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid optuna storage_backend {storage_backend!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
+                f"Invalid optuna storage_backend value {storage_backend!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
             )
         return storage
 
@@ -2969,8 +2971,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid optuna sampler {sampler!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
+                f"Invalid optuna sampler value {sampler!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
             )
 
     @lru_cache(maxsize=8)
@@ -2993,8 +2995,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid namespace {namespace!r}. "
-                f"Supported: {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
+                f"Invalid namespace value {namespace!r}: "
+                f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)}"
             )
 
     def optuna_create_study(
@@ -3037,8 +3039,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
         if sampler not in set(samplers):
             raise ValueError(
-                f"Invalid optuna {namespace} sampler {sampler!r}. "
-                f"Supported: {', '.join(samplers)}"
+                f"Invalid optuna {namespace} sampler value {sampler!r}: "
+                f"supported values are {', '.join(samplers)}"
             )
 
         try:

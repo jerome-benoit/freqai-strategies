@@ -308,7 +308,7 @@ class QuickAdapterV3(IStrategy):
         method = extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
         if method not in set(SMOOTHING_METHODS):
             logger.warning(
-                f"Invalid extrema_smoothing method {method!r}, supported: {', '.join(SMOOTHING_METHODS)}, using default {SMOOTHING_METHODS[0]!r}"
+                f"Invalid extrema_smoothing method value {method!r}: supported values are {', '.join(SMOOTHING_METHODS)}, using default {SMOOTHING_METHODS[0]!r}"
             )
             method = SMOOTHING_METHODS[0]
 
@@ -323,14 +323,14 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(window_candles, int) or window_candles < 3:
             logger.warning(
-                f"Invalid extrema_smoothing window_candles {window_candles!r}: must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
+                f"Invalid extrema_smoothing window_candles value {window_candles!r}: must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
             )
             window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
 
         beta = extrema_smoothing.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
         if not isinstance(beta, (int, float)) or not np.isfinite(beta) or beta <= 0:
             logger.warning(
-                f"Invalid extrema_smoothing beta {beta!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
+                f"Invalid extrema_smoothing beta value {beta!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
             )
             beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
 
@@ -339,21 +339,21 @@ class QuickAdapterV3(IStrategy):
         )
         if not isinstance(polyorder, int) or polyorder < 1:
             logger.warning(
-                f"Invalid extrema_smoothing polyorder {polyorder!r}: must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
+                f"Invalid extrema_smoothing polyorder value {polyorder!r}: must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
             )
             polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
 
         mode = str(extrema_smoothing.get("mode", DEFAULTS_EXTREMA_SMOOTHING["mode"]))
         if mode not in set(SMOOTHING_MODES):
             logger.warning(
-                f"Invalid extrema_smoothing mode {mode!r}, supported: {', '.join(SMOOTHING_MODES)}, using default {SMOOTHING_MODES[0]!r}"
+                f"Invalid extrema_smoothing mode value {mode!r}: supported values are {', '.join(SMOOTHING_MODES)}, using default {SMOOTHING_MODES[0]!r}"
             )
             mode = SMOOTHING_MODES[0]
 
         sigma = extrema_smoothing.get("sigma", DEFAULTS_EXTREMA_SMOOTHING["sigma"])
         if not isinstance(sigma, (int, float)) or sigma <= 0 or not np.isfinite(sigma):
             logger.warning(
-                f"Invalid extrema_smoothing sigma {sigma!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
+                f"Invalid extrema_smoothing sigma value {sigma!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
             )
             sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
 
@@ -380,9 +380,9 @@ class QuickAdapterV3(IStrategy):
         )
         if trade_price_target_method not in set(TRADE_PRICE_TARGETS):
             logger.warning(
-                f"Invalid trade_price_target_method {trade_price_target_method!r}. "
-                f"Supported: {', '.join(TRADE_PRICE_TARGETS)}. "
-                f"Using default {TRADE_PRICE_TARGETS[0]!r}"
+                f"Invalid trade_price_target_method value {trade_price_target_method!r}: "
+                f"supported values are {', '.join(TRADE_PRICE_TARGETS)}, "
+                f"using default {TRADE_PRICE_TARGETS[0]!r}"
             )
             trade_price_target_method = TRADE_PRICE_TARGETS[0]
         return str(trade_price_target_method)
@@ -437,7 +437,7 @@ class QuickAdapterV3(IStrategy):
 
         if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
             logger.warning(
-                f"Invalid reversal_confirmation lookback_period_candles {lookback_period_candles!r}: must be >= 0, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
+                f"Invalid reversal_confirmation lookback_period_candles value {lookback_period_candles!r}: must be >= 0, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
             )
             lookback_period_candles = QuickAdapterV3.default_reversal_confirmation[
                 "lookback_period_candles"
@@ -447,7 +447,7 @@ class QuickAdapterV3(IStrategy):
             0.0 < decay_fraction <= 1.0
         ):
             logger.warning(
-                f"Invalid reversal_confirmation decay_fraction {decay_fraction!r}: must be in range (0, 1], using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
+                f"Invalid reversal_confirmation decay_fraction value {decay_fraction!r}: must be in range (0, 1], using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
             )
             decay_fraction = QuickAdapterV3.default_reversal_confirmation[
                 "decay_fraction"
@@ -841,7 +841,7 @@ class QuickAdapterV3(IStrategy):
     def get_label_natr_multiplier_fraction(self, pair: str, fraction: float) -> float:
         if not isinstance(fraction, float) or not (0.0 <= fraction <= 1.0):
             raise ValueError(
-                f"Invalid fraction {fraction!r}: must be a float in range [0, 1]"
+                f"Invalid fraction value {fraction!r}: must be a float in range [0, 1]"
             )
         return self.get_label_natr_multiplier(pair) * fraction
 
@@ -861,7 +861,7 @@ class QuickAdapterV3(IStrategy):
             return pattern.format(**duration)
         except (KeyError, ValueError) as e:
             raise ValueError(
-                f"Invalid pattern {pattern!r}: failed to format with {e!r}"
+                f"Invalid pattern value {pattern!r}: failed to format with {e!r}"
             )
 
     def set_freqai_targets(
@@ -1187,8 +1187,8 @@ class QuickAdapterV3(IStrategy):
         )
         if trade_price_target_method_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target_method {self.trade_price_target_method!r}. "
-                f"Supported: {', '.join(TRADE_PRICE_TARGETS)}"
+                f"Invalid trade_price_target_method value {self.trade_price_target_method!r}: "
+                f"supported values are {', '.join(TRADE_PRICE_TARGETS)}"
             )
         return trade_price_target_method_fn()
 
@@ -1217,7 +1217,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float]:
         if not (0.0 <= natr_multiplier_fraction <= 1.0):
             raise ValueError(
-                f"Invalid natr_multiplier_fraction {natr_multiplier_fraction!r}: must be in range [0, 1]"
+                f"Invalid natr_multiplier_fraction value {natr_multiplier_fraction!r}: must be in range [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1246,7 +1246,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float]:
         if not (0.0 <= natr_multiplier_fraction <= 1.0):
             raise ValueError(
-                f"Invalid natr_multiplier_fraction {natr_multiplier_fraction!r}: must be in range [0, 1]"
+                f"Invalid natr_multiplier_fraction value {natr_multiplier_fraction!r}: must be in range [0, 1]"
             )
         trade_duration_candles = self.get_trade_duration_candles(df, trade)
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
@@ -1270,7 +1270,7 @@ class QuickAdapterV3(IStrategy):
         callback: Callable[[], None],
     ) -> None:
         if not callable(callback):
-            raise ValueError(f"Invalid callback {callback!r}: must be callable")
+            raise ValueError(f"Invalid callback value {callback!r}: must be callable")
         timestamp = int(current_time.timestamp())
         candle_duration_secs = max(1, int(self._candle_duration_secs))
         candle_start_secs = (timestamp // candle_duration_secs) * candle_duration_secs
@@ -1454,6 +1454,7 @@ class QuickAdapterV3(IStrategy):
         current_exit_profit: float,
         **kwargs,
     ) -> Optional[float] | tuple[Optional[float], Optional[str]]:
+        pair = trade.pair
         if trade.has_open_orders:
             return None
 
@@ -1462,7 +1463,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
         df, _ = self.dp.get_analyzed_dataframe(
-            pair=trade.pair, timeframe=self.config.get("timeframe")
+            pair=pair, timeframe=self.config.get("timeframe")
         )
         if df.empty:
             return None
@@ -1482,10 +1483,10 @@ class QuickAdapterV3(IStrategy):
         )
         if not trade_partial_exit:
             self.throttle_callback(
-                pair=trade.pair,
+                pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
+                    f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
                 ),
             )
@@ -1503,7 +1504,7 @@ class QuickAdapterV3(IStrategy):
                 initial_trade_partial_stake_amount = trade_partial_stake_amount
                 trade_partial_stake_amount = trade.stake_amount - min_stake
                 logger.info(
-                    f"[{trade.pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
+                    f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} to {format_number(trade_partial_stake_amount)} to respect min_stake {format_number(min_stake)}"
                 )
             return (
@@ -1599,8 +1600,8 @@ class QuickAdapterV3(IStrategy):
             )
         else:
             raise ValueError(
-                f"Invalid interpolation_direction {interpolation_direction!r}. "
-                f"Supported: {', '.join(QuickAdapterV3._INTERPOLATION_DIRECTIONS)}"
+                f"Invalid interpolation_direction value {interpolation_direction!r}: "
+                f"supported values are {', '.join(QuickAdapterV3._INTERPOLATION_DIRECTIONS)}"
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
@@ -1673,7 +1674,7 @@ class QuickAdapterV3(IStrategy):
             candle_threshold = base_price * (1 - current_deviation)
         else:
             raise ValueError(
-                f"Invalid side {side!r}, supported: {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
+                f"Invalid side value {side!r}: supported values are {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
             )
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]
@@ -2257,8 +2258,8 @@ class QuickAdapterV3(IStrategy):
             return False
         else:
             raise ValueError(
-                f"Invalid trading_mode {trading_mode!r}. "
-                f"Supported: {', '.join(QuickAdapterV3._TRADING_MODES)}"
+                f"Invalid trading_mode value {trading_mode!r}: "
+                f"supported values are {', '.join(QuickAdapterV3._TRADING_MODES)}"
             )
 
     def leverage(
