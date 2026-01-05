@@ -87,7 +87,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.10.2"
+    version = "3.10.3"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -264,6 +264,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @lru_cache(maxsize=None)
     def _optuna_namespaces_set() -> set[OptunaNamespace]:
         return set(QuickAdapterRegressorV3._OPTUNA_NAMESPACES)
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _scaler_types_set() -> set[ScalerType]:
+        return set(QuickAdapterRegressorV3._SCALER_TYPES)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -1315,7 +1320,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         QuickAdapterRegressorV3._validate_enum_value(
             scaler,
-            set(QuickAdapterRegressorV3._SCALER_TYPES),
+            QuickAdapterRegressorV3._scaler_types_set(),
             QuickAdapterRegressorV3._SCALER_TYPES,
             ctx="scaler",
         )
