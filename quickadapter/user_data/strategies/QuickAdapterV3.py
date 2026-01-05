@@ -194,6 +194,7 @@ class QuickAdapterV3(IStrategy):
                     EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
                 "min_max": {
+                    "smoothed-extrema": {"color": "wheat", "type": "line"},
                     "maxima": {"color": "red", "type": "bar"},
                     "minima": {"color": "green", "type": "bar"},
                 },
@@ -938,7 +939,7 @@ class QuickAdapterV3(IStrategy):
             .mask(extrema_direction.lt(0) & weighted_extrema.eq(0.0), -plot_eps)
         )
 
-        dataframe[EXTREMA_COLUMN] = smooth_extrema(
+        smoothed_extrema = smooth_extrema(
             weighted_extrema,
             self.extrema_smoothing["method"],
             self.extrema_smoothing["window_candles"],
@@ -947,6 +948,9 @@ class QuickAdapterV3(IStrategy):
             self.extrema_smoothing["mode"],
             self.extrema_smoothing["sigma"],
         )
+
+        dataframe[EXTREMA_COLUMN] = smoothed_extrema
+        dataframe["smoothed-extrema"] = smoothed_extrema
 
         return dataframe
 
