@@ -29,9 +29,7 @@ from sklearn.preprocessing import (
 )
 from sklearn_extra.cluster import KMedoids
 
-from ExtremaWeightingTransformer import (
-    ExtremaWeightingTransformer,
-)
+from ExtremaWeightingTransformer import ExtremaWeightingTransformer
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
@@ -1333,9 +1331,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         min_val, max_val = float(feature_range[0]), float(feature_range[1])
         if min_val >= max_val:
-            raise ValueError(
-                f"Invalid range [{min_val}, {max_val}]: min must be < max"
-            )
+            raise ValueError(f"Invalid range [{min_val}, {max_val}]: min must be < max")
         feature_range = (min_val, max_val)
 
         if (
