@@ -1662,15 +1662,27 @@ def fit_regressor(
 
     if regressor == REGRESSORS[0]:  # "xgboost"
         from xgboost import XGBRegressor
+        from xgboost.callback import EarlyStopping
 
         model_training_parameters.setdefault("random_state", 1)
 
+        early_stopping_rounds = None
         if has_eval_set:
-            model_training_parameters.setdefault(
+            early_stopping_rounds = model_training_parameters.pop(
                 "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
             )
         else:
             model_training_parameters.pop("early_stopping_rounds", None)
+
+        if early_stopping_rounds is not None and has_eval_set:
+            fit_callbacks.append(
+                EarlyStopping(
+                    rounds=early_stopping_rounds,
+                    metric_name="rmse",
+                    data_name="validation_0",
+                    save_best=True,
+                )
+            )
 
         if trial is not None:
             model_training_parameters["random_state"] = (
@@ -1702,13 +1714,22 @@ def fit_regressor(
 
         model_training_parameters.setdefault("seed", 1)
 
+        early_stopping_rounds = None
         if has_eval_set:
             early_stopping_rounds = model_training_parameters.pop(
                 "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
             )
         else:
             model_training_parameters.pop("early_stopping_rounds", None)
-            early_stopping_rounds = None
+
+        if early_stopping_rounds is not None:
+            fit_callbacks.append(
+                early_stopping(
+                    stopping_rounds=early_stopping_rounds,
+                    first_metric_only=True,
+                    verbose=False,
+                )
+            )
 
         if trial is not None:
             model_training_parameters["seed"] = (
@@ -1720,15 +1741,6 @@ def fit_regressor(
                         trial, "rmse", valid_name="valid_0"
                     )
                 )
-
-        if early_stopping_rounds is not None:
-            fit_callbacks.append(
-                early_stopping(
-                    stopping_rounds=early_stopping_rounds,
-                    first_metric_only=True,
-                    verbose=False,
-                )
-            )
 
         model = LGBMRegressor(objective="regression", **model_training_parameters)
         model.fit(
