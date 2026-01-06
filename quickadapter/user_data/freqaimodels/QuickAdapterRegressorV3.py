@@ -267,6 +267,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     @lru_cache(maxsize=None)
+    def _optuna_hpo_samplers_set() -> set[OptunaSampler]:
+        return set(QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS)
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _optuna_label_samplers_set() -> set[OptunaSampler]:
+        return set(QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS)
+
+    @staticmethod
+    @lru_cache(maxsize=None)
     def _scaler_types_set() -> set[ScalerType]:
         return set(QuickAdapterRegressorV3._SCALER_TYPES)
 
@@ -3058,20 +3068,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @lru_cache(maxsize=8)
     def optuna_samplers_by_namespace(
         self, namespace: OptunaNamespace
-    ) -> tuple[tuple[OptunaSampler, ...], OptunaSampler]:
+    ) -> tuple[set[OptunaSampler], OptunaSampler]:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             return (
-                QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS,
-                self._optuna_config.get(
-                    "sampler",
-                ),
+                QuickAdapterRegressorV3._optuna_hpo_samplers_set(),
+                self._optuna_config.get("sampler"),
             )
         elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
             return (
-                QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS,
-                self._optuna_config.get(
-                    "label_sampler",
-                ),
+                QuickAdapterRegressorV3._optuna_label_samplers_set(),
+                self._optuna_config.get("label_sampler"),
             )
         else:
             raise ValueError(
@@ -3117,7 +3123,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
-        if sampler not in set(samplers):
+        if sampler not in samplers:
             raise ValueError(
                 f"Invalid optuna {namespace} sampler value {sampler!r}: "
                 f"supported values are {', '.join(samplers)}"
