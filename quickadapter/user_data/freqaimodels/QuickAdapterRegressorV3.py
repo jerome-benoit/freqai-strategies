@@ -3034,6 +3034,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 n_startup_trials=self._optuna_config.get("n_startup_trials"),
                 multivariate=True,
                 group=True,
+                constant_liar=self._optuna_config.get("n_jobs") > 1,
                 seed=self._optuna_config.get("seed"),
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[1]:  # "auto"
