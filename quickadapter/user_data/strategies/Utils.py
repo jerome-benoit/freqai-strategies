@@ -1674,7 +1674,7 @@ def fit_regressor(
         else:
             model_training_parameters.pop("early_stopping_rounds", None)
 
-        if early_stopping_rounds is not None and has_eval_set:
+        if early_stopping_rounds is not None:
             fit_callbacks.append(
                 EarlyStopping(
                     rounds=early_stopping_rounds,
