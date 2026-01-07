@@ -1831,6 +1831,8 @@ def fit_regressor(
 
         dist = model_training_parameters.pop("dist", "lognormal")
 
+        from sklearn.tree import DecisionTreeRegressor
+
         X_val = None
         Y_val = None
         val_sample_weight = None
@@ -1842,6 +1844,12 @@ def fit_regressor(
 
         model = NGBRegressor(
             Dist=get_ngboost_dist(dist),
+            Base=DecisionTreeRegressor(
+                criterion="friedman_mse",
+                max_depth=model_training_parameters.pop("max_depth", None),
+                min_samples_split=model_training_parameters.pop("min_samples_split", 2),
+                min_samples_leaf=model_training_parameters.pop("min_samples_leaf", 1),
+            ),
             **model_training_parameters,
         )
 
@@ -2259,11 +2267,15 @@ def get_optuna_study_model_parameters(
         }
 
     elif regressor == REGRESSORS[3]:  # "ngboost"
-        # Parameter order: boosting -> sampling -> distribution
+        # Parameter order: boosting -> tree structure -> sampling -> distribution
         default_ranges: dict[str, tuple[float, float]] = {
             # Boosting/Training
             "n_estimators": (100, 1000),
             "learning_rate": (0.001, 0.3),
+            # Tree structure
+            "max_depth": (3, 8),
+            "min_samples_split": (2, 20),
+            "min_samples_leaf": (1, 10),
             # Sampling
             "minibatch_frac": (0.5, 1.0),
             "col_sample": (0.3, 1.0),
@@ -2285,6 +2297,16 @@ def get_optuna_study_model_parameters(
                 ranges["learning_rate"][0],
                 ranges["learning_rate"][1],
                 log=True,
+            ),
+            # Tree structure
+            "max_depth": _optuna_suggest_int_from_range(
+                trial, "max_depth", ranges["max_depth"], min_val=1
+            ),
+            "min_samples_split": _optuna_suggest_int_from_range(
+                trial, "min_samples_split", ranges["min_samples_split"], min_val=2
+            ),
+            "min_samples_leaf": _optuna_suggest_int_from_range(
+                trial, "min_samples_leaf", ranges["min_samples_leaf"], min_val=1
             ),
             # Sampling
             "minibatch_frac": trial.suggest_float(
