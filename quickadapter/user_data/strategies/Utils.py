@@ -2259,7 +2259,7 @@ def get_optuna_study_model_parameters(
         }
 
     elif regressor == REGRESSORS[3]:  # "ngboost"
-        # Parameter order: boosting -> tree structure -> sampling -> distribution
+        # Parameter order: boosting -> sampling -> distribution
         default_ranges: dict[str, tuple[float, float]] = {
             # Boosting/Training
             "n_estimators": (100, 1000),
