@@ -1,5 +1,6 @@
 from typing import Any, Final, Literal
 
+import logging
 import numpy as np
 import scipy as sp
 from datasieve.transforms.base_transform import (
@@ -15,6 +16,8 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
+
+logger = logging.getLogger(__name__)
 
 WeightStrategy = Literal[
     "none",
@@ -355,7 +358,14 @@ class ExtremaWeightingTransformer(BaseTransform):
         values = np.asarray(X, dtype=float)
         finite_values = values[np.isfinite(values)]
 
-        fit_values = finite_values if finite_values.size > 0 else np.array([0.0, 1.0])
+        if finite_values.size == 0:
+            logger.warning(
+                "Invalid fit data: no finite values found in X, "
+                "using default fallback [0.0, 1.0]"
+            )
+            fit_values = np.array([0.0, 1.0])
+        else:
+            fit_values = finite_values
 
         self._fit_standardization(fit_values)
 
