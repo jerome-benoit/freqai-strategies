@@ -1608,11 +1608,12 @@ def zigzag(
     )
 
 
-Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor"]
+Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor", "catboost"]
 REGRESSORS: Final[tuple[Regressor, ...]] = (
     "xgboost",
     "lightgbm",
     "histgradientboostingregressor",
+    "catboost",
 )
 
 RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
@@ -1785,6 +1786,57 @@ def fit_regressor(
             y_val=y_val,
             sample_weight_val=sample_weight_val,
         )
+    elif regressor == REGRESSORS[3]:  # "catboost"
+        from catboost import CatBoostRegressor
+
+        model_training_parameters.setdefault("random_state", 1)
+        model_training_parameters.setdefault("loss_function", "RMSE")
+
+        early_stopping_rounds = None
+        if has_eval_set:
+            early_stopping_rounds = model_training_parameters.pop(
+                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+            )
+        else:
+            model_training_parameters.pop("early_stopping_rounds", None)
+
+        verbosity = model_training_parameters.pop("verbosity", None)
+        if "verbose" not in model_training_parameters and verbosity is not None:
+            model_training_parameters["verbose"] = verbosity
+
+        if trial is not None:
+            model_training_parameters["random_state"] = (
+                model_training_parameters["random_state"] + trial.number
+            )
+
+        pruning_callback = None
+        if trial is not None and has_eval_set:
+            pruning_callback = optuna.integration.CatBoostPruningCallback(trial, "RMSE")
+            fit_callbacks.append(pruning_callback)
+
+        model = CatBoostRegressor(**model_training_parameters)
+
+        fit_params = {
+            "X": X,
+            "y": y,
+            "sample_weight": train_weights,
+        }
+
+        if eval_set is not None:
+            fit_params["eval_set"] = eval_set
+
+        if early_stopping_rounds is not None and eval_set is not None:
+            fit_params["early_stopping_rounds"] = early_stopping_rounds
+            fit_params["use_best_model"] = True
+
+        if fit_callbacks:
+            fit_params["callbacks"] = fit_callbacks
+
+        model.fit(**fit_params)
+
+        # CatBoost pruning callback requires manual check after training
+        if pruning_callback is not None:
+            pruning_callback.check_pruned()
     else:
         raise ValueError(
             f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
@@ -2186,6 +2238,59 @@ def get_optuna_study_model_parameters(
                 ranges["tol"][0],
                 ranges["tol"][1],
                 log=True,
+            ),
+        }
+
+    elif regressor == REGRESSORS[3]:  # "catboost"
+        # Parameter order: boosting -> tree structure -> regularization -> sampling
+        default_ranges: dict[str, tuple[float, float]] = {
+            # Boosting/Training
+            "iterations": (100, 2000),
+            "learning_rate": (0.001, 0.3),
+            # Tree structure
+            "depth": (4, 10),
+            # Regularization
+            "l2_leaf_reg": (1, 10),
+            # Sampling/Randomization
+            "bagging_temperature": (0, 10),
+            "random_strength": (1, 20),
+        }
+        log_scaled_params = {
+            "iterations",
+            "learning_rate",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        return {
+            # Boosting/Training
+            "iterations": _optuna_suggest_int_from_range(
+                trial, "iterations", ranges["iterations"], min_val=1, log=True
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            # Tree structure
+            "depth": _optuna_suggest_int_from_range(
+                trial, "depth", ranges["depth"], min_val=1
+            ),
+            # Regularization
+            "l2_leaf_reg": trial.suggest_float(
+                "l2_leaf_reg", ranges["l2_leaf_reg"][0], ranges["l2_leaf_reg"][1]
+            ),
+            # Sampling/Randomization
+            "bagging_temperature": trial.suggest_float(
+                "bagging_temperature",
+                ranges["bagging_temperature"][0],
+                ranges["bagging_temperature"][1],
+            ),
+            "random_strength": trial.suggest_float(
+                "random_strength",
+                ranges["random_strength"][0],
+                ranges["random_strength"][1],
             ),
         }
 
