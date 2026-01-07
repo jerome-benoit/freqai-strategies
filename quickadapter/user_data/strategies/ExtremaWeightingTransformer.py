@@ -1,6 +1,6 @@
+import logging
 from typing import Any, Final, Literal
 
-import logging
 import numpy as np
 import scipy as sp
 from datasieve.transforms.base_transform import (
