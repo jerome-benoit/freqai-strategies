@@ -1608,16 +1608,36 @@ def zigzag(
     )
 
 
-Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor"]
+Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor", "ngboost"]
 REGRESSORS: Final[tuple[Regressor, ...]] = (
     "xgboost",
     "lightgbm",
     "histgradientboostingregressor",
+    "ngboost",
 )
 
 RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
+
+
+def get_ngboost_dist(dist_name: str) -> type:
+    from ngboost.distns import Exponential, Laplace, LogNormal, Normal, T
+
+    dist_map = {
+        "normal": Normal,
+        "lognormal": LogNormal,
+        "exponential": Exponential,
+        "laplace": Laplace,
+        "t": T,
+    }
+
+    if dist_name not in dist_map:
+        raise ValueError(
+            f"Invalid dist_name {dist_name!r}: supported values are {', '.join(dist_map.keys())}"
+        )
+
+    return dist_map[dist_name]
 
 
 def fit_regressor(
@@ -1784,6 +1804,55 @@ def fit_regressor(
             X_val=X_val,
             y_val=y_val,
             sample_weight_val=sample_weight_val,
+        )
+    elif regressor == REGRESSORS[3]:  # "ngboost"
+        from ngboost import NGBRegressor
+
+        model_training_parameters.setdefault("random_state", 1)
+
+        verbosity = model_training_parameters.pop("verbosity", None)
+        if "verbose" not in model_training_parameters and verbosity is not None:
+            model_training_parameters["verbose"] = verbosity
+
+        model_training_parameters.pop("n_jobs", None)
+
+        early_stopping_rounds = None
+        if has_eval_set:
+            early_stopping_rounds = model_training_parameters.pop(
+                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+            )
+        else:
+            model_training_parameters.pop("early_stopping_rounds", None)
+
+        if trial is not None:
+            model_training_parameters["random_state"] = (
+                model_training_parameters["random_state"] + trial.number
+            )
+
+        dist = model_training_parameters.pop("dist", "lognormal")
+
+        X_val = None
+        Y_val = None
+        val_sample_weight = None
+        if has_eval_set:
+            X_val, Y_val = eval_set[0]
+            Y_val = Y_val.to_numpy().ravel()
+            if eval_weights is not None and len(eval_weights) > 0:
+                val_sample_weight = eval_weights[0]
+
+        model = NGBRegressor(
+            Dist=get_ngboost_dist(dist),
+            **model_training_parameters,
+        )
+
+        model.fit(
+            X=X,
+            Y=y.to_numpy().ravel(),
+            sample_weight=train_weights,
+            X_val=X_val,
+            Y_val=Y_val,
+            val_sample_weight=val_sample_weight,
+            early_stopping_rounds=early_stopping_rounds,
         )
     else:
         raise ValueError(
@@ -2187,6 +2256,49 @@ def get_optuna_study_model_parameters(
                 ranges["tol"][1],
                 log=True,
             ),
+        }
+
+    elif regressor == REGRESSORS[3]:  # "ngboost"
+        # Parameter order: boosting -> tree structure -> sampling -> distribution
+        default_ranges: dict[str, tuple[float, float]] = {
+            # Boosting/Training
+            "n_estimators": (100, 1000),
+            "learning_rate": (0.001, 0.3),
+            # Sampling
+            "minibatch_frac": (0.5, 1.0),
+            "col_sample": (0.3, 1.0),
+        }
+        log_scaled_params = {
+            "n_estimators",
+            "learning_rate",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        return {
+            # Boosting/Training
+            "n_estimators": _optuna_suggest_int_from_range(
+                trial, "n_estimators", ranges["n_estimators"], min_val=1, log=True
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            # Sampling
+            "minibatch_frac": trial.suggest_float(
+                "minibatch_frac",
+                ranges["minibatch_frac"][0],
+                ranges["minibatch_frac"][1],
+            ),
+            "col_sample": trial.suggest_float(
+                "col_sample",
+                ranges["col_sample"][0],
+                ranges["col_sample"][1],
+            ),
+            # Distribution
+            "dist": trial.suggest_categorical("dist", ["normal", "lognormal"]),
         }
 
     else:
