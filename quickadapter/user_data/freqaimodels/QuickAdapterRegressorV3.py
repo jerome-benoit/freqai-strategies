@@ -1705,8 +1705,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return minima_indices, maxima_indices
 
     @staticmethod
-    def _calculate_n_kept_extrema(count: int, keep_fraction: float) -> int:
-        return max(1, int(round(count * keep_fraction))) if count > 0 else 0
+    def _calculate_n_kept_extrema(size: int, keep_fraction: float) -> int:
+        return max(1, int(round(size * keep_fraction))) if size > 0 else 0
 
     @staticmethod
     def _get_ranked_peaks(
