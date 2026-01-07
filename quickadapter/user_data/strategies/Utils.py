@@ -2275,10 +2275,10 @@ def get_optuna_study_model_parameters(
             # Tree structure
             "max_depth": (3, 8),
             "min_samples_split": (2, 20),
-            "min_samples_leaf": (1, 10),
+            "min_samples_leaf": (1, 8),
             # Sampling
-            "minibatch_frac": (0.5, 1.0),
-            "col_sample": (0.3, 1.0),
+            "minibatch_frac": (0.6, 1.0),
+            "col_sample": (0.4, 1.0),
         }
         log_scaled_params = {
             "n_estimators",
