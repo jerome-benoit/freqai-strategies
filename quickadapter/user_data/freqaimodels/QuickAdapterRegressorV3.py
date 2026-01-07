@@ -87,7 +87,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.10.4"
+    version = "3.10.5"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -1371,7 +1371,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             scaler_obj = SKLearnWrapper(StandardScaler())
         elif scaler == QuickAdapterRegressorV3._SCALER_TYPES[3]:  # "robust"
             scaler_obj = SKLearnWrapper(RobustScaler())
-        else:
+        else:  # "minmax"
             scaler_obj = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
 
         steps = [
@@ -1705,21 +1705,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return minima_indices, maxima_indices
 
     @staticmethod
+    def _calculate_n_kept_extrema(count: int, keep_fraction: float) -> int:
+        return max(1, int(round(count * keep_fraction))) if count > 0 else 0
+
+    @staticmethod
     def _get_ranked_peaks(
         pred_extrema: pd.Series,
         minima_indices: NDArray[np.intp],
         maxima_indices: NDArray[np.intp],
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
-        n_kept_minima = (
-            max(1, int(round(minima_indices.size * keep_extrema_fraction)))
-            if minima_indices.size > 0
-            else 0
+        n_kept_minima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
+            minima_indices.size, keep_extrema_fraction
         )
-        n_kept_maxima = (
-            max(1, int(round(maxima_indices.size * keep_extrema_fraction)))
-            if maxima_indices.size > 0
-            else 0
+        n_kept_maxima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
+            maxima_indices.size, keep_extrema_fraction
         )
 
         pred_minima = (
@@ -1750,11 +1750,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         n_maxima: int,
         keep_extrema_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
-        n_kept_minima = (
-            max(1, int(round(n_minima * keep_extrema_fraction))) if n_minima > 0 else 0
+        n_kept_minima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
+            n_minima, keep_extrema_fraction
         )
-        n_kept_maxima = (
-            max(1, int(round(n_maxima * keep_extrema_fraction))) if n_maxima > 0 else 0
+        n_kept_maxima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
+            n_maxima, keep_extrema_fraction
         )
 
         pred_minima = (

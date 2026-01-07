@@ -1237,24 +1237,24 @@ def zigzag(
         candidate_pivot_pos = -1
         candidate_pivot_value = np.nan
 
-    def calculate_pivot_amplitude_and_threshold_ratio(
+    def calculate_pivot_metrics(
         *,
         previous_pos: int,
         previous_value: float,
         current_pos: int,
         current_value: float,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, float]:
         if previous_pos < 0 or current_pos < 0:
-            return np.nan, np.nan
+            return np.nan, np.nan, np.nan
         if previous_pos >= n or current_pos >= n:
-            return np.nan, np.nan
+            return np.nan, np.nan, np.nan
 
         if np.isclose(previous_value, 0.0):
-            return np.nan, np.nan
+            return np.nan, np.nan, np.nan
 
         amplitude = abs(current_value - previous_value) / abs(previous_value)
         if not (np.isfinite(amplitude) and amplitude >= 0):
-            return np.nan, np.nan
+            return np.nan, np.nan, np.nan
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
@@ -1266,7 +1266,24 @@ def zigzag(
             else np.nan
         )
 
-        return amplitude / (1.0 + amplitude), amplitude_threshold_ratio
+        duration = calculate_pivot_duration(
+            previous_pos=previous_pos,
+            current_pos=current_pos,
+        )
+
+        if np.isfinite(duration) and duration > 0:
+            speed = amplitude / duration
+            normalized_speed = (
+                speed / (1.0 + speed) if np.isfinite(speed) and speed >= 0 else np.nan
+            )
+        else:
+            normalized_speed = np.nan
+
+        return (
+            amplitude / (1.0 + amplitude),
+            amplitude_threshold_ratio,
+            normalized_speed,
+        )
 
     def calculate_pivot_duration(
         *,
@@ -1309,35 +1326,6 @@ def zigzag(
         ):
             return avg_volume_per_candle / (avg_volume_per_candle + median_volume)
         return np.nan
-
-    def calculate_pivot_speed(
-        *,
-        previous_pos: int,
-        previous_value: float,
-        current_pos: int,
-        current_value: float,
-    ) -> float:
-        if previous_pos < 0 or current_pos < 0:
-            return np.nan
-        if previous_pos >= n or current_pos >= n:
-            return np.nan
-
-        if np.isclose(previous_value, 0.0):
-            return np.nan
-
-        duration = calculate_pivot_duration(
-            previous_pos=previous_pos,
-            current_pos=current_pos,
-        )
-        if not np.isfinite(duration) or duration == 0:
-            return np.nan
-
-        amplitude = abs(current_value - previous_value) / abs(previous_value)
-        if not (np.isfinite(amplitude) and amplitude >= 0):
-            return np.nan
-
-        speed = amplitude / duration
-        return speed / (1.0 + speed) if np.isfinite(speed) and speed >= 0 else np.nan
 
     def calculate_pivot_efficiency_ratio(
         *,
@@ -1409,23 +1397,15 @@ def zigzag(
             and last_pivot_pos >= 0
             and len(pivots_values) == len(pivots_amplitudes)
         ):
-            amplitude, amplitude_threshold_ratio = (
-                calculate_pivot_amplitude_and_threshold_ratio(
-                    previous_pos=last_pivot_pos,
-                    previous_value=pivots_values[-1],
-                    current_pos=pos,
-                    current_value=value,
-                )
-            )
-            volume_rate = calculate_pivot_volume_rate(
-                previous_pos=last_pivot_pos,
-                current_pos=pos,
-            )
-            speed = calculate_pivot_speed(
+            amplitude, amplitude_threshold_ratio, speed = calculate_pivot_metrics(
                 previous_pos=last_pivot_pos,
                 previous_value=pivots_values[-1],
                 current_pos=pos,
                 current_value=value,
+            )
+            volume_rate = calculate_pivot_volume_rate(
+                previous_pos=last_pivot_pos,
+                current_pos=pos,
             )
             efficiency_ratio = calculate_pivot_efficiency_ratio(
                 previous_pos=last_pivot_pos,

@@ -107,7 +107,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.10.4"
+        return "3.10.5"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -2003,7 +2003,7 @@ class QuickAdapterV3(IStrategy):
 
         Args:
             q: Quantile in (0, 1), e.g. 0.75.
-            df: Degrees of freedom (can be fractional).
+            df: Degrees of freedom.
             default_t: Fallback value on error.
 
         Returns:
