@@ -1807,6 +1807,7 @@ def fit_regressor(
         )
     elif regressor == REGRESSORS[3]:  # "ngboost"
         from ngboost import NGBRegressor
+        from sklearn.tree import DecisionTreeRegressor
 
         model_training_parameters.setdefault("random_state", 1)
 
@@ -1830,8 +1831,6 @@ def fit_regressor(
             )
 
         dist = model_training_parameters.pop("dist", "lognormal")
-
-        from sklearn.tree import DecisionTreeRegressor
 
         X_val = None
         Y_val = None
