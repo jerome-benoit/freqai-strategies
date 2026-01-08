@@ -372,6 +372,8 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/vim,visualstudiocode,pycharm+all,linux,osx,windows,python
 
+catboost_info
+
 *.log.*
 config.json
 *.sqlite*
