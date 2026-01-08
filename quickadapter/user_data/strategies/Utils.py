@@ -2301,7 +2301,9 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        return {
+        bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
+
+        params = {
             # Boosting/Training
             "iterations": _optuna_suggest_int_from_range(
                 trial, "iterations", ranges["iterations"], min_val=1, log=True
@@ -2332,14 +2334,7 @@ def get_optuna_study_model_parameters(
                 ranges["model_size_reg"][1],
             ),
             # Sampling/Randomization
-            "bootstrap_type": trial.suggest_categorical(
-                "bootstrap_type", bootstrap_options
-            ),
-            "bagging_temperature": trial.suggest_float(
-                "bagging_temperature",
-                ranges["bagging_temperature"][0],
-                ranges["bagging_temperature"][1],
-            ),
+            "bootstrap_type": bootstrap_type,
             "random_strength": trial.suggest_float(
                 "random_strength",
                 ranges["random_strength"][0],
@@ -2350,27 +2345,34 @@ def get_optuna_study_model_parameters(
                 ranges["rsm"][0],
                 ranges["rsm"][1],
             ),
-            "subsample": trial.suggest_float(
+        }
+
+        if bootstrap_type == "Bayesian":
+            params["bagging_temperature"] = trial.suggest_float(
+                "bagging_temperature",
+                ranges["bagging_temperature"][0],
+                ranges["bagging_temperature"][1],
+            )
+
+        if bootstrap_type in ["Bernoulli", "MVS"]:
+            params["subsample"] = trial.suggest_float(
                 "subsample",
                 ranges["subsample"][0],
                 ranges["subsample"][1],
-            ),
-            **(
-                {
-                    "border_count": _optuna_suggest_int_from_range(
-                        trial, "border_count", ranges["border_count"], min_val=16
-                    ),
-                    "max_ctr_complexity": _optuna_suggest_int_from_range(
-                        trial,
-                        "max_ctr_complexity",
-                        ranges["max_ctr_complexity"],
-                        min_val=1,
-                    ),
-                }
-                if task_type == "GPU"
-                else {}
-            ),
-        }
+            )
+
+        if task_type == "GPU":
+            params["border_count"] = _optuna_suggest_int_from_range(
+                trial, "border_count", ranges["border_count"], min_val=1
+            )
+            params["max_ctr_complexity"] = _optuna_suggest_int_from_range(
+                trial,
+                "max_ctr_complexity",
+                ranges["max_ctr_complexity"],
+                min_val=1,
+            )
+
+        return params
 
     else:
         raise ValueError(
