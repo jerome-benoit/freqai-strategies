@@ -3275,6 +3275,7 @@ def hp_objective(
         trial,
         regressor,
         model_training_best_parameters,
+        model_training_parameters,
         space_reduction,
         space_fraction,
     )

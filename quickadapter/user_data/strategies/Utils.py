@@ -1787,10 +1787,24 @@ def fit_regressor(
             sample_weight_val=sample_weight_val,
         )
     elif regressor == REGRESSORS[3]:  # "catboost"
-        from catboost import CatBoostRegressor
+        from catboost import CatBoostRegressor, Pool
 
         model_training_parameters.setdefault("random_state", 1)
         model_training_parameters.setdefault("loss_function", "RMSE")
+
+        task_type = model_training_parameters.get("task_type", "CPU")
+
+        if task_type == "GPU":
+            model_training_parameters.setdefault("devices", "0")
+            model_training_parameters.setdefault("max_ctr_complexity", 4)
+            model_training_parameters.pop("n_jobs", None)
+        else:
+            n_jobs = model_training_parameters.pop("n_jobs", None)
+            if n_jobs is not None:
+                model_training_parameters.setdefault("thread_count", n_jobs)
+            else:
+                model_training_parameters.setdefault("thread_count", -1)
+            model_training_parameters.setdefault("max_ctr_complexity", 2)
 
         early_stopping_rounds = None
         if has_eval_set:
@@ -1816,25 +1830,24 @@ def fit_regressor(
 
         model = CatBoostRegressor(**model_training_parameters)
 
-        fit_params = {
-            "X": X,
-            "y": y,
-            "sample_weight": train_weights,
-        }
+        model.fit(
+            Pool(data=X, label=y, weight=train_weights),
+            eval_set=Pool(
+                data=eval_set[0][0],
+                label=eval_set[0][1],
+                weight=eval_weights[0] if eval_weights else None,
+            )
+            if has_eval_set
+            else None,
+            early_stopping_rounds=early_stopping_rounds
+            if early_stopping_rounds is not None and has_eval_set
+            else None,
+            use_best_model=True
+            if early_stopping_rounds is not None and has_eval_set
+            else False,
+            callbacks=fit_callbacks if fit_callbacks else None,
+        )
 
-        if eval_set is not None:
-            fit_params["eval_set"] = eval_set
-
-        if early_stopping_rounds is not None and eval_set is not None:
-            fit_params["early_stopping_rounds"] = early_stopping_rounds
-            fit_params["use_best_model"] = True
-
-        if fit_callbacks:
-            fit_params["callbacks"] = fit_callbacks
-
-        model.fit(**fit_params)
-
-        # CatBoost pruning callback requires manual check after training
         if pruning_callback is not None:
             pruning_callback.check_pruned()
     else:
@@ -1885,6 +1898,7 @@ def get_optuna_study_model_parameters(
     trial: optuna.trial.Trial,
     regressor: Regressor,
     model_training_best_parameters: dict[str, Any],
+    model_training_parameters: dict[str, Any],
     space_reduction: bool,
     space_fraction: float,
 ) -> dict[str, Any]:
@@ -2243,18 +2257,46 @@ def get_optuna_study_model_parameters(
 
     elif regressor == REGRESSORS[3]:  # "catboost"
         # Parameter order: boosting -> tree structure -> regularization -> sampling
-        default_ranges: dict[str, tuple[float, float]] = {
-            # Boosting/Training
-            "iterations": (100, 2000),
-            "learning_rate": (0.001, 0.3),
-            # Tree structure
-            "depth": (4, 10),
-            # Regularization
-            "l2_leaf_reg": (1, 10),
-            # Sampling/Randomization
-            "bagging_temperature": (0, 10),
-            "random_strength": (1, 20),
-        }
+        task_type = model_training_parameters.get("task_type", "CPU")
+        if task_type == "GPU":
+            default_ranges: dict[str, tuple[float, float]] = {
+                # Boosting/Training
+                "iterations": (100, 2000),
+                "learning_rate": (0.001, 0.3),
+                # Tree structure
+                "depth": (4, 12),
+                "min_data_in_leaf": (1, 20),
+                "border_count": (32, 254),
+                "max_ctr_complexity": (2, 6),
+                # Regularization
+                "l2_leaf_reg": (1, 10),
+                "model_size_reg": (0.0, 1.0),
+                # Sampling/Randomization
+                "bagging_temperature": (0, 10),
+                "random_strength": (1, 20),
+                "rsm": (0.5, 1.0),
+                "subsample": (0.6, 1.0),
+            }
+            bootstrap_options = ["Bayesian", "Bernoulli"]
+        else:  # CPU
+            default_ranges: dict[str, tuple[float, float]] = {
+                # Boosting/Training
+                "iterations": (100, 2000),
+                "learning_rate": (0.001, 0.3),
+                # Tree structure
+                "depth": (4, 10),
+                "min_data_in_leaf": (1, 20),
+                # Regularization
+                "l2_leaf_reg": (1, 10),
+                "model_size_reg": (0.0, 1.0),
+                # Sampling/Randomization
+                "bagging_temperature": (0, 10),
+                "random_strength": (1, 20),
+                "rsm": (0.5, 1.0),
+                "subsample": (0.6, 1.0),
+            }
+            bootstrap_options = ["Bayesian", "Bernoulli", "MVS"]
+
         log_scaled_params = {
             "iterations",
             "learning_rate",
@@ -2277,11 +2319,25 @@ def get_optuna_study_model_parameters(
             "depth": _optuna_suggest_int_from_range(
                 trial, "depth", ranges["depth"], min_val=1
             ),
+            "min_data_in_leaf": _optuna_suggest_int_from_range(
+                trial, "min_data_in_leaf", ranges["min_data_in_leaf"], min_val=1
+            ),
+            "grow_policy": trial.suggest_categorical(
+                "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
+            ),
             # Regularization
             "l2_leaf_reg": trial.suggest_float(
                 "l2_leaf_reg", ranges["l2_leaf_reg"][0], ranges["l2_leaf_reg"][1]
             ),
+            "model_size_reg": trial.suggest_float(
+                "model_size_reg",
+                ranges["model_size_reg"][0],
+                ranges["model_size_reg"][1],
+            ),
             # Sampling/Randomization
+            "bootstrap_type": trial.suggest_categorical(
+                "bootstrap_type", bootstrap_options
+            ),
             "bagging_temperature": trial.suggest_float(
                 "bagging_temperature",
                 ranges["bagging_temperature"][0],
@@ -2291,6 +2347,31 @@ def get_optuna_study_model_parameters(
                 "random_strength",
                 ranges["random_strength"][0],
                 ranges["random_strength"][1],
+            ),
+            "rsm": trial.suggest_float(
+                "rsm",
+                ranges["rsm"][0],
+                ranges["rsm"][1],
+            ),
+            "subsample": trial.suggest_float(
+                "subsample",
+                ranges["subsample"][0],
+                ranges["subsample"][1],
+            ),
+            **(
+                {
+                    "border_count": _optuna_suggest_int_from_range(
+                        trial, "border_count", ranges["border_count"], min_val=16
+                    ),
+                    "max_ctr_complexity": _optuna_suggest_int_from_range(
+                        trial,
+                        "max_ctr_complexity",
+                        ranges["max_ctr_complexity"],
+                        min_val=1,
+                    ),
+                }
+                if task_type == "GPU"
+                else {}
             ),
         }
 
