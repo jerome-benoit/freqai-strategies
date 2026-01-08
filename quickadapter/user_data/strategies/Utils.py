@@ -1791,7 +1791,7 @@ def fit_regressor(
 
         X_val = None
         y_val = None
-        if eval_set is not None and len(eval_set) > 0:
+        if has_eval_set:
             X_val, y_val = eval_set[0]
             y_val = y_val.to_numpy().ravel()
 
