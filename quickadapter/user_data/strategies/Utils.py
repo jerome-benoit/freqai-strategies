@@ -2366,22 +2366,25 @@ def get_optuna_study_model_parameters(
         }
 
     elif regressor == REGRESSORS[3]:  # "ngboost"
-        # Parameter order: boosting -> tree structure -> sampling -> distribution
+        # Parameter order: boosting -> tree structure -> sampling -> early stopping -> distribution
         default_ranges: dict[str, tuple[float, float]] = {
             # Boosting/Training
-            "n_estimators": (100, 1000),
+            "n_estimators": (200, 2000),
             "learning_rate": (0.001, 0.3),
             # Tree structure
-            "max_depth": (3, 8),
+            "max_depth": (2, 6),
             "min_samples_split": (2, 20),
             "min_samples_leaf": (1, 8),
             # Sampling
             "minibatch_frac": (0.6, 1.0),
             "col_sample": (0.4, 1.0),
+            # Early stopping
+            "tol": (1e-5, 1e-3),
         }
         log_scaled_params = {
             "n_estimators",
             "learning_rate",
+            "tol",
         }
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
@@ -2417,6 +2420,13 @@ def get_optuna_study_model_parameters(
                 "col_sample",
                 ranges["col_sample"][0],
                 ranges["col_sample"][1],
+            ),
+            # Early stopping
+            "tol": trial.suggest_float(
+                "tol",
+                ranges["tol"][0],
+                ranges["tol"][1],
+                log=True,
             ),
             # Distribution
             "dist": trial.suggest_categorical("dist", ["normal", "lognormal"]),
