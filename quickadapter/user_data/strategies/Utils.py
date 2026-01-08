@@ -1795,7 +1795,6 @@ def fit_regressor(
         task_type = model_training_parameters.get("task_type", "CPU")
 
         if task_type == "GPU":
-            model_training_parameters.setdefault("devices", "0")
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
         else:
