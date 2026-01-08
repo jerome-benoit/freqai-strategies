@@ -48,6 +48,10 @@ EXTREMA_COLUMN: Final = "&s-extrema"
 MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
+MAXIMA_COLUMN: Final = "maxima"
+MINIMA_COLUMN: Final = "minima"
+SMOOTHED_EXTREMA_COLUMN: Final = "smoothed_extrema"
+
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
     "gaussian",
@@ -1793,7 +1797,6 @@ def fit_regressor(
         model_training_parameters.setdefault("loss_function", "RMSE")
 
         task_type = model_training_parameters.get("task_type", "CPU")
-
         if task_type == "GPU":
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
