@@ -2044,9 +2044,9 @@ def get_optuna_study_model_parameters(
             "min_child_weight": (1.0, 200.0),
             # Sampling
             "subsample": (0.5, 1.0),
-            "colsample_bytree": (0.3, 1.0),
-            "colsample_bylevel": (0.3, 1.0),
-            "colsample_bynode": (0.3, 1.0),
+            "colsample_bytree": (0.5, 1.0),
+            "colsample_bylevel": (0.5, 1.0),
+            "colsample_bynode": (0.5, 1.0),
             # Regularization
             "reg_alpha": (1e-8, 10.0),
             "reg_lambda": (1e-8, 10.0),
@@ -2066,12 +2066,14 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
+        booster = trial.suggest_categorical("booster", ["gbtree", "dart"])
         grow_policy = trial.suggest_categorical(
             "grow_policy", ["depthwise", "lossguide"]
         )
 
-        return {
+        params: dict[str, Any] = {
             # Boosting/Training
+            "booster": booster,
             "n_estimators": _optuna_suggest_int_from_range(
                 trial, "n_estimators", ranges["n_estimators"], min_val=1, log=True
             ),
@@ -2138,6 +2140,19 @@ def get_optuna_study_model_parameters(
                 trial, "max_bin", ranges["max_bin"], min_val=2
             ),
         }
+
+        if booster == "dart":
+            params["sample_type"] = trial.suggest_categorical(
+                "sample_type", ["uniform", "weighted"]
+            )
+            params["normalize_type"] = trial.suggest_categorical(
+                "normalize_type", ["tree", "forest"]
+            )
+            params["rate_drop"] = trial.suggest_float("rate_drop", 0.0, 0.5)
+            params["skip_drop"] = trial.suggest_float("skip_drop", 0.0, 0.7)
+            params["one_drop"] = trial.suggest_categorical("one_drop", [False, True])
+
+        return params
 
     elif regressor == REGRESSORS[1]:  # "lightgbm"
         # Parameter order: boosting -> tree structure -> leaf constraints ->
@@ -2234,8 +2249,15 @@ def get_optuna_study_model_parameters(
         }
 
         if boosting_type == "dart":
-            params["drop_rate"] = trial.suggest_float("drop_rate", 0.01, 0.5)
-            params["skip_drop"] = trial.suggest_float("skip_drop", 0.1, 0.7)
+            params["xgboost_dart_mode"] = trial.suggest_categorical(
+                "xgboost_dart_mode", [False, True]
+            )
+            params["drop_rate"] = trial.suggest_float("drop_rate", 0.0, 0.5)
+            params["skip_drop"] = trial.suggest_float("skip_drop", 0.0, 0.7)
+            params["max_drop"] = trial.suggest_int("max_drop", 10, 100)
+            params["uniform_drop"] = trial.suggest_categorical(
+                "uniform_drop", [False, True]
+            )
 
         return params
 
