@@ -1816,8 +1816,8 @@ def fit_regressor(
             model_training_parameters["verbose"] = verbosity
 
         if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
+            model_training_parameters["random_seed"] = (
+                model_training_parameters["random_seed"] + trial.number
             )
 
         pruning_callback = None
