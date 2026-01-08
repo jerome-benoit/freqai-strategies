@@ -137,7 +137,8 @@
       "beta": 12.0
     },
     "predictions_extrema": {
-      "threshold_smoothing_method": "isodata"
+      "threshold_smoothing_method": "isodata",
+      "keep_extrema_fraction": 0.5
     },
     "optuna_hyperopt": {
       "enabled": true,
