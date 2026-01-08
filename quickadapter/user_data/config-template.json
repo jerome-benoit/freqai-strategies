@@ -199,7 +199,7 @@
       // "device": "gpu",
       // "use_rmm:": true,
       "n_jobs": 6, // set to number of CPU threads / 4
-      "verbosity": 1
+      "verbosity": 0
     }
   },
   "bot_name": "freqtrade-quickadapter",
