@@ -1789,7 +1789,7 @@ def fit_regressor(
     elif regressor == REGRESSORS[3]:  # "catboost"
         from catboost import CatBoostRegressor, Pool
 
-        model_training_parameters.setdefault("random_state", 1)
+        model_training_parameters.setdefault("random_seed", 1)
         model_training_parameters.setdefault("loss_function", "RMSE")
 
         task_type = model_training_parameters.get("task_type", "CPU")
@@ -1801,8 +1801,6 @@ def fit_regressor(
             n_jobs = model_training_parameters.pop("n_jobs", None)
             if n_jobs is not None:
                 model_training_parameters.setdefault("thread_count", n_jobs)
-            else:
-                model_training_parameters.setdefault("thread_count", -1)
             model_training_parameters.setdefault("max_ctr_complexity", 2)
 
         early_stopping_rounds = None
