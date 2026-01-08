@@ -2489,6 +2489,10 @@ def get_optuna_study_model_parameters(
             "boosting_type", boosting_type_options
         )
         bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
+        if boosting_type == "Ordered":
+            grow_policy_options = ["SymmetricTree"]
+        else:
+            grow_policy_options = ["SymmetricTree", "Depthwise", "Lossguide"]
 
         params: dict[str, Any] = {
             # Boosting/Training
@@ -2510,7 +2514,7 @@ def get_optuna_study_model_parameters(
                 trial, "min_data_in_leaf", ranges["min_data_in_leaf"], min_val=1
             ),
             "grow_policy": trial.suggest_categorical(
-                "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
+                "grow_policy", grow_policy_options
             ),
             # Regularization
             "l2_leaf_reg": trial.suggest_float(
