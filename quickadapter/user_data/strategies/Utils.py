@@ -1612,7 +1612,9 @@ def zigzag(
     )
 
 
-Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"]
+Regressor = Literal[
+    "xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"
+]
 REGRESSORS: Final[tuple[Regressor, ...]] = (
     "xgboost",
     "lightgbm",
@@ -2163,6 +2165,7 @@ def get_optuna_study_model_parameters(
         log_scaled_params = {
             "n_estimators",
             "learning_rate",
+            "num_leaves",
             "min_child_weight",
             "min_split_gain",
             "reg_alpha",
@@ -2184,7 +2187,7 @@ def get_optuna_study_model_parameters(
             ),
             # Tree structure
             "num_leaves": _optuna_suggest_int_from_range(
-                trial, "num_leaves", ranges["num_leaves"], min_val=2
+                trial, "num_leaves", ranges["num_leaves"], min_val=2, log=True
             ),
             # Leaf constraints
             "min_child_weight": trial.suggest_float(
@@ -2433,6 +2436,8 @@ def get_optuna_study_model_parameters(
         log_scaled_params = {
             "iterations",
             "learning_rate",
+            "l2_leaf_reg",
+            "random_strength",
         }
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
@@ -2462,7 +2467,10 @@ def get_optuna_study_model_parameters(
             ),
             # Regularization
             "l2_leaf_reg": trial.suggest_float(
-                "l2_leaf_reg", ranges["l2_leaf_reg"][0], ranges["l2_leaf_reg"][1]
+                "l2_leaf_reg",
+                ranges["l2_leaf_reg"][0],
+                ranges["l2_leaf_reg"][1],
+                log=True,
             ),
             "model_size_reg": trial.suggest_float(
                 "model_size_reg",
@@ -2475,6 +2483,7 @@ def get_optuna_study_model_parameters(
                 "random_strength",
                 ranges["random_strength"][0],
                 ranges["random_strength"][1],
+                log=True,
             ),
             "rsm": trial.suggest_float(
                 "rsm",
