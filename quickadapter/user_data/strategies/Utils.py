@@ -2147,10 +2147,10 @@ def get_optuna_study_model_parameters(
             "n_estimators": (50, 3000),
             "learning_rate": (0.005, 0.3),
             # Tree structure
-            "num_leaves": (8, 256),
+            "num_leaves": (8, 512),
             # Leaf constraints
             "min_child_weight": (1e-5, 10.0),
-            "min_child_samples": (5, 100),
+            "min_child_samples": (1, 200),
             "min_split_gain": (1e-8, 1.0),
             # Sampling
             "subsample": (0.4, 1.0),
@@ -2174,8 +2174,11 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        return {
+        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
+
+        params: dict[str, Any] = {
             # Boosting/Training
+            "boosting_type": boosting_type,
             "n_estimators": _optuna_suggest_int_from_range(
                 trial, "n_estimators", ranges["n_estimators"], min_val=1, log=True
             ),
@@ -2229,6 +2232,12 @@ def get_optuna_study_model_parameters(
                 trial, "max_bin", ranges["max_bin"], min_val=2
             ),
         }
+
+        if boosting_type == "dart":
+            params["drop_rate"] = trial.suggest_float("drop_rate", 0.01, 0.5)
+            params["skip_drop"] = trial.suggest_float("skip_drop", 0.1, 0.7)
+
+        return params
 
     elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
         # Parameter order: boosting -> tree structure -> leaf constraints ->
@@ -2449,7 +2458,7 @@ def get_optuna_study_model_parameters(
         )
         bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
 
-        params = {
+        params: dict[str, Any] = {
             # Boosting/Training
             "boosting_type": boosting_type,
             "iterations": _optuna_suggest_int_from_range(
@@ -2485,6 +2494,9 @@ def get_optuna_study_model_parameters(
             ),
             # Sampling/Randomization
             "bootstrap_type": bootstrap_type,
+            "leaf_estimation_method": trial.suggest_categorical(
+                "leaf_estimation_method", ["Newton", "Gradient"]
+            ),
             "random_strength": trial.suggest_float(
                 "random_strength",
                 ranges["random_strength"][0],
@@ -2495,9 +2507,6 @@ def get_optuna_study_model_parameters(
                 "rsm",
                 ranges["rsm"][0],
                 ranges["rsm"][1],
-            ),
-            "leaf_estimation_method": trial.suggest_categorical(
-                "leaf_estimation_method", ["Newton", "Gradient"]
             ),
         }
 
