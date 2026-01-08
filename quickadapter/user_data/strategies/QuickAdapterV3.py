@@ -26,12 +26,16 @@ from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 
+from ExtremaWeightingTransformer import COMBINED_AGGREGATIONS
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_EXTREMA_SMOOTHING,
     EXTREMA_COLUMN,
+    MAXIMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
+    MINIMA_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
+    SMOOTHED_EXTREMA_COLUMN,
     SMOOTHING_METHODS,
     SMOOTHING_MODES,
     TRADE_PRICE_TARGETS,
@@ -57,7 +61,6 @@ from Utils import (
     zigzag,
     zlema,
 )
-from ExtremaWeightingTransformer import COMBINED_AGGREGATIONS
 
 TradeDirection = Literal["long", "short"]
 InterpolationDirection = Literal["direct", "inverse"]
@@ -194,9 +197,9 @@ class QuickAdapterV3(IStrategy):
                     EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
                 "min_max": {
-                    "smoothed-extrema": {"color": "wheat", "type": "line"},
-                    "maxima": {"color": "red", "type": "bar"},
-                    "minima": {"color": "green", "type": "bar"},
+                    SMOOTHED_EXTREMA_COLUMN: {"color": "wheat", "type": "line"},
+                    MAXIMA_COLUMN: {"color": "red", "type": "bar"},
+                    MINIMA_COLUMN: {"color": "green", "type": "bar"},
                 },
             },
         }
@@ -897,8 +900,8 @@ class QuickAdapterV3(IStrategy):
             minutes=len(dataframe) * self.get_timeframe_minutes()
         )
         dataframe[EXTREMA_COLUMN] = 0.0
-        dataframe["minima"] = 0.0
-        dataframe["maxima"] = 0.0
+        dataframe[MINIMA_COLUMN] = 0.0
+        dataframe[MAXIMA_COLUMN] = 0.0
 
         if len(pivots_indices) == 0:
             logger.warning(
@@ -928,12 +931,12 @@ class QuickAdapterV3(IStrategy):
         if not np.isfinite(plot_eps):
             plot_eps = 0.0
         plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
-        dataframe["maxima"] = (
+        dataframe[MAXIMA_COLUMN] = (
             weighted_extrema.where(extrema_direction.gt(0), 0.0)
             .clip(lower=0.0)
             .mask(extrema_direction.gt(0) & weighted_extrema.eq(0.0), plot_eps)
         )
-        dataframe["minima"] = (
+        dataframe[MINIMA_COLUMN] = (
             weighted_extrema.where(extrema_direction.lt(0), 0.0)
             .clip(upper=0.0)
             .mask(extrema_direction.lt(0) & weighted_extrema.eq(0.0), -plot_eps)
@@ -950,7 +953,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         dataframe[EXTREMA_COLUMN] = smoothed_extrema
-        dataframe["smoothed-extrema"] = smoothed_extrema
+        dataframe[SMOOTHED_EXTREMA_COLUMN] = smoothed_extrema
 
         return dataframe
 

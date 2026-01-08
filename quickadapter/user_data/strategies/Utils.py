@@ -48,6 +48,10 @@ EXTREMA_COLUMN: Final = "&s-extrema"
 MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
+MAXIMA_COLUMN: Final = "maxima"
+MINIMA_COLUMN: Final = "minima"
+SMOOTHED_EXTREMA_COLUMN: Final = "smoothed_extrema"
+
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
     "gaussian",
@@ -1608,12 +1612,13 @@ def zigzag(
     )
 
 
-Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor", "ngboost"]
+Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"]
 REGRESSORS: Final[tuple[Regressor, ...]] = (
     "xgboost",
     "lightgbm",
     "histgradientboostingregressor",
     "ngboost",
+    "catboost",
 )
 
 RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
@@ -1861,6 +1866,66 @@ def fit_regressor(
             val_sample_weight=val_sample_weight,
             early_stopping_rounds=early_stopping_rounds,
         )
+    elif regressor == REGRESSORS[4]:  # "catboost"
+        from catboost import CatBoostRegressor, Pool
+
+        model_training_parameters.setdefault("random_seed", 1)
+        model_training_parameters.setdefault("loss_function", "RMSE")
+
+        task_type = model_training_parameters.get("task_type", "CPU")
+        if task_type == "GPU":
+            model_training_parameters.setdefault("max_ctr_complexity", 4)
+            model_training_parameters.pop("n_jobs", None)
+        else:
+            n_jobs = model_training_parameters.pop("n_jobs", None)
+            if n_jobs is not None:
+                model_training_parameters.setdefault("thread_count", n_jobs)
+            model_training_parameters.setdefault("max_ctr_complexity", 2)
+
+        early_stopping_rounds = None
+        if has_eval_set:
+            early_stopping_rounds = model_training_parameters.pop(
+                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+            )
+        else:
+            model_training_parameters.pop("early_stopping_rounds", None)
+
+        verbosity = model_training_parameters.pop("verbosity", None)
+        if "verbose" not in model_training_parameters and verbosity is not None:
+            model_training_parameters["verbose"] = verbosity
+
+        if trial is not None:
+            model_training_parameters["random_seed"] = (
+                model_training_parameters["random_seed"] + trial.number
+            )
+
+        pruning_callback = None
+        if trial is not None and has_eval_set:
+            pruning_callback = optuna.integration.CatBoostPruningCallback(trial, "RMSE")
+            fit_callbacks.append(pruning_callback)
+
+        model = CatBoostRegressor(**model_training_parameters)
+
+        model.fit(
+            Pool(data=X, label=y, weight=train_weights),
+            eval_set=Pool(
+                data=eval_set[0][0],
+                label=eval_set[0][1],
+                weight=eval_weights[0] if eval_weights else None,
+            )
+            if has_eval_set
+            else None,
+            early_stopping_rounds=early_stopping_rounds
+            if early_stopping_rounds is not None and has_eval_set
+            else None,
+            use_best_model=True
+            if early_stopping_rounds is not None and has_eval_set
+            else False,
+            callbacks=fit_callbacks if fit_callbacks else None,
+        )
+
+        if pruning_callback is not None:
+            pruning_callback.check_pruned()
     else:
         raise ValueError(
             f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
@@ -1909,6 +1974,7 @@ def get_optuna_study_model_parameters(
     trial: optuna.trial.Trial,
     regressor: Regressor,
     model_training_best_parameters: dict[str, Any],
+    model_training_parameters: dict[str, Any],
     space_reduction: bool,
     space_fraction: float,
 ) -> dict[str, Any]:
@@ -2322,6 +2388,127 @@ def get_optuna_study_model_parameters(
             "dist": trial.suggest_categorical("dist", ["normal", "lognormal"]),
         }
 
+    elif regressor == REGRESSORS[4]:  # "catboost"
+        # Parameter order: boosting -> tree structure -> regularization -> sampling
+        task_type = model_training_parameters.get("task_type", "CPU")
+        if task_type == "GPU":
+            default_ranges: dict[str, tuple[float, float]] = {
+                # Boosting/Training
+                "iterations": (100, 2000),
+                "learning_rate": (0.001, 0.3),
+                # Tree structure
+                "depth": (4, 12),
+                "min_data_in_leaf": (1, 20),
+                "border_count": (32, 254),
+                "max_ctr_complexity": (2, 6),
+                # Regularization
+                "l2_leaf_reg": (1, 10),
+                "model_size_reg": (0.0, 1.0),
+                # Sampling/Randomization
+                "bagging_temperature": (0, 10),
+                "random_strength": (1, 20),
+                "rsm": (0.5, 1.0),
+                "subsample": (0.6, 1.0),
+            }
+            bootstrap_options = ["Bayesian", "Bernoulli"]
+        else:  # CPU
+            default_ranges: dict[str, tuple[float, float]] = {
+                # Boosting/Training
+                "iterations": (100, 2000),
+                "learning_rate": (0.001, 0.3),
+                # Tree structure
+                "depth": (4, 10),
+                "min_data_in_leaf": (1, 20),
+                # Regularization
+                "l2_leaf_reg": (1, 10),
+                "model_size_reg": (0.0, 1.0),
+                # Sampling/Randomization
+                "bagging_temperature": (0, 10),
+                "random_strength": (1, 20),
+                "rsm": (0.5, 1.0),
+                "subsample": (0.6, 1.0),
+            }
+            bootstrap_options = ["Bayesian", "Bernoulli", "MVS"]
+
+        log_scaled_params = {
+            "iterations",
+            "learning_rate",
+        }
+
+        ranges = _build_ranges(default_ranges, log_scaled_params)
+
+        bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
+
+        params = {
+            # Boosting/Training
+            "iterations": _optuna_suggest_int_from_range(
+                trial, "iterations", ranges["iterations"], min_val=1, log=True
+            ),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                ranges["learning_rate"][0],
+                ranges["learning_rate"][1],
+                log=True,
+            ),
+            # Tree structure
+            "depth": _optuna_suggest_int_from_range(
+                trial, "depth", ranges["depth"], min_val=1
+            ),
+            "min_data_in_leaf": _optuna_suggest_int_from_range(
+                trial, "min_data_in_leaf", ranges["min_data_in_leaf"], min_val=1
+            ),
+            "grow_policy": trial.suggest_categorical(
+                "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
+            ),
+            # Regularization
+            "l2_leaf_reg": trial.suggest_float(
+                "l2_leaf_reg", ranges["l2_leaf_reg"][0], ranges["l2_leaf_reg"][1]
+            ),
+            "model_size_reg": trial.suggest_float(
+                "model_size_reg",
+                ranges["model_size_reg"][0],
+                ranges["model_size_reg"][1],
+            ),
+            # Sampling/Randomization
+            "bootstrap_type": bootstrap_type,
+            "random_strength": trial.suggest_float(
+                "random_strength",
+                ranges["random_strength"][0],
+                ranges["random_strength"][1],
+            ),
+            "rsm": trial.suggest_float(
+                "rsm",
+                ranges["rsm"][0],
+                ranges["rsm"][1],
+            ),
+        }
+
+        if bootstrap_type == "Bayesian":
+            params["bagging_temperature"] = trial.suggest_float(
+                "bagging_temperature",
+                ranges["bagging_temperature"][0],
+                ranges["bagging_temperature"][1],
+            )
+
+        if bootstrap_type in ["Bernoulli", "MVS"]:
+            params["subsample"] = trial.suggest_float(
+                "subsample",
+                ranges["subsample"][0],
+                ranges["subsample"][1],
+            )
+
+        if task_type == "GPU":
+            params["border_count"] = _optuna_suggest_int_from_range(
+                trial, "border_count", ranges["border_count"], min_val=1
+            )
+            params["max_ctr_complexity"] = _optuna_suggest_int_from_range(
+                trial,
+                "max_ctr_complexity",
+                ranges["max_ctr_complexity"],
+                min_val=1,
+            )
+
+        return params
     else:
         raise ValueError(
             f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
