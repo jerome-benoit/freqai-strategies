@@ -2402,7 +2402,7 @@ def get_optuna_study_model_parameters(
                 # Tree structure
                 "depth": (4, 12),
                 "min_data_in_leaf": (1, 20),
-                "border_count": (32, 254),
+                "border_count": (128, 255),
                 "max_ctr_complexity": (2, 6),
                 # Regularization
                 "l2_leaf_reg": (1, 10),
@@ -2414,6 +2414,7 @@ def get_optuna_study_model_parameters(
                 "subsample": (0.6, 1.0),
             }
             bootstrap_options = ["Bayesian", "Bernoulli"]
+            boosting_type_options = ["Plain"]
         else:  # CPU
             default_ranges: dict[str, tuple[float, float]] = {
                 # Boosting/Training
@@ -2432,6 +2433,7 @@ def get_optuna_study_model_parameters(
                 "subsample": (0.6, 1.0),
             }
             bootstrap_options = ["Bayesian", "Bernoulli", "MVS"]
+            boosting_type_options = ["Plain", "Ordered"]
 
         log_scaled_params = {
             "iterations",
@@ -2442,10 +2444,14 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
+        boosting_type = trial.suggest_categorical(
+            "boosting_type", boosting_type_options
+        )
         bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
 
         params = {
             # Boosting/Training
+            "boosting_type": boosting_type,
             "iterations": _optuna_suggest_int_from_range(
                 trial, "iterations", ranges["iterations"], min_val=1, log=True
             ),
@@ -2489,6 +2495,9 @@ def get_optuna_study_model_parameters(
                 "rsm",
                 ranges["rsm"][0],
                 ranges["rsm"][1],
+            ),
+            "leaf_estimation_method": trial.suggest_categorical(
+                "leaf_estimation_method", ["Newton", "Gradient"]
             ),
         }
 
