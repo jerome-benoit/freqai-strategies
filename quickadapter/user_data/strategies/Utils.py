@@ -1879,10 +1879,8 @@ def fit_regressor(
         if task_type == "GPU":
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
-            # rsm is only supported on GPU for pairwise loss functions
-            # See: https://github.com/catboost/catboost/issues/983
-            _CATBOOST_GPU_RSM_SUPPORTED_LOSSES = ("PairLogit", "PairLogitPairwise")
-            if loss_function not in _CATBOOST_GPU_RSM_SUPPORTED_LOSSES:
+            _CATBOOST_GPU_RSM_LOSS_FUNCTIONS = ("PairLogit", "PairLogitPairwise")
+            if loss_function not in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
                 model_training_parameters.pop("rsm", None)
         else:
             n_jobs = model_training_parameters.pop("n_jobs", None)
