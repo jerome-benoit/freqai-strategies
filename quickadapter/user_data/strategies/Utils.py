@@ -1875,10 +1875,15 @@ def fit_regressor(
         model_training_parameters.setdefault("loss_function", "RMSE")
 
         task_type = model_training_parameters.get("task_type", "CPU")
+        loss_function = model_training_parameters.get("loss_function", "RMSE")
         if task_type == "GPU":
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
-            model_training_parameters.pop("rsm", None)
+            # rsm is only supported on GPU for pairwise loss functions
+            # See: https://github.com/catboost/catboost/issues/983
+            _CATBOOST_GPU_RSM_SUPPORTED_LOSSES = ("PairLogit", "PairLogitPairwise")
+            if loss_function not in _CATBOOST_GPU_RSM_SUPPORTED_LOSSES:
+                model_training_parameters.pop("rsm", None)
         else:
             n_jobs = model_training_parameters.pop("n_jobs", None)
             if n_jobs is not None:
@@ -1903,14 +1908,8 @@ def fit_regressor(
             )
 
         pruning_callback = None
-        if (
-            trial is not None
-            and has_eval_set
-            and task_type != "GPU"
-        ):
-            pruning_callback = optuna.integration.CatBoostPruningCallback(
-                trial, "RMSE"
-            )
+        if trial is not None and has_eval_set and task_type != "GPU":
+            pruning_callback = optuna.integration.CatBoostPruningCallback(trial, "RMSE")
             fit_callbacks.append(pruning_callback)
 
         model = CatBoostRegressor(**model_training_parameters)
