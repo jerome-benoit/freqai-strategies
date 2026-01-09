@@ -1627,6 +1627,11 @@ RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 
+_CATBOOST_GPU_RSM_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
+    "PairLogit",
+    "PairLogitPairwise",
+)
+
 
 def get_ngboost_dist(dist_name: str) -> type:
     from ngboost.distns import Exponential, Laplace, LogNormal, Normal, T
@@ -1875,10 +1880,12 @@ def fit_regressor(
         model_training_parameters.setdefault("loss_function", "RMSE")
 
         task_type = model_training_parameters.get("task_type", "CPU")
+        loss_function = model_training_parameters.get("loss_function", "RMSE")
         if task_type == "GPU":
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
-            model_training_parameters.pop("rsm", None)
+            if loss_function not in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
+                model_training_parameters.pop("rsm", None)
         else:
             n_jobs = model_training_parameters.pop("n_jobs", None)
             if n_jobs is not None:
@@ -1903,14 +1910,8 @@ def fit_regressor(
             )
 
         pruning_callback = None
-        if (
-            trial is not None
-            and has_eval_set
-            and task_type != "GPU"
-        ):
-            pruning_callback = optuna.integration.CatBoostPruningCallback(
-                trial, "RMSE"
-            )
+        if trial is not None and has_eval_set and task_type != "GPU":
+            pruning_callback = optuna.integration.CatBoostPruningCallback(trial, "RMSE")
             fit_callbacks.append(pruning_callback)
 
         model = CatBoostRegressor(**model_training_parameters)
@@ -2547,12 +2548,15 @@ def get_optuna_study_model_parameters(
                 ranges["random_strength"][1],
                 log=True,
             ),
-            "rsm": trial.suggest_float(
+        }
+
+        loss_function = model_training_parameters.get("loss_function", "RMSE")
+        if task_type == "CPU" or loss_function in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
+            params["rsm"] = trial.suggest_float(
                 "rsm",
                 ranges["rsm"][0],
                 ranges["rsm"][1],
-            ),
-        }
+            )
 
         if bootstrap_type == "Bayesian":
             params["bagging_temperature"] = trial.suggest_float(
