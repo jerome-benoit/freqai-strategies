@@ -1627,6 +1627,11 @@ RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 
+_CATBOOST_GPU_RSM_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
+    "PairLogit",
+    "PairLogitPairwise",
+)
+
 
 def get_ngboost_dist(dist_name: str) -> type:
     from ngboost.distns import Exponential, Laplace, LogNormal, Normal, T
@@ -1879,7 +1884,6 @@ def fit_regressor(
         if task_type == "GPU":
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
-            _CATBOOST_GPU_RSM_LOSS_FUNCTIONS = ("PairLogit", "PairLogitPairwise")
             if loss_function not in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
                 model_training_parameters.pop("rsm", None)
         else:
@@ -2544,12 +2548,15 @@ def get_optuna_study_model_parameters(
                 ranges["random_strength"][1],
                 log=True,
             ),
-            "rsm": trial.suggest_float(
+        }
+
+        loss_function = model_training_parameters.get("loss_function", "RMSE")
+        if task_type == "CPU" or loss_function in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
+            params["rsm"] = trial.suggest_float(
                 "rsm",
                 ranges["rsm"][0],
                 ranges["rsm"][1],
-            ),
-        }
+            )
 
         if bootstrap_type == "Bayesian":
             params["bagging_temperature"] = trial.suggest_float(
