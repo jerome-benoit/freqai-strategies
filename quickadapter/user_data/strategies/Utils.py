@@ -1878,6 +1878,7 @@ def fit_regressor(
         if task_type == "GPU":
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             model_training_parameters.pop("n_jobs", None)
+            model_training_parameters.pop("rsm", None)
         else:
             n_jobs = model_training_parameters.pop("n_jobs", None)
             if n_jobs is not None:
@@ -1902,8 +1903,14 @@ def fit_regressor(
             )
 
         pruning_callback = None
-        if trial is not None and has_eval_set:
-            pruning_callback = optuna.integration.CatBoostPruningCallback(trial, "RMSE")
+        if (
+            trial is not None
+            and has_eval_set
+            and task_type != "GPU"
+        ):
+            pruning_callback = optuna.integration.CatBoostPruningCallback(
+                trial, "RMSE"
+            )
             fit_callbacks.append(pruning_callback)
 
         model = CatBoostRegressor(**model_training_parameters)
