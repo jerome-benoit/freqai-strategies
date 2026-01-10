@@ -2449,7 +2449,7 @@ def get_optuna_study_model_parameters(
                 "iterations": (100, 2000),
                 "learning_rate": (0.001, 0.3),
                 # Tree structure
-                "depth": (4, 12),
+                "depth": (4, 8),
                 "min_data_in_leaf": (1, 20),
                 "border_count": (128, 255),
                 "max_ctr_complexity": (2, 6),
