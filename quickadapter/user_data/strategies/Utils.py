@@ -1632,6 +1632,12 @@ _CATBOOST_GPU_RSM_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
     "PairLogitPairwise",
 )
 
+_CATBOOST_GPU_PAIRWISE_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
+    "YetiRank",
+    "PairLogitPairwise",
+    "QueryCrossEntropy",
+)
+
 
 def get_ngboost_dist(dist_name: str) -> type:
     from ngboost.distns import Exponential, Laplace, LogNormal, Normal, T
@@ -2443,13 +2449,25 @@ def get_optuna_study_model_parameters(
     elif regressor == REGRESSORS[4]:  # "catboost"
         # Parameter order: boosting -> tree structure -> regularization -> sampling
         task_type = model_training_parameters.get("task_type", "CPU")
+        loss_function = model_training_parameters.get("loss_function", "RMSE")
+
+        if (
+            task_type == "GPU"
+            and loss_function in _CATBOOST_GPU_PAIRWISE_LOSS_FUNCTIONS
+        ):
+            max_depth = 8
+        elif task_type == "GPU":
+            max_depth = 16
+        else:  # CPU
+            max_depth = 16
+
         if task_type == "GPU":
             default_ranges: dict[str, tuple[float, float]] = {
                 # Boosting/Training
                 "iterations": (100, 2000),
                 "learning_rate": (0.001, 0.3),
                 # Tree structure
-                "depth": (4, 8),
+                "depth": (4, max_depth),
                 "min_data_in_leaf": (1, 20),
                 "border_count": (128, 255),
                 "max_ctr_complexity": (2, 6),
@@ -2470,7 +2488,7 @@ def get_optuna_study_model_parameters(
                 "iterations": (100, 2000),
                 "learning_rate": (0.001, 0.3),
                 # Tree structure
-                "depth": (4, 10),
+                "depth": (4, max_depth),
                 "min_data_in_leaf": (1, 20),
                 # Regularization
                 "l2_leaf_reg": (1, 10),
@@ -2550,7 +2568,6 @@ def get_optuna_study_model_parameters(
             ),
         }
 
-        loss_function = model_training_parameters.get("loss_function", "RMSE")
         if task_type == "CPU" or loss_function in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
             params["rsm"] = trial.suggest_float(
                 "rsm",
