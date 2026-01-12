@@ -1191,12 +1191,9 @@ def zigzag(
 
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
-    closes = df.get("close").to_numpy()
-    closes_log = np.log(closes)
-    highs = df.get("high").to_numpy()
-    highs_log = np.log(highs)
-    lows = df.get("low").to_numpy()
-    lows_log = np.log(lows)
+    closes_log = np.log(df.get("close").to_numpy())
+    highs_log = np.log(df.get("high").to_numpy())
+    lows_log = np.log(df.get("low").to_numpy())
     volumes = df.get("volume").to_numpy()
 
     state: TrendDirection = TrendDirection.NEUTRAL
