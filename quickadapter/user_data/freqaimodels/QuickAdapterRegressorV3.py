@@ -87,7 +87,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.10.10"
+    version = "3.10.11"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -3347,8 +3347,8 @@ def label_objective(
         return 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     (
+        pivots_indices,
         _,
-        pivots_values,
         _,
         pivots_amplitudes,
         pivots_amplitude_threshold_ratios,
@@ -3393,7 +3393,7 @@ def label_objective(
         median_volume_weighted_efficiency_ratio = 0.0
 
     return (
-        len(pivots_values),
+        len(pivots_indices),
         median_amplitude,
         median_amplitude_threshold_ratio,
         median_volume_rate,
