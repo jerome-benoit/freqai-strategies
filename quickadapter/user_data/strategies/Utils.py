@@ -1480,6 +1480,7 @@ def zigzag(
         slope_close_log = (current_close_log - candidate_pivot_close_log) / (
             pos - candidate_pivot_pos
         )
+
         if direction == TrendDirection.UP:
             slope_ok_cache[cache_key] = slope_close_log > min_slope
         elif direction == TrendDirection.DOWN:
