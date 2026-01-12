@@ -825,7 +825,7 @@ def top_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     )
 
-    return (dataframe.get("close") - previous_close_top) / previous_close_top
+    return np.log(dataframe.get("close") / previous_close_top)
 
 
 def bottom_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
@@ -843,7 +843,7 @@ def bottom_change_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
     )
 
-    return (dataframe.get("close") - previous_close_bottom) / previous_close_bottom
+    return np.log(dataframe.get("close") / previous_close_bottom)
 
 
 def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
@@ -864,9 +864,9 @@ def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series
     previous_close_high = (
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     )
-
-    return (dataframe.get("close") - previous_close_low) / (
-        non_zero_diff(previous_close_high, previous_close_low)
+    denominator = np.log(previous_close_high / previous_close_low)
+    return (np.log(dataframe.get("close") / previous_close_low) / denominator).where(
+        ~np.isclose(denominator, 0.0), 0.0
     )
 
 
@@ -1182,7 +1182,7 @@ def zigzag(
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
     closes = df.get("close").to_numpy()
-    log_closes = np.log(closes)
+    closes_log = np.log(closes)
     highs = df.get("high").to_numpy()
     lows = df.get("low").to_numpy()
     volumes = df.get("volume").to_numpy()
@@ -1253,20 +1253,20 @@ def zigzag(
         if previous_pos >= n or current_pos >= n:
             return np.nan, np.nan, np.nan
 
-        if np.isclose(previous_value, 0.0):
+        if np.isclose(previous_value, 0.0) or np.isclose(current_value, 0.0):
             return np.nan, np.nan, np.nan
 
-        amplitude = abs(current_value - previous_value) / abs(previous_value)
+        amplitude = abs(np.log(current_value) - np.log(previous_value))
         if not (np.isfinite(amplitude) and amplitude >= 0):
             return np.nan, np.nan, np.nan
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
-        median_threshold = np.nanmedian(thresholds[start_pos:end_pos])
+        median_threshold_log = np.nanmedian(np.log1p(thresholds[start_pos:end_pos]))
 
         amplitude_threshold_ratio = (
-            amplitude / (amplitude + median_threshold)
-            if np.isfinite(median_threshold) and median_threshold > 0
+            amplitude / (amplitude + median_threshold_log)
+            if np.isfinite(median_threshold_log) and median_threshold_log > 0
             else np.nan
         )
 
@@ -1277,16 +1277,13 @@ def zigzag(
 
         if np.isfinite(duration) and duration > 0:
             speed = amplitude / duration
-            normalized_speed = (
-                speed / (1.0 + speed) if np.isfinite(speed) and speed >= 0 else np.nan
-            )
         else:
-            normalized_speed = np.nan
+            speed = np.nan
 
         return (
-            amplitude / (1.0 + amplitude),
+            amplitude,
             amplitude_threshold_ratio,
-            normalized_speed,
+            speed,
         )
 
     def calculate_pivot_duration(
@@ -1467,8 +1464,8 @@ def zigzag(
             slope_ok_cache[cache_key] = False
             return slope_ok_cache[cache_key]
 
-        log_candidate_pivot_close = log_closes[candidate_pivot_pos]
-        log_current_close = log_closes[pos]
+        log_candidate_pivot_close = closes_log[candidate_pivot_pos]
+        log_current_close = closes_log[pos]
 
         log_slope_close = (log_current_close - log_candidate_pivot_close) / (
             pos - candidate_pivot_pos
@@ -1532,13 +1529,13 @@ def zigzag(
         if current_low < initial_low:
             initial_low, initial_low_pos = current_low, i
 
-        initial_move_from_high = (initial_high - current_low) / initial_high
-        initial_move_from_low = (current_high - initial_low) / initial_low
-        is_initial_high_move_significant: bool = (
-            initial_move_from_high >= thresholds[initial_high_pos]
+        initial_move_from_high = abs(np.log(current_low) - np.log(initial_high))
+        initial_move_from_low = abs(np.log(current_high) - np.log(initial_low))
+        is_initial_high_move_significant: bool = initial_move_from_high >= np.log1p(
+            thresholds[initial_high_pos]
         )
-        is_initial_low_move_significant: bool = (
-            initial_move_from_low >= thresholds[initial_low_pos]
+        is_initial_low_move_significant: bool = initial_move_from_low >= np.log1p(
+            thresholds[initial_low_pos]
         )
         if is_initial_high_move_significant and is_initial_low_move_significant:
             if initial_move_from_high > initial_move_from_low:
@@ -1578,22 +1575,20 @@ def zigzag(
         if state == TrendDirection.UP:
             if np.isnan(candidate_pivot_value) or current_high > candidate_pivot_value:
                 update_candidate_pivot(i, current_high)
-            if (
-                candidate_pivot_value - current_low
-            ) / candidate_pivot_value >= thresholds[
-                candidate_pivot_pos
-            ] and is_pivot_confirmed(i, candidate_pivot_pos, TrendDirection.DOWN):
+            move_down = abs(np.log(current_low) - np.log(candidate_pivot_value))
+            if move_down >= np.log1p(
+                thresholds[candidate_pivot_pos]
+            ) and is_pivot_confirmed(i, candidate_pivot_pos, TrendDirection.DOWN):
                 add_pivot(candidate_pivot_pos, candidate_pivot_value, TrendDirection.UP)
                 state = TrendDirection.DOWN
 
         elif state == TrendDirection.DOWN:
             if np.isnan(candidate_pivot_value) or current_low < candidate_pivot_value:
                 update_candidate_pivot(i, current_low)
-            if (
-                current_high - candidate_pivot_value
-            ) / candidate_pivot_value >= thresholds[
-                candidate_pivot_pos
-            ] and is_pivot_confirmed(i, candidate_pivot_pos, TrendDirection.UP):
+            move_up = abs(np.log(current_high) - np.log(candidate_pivot_value))
+            if move_up >= np.log1p(
+                thresholds[candidate_pivot_pos]
+            ) and is_pivot_confirmed(i, candidate_pivot_pos, TrendDirection.UP):
                 add_pivot(
                     candidate_pivot_pos, candidate_pivot_value, TrendDirection.DOWN
                 )

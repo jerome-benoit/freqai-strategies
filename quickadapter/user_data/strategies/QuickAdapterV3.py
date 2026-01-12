@@ -110,7 +110,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.10.9"
+        return "3.10.10"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -697,7 +697,7 @@ class QuickAdapterV3(IStrategy):
         closes = dataframe.get("close")
         volumes = dataframe.get("volume")
 
-        dataframe["%-close_pct_change"] = closes.pct_change()
+        dataframe["%-close_pct_change"] = np.log(closes).diff()
         dataframe["%-raw_volume"] = volumes
         dataframe["%-obv"] = ta.OBV(dataframe)
         label_period_candles = self.get_label_period_candles(str(metadata.get("pair")))
