@@ -3528,7 +3528,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._position_history[previous_tick] == Positions.Long
                 or self._position_history[previous_tick] == Positions.Neutral
             ):
-                previous_price = self.add_entry_fee(previous_price)
+                previous_price = self.add_exit_fee(previous_price)
 
             if (
                 previous_price <= 0.0
@@ -3580,8 +3580,8 @@ class MyRLEnv(Base5ActionRLEnv):
             return (current_price - previous_price) / previous_price
 
         elif self._position == Positions.Short:
-            current_price = self.add_exit_fee(self.current_price())
-            previous_price = self.add_entry_fee(self.previous_price())
+            current_price = self.add_entry_fee(self.current_price())
+            previous_price = self.add_exit_fee(self.previous_price())
 
             if (
                 previous_price <= 0.0
