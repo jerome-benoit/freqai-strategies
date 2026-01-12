@@ -1474,17 +1474,17 @@ def zigzag(
             slope_ok_cache[cache_key] = False
             return slope_ok_cache[cache_key]
 
-        log_candidate_pivot_close = closes_log[candidate_pivot_pos]
-        log_current_close = closes_log[pos]
+        candidate_pivot_close_log = closes_log[candidate_pivot_pos]
+        current_close_log = closes_log[pos]
 
-        log_slope_close = (log_current_close - log_candidate_pivot_close) / (
+        slope_close_log = (current_close_log - candidate_pivot_close_log) / (
             pos - candidate_pivot_pos
         )
-
-        if direction == TrendDirection.UP:
-            slope_ok_cache[cache_key] = log_slope_close > min_slope
-        elif direction == TrendDirection.DOWN:
-            slope_ok_cache[cache_key] = log_slope_close < -min_slope
+        cache_key = (candidate_pivot_pos, pos)
+        if state == TrendDirection.UP:
+            slope_ok_cache[cache_key] = slope_close_log > min_slope
+        elif state == TrendDirection.DOWN:
+            slope_ok_cache[cache_key] = slope_close_log < -min_slope
         else:
             slope_ok_cache[cache_key] = False
 
