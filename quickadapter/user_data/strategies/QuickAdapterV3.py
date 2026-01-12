@@ -40,7 +40,7 @@ from Utils import (
     SMOOTHING_MODES,
     TRADE_PRICE_TARGETS,
     alligator,
-    bottom_change_percent,
+    bottom_log_return,
     calculate_quantile,
     ewo,
     format_number,
@@ -54,7 +54,7 @@ from Utils import (
     non_zero_diff,
     price_retracement_percent,
     smooth_extrema,
-    top_change_percent,
+    top_log_return,
     update_config_value,
     validate_range,
     vwapb,
@@ -671,8 +671,10 @@ class QuickAdapterV3(IStrategy):
             volumes,
             length=period,
         )
-        dataframe["%-tcp-period"] = top_change_percent(dataframe, period=period)
-        dataframe["%-bcp-period"] = bottom_change_percent(dataframe, period=period)
+        # TODO [BREAKING]: Rename %-tcp-period -> %-top_log_return-period
+        dataframe["%-tcp-period"] = top_log_return(dataframe, period=period)
+        # TODO [BREAKING]: Rename %-bcp-period -> %-bottom_log_return-period
+        dataframe["%-bcp-period"] = bottom_log_return(dataframe, period=period)
         dataframe["%-prp-period"] = price_retracement_percent(dataframe, period=period)
         dataframe["%-cti-period"] = pta.cti(closes, length=period)
         dataframe["%-chop-period"] = pta.chop(
@@ -697,6 +699,7 @@ class QuickAdapterV3(IStrategy):
         closes = dataframe.get("close")
         volumes = dataframe.get("volume")
 
+        # TODO [BREAKING]: Rename %-close_pct_change -> %-close_log_return
         dataframe["%-close_pct_change"] = np.log(closes).diff()
         dataframe["%-raw_volume"] = volumes
         dataframe["%-obv"] = ta.OBV(dataframe)
