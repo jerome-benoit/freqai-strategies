@@ -3,6 +3,8 @@ import logging
 from functools import reduce
 from typing import Any, Final, Literal, Optional
 
+import numpy as np
+
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
@@ -44,7 +46,8 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_expand_basic(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dataframe["%-close_pct_change"] = dataframe.get("close").pct_change()
+        # TODO [BREAKING]: Rename %-close_pct_change -> %-close_log_return
+        dataframe["%-close_pct_change"] = np.log(dataframe.get("close")).diff()
         dataframe["%-raw_volume"] = dataframe.get("volume")
 
         return dataframe

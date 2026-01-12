@@ -3483,14 +3483,23 @@ class MyRLEnv(Base5ActionRLEnv):
 
     def get_most_recent_return(self) -> float:
         """
-        Calculate the tick to tick return if the agent is in a trade.
-        Return is generated from rising prices in Long and falling prices in Short positions.
-        The actions Sell/Buy or Hold during a Long position trigger the sell/buy-fee.
+        Calculate tick-to-tick log-return for the current position.
+
+        Entry fees are applied on position transitions only (Neutral/opposite → current).
+
+        Returns
+        -------
+        float
+            Log-return: ln(current/previous)
+            - Long: positive when price rises
+            - Short: positive when price falls
+            - 0.0 if no trade, neutral position, or invalid prices
         """
         if self._last_trade_tick is None:
             return 0.0
         if self._position == Positions.Neutral:
             return 0.0
+
         elif self._position == Positions.Long:
             current_price = self.current_price()
             previous_price = self.previous_price()
@@ -3500,7 +3509,17 @@ class MyRLEnv(Base5ActionRLEnv):
                 or self._position_history[previous_tick] == Positions.Neutral
             ):
                 previous_price = self.add_entry_fee(previous_price)
+
+            if (
+                previous_price <= 0.0
+                or not np.isfinite(previous_price)
+                or current_price <= 0.0
+                or not np.isfinite(current_price)
+            ):
+                return 0.0
+
             return np.log(current_price) - np.log(previous_price)
+
         elif self._position == Positions.Short:
             current_price = self.current_price()
             previous_price = self.previous_price()
@@ -3509,8 +3528,18 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._position_history[previous_tick] == Positions.Long
                 or self._position_history[previous_tick] == Positions.Neutral
             ):
-                previous_price = self.add_exit_fee(previous_price)
+                previous_price = self.add_entry_fee(previous_price)
+
+            if (
+                previous_price <= 0.0
+                or not np.isfinite(previous_price)
+                or current_price <= 0.0
+                or not np.isfinite(current_price)
+            ):
+                return 0.0
+
             return np.log(previous_price) - np.log(current_price)
+
         return 0.0
 
     def _update_portfolio_log_returns(self):
@@ -3518,20 +3547,52 @@ class MyRLEnv(Base5ActionRLEnv):
 
     def get_most_recent_profit(self) -> float:
         """
-        Calculate the tick to tick unrealized profit if the agent is in a trade
+        Calculate tick-to-tick unrealized profit ratio with fees.
+
+        Returns simple return: (current - previous) / previous
+        Entry/exit fees are always applied to simulate closing the position.
+
+        Returns
+        -------
+        float
+            Profit ratio (not log-return)
+            - Long: (current_with_exit_fee - previous_with_entry_fee) / previous
+            - Short: (previous_with_exit_fee - current_with_entry_fee) / previous
+            - 0.0 if no trade, neutral position, or invalid prices
         """
         if self._last_trade_tick is None:
             return 0.0
         if self._position == Positions.Neutral:
             return 0.0
+
         elif self._position == Positions.Long:
             current_price = self.add_exit_fee(self.current_price())
             previous_price = self.add_entry_fee(self.previous_price())
+
+            if (
+                previous_price <= 0.0
+                or not np.isfinite(previous_price)
+                or current_price <= 0.0
+                or not np.isfinite(current_price)
+            ):
+                return 0.0
+
             return (current_price - previous_price) / previous_price
+
         elif self._position == Positions.Short:
-            current_price = self.add_entry_fee(self.current_price())
-            previous_price = self.add_exit_fee(self.previous_price())
+            current_price = self.add_exit_fee(self.current_price())
+            previous_price = self.add_entry_fee(self.previous_price())
+
+            if (
+                previous_price <= 0.0
+                or not np.isfinite(previous_price)
+                or current_price <= 0.0
+                or not np.isfinite(current_price)
+            ):
+                return 0.0
+
             return (previous_price - current_price) / previous_price
+
         return 0.0
 
     def previous_tick(self) -> int:
