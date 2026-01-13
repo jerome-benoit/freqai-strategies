@@ -2466,9 +2466,9 @@ def get_optuna_study_model_parameters(
         ):
             max_depth = 8
         elif task_type == "GPU":
-            max_depth = 16
+            max_depth = 12
         else:  # CPU
-            max_depth = 16
+            max_depth = 10
 
         if task_type == "GPU":
             default_ranges: dict[str, tuple[float, float]] = {
