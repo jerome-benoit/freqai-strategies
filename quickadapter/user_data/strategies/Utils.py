@@ -5,6 +5,7 @@ import math
 from enum import IntEnum
 from functools import lru_cache
 from logging import Logger
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1677,6 +1678,7 @@ def fit_regressor(
     model_training_parameters: dict[str, Any],
     init_model: Any = None,
     callbacks: Optional[list[RegressorCallback]] = None,
+    model_path: Optional[Path] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
     """Fit a regressor model."""
@@ -1893,6 +1895,18 @@ def fit_regressor(
 
         model_training_parameters.setdefault("random_seed", 1)
         model_training_parameters.setdefault("loss_function", "RMSE")
+
+        if model_path is not None and "train_dir" not in model_training_parameters:
+            if trial is not None:
+                trial_path = model_path / f"hp_trial_{trial.number}"
+                trial_path.mkdir(parents=True, exist_ok=True)
+                model_training_parameters["train_dir"] = str(
+                    trial_path / "catboost_info"
+                )
+            else:
+                model_training_parameters["train_dir"] = str(
+                    model_path / "catboost_info"
+                )
 
         task_type = model_training_parameters.get("task_type", "CPU")
         loss_function = model_training_parameters.get("loss_function", "RMSE")

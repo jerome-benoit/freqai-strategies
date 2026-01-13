@@ -1448,6 +1448,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     model_training_parameters,
                     self._optuna_config.get("space_reduction"),
                     self._optuna_config.get("space_fraction"),
+                    dk.data_path,
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
             )
@@ -1479,6 +1480,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             eval_weights=eval_weights,
             model_training_parameters=model_training_parameters,
             init_model=self.get_init_model(dk.pair),
+            model_path=dk.data_path,
         )
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
@@ -3270,6 +3272,7 @@ def hp_objective(
     model_training_parameters: dict[str, Any],
     space_reduction: bool,
     space_fraction: float,
+    model_path: Optional[Path] = None,
 ) -> float:
     study_model_parameters = get_optuna_study_model_parameters(
         trial,
@@ -3293,6 +3296,7 @@ def hp_objective(
         eval_set=eval_set,
         eval_weights=eval_weights,
         model_training_parameters=model_training_parameters,
+        model_path=model_path,
         trial=trial,
     )
     y_pred = model.predict(X_test)
