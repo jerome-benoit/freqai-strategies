@@ -17,7 +17,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        optuna_version: 4.6.0
+        optuna_version: 4.7.0
         scikit_learn_extra_version: 0.3.0
         scikit_image_version: 0.26.0
         ngboost_version: 0.5.8
