@@ -1,6 +1,6 @@
 FROM freqtradeorg/freqtrade:stable_freqairl
 
-ARG optuna_version=4.6.0
+ARG optuna_version=4.7.0
 
 USER root
 RUN apt-get update \
