@@ -172,14 +172,14 @@
       ],
       "label_period_candles": 18,
       "label_natr_multiplier": 10.5,
-      "label_method": "kmedoids",
+      "label_method": "topsis",
       "label_weights": [
         1.0,
-        4.0,
+        5.0,
         1.0,
         1.0,
         1.0,
-        2.0,
+        2.5,
         1.0
       ],
       "include_shifted_candles": 6,
