@@ -94,7 +94,6 @@ NORMALIZATION_TYPES: Final[tuple[NormalizationType, ...]] = (
     "none",  # 3 - w
 )
 
-# Default configuration for label weighting (sample weight computation in strategy)
 DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "strategy": WEIGHT_STRATEGIES[0],  # "none"
     "metric_coefficients": {},
@@ -102,7 +101,6 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "softmax_temperature": 1.0,
 }
 
-# Default configuration for label pipeline transformation (standardization/normalization)
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
@@ -113,13 +111,6 @@ DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
     "gamma": 1.0,
 }
 
-# Legacy: Combined defaults (deprecated, for backward compatibility)
-DEFAULTS_LABEL_TRANSFORMER: Final[dict[str, Any]] = {
-    **DEFAULTS_LABEL_WEIGHTING,
-    **DEFAULTS_LABEL_PIPELINE,
-}
-
-DEFAULTS_PIPELINE_TRANSFORM = DEFAULTS_LABEL_PIPELINE
 
 SmoothingMethod = Literal[
     "none", "gaussian", "kaiser", "triang", "smm", "sma", "savgol", "gaussian_filter1d"
@@ -200,15 +191,13 @@ DEFAULTS_LABEL_PREDICTION: Final[dict[str, Any]] = {
     "selection_method": EXTREMA_SELECTION_METHODS[0],  # "rank_extrema"
     "threshold_method": SKIMAGE_THRESHOLD_METHODS[0],  # "mean"
     "outlier_quantile": 0.999,
-    "soft_alpha": 12.0,
+    "soft_extremum_alpha": 12.0,
     "keep_fraction": 1.0,
 }
 
 
 @dataclass
 class _ColumnState:
-    """Fitted state for a single column's transformation pipeline."""
-
     config: dict[str, Any]
     # Phase 1: Standardization
     standard_scaler: StandardScaler | None = None
@@ -223,64 +212,21 @@ class _ColumnState:
 
 @dataclass
 class _LabelTransformerConfig:
-    """
-    Configuration for LabelTransformer with per-label settings.
-
-    Supports two configuration formats:
-
-    1. Flat format (legacy, applies same config to all labels):
-       {
-           "standardization": "robust",
-           "normalization": "minmax",
-           "gamma": 1.5
-       }
-
-    2. Per-label format (new, allows different configs per label):
-       {
-           "default": {
-               "standardization": "none",
-               "normalization": "maxabs"
-           },
-           "columns": {
-               "&s-extrema": {
-                   "standardization": "robust",
-                   "normalization": "minmax",
-                   "gamma": 1.5
-               },
-               "&s-threshold_*": {
-                   "standardization": "zscore"
-               }
-           }
-       }
-
-    The "columns" mapping supports glob patterns (*, ?) for matching label names.
-    """
-
     default: dict[str, Any] = field(
-        default_factory=lambda: DEFAULTS_PIPELINE_TRANSFORM.copy()
+        default_factory=lambda: DEFAULTS_LABEL_PIPELINE.copy()
     )
     columns: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> "_LabelTransformerConfig":
-        """
-        Parse configuration dict into LabelTransformerConfig.
-
-        Detects format automatically:
-        - If "default" or "columns" keys exist -> per-label format
-        - Otherwise -> flat format (used as default for all labels)
-        """
         if "default" in config or "columns" in config:
-            # Per-label format
-            default = {**DEFAULTS_PIPELINE_TRANSFORM, **config.get("default", {})}
+            default = {**DEFAULTS_LABEL_PIPELINE, **config.get("default", {})}
             columns = config.get("columns", {})
             return cls(default=default, columns=columns)
         else:
-            # Flat format - use entire config as default
-            # Filter out keys that are not pipeline transform keys (e.g., strategy, aggregation)
-            pipeline_keys = set(DEFAULTS_PIPELINE_TRANSFORM.keys())
+            pipeline_keys = set(DEFAULTS_LABEL_PIPELINE.keys())
             filtered_config = {k: v for k, v in config.items() if k in pipeline_keys}
-            default = {**DEFAULTS_PIPELINE_TRANSFORM, **filtered_config}
+            default = {**DEFAULTS_LABEL_PIPELINE, **filtered_config}
             return cls(default=default, columns={})
 
     def get_column_config(self, column_name: str) -> dict[str, Any]:
@@ -289,37 +235,6 @@ class _LabelTransformerConfig:
 
 
 class LabelTransformer(BaseTransform):
-    """
-    Datasieve-compatible transformer for FreqAI label pipelines.
-
-    Applies standardization, normalization, and gamma correction to labels.
-    Supports per-column configuration via the "columns" mapping with glob patterns.
-
-    Pipeline stages:
-    1. Standardization: zscore, robust, mmad, power_yj, or none
-    2. Normalization: maxabs, minmax, sigmoid, or none
-    3. Post-processing: gamma power transform
-
-    Example configuration:
-    ```python
-    LabelTransformer(label_transformer={
-        "default": {
-            "standardization": "none",
-            "normalization": "maxabs",
-            "gamma": 1.0
-        },
-        "columns": {
-            "&s-extrema": {
-                "standardization": "robust",
-                "normalization": "minmax",
-                "minmax_range": (-1.0, 1.0),
-                "gamma": 1.5
-            }
-        }
-    })
-    ```
-    """
-
     _STANDARDIZATION_SCALERS: dict[str, str] = {
         "zscore": "standard_scaler",
         "robust": "robust_scaler",
@@ -336,10 +251,6 @@ class LabelTransformer(BaseTransform):
         self._column_states: dict[str, _ColumnState] = {}
         self._fitted_columns: list[str] = []
         self._fitted = False
-
-    # -------------------------------------------------------------------------
-    # Static transform methods (operate on values with config)
-    # -------------------------------------------------------------------------
 
     @staticmethod
     def _apply_scaler(
@@ -405,9 +316,6 @@ class LabelTransformer(BaseTransform):
         out[mask] = np.sign(values[mask]) * np.power(np.abs(values[mask]), exp)
         return out
 
-    # -------------------------------------------------------------------------
-    # Per-column transform methods
-    # -------------------------------------------------------------------------
 
     def _standardize(
         self,
@@ -466,9 +374,6 @@ class LabelTransformer(BaseTransform):
             raise RuntimeError(f"{scaler_attr} not fitted")
         return self._apply_scaler(values, mask, scaler, inverse=inverse)
 
-    # -------------------------------------------------------------------------
-    # Fitting methods
-    # -------------------------------------------------------------------------
 
     def _fit_standardization(
         self, values: NDArray[np.floating], state: _ColumnState
@@ -542,14 +447,11 @@ class LabelTransformer(BaseTransform):
         else:
             fit_values = finite_values
 
-        # Fit standardization
         self._fit_standardization(fit_values, state)
 
-        # Standardize for normalization fitting
         finite_mask = np.ones(len(fit_values), dtype=bool)
         standardized = self._standardize(fit_values, finite_mask, state, inverse=False)
 
-        # Fit normalization
         self._fit_normalization(standardized, state)
 
         return state
@@ -560,27 +462,20 @@ class LabelTransformer(BaseTransform):
         state: _ColumnState,
         inverse: bool = False,
     ) -> NDArray[np.floating]:
-        """Transform a single column using its fitted state."""
         mask = np.isfinite(values)
 
         if inverse:
-            # Inverse order: gamma -> normalize -> standardize
             degamma = self._apply_gamma(
                 values, mask, state.config["gamma"], inverse=True
             )
             denorm = self._normalize(degamma, mask, state, inverse=True)
             return self._standardize(denorm, mask, state, inverse=True)
         else:
-            # Forward order: standardize -> normalize -> gamma
             standardized = self._standardize(values, mask, state, inverse=False)
             normalized = self._normalize(standardized, mask, state, inverse=False)
             return self._apply_gamma(
                 normalized, mask, state.config["gamma"], inverse=False
             )
-
-    # -------------------------------------------------------------------------
-    # BaseTransform interface
-    # -------------------------------------------------------------------------
 
     def fit(
         self,
@@ -592,19 +487,16 @@ class LabelTransformer(BaseTransform):
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         arr = np.asarray(X, dtype=float)
 
-        # Handle 1D vs 2D input
         if arr.ndim == 1:
             arr = arr.reshape(-1, 1)
 
         n_columns = arr.shape[1]
 
-        # Determine column names
         if feature_list is not None and len(feature_list) == n_columns:
             column_names = list(feature_list)
         else:
             column_names = [f"column_{i}" for i in range(n_columns)]
 
-        # Fit each column
         self._column_states = {}
         for i, col_name in enumerate(column_names):
             col_values = arr[:, i]
@@ -634,7 +526,6 @@ class LabelTransformer(BaseTransform):
 
         n_columns = arr.shape[1]
 
-        # Determine column names (must match fitted columns)
         if feature_list is not None and len(feature_list) == n_columns:
             column_names = list(feature_list)
         else:
@@ -646,7 +537,6 @@ class LabelTransformer(BaseTransform):
                 f"got {n_columns}"
             )
 
-        # Transform each column
         result = np.empty_like(arr)
         for i, col_name in enumerate(column_names):
             if col_name not in self._column_states:
@@ -691,7 +581,6 @@ class LabelTransformer(BaseTransform):
 
         n_columns = arr.shape[1]
 
-        # Determine column names
         if feature_list is not None and len(feature_list) == n_columns:
             column_names = list(feature_list)
         else:
@@ -703,7 +592,6 @@ class LabelTransformer(BaseTransform):
                 f"got {n_columns}"
             )
 
-        # Inverse transform each column
         result = np.empty_like(arr)
         for i, col_name in enumerate(column_names):
             if col_name not in self._column_states:

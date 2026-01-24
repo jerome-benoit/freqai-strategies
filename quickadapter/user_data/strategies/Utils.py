@@ -59,8 +59,6 @@ T = TypeVar("T", pd.Series, float)
 
 EXTREMA_COLUMN: Final = "&s-extrema"
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
-MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
-MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
 
 @dataclass
@@ -75,7 +73,6 @@ _LABEL_GENERATORS: dict[str, LabelGenerator] = {}
 
 
 def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
-    """Register a label generator for a specific column."""
     _LABEL_GENERATORS[label_column] = generator
 
 
@@ -83,7 +80,6 @@ def _generate_extrema_label(
     dataframe: pd.DataFrame,
     params: dict[str, Any],
 ) -> LabelData:
-    """Generate extrema labels using zigzag detection."""
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
 
@@ -103,9 +99,9 @@ def _generate_extrema_label(
         natr_multiplier=natr_multiplier,
     )
 
-    values = pd.Series(0.0, index=dataframe.index)
+    series = pd.Series(0.0, index=dataframe.index)
     if pivots_indices:
-        values.loc[pivots_indices] = pivots_directions
+        series.loc[pivots_indices] = pivots_directions
 
     metrics: dict[str, list[float]] = {
         "amplitude": pivots_amplitudes,
@@ -116,7 +112,7 @@ def _generate_extrema_label(
         "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
     }
 
-    return LabelData(series=values, indices=pivots_indices, metrics=metrics)
+    return LabelData(series=series, indices=pivots_indices, metrics=metrics)
 
 
 register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
@@ -176,7 +172,6 @@ PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
         "threshold_method": "threshold_smoothing_method",
         "keep_fraction": "keep_extrema_fraction",
         "outlier_quantile": "outlier_threshold_quantile",
-        "soft_alpha": "soft_extremum_alpha",
     },
     "exit_pricing": {
         "trade_price_target_method": "trade_price_target",
@@ -494,7 +489,7 @@ def get_column_config(
 
     matches.sort(key=lambda x: x[0])
 
-    for _specificity, _pattern, col_config in matches:
+    for _, _, col_config in matches:
         result.update(col_config)
 
     return result
@@ -619,16 +614,18 @@ def _validate_prediction_params(
         )
         outlier_quantile = DEFAULTS_LABEL_PREDICTION["outlier_quantile"]
 
-    soft_alpha = config.get("soft_alpha", DEFAULTS_LABEL_PREDICTION["soft_alpha"])
+    soft_extremum_alpha = config.get(
+        "soft_extremum_alpha", DEFAULTS_LABEL_PREDICTION["soft_extremum_alpha"]
+    )
     if (
-        not isinstance(soft_alpha, (int, float))
-        or not np.isfinite(soft_alpha)
-        or soft_alpha < 0
+        not isinstance(soft_extremum_alpha, (int, float))
+        or not np.isfinite(soft_extremum_alpha)
+        or soft_extremum_alpha < 0
     ):
         logger.warning(
-            f"Invalid {config_name} soft_alpha value {soft_alpha!r}: must be a finite number >= 0, using default {DEFAULTS_LABEL_PREDICTION['soft_alpha']!r}"
+            f"Invalid {config_name} soft_extremum_alpha value {soft_extremum_alpha!r}: must be a finite number >= 0, using default {DEFAULTS_LABEL_PREDICTION['soft_extremum_alpha']!r}"
         )
-        soft_alpha = DEFAULTS_LABEL_PREDICTION["soft_alpha"]
+        soft_extremum_alpha = DEFAULTS_LABEL_PREDICTION["soft_extremum_alpha"]
 
     keep_fraction = config.get(
         "keep_fraction", DEFAULTS_LABEL_PREDICTION["keep_fraction"]
@@ -648,7 +645,7 @@ def _validate_prediction_params(
         "selection_method": selection_method,
         "threshold_method": threshold_method,
         "outlier_quantile": float(outlier_quantile),
-        "soft_alpha": float(soft_alpha),
+        "soft_extremum_alpha": float(soft_extremum_alpha),
         "keep_fraction": float(keep_fraction),
     }
 

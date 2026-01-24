@@ -42,8 +42,6 @@ from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
     EXTREMA_COLUMN,
-    MAXIMA_THRESHOLD_COLUMN,
-    MINIMA_THRESHOLD_COLUMN,
     REGRESSORS,
     WEIGHT_STRATEGIES,
     Regressor,
@@ -1051,7 +1049,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"  outlier_quantile: {format_number(label_prediction_default['outlier_quantile'])}"
         )
         logger.info(
-            f"  soft_alpha: {format_number(label_prediction_default['soft_alpha'])}"
+            f"  soft_extremum_alpha: {format_number(label_prediction_default['soft_extremum_alpha'])}"
         )
         logger.info(
             f"  keep_fraction: {format_number(label_prediction_default['keep_fraction'])}"
@@ -1488,12 +1486,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         for label_col in dk.label_list:
-            if label_col == EXTREMA_COLUMN:
-                minima_thresh_col = MINIMA_THRESHOLD_COLUMN
-                maxima_thresh_col = MAXIMA_THRESHOLD_COLUMN
-            else:
-                minima_thresh_col = f"{label_col}_minima_threshold"
-                maxima_thresh_col = f"{label_col}_maxima_threshold"
+            minima_thresh_col = f"{label_col}_minima_threshold"
+            maxima_thresh_col = f"{label_col}_maxima_threshold"
 
             if not warmed_up:
                 dk.data["extra_returns_per_train"][minima_thresh_col] = -2
@@ -1607,7 +1601,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif threshold_method == CUSTOM_THRESHOLD_METHODS[1]:  # "soft_extremum"
             return QuickAdapterRegressorV3.soft_extremum_min_max(
                 pred_label,
-                col_prediction_config["soft_alpha"],
+                col_prediction_config["soft_extremum_alpha"],
                 extrema_selection,
                 keep_fraction,
             )

@@ -33,9 +33,7 @@ from Utils import (
     EXTREMA_COLUMN,
     LABEL_COLUMNS,
     MAXIMA_COLUMN,
-    MAXIMA_THRESHOLD_COLUMN,
     MINIMA_COLUMN,
-    MINIMA_THRESHOLD_COLUMN,
     SMOOTHED_EXTREMA_COLUMN,
     TRADE_PRICE_TARGETS,
     alligator,
@@ -211,8 +209,14 @@ class QuickAdapterV3(IStrategy):
                     "hp_rmse": {"color": "violet", "type": "line"},
                 },
                 "extrema": {
-                    MAXIMA_THRESHOLD_COLUMN: {"color": "blue", "type": "line"},
-                    MINIMA_THRESHOLD_COLUMN: {"color": "cyan", "type": "line"},
+                    f"{EXTREMA_COLUMN}_maxima_threshold": {
+                        "color": "blue",
+                        "type": "line",
+                    },
+                    f"{EXTREMA_COLUMN}_minima_threshold": {
+                        "color": "cyan",
+                        "type": "line",
+                    },
                     EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
                 "min_max": {
@@ -926,8 +930,12 @@ class QuickAdapterV3(IStrategy):
             dataframe, timeperiod=self.get_label_period_candles(pair)
         )
 
-        dataframe["minima_threshold"] = dataframe.get(MINIMA_THRESHOLD_COLUMN)
-        dataframe["maxima_threshold"] = dataframe.get(MAXIMA_THRESHOLD_COLUMN)
+        dataframe["minima_threshold"] = dataframe.get(
+            f"{EXTREMA_COLUMN}_minima_threshold"
+        )
+        dataframe["maxima_threshold"] = dataframe.get(
+            f"{EXTREMA_COLUMN}_maxima_threshold"
+        )
 
         return dataframe
 
