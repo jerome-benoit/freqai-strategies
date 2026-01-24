@@ -919,9 +919,6 @@ class QuickAdapterV3(IStrategy):
         label_period = datetime.timedelta(
             minutes=len(dataframe) * self.get_timeframe_minutes()
         )
-        dataframe[EXTREMA_COLUMN] = 0.0
-        dataframe[MINIMA_COLUMN] = 0.0
-        dataframe[MAXIMA_COLUMN] = 0.0
 
         if len(pivots_indices) == 0:
             logger.warning(
@@ -938,42 +935,30 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
 
+        # Build metrics dict for weighting (computed once, used for all labels)
+        weighting_metrics: dict[str, list[float]] = {
+            "amplitude": pivots_amplitudes,
+            "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
+            "volume_rate": pivots_volume_rates,
+            "speed": pivots_speeds,
+            "efficiency_ratio": pivots_efficiency_ratios,
+            "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
+        }
+
         for label_col in LABEL_COLUMNS:
+            dataframe[label_col] = 0.0
             col_weighting_config = get_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
-            if label_col == EXTREMA_COLUMN:
-                weighted_label, _ = apply_label_weighting(
-                    extrema=extrema_direction,
-                    indices=pivots_indices,
-                    amplitudes=pivots_amplitudes,
-                    amplitude_threshold_ratios=pivots_amplitude_threshold_ratios,
-                    volume_rates=pivots_volume_rates,
-                    speeds=pivots_speeds,
-                    efficiency_ratios=pivots_efficiency_ratios,
-                    volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
-                    label_transformer=col_weighting_config,
-                )
+            weighted_label, _ = apply_label_weighting(
+                label_values=extrema_direction,
+                indices=pivots_indices,
+                metrics=weighting_metrics,
+                weighting_config=col_weighting_config,
+            )
 
-                plot_eps = weighted_label.abs().where(weighted_label.ne(0.0)).min()
-                if not np.isfinite(plot_eps):
-                    plot_eps = 0.0
-                plot_eps = max(
-                    float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS
-                )
-                dataframe[MAXIMA_COLUMN] = (
-                    weighted_label.where(extrema_direction.gt(0), 0.0)
-                    .clip(lower=0.0)
-                    .mask(extrema_direction.gt(0) & weighted_label.eq(0.0), plot_eps)
-                )
-                dataframe[MINIMA_COLUMN] = (
-                    weighted_label.where(extrema_direction.lt(0), 0.0)
-                    .clip(upper=0.0)
-                    .mask(extrema_direction.lt(0) & weighted_label.eq(0.0), -plot_eps)
-                )
-
-                dataframe[label_col] = weighted_label
+            dataframe[label_col] = weighted_label
 
             col_smoothing_config = get_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
@@ -988,6 +973,23 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config["mode"],
                 col_smoothing_config["sigma"],
             )
+
+        # dataframe[MINIMA_COLUMN] = 0.0
+        # dataframe[MAXIMA_COLUMN] = 0.0
+        # plot_eps = weighted_label.abs().where(weighted_label.ne(0.0)).min()
+        # if not np.isfinite(plot_eps):
+        #     plot_eps = 0.0
+        #     plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
+        #     dataframe[MAXIMA_COLUMN] = (
+        #         weighted_label.where(extrema_direction.gt(0), 0.0)
+        #         .clip(lower=0.0)
+        #         .mask(extrema_direction.gt(0) & weighted_label.eq(0.0), plot_eps)
+        #     )
+        #     dataframe[MINIMA_COLUMN] = (
+        #         weighted_label.where(extrema_direction.lt(0), 0.0)
+        #         .clip(upper=0.0)
+        #         .mask(extrema_direction.lt(0) & weighted_label.eq(0.0), -plot_eps)
+        #     )
 
         dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]
 

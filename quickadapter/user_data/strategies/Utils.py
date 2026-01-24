@@ -976,48 +976,29 @@ def _aggregate_metrics(
 
 
 def _compute_combined_weights(
-    indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
+    metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
     softmax_temperature: float,
 ) -> NDArray[np.floating]:
-    if len(indices) == 0:
+    if len(metrics) == 0:
         return np.asarray([], dtype=float)
 
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
-        coefficients = dict.fromkeys(COMBINED_METRICS, DEFAULT_EXTREMA_WEIGHT)
-
-    metrics: dict[CombinedMetric, NDArray[np.floating]] = {
-        "amplitude": np.asarray(amplitudes, dtype=float),
-        "amplitude_threshold_ratio": np.asarray(
-            amplitude_threshold_ratios, dtype=float
-        ),
-        "volume_rate": np.asarray(volume_rates, dtype=float),
-        "speed": np.asarray(speeds, dtype=float),
-        "efficiency_ratio": np.asarray(efficiency_ratios, dtype=float),
-        "volume_weighted_efficiency_ratio": np.asarray(
-            volume_weighted_efficiency_ratios, dtype=float
-        ),
-    }
+        coefficients = {k: DEFAULT_EXTREMA_WEIGHT for k in metrics.keys()}
 
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
 
-    for metric_name in COMBINED_METRICS:
+    for metric_name, metric_values in metrics.items():
         if metric_name not in coefficients:
             continue
         coefficient = coefficients[metric_name]
-        metric_values = metrics[metric_name]
-        if metric_values.size == 0:
+        values_array = np.asarray(metric_values, dtype=float)
+        if values_array.size == 0:
             continue
-        imputed_metrics.append(_impute_weights(weights=metric_values))
+        imputed_metrics.append(_impute_weights(weights=values_array))
         coefficients_list.append(float(coefficient))
 
     if len(imputed_metrics) == 0:
@@ -1031,55 +1012,46 @@ def _compute_combined_weights(
     )
 
 
-def compute_extrema_weights(
-    n_extrema: int,
+def compute_label_weights(
+    n_values: int,
     indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
-    label_transformer: dict[str, Any],
+    metrics: dict[str, list[float]],
+    weighting_config: dict[str, Any],
 ) -> NDArray[np.floating]:
-    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **label_transformer}
+    """
+    Compute weights for label values based on provided metrics.
+
+    Args:
+        n_values: Total number of label values (length of output array).
+        indices: Indices where metrics were computed (sparse).
+        metrics: Dict mapping metric names to their values at indices.
+        weighting_config: Weighting configuration with strategy, aggregation, etc.
+
+    Returns:
+        Array of weights with length n_values.
+    """
+    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
 
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
-        return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+        return np.full(n_values, DEFAULT_EXTREMA_WEIGHT, dtype=float)
 
     weights: Optional[NDArray[np.floating]] = None
 
-    if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
-        weights = np.asarray(amplitudes, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
-        weights = np.asarray(amplitude_threshold_ratios, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[3]:  # "volume_rate"
-        weights = np.asarray(volume_rates, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[4]:  # "speed"
-        weights = np.asarray(speeds, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
-        weights = np.asarray(efficiency_ratios, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[6]:  # "volume_weighted_efficiency_ratio"
-        weights = np.asarray(volume_weighted_efficiency_ratios, dtype=float)
+    # Single metric strategies
+    if strategy in metrics:
+        weights = np.asarray(metrics[strategy], dtype=float)
     elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
         weights = _compute_combined_weights(
-            indices=indices,
-            amplitudes=amplitudes,
-            amplitude_threshold_ratios=amplitude_threshold_ratios,
-            volume_rates=volume_rates,
-            speeds=speeds,
-            efficiency_ratios=efficiency_ratios,
-            volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
+            metrics=metrics,
             metric_coefficients=label_weighting["metric_coefficients"],
             aggregation=label_weighting["aggregation"],
             softmax_temperature=label_weighting["softmax_temperature"],
         )
-
     else:
         raise ValueError(
-            f"Invalid extrema weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)}"
+            f"Invalid weighting strategy value {strategy!r}: "
+            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
         )
 
     weights = _impute_weights(
@@ -1087,7 +1059,7 @@ def compute_extrema_weights(
     )
 
     return _build_weights_array(
-        n_extrema=n_extrema,
+        n_extrema=n_values,
         indices=indices,
         weights=weights,
         default_weight=float(np.nanmedian(weights)),
@@ -1113,35 +1085,37 @@ def _apply_label_weights(
 
 
 def apply_label_weighting(
-    extrema: pd.Series,
+    label_values: pd.Series,
     indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
-    label_transformer: dict[str, Any],
+    metrics: dict[str, list[float]],
+    weighting_config: dict[str, Any],
 ) -> tuple[pd.Series, pd.Series]:
-    extrema_values = extrema.to_numpy(dtype=float)
-    extrema_index = extrema.index
-    n_extrema = len(extrema_values)
+    """
+    Apply weighting to label values based on provided metrics.
 
-    weights = compute_extrema_weights(
-        n_extrema=n_extrema,
+    Args:
+        label_values: Series of label values to weight.
+        indices: Indices where metrics were computed (sparse).
+        metrics: Dict mapping metric names to their values at indices.
+        weighting_config: Weighting configuration with strategy, aggregation, etc.
+
+    Returns:
+        Tuple of (weighted_values, weights) as Series.
+    """
+    values_array = label_values.to_numpy(dtype=float)
+    label_index = label_values.index
+    n_values = len(values_array)
+
+    weights = compute_label_weights(
+        n_values=n_values,
         indices=indices,
-        amplitudes=amplitudes,
-        amplitude_threshold_ratios=amplitude_threshold_ratios,
-        volume_rates=volume_rates,
-        speeds=speeds,
-        efficiency_ratios=efficiency_ratios,
-        volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
-        label_transformer=label_transformer,
+        metrics=metrics,
+        weighting_config=weighting_config,
     )
 
     return pd.Series(
-        _apply_label_weights(extrema_values, weights), index=extrema_index
-    ), pd.Series(weights, index=extrema_index)
+        _apply_label_weights(values_array, weights), index=label_index
+    ), pd.Series(weights, index=label_index)
 
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
