@@ -38,6 +38,7 @@ from LabelTransformer import (
 )
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
+    DEFAULTS_LABEL_PREDICTION,
     EXTREMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
@@ -1595,7 +1596,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             label_prediction = self.label_prediction
             outlier_quantile = label_prediction["default"].get(
-                "outlier_quantile", 0.999
+                "outlier_quantile", DEFAULTS_LABEL_PREDICTION["outlier_quantile"]
             )
             cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
 
