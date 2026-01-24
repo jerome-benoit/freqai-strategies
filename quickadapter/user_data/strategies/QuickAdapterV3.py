@@ -26,18 +26,15 @@ from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 
-from ExtremaWeightingTransformer import COMBINED_AGGREGATIONS
+from LabelTransformer import COMBINED_AGGREGATIONS
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
-    DEFAULTS_EXTREMA_SMOOTHING,
     EXTREMA_COLUMN,
     MAXIMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_COLUMN,
     MINIMA_THRESHOLD_COLUMN,
     SMOOTHED_EXTREMA_COLUMN,
-    SMOOTHING_METHODS,
-    SMOOTHING_MODES,
     TRADE_PRICE_TARGETS,
     alligator,
     bottom_log_return,
@@ -45,10 +42,15 @@ from Utils import (
     ewo,
     format_number,
     get_callable_sha256,
+    get_column_config,
     get_distance,
-    get_extrema_weighting_config,
+    LABEL_COLUMNS,
+    get_label_pipeline_config,
+    get_label_smoothing_config,
+    get_label_transformer_config,
+    get_label_weighting_config,
     get_label_defaults,
-    get_weighted_extrema,
+    apply_label_weighting,
     get_zl_ma_fn,
     nan_average,
     non_zero_diff,
@@ -298,78 +300,99 @@ class QuickAdapterV3(IStrategy):
         else:
             return max_open_trades
 
+    def _get_label_config_raw(self) -> dict[str, Any]:
+        label_weighting = self.freqai_info.get("label_weighting")
+        label_pipeline = self.freqai_info.get("label_pipeline")
+
+        if label_weighting is not None or label_pipeline is not None:
+            return {
+                "label_weighting": label_weighting
+                if isinstance(label_weighting, dict)
+                else {},
+                "label_pipeline": label_pipeline
+                if isinstance(label_pipeline, dict)
+                else {},
+            }
+
+        label_transformer = update_config_value(
+            self.freqai_info,
+            new_key="label_transformer",
+            old_key="extrema_weighting",
+            default={},
+            logger=logger,
+            new_path="freqai.label_transformer",
+            old_path="freqai.extrema_weighting",
+        )
+        if not isinstance(label_transformer, dict):
+            label_transformer = {}
+        return {"legacy": label_transformer}
+
     @property
-    def extrema_weighting(self) -> dict[str, Any]:
-        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
-        if not isinstance(extrema_weighting, dict):
-            extrema_weighting = {}
-        return get_extrema_weighting_config(extrema_weighting, logger)
+    def label_weighting(self) -> dict[str, Any]:
+        """Sample weight computation config (strategy, aggregation, etc.)."""
+        raw = self._get_label_config_raw()
+        if "legacy" in raw:
+            return get_label_weighting_config(raw["legacy"], logger)
+        return get_label_weighting_config(raw["label_weighting"], logger)
+
+    @property
+    def label_pipeline(self) -> dict[str, Any]:
+        """
+        Label pipeline transformation config (standardization, normalization, gamma).
+
+        Returns a dict with "default" and "columns" keys for per-label support.
+        """
+        raw = self._get_label_config_raw()
+        if "legacy" in raw:
+            return get_label_pipeline_config(raw["legacy"], logger)
+        return get_label_pipeline_config(raw["label_pipeline"], logger)
+
+    @property
+    def label_transformer(self) -> dict[str, Any]:
+        """
+        DEPRECATED: Use label_weighting and label_pipeline instead.
+
+        Combined config for backward compatibility. Returns flat dict.
+        """
+        raw = self._get_label_config_raw()
+        if "legacy" in raw:
+            return get_label_transformer_config(raw["legacy"], logger)
+        label_weighting = get_label_weighting_config(raw["label_weighting"], logger)
+        label_pipeline = get_label_pipeline_config(raw["label_pipeline"], logger)
+        return {**label_weighting["default"], **label_pipeline["default"]}
+
+    @property
+    def label_smoothing(self) -> dict[str, Any]:
+        label_smoothing_raw = self.freqai_info.get("label_smoothing", {})
+        if not isinstance(label_smoothing_raw, dict):
+            label_smoothing_raw = {}
+
+        legacy_config = None
+        if not label_smoothing_raw:
+            extrema_smoothing_raw = self.freqai_info.get("extrema_smoothing", {})
+            if isinstance(extrema_smoothing_raw, dict) and extrema_smoothing_raw:
+                legacy_config = dict(extrema_smoothing_raw)
+                if "window" in legacy_config and "window_candles" not in legacy_config:
+                    logger.warning(
+                        "freqai.extrema_smoothing.window is deprecated, use window_candles instead"
+                    )
+                    legacy_config["window_candles"] = legacy_config.pop("window")
+
+        return get_label_smoothing_config(
+            label_smoothing_raw, logger, legacy_config=legacy_config
+        )
 
     @property
     def extrema_smoothing(self) -> dict[str, Any]:
-        extrema_smoothing = self.freqai_info.get("extrema_smoothing", {})
-        if not isinstance(extrema_smoothing, dict):
-            extrema_smoothing = {}
-        method = extrema_smoothing.get("method", DEFAULTS_EXTREMA_SMOOTHING["method"])
-        if method not in set(SMOOTHING_METHODS):
-            logger.warning(
-                f"Invalid extrema_smoothing method value {method!r}: supported values are {', '.join(SMOOTHING_METHODS)}, using default {SMOOTHING_METHODS[0]!r}"
-            )
-            method = SMOOTHING_METHODS[0]
+        """
+        DEPRECATED: Use label_smoothing property instead.
 
-        window_candles = update_config_value(
-            extrema_smoothing,
-            new_key="window_candles",
-            old_key="window",
-            default=DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
-            logger=logger,
-            new_path="freqai.extrema_smoothing.window_candles",
-            old_path="freqai.extrema_smoothing.window",
+        Returns flat smoothing config for backward compatibility (uses default config).
+        """
+        label_smoothing = self.label_smoothing
+        return get_column_config(
+            EXTREMA_COLUMN, label_smoothing["default"], label_smoothing["columns"]
         )
-        if not isinstance(window_candles, int) or window_candles < 3:
-            logger.warning(
-                f"Invalid extrema_smoothing window_candles value {window_candles!r}: must be an integer >= 3, using default {DEFAULTS_EXTREMA_SMOOTHING['window_candles']!r}"
-            )
-            window_candles = int(DEFAULTS_EXTREMA_SMOOTHING["window_candles"])
-
-        beta = extrema_smoothing.get("beta", DEFAULTS_EXTREMA_SMOOTHING["beta"])
-        if not isinstance(beta, (int, float)) or not np.isfinite(beta) or beta <= 0:
-            logger.warning(
-                f"Invalid extrema_smoothing beta value {beta!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['beta']!r}"
-            )
-            beta = DEFAULTS_EXTREMA_SMOOTHING["beta"]
-
-        polyorder = extrema_smoothing.get(
-            "polyorder", DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
-        )
-        if not isinstance(polyorder, int) or polyorder < 1:
-            logger.warning(
-                f"Invalid extrema_smoothing polyorder value {polyorder!r}: must be an integer >= 1, using default {DEFAULTS_EXTREMA_SMOOTHING['polyorder']!r}"
-            )
-            polyorder = DEFAULTS_EXTREMA_SMOOTHING["polyorder"]
-
-        mode = str(extrema_smoothing.get("mode", DEFAULTS_EXTREMA_SMOOTHING["mode"]))
-        if mode not in set(SMOOTHING_MODES):
-            logger.warning(
-                f"Invalid extrema_smoothing mode value {mode!r}: supported values are {', '.join(SMOOTHING_MODES)}, using default {SMOOTHING_MODES[0]!r}"
-            )
-            mode = SMOOTHING_MODES[0]
-
-        sigma = extrema_smoothing.get("sigma", DEFAULTS_EXTREMA_SMOOTHING["sigma"])
-        if not isinstance(sigma, (int, float)) or sigma <= 0 or not np.isfinite(sigma):
-            logger.warning(
-                f"Invalid extrema_smoothing sigma value {sigma!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_SMOOTHING['sigma']!r}"
-            )
-            sigma = DEFAULTS_EXTREMA_SMOOTHING["sigma"]
-
-        return {
-            "method": method,
-            "window_candles": window_candles,
-            "beta": beta,
-            "polyorder": polyorder,
-            "mode": mode,
-            "sigma": sigma,
-        }
 
     @property
     def trade_price_target_method(self) -> str:
@@ -548,41 +571,62 @@ class QuickAdapterV3(IStrategy):
         logger.info("QuickAdapter Strategy Configuration")
         logger.info("=" * 60)
 
-        logger.info("Extrema Weighting:")
-        logger.info(f"  strategy: {self.extrema_weighting['strategy']}")
+        label_weighting = self.label_weighting
+        label_pipeline = self.label_pipeline
+
+        logger.info("Label Weighting:")
+        label_weighting_default = label_weighting["default"]
+        logger.info(f"  strategy: {label_weighting_default['strategy']}")
         logger.info(
-            f"  metric_coefficients: {self.extrema_weighting['metric_coefficients']}"
+            f"  metric_coefficients: {label_weighting_default['metric_coefficients']}"
         )
-        logger.info(f"  aggregation: {self.extrema_weighting['aggregation']}")
-        logger.info(f"  standardization: {self.extrema_weighting['standardization']}")
-        logger.info(
-            f"  robust_quantiles: ({format_number(self.extrema_weighting['robust_quantiles'][0])}, {format_number(self.extrema_weighting['robust_quantiles'][1])})"
-        )
-        logger.info(
-            f"  mmad_scaling_factor: {format_number(self.extrema_weighting['mmad_scaling_factor'])}"
-        )
-        logger.info(f"  normalization: {self.extrema_weighting['normalization']}")
-        logger.info(
-            f"  minmax_range: ({format_number(self.extrema_weighting['minmax_range'][0])}, {format_number(self.extrema_weighting['minmax_range'][1])})"
-        )
-        logger.info(
-            f"  sigmoid_scale: {format_number(self.extrema_weighting['sigmoid_scale'])}"
-        )
-        logger.info(f"  gamma: {format_number(self.extrema_weighting['gamma'])}")
+        logger.info(f"  aggregation: {label_weighting_default['aggregation']}")
         if (
-            self.extrema_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]
+            label_weighting_default["aggregation"] == COMBINED_AGGREGATIONS[5]
         ):  # "softmax"
             logger.info(
-                f"  softmax_temperature: {format_number(self.extrema_weighting['softmax_temperature'])}"
+                f"  softmax_temperature: {format_number(label_weighting_default['softmax_temperature'])}"
+            )
+        if label_weighting["columns"]:
+            logger.info(
+                f"  per-column overrides: {list(label_weighting['columns'].keys())}"
             )
 
-        logger.info("Extrema Smoothing:")
-        logger.info(f"  method: {self.extrema_smoothing['method']}")
-        logger.info(f"  window_candles: {self.extrema_smoothing['window_candles']}")
-        logger.info(f"  beta: {format_number(self.extrema_smoothing['beta'])}")
-        logger.info(f"  polyorder: {self.extrema_smoothing['polyorder']}")
-        logger.info(f"  mode: {self.extrema_smoothing['mode']}")
-        logger.info(f"  sigma: {format_number(self.extrema_smoothing['sigma'])}")
+        logger.info("Label Pipeline:")
+        label_pipeline_default = label_pipeline["default"]
+        logger.info(f"  standardization: {label_pipeline_default['standardization']}")
+        logger.info(
+            f"  robust_quantiles: ({format_number(label_pipeline_default['robust_quantiles'][0])}, {format_number(label_pipeline_default['robust_quantiles'][1])})"
+        )
+        logger.info(
+            f"  mmad_scaling_factor: {format_number(label_pipeline_default['mmad_scaling_factor'])}"
+        )
+        logger.info(f"  normalization: {label_pipeline_default['normalization']}")
+        logger.info(
+            f"  minmax_range: ({format_number(label_pipeline_default['minmax_range'][0])}, {format_number(label_pipeline_default['minmax_range'][1])})"
+        )
+        logger.info(
+            f"  sigmoid_scale: {format_number(label_pipeline_default['sigmoid_scale'])}"
+        )
+        logger.info(f"  gamma: {format_number(label_pipeline_default['gamma'])}")
+        if label_pipeline["columns"]:
+            logger.info(
+                f"  per-column overrides: {list(label_pipeline['columns'].keys())}"
+            )
+
+        label_smoothing = self.label_smoothing
+        label_smoothing_default = label_smoothing["default"]
+        logger.info("Label Smoothing:")
+        logger.info(f"  method: {label_smoothing_default['method']}")
+        logger.info(f"  window_candles: {label_smoothing_default['window_candles']}")
+        logger.info(f"  beta: {format_number(label_smoothing_default['beta'])}")
+        logger.info(f"  polyorder: {label_smoothing_default['polyorder']}")
+        logger.info(f"  mode: {label_smoothing_default['mode']}")
+        logger.info(f"  sigma: {format_number(label_smoothing_default['sigma'])}")
+        if label_smoothing["columns"]:
+            logger.info(
+                f"  per-column overrides: {list(label_smoothing['columns'].keys())}"
+            )
 
         logger.info("Reversal Confirmation:")
         logger.info(
@@ -918,45 +962,61 @@ class QuickAdapterV3(IStrategy):
 
         extrema_direction = dataframe[EXTREMA_COLUMN]
 
-        weighted_extrema, _ = get_weighted_extrema(
-            extrema=extrema_direction,
-            indices=pivots_indices,
-            amplitudes=pivots_amplitudes,
-            amplitude_threshold_ratios=pivots_amplitude_threshold_ratios,
-            volume_rates=pivots_volume_rates,
-            speeds=pivots_speeds,
-            efficiency_ratios=pivots_efficiency_ratios,
-            volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
-            extrema_weighting=self.extrema_weighting,
-        )
+        label_weighting = self.label_weighting
+        label_smoothing = self.label_smoothing
 
-        plot_eps = weighted_extrema.abs().where(weighted_extrema.ne(0.0)).min()
-        if not np.isfinite(plot_eps):
-            plot_eps = 0.0
-        plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
-        dataframe[MAXIMA_COLUMN] = (
-            weighted_extrema.where(extrema_direction.gt(0), 0.0)
-            .clip(lower=0.0)
-            .mask(extrema_direction.gt(0) & weighted_extrema.eq(0.0), plot_eps)
-        )
-        dataframe[MINIMA_COLUMN] = (
-            weighted_extrema.where(extrema_direction.lt(0), 0.0)
-            .clip(upper=0.0)
-            .mask(extrema_direction.lt(0) & weighted_extrema.eq(0.0), -plot_eps)
-        )
+        for label_col in LABEL_COLUMNS:
+            col_weighting_config = get_column_config(
+                label_col, label_weighting["default"], label_weighting["columns"]
+            )
 
-        smoothed_extrema = smooth_extrema(
-            weighted_extrema,
-            self.extrema_smoothing["method"],
-            self.extrema_smoothing["window_candles"],
-            self.extrema_smoothing["beta"],
-            self.extrema_smoothing["polyorder"],
-            self.extrema_smoothing["mode"],
-            self.extrema_smoothing["sigma"],
-        )
+            if label_col == EXTREMA_COLUMN:
+                weighted_label, _ = apply_label_weighting(
+                    extrema=extrema_direction,
+                    indices=pivots_indices,
+                    amplitudes=pivots_amplitudes,
+                    amplitude_threshold_ratios=pivots_amplitude_threshold_ratios,
+                    volume_rates=pivots_volume_rates,
+                    speeds=pivots_speeds,
+                    efficiency_ratios=pivots_efficiency_ratios,
+                    volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
+                    label_transformer=col_weighting_config,
+                )
 
-        dataframe[EXTREMA_COLUMN] = smoothed_extrema
-        dataframe[SMOOTHED_EXTREMA_COLUMN] = smoothed_extrema
+                plot_eps = weighted_label.abs().where(weighted_label.ne(0.0)).min()
+                if not np.isfinite(plot_eps):
+                    plot_eps = 0.0
+                plot_eps = max(
+                    float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS
+                )
+                dataframe[MAXIMA_COLUMN] = (
+                    weighted_label.where(extrema_direction.gt(0), 0.0)
+                    .clip(lower=0.0)
+                    .mask(extrema_direction.gt(0) & weighted_label.eq(0.0), plot_eps)
+                )
+                dataframe[MINIMA_COLUMN] = (
+                    weighted_label.where(extrema_direction.lt(0), 0.0)
+                    .clip(upper=0.0)
+                    .mask(extrema_direction.lt(0) & weighted_label.eq(0.0), -plot_eps)
+                )
+
+                dataframe[label_col] = weighted_label
+
+            col_smoothing_config = get_column_config(
+                label_col, label_smoothing["default"], label_smoothing["columns"]
+            )
+
+            dataframe[label_col] = smooth_extrema(
+                dataframe[label_col],
+                col_smoothing_config["method"],
+                col_smoothing_config["window_candles"],
+                col_smoothing_config["beta"],
+                col_smoothing_config["polyorder"],
+                col_smoothing_config["mode"],
+                col_smoothing_config["sigma"],
+            )
+
+        dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]
 
         return dataframe
 

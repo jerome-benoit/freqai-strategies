@@ -124,22 +124,83 @@
     "fit_live_predictions_candles": 864,
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
-    "extrema_weighting": {
+    // New separate config structure (recommended):
+    "label_weighting": {
+      // Flat format (same config for all labels):
       "strategy": "none"
+      // "strategy": "amplitude",
+      // "aggregation": "arithmetic_mean",
+      // "metric_coefficients": {},
+      // "softmax_temperature": 1.0
+
+      // Per-label format (different configs per label column):
+      // "default": { "strategy": "none" },
+      // "columns": {
+      //   "&s-extrema": { "strategy": "amplitude", "aggregation": "softmax" },
+      //   "&s-volume_*": { "strategy": "combined" }
+      // }
     },
-    // "extrema_weighting": {
+    "label_pipeline": {
+      // Flat format (same config for all labels):
+      // "standardization": "robust",
+      // "normalization": "minmax",
+      // "gamma": 1.0
+
+      // Per-label format (different configs per label column):
+      // "default": {
+      //   "standardization": "none",
+      //   "normalization": "maxabs",
+      //   "gamma": 1.0
+      // },
+      // "columns": {
+      //   "&s-extrema": {
+      //     "standardization": "robust",
+      //     "normalization": "minmax",
+      //     "gamma": 1.5
+      //   },
+      //   "&s-*_threshold": {
+      //     "standardization": "zscore"
+      //   }
+      // }
+    },
+    // Legacy combined config (deprecated, for backward compatibility):
+    // "label_transformer": {
     //   "strategy": "amplitude",
+    //   "standardization": "robust",
+    //   "normalization": "minmax",
     //   "gamma": 1.5
     // },
-    "extrema_smoothing": {
+    "label_smoothing": {
       "method": "kaiser",
       "window_candles": 5,
       "beta": 14.0
+      // Per-label format:
+      // "default": { "method": "none" },
+      // "columns": {
+      //   "&s-extrema": { "method": "kaiser", "window_candles": 5, "beta": 14.0 }
+      // }
     },
-    "predictions_extrema": {
-      "threshold_smoothing_method": "isodata",
-      "keep_extrema_fraction": 0.5
+    "label_prediction": {
+      "method": "thresholding",
+      "threshold_method": "isodata",
+      "keep_fraction": 0.5
+      // Per-label format:
+      // "default": { "method": "thresholding", "threshold_method": "mean" },
+      // "columns": {
+      //   "&s-extrema": { "threshold_method": "isodata", "keep_fraction": 0.5 }
+      // }
     },
+    // Legacy config names (DEPRECATED - emit warnings, will be removed):
+    // Use label_weighting, label_smoothing, label_prediction instead.
+    // Parameter renames in label_prediction:
+    //   threshold_smoothing_method -> threshold_method
+    //   keep_extrema_fraction -> keep_fraction
+    //   outlier_threshold_quantile -> outlier_quantile
+    //   soft_extremum_alpha -> soft_alpha
+    //
+    // "extrema_weighting": { ... },
+    // "extrema_smoothing": { ... },
+    // "predictions_extrema": { ... },
     "optuna_hyperopt": {
       "enabled": true,
       "n_jobs": 6,

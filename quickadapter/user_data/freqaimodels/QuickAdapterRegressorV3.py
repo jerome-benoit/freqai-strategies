@@ -29,7 +29,13 @@ from sklearn.preprocessing import (
 )
 from sklearn_extra.cluster import KMedoids
 
-from ExtremaWeightingTransformer import ExtremaWeightingTransformer
+from LabelTransformer import (
+    CUSTOM_THRESHOLD_METHODS,
+    EXTREMA_SELECTION_METHODS,
+    LabelTransformer,
+    SKIMAGE_THRESHOLD_METHODS,
+    THRESHOLD_METHODS,
+)
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
@@ -41,7 +47,10 @@ from Utils import (
     eval_set_and_weights,
     fit_regressor,
     format_number,
-    get_extrema_weighting_config,
+    get_column_config,
+    get_label_pipeline_config,
+    get_label_prediction_config,
+    get_label_weighting_config,
     get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
@@ -92,29 +101,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _TEST_SIZE: Final[float] = 0.1
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
-
-    _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
-        "rank_extrema",
-        "rank_peaks",
-        "partition",
-    )
-    _CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
-        "median",
-        "soft_extremum",
-    )
-    _SKIMAGE_THRESHOLD_METHODS: Final[tuple[SkimageThresholdMethod, ...]] = (
-        "mean",
-        "isodata",
-        "li",
-        "minimum",
-        "otsu",
-        "triangle",
-        "yen",
-    )
-    _THRESHOLD_METHODS: Final[tuple[ThresholdMethod, ...]] = (
-        *_SKIMAGE_THRESHOLD_METHODS,
-        *_CUSTOM_THRESHOLD_METHODS,
-    )
 
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
@@ -211,10 +197,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "cubic_mean": 3.0,
     }
 
-    PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT: Final[float] = 0.999
-    PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT: Final[float] = 12.0
-    PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
-
     FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
         DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
     )
@@ -243,22 +225,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     @lru_cache(maxsize=None)
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
-        return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
+        return set(EXTREMA_SELECTION_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _custom_threshold_methods_set() -> set[CustomThresholdMethod]:
-        return set(QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS)
+        return set(CUSTOM_THRESHOLD_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _skimage_threshold_methods_set() -> set[SkimageThresholdMethod]:
-        return set(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)
+        return set(SKIMAGE_THRESHOLD_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _threshold_methods_set() -> set[ThresholdMethod]:
-        return set(QuickAdapterRegressorV3._THRESHOLD_METHODS)
+        return set(THRESHOLD_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -874,98 +856,89 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return label_frequency_candles
 
     @property
+    def label_prediction(self) -> dict[str, Any]:
+        """
+        Get validated label prediction configuration.
+
+        Supports both new label_prediction config and legacy predictions_extrema fallback.
+
+        Returns:
+            A dict with "default" and "columns" keys for per-label prediction configs.
+        """
+        label_prediction_raw = self.freqai_info.get("label_prediction", {})
+        if not isinstance(label_prediction_raw, dict):
+            label_prediction_raw = {}
+
+        legacy_config = None
+        if not label_prediction_raw:
+            predictions_extrema_raw = self.freqai_info.get("predictions_extrema", {})
+            if isinstance(predictions_extrema_raw, dict) and predictions_extrema_raw:
+                legacy_config = dict(predictions_extrema_raw)
+                if (
+                    "threshold_outlier" in legacy_config
+                    and "outlier_threshold_quantile" not in legacy_config
+                    and "outlier_quantile" not in legacy_config
+                ):
+                    logger.warning(
+                        "freqai.predictions_extrema.threshold_outlier is deprecated, use outlier_quantile instead"
+                    )
+                    legacy_config["outlier_quantile"] = legacy_config.pop(
+                        "threshold_outlier"
+                    )
+                if (
+                    "thresholds_smoothing" in legacy_config
+                    and "threshold_smoothing_method" not in legacy_config
+                    and "threshold_method" not in legacy_config
+                ):
+                    logger.warning(
+                        "freqai.predictions_extrema.thresholds_smoothing is deprecated, use threshold_method instead"
+                    )
+                    legacy_config["threshold_method"] = legacy_config.pop(
+                        "thresholds_smoothing"
+                    )
+                if (
+                    "thresholds_alpha" in legacy_config
+                    and "soft_extremum_alpha" not in legacy_config
+                    and "soft_alpha" not in legacy_config
+                ):
+                    logger.warning(
+                        "freqai.predictions_extrema.thresholds_alpha is deprecated, use soft_alpha instead"
+                    )
+                    legacy_config["soft_alpha"] = legacy_config.pop("thresholds_alpha")
+                if (
+                    "extrema_fraction" in legacy_config
+                    and "keep_extrema_fraction" not in legacy_config
+                    and "keep_fraction" not in legacy_config
+                ):
+                    logger.warning(
+                        "freqai.predictions_extrema.extrema_fraction is deprecated, use keep_fraction instead"
+                    )
+                    legacy_config["keep_fraction"] = legacy_config.pop(
+                        "extrema_fraction"
+                    )
+
+        return get_label_prediction_config(
+            label_prediction_raw, logger, legacy_config=legacy_config
+        )
+
+    @property
     def predictions_extrema(self) -> dict[str, Any]:
-        predictions_extrema = self.freqai_info.get("predictions_extrema", {})
-        if not isinstance(predictions_extrema, dict):
-            predictions_extrema = {}
+        """
+        DEPRECATED: Use label_prediction property instead.
 
-        outlier_threshold_quantile = update_config_value(
-            predictions_extrema,
-            new_key="outlier_threshold_quantile",
-            old_key="threshold_outlier",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT,
-            logger=logger,
-            new_path="freqai.predictions_extrema.outlier_threshold_quantile",
-            old_path="freqai.predictions_extrema.threshold_outlier",
+        Returns flat prediction config for backward compatibility (uses default config).
+        Maps new parameter names to legacy names for backward compatibility.
+        """
+        label_prediction = self.label_prediction
+        col_prediction_config = get_column_config(
+            EXTREMA_COLUMN, label_prediction["default"], label_prediction["columns"]
         )
-        if (
-            not isinstance(outlier_threshold_quantile, (int, float))
-            or not np.isfinite(outlier_threshold_quantile)
-            or not (0 < outlier_threshold_quantile < 1)
-        ):
-            outlier_threshold_quantile = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT
-
-        selection_method = str(
-            predictions_extrema.get(
-                "selection_method",
-                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank_extrema"
-            )
-        )
-        if (
-            selection_method
-            not in QuickAdapterRegressorV3._extrema_selection_methods_set()
-        ):
-            selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[
-                0
-            ]  # "rank_extrema"
-
-        threshold_smoothing_method = str(
-            update_config_value(
-                predictions_extrema,
-                new_key="threshold_smoothing_method",
-                old_key="thresholds_smoothing",
-                default=QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
-                logger=logger,
-                new_path="freqai.predictions_extrema.threshold_smoothing_method",
-                old_path="freqai.predictions_extrema.thresholds_smoothing",
-            )
-        )
-        if (
-            threshold_smoothing_method
-            not in QuickAdapterRegressorV3._threshold_methods_set()
-        ):
-            threshold_smoothing_method = QuickAdapterRegressorV3._THRESHOLD_METHODS[
-                0
-            ]  # "mean"
-
-        soft_extremum_alpha = update_config_value(
-            predictions_extrema,
-            new_key="soft_extremum_alpha",
-            old_key="thresholds_alpha",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT,
-            logger=logger,
-            new_path="freqai.predictions_extrema.soft_extremum_alpha",
-            old_path="freqai.predictions_extrema.thresholds_alpha",
-        )
-        if (
-            not isinstance(soft_extremum_alpha, (int, float))
-            or not np.isfinite(soft_extremum_alpha)
-            or soft_extremum_alpha < 0
-        ):
-            soft_extremum_alpha = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT
-            )
-
-        keep_extrema_fraction = update_config_value(
-            predictions_extrema,
-            new_key="keep_extrema_fraction",
-            old_key="extrema_fraction",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT,
-            logger=logger,
-            new_path="freqai.predictions_extrema.keep_extrema_fraction",
-            old_path="freqai.predictions_extrema.extrema_fraction",
-        )
-        if not isinstance(keep_extrema_fraction, (int, float)) or not (
-            0 < keep_extrema_fraction <= 1
-        ):
-            keep_extrema_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT
-
         return {
-            "outlier_threshold_quantile": float(outlier_threshold_quantile),
-            "selection_method": selection_method,
-            "threshold_smoothing_method": threshold_smoothing_method,
-            "soft_extremum_alpha": float(soft_extremum_alpha),
-            "keep_extrema_fraction": float(keep_extrema_fraction),
+            "outlier_threshold_quantile": col_prediction_config["outlier_quantile"],
+            "selection_method": col_prediction_config["selection_method"],
+            "threshold_smoothing_method": col_prediction_config["threshold_method"],
+            "soft_extremum_alpha": col_prediction_config["soft_alpha"],
+            "keep_extrema_fraction": col_prediction_config["keep_fraction"],
         }
 
     @property
@@ -1132,23 +1105,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"  label_p_order: {format_number(label_p_order_default)} (default for {distance_metric})"
                     )
 
-        logger.info("Predictions Extrema Configuration:")
-        predictions_extrema = self.predictions_extrema
+        label_prediction = self.label_prediction
+        label_prediction_default = label_prediction["default"]
+        logger.info("Label Prediction:")
         logger.info(
-            f"  selection_method: {predictions_extrema.get('selection_method')}"
+            f"  selection_method: {label_prediction_default['selection_method']}"
         )
         logger.info(
-            f"  threshold_smoothing_method: {predictions_extrema.get('threshold_smoothing_method')}"
+            f"  threshold_method: {label_prediction_default['threshold_method']}"
         )
         logger.info(
-            f"  outlier_threshold_quantile: {format_number(predictions_extrema.get('outlier_threshold_quantile'))}"
+            f"  outlier_quantile: {format_number(label_prediction_default['outlier_quantile'])}"
         )
         logger.info(
-            f"  soft_extremum_alpha: {format_number(predictions_extrema.get('soft_extremum_alpha'))}"
+            f"  soft_alpha: {format_number(label_prediction_default['soft_alpha'])}"
         )
         logger.info(
-            f"  keep_extrema_fraction: {format_number(predictions_extrema.get('keep_extrema_fraction'))}"
+            f"  keep_fraction: {format_number(label_prediction_default['keep_fraction'])}"
         )
+        if label_prediction["columns"]:
+            logger.info(
+                f"  per-column overrides: {list(label_prediction['columns'].keys())}"
+            )
 
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
@@ -1384,23 +1362,39 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return Pipeline(steps)
 
     def define_label_pipeline(self, threads: int = -1) -> Pipeline:
-        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
-        if not isinstance(extrema_weighting, dict):
-            extrema_weighting = {}
-        extrema_weighting_config = get_extrema_weighting_config(
-            extrema_weighting, logger
-        )
+        label_weighting_raw = self.freqai_info.get("label_weighting")
+        label_pipeline_raw = self.freqai_info.get("label_pipeline")
 
-        if extrema_weighting_config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+        if label_weighting_raw is not None or label_pipeline_raw is not None:
+            if not isinstance(label_weighting_raw, dict):
+                label_weighting_raw = {}
+            if not isinstance(label_pipeline_raw, dict):
+                label_pipeline_raw = {}
+            label_weighting = get_label_weighting_config(label_weighting_raw, logger)
+            label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
+        else:
+            label_transformer = update_config_value(
+                self.freqai_info,
+                new_key="label_transformer",
+                old_key="extrema_weighting",
+                default={},
+                logger=logger,
+                new_path="freqai.label_transformer",
+                old_path="freqai.extrema_weighting",
+            )
+            if not isinstance(label_transformer, dict):
+                label_transformer = {}
+            label_weighting = get_label_weighting_config(label_transformer, logger)
+            label_pipeline = get_label_pipeline_config(label_transformer, logger)
+
+        if label_weighting["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
             return super().define_label_pipeline(threads)
 
         return Pipeline(
             [
                 (
-                    "extrema_weighting",
-                    ExtremaWeightingTransformer(
-                        extrema_weighting=extrema_weighting_config
-                    ),
+                    "label_transformer",
+                    LabelTransformer(label_transformer=label_pipeline),
                 ),
             ]
         )
@@ -1575,19 +1569,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             .reset_index(drop=True)
         )
 
-        if not warmed_up:
-            dk.data["extra_returns_per_train"][MINIMA_THRESHOLD_COLUMN] = -2
-            dk.data["extra_returns_per_train"][MAXIMA_THRESHOLD_COLUMN] = 2
-        else:
-            min_pred, max_pred = self.min_max_pred(
-                pred_df,
-                fit_live_predictions_candles,
-                self.get_optuna_params(
-                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
-                ).get("label_period_candles"),  # "label"
-            )
-            dk.data["extra_returns_per_train"][MINIMA_THRESHOLD_COLUMN] = min_pred
-            dk.data["extra_returns_per_train"][MAXIMA_THRESHOLD_COLUMN] = max_pred
+        for label_col in dk.label_list:
+            if label_col == EXTREMA_COLUMN:
+                minima_thresh_col = MINIMA_THRESHOLD_COLUMN
+                maxima_thresh_col = MAXIMA_THRESHOLD_COLUMN
+            else:
+                minima_thresh_col = f"{label_col}_minima_threshold"
+                maxima_thresh_col = f"{label_col}_maxima_threshold"
+
+            if not warmed_up:
+                dk.data["extra_returns_per_train"][minima_thresh_col] = -2
+                dk.data["extra_returns_per_train"][maxima_thresh_col] = 2
+            else:
+                min_pred, max_pred = self.min_max_pred(
+                    pred_df,
+                    fit_live_predictions_candles,
+                    self.get_optuna_params(
+                        pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
+                    ).get("label_period_candles"),  # "label"
+                    label_col=label_col,
+                )
+                dk.data["extra_returns_per_train"][minima_thresh_col] = min_pred
+                dk.data["extra_returns_per_train"][maxima_thresh_col] = max_pred
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
         for label in dk.label_list + dk.unique_class_list:
@@ -1610,9 +1613,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f = sp.stats.weibull_min.fit(
                 pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
             )
-            cutoff = sp.stats.weibull_min.ppf(
-                self.predictions_extrema["outlier_threshold_quantile"], *f
+            label_prediction = self.label_prediction
+            outlier_quantile = label_prediction["default"].get(
+                "outlier_quantile", 0.999
             )
+            cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
 
         dk.data["DI_value_mean"] = di_values.mean()
         dk.data["DI_value_std"] = di_values.std(ddof=1)
@@ -1649,6 +1654,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_df: pd.DataFrame,
         fit_live_predictions_candles: int,
         label_period_candles: int,
+        label_col: str = EXTREMA_COLUMN,
     ) -> tuple[float, float]:
         if not isinstance(label_period_candles, int) or label_period_candles <= 0:
             label_period_candles = self.ft_params.get(
@@ -1659,39 +1665,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             * label_period_candles
         )
 
-        pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
+        pred_label = pred_df.get(label_col)
+        if pred_label is None:
+            return -2.0, 2.0
+        pred_label = pred_label.iloc[-thresholds_candles:].copy()
 
-        extrema_selection = self.predictions_extrema["selection_method"]
-        threshold_smoothing_method = self.predictions_extrema[
-            "threshold_smoothing_method"
-        ]
-        keep_extrema_fraction = self.predictions_extrema["keep_extrema_fraction"]
+        label_prediction = self.label_prediction
+        col_prediction_config = get_column_config(
+            label_col, label_prediction["default"], label_prediction["columns"]
+        )
 
-        if (
-            threshold_smoothing_method == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
-        ):  # "median"
+        extrema_selection = col_prediction_config["selection_method"]
+        threshold_method = col_prediction_config["threshold_method"]
+        keep_fraction = col_prediction_config["keep_fraction"]
+
+        if threshold_method == CUSTOM_THRESHOLD_METHODS[0]:  # "median"
             return QuickAdapterRegressorV3.median_min_max(
-                pred_extrema, extrema_selection, keep_extrema_fraction
+                pred_label, extrema_selection, keep_fraction
             )
-        elif (
-            threshold_smoothing_method == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
-        ):  # "soft_extremum"
+        elif threshold_method == CUSTOM_THRESHOLD_METHODS[1]:  # "soft_extremum"
             return QuickAdapterRegressorV3.soft_extremum_min_max(
-                pred_extrema,
-                self.predictions_extrema["soft_extremum_alpha"],
+                pred_label,
+                col_prediction_config["soft_alpha"],
                 extrema_selection,
-                keep_extrema_fraction,
+                keep_fraction,
             )
         elif (
-            threshold_smoothing_method
-            in QuickAdapterRegressorV3._skimage_threshold_methods_set()
+            threshold_method in QuickAdapterRegressorV3._skimage_threshold_methods_set()
         ):
             return QuickAdapterRegressorV3.skimage_min_max(
-                pred_extrema,
-                threshold_smoothing_method,
+                pred_label,
+                threshold_method,
                 extrema_selection,
-                keep_extrema_fraction,
+                keep_fraction,
             )
+        return -2.0, 2.0
 
     @staticmethod
     def _get_extrema_indices(
@@ -1790,9 +1798,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pred_extrema.empty:
             return pd.Series(dtype=float), pd.Series(dtype=float)
 
-        if (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
-        ):  # "rank_extrema"
+        if extrema_selection == EXTREMA_SELECTION_METHODS[0]:  # "rank_extrema"
             minima_indices, maxima_indices = (
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
@@ -1803,9 +1809,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 keep_extrema_fraction,
             )
 
-        elif (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
-        ):  # "rank_peaks"
+        elif extrema_selection == EXTREMA_SELECTION_METHODS[1]:  # "rank_peaks"
             minima_indices, maxima_indices = (
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
@@ -1813,9 +1817,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_extrema, minima_indices, maxima_indices, keep_extrema_fraction
             )
 
-        elif (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[2]
-        ):  # "partition"
+        elif extrema_selection == EXTREMA_SELECTION_METHODS[2]:  # "partition"
             eps = np.finfo(float).eps
 
             pred_maxima = pred_extrema[pred_extrema > eps]
@@ -1823,7 +1825,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid extrema_selection value {extrema_selection!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
+                f"supported values are {', '.join(EXTREMA_SELECTION_METHODS)}"
             )
 
         return pred_minima, pred_maxima
@@ -1918,7 +1920,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         except AttributeError:
             raise ValueError(
                 f"Invalid skimage threshold method value {method!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)}"
+                f"supported values are {', '.join(SKIMAGE_THRESHOLD_METHODS)}"
             )
 
         min_func = QuickAdapterRegressorV3.apply_skimage_threshold
