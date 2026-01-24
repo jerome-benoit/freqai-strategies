@@ -883,20 +883,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Resolve all deprecated params once at init
-        resolve_deprecated_params(self.freqai_info, "freqai", logger)
-        resolve_deprecated_params(
-            self.freqai_info.get("feature_parameters", {}),
-            "freqai.feature_parameters",
-            logger,
-        )
         resolve_deprecated_params(
             self.freqai_info.get("label_prediction", {}),
             "label_prediction",
             logger,
         )
         resolve_deprecated_params(
-            self.config.get("freqai", {}).get("optuna_hyperopt", {}),
+            self.freqai_info.get("optuna_hyperopt", {}),
             "freqai.optuna_hyperopt",
             logger,
         )
@@ -1304,19 +1297,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_weighting_raw = self.freqai_info.get("label_weighting")
         label_pipeline_raw = self.freqai_info.get("label_pipeline")
 
-        if label_weighting_raw is not None or label_pipeline_raw is not None:
-            if not isinstance(label_weighting_raw, dict):
-                label_weighting_raw = {}
-            if not isinstance(label_pipeline_raw, dict):
-                label_pipeline_raw = {}
-            label_weighting = get_label_weighting_config(label_weighting_raw, logger)
-            label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
-        else:
-            label_transformer = self.freqai_info.get("label_transformer", {})
-            if not isinstance(label_transformer, dict):
-                label_transformer = {}
-            label_weighting = get_label_weighting_config(label_transformer, logger)
-            label_pipeline = get_label_pipeline_config(label_transformer, logger)
+        if not isinstance(label_weighting_raw, dict):
+            label_weighting_raw = {}
+        if not isinstance(label_pipeline_raw, dict):
+            label_pipeline_raw = {}
+        label_weighting = get_label_weighting_config(label_weighting_raw, logger)
+        label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
 
         if label_weighting["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
             return super().define_label_pipeline(threads)

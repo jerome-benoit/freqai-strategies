@@ -187,10 +187,6 @@ PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
         "min_natr_multiplier_fraction": "min_natr_ratio_percent",
         "max_natr_multiplier_fraction": "max_natr_ratio_percent",
     },
-    "freqai": {
-        "label_transformer": "extrema_weighting",
-        "label_pipeline": "label_transformer",
-    },
     "freqai.feature_parameters": {
         "min_label_natr_multiplier": "min_label_natr_ratio",
         "max_label_natr_multiplier": "max_label_natr_ratio",

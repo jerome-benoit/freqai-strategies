@@ -167,6 +167,23 @@ class QuickAdapterV3(IStrategy):
 
     process_only_new_candles = True
 
+    def __init__(self, config: dict) -> None:
+        super().__init__(config)
+        freqai_config = self.config.get("freqai", {})
+        resolve_deprecated_params(
+            freqai_config.get("feature_parameters", {}),
+            "freqai.feature_parameters",
+            logger,
+        )
+        resolve_deprecated_params(
+            self.config.get("exit_pricing", {}), "exit_pricing", logger
+        )
+        resolve_deprecated_params(
+            self.config.get("reversal_confirmation", {}),
+            "reversal_confirmation",
+            logger,
+        )
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _trade_directions_set() -> set[TradeDirection]:
@@ -300,32 +317,13 @@ class QuickAdapterV3(IStrategy):
         else:
             return max_open_trades
 
-    def _get_label_config_raw(self) -> dict[str, Any]:
-        label_weighting = self.freqai_info.get("label_weighting")
-        label_pipeline = self.freqai_info.get("label_pipeline")
-
-        if label_weighting is not None or label_pipeline is not None:
-            return {
-                "label_weighting": label_weighting
-                if isinstance(label_weighting, dict)
-                else {},
-                "label_pipeline": label_pipeline
-                if isinstance(label_pipeline, dict)
-                else {},
-            }
-
-        label_transformer = self.freqai_info.get("label_transformer", {})
-        if not isinstance(label_transformer, dict):
-            label_transformer = {}
-        return {"legacy": label_transformer}
-
     @property
     def label_weighting(self) -> dict[str, Any]:
         """Sample weight computation config (strategy, aggregation, etc.)."""
-        raw = self._get_label_config_raw()
-        if "legacy" in raw:
-            return get_label_weighting_config(raw["legacy"], logger)
-        return get_label_weighting_config(raw["label_weighting"], logger)
+        label_weighting = self.freqai_info.get("label_weighting")
+        if not isinstance(label_weighting, dict):
+            label_weighting = {}
+        return get_label_weighting_config(label_weighting, logger)
 
     @property
     def label_pipeline(self) -> dict[str, Any]:
@@ -334,10 +332,10 @@ class QuickAdapterV3(IStrategy):
 
         Returns a dict with "default" and "columns" keys for per-label support.
         """
-        raw = self._get_label_config_raw()
-        if "legacy" in raw:
-            return get_label_pipeline_config(raw["legacy"], logger)
-        return get_label_pipeline_config(raw["label_pipeline"], logger)
+        label_pipeline = self.freqai_info.get("label_pipeline")
+        if not isinstance(label_pipeline, dict):
+            label_pipeline = {}
+        return get_label_pipeline_config(label_pipeline, logger)
 
     @property
     def label_smoothing(self) -> dict[str, Any]:
@@ -427,21 +425,6 @@ class QuickAdapterV3(IStrategy):
         return get_label_defaults(feature_parameters, logger)
 
     def bot_start(self, **kwargs) -> None:
-        # Resolve all deprecated params once at startup
-        resolve_deprecated_params(self.freqai_info, "freqai", logger)
-        resolve_deprecated_params(
-            self.freqai_info.get("feature_parameters", {}),
-            "freqai.feature_parameters",
-            logger,
-        )
-        resolve_deprecated_params(
-            self.config.get("exit_pricing", {}), "exit_pricing", logger
-        )
-        resolve_deprecated_params(
-            self.config.get("reversal_confirmation", {}),
-            "reversal_confirmation",
-            logger,
-        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
