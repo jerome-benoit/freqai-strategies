@@ -393,33 +393,6 @@ def get_label_pipeline_config(
     )
 
 
-def get_label_transformer_config(
-    label_transformer: dict[str, Any],
-    logger: Logger,
-) -> dict[str, Any]:
-    """
-    DEPRECATED: Use get_label_weighting_config() and get_label_pipeline_config() instead.
-
-    Validates the combined label_transformer config for backward compatibility.
-    Returns a flat dict with all weighting and pipeline params merged.
-    """
-    weighting = get_label_weighting_config(label_transformer, logger)
-    pipeline = _validate_pipeline_params(label_transformer, logger, "label_transformer")
-
-    if (
-        weighting["strategy"] != WEIGHT_STRATEGIES[0]  # "none"
-        and pipeline["standardization"] != STANDARDIZATION_TYPES[0]  # "none"
-        and pipeline["normalization"] == NORMALIZATION_TYPES[3]  # "none"
-    ):
-        logger.warning(
-            f"label_transformer standardization={pipeline['standardization']!r} with normalization={pipeline['normalization']!r} can shift/flip ternary extrema labels. "
-            f"Consider using normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r},{NORMALIZATION_TYPES[2]!r}}} "
-            f"or set standardization={STANDARDIZATION_TYPES[0]!r}"
-        )
-
-    return {**weighting, **pipeline}
-
-
 def get_column_config(
     column_name: str,
     default_config: dict[str, Any],

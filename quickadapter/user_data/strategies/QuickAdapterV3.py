@@ -47,7 +47,6 @@ from Utils import (
     LABEL_COLUMNS,
     get_label_pipeline_config,
     get_label_smoothing_config,
-    get_label_transformer_config,
     get_label_weighting_config,
     get_label_defaults,
     apply_label_weighting,
@@ -348,20 +347,6 @@ class QuickAdapterV3(IStrategy):
         return get_label_pipeline_config(raw["label_pipeline"], logger)
 
     @property
-    def label_transformer(self) -> dict[str, Any]:
-        """
-        DEPRECATED: Use label_weighting and label_pipeline instead.
-
-        Combined config for backward compatibility. Returns flat dict.
-        """
-        raw = self._get_label_config_raw()
-        if "legacy" in raw:
-            return get_label_transformer_config(raw["legacy"], logger)
-        label_weighting = get_label_weighting_config(raw["label_weighting"], logger)
-        label_pipeline = get_label_pipeline_config(raw["label_pipeline"], logger)
-        return {**label_weighting["default"], **label_pipeline["default"]}
-
-    @property
     def label_smoothing(self) -> dict[str, Any]:
         label_smoothing_raw = self.freqai_info.get("label_smoothing", {})
         if not isinstance(label_smoothing_raw, dict):
@@ -380,18 +365,6 @@ class QuickAdapterV3(IStrategy):
 
         return get_label_smoothing_config(
             label_smoothing_raw, logger, legacy_config=legacy_config
-        )
-
-    @property
-    def extrema_smoothing(self) -> dict[str, Any]:
-        """
-        DEPRECATED: Use label_smoothing property instead.
-
-        Returns flat smoothing config for backward compatibility (uses default config).
-        """
-        label_smoothing = self.label_smoothing
-        return get_column_config(
-            EXTREMA_COLUMN, label_smoothing["default"], label_smoothing["columns"]
         )
 
     @property
