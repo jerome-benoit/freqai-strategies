@@ -922,26 +922,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
     @property
-    def predictions_extrema(self) -> dict[str, Any]:
-        """
-        DEPRECATED: Use label_prediction property instead.
-
-        Returns flat prediction config for backward compatibility (uses default config).
-        Maps new parameter names to legacy names for backward compatibility.
-        """
-        label_prediction = self.label_prediction
-        col_prediction_config = get_column_config(
-            EXTREMA_COLUMN, label_prediction["default"], label_prediction["columns"]
-        )
-        return {
-            "outlier_threshold_quantile": col_prediction_config["outlier_quantile"],
-            "selection_method": col_prediction_config["selection_method"],
-            "threshold_smoothing_method": col_prediction_config["threshold_method"],
-            "soft_extremum_alpha": col_prediction_config["soft_alpha"],
-            "keep_extrema_fraction": col_prediction_config["keep_fraction"],
-        }
-
-    @property
     def _label_defaults(self) -> tuple[int, float]:
         return get_label_defaults(self.ft_params, logger)
 
