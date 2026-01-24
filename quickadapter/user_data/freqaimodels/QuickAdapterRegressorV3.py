@@ -32,6 +32,7 @@ from sklearn_extra.cluster import KMedoids
 from LabelTransformer import (
     CUSTOM_THRESHOLD_METHODS,
     EXTREMA_SELECTION_METHODS,
+    PREDICTION_METHODS,
     SKIMAGE_THRESHOLD_METHODS,
     THRESHOLD_METHODS,
     LabelTransformer,
@@ -1304,7 +1305,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_weighting = get_label_weighting_config(label_weighting_raw, logger)
         label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
 
-        if label_weighting["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+        if label_weighting["default"]["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
             return super().define_label_pipeline(threads)
 
         return Pipeline(
@@ -1591,6 +1592,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         col_prediction_config = get_column_config(
             label_col, label_prediction["default"], label_prediction["columns"]
         )
+
+        if col_prediction_config.get("method") == PREDICTION_METHODS[0]:  # "none"
+            return -2.0, 2.0
 
         extrema_selection = col_prediction_config["selection_method"]
         threshold_method = col_prediction_config["threshold_method"]

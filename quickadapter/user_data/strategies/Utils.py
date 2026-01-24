@@ -483,13 +483,13 @@ def get_column_config(
 ) -> dict[str, Any]:
     result = copy.deepcopy(default_config)
 
-    matches: list[tuple[int, str, dict[str, Any]]] = []
+    matches: list[tuple[float, str, dict[str, Any]]] = []
     for pattern, col_config in columns_config.items():
         if fnmatch.fnmatch(column_name, pattern):
             if "*" not in pattern and "?" not in pattern and "[" not in pattern:
-                specificity = 100
+                specificity = float("inf")
             else:
-                specificity = sum(1 for c in pattern if c not in "*?[]")
+                specificity = float(sum(1 for c in pattern if c not in "*?[]"))
             matches.append((specificity, pattern, col_config))
 
     matches.sort(key=lambda x: x[0])

@@ -1,4 +1,3 @@
-import fnmatch
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
@@ -18,6 +17,7 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
+from Utils import get_column_config
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ SMOOTHING_MODES: Final[tuple[SmoothingMode, ...]] = (
 )
 
 DEFAULTS_LABEL_SMOOTHING: Final[dict[str, Any]] = {
-    "method": SMOOTHING_METHODS[0],  # "none"
+    "method": SMOOTHING_METHODS[1],  # "gaussian"
     "window_candles": 5,
     "beta": 8.0,
     "polyorder": 3,
@@ -284,22 +284,8 @@ class _LabelTransformerConfig:
             return cls(default=default, columns={})
 
     def get_column_config(self, column_name: str) -> dict[str, Any]:
-        """
-        Get the configuration for a specific column.
-
-        Tries exact match first, then glob patterns, falls back to default.
-        """
-        # Exact match
-        if column_name in self.columns:
-            return {**self.default, **self.columns[column_name]}
-
-        # Glob pattern match (first match wins)
-        for pattern, col_config in self.columns.items():
-            if fnmatch.fnmatch(column_name, pattern):
-                return {**self.default, **col_config}
-
-        # Default
-        return self.default.copy()
+        """Get the configuration for a specific column."""
+        return get_column_config(column_name, self.default, self.columns)
 
 
 class LabelTransformer(BaseTransform):
