@@ -208,35 +208,34 @@ def resolve_deprecated_params(
     logger: Logger,
     *,
     log_prefix: str | None = None,
-) -> dict[str, Any]:
+) -> None:
     """
-    Resolve deprecated parameter names to their new names.
+    Resolve deprecated parameter names to their new names in-place.
 
     Uses PARAM_DEPRECATIONS table to map old_key -> new_key.
     Logs warnings for deprecated keys found.
+    Modifies config dict in-place.
 
     Args:
-        config: Configuration dict to resolve
+        config: Configuration dict to resolve (modified in-place)
         section: Key in PARAM_DEPRECATIONS table
         logger: Logger instance
         log_prefix: Optional prefix for log messages (defaults to section)
     """
     deprecations = PARAM_DEPRECATIONS.get(section, {})
     if not deprecations:
-        return config
+        return
 
     prefix = log_prefix if log_prefix is not None else section
-    result = dict(config)
     for new_key, old_key in deprecations.items():
-        if old_key in result and new_key not in result:
+        if old_key in config and new_key not in config:
             logger.warning(f"{prefix}.{old_key} is deprecated, use {new_key} instead")
-            result[new_key] = result.pop(old_key)
-        elif old_key in result and new_key in result:
+            config[new_key] = config.pop(old_key)
+        elif old_key in config and new_key in config:
             logger.warning(
                 f"{prefix} has both {new_key} and deprecated {old_key}, using {new_key}"
             )
-            del result[old_key]
-    return result
+            del config[old_key]
 
 
 def _get_label_config(
@@ -586,8 +585,6 @@ def _validate_prediction_params(
     logger: Logger,
     config_name: str = "label_prediction",
 ) -> dict[str, Any]:
-    config = resolve_deprecated_params(config, "label_prediction", logger)
-
     method = config.get("method", DEFAULTS_LABEL_PREDICTION["method"])
     if method not in set(PREDICTION_METHODS):
         logger.warning(
@@ -3234,13 +3231,10 @@ def get_label_defaults(
     default_min_label_natr_multiplier: float = 9.0,
     default_max_label_natr_multiplier: float = 12.0,
 ) -> tuple[int, float]:
-    fp = resolve_deprecated_params(
-        feature_parameters, "freqai.feature_parameters", logger
-    )
-    min_label_natr_multiplier = fp.get(
+    min_label_natr_multiplier = feature_parameters.get(
         "min_label_natr_multiplier", default_min_label_natr_multiplier
     )
-    max_label_natr_multiplier = fp.get(
+    max_label_natr_multiplier = feature_parameters.get(
         "max_label_natr_multiplier", default_max_label_natr_multiplier
     )
     min_label_natr_multiplier, max_label_natr_multiplier = validate_range(
@@ -3257,12 +3251,14 @@ def get_label_defaults(
     default_label_natr_multiplier = float(
         midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
     )
-    fp.setdefault("label_natr_multiplier", default_label_natr_multiplier)
+    feature_parameters.setdefault(
+        "label_natr_multiplier", default_label_natr_multiplier
+    )
 
-    min_label_period_candles = fp.get(
+    min_label_period_candles = feature_parameters.get(
         "min_label_period_candles", default_min_label_period_candles
     )
-    max_label_period_candles = fp.get(
+    max_label_period_candles = feature_parameters.get(
         "max_label_period_candles", default_max_label_period_candles
     )
     min_label_period_candles, max_label_period_candles = validate_range(

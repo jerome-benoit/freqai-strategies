@@ -314,8 +314,7 @@ class QuickAdapterV3(IStrategy):
                 else {},
             }
 
-        freqai_resolved = resolve_deprecated_params(self.freqai_info, "freqai", logger)
-        label_transformer = freqai_resolved.get("label_transformer", {})
+        label_transformer = self.freqai_info.get("label_transformer", {})
         if not isinstance(label_transformer, dict):
             label_transformer = {}
         return {"legacy": label_transformer}
@@ -349,9 +348,7 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def trade_price_target_method(self) -> str:
-        exit_pricing = resolve_deprecated_params(
-            self.config.get("exit_pricing", {}), "exit_pricing", logger
-        )
+        exit_pricing = self.config.get("exit_pricing", {})
         trade_price_target_method = exit_pricing.get(
             "trade_price_target_method",
             TRADE_PRICE_TARGETS[0],  # "moving_average"
@@ -367,11 +364,7 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def reversal_confirmation(self) -> dict[str, int | float]:
-        reversal_confirmation = resolve_deprecated_params(
-            self.config.get("reversal_confirmation", {}),
-            "reversal_confirmation",
-            logger,
-        )
+        reversal_confirmation = self.config.get("reversal_confirmation", {})
         defaults = QuickAdapterV3.default_reversal_confirmation
 
         lookback_period_candles = reversal_confirmation.get(
@@ -434,6 +427,21 @@ class QuickAdapterV3(IStrategy):
         return get_label_defaults(feature_parameters, logger)
 
     def bot_start(self, **kwargs) -> None:
+        # Resolve all deprecated params once at startup
+        resolve_deprecated_params(self.freqai_info, "freqai", logger)
+        resolve_deprecated_params(
+            self.freqai_info.get("feature_parameters", {}),
+            "freqai.feature_parameters",
+            logger,
+        )
+        resolve_deprecated_params(
+            self.config.get("exit_pricing", {}), "exit_pricing", logger
+        )
+        resolve_deprecated_params(
+            self.config.get("reversal_confirmation", {}),
+            "reversal_confirmation",
+            logger,
+        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(

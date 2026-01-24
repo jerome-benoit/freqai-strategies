@@ -780,11 +780,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "min_resource": 3,
             "seed": 1,
         }
-        optuna_hyperopt = resolve_deprecated_params(
-            self.config.get("freqai", {}).get("optuna_hyperopt", {}),
-            "freqai.optuna_hyperopt",
-            logger,
-        )
+        optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
         return {
             **optuna_default_config,
             **optuna_hyperopt,
@@ -887,6 +883,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Resolve all deprecated params once at init
+        resolve_deprecated_params(self.freqai_info, "freqai", logger)
+        resolve_deprecated_params(
+            self.freqai_info.get("feature_parameters", {}),
+            "freqai.feature_parameters",
+            logger,
+        )
+        resolve_deprecated_params(
+            self.freqai_info.get("label_prediction", {}),
+            "label_prediction",
+            logger,
+        )
+        resolve_deprecated_params(
+            self.config.get("freqai", {}).get("optuna_hyperopt", {}),
+            "freqai.optuna_hyperopt",
+            logger,
+        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1299,10 +1312,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weighting = get_label_weighting_config(label_weighting_raw, logger)
             label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
         else:
-            freqai_resolved = resolve_deprecated_params(
-                self.freqai_info, "freqai", logger
-            )
-            label_transformer = freqai_resolved.get("label_transformer", {})
+            label_transformer = self.freqai_info.get("label_transformer", {})
             if not isinstance(label_transformer, dict):
                 label_transformer = {}
             label_weighting = get_label_weighting_config(label_transformer, logger)
