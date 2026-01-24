@@ -3,6 +3,7 @@ import fnmatch
 import functools
 import hashlib
 import math
+from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache
 from logging import Logger
@@ -57,10 +58,89 @@ T = TypeVar("T", pd.Series, float)
 
 
 EXTREMA_COLUMN: Final = "&s-extrema"
+LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
 MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
 
-LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+
+@dataclass
+class LabelData:
+    series: pd.Series
+    indices: list[int]
+    metrics: dict[str, list[float]]
+
+
+LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
+_LABEL_GENERATORS: dict[str, LabelGenerator] = {}
+
+
+def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
+    """Register a label generator for a specific column."""
+    _LABEL_GENERATORS[label_column] = generator
+
+
+def _generate_extrema_label(
+    dataframe: pd.DataFrame,
+    params: dict[str, Any],
+) -> LabelData:
+    """Generate extrema labels using zigzag detection."""
+    natr_period = params.get("natr_period", 14)
+    natr_multiplier = params.get("natr_multiplier", 9.0)
+
+    (
+        pivots_indices,
+        _,
+        pivots_directions,
+        pivots_amplitudes,
+        pivots_amplitude_threshold_ratios,
+        pivots_volume_rates,
+        pivots_speeds,
+        pivots_efficiency_ratios,
+        pivots_volume_weighted_efficiency_ratios,
+    ) = zigzag(
+        dataframe,
+        natr_period=natr_period,
+        natr_multiplier=natr_multiplier,
+    )
+
+    values = pd.Series(0.0, index=dataframe.index)
+    if pivots_indices:
+        values.loc[pivots_indices] = pivots_directions
+
+    metrics: dict[str, list[float]] = {
+        "amplitude": pivots_amplitudes,
+        "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
+        "volume_rate": pivots_volume_rates,
+        "speed": pivots_speeds,
+        "efficiency_ratio": pivots_efficiency_ratios,
+        "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
+    }
+
+    return LabelData(series=values, indices=pivots_indices, metrics=metrics)
+
+
+register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
+
+
+def generate_label_data(
+    dataframe: pd.DataFrame,
+    label_column: str,
+    params: dict[str, Any],
+) -> LabelData:
+    """
+    Generate label data for a specific label column.
+
+    Dispatches to registered generator for the column.
+    Raises KeyError if no generator registered for the column.
+    """
+    generator = _LABEL_GENERATORS.get(label_column)
+    if generator is None:
+        raise KeyError(
+            f"No label generator registered for column '{label_column}'. "
+            f"Available: {list(_LABEL_GENERATORS.keys())}"
+        )
+    return generator(dataframe, params)
+
 
 MAXIMA_COLUMN: Final = "maxima"
 MINIMA_COLUMN: Final = "minima"
@@ -83,22 +163,80 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
 )
 
 
-DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
-    "method": SMOOTHING_METHODS[1],  # "gaussian"
-    "window_candles": 5,
-    "beta": 8.0,
-    "polyorder": 3,
-    "mode": SMOOTHING_MODES[0],  # "mirror"
-    "sigma": 1.0,
-}
-
-DEFAULT_EXTREMA_WEIGHT: Final[float] = 1.0
+DEFAULT_LABEL_WEIGHT: Final[float] = 1.0
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
-ResolveAliasesFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
+
+
+PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
+    "label_prediction": {
+        "threshold_method": "threshold_smoothing_method",
+        "keep_fraction": "keep_extrema_fraction",
+        "outlier_quantile": "outlier_threshold_quantile",
+        "soft_alpha": "soft_extremum_alpha",
+    },
+    "exit_pricing": {
+        "trade_price_target_method": "trade_price_target",
+    },
+    "reversal_confirmation": {
+        "lookback_period_candles": "lookback_period",
+        "decay_fraction": "decay_ratio",
+        "min_natr_multiplier_fraction": "min_natr_ratio_percent",
+        "max_natr_multiplier_fraction": "max_natr_ratio_percent",
+    },
+    "freqai": {
+        "label_transformer": "extrema_weighting",
+        "label_pipeline": "label_transformer",
+    },
+    "freqai.feature_parameters": {
+        "min_label_natr_multiplier": "min_label_natr_ratio",
+        "max_label_natr_multiplier": "max_label_natr_ratio",
+        "label_natr_multiplier": "label_natr_ratio",
+    },
+    "freqai.optuna_hyperopt": {
+        "space_fraction": "expansion_ratio",
+    },
+}
+
+
+def resolve_deprecated_params(
+    config: dict[str, Any],
+    section: str,
+    logger: Logger,
+    *,
+    log_prefix: str | None = None,
+) -> dict[str, Any]:
+    """
+    Resolve deprecated parameter names to their new names.
+
+    Uses PARAM_DEPRECATIONS table to map old_key -> new_key.
+    Logs warnings for deprecated keys found.
+
+    Args:
+        config: Configuration dict to resolve
+        section: Key in PARAM_DEPRECATIONS table
+        logger: Logger instance
+        log_prefix: Optional prefix for log messages (defaults to section)
+    """
+    deprecations = PARAM_DEPRECATIONS.get(section, {})
+    if not deprecations:
+        return config
+
+    prefix = log_prefix if log_prefix is not None else section
+    result = dict(config)
+    for new_key, old_key in deprecations.items():
+        if old_key in result and new_key not in result:
+            logger.warning(f"{prefix}.{old_key} is deprecated, use {new_key} instead")
+            result[new_key] = result.pop(old_key)
+        elif old_key in result and new_key in result:
+            logger.warning(
+                f"{prefix} has both {new_key} and deprecated {old_key}, using {new_key}"
+            )
+            del result[old_key]
+    return result
 
 
 def _get_label_config(
@@ -107,24 +245,7 @@ def _get_label_config(
     config_name: str,
     validate_fn: ValidateParamsFn,
     defaults_dict: dict[str, Any],
-    *,
-    legacy_config: dict[str, Any] | None = None,
-    legacy_deprecation_msg: str | None = None,
-    resolve_aliases_fn: ResolveAliasesFn | None = None,
 ) -> dict[str, Any]:
-    """
-    Generic helper to validate label configuration with per-column support.
-
-    Supports three formats:
-    1. Per-label format: {"default": {...}, "columns": {"pattern": {...}}}
-    2. Flat format: {...} - applies same config to all labels
-    3. Legacy fallback: uses legacy_config if config is empty
-    """
-    if not config and legacy_config:
-        if legacy_deprecation_msg:
-            logger.warning(legacy_deprecation_msg)
-        config = legacy_config
-
     if "default" in config or "columns" in config:
         default_config = config.get("default", {})
         if not isinstance(default_config, dict):
@@ -151,10 +272,6 @@ def _get_label_config(
                     f"Invalid {config_name} columns[{col_pattern!r}] value {col_config!r}: must be a mapping, ignoring"
                 )
                 continue
-            if resolve_aliases_fn:
-                col_config = resolve_aliases_fn(
-                    col_config, logger, f"{config_name}.columns[{col_pattern!r}]"
-                )
             validated_col: dict[str, Any] = {}
             for key, value in col_config.items():
                 if key in defaults_dict:
@@ -181,11 +298,6 @@ def _validate_weighting_params(
     logger: Logger,
     config_name: str = "label_weighting",
 ) -> dict[str, Any]:
-    """
-    Validate weighting parameters (strategy, metric_coefficients, aggregation, softmax_temperature).
-
-    Returns a validated flat config dict with all weighting params.
-    """
     strategy = config.get("strategy", DEFAULTS_LABEL_WEIGHTING["strategy"])
     if strategy not in set(WEIGHT_STRATEGIES):
         logger.warning(
@@ -242,25 +354,13 @@ def _validate_weighting_params(
 def get_label_weighting_config(
     config: dict[str, Any],
     logger: Logger,
-    *,
-    legacy_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Validate and return label weighting configuration.
-
-    Supports three formats:
-    1. Per-label: {"default": {...}, "columns": {"pattern": {...}}}
-    2. Flat: {...} - applies same config to all labels
-    3. Legacy fallback from extrema_weighting via legacy_config parameter
-    """
     return _get_label_config(
         config,
         logger,
         "label_weighting",
         _validate_weighting_params,
         DEFAULTS_LABEL_WEIGHTING,
-        legacy_config=legacy_config,
-        legacy_deprecation_msg="freqai.extrema_weighting is deprecated, use freqai.label_weighting instead",
     )
 
 
@@ -269,11 +369,6 @@ def _validate_pipeline_params(
     logger: Logger,
     config_name: str = "label_pipeline",
 ) -> dict[str, Any]:
-    """
-    Validate pipeline transformation params (standardization, normalization, gamma).
-
-    Returns a validated flat config dict with all pipeline params.
-    """
     standardization = config.get(
         "standardization", DEFAULTS_LABEL_PIPELINE["standardization"]
     )
@@ -377,13 +472,6 @@ def get_label_pipeline_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    """
-    Validate and return label pipeline configuration.
-
-    Supports two formats:
-    1. Per-label: {"default": {...}, "columns": {"pattern": {...}}}
-    2. Flat: {...} - applies same config to all labels
-    """
     return _get_label_config(
         config,
         logger,
@@ -398,25 +486,6 @@ def get_column_config(
     default_config: dict[str, Any],
     columns_config: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    Get merged configuration for a specific column using glob pattern matching.
-
-    Searches columns_config for patterns matching column_name. Multiple patterns
-    can match - their configs are merged in order of specificity (most specific last).
-
-    Pattern specificity is determined by:
-    1. Exact match (no wildcards) - highest priority
-    2. Single wildcard at end (e.g., "&s-threshold_*") - medium priority
-    3. Multiple wildcards or complex patterns - lower priority
-
-    Args:
-        column_name: The column to get config for (e.g., "&s-extrema")
-        default_config: Base configuration to start with
-        columns_config: Per-column/pattern overrides
-
-    Returns:
-        Merged config dict with defaults + matching pattern overrides
-    """
     result = copy.deepcopy(default_config)
 
     matches: list[tuple[int, str, dict[str, Any]]] = []
@@ -441,11 +510,6 @@ def _validate_smoothing_params(
     logger: Logger,
     config_name: str = "label_smoothing",
 ) -> dict[str, Any]:
-    """
-    Validate smoothing parameters.
-
-    Returns a validated config dict with all smoothing params.
-    """
     method = config.get("method", DEFAULTS_LABEL_SMOOTHING["method"])
     if method not in set(SMOOTHING_METHODS):
         logger.warning(
@@ -507,59 +571,14 @@ def _validate_smoothing_params(
 def get_label_smoothing_config(
     config: dict[str, Any],
     logger: Logger,
-    *,
-    legacy_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Validate and return label smoothing configuration.
-
-    Supports three formats:
-    1. Per-label: {"default": {...}, "columns": {"pattern": {...}}}
-    2. Flat: {...} - applies same config to all labels
-    3. Legacy fallback from extrema_smoothing via legacy_config parameter
-    """
     return _get_label_config(
         config,
         logger,
         "label_smoothing",
         _validate_smoothing_params,
         DEFAULTS_LABEL_SMOOTHING,
-        legacy_config=legacy_config,
-        legacy_deprecation_msg="freqai.extrema_smoothing is deprecated, use freqai.label_smoothing instead",
     )
-
-
-_PREDICTION_PARAM_ALIASES: Final[dict[str, str]] = {
-    "threshold_method": "threshold_smoothing_method",
-    "keep_fraction": "keep_extrema_fraction",
-    "outlier_quantile": "outlier_threshold_quantile",
-    "soft_alpha": "soft_extremum_alpha",
-}
-
-
-def _resolve_prediction_aliases(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str,
-) -> dict[str, Any]:
-    """
-    Resolve parameter aliases, preferring new names over old.
-
-    Returns a new dict with canonical (new) parameter names.
-    """
-    result = dict(config)
-    for new_key, old_key in _PREDICTION_PARAM_ALIASES.items():
-        if old_key in result and new_key not in result:
-            logger.warning(
-                f"{config_name}.{old_key} is deprecated, use {new_key} instead"
-            )
-            result[new_key] = result.pop(old_key)
-        elif old_key in result and new_key in result:
-            logger.warning(
-                f"{config_name} has both {new_key} and deprecated {old_key}, using {new_key}"
-            )
-            del result[old_key]
-    return result
 
 
 def _validate_prediction_params(
@@ -567,12 +586,7 @@ def _validate_prediction_params(
     logger: Logger,
     config_name: str = "label_prediction",
 ) -> dict[str, Any]:
-    """
-    Validate prediction threshold computation parameters.
-
-    Returns a validated config dict with all prediction params.
-    """
-    config = _resolve_prediction_aliases(config, logger, config_name)
+    config = resolve_deprecated_params(config, "label_prediction", logger)
 
     method = config.get("method", DEFAULTS_LABEL_PREDICTION["method"])
     if method not in set(PREDICTION_METHODS):
@@ -649,32 +663,13 @@ def _validate_prediction_params(
 def get_label_prediction_config(
     config: dict[str, Any],
     logger: Logger,
-    *,
-    legacy_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Validate and return label prediction configuration.
-
-    Supports three formats:
-    1. Per-label: {"default": {...}, "columns": {"pattern": {...}}}
-    2. Flat: {...} - applies same config to all labels
-    3. Legacy fallback from predictions_extrema via legacy_config parameter
-
-    Parameter aliases (new -> deprecated):
-    - threshold_method -> threshold_smoothing_method
-    - keep_fraction -> keep_extrema_fraction
-    - outlier_quantile -> outlier_threshold_quantile
-    - soft_alpha -> soft_extremum_alpha
-    """
     return _get_label_config(
         config,
         logger,
         "label_prediction",
         _validate_prediction_params,
         DEFAULTS_LABEL_PREDICTION,
-        legacy_config=legacy_config,
-        legacy_deprecation_msg="freqai.predictions_extrema is deprecated, use freqai.label_prediction instead",
-        resolve_aliases_fn=_resolve_prediction_aliases,
     )
 
 
@@ -778,14 +773,14 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-def smooth_extrema(
+def smooth_label(
     series: pd.Series,
-    method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
-    window_candles: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
-    beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
-    polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
-    mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
-    sigma: float = DEFAULTS_EXTREMA_SMOOTHING["sigma"],
+    method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
+    window_candles: int = DEFAULTS_LABEL_SMOOTHING["window_candles"],
+    beta: float = DEFAULTS_LABEL_SMOOTHING["beta"],
+    polyorder: int = DEFAULTS_LABEL_SMOOTHING["polyorder"],
+    mode: SmoothingMode = DEFAULTS_LABEL_SMOOTHING["mode"],
+    sigma: float = DEFAULTS_LABEL_SMOOTHING["sigma"],
 ) -> pd.Series:
     n = len(series)
     if n == 0:
@@ -867,7 +862,7 @@ def smooth_extrema(
 def _impute_weights(
     weights: NDArray[np.floating],
     *,
-    default_weight: float = DEFAULT_EXTREMA_WEIGHT,
+    default_weight: float = DEFAULT_LABEL_WEIGHT,
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
 
@@ -897,10 +892,10 @@ def _build_weights_array(
     n_extrema: int,
     indices: list[int],
     weights: NDArray[np.floating],
-    default_weight: float = DEFAULT_EXTREMA_WEIGHT,
+    default_weight: float = DEFAULT_LABEL_WEIGHT,
 ) -> NDArray[np.floating]:
     if len(indices) == 0 or weights.size == 0:
-        return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+        return np.full(n_extrema, DEFAULT_LABEL_WEIGHT, dtype=float)
 
     if len(indices) != weights.size:
         raise ValueError(
@@ -986,7 +981,7 @@ def _compute_combined_weights(
 
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
-        coefficients = {k: DEFAULT_EXTREMA_WEIGHT for k in metrics.keys()}
+        coefficients = {k: DEFAULT_LABEL_WEIGHT for k in metrics.keys()}
 
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
@@ -1034,11 +1029,10 @@ def compute_label_weights(
     strategy = label_weighting["strategy"]
 
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
-        return np.full(n_values, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+        return np.full(n_values, DEFAULT_LABEL_WEIGHT, dtype=float)
 
     weights: Optional[NDArray[np.floating]] = None
 
-    # Single metric strategies
     if strategy in metrics:
         weights = np.asarray(metrics[strategy], dtype=float)
     elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
@@ -1078,14 +1072,14 @@ def _apply_label_weights(
     if np.allclose(weights, weights[0]):
         return values
 
-    if np.allclose(weights, DEFAULT_EXTREMA_WEIGHT):
+    if np.allclose(weights, DEFAULT_LABEL_WEIGHT):
         return values
 
     return values * weights
 
 
 def apply_label_weighting(
-    label_values: pd.Series,
+    label: pd.Series,
     indices: list[int],
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
@@ -1094,7 +1088,7 @@ def apply_label_weighting(
     Apply weighting to label values based on provided metrics.
 
     Args:
-        label_values: Series of label values to weight.
+        label: Series of label to weight.
         indices: Indices where metrics were computed (sparse).
         metrics: Dict mapping metric names to their values at indices.
         weighting_config: Weighting configuration with strategy, aggregation, etc.
@@ -1102,9 +1096,9 @@ def apply_label_weighting(
     Returns:
         Tuple of (weighted_values, weights) as Series.
     """
-    values_array = label_values.to_numpy(dtype=float)
-    label_index = label_values.index
-    n_values = len(values_array)
+    label_values = label.to_numpy(dtype=float)
+    label_index = label.index
+    n_values = len(label_values)
 
     weights = compute_label_weights(
         n_values=n_values,
@@ -1114,7 +1108,7 @@ def apply_label_weighting(
     )
 
     return pd.Series(
-        _apply_label_weights(values_array, weights), index=label_index
+        _apply_label_weights(label_values, weights), index=label_index
     ), pd.Series(weights, index=label_index)
 
 
@@ -3157,33 +3151,6 @@ def floor_to_step(value: float | int, step: int) -> int:
     return int(math.floor(float(value) / step) * step)
 
 
-def update_config_value(
-    config: Any,
-    *,
-    new_key: str,
-    old_key: str,
-    default: Any,
-    logger: Logger,
-    new_path: str,
-    old_path: str,
-) -> Any:
-    if not isinstance(config, dict):
-        return default
-
-    if new_key in config:
-        return config[new_key]
-
-    if old_key in config:
-        logger.warning(
-            f"Deprecated config key {old_path} detected; use {new_path} instead"
-        )
-        config[new_key] = config.pop(old_key)
-        return config[new_key]
-
-    config[new_key] = default
-    return default
-
-
 def validate_range(
     min_val: float | int,
     max_val: float | int,
@@ -3267,23 +3234,14 @@ def get_label_defaults(
     default_min_label_natr_multiplier: float = 9.0,
     default_max_label_natr_multiplier: float = 12.0,
 ) -> tuple[int, float]:
-    min_label_natr_multiplier = update_config_value(
-        feature_parameters,
-        new_key="min_label_natr_multiplier",
-        old_key="min_label_natr_ratio",
-        default=default_min_label_natr_multiplier,
-        logger=logger,
-        new_path="freqai.feature_parameters.min_label_natr_multiplier",
-        old_path="freqai.feature_parameters.min_label_natr_ratio",
+    fp = resolve_deprecated_params(
+        feature_parameters, "freqai.feature_parameters", logger
     )
-    max_label_natr_multiplier = update_config_value(
-        feature_parameters,
-        new_key="max_label_natr_multiplier",
-        old_key="max_label_natr_ratio",
-        default=default_max_label_natr_multiplier,
-        logger=logger,
-        new_path="freqai.feature_parameters.max_label_natr_multiplier",
-        old_path="freqai.feature_parameters.max_label_natr_ratio",
+    min_label_natr_multiplier = fp.get(
+        "min_label_natr_multiplier", default_min_label_natr_multiplier
+    )
+    max_label_natr_multiplier = fp.get(
+        "max_label_natr_multiplier", default_max_label_natr_multiplier
     )
     min_label_natr_multiplier, max_label_natr_multiplier = validate_range(
         min_label_natr_multiplier,
@@ -3299,20 +3257,12 @@ def get_label_defaults(
     default_label_natr_multiplier = float(
         midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
     )
-    update_config_value(
-        feature_parameters,
-        new_key="label_natr_multiplier",
-        old_key="label_natr_ratio",
-        default=default_label_natr_multiplier,
-        logger=logger,
-        new_path="freqai.feature_parameters.label_natr_multiplier",
-        old_path="freqai.feature_parameters.label_natr_ratio",
-    )
+    fp.setdefault("label_natr_multiplier", default_label_natr_multiplier)
 
-    min_label_period_candles = feature_parameters.get(
+    min_label_period_candles = fp.get(
         "min_label_period_candles", default_min_label_period_candles
     )
-    max_label_period_candles = feature_parameters.get(
+    max_label_period_candles = fp.get(
         "max_label_period_candles", default_max_label_period_candles
     )
     min_label_period_candles, max_label_period_candles = validate_range(

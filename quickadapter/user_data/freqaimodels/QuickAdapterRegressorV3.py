@@ -32,10 +32,11 @@ from sklearn_extra.cluster import KMedoids
 from LabelTransformer import (
     CUSTOM_THRESHOLD_METHODS,
     EXTREMA_SELECTION_METHODS,
-    LabelTransformer,
     SKIMAGE_THRESHOLD_METHODS,
     THRESHOLD_METHODS,
+    LabelTransformer,
 )
+
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
@@ -49,14 +50,14 @@ from Utils import (
     fit_regressor,
     format_number,
     get_column_config,
+    get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
     get_label_weighting_config,
-    get_label_defaults,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     soft_extremum,
-    update_config_value,
+    resolve_deprecated_params,
     zigzag,
 )
 
@@ -779,15 +780,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "min_resource": 3,
             "seed": 1,
         }
-        optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        update_config_value(
-            optuna_hyperopt,
-            new_key="space_fraction",
-            old_key="expansion_ratio",
-            default=optuna_default_config["space_fraction"],
-            logger=logger,
-            new_path="freqai.optuna_hyperopt.space_fraction",
-            old_path="freqai.optuna_hyperopt.expansion_ratio",
+        optuna_hyperopt = resolve_deprecated_params(
+            self.config.get("freqai", {}).get("optuna_hyperopt", {}),
+            "freqai.optuna_hyperopt",
+            logger,
         )
         return {
             **optuna_default_config,
@@ -869,58 +865,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_prediction_raw = self.freqai_info.get("label_prediction", {})
         if not isinstance(label_prediction_raw, dict):
             label_prediction_raw = {}
-
-        legacy_config = None
-        if not label_prediction_raw:
-            predictions_extrema_raw = self.freqai_info.get("predictions_extrema", {})
-            if isinstance(predictions_extrema_raw, dict) and predictions_extrema_raw:
-                legacy_config = dict(predictions_extrema_raw)
-                if (
-                    "threshold_outlier" in legacy_config
-                    and "outlier_threshold_quantile" not in legacy_config
-                    and "outlier_quantile" not in legacy_config
-                ):
-                    logger.warning(
-                        "freqai.predictions_extrema.threshold_outlier is deprecated, use outlier_quantile instead"
-                    )
-                    legacy_config["outlier_quantile"] = legacy_config.pop(
-                        "threshold_outlier"
-                    )
-                if (
-                    "thresholds_smoothing" in legacy_config
-                    and "threshold_smoothing_method" not in legacy_config
-                    and "threshold_method" not in legacy_config
-                ):
-                    logger.warning(
-                        "freqai.predictions_extrema.thresholds_smoothing is deprecated, use threshold_method instead"
-                    )
-                    legacy_config["threshold_method"] = legacy_config.pop(
-                        "thresholds_smoothing"
-                    )
-                if (
-                    "thresholds_alpha" in legacy_config
-                    and "soft_extremum_alpha" not in legacy_config
-                    and "soft_alpha" not in legacy_config
-                ):
-                    logger.warning(
-                        "freqai.predictions_extrema.thresholds_alpha is deprecated, use soft_alpha instead"
-                    )
-                    legacy_config["soft_alpha"] = legacy_config.pop("thresholds_alpha")
-                if (
-                    "extrema_fraction" in legacy_config
-                    and "keep_extrema_fraction" not in legacy_config
-                    and "keep_fraction" not in legacy_config
-                ):
-                    logger.warning(
-                        "freqai.predictions_extrema.extrema_fraction is deprecated, use keep_fraction instead"
-                    )
-                    legacy_config["keep_fraction"] = legacy_config.pop(
-                        "extrema_fraction"
-                    )
-
-        return get_label_prediction_config(
-            label_prediction_raw, logger, legacy_config=legacy_config
-        )
+        return get_label_prediction_config(label_prediction_raw, logger)
 
     @property
     def _label_defaults(self) -> tuple[int, float]:
@@ -1354,15 +1299,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weighting = get_label_weighting_config(label_weighting_raw, logger)
             label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
         else:
-            label_transformer = update_config_value(
-                self.freqai_info,
-                new_key="label_transformer",
-                old_key="extrema_weighting",
-                default={},
-                logger=logger,
-                new_path="freqai.label_transformer",
-                old_path="freqai.extrema_weighting",
+            freqai_resolved = resolve_deprecated_params(
+                self.freqai_info, "freqai", logger
             )
+            label_transformer = freqai_resolved.get("label_transformer", {})
             if not isinstance(label_transformer, dict):
                 label_transformer = {}
             label_weighting = get_label_weighting_config(label_transformer, logger)
@@ -1704,13 +1644,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         minima_indices: NDArray[np.intp],
         maxima_indices: NDArray[np.intp],
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         n_kept_minima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            minima_indices.size, keep_extrema_fraction
+            minima_indices.size, keep_fraction
         )
         n_kept_maxima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            maxima_indices.size, keep_extrema_fraction
+            maxima_indices.size, keep_fraction
         )
 
         pred_minima = (
@@ -1730,7 +1670,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.debug(
             f"Extrema filtering | rank_peaks: kept {n_kept_minima}/{minima_indices.size} minima, "
-            f"{n_kept_maxima}/{maxima_indices.size} maxima with keep_fraction={keep_extrema_fraction}"
+            f"{n_kept_maxima}/{maxima_indices.size} maxima with keep_fraction={keep_fraction}"
         )
         return pred_minima, pred_maxima
 
@@ -1739,13 +1679,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         n_minima: int,
         n_maxima: int,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         n_kept_minima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            n_minima, keep_extrema_fraction
+            n_minima, keep_fraction
         )
         n_kept_maxima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            n_maxima, keep_extrema_fraction
+            n_maxima, keep_fraction
         )
 
         pred_minima = (
@@ -1761,7 +1701,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.debug(
             f"Extrema filtering | rank_extrema: kept {n_kept_minima}/{n_minima} minima, "
-            f"{n_kept_maxima}/{n_maxima} maxima with keep_fraction={keep_extrema_fraction}"
+            f"{n_kept_maxima}/{n_maxima} maxima with keep_fraction={keep_fraction}"
         )
         return pred_minima, pred_maxima
 
@@ -1769,7 +1709,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def get_pred_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         pred_extrema = (
             pd.to_numeric(pred_extrema, errors="coerce")
@@ -1787,7 +1727,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_extrema,
                 minima_indices.size,
                 maxima_indices.size,
-                keep_extrema_fraction,
+                keep_fraction,
             )
 
         elif extrema_selection == EXTREMA_SELECTION_METHODS[1]:  # "rank_peaks"
@@ -1795,7 +1735,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
             pred_minima, pred_maxima = QuickAdapterRegressorV3._get_ranked_peaks(
-                pred_extrema, minima_indices, maxima_indices, keep_extrema_fraction
+                pred_extrema, minima_indices, maxima_indices, keep_fraction
             )
 
         elif extrema_selection == EXTREMA_SELECTION_METHODS[2]:  # "partition"
@@ -1844,12 +1784,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         alpha: float,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
             raise ValueError(f"Invalid alpha value {alpha!r}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, keep_extrema_fraction
+            pred_extrema, extrema_selection, keep_fraction
         )
         soft_minimum = soft_extremum(pred_minima, alpha=-alpha)
         if not np.isfinite(soft_minimum):
@@ -1863,10 +1803,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def median_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, keep_extrema_fraction
+            pred_extrema, extrema_selection, keep_fraction
         )
 
         if pred_minima.empty:
@@ -1890,10 +1830,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         method: SkimageThresholdMethod,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, keep_extrema_fraction
+            pred_extrema, extrema_selection, keep_fraction
         )
 
         try:

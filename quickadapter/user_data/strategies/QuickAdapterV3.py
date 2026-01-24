@@ -27,9 +27,11 @@ from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 
 from LabelTransformer import COMBINED_AGGREGATIONS
+
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
+    LABEL_COLUMNS,
     MAXIMA_COLUMN,
     MAXIMA_THRESHOLD_COLUMN,
     MINIMA_COLUMN,
@@ -37,29 +39,28 @@ from Utils import (
     SMOOTHED_EXTREMA_COLUMN,
     TRADE_PRICE_TARGETS,
     alligator,
+    apply_label_weighting,
     bottom_log_return,
     calculate_quantile,
     ewo,
     format_number,
+    generate_label_data,
     get_callable_sha256,
     get_column_config,
     get_distance,
-    LABEL_COLUMNS,
+    get_label_defaults,
     get_label_pipeline_config,
     get_label_smoothing_config,
     get_label_weighting_config,
-    get_label_defaults,
-    apply_label_weighting,
     get_zl_ma_fn,
     nan_average,
     non_zero_diff,
     price_retracement_percent,
-    smooth_extrema,
+    smooth_label,
     top_log_return,
-    update_config_value,
+    resolve_deprecated_params,
     validate_range,
     vwapb,
-    zigzag,
     zlema,
 )
 
@@ -313,15 +314,8 @@ class QuickAdapterV3(IStrategy):
                 else {},
             }
 
-        label_transformer = update_config_value(
-            self.freqai_info,
-            new_key="label_transformer",
-            old_key="extrema_weighting",
-            default={},
-            logger=logger,
-            new_path="freqai.label_transformer",
-            old_path="freqai.extrema_weighting",
-        )
+        freqai_resolved = resolve_deprecated_params(self.freqai_info, "freqai", logger)
+        label_transformer = freqai_resolved.get("label_transformer", {})
         if not isinstance(label_transformer, dict):
             label_transformer = {}
         return {"legacy": label_transformer}
@@ -351,33 +345,16 @@ class QuickAdapterV3(IStrategy):
         label_smoothing_raw = self.freqai_info.get("label_smoothing", {})
         if not isinstance(label_smoothing_raw, dict):
             label_smoothing_raw = {}
-
-        legacy_config = None
-        if not label_smoothing_raw:
-            extrema_smoothing_raw = self.freqai_info.get("extrema_smoothing", {})
-            if isinstance(extrema_smoothing_raw, dict) and extrema_smoothing_raw:
-                legacy_config = dict(extrema_smoothing_raw)
-                if "window" in legacy_config and "window_candles" not in legacy_config:
-                    logger.warning(
-                        "freqai.extrema_smoothing.window is deprecated, use window_candles instead"
-                    )
-                    legacy_config["window_candles"] = legacy_config.pop("window")
-
-        return get_label_smoothing_config(
-            label_smoothing_raw, logger, legacy_config=legacy_config
-        )
+        return get_label_smoothing_config(label_smoothing_raw, logger)
 
     @property
     def trade_price_target_method(self) -> str:
-        exit_pricing = self.config.get("exit_pricing", {})
-        trade_price_target_method = update_config_value(
-            exit_pricing,
-            new_key="trade_price_target_method",
-            old_key="trade_price_target",
-            default=TRADE_PRICE_TARGETS[0],  # "moving_average"
-            logger=logger,
-            new_path="exit_pricing.trade_price_target_method",
-            old_path="exit_pricing.trade_price_target",
+        exit_pricing = resolve_deprecated_params(
+            self.config.get("exit_pricing", {}), "exit_pricing", logger
+        )
+        trade_price_target_method = exit_pricing.get(
+            "trade_price_target_method",
+            TRADE_PRICE_TARGETS[0],  # "moving_average"
         )
         if trade_price_target_method not in set(TRADE_PRICE_TARGETS):
             logger.warning(
@@ -390,50 +367,24 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def reversal_confirmation(self) -> dict[str, int | float]:
-        reversal_confirmation = self.config.get("reversal_confirmation", {})
+        reversal_confirmation = resolve_deprecated_params(
+            self.config.get("reversal_confirmation", {}),
+            "reversal_confirmation",
+            logger,
+        )
+        defaults = QuickAdapterV3.default_reversal_confirmation
 
-        lookback_period_candles = update_config_value(
-            reversal_confirmation,
-            new_key="lookback_period_candles",
-            old_key="lookback_period",
-            default=QuickAdapterV3.default_reversal_confirmation[
-                "lookback_period_candles"
-            ],
-            logger=logger,
-            new_path="reversal_confirmation.lookback_period_candles",
-            old_path="reversal_confirmation.lookback_period",
+        lookback_period_candles = reversal_confirmation.get(
+            "lookback_period_candles", defaults["lookback_period_candles"]
         )
-        decay_fraction = update_config_value(
-            reversal_confirmation,
-            new_key="decay_fraction",
-            old_key="decay_ratio",
-            default=QuickAdapterV3.default_reversal_confirmation["decay_fraction"],
-            logger=logger,
-            new_path="reversal_confirmation.decay_fraction",
-            old_path="reversal_confirmation.decay_ratio",
+        decay_fraction = reversal_confirmation.get(
+            "decay_fraction", defaults["decay_fraction"]
         )
-
-        min_natr_multiplier_fraction = update_config_value(
-            reversal_confirmation,
-            new_key="min_natr_multiplier_fraction",
-            old_key="min_natr_ratio_percent",
-            default=QuickAdapterV3.default_reversal_confirmation[
-                "min_natr_multiplier_fraction"
-            ],
-            logger=logger,
-            new_path="reversal_confirmation.min_natr_multiplier_fraction",
-            old_path="reversal_confirmation.min_natr_ratio_percent",
+        min_natr_multiplier_fraction = reversal_confirmation.get(
+            "min_natr_multiplier_fraction", defaults["min_natr_multiplier_fraction"]
         )
-        max_natr_multiplier_fraction = update_config_value(
-            reversal_confirmation,
-            new_key="max_natr_multiplier_fraction",
-            old_key="max_natr_ratio_percent",
-            default=QuickAdapterV3.default_reversal_confirmation[
-                "max_natr_multiplier_fraction"
-            ],
-            logger=logger,
-            new_path="reversal_confirmation.max_natr_multiplier_fraction",
-            old_path="reversal_confirmation.max_natr_ratio_percent",
+        max_natr_multiplier_fraction = reversal_confirmation.get(
+            "max_natr_multiplier_fraction", defaults["max_natr_multiplier_fraction"]
         )
 
         if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
@@ -876,6 +827,15 @@ class QuickAdapterV3(IStrategy):
             )
         return self.get_label_natr_multiplier(pair) * fraction
 
+    def get_label_params(self, pair: str, label_col: str) -> dict[str, Any]:
+        """Build label generation params for a specific label column."""
+        if label_col == EXTREMA_COLUMN:
+            return {
+                "natr_period": self.get_label_period_candles(pair),
+                "natr_multiplier": self.get_label_natr_multiplier(pair),
+            }
+        return {}
+
     @staticmethod
     @lru_cache(maxsize=128)
     def _td_format(
@@ -899,62 +859,34 @@ class QuickAdapterV3(IStrategy):
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
-        label_period_candles = self.get_label_period_candles(pair)
-        label_natr_multiplier = self.get_label_natr_multiplier(pair)
-        (
-            pivots_indices,
-            _,
-            pivots_directions,
-            pivots_amplitudes,
-            pivots_amplitude_threshold_ratios,
-            pivots_volume_rates,
-            pivots_speeds,
-            pivots_efficiency_ratios,
-            pivots_volume_weighted_efficiency_ratios,
-        ) = zigzag(
-            dataframe,
-            natr_period=label_period_candles,
-            natr_multiplier=label_natr_multiplier,
-        )
         label_period = datetime.timedelta(
             minutes=len(dataframe) * self.get_timeframe_minutes()
         )
 
-        if len(pivots_indices) == 0:
-            logger.warning(
-                f"[{pair}] No extrema to label | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_multiplier: {format_number(label_natr_multiplier)}"
-            )
-        else:
-            logger.info(
-                f"[{pair}] Labeled {len(pivots_indices)} extrema | label_period: {QuickAdapterV3._td_format(label_period)} | label_period_candles: {label_period_candles} | label_natr_multiplier: {format_number(label_natr_multiplier)}"
-            )
-            dataframe.loc[pivots_indices, EXTREMA_COLUMN] = pivots_directions
-
-        extrema_direction = dataframe[EXTREMA_COLUMN]
-
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
 
-        # Build metrics dict for weighting (computed once, used for all labels)
-        weighting_metrics: dict[str, list[float]] = {
-            "amplitude": pivots_amplitudes,
-            "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
-            "volume_rate": pivots_volume_rates,
-            "speed": pivots_speeds,
-            "efficiency_ratio": pivots_efficiency_ratios,
-            "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
-        }
-
         for label_col in LABEL_COLUMNS:
-            dataframe[label_col] = 0.0
+            label_params = self.get_label_params(pair, label_col)
+            label_data = generate_label_data(dataframe, label_col, label_params)
+
+            if len(label_data.indices) == 0:
+                logger.warning(
+                    f"[{pair}] No labels for {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                )
+            else:
+                logger.info(
+                    f"[{pair}] Labeled {len(label_data.indices)} points for {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                )
+
             col_weighting_config = get_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
             weighted_label, _ = apply_label_weighting(
-                label_values=extrema_direction,
-                indices=pivots_indices,
-                metrics=weighting_metrics,
+                label=label_data.series,
+                indices=label_data.indices,
+                metrics=label_data.metrics,
                 weighting_config=col_weighting_config,
             )
 
@@ -964,7 +896,7 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
 
-            dataframe[label_col] = smooth_extrema(
+            dataframe[label_col] = smooth_label(
                 dataframe[label_col],
                 col_smoothing_config["method"],
                 col_smoothing_config["window_candles"],
@@ -973,23 +905,6 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config["mode"],
                 col_smoothing_config["sigma"],
             )
-
-        # dataframe[MINIMA_COLUMN] = 0.0
-        # dataframe[MAXIMA_COLUMN] = 0.0
-        # plot_eps = weighted_label.abs().where(weighted_label.ne(0.0)).min()
-        # if not np.isfinite(plot_eps):
-        #     plot_eps = 0.0
-        #     plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
-        #     dataframe[MAXIMA_COLUMN] = (
-        #         weighted_label.where(extrema_direction.gt(0), 0.0)
-        #         .clip(lower=0.0)
-        #         .mask(extrema_direction.gt(0) & weighted_label.eq(0.0), plot_eps)
-        #     )
-        #     dataframe[MINIMA_COLUMN] = (
-        #         weighted_label.where(extrema_direction.lt(0), 0.0)
-        #         .clip(upper=0.0)
-        #         .mask(extrema_direction.lt(0) & weighted_label.eq(0.0), -plot_eps)
-        #     )
 
         dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]
 
