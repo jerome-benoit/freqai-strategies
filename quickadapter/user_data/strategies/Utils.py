@@ -2,6 +2,7 @@ import copy
 import functools
 import hashlib
 import math
+from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache
 from logging import Logger
@@ -22,15 +23,25 @@ import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
-from ExtremaWeightingTransformer import (
+from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
-    DEFAULTS_EXTREMA_WEIGHTING,
+    DEFAULTS_LABEL_PIPELINE,
+    DEFAULTS_LABEL_PREDICTION,
+    DEFAULTS_LABEL_SMOOTHING,
+    DEFAULTS_LABEL_WEIGHTING,
+    EXTREMA_SELECTION_METHODS,
     NORMALIZATION_TYPES,
+    PREDICTION_METHODS,
+    SMOOTHING_METHODS,
+    SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
+    THRESHOLD_METHODS,
     WEIGHT_STRATEGIES,
     CombinedAggregation,
     CombinedMetric,
+    SmoothingMethod,
+    SmoothingMode,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -45,9 +56,272 @@ else:
 T = TypeVar("T", pd.Series, float)
 
 
+@dataclass(frozen=True, slots=True)
+class _EnumValidator:
+    valid_values: tuple[str, ...]
+
+    def __call__(self, value: Any) -> bool:
+        return value in self.valid_values
+
+    def message(self, param: str) -> str:
+        return f"supported values are {', '.join(self.valid_values)}"
+
+
+@dataclass(frozen=True, slots=True)
+class _NumericValidator:
+    min_value: float | None = None
+    max_value: float | None = None
+    min_exclusive: bool = False
+    max_exclusive: bool = False
+    require_int: bool = False
+
+    def __call__(self, value: Any) -> bool:
+        if self.require_int and not isinstance(value, int):
+            return False
+        if not isinstance(value, (int, float)) or not np.isfinite(value):
+            return False
+        if self.min_value is not None:
+            if self.min_exclusive and value <= self.min_value:
+                return False
+            if not self.min_exclusive and value < self.min_value:
+                return False
+        if self.max_value is not None:
+            if self.max_exclusive and value >= self.max_value:
+                return False
+            if not self.max_exclusive and value > self.max_value:
+                return False
+        return True
+
+    def message(self, param: str) -> str:
+        parts = []
+        if self.require_int:
+            parts.append("must be an integer")
+        else:
+            parts.append("must be a finite number")
+        if self.min_value is not None:
+            op = ">" if self.min_exclusive else ">="
+            parts.append(f"{op} {self.min_value}")
+        if self.max_value is not None:
+            op = "<" if self.max_exclusive else "<="
+            parts.append(f"{op} {self.max_value}")
+        return " ".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class _RangeValidator:
+    min_bound: float | None = None
+    max_bound: float | None = None
+
+    def __call__(self, value: Any) -> bool:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return False
+        if not all(isinstance(x, (int, float)) and np.isfinite(x) for x in value):
+            return False
+        if value[0] >= value[1]:
+            return False
+        if self.min_bound is not None and value[0] < self.min_bound:
+            return False
+        if self.max_bound is not None and value[1] > self.max_bound:
+            return False
+        return True
+
+    def message(self, param: str) -> str:
+        if self.min_bound is not None and self.max_bound is not None:
+            return f"must be (low, high) with {self.min_bound} <= low < high <= {self.max_bound}"
+        return "must be (low, high) with low < high"
+
+
+@dataclass(frozen=True, slots=True)
+class _DictValidator:
+    valid_keys: tuple[str, ...] | None = None
+
+    def __call__(self, value: Any) -> bool:
+        return isinstance(value, dict)
+
+    def message(self, param: str) -> str:
+        return "must be a mapping"
+
+
+_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator
+
+
+@dataclass(frozen=True, slots=True)
+class _ParamSpec:
+    validator: _Validator
+    output_type: type | None = None
+
+
+def _validate_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str,
+    specs: dict[str, _ParamSpec],
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for param, spec in specs.items():
+        value = config.get(param, defaults[param])
+        if not spec.validator(value):
+            logger.warning(
+                f"Invalid {config_name} {param} value {value!r}: "
+                f"{spec.validator.message(param)}, using default {defaults[param]!r}"
+            )
+            value = defaults[param]
+        elif isinstance(spec.validator, _DictValidator) and spec.validator.valid_keys:
+            invalid_keys = set(value.keys()) - set(spec.validator.valid_keys)
+            if invalid_keys:
+                logger.warning(
+                    f"Invalid {config_name} {param} keys {sorted(invalid_keys)!r}, "
+                    f"valid keys: {', '.join(spec.validator.valid_keys)}"
+                )
+                value = {
+                    k: v for k, v in value.items() if k in spec.validator.valid_keys
+                }
+        if spec.output_type is not None:
+            if spec.output_type is tuple and isinstance(value, (list, tuple)):
+                value = (value[0], value[1])
+            else:
+                value = spec.output_type(value)
+        result[param] = value
+    return result
+
+
+_WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "strategy": _ParamSpec(_EnumValidator(WEIGHT_STRATEGIES)),
+    "metric_coefficients": _ParamSpec(_DictValidator(COMBINED_METRICS)),
+    "aggregation": _ParamSpec(_EnumValidator(COMBINED_AGGREGATIONS)),
+    "softmax_temperature": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True)
+    ),
+}
+
+_PIPELINE_SPECS: Final[dict[str, _ParamSpec]] = {
+    "standardization": _ParamSpec(_EnumValidator(STANDARDIZATION_TYPES)),
+    "robust_quantiles": _ParamSpec(
+        _RangeValidator(min_bound=0, max_bound=1), output_type=tuple
+    ),
+    "mmad_scaling_factor": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True)
+    ),
+    "normalization": _ParamSpec(_EnumValidator(NORMALIZATION_TYPES)),
+    "minmax_range": _ParamSpec(_RangeValidator(), output_type=tuple),
+    "sigmoid_scale": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True)),
+    "gamma": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=10, min_exclusive=True)
+    ),
+}
+
+_SMOOTHING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "method": _ParamSpec(_EnumValidator(SMOOTHING_METHODS)),
+    "window_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "beta": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
+    ),
+    "polyorder": _ParamSpec(
+        _NumericValidator(min_value=0, require_int=True), output_type=int
+    ),
+    "mode": _ParamSpec(_EnumValidator(SMOOTHING_MODES)),
+    "sigma": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
+    ),
+}
+
+_PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "method": _ParamSpec(_EnumValidator(PREDICTION_METHODS)),
+    "selection_method": _ParamSpec(_EnumValidator(EXTREMA_SELECTION_METHODS)),
+    "threshold_method": _ParamSpec(_EnumValidator(THRESHOLD_METHODS)),
+    "outlier_quantile": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+    "soft_extremum_alpha": _ParamSpec(
+        _NumericValidator(min_value=0), output_type=float
+    ),
+    "keep_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+
 EXTREMA_COLUMN: Final = "&s-extrema"
-MAXIMA_THRESHOLD_COLUMN: Final = "&s-maxima_threshold"
-MINIMA_THRESHOLD_COLUMN: Final = "&s-minima_threshold"
+LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+
+
+@dataclass
+class LabelData:
+    series: pd.Series
+    indices: list[int]
+    metrics: dict[str, list[float]]
+
+
+LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
+_LABEL_GENERATORS: dict[str, LabelGenerator] = {}
+
+
+def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
+    _LABEL_GENERATORS[label_column] = generator
+
+
+def _generate_extrema_label(
+    dataframe: pd.DataFrame,
+    params: dict[str, Any],
+) -> LabelData:
+    natr_period = params.get("natr_period", 14)
+    natr_multiplier = params.get("natr_multiplier", 9.0)
+
+    (
+        pivots_indices,
+        _,
+        pivots_directions,
+        pivots_amplitudes,
+        pivots_amplitude_threshold_ratios,
+        pivots_volume_rates,
+        pivots_speeds,
+        pivots_efficiency_ratios,
+        pivots_volume_weighted_efficiency_ratios,
+    ) = zigzag(
+        dataframe,
+        natr_period=natr_period,
+        natr_multiplier=natr_multiplier,
+    )
+
+    series = pd.Series(0.0, index=dataframe.index)
+    if pivots_indices:
+        series.loc[pivots_indices] = pivots_directions
+
+    metrics: dict[str, list[float]] = {
+        "amplitude": pivots_amplitudes,
+        "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
+        "volume_rate": pivots_volume_rates,
+        "speed": pivots_speeds,
+        "efficiency_ratio": pivots_efficiency_ratios,
+        "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
+    }
+
+    return LabelData(series=series, indices=pivots_indices, metrics=metrics)
+
+
+register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
+
+
+def generate_label_data(
+    dataframe: pd.DataFrame,
+    label_column: str,
+    params: dict[str, Any],
+) -> LabelData:
+    generator = _LABEL_GENERATORS.get(label_column)
+    if generator is None:
+        raise KeyError(
+            f"No label generator registered for column '{label_column}'. "
+            f"Available columns: {list(_LABEL_GENERATORS.keys())}"
+        )
+    return generator(dataframe, params)
+
 
 MAXIMA_COLUMN: Final = "maxima"
 MINIMA_COLUMN: Final = "minima"
@@ -60,28 +334,6 @@ SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
     "triang",
 )
 
-SmoothingMethod = Union[
-    SmoothingKernel, Literal["smm", "sma", "savgol", "gaussian_filter1d"]
-]
-SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
-    "gaussian",
-    "kaiser",
-    "triang",
-    "smm",
-    "sma",
-    "savgol",
-    "gaussian_filter1d",
-)
-
-SmoothingMode = Literal["mirror", "constant", "nearest", "wrap", "interp"]
-SMOOTHING_MODES: Final[tuple[SmoothingMode, ...]] = (
-    "mirror",
-    "constant",
-    "nearest",
-    "wrap",
-    "interp",
-)
-
 TradePriceTarget = Literal[
     "moving_average", "quantile_interpolation", "weighted_average"
 ]
@@ -92,194 +344,304 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
 )
 
 
-DEFAULTS_EXTREMA_SMOOTHING: Final[dict[str, Any]] = {
-    "method": SMOOTHING_METHODS[0],  # "gaussian"
-    "window_candles": 5,
-    "beta": 8.0,
-    "polyorder": 3,
-    "mode": SMOOTHING_MODES[0],  # "mirror"
-    "sigma": 1.0,
-}
-
-DEFAULT_EXTREMA_WEIGHT: Final[float] = 1.0
+DEFAULT_LABEL_WEIGHT: Final[float] = 1.0
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
 
-def get_extrema_weighting_config(
-    extrema_weighting: dict[str, Any],
+ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
+
+
+_MISSING: Final = object()
+
+
+def _get_path(config: dict[str, Any], path: str) -> Any:
+    keys = path.split(".")
+    current = config
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return _MISSING
+        current = current[key]
+    return current
+
+
+def _set_path(config: dict[str, Any], path: str, value: Any) -> None:
+    keys = path.split(".")
+    current = config
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        current = current[key]
+    current[keys[-1]] = value
+
+
+def _delete_path(config: dict[str, Any], path: str) -> bool:
+    keys = path.split(".")
+    current = config
+    for key in keys[:-1]:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        current = current[key]
+    if isinstance(current, dict) and keys[-1] in current:
+        del current[keys[-1]]
+        return True
+    return False
+
+
+# Order matters: section renames before key moves (e.g. extrema_weighting.gamma -> label_weighting.gamma -> label_pipeline.gamma)
+CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("freqai.extrema_weighting", "freqai.label_weighting"),
+    ("freqai.extrema_smoothing", "freqai.label_smoothing"),
+    ("freqai.predictions_extrema", "freqai.label_prediction"),
+    ("freqai.label_smoothing.window", "freqai.label_smoothing.window_candles"),
+    (
+        "freqai.label_prediction.thresholds_smoothing",
+        "freqai.label_prediction.threshold_smoothing_method",
+    ),
+    (
+        "freqai.label_prediction.threshold_smoothing_method",
+        "freqai.label_prediction.threshold_method",
+    ),
+    (
+        "freqai.label_prediction.threshold_outlier",
+        "freqai.label_prediction.outlier_threshold_quantile",
+    ),
+    (
+        "freqai.label_prediction.outlier_threshold_quantile",
+        "freqai.label_prediction.outlier_quantile",
+    ),
+    (
+        "freqai.label_prediction.extrema_fraction",
+        "freqai.label_prediction.keep_extrema_fraction",
+    ),
+    (
+        "freqai.label_prediction.keep_extrema_fraction",
+        "freqai.label_prediction.keep_fraction",
+    ),
+    (
+        "freqai.label_prediction.thresholds_alpha",
+        "freqai.label_prediction.soft_extremum_alpha",
+    ),
+    ("exit_pricing.trade_price_target", "exit_pricing.trade_price_target_method"),
+    (
+        "reversal_confirmation.lookback_period",
+        "reversal_confirmation.lookback_period_candles",
+    ),
+    ("reversal_confirmation.decay_ratio", "reversal_confirmation.decay_fraction"),
+    (
+        "reversal_confirmation.min_natr_ratio_percent",
+        "reversal_confirmation.min_natr_multiplier_fraction",
+    ),
+    (
+        "reversal_confirmation.max_natr_ratio_percent",
+        "reversal_confirmation.max_natr_multiplier_fraction",
+    ),
+    (
+        "freqai.feature_parameters.min_label_natr_ratio",
+        "freqai.feature_parameters.min_label_natr_multiplier",
+    ),
+    (
+        "freqai.feature_parameters.max_label_natr_ratio",
+        "freqai.feature_parameters.max_label_natr_multiplier",
+    ),
+    (
+        "freqai.feature_parameters.label_natr_ratio",
+        "freqai.feature_parameters.label_natr_multiplier",
+    ),
+    ("freqai.optuna_hyperopt.expansion_ratio", "freqai.optuna_hyperopt.space_fraction"),
+    (
+        "freqai.label_weighting.standardization",
+        "freqai.label_pipeline.standardization",
+    ),
+    (
+        "freqai.label_weighting.robust_quantiles",
+        "freqai.label_pipeline.robust_quantiles",
+    ),
+    (
+        "freqai.label_weighting.mmad_scaling_factor",
+        "freqai.label_pipeline.mmad_scaling_factor",
+    ),
+    ("freqai.label_weighting.normalization", "freqai.label_pipeline.normalization"),
+    ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
+    ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
+    ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+)
+
+
+def migrate_config(config: dict[str, Any], logger: Logger) -> None:
+    for old_path, new_path in CONFIG_MIGRATIONS:
+        old_value = _get_path(config, old_path)
+        if old_value is _MISSING:
+            continue
+
+        old_section = old_path.rsplit(".", 1)[0] if "." in old_path else ""
+        new_section = new_path.rsplit(".", 1)[0] if "." in new_path else ""
+        new_key = new_path.rsplit(".", 1)[-1]
+
+        new_value = _get_path(config, new_path)
+        if new_value is _MISSING:
+            _set_path(config, new_path, old_value)
+            _delete_path(config, old_path)
+            if old_section == new_section:
+                logger.warning(f"{old_path} is deprecated, use {new_key} instead")
+            else:
+                logger.warning(f"{old_path} has moved to {new_path}")
+        else:
+            _delete_path(config, old_path)
+            if old_section == new_section:
+                logger.warning(
+                    f"{new_section} has both {new_key} and deprecated {old_path.rsplit('.', 1)[-1]}, using {new_key}"
+                )
+            else:
+                logger.warning(
+                    f"{new_section} has {new_key} and deprecated {old_path}, using {new_path}"
+                )
+
+
+def _get_label_config(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str,
+    validate_fn: ValidateParamsFn,
+    defaults_dict: dict[str, Any],
+) -> dict[str, Any]:
+    if "default" in config or "columns" in config:
+        default_config = config.get("default", {})
+        if not isinstance(default_config, dict):
+            logger.warning(
+                f"Invalid {config_name} default value {default_config!r}: must be a mapping, using defaults"
+            )
+            default_config = {}
+
+        validated_default = validate_fn(
+            default_config, logger, f"{config_name}.default"
+        )
+
+        columns_config = config.get("columns", {})
+        if not isinstance(columns_config, dict):
+            logger.warning(
+                f"Invalid {config_name} columns value {columns_config!r}: must be a mapping, ignoring"
+            )
+            columns_config = {}
+
+        validated_columns: dict[str, dict[str, Any]] = {}
+        for col_pattern, col_config in columns_config.items():
+            if not isinstance(col_config, dict):
+                logger.warning(
+                    f"Invalid {config_name} columns[{col_pattern!r}] value {col_config!r}: must be a mapping, ignoring"
+                )
+                continue
+            validated_col: dict[str, Any] = {}
+            for key, value in col_config.items():
+                if key in defaults_dict:
+                    temp = {key: value}
+                    validated = validate_fn(
+                        temp, logger, f"{config_name}.columns[{col_pattern!r}]"
+                    )
+                    validated_col[key] = validated[key]
+                else:
+                    logger.warning(
+                        f"Unknown {config_name}.columns[{col_pattern!r}] key {key!r}, ignoring"
+                    )
+            if validated_col:
+                validated_columns[col_pattern] = validated_col
+
+        return {"default": validated_default, "columns": validated_columns}
+    else:
+        validated_default = validate_fn(config, logger, config_name)
+        return {"default": validated_default, "columns": {}}
+
+
+def _validate_weighting_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str = "label_weighting",
+) -> dict[str, Any]:
+    return _validate_params(
+        config, logger, config_name, _WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING
+    )
+
+
+def get_label_weighting_config(
+    config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    strategy = extrema_weighting.get("strategy", DEFAULTS_EXTREMA_WEIGHTING["strategy"])
-    if strategy not in set(WEIGHT_STRATEGIES):
-        logger.warning(
-            f"Invalid extrema_weighting strategy value {strategy!r}: supported values are {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
-        )
-        strategy = WEIGHT_STRATEGIES[0]
-    metric_coefficients = extrema_weighting.get(
-        "metric_coefficients", DEFAULTS_EXTREMA_WEIGHTING["metric_coefficients"]
+    return _get_label_config(
+        config,
+        logger,
+        "label_weighting",
+        _validate_weighting_params,
+        DEFAULTS_LABEL_WEIGHTING,
     )
-    if not isinstance(metric_coefficients, dict):
-        logger.warning(
-            f"Invalid extrema_weighting metric_coefficients value value {metric_coefficients!r}: must be a mapping, using default {DEFAULTS_EXTREMA_WEIGHTING['metric_coefficients']!r}"
-        )
-        metric_coefficients = DEFAULTS_EXTREMA_WEIGHTING["metric_coefficients"]
-    elif invalid_keys := set(metric_coefficients.keys()) - set(COMBINED_METRICS):
-        logger.warning(
-            f"Invalid extrema_weighting metric_coefficients keys {sorted(invalid_keys)!r}, valid keys: {', '.join(COMBINED_METRICS)}"
-        )
-        metric_coefficients = {
-            k: v for k, v in metric_coefficients.items() if k in set(COMBINED_METRICS)
-        }
 
-    aggregation: CombinedAggregation = extrema_weighting.get(
-        "aggregation", DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
+
+def _validate_pipeline_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str = "label_pipeline",
+) -> dict[str, Any]:
+    return _validate_params(
+        config, logger, config_name, _PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE
     )
-    if aggregation not in set(COMBINED_AGGREGATIONS):
-        logger.warning(
-            f"Invalid extrema_weighting aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}, using default {DEFAULTS_EXTREMA_WEIGHTING['aggregation']!r}"
-        )
-        aggregation = DEFAULTS_EXTREMA_WEIGHTING["aggregation"]
 
-    softmax_temperature = extrema_weighting.get(
-        "softmax_temperature", DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
+
+def get_label_pipeline_config(
+    config: dict[str, Any],
+    logger: Logger,
+) -> dict[str, Any]:
+    return _get_label_config(
+        config,
+        logger,
+        "label_pipeline",
+        _validate_pipeline_params,
+        DEFAULTS_LABEL_PIPELINE,
     )
-    if (
-        not isinstance(softmax_temperature, (int, float))
-        or not np.isfinite(softmax_temperature)
-        or softmax_temperature <= 0
-    ):
-        logger.warning(
-            f"Invalid extrema_weighting softmax_temperature value {softmax_temperature!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['softmax_temperature']!r}"
-        )
-        softmax_temperature = DEFAULTS_EXTREMA_WEIGHTING["softmax_temperature"]
 
-    # Phase 1: Standardization
-    standardization = extrema_weighting.get(
-        "standardization", DEFAULTS_EXTREMA_WEIGHTING["standardization"]
+
+def _validate_smoothing_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str = "label_smoothing",
+) -> dict[str, Any]:
+    return _validate_params(
+        config, logger, config_name, _SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING
     )
-    if standardization not in set(STANDARDIZATION_TYPES):
-        logger.warning(
-            f"Invalid extrema_weighting standardization value {standardization!r}: supported values are {', '.join(STANDARDIZATION_TYPES)}, using default {STANDARDIZATION_TYPES[0]!r}"
-        )
-        standardization = STANDARDIZATION_TYPES[0]
 
-    robust_quantiles = extrema_weighting.get(
-        "robust_quantiles", DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
+
+def get_label_smoothing_config(
+    config: dict[str, Any],
+    logger: Logger,
+) -> dict[str, Any]:
+    return _get_label_config(
+        config,
+        logger,
+        "label_smoothing",
+        _validate_smoothing_params,
+        DEFAULTS_LABEL_SMOOTHING,
     )
-    if (
-        not isinstance(robust_quantiles, (list, tuple))
-        or len(robust_quantiles) != 2
-        or not all(
-            isinstance(q, (int, float)) and np.isfinite(q) and 0 <= q <= 1
-            for q in robust_quantiles
-        )
-        or robust_quantiles[0] >= robust_quantiles[1]
-    ):
-        logger.warning(
-            f"Invalid extrema_weighting robust_quantiles value {robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_EXTREMA_WEIGHTING['robust_quantiles']!r}"
-        )
-        robust_quantiles = DEFAULTS_EXTREMA_WEIGHTING["robust_quantiles"]
-    else:
-        robust_quantiles = (
-            robust_quantiles[0],
-            robust_quantiles[1],
-        )
 
-    mmad_scaling_factor = extrema_weighting.get(
-        "mmad_scaling_factor", DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
+
+def _validate_prediction_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str = "label_prediction",
+) -> dict[str, Any]:
+    return _validate_params(
+        config, logger, config_name, _PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION
     )
-    if (
-        not isinstance(mmad_scaling_factor, (int, float))
-        or not np.isfinite(mmad_scaling_factor)
-        or mmad_scaling_factor <= 0
-    ):
-        logger.warning(
-            f"Invalid extrema_weighting mmad_scaling_factor value {mmad_scaling_factor!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['mmad_scaling_factor']!r}"
-        )
-        mmad_scaling_factor = DEFAULTS_EXTREMA_WEIGHTING["mmad_scaling_factor"]
 
-    # Phase 2: Normalization
-    normalization = extrema_weighting.get(
-        "normalization", DEFAULTS_EXTREMA_WEIGHTING["normalization"]
+
+def get_label_prediction_config(
+    config: dict[str, Any],
+    logger: Logger,
+) -> dict[str, Any]:
+    return _get_label_config(
+        config,
+        logger,
+        "label_prediction",
+        _validate_prediction_params,
+        DEFAULTS_LABEL_PREDICTION,
     )
-    if normalization not in set(NORMALIZATION_TYPES):
-        logger.warning(
-            f"Invalid extrema_weighting normalization value {normalization!r}: supported values are {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[0]!r}"
-        )
-        normalization = NORMALIZATION_TYPES[0]
-
-    if (
-        strategy != WEIGHT_STRATEGIES[0]  # "none"
-        and standardization != STANDARDIZATION_TYPES[0]  # "none"
-        and normalization == NORMALIZATION_TYPES[3]  # "none"
-    ):
-        logger.warning(
-            f"extrema_weighting standardization={standardization!r} with normalization={normalization!r} can shift/flip ternary extrema labels. "
-            f"Consider using normalization in {{{NORMALIZATION_TYPES[0]!r},{NORMALIZATION_TYPES[1]!r},{NORMALIZATION_TYPES[2]!r}}} "
-            f"or set standardization={STANDARDIZATION_TYPES[0]!r}"
-        )
-
-    minmax_range = extrema_weighting.get(
-        "minmax_range", DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
-    )
-    if (
-        not isinstance(minmax_range, (list, tuple))
-        or len(minmax_range) != 2
-        or not all(isinstance(x, (int, float)) and np.isfinite(x) for x in minmax_range)
-        or minmax_range[0] >= minmax_range[1]
-    ):
-        logger.warning(
-            f"Invalid extrema_weighting minmax_range value {minmax_range!r}: must be (min, max) with min < max, using default {DEFAULTS_EXTREMA_WEIGHTING['minmax_range']!r}"
-        )
-        minmax_range = DEFAULTS_EXTREMA_WEIGHTING["minmax_range"]
-    else:
-        minmax_range = (
-            minmax_range[0],
-            minmax_range[1],
-        )
-
-    sigmoid_scale = extrema_weighting.get(
-        "sigmoid_scale", DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
-    )
-    if (
-        not isinstance(sigmoid_scale, (int, float))
-        or not np.isfinite(sigmoid_scale)
-        or sigmoid_scale <= 0
-    ):
-        logger.warning(
-            f"Invalid extrema_weighting sigmoid_scale value {sigmoid_scale!r}: must be a finite number > 0, using default {DEFAULTS_EXTREMA_WEIGHTING['sigmoid_scale']!r}"
-        )
-        sigmoid_scale = DEFAULTS_EXTREMA_WEIGHTING["sigmoid_scale"]
-
-    # Phase 3: Post-processing
-    gamma = extrema_weighting.get("gamma", DEFAULTS_EXTREMA_WEIGHTING["gamma"])
-    if (
-        not isinstance(gamma, (int, float))
-        or not np.isfinite(gamma)
-        or not (0 < gamma <= 10.0)
-    ):
-        logger.warning(
-            f"Invalid extrema_weighting gamma value {gamma!r}: must be in range (0, 10], using default {DEFAULTS_EXTREMA_WEIGHTING['gamma']!r}"
-        )
-        gamma = DEFAULTS_EXTREMA_WEIGHTING["gamma"]
-
-    return {
-        "strategy": strategy,
-        "metric_coefficients": metric_coefficients,
-        "aggregation": aggregation,
-        "softmax_temperature": softmax_temperature,
-        # Phase 1: Standardization
-        "standardization": standardization,
-        "robust_quantiles": robust_quantiles,
-        "mmad_scaling_factor": mmad_scaling_factor,
-        # Phase 2: Normalization
-        "normalization": normalization,
-        "minmax_range": minmax_range,
-        "sigmoid_scale": sigmoid_scale,
-        # Phase 3: Post-processing
-        "gamma": gamma,
-    }
 
 
 def get_distance(p1: T, p2: T) -> T:
@@ -300,14 +662,14 @@ def nan_average(
         return np.nan
 
     if weights is None:
-        return np.nanmean(values)
+        return float(np.nanmean(values))
 
     weights = np.asarray(weights, dtype=float)
     mask = np.isfinite(values) & np.isfinite(weights)
     if not mask.any():
         return np.nan
 
-    return np.average(values[mask], weights=weights[mask])
+    return float(np.average(values[mask], weights=weights[mask]))
 
 
 def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
@@ -345,11 +707,11 @@ def _calculate_coeffs(
     std: float,
     beta: float,
 ) -> NDArray[np.floating]:
-    if win_type == SMOOTHING_METHODS[0]:  # "gaussian"
+    if win_type == SMOOTHING_KERNELS[0]:  # "gaussian"
         coeffs = sp.signal.windows.gaussian(M=window, std=std, sym=True)
-    elif win_type == SMOOTHING_METHODS[1]:  # "kaiser"
+    elif win_type == SMOOTHING_KERNELS[1]:  # "kaiser"
         coeffs = sp.signal.windows.kaiser(M=window, beta=beta, sym=True)
-    elif win_type == SMOOTHING_METHODS[2]:  # "triang"
+    elif win_type == SMOOTHING_KERNELS[2]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(
@@ -382,14 +744,14 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-def smooth_extrema(
+def smooth_label(
     series: pd.Series,
-    method: SmoothingMethod = DEFAULTS_EXTREMA_SMOOTHING["method"],
-    window_candles: int = DEFAULTS_EXTREMA_SMOOTHING["window_candles"],
-    beta: float = DEFAULTS_EXTREMA_SMOOTHING["beta"],
-    polyorder: int = DEFAULTS_EXTREMA_SMOOTHING["polyorder"],
-    mode: SmoothingMode = DEFAULTS_EXTREMA_SMOOTHING["mode"],
-    sigma: float = DEFAULTS_EXTREMA_SMOOTHING["sigma"],
+    method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
+    window_candles: int = DEFAULTS_LABEL_SMOOTHING["window_candles"],
+    beta: float = DEFAULTS_LABEL_SMOOTHING["beta"],
+    polyorder: int = DEFAULTS_LABEL_SMOOTHING["polyorder"],
+    mode: SmoothingMode = DEFAULTS_LABEL_SMOOTHING["mode"],
+    sigma: float = DEFAULTS_LABEL_SMOOTHING["sigma"],
 ) -> pd.Series:
     n = len(series)
     if n == 0:
@@ -405,35 +767,37 @@ def smooth_extrema(
     odd_window = get_odd_window(window_candles)
     std = get_gaussian_std(odd_window)
 
-    if method == SMOOTHING_METHODS[0]:  # "gaussian"
+    if method == SMOOTHING_METHODS[0]:  # "none"
+        return series
+    elif method == SMOOTHING_METHODS[1]:  # "gaussian"
         return zero_phase_filter(
             series=series,
             window=odd_window,
-            win_type=SMOOTHING_METHODS[0],
+            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
             std=std,
             beta=beta,
         )
-    elif method == SMOOTHING_METHODS[1]:  # "kaiser"
+    elif method == SMOOTHING_METHODS[2]:  # "kaiser"
         return zero_phase_filter(
             series=series,
             window=odd_window,
-            win_type=SMOOTHING_METHODS[1],
+            win_type=SMOOTHING_KERNELS[1],  # "kaiser"
             std=std,
             beta=beta,
         )
-    elif method == SMOOTHING_METHODS[2]:  # "triang"
+    elif method == SMOOTHING_METHODS[3]:  # "triang"
         return zero_phase_filter(
             series=series,
             window=odd_window,
-            win_type=SMOOTHING_METHODS[2],
+            win_type=SMOOTHING_KERNELS[2],  # "triang"
             std=std,
             beta=beta,
         )
-    elif method == SMOOTHING_METHODS[3]:  # "smm" (Simple Moving Median)
+    elif method == SMOOTHING_METHODS[4]:  # "smm" (Simple Moving Median)
         return series.rolling(window=odd_window, center=True, min_periods=1).median()
-    elif method == SMOOTHING_METHODS[4]:  # "sma" (Simple Moving Average)
+    elif method == SMOOTHING_METHODS[5]:  # "sma" (Simple Moving Average)
         return series.rolling(window=odd_window, center=True, min_periods=1).mean()
-    elif method == SMOOTHING_METHODS[5]:  # "savgol" (Savitzky-Golay)
+    elif method == SMOOTHING_METHODS[6]:  # "savgol" (Savitzky-Golay)
         w, p, m = get_savgol_params(odd_window, polyorder, mode)
         if n < w:
             return series
@@ -446,7 +810,7 @@ def smooth_extrema(
             ),
             index=series.index,
         )
-    elif method == SMOOTHING_METHODS[6]:  # "gaussian_filter1d"
+    elif method == SMOOTHING_METHODS[7]:  # "gaussian_filter1d"
         return pd.Series(
             gaussian_filter1d(
                 series.to_numpy(),
@@ -459,7 +823,7 @@ def smooth_extrema(
         return zero_phase_filter(
             series=series,
             window=odd_window,
-            win_type=SMOOTHING_METHODS[0],
+            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
             std=std,
             beta=beta,
         )
@@ -468,7 +832,7 @@ def smooth_extrema(
 def _impute_weights(
     weights: NDArray[np.floating],
     *,
-    default_weight: float = DEFAULT_EXTREMA_WEIGHT,
+    default_weight: float = DEFAULT_LABEL_WEIGHT,
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
 
@@ -498,10 +862,10 @@ def _build_weights_array(
     n_extrema: int,
     indices: list[int],
     weights: NDArray[np.floating],
-    default_weight: float = DEFAULT_EXTREMA_WEIGHT,
+    default_weight: float = DEFAULT_LABEL_WEIGHT,
 ) -> NDArray[np.floating]:
     if len(indices) == 0 or weights.size == 0:
-        return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+        return np.full(n_extrema, DEFAULT_LABEL_WEIGHT, dtype=float)
 
     if len(indices) != weights.size:
         raise ValueError(
@@ -543,13 +907,21 @@ def _aggregate_metrics(
     softmax_temperature: float,
 ) -> NDArray[np.floating]:
     if aggregation == COMBINED_AGGREGATIONS[0]:  # "arithmetic_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[1]:  # "geometric_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[2]:  # "harmonic_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[3]:  # "quadratic_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[4]:  # "weighted_median"
         return np.array(
             [
@@ -576,49 +948,30 @@ def _aggregate_metrics(
         )
 
 
-def _compute_combined_weights(
-    indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
+def _compute_combined_label_weights(
+    metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
     softmax_temperature: float,
 ) -> NDArray[np.floating]:
-    if len(indices) == 0:
+    if len(metrics) == 0:
         return np.asarray([], dtype=float)
 
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
-        coefficients = dict.fromkeys(COMBINED_METRICS, DEFAULT_EXTREMA_WEIGHT)
-
-    metrics: dict[CombinedMetric, NDArray[np.floating]] = {
-        "amplitude": np.asarray(amplitudes, dtype=float),
-        "amplitude_threshold_ratio": np.asarray(
-            amplitude_threshold_ratios, dtype=float
-        ),
-        "volume_rate": np.asarray(volume_rates, dtype=float),
-        "speed": np.asarray(speeds, dtype=float),
-        "efficiency_ratio": np.asarray(efficiency_ratios, dtype=float),
-        "volume_weighted_efficiency_ratio": np.asarray(
-            volume_weighted_efficiency_ratios, dtype=float
-        ),
-    }
+        coefficients = {k: DEFAULT_LABEL_WEIGHT for k in metrics.keys()}
 
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
 
-    for metric_name in COMBINED_METRICS:
+    for metric_name, metric_values in metrics.items():
         if metric_name not in coefficients:
             continue
         coefficient = coefficients[metric_name]
-        metric_values = metrics[metric_name]
-        if metric_values.size == 0:
+        values_array = np.asarray(metric_values, dtype=float)
+        if values_array.size == 0:
             continue
-        imputed_metrics.append(_impute_weights(weights=metric_values))
+        imputed_metrics.append(_impute_weights(weights=values_array))
         coefficients_list.append(float(coefficient))
 
     if len(imputed_metrics) == 0:
@@ -632,55 +985,33 @@ def _compute_combined_weights(
     )
 
 
-def compute_extrema_weights(
-    n_extrema: int,
+def compute_label_weights(
+    n_values: int,
     indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
-    extrema_weighting: dict[str, Any],
+    metrics: dict[str, list[float]],
+    weighting_config: dict[str, Any],
 ) -> NDArray[np.floating]:
-    extrema_weighting = {**DEFAULTS_EXTREMA_WEIGHTING, **extrema_weighting}
-    strategy = extrema_weighting["strategy"]
+    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
+    strategy = label_weighting["strategy"]
 
     if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
-        return np.full(n_extrema, DEFAULT_EXTREMA_WEIGHT, dtype=float)
+        return np.full(n_values, DEFAULT_LABEL_WEIGHT, dtype=float)
 
     weights: Optional[NDArray[np.floating]] = None
 
-    if strategy == WEIGHT_STRATEGIES[1]:  # "amplitude"
-        weights = np.asarray(amplitudes, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[2]:  # "amplitude_threshold_ratio"
-        weights = np.asarray(amplitude_threshold_ratios, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[3]:  # "volume_rate"
-        weights = np.asarray(volume_rates, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[4]:  # "speed"
-        weights = np.asarray(speeds, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[5]:  # "efficiency_ratio"
-        weights = np.asarray(efficiency_ratios, dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[6]:  # "volume_weighted_efficiency_ratio"
-        weights = np.asarray(volume_weighted_efficiency_ratios, dtype=float)
+    if strategy in metrics:
+        weights = np.asarray(metrics[strategy], dtype=float)
     elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
-        weights = _compute_combined_weights(
-            indices=indices,
-            amplitudes=amplitudes,
-            amplitude_threshold_ratios=amplitude_threshold_ratios,
-            volume_rates=volume_rates,
-            speeds=speeds,
-            efficiency_ratios=efficiency_ratios,
-            volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
-            metric_coefficients=extrema_weighting["metric_coefficients"],
-            aggregation=extrema_weighting["aggregation"],
-            softmax_temperature=extrema_weighting["softmax_temperature"],
+        weights = _compute_combined_label_weights(
+            metrics=metrics,
+            metric_coefficients=label_weighting["metric_coefficients"],
+            aggregation=label_weighting["aggregation"],
+            softmax_temperature=label_weighting["softmax_temperature"],
         )
-
     else:
         raise ValueError(
-            f"Invalid extrema weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)}"
+            f"Invalid weighting strategy value {strategy!r}: "
+            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
         )
 
     weights = _impute_weights(
@@ -688,61 +1019,51 @@ def compute_extrema_weights(
     )
 
     return _build_weights_array(
-        n_extrema=n_extrema,
+        n_extrema=n_values,
         indices=indices,
         weights=weights,
         default_weight=float(np.nanmedian(weights)),
     )
 
 
-def _apply_weights(
-    extrema: NDArray[np.floating], weights: NDArray[np.floating]
+def _apply_label_weights(
+    values: NDArray[np.floating], weights: NDArray[np.floating]
 ) -> NDArray[np.floating]:
     if weights.size == 0:
-        return extrema
+        return values
 
     if not np.isfinite(weights).all():
-        return extrema
+        return values
 
     if np.allclose(weights, weights[0]):
-        return extrema
+        return values
 
-    if np.allclose(weights, DEFAULT_EXTREMA_WEIGHT):
-        return extrema
+    if np.allclose(weights, DEFAULT_LABEL_WEIGHT):
+        return values
 
-    return extrema * weights
+    return values * weights
 
 
-def get_weighted_extrema(
-    extrema: pd.Series,
+def apply_label_weighting(
+    label: pd.Series,
     indices: list[int],
-    amplitudes: list[float],
-    amplitude_threshold_ratios: list[float],
-    volume_rates: list[float],
-    speeds: list[float],
-    efficiency_ratios: list[float],
-    volume_weighted_efficiency_ratios: list[float],
-    extrema_weighting: dict[str, Any],
+    metrics: dict[str, list[float]],
+    weighting_config: dict[str, Any],
 ) -> tuple[pd.Series, pd.Series]:
-    extrema_values = extrema.to_numpy(dtype=float)
-    extrema_index = extrema.index
-    n_extrema = len(extrema_values)
+    label_values = label.to_numpy(dtype=float)
+    label_index = label.index
+    n_values = len(label_values)
 
-    weights = compute_extrema_weights(
-        n_extrema=n_extrema,
+    weights = compute_label_weights(
+        n_values=n_values,
         indices=indices,
-        amplitudes=amplitudes,
-        amplitude_threshold_ratios=amplitude_threshold_ratios,
-        volume_rates=volume_rates,
-        speeds=speeds,
-        efficiency_ratios=efficiency_ratios,
-        volume_weighted_efficiency_ratios=volume_weighted_efficiency_ratios,
-        extrema_weighting=extrema_weighting,
+        metrics=metrics,
+        weighting_config=weighting_config,
     )
 
     return pd.Series(
-        _apply_weights(extrema_values, weights), index=extrema_index
-    ), pd.Series(weights, index=extrema_index)
+        _apply_label_weights(label_values, weights), index=label_index
+    ), pd.Series(weights, index=label_index)
 
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
@@ -1684,7 +2005,12 @@ def fit_regressor(
     """Fit a regressor model."""
     fit_callbacks = list(callbacks) if callbacks else []
 
-    has_eval_set = eval_set is not None and len(eval_set) > 0
+    has_eval_set = (
+        eval_set is not None
+        and len(eval_set) > 0
+        and eval_weights is not None
+        and len(eval_weights) > 0
+    )
     if not has_eval_set:
         eval_set = None
         eval_weights = None
@@ -1947,13 +2273,15 @@ def fit_regressor(
 
         model.fit(
             Pool(data=X, label=y, weight=train_weights),
-            eval_set=Pool(
-                data=eval_set[0][0],
-                label=eval_set[0][1],
-                weight=eval_weights[0] if eval_weights else None,
-            )
-            if has_eval_set
-            else None,
+            eval_set=(
+                Pool(
+                    data=eval_set[0][0],
+                    label=eval_set[0][1],
+                    weight=eval_weights[0],
+                )
+                if has_eval_set and eval_set is not None and eval_weights is not None
+                else None
+            ),
             early_stopping_rounds=early_stopping_rounds
             if early_stopping_rounds is not None and has_eval_set
             else None,
@@ -2664,7 +2992,7 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
     if not finite_mask.any():
         return np.nan
     if np.isclose(alpha, 0.0):
-        return np.nanmean(values)
+        return float(np.nanmean(values))
     scaled_values = alpha * values
     max_scaled_values = np.nanmax(scaled_values)
     if not np.isfinite(max_scaled_values):
@@ -2784,33 +3112,6 @@ def floor_to_step(value: float | int, step: int) -> int:
     return int(math.floor(float(value) / step) * step)
 
 
-def update_config_value(
-    config: Any,
-    *,
-    new_key: str,
-    old_key: str,
-    default: Any,
-    logger: Logger,
-    new_path: str,
-    old_path: str,
-) -> Any:
-    if not isinstance(config, dict):
-        return default
-
-    if new_key in config:
-        return config[new_key]
-
-    if old_key in config:
-        logger.warning(
-            f"Deprecated config key {old_path} detected; use {new_path} instead"
-        )
-        config[new_key] = config.pop(old_key)
-        return config[new_key]
-
-    config[new_key] = default
-    return default
-
-
 def validate_range(
     min_val: float | int,
     max_val: float | int,
@@ -2894,23 +3195,11 @@ def get_label_defaults(
     default_min_label_natr_multiplier: float = 9.0,
     default_max_label_natr_multiplier: float = 12.0,
 ) -> tuple[int, float]:
-    min_label_natr_multiplier = update_config_value(
-        feature_parameters,
-        new_key="min_label_natr_multiplier",
-        old_key="min_label_natr_ratio",
-        default=default_min_label_natr_multiplier,
-        logger=logger,
-        new_path="freqai.feature_parameters.min_label_natr_multiplier",
-        old_path="freqai.feature_parameters.min_label_natr_ratio",
+    min_label_natr_multiplier = feature_parameters.get(
+        "min_label_natr_multiplier", default_min_label_natr_multiplier
     )
-    max_label_natr_multiplier = update_config_value(
-        feature_parameters,
-        new_key="max_label_natr_multiplier",
-        old_key="max_label_natr_ratio",
-        default=default_max_label_natr_multiplier,
-        logger=logger,
-        new_path="freqai.feature_parameters.max_label_natr_multiplier",
-        old_path="freqai.feature_parameters.max_label_natr_ratio",
+    max_label_natr_multiplier = feature_parameters.get(
+        "max_label_natr_multiplier", default_max_label_natr_multiplier
     )
     min_label_natr_multiplier, max_label_natr_multiplier = validate_range(
         min_label_natr_multiplier,
@@ -2926,14 +3215,8 @@ def get_label_defaults(
     default_label_natr_multiplier = float(
         midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
     )
-    update_config_value(
-        feature_parameters,
-        new_key="label_natr_multiplier",
-        old_key="label_natr_ratio",
-        default=default_label_natr_multiplier,
-        logger=logger,
-        new_path="freqai.feature_parameters.label_natr_multiplier",
-        old_path="freqai.feature_parameters.label_natr_ratio",
+    feature_parameters.setdefault(
+        "label_natr_multiplier", default_label_natr_multiplier
     )
 
     min_label_period_candles = feature_parameters.get(

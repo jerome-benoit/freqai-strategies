@@ -29,36 +29,42 @@ from sklearn.preprocessing import (
 )
 from sklearn_extra.cluster import KMedoids
 
-from ExtremaWeightingTransformer import ExtremaWeightingTransformer
+from LabelTransformer import (
+    CUSTOM_THRESHOLD_METHODS,
+    EXTREMA_SELECTION_METHODS,
+    PREDICTION_METHODS,
+    SKIMAGE_THRESHOLD_METHODS,
+    THRESHOLD_METHODS,
+    CustomThresholdMethod,
+    ExtremaSelectionMethod,
+    LabelTransformer,
+    SkimageThresholdMethod,
+    ThresholdMethod,
+    get_label_column_config,
+)
+
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
-    EXTREMA_COLUMN,
-    MAXIMA_THRESHOLD_COLUMN,
-    MINIMA_THRESHOLD_COLUMN,
+    DEFAULTS_LABEL_PREDICTION,
+    LABEL_COLUMNS,
     REGRESSORS,
-    WEIGHT_STRATEGIES,
     Regressor,
     eval_set_and_weights,
     fit_regressor,
     format_number,
-    get_extrema_weighting_config,
     get_label_defaults,
+    get_label_pipeline_config,
+    get_label_prediction_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
+    migrate_config,
     soft_extremum,
-    update_config_value,
     zigzag,
 )
 
-ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
 OptunaSampler = Literal["tpe", "auto", "nsgaii", "nsgaiii"]
 OptunaNamespace = Literal["hp", "label"]
 ScalerType = Literal["minmax", "maxabs", "standard", "robust"]
-CustomThresholdMethod = Literal["median", "soft_extremum"]
-SkimageThresholdMethod = Literal[
-    "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
-]
-ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
 DensityAggregation = Literal["power_mean", "quantile", "min", "max"]
 DistanceMethod = Literal["compromise_programming", "topsis"]
 ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
@@ -87,40 +93,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.10.11"
+    version = "3.11.0"
 
     _TEST_SIZE: Final[float] = 0.1
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
-    _EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
-        "rank_extrema",
-        "rank_peaks",
-        "partition",
-    )
-    _CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
-        "median",
-        "soft_extremum",
-    )
-    _SKIMAGE_THRESHOLD_METHODS: Final[tuple[SkimageThresholdMethod, ...]] = (
-        "mean",
-        "isodata",
-        "li",
-        "minimum",
-        "otsu",
-        "triangle",
-        "yen",
-    )
-    _THRESHOLD_METHODS: Final[tuple[ThresholdMethod, ...]] = (
-        *_SKIMAGE_THRESHOLD_METHODS,
-        *_CUSTOM_THRESHOLD_METHODS,
-    )
-
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
-
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
     _OPTUNA_SAMPLERS: Final[tuple[OptunaSampler, ...]] = (
         "tpe",
@@ -211,10 +193,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "cubic_mean": 3.0,
     }
 
-    PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT: Final[float] = 0.999
-    PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT: Final[float] = 12.0
-    PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT: Final[float] = 1.0
-
     FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
         DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
     )
@@ -240,25 +218,35 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         _DENSITY_AGGREGATIONS[0]  # "power_mean"
     )
 
+    OPTUNA_N_JOBS_DEFAULT: Final[int] = 1
+    OPTUNA_N_STARTUP_TRIALS_DEFAULT: Final[int] = 15
+    OPTUNA_N_TRIALS_DEFAULT: Final[int] = 50
+    OPTUNA_TIMEOUT_DEFAULT: Final[int] = 7200
+    OPTUNA_MIN_RESOURCE_DEFAULT: Final[int] = 3
+    OPTUNA_LABEL_CANDLES_STEP_DEFAULT: Final[int] = 1
+    OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
+    OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
+    OPTUNA_SEED_DEFAULT: Final[int] = 1
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
-        return set(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)
+        return set(EXTREMA_SELECTION_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _custom_threshold_methods_set() -> set[CustomThresholdMethod]:
-        return set(QuickAdapterRegressorV3._CUSTOM_THRESHOLD_METHODS)
+        return set(CUSTOM_THRESHOLD_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _skimage_threshold_methods_set() -> set[SkimageThresholdMethod]:
-        return set(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)
+        return set(SKIMAGE_THRESHOLD_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _threshold_methods_set() -> set[ThresholdMethod]:
-        return set(QuickAdapterRegressorV3._THRESHOLD_METHODS)
+        return set(THRESHOLD_METHODS)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -620,7 +608,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _resolve_label_method_config(self, label_method: str) -> dict[str, Any]:
         QuickAdapterRegressorV3._validate_enum_value(
             label_method,
-            self._selection_methods_set(),
+            QuickAdapterRegressorV3._selection_methods_set(),
             QuickAdapterRegressorV3._SELECTION_METHODS,
             ctx="label_method",
         )
@@ -777,35 +765,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "n_jobs": min(
                 self.config.get("freqai", {})
                 .get("optuna_hyperopt", {})
-                .get("n_jobs", 1),
+                .get("n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT),
                 max(int(self.max_system_threads / 4), 1),
             ),
             "sampler": QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS[0],  # "tpe"
             "storage": QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[0],  # "file"
             "continuous": True,
             "warm_start": True,
-            "n_startup_trials": 15,
-            "n_trials": 50,
-            "timeout": 7200,
+            "n_startup_trials": QuickAdapterRegressorV3.OPTUNA_N_STARTUP_TRIALS_DEFAULT,
+            "n_trials": QuickAdapterRegressorV3.OPTUNA_N_TRIALS_DEFAULT,
+            "timeout": QuickAdapterRegressorV3.OPTUNA_TIMEOUT_DEFAULT,
             "label_sampler": QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS[
                 0
             ],  # "auto"
-            "label_candles_step": 1,
-            "space_reduction": False,
-            "space_fraction": 0.4,
-            "min_resource": 3,
-            "seed": 1,
+            "label_candles_step": QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
+            "space_reduction": QuickAdapterRegressorV3.OPTUNA_SPACE_REDUCTION_DEFAULT,
+            "space_fraction": QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
+            "min_resource": QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT,
+            "seed": QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT,
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        update_config_value(
-            optuna_hyperopt,
-            new_key="space_fraction",
-            old_key="expansion_ratio",
-            default=optuna_default_config["space_fraction"],
-            logger=logger,
-            new_path="freqai.optuna_hyperopt.space_fraction",
-            old_path="freqai.optuna_hyperopt.expansion_ratio",
-        )
         return {
             **optuna_default_config,
             **optuna_hyperopt,
@@ -874,99 +853,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return label_frequency_candles
 
     @property
-    def predictions_extrema(self) -> dict[str, Any]:
-        predictions_extrema = self.freqai_info.get("predictions_extrema", {})
-        if not isinstance(predictions_extrema, dict):
-            predictions_extrema = {}
+    def label_pipeline(self) -> dict[str, Any]:
+        label_pipeline_raw = self.freqai_info.get("label_pipeline")
+        if not isinstance(label_pipeline_raw, dict):
+            label_pipeline_raw = {}
+        return get_label_pipeline_config(label_pipeline_raw, logger)
 
-        outlier_threshold_quantile = update_config_value(
-            predictions_extrema,
-            new_key="outlier_threshold_quantile",
-            old_key="threshold_outlier",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT,
-            logger=logger,
-            new_path="freqai.predictions_extrema.outlier_threshold_quantile",
-            old_path="freqai.predictions_extrema.threshold_outlier",
-        )
-        if (
-            not isinstance(outlier_threshold_quantile, (int, float))
-            or not np.isfinite(outlier_threshold_quantile)
-            or not (0 < outlier_threshold_quantile < 1)
-        ):
-            outlier_threshold_quantile = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_OUTLIER_THRESHOLD_QUANTILE_DEFAULT
-
-        selection_method = str(
-            predictions_extrema.get(
-                "selection_method",
-                QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0],  # "rank_extrema"
-            )
-        )
-        if (
-            selection_method
-            not in QuickAdapterRegressorV3._extrema_selection_methods_set()
-        ):
-            selection_method = QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[
-                0
-            ]  # "rank_extrema"
-
-        threshold_smoothing_method = str(
-            update_config_value(
-                predictions_extrema,
-                new_key="threshold_smoothing_method",
-                old_key="thresholds_smoothing",
-                default=QuickAdapterRegressorV3._THRESHOLD_METHODS[0],  # "mean"
-                logger=logger,
-                new_path="freqai.predictions_extrema.threshold_smoothing_method",
-                old_path="freqai.predictions_extrema.thresholds_smoothing",
-            )
-        )
-        if (
-            threshold_smoothing_method
-            not in QuickAdapterRegressorV3._threshold_methods_set()
-        ):
-            threshold_smoothing_method = QuickAdapterRegressorV3._THRESHOLD_METHODS[
-                0
-            ]  # "mean"
-
-        soft_extremum_alpha = update_config_value(
-            predictions_extrema,
-            new_key="soft_extremum_alpha",
-            old_key="thresholds_alpha",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT,
-            logger=logger,
-            new_path="freqai.predictions_extrema.soft_extremum_alpha",
-            old_path="freqai.predictions_extrema.thresholds_alpha",
-        )
-        if (
-            not isinstance(soft_extremum_alpha, (int, float))
-            or not np.isfinite(soft_extremum_alpha)
-            or soft_extremum_alpha < 0
-        ):
-            soft_extremum_alpha = (
-                QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_SOFT_EXTREMUM_ALPHA_DEFAULT
-            )
-
-        keep_extrema_fraction = update_config_value(
-            predictions_extrema,
-            new_key="keep_extrema_fraction",
-            old_key="extrema_fraction",
-            default=QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT,
-            logger=logger,
-            new_path="freqai.predictions_extrema.keep_extrema_fraction",
-            old_path="freqai.predictions_extrema.extrema_fraction",
-        )
-        if not isinstance(keep_extrema_fraction, (int, float)) or not (
-            0 < keep_extrema_fraction <= 1
-        ):
-            keep_extrema_fraction = QuickAdapterRegressorV3.PREDICTIONS_EXTREMA_KEEP_EXTREMA_FRACTION_DEFAULT
-
-        return {
-            "outlier_threshold_quantile": float(outlier_threshold_quantile),
-            "selection_method": selection_method,
-            "threshold_smoothing_method": threshold_smoothing_method,
-            "soft_extremum_alpha": float(soft_extremum_alpha),
-            "keep_extrema_fraction": float(keep_extrema_fraction),
-        }
+    @property
+    def label_prediction(self) -> dict[str, Any]:
+        label_prediction_raw = self.freqai_info.get("label_prediction")
+        if not isinstance(label_prediction_raw, dict):
+            label_prediction_raw = {}
+        return get_label_prediction_config(label_prediction_raw, logger)
 
     @property
     def _label_defaults(self) -> tuple[int, float]:
@@ -988,6 +886,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        migrate_config(self.config, logger)
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1013,7 +912,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_candle_pool_full_cache: dict[int, list[int]] = {}
-        self._optuna_label_shuffle_rng = random.Random(self._optuna_config.get("seed"))
+        self._optuna_label_shuffle_rng = random.Random(
+            self._optuna_config.get("seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT)
+        )
         self.init_optuna_label_candle_pool()
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
@@ -1030,19 +931,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
                 )  # "hp"
-                if self.optuna_load_best_params(
-                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
-                )
-                else {}
+                or {}
             )
             self._optuna_label_params[pair] = (
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
                 )  # "label"
-                if self.optuna_load_best_params(
-                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
-                )
-                else {
+                or {
                     "label_period_candles": self.ft_params.get(
                         "label_period_candles",
                         default_label_period_candles,
@@ -1101,7 +996,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(f"  label_method: {label_method}")
 
             label_config = self._resolve_label_method_config(label_method)
-            self._log_label_method_config(label_config)
+            QuickAdapterRegressorV3._log_label_method_config(label_config)
 
             label_weights = self.ft_params.get("label_weights")
             if label_weights is not None:
@@ -1132,23 +1027,47 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"  label_p_order: {format_number(label_p_order_default)} (default for {distance_metric})"
                     )
 
-        logger.info("Predictions Extrema Configuration:")
-        predictions_extrema = self.predictions_extrema
-        logger.info(
-            f"  selection_method: {predictions_extrema.get('selection_method')}"
-        )
-        logger.info(
-            f"  threshold_smoothing_method: {predictions_extrema.get('threshold_smoothing_method')}"
-        )
-        logger.info(
-            f"  outlier_threshold_quantile: {format_number(predictions_extrema.get('outlier_threshold_quantile'))}"
-        )
-        logger.info(
-            f"  soft_extremum_alpha: {format_number(predictions_extrema.get('soft_extremum_alpha'))}"
-        )
-        logger.info(
-            f"  keep_extrema_fraction: {format_number(predictions_extrema.get('keep_extrema_fraction'))}"
-        )
+        label_pipeline = self.label_pipeline
+        label_prediction = self.label_prediction
+        for label_col in LABEL_COLUMNS:
+            logger.info(f"Label Configuration [{label_col}]:")
+
+            col_pipeline = get_label_column_config(
+                label_col, label_pipeline["default"], label_pipeline["columns"]
+            )
+            logger.info("  Pipeline:")
+            logger.info(f"    standardization: {col_pipeline['standardization']}")
+            logger.info(
+                f"    robust_quantiles: ({format_number(col_pipeline['robust_quantiles'][0])}, {format_number(col_pipeline['robust_quantiles'][1])})"
+            )
+            logger.info(
+                f"    mmad_scaling_factor: {format_number(col_pipeline['mmad_scaling_factor'])}"
+            )
+            logger.info(f"    normalization: {col_pipeline['normalization']}")
+            logger.info(
+                f"    minmax_range: ({format_number(col_pipeline['minmax_range'][0])}, {format_number(col_pipeline['minmax_range'][1])})"
+            )
+            logger.info(
+                f"    sigmoid_scale: {format_number(col_pipeline['sigmoid_scale'])}"
+            )
+            logger.info(f"    gamma: {format_number(col_pipeline['gamma'])}")
+
+            col_prediction = get_label_column_config(
+                label_col, label_prediction["default"], label_prediction["columns"]
+            )
+            logger.info("  Prediction:")
+            logger.info(f"    method: {col_prediction['method']}")
+            logger.info(f"    selection_method: {col_prediction['selection_method']}")
+            logger.info(f"    threshold_method: {col_prediction['threshold_method']}")
+            logger.info(
+                f"    outlier_quantile: {format_number(col_prediction['outlier_quantile'])}"
+            )
+            logger.info(
+                f"    soft_extremum_alpha: {format_number(col_prediction['soft_extremum_alpha'])}"
+            )
+            logger.info(
+                f"    keep_fraction: {format_number(col_prediction['keep_fraction'])}"
+            )
 
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
@@ -1159,7 +1078,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_natr_multiplier = float(
             self.ft_params.get("label_natr_multiplier", default_label_natr_multiplier)
         )
-        logger.info("Label Configuration:")
+        logger.info("Label Hyperparameters:")
         logger.info(
             f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
         )
@@ -1210,9 +1129,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, pair: str, namespace: OptunaNamespace
     ) -> dict[str, Any]:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
-            params = self._optuna_hp_params.get(pair)
+            params = self._optuna_hp_params.get(pair, {})
         elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
-            params = self._optuna_label_params.get(pair)
+            params = self._optuna_label_params.get(pair, {})
         else:
             raise ValueError(
                 f"Invalid namespace value {namespace!r}: "
@@ -1235,7 +1154,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def get_optuna_value(self, pair: str, namespace: OptunaNamespace) -> float:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
-            value = self._optuna_hp_value.get(pair)
+            value = self._optuna_hp_value.get(pair, np.nan)
         else:
             raise ValueError(
                 f"Invalid namespace value {namespace!r}: "
@@ -1258,7 +1177,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, pair: str, namespace: OptunaNamespace
     ) -> list[float | int]:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
-            values = self._optuna_label_values.get(pair)
+            values = self._optuna_label_values.get(
+                pair, [np.nan] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
+            )
         else:
             raise ValueError(
                 f"Invalid namespace value {namespace!r}: "
@@ -1384,23 +1305,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return Pipeline(steps)
 
     def define_label_pipeline(self, threads: int = -1) -> Pipeline:
-        extrema_weighting = self.freqai_info.get("extrema_weighting", {})
-        if not isinstance(extrema_weighting, dict):
-            extrema_weighting = {}
-        extrema_weighting_config = get_extrema_weighting_config(
-            extrema_weighting, logger
-        )
-
-        if extrema_weighting_config["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
-            return super().define_label_pipeline(threads)
-
         return Pipeline(
             [
                 (
-                    "extrema_weighting",
-                    ExtremaWeightingTransformer(
-                        extrema_weighting=extrema_weighting_config
-                    ),
+                    "label_transformer",
+                    LabelTransformer(label_transformer=self.label_pipeline),
                 ),
             ]
         )
@@ -1446,8 +1355,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
                     ),  # "hp"
                     model_training_parameters,
-                    self._optuna_config.get("space_reduction"),
-                    self._optuna_config.get("space_fraction"),
+                    self._optuna_config.get(
+                        "space_reduction",
+                        QuickAdapterRegressorV3.OPTUNA_SPACE_REDUCTION_DEFAULT,
+                    ),
+                    self._optuna_config.get(
+                        "space_fraction",
+                        QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
+                    ),
                     dk.data_path,
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
@@ -1506,8 +1421,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pair not in self._optuna_label_incremented_pairs:
             self._optuna_label_incremented_pairs.append(pair)
         optuna_label_remaining_candles = self._optuna_label_candle.get(
-            pair
-        ) - self._optuna_label_candles.get(pair)
+            pair, 0
+        ) - self._optuna_label_candles.get(pair, 0)
         if optuna_label_remaining_candles <= 0:
             try:
                 callback()
@@ -1547,7 +1462,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             pair=pair, timeframe=self.config.get("timeframe")
                         ),
                         fit_live_predictions_candles,
-                        self._optuna_config.get("label_candles_step"),
+                        self._optuna_config.get(
+                            "label_candles_step",
+                            QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
+                        ),
                         min_label_period_candles=self._min_label_period_candles,
                         max_label_period_candles=self._max_label_period_candles,
                         min_label_natr_multiplier=self._min_label_natr_multiplier,
@@ -1575,19 +1493,51 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             .reset_index(drop=True)
         )
 
-        if not warmed_up:
-            dk.data["extra_returns_per_train"][MINIMA_THRESHOLD_COLUMN] = -2
-            dk.data["extra_returns_per_train"][MAXIMA_THRESHOLD_COLUMN] = 2
-        else:
-            min_pred, max_pred = self.min_max_pred(
-                pred_df,
-                fit_live_predictions_candles,
-                self.get_optuna_params(
-                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
-                ).get("label_period_candles"),  # "label"
+        di_values = pred_df.get("DI_values")
+        dk.data["DI_value_mean"] = di_values.mean()
+        dk.data["DI_value_std"] = di_values.std(ddof=1)
+
+        label_prediction = self.label_prediction
+        for label_col in dk.label_list:
+            col_prediction_config = get_label_column_config(
+                label_col, label_prediction["default"], label_prediction["columns"]
             )
-            dk.data["extra_returns_per_train"][MINIMA_THRESHOLD_COLUMN] = min_pred
-            dk.data["extra_returns_per_train"][MAXIMA_THRESHOLD_COLUMN] = max_pred
+            method = col_prediction_config.get("method")
+            if method == PREDICTION_METHODS[0]:  # "none"
+                continue
+            elif method == PREDICTION_METHODS[1]:  # "thresholding"
+                if not warmed_up:
+                    min_pred, max_pred = -2.0, 2.0
+                    f = [0.0, 0.0, 0.0]
+                    cutoff = 2.0
+                else:
+                    min_pred, max_pred = self.min_max_pred(
+                        label_col,
+                        col_prediction_config,
+                        pred_df,
+                        fit_live_predictions_candles,
+                        self.get_optuna_params(
+                            pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
+                        ).get("label_period_candles"),  # "label"
+                    )
+                    f = sp.stats.weibull_min.fit(
+                        pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
+                    )
+                    outlier_quantile = col_prediction_config.get(
+                        "outlier_quantile",
+                        DEFAULTS_LABEL_PREDICTION["outlier_quantile"],
+                    )
+                    cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
+                dk.data["extra_returns_per_train"][f"{label_col}_minima_threshold"] = (
+                    min_pred
+                )
+                dk.data["extra_returns_per_train"][f"{label_col}_maxima_threshold"] = (
+                    max_pred
+                )
+                dk.data["extra_returns_per_train"]["DI_value_param1"] = f[0]
+                dk.data["extra_returns_per_train"]["DI_value_param2"] = f[1]
+                dk.data["extra_returns_per_train"]["DI_value_param3"] = f[2]
+                dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
         for label in dk.label_list + dk.unique_class_list:
@@ -1599,27 +1549,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else:
                 f = sp.stats.norm.fit(pred_df_label)
             dk.data["labels_mean"][label], dk.data["labels_std"][label] = f[0], f[1]
-
-        di_values = pred_df.get("DI_values")
-
-        # Fit DI_value cutoff
-        if not warmed_up:
-            f = [0.0, 0.0, 0.0]
-            cutoff = 2.0
-        else:
-            f = sp.stats.weibull_min.fit(
-                pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
-            )
-            cutoff = sp.stats.weibull_min.ppf(
-                self.predictions_extrema["outlier_threshold_quantile"], *f
-            )
-
-        dk.data["DI_value_mean"] = di_values.mean()
-        dk.data["DI_value_std"] = di_values.std(ddof=1)
-        dk.data["extra_returns_per_train"]["DI_value_param1"] = f[0]
-        dk.data["extra_returns_per_train"]["DI_value_param2"] = f[1]
-        dk.data["extra_returns_per_train"]["DI_value_param3"] = f[2]
-        dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
 
         dk.data["extra_returns_per_train"]["label_period_candles"] = (
             self.get_optuna_params(
@@ -1633,7 +1562,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ).get("label_natr_multiplier")
         )
 
-        hp_rmse = self.optuna_validate_value(
+        hp_rmse = QuickAdapterRegressorV3.optuna_validate_value(
             self.get_optuna_value(pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0])
         )  # "hp"
         dk.data["extra_returns_per_train"]["hp_rmse"] = (
@@ -1646,52 +1575,51 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def min_max_pred(
         self,
+        label_col: str,
+        col_prediction_config: dict[str, Any],
         pred_df: pd.DataFrame,
         fit_live_predictions_candles: int,
-        label_period_candles: int,
+        label_period_candles: Optional[int],
     ) -> tuple[float, float]:
-        if not isinstance(label_period_candles, int) or label_period_candles <= 0:
-            label_period_candles = self.ft_params.get(
-                "label_period_candles", self._label_defaults[0]
+        if label_period_candles is None or label_period_candles <= 0:
+            label_period_candles = int(
+                self.ft_params.get("label_period_candles", self._label_defaults[0])
             )
         thresholds_candles = (
             max(2, int(fit_live_predictions_candles / label_period_candles))
             * label_period_candles
         )
 
-        pred_extrema = pred_df.get(EXTREMA_COLUMN).iloc[-thresholds_candles:].copy()
+        pred_label = pred_df.get(label_col)
+        if pred_label is None:
+            return -2.0, 2.0
+        pred_label = pred_label.iloc[-thresholds_candles:].copy()
 
-        extrema_selection = self.predictions_extrema["selection_method"]
-        threshold_smoothing_method = self.predictions_extrema[
-            "threshold_smoothing_method"
-        ]
-        keep_extrema_fraction = self.predictions_extrema["keep_extrema_fraction"]
+        extrema_selection = col_prediction_config["selection_method"]
+        threshold_method = col_prediction_config["threshold_method"]
+        keep_fraction = col_prediction_config["keep_fraction"]
 
-        if (
-            threshold_smoothing_method == QuickAdapterRegressorV3._THRESHOLD_METHODS[7]
-        ):  # "median"
+        if threshold_method == CUSTOM_THRESHOLD_METHODS[0]:  # "median"
             return QuickAdapterRegressorV3.median_min_max(
-                pred_extrema, extrema_selection, keep_extrema_fraction
+                pred_label, extrema_selection, keep_fraction
             )
-        elif (
-            threshold_smoothing_method == QuickAdapterRegressorV3._THRESHOLD_METHODS[8]
-        ):  # "soft_extremum"
+        elif threshold_method == CUSTOM_THRESHOLD_METHODS[1]:  # "soft_extremum"
             return QuickAdapterRegressorV3.soft_extremum_min_max(
-                pred_extrema,
-                self.predictions_extrema["soft_extremum_alpha"],
+                pred_label,
+                col_prediction_config["soft_extremum_alpha"],
                 extrema_selection,
-                keep_extrema_fraction,
+                keep_fraction,
             )
         elif (
-            threshold_smoothing_method
-            in QuickAdapterRegressorV3._skimage_threshold_methods_set()
+            threshold_method in QuickAdapterRegressorV3._skimage_threshold_methods_set()
         ):
             return QuickAdapterRegressorV3.skimage_min_max(
-                pred_extrema,
-                threshold_smoothing_method,
+                pred_label,
+                threshold_method,
                 extrema_selection,
-                keep_extrema_fraction,
+                keep_fraction,
             )
+        return -2.0, 2.0
 
     @staticmethod
     def _get_extrema_indices(
@@ -1715,13 +1643,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         minima_indices: NDArray[np.intp],
         maxima_indices: NDArray[np.intp],
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         n_kept_minima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            minima_indices.size, keep_extrema_fraction
+            minima_indices.size, keep_fraction
         )
         n_kept_maxima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            maxima_indices.size, keep_extrema_fraction
+            maxima_indices.size, keep_fraction
         )
 
         pred_minima = (
@@ -1741,7 +1669,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.debug(
             f"Extrema filtering | rank_peaks: kept {n_kept_minima}/{minima_indices.size} minima, "
-            f"{n_kept_maxima}/{maxima_indices.size} maxima with keep_fraction={keep_extrema_fraction}"
+            f"{n_kept_maxima}/{maxima_indices.size} maxima with keep_fraction={keep_fraction}"
         )
         return pred_minima, pred_maxima
 
@@ -1750,13 +1678,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         n_minima: int,
         n_maxima: int,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         n_kept_minima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            n_minima, keep_extrema_fraction
+            n_minima, keep_fraction
         )
         n_kept_maxima = QuickAdapterRegressorV3._calculate_n_kept_extrema(
-            n_maxima, keep_extrema_fraction
+            n_maxima, keep_fraction
         )
 
         pred_minima = (
@@ -1772,7 +1700,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.debug(
             f"Extrema filtering | rank_extrema: kept {n_kept_minima}/{n_minima} minima, "
-            f"{n_kept_maxima}/{n_maxima} maxima with keep_fraction={keep_extrema_fraction}"
+            f"{n_kept_maxima}/{n_maxima} maxima with keep_fraction={keep_fraction}"
         )
         return pred_minima, pred_maxima
 
@@ -1780,7 +1708,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def get_pred_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[pd.Series, pd.Series]:
         pred_extrema = (
             pd.to_numeric(pred_extrema, errors="coerce")
@@ -1790,9 +1718,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pred_extrema.empty:
             return pd.Series(dtype=float), pd.Series(dtype=float)
 
-        if (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[0]
-        ):  # "rank_extrema"
+        if extrema_selection == EXTREMA_SELECTION_METHODS[0]:  # "rank_extrema"
             minima_indices, maxima_indices = (
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
@@ -1800,22 +1726,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 pred_extrema,
                 minima_indices.size,
                 maxima_indices.size,
-                keep_extrema_fraction,
+                keep_fraction,
             )
 
-        elif (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[1]
-        ):  # "rank_peaks"
+        elif extrema_selection == EXTREMA_SELECTION_METHODS[1]:  # "rank_peaks"
             minima_indices, maxima_indices = (
                 QuickAdapterRegressorV3._get_extrema_indices(pred_extrema)
             )
             pred_minima, pred_maxima = QuickAdapterRegressorV3._get_ranked_peaks(
-                pred_extrema, minima_indices, maxima_indices, keep_extrema_fraction
+                pred_extrema, minima_indices, maxima_indices, keep_fraction
             )
 
-        elif (
-            extrema_selection == QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS[2]
-        ):  # "partition"
+        elif extrema_selection == EXTREMA_SELECTION_METHODS[2]:  # "partition"
             eps = np.finfo(float).eps
 
             pred_maxima = pred_extrema[pred_extrema > eps]
@@ -1823,7 +1745,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             raise ValueError(
                 f"Invalid extrema_selection value {extrema_selection!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._EXTREMA_SELECTION_METHODS)}"
+                f"supported values are {', '.join(EXTREMA_SELECTION_METHODS)}"
             )
 
         return pred_minima, pred_maxima
@@ -1839,7 +1761,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and isinstance(pred_minimum, (int, float, np.number))
             and np.isfinite(pred_minimum)
         ):
-            return pred_minimum
+            return float(pred_minimum)
         return -2.0
 
     @staticmethod
@@ -1853,7 +1775,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and isinstance(pred_maximum, (int, float, np.number))
             and np.isfinite(pred_maximum)
         ):
-            return pred_maximum
+            return float(pred_maximum)
         return 2.0
 
     @staticmethod
@@ -1861,12 +1783,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         alpha: float,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[float, float]:
         if alpha < 0:
             raise ValueError(f"Invalid alpha value {alpha!r}: must be >= 0")
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, keep_extrema_fraction
+            pred_extrema, extrema_selection, keep_fraction
         )
         soft_minimum = soft_extremum(pred_minima, alpha=-alpha)
         if not np.isfinite(soft_minimum):
@@ -1880,10 +1802,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def median_min_max(
         pred_extrema: pd.Series,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, keep_extrema_fraction
+            pred_extrema, extrema_selection, keep_fraction
         )
 
         if pred_minima.empty:
@@ -1907,10 +1829,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_extrema: pd.Series,
         method: SkimageThresholdMethod,
         extrema_selection: ExtremaSelectionMethod,
-        keep_extrema_fraction: float = 1.0,
+        keep_fraction: float = 1.0,
     ) -> tuple[float, float]:
         pred_minima, pred_maxima = QuickAdapterRegressorV3.get_pred_min_max(
-            pred_extrema, extrema_selection, keep_extrema_fraction
+            pred_extrema, extrema_selection, keep_fraction
         )
 
         try:
@@ -1918,7 +1840,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         except AttributeError:
             raise ValueError(
                 f"Invalid skimage threshold method value {method!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS)}"
+                f"supported values are {', '.join(SKIMAGE_THRESHOLD_METHODS)}"
             )
 
         min_func = QuickAdapterRegressorV3.apply_skimage_threshold
@@ -2088,6 +2010,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if (
             distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
         ):  # "weighted_sum"
+            assert weights is not None
             return QuickAdapterRegressorV3._weighted_sum_distance(
                 normalized_matrix,
                 ideal_point,
@@ -2243,6 +2166,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif (
             distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
         ):  # "weighted_sum"
+            assert weights is not None
             dist_to_ideal = np.abs(
                 QuickAdapterRegressorV3._weighted_sum_distance(
                     normalized_matrix,
@@ -2310,13 +2234,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> tuple[int, float]:
         if best_cluster_indices.size == 1:
             best_trial_index = best_cluster_indices[0]
-            best_trial_distance = self._calculate_trial_distance_to_ideal(
-                normalized_matrix,
-                best_trial_index,
-                ideal_point_2d,
-                distance_metric,
-                weights=weights,
-                p=p,
+            best_trial_distance = (
+                QuickAdapterRegressorV3._calculate_trial_distance_to_ideal(
+                    normalized_matrix,
+                    best_trial_index,
+                    ideal_point_2d,
+                    distance_metric,
+                    weights=weights,
+                    p=p,
+                )
             )
             return best_trial_index, best_trial_distance
 
@@ -2346,13 +2272,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         min_score_position = np.nanargmin(scores)
         best_trial_index = best_cluster_indices[min_score_position]
-        best_trial_distance = self._calculate_trial_distance_to_ideal(
-            normalized_matrix,
-            best_trial_index,
-            ideal_point_2d,
-            distance_metric,
-            weights=weights,
-            p=p,
+        best_trial_distance = (
+            QuickAdapterRegressorV3._calculate_trial_distance_to_ideal(
+                normalized_matrix,
+                best_trial_index,
+                ideal_point_2d,
+                distance_metric,
+                weights=weights,
+                p=p,
+            )
         )
         return best_trial_index, best_trial_distance
 
@@ -2556,7 +2484,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 power,
                 ctx="label_density_aggregation_param",
             )
-            return sp.stats.pmean(neighbor_distances, p=power, axis=1)
+            assert power is not None
+            return np.asarray(sp.stats.pmean(neighbor_distances, p=power, axis=1))
         elif (
             aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[1]
         ):  # "quantile"
@@ -2573,7 +2502,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 quantile,
                 ctx="label_density_aggregation_param",
             )
-            return np.nanquantile(neighbor_distances, quantile, axis=1)
+            assert quantile is not None
+            return np.asarray(np.nanquantile(neighbor_distances, quantile, axis=1))
         elif aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[2]:  # "min"
             return np.nanmin(neighbor_distances, axis=1)
         elif aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[3]:  # "max"
@@ -2914,9 +2844,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         try:
             study.optimize(
                 objective,
-                n_trials=self._optuna_config.get("n_trials"),
-                n_jobs=self._optuna_config.get("n_jobs"),
-                timeout=self._optuna_config.get("timeout"),
+                n_trials=self._optuna_config.get(
+                    "n_trials", QuickAdapterRegressorV3.OPTUNA_N_TRIALS_DEFAULT
+                ),
+                n_jobs=self._optuna_config.get(
+                    "n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT
+                ),
+                timeout=self._optuna_config.get(
+                    "timeout", QuickAdapterRegressorV3.OPTUNA_TIMEOUT_DEFAULT
+                ),
                 gc_after_trial=True,
             )
         except Exception as e:
@@ -2964,7 +2900,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 **self.get_optuna_params(pair, namespace),
             }
             label_config = self._resolve_label_method_config(
-                self.ft_params.get("label_method", self.LABEL_METHOD_DEFAULT)
+                self.ft_params.get(
+                    "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
+                )
             )
             metric_log_msg = f" ({QuickAdapterRegressorV3._format_label_method_config(label_config)})"
         logger.info(
@@ -3029,7 +2967,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> optuna.pruners.BasePruner:
         if is_single_objective:
             return optuna.pruners.HyperbandPruner(
-                min_resource=self._optuna_config.get("min_resource")
+                min_resource=self._optuna_config.get(
+                    "min_resource", QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT
+                )
             )
         else:
             return optuna.pruners.NopPruner()
@@ -3043,23 +2983,37 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         if sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[0]:  # "tpe"
             return optuna.samplers.TPESampler(
-                n_startup_trials=self._optuna_config.get("n_startup_trials"),
+                n_startup_trials=self._optuna_config.get(
+                    "n_startup_trials",
+                    QuickAdapterRegressorV3.OPTUNA_N_STARTUP_TRIALS_DEFAULT,
+                ),
                 multivariate=True,
                 group=True,
-                constant_liar=self._optuna_config.get("n_jobs") > 1,
-                seed=self._optuna_config.get("seed"),
+                constant_liar=self._optuna_config.get(
+                    "n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT
+                )
+                > 1,
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                ),
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[1]:  # "auto"
             return optunahub.load_module("samplers/auto_sampler").AutoSampler(
-                seed=self._optuna_config.get("seed")
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                )
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[2]:  # "nsgaii"
             return optuna.samplers.NSGAIISampler(
-                seed=self._optuna_config.get("seed"),
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                ),
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[3]:  # "nsgaiii"
             return optuna.samplers.NSGAIIISampler(
-                seed=self._optuna_config.get("seed"),
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                ),
             )
         else:
             raise ValueError(
@@ -3074,12 +3028,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             return (
                 QuickAdapterRegressorV3._optuna_hpo_samplers_set(),
-                self._optuna_config.get("sampler"),
+                self._optuna_config.get(
+                    "sampler", QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS[0]
+                ),
             )
         elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
             return (
                 QuickAdapterRegressorV3._optuna_label_samplers_set(),
-                self._optuna_config.get("label_sampler"),
+                self._optuna_config.get(
+                    "label_sampler", QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS[0]
+                ),
             )
         else:
             raise ValueError(
@@ -3160,13 +3118,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(best_values, list)
                 and len(best_values) == n_objectives
                 and all(
-                    self.optuna_validate_value(value) is not None
+                    QuickAdapterRegressorV3.optuna_validate_value(value) is not None
                     for value in best_values
                 )
             )
         else:
             best_value = self.get_optuna_value(pair, namespace)
-            return self.optuna_validate_value(best_value) is not None
+            return QuickAdapterRegressorV3.optuna_validate_value(best_value) is not None
 
     def optuna_enqueue_previous_best_params(
         self, pair: str, namespace: OptunaNamespace, study: Optional[optuna.study.Study]
