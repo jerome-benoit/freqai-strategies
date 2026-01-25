@@ -889,6 +889,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "freqai.optuna_hyperopt",
             logger,
         )
+        resolve_deprecated_params(
+            self.freqai_info.get("label_pipeline", {}),
+            "freqai.label_pipeline",
+            logger,
+            root_config=self.freqai_info,
+        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(

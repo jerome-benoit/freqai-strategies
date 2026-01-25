@@ -160,16 +160,29 @@ DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
 
 
-PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
+# Deprecation mapping: section -> new_key -> old_key_or_source
+# If str: rename within same section (old_key in same config dict)
+# If tuple[str, str]: move from another section (old_section, old_key)
+PARAM_DEPRECATIONS: Final[dict[str, dict[str, str | tuple[str, str]]]] = {
     "freqai": {
         "label_weighting": "extrema_weighting",
         "label_smoothing": "extrema_smoothing",
         "label_prediction": "predictions_extrema",
     },
-    "label_smoothing": {
+    "freqai.label_smoothing": {
         "window_candles": "window",
     },
-    "label_prediction": {
+    "freqai.label_pipeline": {
+        # Moved from label_weighting (was in extrema_weighting)
+        "standardization": ("label_weighting", "standardization"),
+        "robust_quantiles": ("label_weighting", "robust_quantiles"),
+        "mmad_scaling_factor": ("label_weighting", "mmad_scaling_factor"),
+        "normalization": ("label_weighting", "normalization"),
+        "minmax_range": ("label_weighting", "minmax_range"),
+        "sigmoid_scale": ("label_weighting", "sigmoid_scale"),
+        "gamma": ("label_weighting", "gamma"),
+    },
+    "freqai.label_prediction": {
         "threshold_method": "threshold_smoothing_method",
         "keep_fraction": "keep_extrema_fraction",
         "outlier_quantile": "outlier_threshold_quantile",
@@ -199,20 +212,42 @@ def resolve_deprecated_params(
     config: dict[str, Any],
     section: str,
     logger: Logger,
+    root_config: dict[str, Any] | None = None,
 ) -> None:
     deprecations = PARAM_DEPRECATIONS.get(section, {})
     if not deprecations:
         return
 
-    for new_key, old_key in deprecations.items():
-        if old_key in config and new_key not in config:
-            logger.warning(f"{section}.{old_key} is deprecated, use {new_key} instead")
-            config[new_key] = config.pop(old_key)
-        elif old_key in config and new_key in config:
-            logger.warning(
-                f"{section} has both {new_key} and deprecated {old_key}, using {new_key}"
-            )
-            del config[old_key]
+    for new_key, old_source in deprecations.items():
+        if isinstance(old_source, tuple):
+            # Cross-section move: (old_section, old_key)
+            old_section, old_key = old_source
+            source_config = root_config.get(old_section, {}) if root_config else None
+            if source_config and old_key in source_config and new_key not in config:
+                logger.warning(
+                    f"{old_section}.{old_key} has moved to {section}.{new_key}"
+                )
+                config[new_key] = source_config.pop(old_key)
+            elif source_config and old_key in source_config and new_key in config:
+                logger.warning(
+                    f"{section} has {new_key} and deprecated {old_section}.{old_key}, "
+                    f"using {section}.{new_key}"
+                )
+                del source_config[old_key]
+        else:
+            # Same-section rename: old_key is a string
+            old_key = old_source
+            if old_key in config and new_key not in config:
+                logger.warning(
+                    f"{section}.{old_key} is deprecated, use {new_key} instead"
+                )
+                config[new_key] = config.pop(old_key)
+            elif old_key in config and new_key in config:
+                logger.warning(
+                    f"{section} has both {new_key} and deprecated {old_key}, "
+                    f"using {new_key}"
+                )
+                del config[old_key]
 
 
 def _get_label_config(

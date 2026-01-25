@@ -185,6 +185,12 @@ class QuickAdapterV3(IStrategy):
             "reversal_confirmation",
             logger,
         )
+        resolve_deprecated_params(
+            freqai_config.get("label_pipeline", {}),
+            "freqai.label_pipeline",
+            logger,
+            root_config=freqai_config,
+        )
 
     @staticmethod
     @lru_cache(maxsize=None)
