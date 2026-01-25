@@ -43,7 +43,6 @@ from Utils import (
     DEFAULTS_LABEL_PREDICTION,
     EXTREMA_COLUMN,
     REGRESSORS,
-    WEIGHT_STRATEGIES,
     Regressor,
     eval_set_and_weights,
     fit_regressor,
@@ -52,11 +51,10 @@ from Utils import (
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
-    get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
-    soft_extremum,
     resolve_deprecated_params,
+    soft_extremum,
     zigzag,
 )
 
@@ -1287,20 +1285,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return Pipeline(steps)
 
     def define_label_pipeline(self, threads: int = -1) -> Pipeline:
-        label_weighting_raw = self.freqai_info.get("label_weighting")
         label_pipeline_raw = self.freqai_info.get("label_pipeline")
-
-        if not isinstance(label_weighting_raw, dict):
-            label_weighting_raw = {}
         if not isinstance(label_pipeline_raw, dict):
             label_pipeline_raw = {}
-        label_weighting = get_label_weighting_config(label_weighting_raw, logger)
         label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
-
-        if (
-            label_weighting["default"]["strategy"] == WEIGHT_STRATEGIES[0]  # "none"
-        ):
-            return super().define_label_pipeline(threads)
 
         return Pipeline(
             [
