@@ -458,7 +458,7 @@ def get_label_pipeline_config(
     )
 
 
-def get_column_config(
+def get_label_column_config(
     column_name: str,
     default_config: dict[str, Any],
     columns_config: dict[str, dict[str, Any]],

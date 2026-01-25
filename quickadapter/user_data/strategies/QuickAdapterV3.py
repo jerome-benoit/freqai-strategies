@@ -44,7 +44,7 @@ from Utils import (
     format_number,
     generate_label_data,
     get_callable_sha256,
-    get_column_config,
+    get_label_column_config,
     get_distance,
     get_label_defaults,
     get_label_pipeline_config,
@@ -869,7 +869,7 @@ class QuickAdapterV3(IStrategy):
                     f"[{pair}] Labeled {len(label_data.indices)} points for {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
                 )
 
-            col_weighting_config = get_column_config(
+            col_weighting_config = get_label_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
@@ -882,7 +882,7 @@ class QuickAdapterV3(IStrategy):
 
             dataframe[label_col] = weighted_label
 
-            col_smoothing_config = get_column_config(
+            col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
 

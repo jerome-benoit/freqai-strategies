@@ -17,7 +17,7 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-from Utils import get_column_config
+from Utils import get_label_column_config
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ class _LabelTransformerConfig:
             return cls(default=default, columns={})
 
     def get_column_config(self, column_name: str) -> dict[str, Any]:
-        return get_column_config(column_name, self.default, self.columns)
+        return get_label_column_config(column_name, self.default, self.columns)
 
 
 class LabelTransformer(BaseTransform):

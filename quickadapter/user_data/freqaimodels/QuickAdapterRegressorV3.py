@@ -47,7 +47,7 @@ from Utils import (
     eval_set_and_weights,
     fit_regressor,
     format_number,
-    get_column_config,
+    get_label_column_config,
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
@@ -1567,7 +1567,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pred_label = pred_label.iloc[-thresholds_candles:].copy()
 
         label_prediction = self.label_prediction
-        col_prediction_config = get_column_config(
+        col_prediction_config = get_label_column_config(
             label_col, label_prediction["default"], label_prediction["columns"]
         )
 
