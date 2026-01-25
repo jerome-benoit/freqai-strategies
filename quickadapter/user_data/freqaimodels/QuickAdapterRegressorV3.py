@@ -1078,7 +1078,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_natr_multiplier = float(
             self.ft_params.get("label_natr_multiplier", default_label_natr_multiplier)
         )
-        logger.info("Label Configuration:")
+        logger.info("Label Hyperparameters:")
         logger.info(
             f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
         )
