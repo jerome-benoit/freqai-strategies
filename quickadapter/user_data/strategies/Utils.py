@@ -197,21 +197,18 @@ def resolve_deprecated_params(
     config: dict[str, Any],
     section: str,
     logger: Logger,
-    *,
-    log_prefix: str | None = None,
 ) -> None:
     deprecations = PARAM_DEPRECATIONS.get(section, {})
     if not deprecations:
         return
 
-    prefix = log_prefix if log_prefix is not None else section
     for new_key, old_key in deprecations.items():
         if old_key in config and new_key not in config:
-            logger.warning(f"{prefix}.{old_key} is deprecated, use {new_key} instead")
+            logger.warning(f"{section}.{old_key} is deprecated, use {new_key} instead")
             config[new_key] = config.pop(old_key)
         elif old_key in config and new_key in config:
             logger.warning(
-                f"{prefix} has both {new_key} and deprecated {old_key}, using {new_key}"
+                f"{section} has both {new_key} and deprecated {old_key}, using {new_key}"
             )
             del config[old_key]
 
@@ -1048,18 +1045,6 @@ def apply_label_weighting(
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
 ) -> tuple[pd.Series, pd.Series]:
-    """
-    Apply weighting to label values based on provided metrics.
-
-    Args:
-        label: Series of label to weight.
-        indices: Indices where metrics were computed (sparse).
-        metrics: Dict mapping metric names to their values at indices.
-        weighting_config: Weighting configuration with strategy, aggregation, etc.
-
-    Returns:
-        Tuple of (weighted_values, weights) as Series.
-    """
     label_values = label.to_numpy(dtype=float)
     label_index = label.index
     n_values = len(label_values)

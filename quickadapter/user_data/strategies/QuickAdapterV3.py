@@ -818,7 +818,6 @@ class QuickAdapterV3(IStrategy):
         return self.get_label_natr_multiplier(pair) * fraction
 
     def get_label_params(self, pair: str, label_col: str) -> dict[str, Any]:
-        """Build label generation params for a specific label column."""
         if label_col == EXTREMA_COLUMN:
             return {
                 "natr_period": self.get_label_period_candles(pair),
@@ -866,7 +865,7 @@ class QuickAdapterV3(IStrategy):
                 )
             else:
                 logger.info(
-                    f"[{pair}] Labeled {len(label_data.indices)} points for {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                    f"[{pair}] Labeled {len(label_data.indices)} {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
                 )
 
             col_weighting_config = get_label_column_config(

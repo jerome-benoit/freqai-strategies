@@ -1031,6 +1031,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_prediction = self.label_prediction
         label_prediction_default = label_prediction["default"]
         logger.info("Label Prediction:")
+        logger.info(f"  method: {label_prediction_default['method']}")
         logger.info(
             f"  selection_method: {label_prediction_default['selection_method']}"
         )
