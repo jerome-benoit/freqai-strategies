@@ -42,7 +42,6 @@ from LabelTransformer import (
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
-    EXTREMA_COLUMN,
     LABEL_COLUMNS,
     REGRESSORS,
     Regressor,
@@ -1489,24 +1488,54 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             .reset_index(drop=True)
         )
 
-        for label_col in dk.label_list:
-            minima_thresh_col = f"{label_col}_minima_threshold"
-            maxima_thresh_col = f"{label_col}_maxima_threshold"
+        di_values = pred_df.get("DI_values")
 
-            if not warmed_up:
-                dk.data["extra_returns_per_train"][minima_thresh_col] = -2
-                dk.data["extra_returns_per_train"][maxima_thresh_col] = 2
-            else:
+        label_prediction = self.label_prediction
+        for label_col in dk.label_list:
+            col_prediction_config = get_label_column_config(
+                label_col, label_prediction["default"], label_prediction["columns"]
+            )
+            method = col_prediction_config.get("method")
+            if method == PREDICTION_METHODS[0]:  # "none"
+                continue
+            elif method == PREDICTION_METHODS[1]:  # "thresholding"
+                minima_thresh_col = f"{label_col}_minima_threshold"
+                maxima_thresh_col = f"{label_col}_maxima_threshold"
+                if not warmed_up:
+                    dk.data["extra_returns_per_train"][minima_thresh_col] = -2.0
+                    dk.data["extra_returns_per_train"][maxima_thresh_col] = 2.0
+                    continue
                 min_pred, max_pred = self.min_max_pred(
+                    label_col,
+                    col_prediction_config,
                     pred_df,
                     fit_live_predictions_candles,
                     self.get_optuna_params(
                         pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
                     ).get("label_period_candles"),  # "label"
-                    label_col=label_col,
                 )
                 dk.data["extra_returns_per_train"][minima_thresh_col] = min_pred
                 dk.data["extra_returns_per_train"][maxima_thresh_col] = max_pred
+                # Fit DI_value cutoff
+                if not warmed_up:
+                    f = [0.0, 0.0, 0.0]
+                    cutoff = 2.0
+                else:
+                    f = sp.stats.weibull_min.fit(
+                        pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
+                    )
+                    outlier_quantile = col_prediction_config.get(
+                        "outlier_quantile",
+                        DEFAULTS_LABEL_PREDICTION["outlier_quantile"],
+                    )
+                    cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
+                    dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
+
+        dk.data["DI_value_mean"] = di_values.mean()
+        dk.data["DI_value_std"] = di_values.std(ddof=1)
+        dk.data["extra_returns_per_train"]["DI_value_param1"] = f[0]
+        dk.data["extra_returns_per_train"]["DI_value_param2"] = f[1]
+        dk.data["extra_returns_per_train"]["DI_value_param3"] = f[2]
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
         for label in dk.label_list + dk.unique_class_list:
@@ -1518,29 +1547,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else:
                 f = sp.stats.norm.fit(pred_df_label)
             dk.data["labels_mean"][label], dk.data["labels_std"][label] = f[0], f[1]
-
-        di_values = pred_df.get("DI_values")
-
-        # Fit DI_value cutoff
-        if not warmed_up:
-            f = [0.0, 0.0, 0.0]
-            cutoff = 2.0
-        else:
-            f = sp.stats.weibull_min.fit(
-                pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
-            )
-            label_prediction = self.label_prediction
-            outlier_quantile = label_prediction["default"].get(
-                "outlier_quantile", DEFAULTS_LABEL_PREDICTION["outlier_quantile"]
-            )
-            cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
-
-        dk.data["DI_value_mean"] = di_values.mean()
-        dk.data["DI_value_std"] = di_values.std(ddof=1)
-        dk.data["extra_returns_per_train"]["DI_value_param1"] = f[0]
-        dk.data["extra_returns_per_train"]["DI_value_param2"] = f[1]
-        dk.data["extra_returns_per_train"]["DI_value_param3"] = f[2]
-        dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
 
         dk.data["extra_returns_per_train"]["label_period_candles"] = (
             self.get_optuna_params(
@@ -1567,10 +1573,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def min_max_pred(
         self,
+        label_col: str,
+        col_prediction_config: dict[str, Any],
         pred_df: pd.DataFrame,
         fit_live_predictions_candles: int,
         label_period_candles: int,
-        label_col: str = EXTREMA_COLUMN,
     ) -> tuple[float, float]:
         if not isinstance(label_period_candles, int) or label_period_candles <= 0:
             label_period_candles = self.ft_params.get(
@@ -1585,14 +1592,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pred_label is None:
             return -2.0, 2.0
         pred_label = pred_label.iloc[-thresholds_candles:].copy()
-
-        label_prediction = self.label_prediction
-        col_prediction_config = get_label_column_config(
-            label_col, label_prediction["default"], label_prediction["columns"]
-        )
-
-        if col_prediction_config.get("method") == PREDICTION_METHODS[0]:  # "none"
-            return -2.0, 2.0
 
         extrema_selection = col_prediction_config["selection_method"]
         threshold_method = col_prediction_config["threshold_method"]

@@ -341,7 +341,9 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def trade_price_target_method(self) -> str:
-        exit_pricing = self.config.get("exit_pricing", {})
+        exit_pricing = self.config.get("exit_pricing")
+        if not isinstance(exit_pricing, dict):
+            exit_pricing = {}
         trade_price_target_method = exit_pricing.get(
             "trade_price_target_method",
             TRADE_PRICE_TARGETS[0],  # "moving_average"
@@ -357,7 +359,9 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def reversal_confirmation(self) -> dict[str, int | float]:
-        reversal_confirmation = self.config.get("reversal_confirmation", {})
+        reversal_confirmation = self.config.get("reversal_confirmation")
+        if not isinstance(reversal_confirmation, dict):
+            reversal_confirmation = {}
         defaults = QuickAdapterV3.default_reversal_confirmation
 
         lookback_period_candles = reversal_confirmation.get(
@@ -824,23 +828,44 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
 
-        extrema_direction: Series | None = None
-
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
             label_data = generate_label_data(dataframe, label_col, label_params)
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                    f"[{pair}] No {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] {len(label_data.indices)} {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                    f"[{pair}] {len(label_data.indices)} {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
                 )
 
             if label_col == EXTREMA_COLUMN:
+                extrema = dataframe[label_col]
                 extrema_direction = label_data.series
+                plot_eps = extrema.abs().where(extrema.ne(0.0)).min()
+                if not np.isfinite(plot_eps):
+                    plot_eps = 0.0
+                plot_eps = max(
+                    float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS
+                )
+                dataframe[MAXIMA_COLUMN] = (
+                    extrema.where(extrema_direction.gt(0), 0.0)
+                    .clip(lower=0.0)
+                    .mask(
+                        extrema_direction.gt(0) & extrema.eq(0.0),
+                        plot_eps,
+                    )
+                )
+                dataframe[MINIMA_COLUMN] = (
+                    extrema.where(extrema_direction.lt(0), 0.0)
+                    .clip(upper=0.0)
+                    .mask(
+                        extrema_direction.lt(0) & extrema.eq(0.0),
+                        -plot_eps,
+                    )
+                )
 
             col_weighting_config = get_label_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]
@@ -868,30 +893,6 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config["mode"],
                 col_smoothing_config["sigma"],
             )
-
-        plot_eps = (
-            dataframe[EXTREMA_COLUMN]
-            .abs()
-            .where(dataframe[EXTREMA_COLUMN].ne(0.0))
-            .min()
-        )
-        if not np.isfinite(plot_eps):
-            plot_eps = 0.0
-        plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
-        dataframe[MAXIMA_COLUMN] = (
-            dataframe[EXTREMA_COLUMN]
-            .where(extrema_direction.gt(0), 0.0)
-            .clip(lower=0.0)
-            .mask(extrema_direction.gt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), plot_eps)
-        )
-        dataframe[MINIMA_COLUMN] = (
-            dataframe[EXTREMA_COLUMN]
-            .where(extrema_direction.lt(0), 0.0)
-            .clip(upper=0.0)
-            .mask(
-                extrema_direction.lt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), -plot_eps
-            )
-        )
 
         dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]
 
