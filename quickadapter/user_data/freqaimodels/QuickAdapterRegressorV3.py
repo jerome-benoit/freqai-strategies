@@ -106,7 +106,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
-
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
     _OPTUNA_SAMPLERS: Final[tuple[OptunaSampler, ...]] = (
         "tpe",
@@ -847,11 +846,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return label_frequency_candles
 
     @property
+    def label_pipeline(self) -> dict[str, Any]:
+        label_pipeline_raw = self.freqai_info.get("label_pipeline")
+        if not isinstance(label_pipeline_raw, dict):
+            label_pipeline_raw = {}
+        return get_label_pipeline_config(label_pipeline_raw, logger)
+
+    @property
     def label_prediction(self) -> dict[str, Any]:
         label_prediction_raw = self.freqai_info.get("label_prediction")
         if not isinstance(label_prediction_raw, dict):
             label_prediction_raw = {}
-
         return get_label_prediction_config(label_prediction_raw, logger)
 
     @property
@@ -1029,23 +1034,46 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"  label_p_order: {format_number(label_p_order_default)} (default for {distance_metric})"
                     )
 
+        label_pipeline = self.label_pipeline
         label_prediction = self.label_prediction
         for label_col in LABEL_COLUMNS:
-            logger.info(f"Label Prediction [{label_col}]:")
+            logger.info(f"Label Configuration [{label_col}]:")
+
+            col_pipeline = get_label_column_config(
+                label_col, label_pipeline["default"], label_pipeline["columns"]
+            )
+            logger.info("  Pipeline:")
+            logger.info(f"    standardization: {col_pipeline['standardization']}")
+            logger.info(
+                f"    robust_quantiles: ({format_number(col_pipeline['robust_quantiles'][0])}, {format_number(col_pipeline['robust_quantiles'][1])})"
+            )
+            logger.info(
+                f"    mmad_scaling_factor: {format_number(col_pipeline['mmad_scaling_factor'])}"
+            )
+            logger.info(f"    normalization: {col_pipeline['normalization']}")
+            logger.info(
+                f"    minmax_range: ({format_number(col_pipeline['minmax_range'][0])}, {format_number(col_pipeline['minmax_range'][1])})"
+            )
+            logger.info(
+                f"    sigmoid_scale: {format_number(col_pipeline['sigmoid_scale'])}"
+            )
+            logger.info(f"    gamma: {format_number(col_pipeline['gamma'])}")
+
             col_prediction = get_label_column_config(
                 label_col, label_prediction["default"], label_prediction["columns"]
             )
-            logger.info(f"  method: {col_prediction['method']}")
-            logger.info(f"  selection_method: {col_prediction['selection_method']}")
-            logger.info(f"  threshold_method: {col_prediction['threshold_method']}")
+            logger.info("  Prediction:")
+            logger.info(f"    method: {col_prediction['method']}")
+            logger.info(f"    selection_method: {col_prediction['selection_method']}")
+            logger.info(f"    threshold_method: {col_prediction['threshold_method']}")
             logger.info(
-                f"  outlier_quantile: {format_number(col_prediction['outlier_quantile'])}"
+                f"    outlier_quantile: {format_number(col_prediction['outlier_quantile'])}"
             )
             logger.info(
-                f"  soft_extremum_alpha: {format_number(col_prediction['soft_extremum_alpha'])}"
+                f"    soft_extremum_alpha: {format_number(col_prediction['soft_extremum_alpha'])}"
             )
             logger.info(
-                f"  keep_fraction: {format_number(col_prediction['keep_fraction'])}"
+                f"    keep_fraction: {format_number(col_prediction['keep_fraction'])}"
             )
 
         default_label_period_candles, default_label_natr_multiplier = (
@@ -1282,16 +1310,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return Pipeline(steps)
 
     def define_label_pipeline(self, threads: int = -1) -> Pipeline:
-        label_pipeline_raw = self.freqai_info.get("label_pipeline")
-        if not isinstance(label_pipeline_raw, dict):
-            label_pipeline_raw = {}
-        label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
-
         return Pipeline(
             [
                 (
                     "label_transformer",
-                    LabelTransformer(label_transformer=label_pipeline),
+                    LabelTransformer(label_transformer=self.label_pipeline),
                 ),
             ]
         )

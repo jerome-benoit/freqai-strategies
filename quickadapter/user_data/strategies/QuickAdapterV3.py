@@ -47,7 +47,6 @@ from Utils import (
     get_distance,
     get_label_column_config,
     get_label_defaults,
-    get_label_pipeline_config,
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
@@ -329,17 +328,10 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def label_weighting(self) -> dict[str, Any]:
-        label_weighting = self.freqai_info.get("label_weighting")
-        if not isinstance(label_weighting, dict):
-            label_weighting = {}
-        return get_label_weighting_config(label_weighting, logger)
-
-    @property
-    def label_pipeline(self) -> dict[str, Any]:
-        label_pipeline = self.freqai_info.get("label_pipeline")
-        if not isinstance(label_pipeline, dict):
-            label_pipeline = {}
-        return get_label_pipeline_config(label_pipeline, logger)
+        label_weighting_raw = self.freqai_info.get("label_weighting")
+        if not isinstance(label_weighting_raw, dict):
+            label_weighting_raw = {}
+        return get_label_weighting_config(label_weighting_raw, logger)
 
     @property
     def label_smoothing(self) -> dict[str, Any]:
@@ -492,8 +484,6 @@ class QuickAdapterV3(IStrategy):
 
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
-        label_pipeline = self.label_pipeline
-
         for label_col in LABEL_COLUMNS:
             logger.info(f"Label Configuration [{label_col}]:")
 
@@ -510,26 +500,6 @@ class QuickAdapterV3(IStrategy):
                 logger.info(
                     f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
                 )
-
-            col_pipeline = get_label_column_config(
-                label_col, label_pipeline["default"], label_pipeline["columns"]
-            )
-            logger.info("  Pipeline:")
-            logger.info(f"    standardization: {col_pipeline['standardization']}")
-            logger.info(
-                f"    robust_quantiles: ({format_number(col_pipeline['robust_quantiles'][0])}, {format_number(col_pipeline['robust_quantiles'][1])})"
-            )
-            logger.info(
-                f"    mmad_scaling_factor: {format_number(col_pipeline['mmad_scaling_factor'])}"
-            )
-            logger.info(f"    normalization: {col_pipeline['normalization']}")
-            logger.info(
-                f"    minmax_range: ({format_number(col_pipeline['minmax_range'][0])}, {format_number(col_pipeline['minmax_range'][1])})"
-            )
-            logger.info(
-                f"    sigmoid_scale: {format_number(col_pipeline['sigmoid_scale'])}"
-            )
-            logger.info(f"    gamma: {format_number(col_pipeline['gamma'])}")
 
             col_smoothing = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
