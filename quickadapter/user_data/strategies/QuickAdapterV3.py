@@ -170,6 +170,11 @@ class QuickAdapterV3(IStrategy):
         freqai_config = self.config.get("freqai", {})
         resolve_deprecated_params(freqai_config, "freqai", logger)
         resolve_deprecated_params(
+            freqai_config.get("label_smoothing", {}),
+            "label_smoothing",
+            logger,
+        )
+        resolve_deprecated_params(
             freqai_config.get("feature_parameters", {}),
             "freqai.feature_parameters",
             logger,
@@ -180,11 +185,6 @@ class QuickAdapterV3(IStrategy):
         resolve_deprecated_params(
             self.config.get("reversal_confirmation", {}),
             "reversal_confirmation",
-            logger,
-        )
-        resolve_deprecated_params(
-            freqai_config.get("label_smoothing", {}),
-            "label_smoothing",
             logger,
         )
 

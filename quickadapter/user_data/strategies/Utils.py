@@ -42,7 +42,6 @@ from LabelTransformer import (
     CombinedMetric,
     SmoothingMethod,
     SmoothingMode,
-    get_label_column_config,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -174,7 +173,7 @@ PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
         "threshold_method": "threshold_smoothing_method",
         "keep_fraction": "keep_extrema_fraction",
         "outlier_quantile": "outlier_threshold_quantile",
-        "soft_extremum_alpha": "soft_alpha",
+        "soft_extremum_alpha": "thresholds_alpha",
     },
     "exit_pricing": {
         "trade_price_target_method": "trade_price_target",
