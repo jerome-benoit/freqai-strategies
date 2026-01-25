@@ -169,7 +169,7 @@ class QuickAdapterV3(IStrategy):
         resolve_deprecated_params(freqai_config, "freqai", logger)
         resolve_deprecated_params(
             freqai_config.get("label_smoothing", {}),
-            "label_smoothing",
+            "freqai.label_smoothing",
             logger,
         )
         resolve_deprecated_params(

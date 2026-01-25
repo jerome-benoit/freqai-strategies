@@ -881,7 +881,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         resolve_deprecated_params(self.freqai_info, "freqai", logger)
         resolve_deprecated_params(
             self.freqai_info.get("label_prediction", {}),
-            "label_prediction",
+            "freqai.label_prediction",
             logger,
         )
         resolve_deprecated_params(
