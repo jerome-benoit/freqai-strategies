@@ -213,6 +213,12 @@ def get_label_column_config(
                 specificity = float(sum(1 for c in pattern if c not in "*?[]"))
             matches.append((specificity, pattern, col_config))
 
+    if columns_config and not matches:
+        logger.warning(
+            f"Column '{column_name}' did not match any pattern in columns config. "
+            f"Available patterns: {list(columns_config.keys())}"
+        )
+
     matches.sort(key=lambda x: x[0])
 
     for _, _, col_config in matches:

@@ -126,7 +126,7 @@ def generate_label_data(
     if generator is None:
         raise KeyError(
             f"No label generator registered for column '{label_column}'. "
-            f"Available: {list(_LABEL_GENERATORS.keys())}"
+            f"Available columns: {list(_LABEL_GENERATORS.keys())}"
         )
     return generator(dataframe, params)
 
