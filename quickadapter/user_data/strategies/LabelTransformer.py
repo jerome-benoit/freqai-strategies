@@ -209,13 +209,11 @@ def get_label_column_config(
 @dataclass
 class _ColumnState:
     config: dict[str, Any]
-    # Phase 1: Standardization
     standard_scaler: StandardScaler | None = None
     robust_scaler: RobustScaler | None = None
     power_transformer: PowerTransformer | None = None
     median: float = 0.0
     mad: float = 1.0
-    # Phase 2: Normalization
     minmax_scaler: MinMaxScaler | None = None
     maxabs_scaler: MaxAbsScaler | None = None
 
