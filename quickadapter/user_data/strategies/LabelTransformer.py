@@ -260,13 +260,13 @@ class _LabelTransformerConfig:
 
 class LabelTransformer(BaseTransform):
     _STANDARDIZATION_SCALERS: dict[str, str] = {
-        "zscore": "standard_scaler",
-        "robust": "robust_scaler",
-        "power_yj": "power_transformer",
+        STANDARDIZATION_TYPES[1]: "standard_scaler",  # zscore
+        STANDARDIZATION_TYPES[2]: "robust_scaler",  # robust
+        STANDARDIZATION_TYPES[4]: "power_transformer",  # power_yj
     }
     _NORMALIZATION_SCALERS: dict[str, str] = {
-        "maxabs": "maxabs_scaler",
-        "minmax": "minmax_scaler",
+        NORMALIZATION_TYPES[0]: "maxabs_scaler",  # maxabs
+        NORMALIZATION_TYPES[1]: "minmax_scaler",  # minmax
     }
 
     def __init__(self, *, label_transformer: dict[str, Any]) -> None:
@@ -348,9 +348,9 @@ class LabelTransformer(BaseTransform):
         inverse: bool = False,
     ) -> NDArray[np.floating]:
         method = state.config["standardization"]
-        if method == "none":
+        if method == STANDARDIZATION_TYPES[0]:  # none
             return values
-        if method == "mmad":
+        if method == STANDARDIZATION_TYPES[3]:  # mmad
             return self._apply_mmad(
                 values,
                 mask,
@@ -379,11 +379,11 @@ class LabelTransformer(BaseTransform):
         inverse: bool = False,
     ) -> NDArray[np.floating]:
         method = state.config["normalization"]
-        if method == "sigmoid":
+        if method == NORMALIZATION_TYPES[2]:  # sigmoid
             return self._apply_sigmoid(
                 values, mask, state.config["sigmoid_scale"], inverse=inverse
             )
-        if method == "none":
+        if method == NORMALIZATION_TYPES[3]:  # none
             return values
 
         scaler_attr = self._NORMALIZATION_SCALERS.get(method)
@@ -401,25 +401,25 @@ class LabelTransformer(BaseTransform):
         self, values: NDArray[np.floating], state: _ColumnState
     ) -> None:
         method = state.config["standardization"]
-        if method == "none":
+        if method == STANDARDIZATION_TYPES[0]:  # none
             return
-        if method == "zscore":
+        if method == STANDARDIZATION_TYPES[1]:  # zscore
             state.standard_scaler = StandardScaler()
             state.standard_scaler.fit(values.reshape(-1, 1))
             return
-        if method == "robust":
+        if method == STANDARDIZATION_TYPES[2]:  # robust
             q = state.config["robust_quantiles"]
             state.robust_scaler = RobustScaler(quantile_range=(q[0] * 100, q[1] * 100))
             state.robust_scaler.fit(values.reshape(-1, 1))
             return
-        if method == "mmad":
+        if method == STANDARDIZATION_TYPES[3]:  # mmad
             state.median = float(np.median(values))
             mad = np.median(np.abs(values - state.median))
             state.mad = (
                 float(mad) if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
             )
             return
-        if method == "power_yj":
+        if method == STANDARDIZATION_TYPES[4]:  # power_yj
             state.power_transformer = PowerTransformer(
                 method="yeo-johnson", standardize=True
             )
@@ -435,17 +435,17 @@ class LabelTransformer(BaseTransform):
         self, values: NDArray[np.floating], state: _ColumnState
     ) -> None:
         method = state.config["normalization"]
-        if method == "maxabs":
+        if method == NORMALIZATION_TYPES[0]:  # maxabs
             state.maxabs_scaler = MaxAbsScaler()
             state.maxabs_scaler.fit(values.reshape(-1, 1))
             return
-        if method == "minmax":
+        if method == NORMALIZATION_TYPES[1]:  # minmax
             state.minmax_scaler = MinMaxScaler(
                 feature_range=state.config["minmax_range"]
             )
             state.minmax_scaler.fit(values.reshape(-1, 1))
             return
-        if method in ("sigmoid", "none"):
+        if method in (NORMALIZATION_TYPES[2], NORMALIZATION_TYPES[3]):  # sigmoid, none
             return
 
         raise ValueError(
@@ -456,7 +456,6 @@ class LabelTransformer(BaseTransform):
     def _fit_column(
         self, column_name: str, values: NDArray[np.floating]
     ) -> _ColumnState:
-        """Fit transformation pipeline for a single column."""
         config = self._config.get_column_config(column_name)
         state = _ColumnState(config=config)
 
