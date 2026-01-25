@@ -123,12 +123,6 @@ def generate_label_data(
     label_column: str,
     params: dict[str, Any],
 ) -> LabelData:
-    """
-    Generate label data for a specific label column.
-
-    Dispatches to registered generator for the column.
-    Raises KeyError if no generator registered for the column.
-    """
     generator = _LABEL_GENERATORS.get(label_column)
     if generator is None:
         raise KeyError(
@@ -168,10 +162,16 @@ ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
 
 
 PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
+    "freqai": {
+        "label_weighting": "extrema_weighting",
+        "label_smoothing": "extrema_smoothing",
+        "label_prediction": "predictions_extrema",
+    },
     "label_prediction": {
         "threshold_method": "threshold_smoothing_method",
         "keep_fraction": "keep_extrema_fraction",
         "outlier_quantile": "outlier_threshold_quantile",
+        "soft_extremum_alpha": "soft_alpha",
     },
     "exit_pricing": {
         "trade_price_target_method": "trade_price_target",
@@ -200,19 +200,6 @@ def resolve_deprecated_params(
     *,
     log_prefix: str | None = None,
 ) -> None:
-    """
-    Resolve deprecated parameter names to their new names in-place.
-
-    Uses PARAM_DEPRECATIONS table to map old_key -> new_key.
-    Logs warnings for deprecated keys found.
-    Modifies config dict in-place.
-
-    Args:
-        config: Configuration dict to resolve (modified in-place)
-        section: Key in PARAM_DEPRECATIONS table
-        logger: Logger instance
-        log_prefix: Optional prefix for log messages (defaults to section)
-    """
     deprecations = PARAM_DEPRECATIONS.get(section, {})
     if not deprecations:
         return
@@ -839,7 +826,6 @@ def smooth_label(
             index=series.index,
         )
     else:
-        # Fallback to gaussian
         return zero_phase_filter(
             series=series,
             window=odd_window,
@@ -960,7 +946,7 @@ def _aggregate_metrics(
         )
 
 
-def _compute_combined_weights(
+def _compute_combined_label_weights(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
@@ -1003,18 +989,6 @@ def compute_label_weights(
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
 ) -> NDArray[np.floating]:
-    """
-    Compute weights for label values based on provided metrics.
-
-    Args:
-        n_values: Total number of label values (length of output array).
-        indices: Indices where metrics were computed (sparse).
-        metrics: Dict mapping metric names to their values at indices.
-        weighting_config: Weighting configuration with strategy, aggregation, etc.
-
-    Returns:
-        Array of weights with length n_values.
-    """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
 
@@ -1026,7 +1000,7 @@ def compute_label_weights(
     if strategy in metrics:
         weights = np.asarray(metrics[strategy], dtype=float)
     elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
-        weights = _compute_combined_weights(
+        weights = _compute_combined_label_weights(
             metrics=metrics,
             metric_coefficients=label_weighting["metric_coefficients"],
             aggregation=label_weighting["aggregation"],

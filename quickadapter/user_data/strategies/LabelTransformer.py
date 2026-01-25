@@ -192,7 +192,7 @@ DEFAULTS_LABEL_PREDICTION: Final[dict[str, Any]] = {
     "threshold_method": SKIMAGE_THRESHOLD_METHODS[0],  # "mean"
     "outlier_quantile": 0.999,
     "soft_extremum_alpha": 12.0,
-    "keep_fraction": 1.0,
+    "keep_fraction": 0.5,
 }
 
 
@@ -230,7 +230,6 @@ class _LabelTransformerConfig:
             return cls(default=default, columns={})
 
     def get_column_config(self, column_name: str) -> dict[str, Any]:
-        """Get the configuration for a specific column."""
         return get_column_config(column_name, self.default, self.columns)
 
 

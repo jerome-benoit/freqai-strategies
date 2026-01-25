@@ -849,17 +849,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @property
     def label_prediction(self) -> dict[str, Any]:
-        """
-        Get validated label prediction configuration.
-
-        Supports both new label_prediction config and legacy predictions_extrema fallback.
-
-        Returns:
-            A dict with "default" and "columns" keys for per-label prediction configs.
-        """
-        label_prediction_raw = self.freqai_info.get("label_prediction", {})
+        label_prediction_raw = self.freqai_info.get("label_prediction")
         if not isinstance(label_prediction_raw, dict):
             label_prediction_raw = {}
+
         return get_label_prediction_config(label_prediction_raw, logger)
 
     @property
@@ -882,6 +875,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        resolve_deprecated_params(self.freqai_info, "freqai", logger)
         resolve_deprecated_params(
             self.freqai_info.get("label_prediction", {}),
             "label_prediction",
@@ -1303,7 +1297,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_weighting = get_label_weighting_config(label_weighting_raw, logger)
         label_pipeline = get_label_pipeline_config(label_pipeline_raw, logger)
 
-        if label_weighting["default"]["strategy"] == WEIGHT_STRATEGIES[0]:  # "none"
+        if (
+            label_weighting["default"]["strategy"] == WEIGHT_STRATEGIES[0]  # "none"
+        ):
             return super().define_label_pipeline(threads)
 
         return Pipeline(

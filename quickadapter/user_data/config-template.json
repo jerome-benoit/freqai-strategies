@@ -196,7 +196,6 @@
     //   threshold_smoothing_method -> threshold_method
     //   keep_extrema_fraction -> keep_fraction
     //   outlier_threshold_quantile -> outlier_quantile
-    //   soft_extremum_alpha -> soft_alpha
     //
     // "extrema_weighting": { ... },
     // "extrema_smoothing": { ... },
@@ -214,8 +213,8 @@
       "DI_value_param2": 0,
       "DI_value_param3": 0,
       "DI_cutoff": 2,
-      "&s-minima_threshold": -2,
-      "&s-maxima_threshold": 2,
+      "&s-extrema_minima_threshold": -2,
+      "&s-extrema_maxima_threshold": 2,
       "label_period_candles": 18,
       "label_natr_multiplier": 10.5,
       "hp_rmse": -1

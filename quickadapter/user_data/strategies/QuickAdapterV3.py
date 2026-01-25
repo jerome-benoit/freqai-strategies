@@ -168,6 +168,7 @@ class QuickAdapterV3(IStrategy):
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         freqai_config = self.config.get("freqai", {})
+        resolve_deprecated_params(freqai_config, "freqai", logger)
         resolve_deprecated_params(
             freqai_config.get("feature_parameters", {}),
             "freqai.feature_parameters",
@@ -323,7 +324,6 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def label_weighting(self) -> dict[str, Any]:
-        """Sample weight computation config (strategy, aggregation, etc.)."""
         label_weighting = self.freqai_info.get("label_weighting")
         if not isinstance(label_weighting, dict):
             label_weighting = {}
@@ -331,11 +331,6 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def label_pipeline(self) -> dict[str, Any]:
-        """
-        Label pipeline transformation config (standardization, normalization, gamma).
-
-        Returns a dict with "default" and "columns" keys for per-label support.
-        """
         label_pipeline = self.freqai_info.get("label_pipeline")
         if not isinstance(label_pipeline, dict):
             label_pipeline = {}
@@ -901,6 +896,21 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config["sigma"],
             )
 
+        plot_eps = dataframe[EXTREMA_COLUMN].abs().where(dataframe[EXTREMA_COLUMN].ne(0.0)).min()
+        if not np.isfinite(plot_eps):
+            plot_eps = 0.0
+        plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
+        dataframe[MAXIMA_COLUMN] = (
+            dataframe[EXTREMA_COLUMN].where(extrema_direction.gt(0), 0.0)
+            .clip(lower=0.0)
+            .mask(extrema_direction.gt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), plot_eps)
+        )
+        dataframe[MINIMA_COLUMN] = (
+            dataframe[EXTREMA_COLUMN].where(extrema_direction.lt(0), 0.0)
+            .clip(upper=0.0)
+            .mask(extrema_direction.lt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), -plot_eps)
+        )
+
         dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]
 
         return dataframe
@@ -931,10 +941,10 @@ class QuickAdapterV3(IStrategy):
         )
 
         dataframe["minima_threshold"] = dataframe.get(
-            f"{EXTREMA_COLUMN}_minima_threshold"
+            f"{EXTREMA_COLUMN}_minima_threshold", np.nan
         )
         dataframe["maxima_threshold"] = dataframe.get(
-            f"{EXTREMA_COLUMN}_maxima_threshold"
+            f"{EXTREMA_COLUMN}_maxima_threshold", np.nan
         )
 
         return dataframe
