@@ -1,3 +1,5 @@
+import copy
+import fnmatch
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
@@ -17,7 +19,6 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-from Utils import get_label_column_config
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,30 @@ DEFAULTS_LABEL_PREDICTION: Final[dict[str, Any]] = {
 }
 
 
+def get_label_column_config(
+    column_name: str,
+    default_config: dict[str, Any],
+    columns_config: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    result = copy.deepcopy(default_config)
+
+    matches: list[tuple[float, str, dict[str, Any]]] = []
+    for pattern, col_config in columns_config.items():
+        if fnmatch.fnmatch(column_name, pattern):
+            if "*" not in pattern and "?" not in pattern and "[" not in pattern:
+                specificity = float("inf")
+            else:
+                specificity = float(sum(1 for c in pattern if c not in "*?[]"))
+            matches.append((specificity, pattern, col_config))
+
+    matches.sort(key=lambda x: x[0])
+
+    for _, _, col_config in matches:
+        result.update(col_config)
+
+    return result
+
+
 @dataclass
 class _ColumnState:
     config: dict[str, Any]
@@ -315,7 +340,6 @@ class LabelTransformer(BaseTransform):
         out[mask] = np.sign(values[mask]) * np.power(np.abs(values[mask]), exp)
         return out
 
-
     def _standardize(
         self,
         values: NDArray[np.floating],
@@ -372,7 +396,6 @@ class LabelTransformer(BaseTransform):
         if scaler is None:
             raise RuntimeError(f"{scaler_attr} not fitted")
         return self._apply_scaler(values, mask, scaler, inverse=inverse)
-
 
     def _fit_standardization(
         self, values: NDArray[np.floating], state: _ColumnState

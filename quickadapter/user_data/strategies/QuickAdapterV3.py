@@ -44,8 +44,8 @@ from Utils import (
     format_number,
     generate_label_data,
     get_callable_sha256,
-    get_label_column_config,
     get_distance,
+    get_label_column_config,
     get_label_defaults,
     get_label_pipeline_config,
     get_label_smoothing_config,
@@ -54,9 +54,9 @@ from Utils import (
     nan_average,
     non_zero_diff,
     price_retracement_percent,
+    resolve_deprecated_params,
     smooth_label,
     top_log_return,
-    resolve_deprecated_params,
     validate_range,
     vwapb,
     zlema,
@@ -180,6 +180,11 @@ class QuickAdapterV3(IStrategy):
         resolve_deprecated_params(
             self.config.get("reversal_confirmation", {}),
             "reversal_confirmation",
+            logger,
+        )
+        resolve_deprecated_params(
+            freqai_config.get("label_smoothing", {}),
+            "label_smoothing",
             logger,
         )
 
@@ -486,61 +491,56 @@ class QuickAdapterV3(IStrategy):
         logger.info("=" * 60)
 
         label_weighting = self.label_weighting
+        label_smoothing = self.label_smoothing
         label_pipeline = self.label_pipeline
 
-        logger.info("Label Weighting:")
-        label_weighting_default = label_weighting["default"]
-        logger.info(f"  strategy: {label_weighting_default['strategy']}")
-        logger.info(
-            f"  metric_coefficients: {label_weighting_default['metric_coefficients']}"
-        )
-        logger.info(f"  aggregation: {label_weighting_default['aggregation']}")
-        if (
-            label_weighting_default["aggregation"] == COMBINED_AGGREGATIONS[5]
-        ):  # "softmax"
-            logger.info(
-                f"  softmax_temperature: {format_number(label_weighting_default['softmax_temperature'])}"
-            )
-        if label_weighting["columns"]:
-            logger.info(
-                f"  per-column overrides: {list(label_weighting['columns'].keys())}"
-            )
+        for label_col in LABEL_COLUMNS:
+            logger.info(f"Label Configuration [{label_col}]:")
 
-        logger.info("Label Pipeline:")
-        label_pipeline_default = label_pipeline["default"]
-        logger.info(f"  standardization: {label_pipeline_default['standardization']}")
-        logger.info(
-            f"  robust_quantiles: ({format_number(label_pipeline_default['robust_quantiles'][0])}, {format_number(label_pipeline_default['robust_quantiles'][1])})"
-        )
-        logger.info(
-            f"  mmad_scaling_factor: {format_number(label_pipeline_default['mmad_scaling_factor'])}"
-        )
-        logger.info(f"  normalization: {label_pipeline_default['normalization']}")
-        logger.info(
-            f"  minmax_range: ({format_number(label_pipeline_default['minmax_range'][0])}, {format_number(label_pipeline_default['minmax_range'][1])})"
-        )
-        logger.info(
-            f"  sigmoid_scale: {format_number(label_pipeline_default['sigmoid_scale'])}"
-        )
-        logger.info(f"  gamma: {format_number(label_pipeline_default['gamma'])}")
-        if label_pipeline["columns"]:
-            logger.info(
-                f"  per-column overrides: {list(label_pipeline['columns'].keys())}"
+            col_weighting = get_label_column_config(
+                label_col, label_weighting["default"], label_weighting["columns"]
             )
+            logger.info("  Weighting:")
+            logger.info(f"    strategy: {col_weighting['strategy']}")
+            logger.info(
+                f"    metric_coefficients: {col_weighting['metric_coefficients']}"
+            )
+            logger.info(f"    aggregation: {col_weighting['aggregation']}")
+            if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
+                logger.info(
+                    f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
+                )
 
-        label_smoothing = self.label_smoothing
-        label_smoothing_default = label_smoothing["default"]
-        logger.info("Label Smoothing:")
-        logger.info(f"  method: {label_smoothing_default['method']}")
-        logger.info(f"  window_candles: {label_smoothing_default['window_candles']}")
-        logger.info(f"  beta: {format_number(label_smoothing_default['beta'])}")
-        logger.info(f"  polyorder: {label_smoothing_default['polyorder']}")
-        logger.info(f"  mode: {label_smoothing_default['mode']}")
-        logger.info(f"  sigma: {format_number(label_smoothing_default['sigma'])}")
-        if label_smoothing["columns"]:
-            logger.info(
-                f"  per-column overrides: {list(label_smoothing['columns'].keys())}"
+            col_pipeline = get_label_column_config(
+                label_col, label_pipeline["default"], label_pipeline["columns"]
             )
+            logger.info("  Pipeline:")
+            logger.info(f"    standardization: {col_pipeline['standardization']}")
+            logger.info(
+                f"    robust_quantiles: ({format_number(col_pipeline['robust_quantiles'][0])}, {format_number(col_pipeline['robust_quantiles'][1])})"
+            )
+            logger.info(
+                f"    mmad_scaling_factor: {format_number(col_pipeline['mmad_scaling_factor'])}"
+            )
+            logger.info(f"    normalization: {col_pipeline['normalization']}")
+            logger.info(
+                f"    minmax_range: ({format_number(col_pipeline['minmax_range'][0])}, {format_number(col_pipeline['minmax_range'][1])})"
+            )
+            logger.info(
+                f"    sigmoid_scale: {format_number(col_pipeline['sigmoid_scale'])}"
+            )
+            logger.info(f"    gamma: {format_number(col_pipeline['gamma'])}")
+
+            col_smoothing = get_label_column_config(
+                label_col, label_smoothing["default"], label_smoothing["columns"]
+            )
+            logger.info("  Smoothing:")
+            logger.info(f"    method: {col_smoothing['method']}")
+            logger.info(f"    window_candles: {col_smoothing['window_candles']}")
+            logger.info(f"    beta: {format_number(col_smoothing['beta'])}")
+            logger.info(f"    polyorder: {col_smoothing['polyorder']}")
+            logger.info(f"    mode: {col_smoothing['mode']}")
+            logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
 
         logger.info("Reversal Confirmation:")
         logger.info(
@@ -855,18 +855,23 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
 
+        extrema_direction: Series | None = None
+
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
             label_data = generate_label_data(dataframe, label_col, label_params)
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No labels for {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                    f"[{pair}] No {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] Labeled {len(label_data.indices)} {label_col} | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
+                    f"[{pair}] {len(label_data.indices)} {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params}"
                 )
+
+            if label_col == EXTREMA_COLUMN:
+                extrema_direction = label_data.series
 
             col_weighting_config = get_label_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]
@@ -895,19 +900,28 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config["sigma"],
             )
 
-        plot_eps = dataframe[EXTREMA_COLUMN].abs().where(dataframe[EXTREMA_COLUMN].ne(0.0)).min()
+        plot_eps = (
+            dataframe[EXTREMA_COLUMN]
+            .abs()
+            .where(dataframe[EXTREMA_COLUMN].ne(0.0))
+            .min()
+        )
         if not np.isfinite(plot_eps):
             plot_eps = 0.0
         plot_eps = max(float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS)
         dataframe[MAXIMA_COLUMN] = (
-            dataframe[EXTREMA_COLUMN].where(extrema_direction.gt(0), 0.0)
+            dataframe[EXTREMA_COLUMN]
+            .where(extrema_direction.gt(0), 0.0)
             .clip(lower=0.0)
             .mask(extrema_direction.gt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), plot_eps)
         )
         dataframe[MINIMA_COLUMN] = (
-            dataframe[EXTREMA_COLUMN].where(extrema_direction.lt(0), 0.0)
+            dataframe[EXTREMA_COLUMN]
+            .where(extrema_direction.lt(0), 0.0)
             .clip(upper=0.0)
-            .mask(extrema_direction.lt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), -plot_eps)
+            .mask(
+                extrema_direction.lt(0) & dataframe[EXTREMA_COLUMN].eq(0.0), -plot_eps
+            )
         )
 
         dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]

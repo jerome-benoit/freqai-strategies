@@ -1,5 +1,4 @@
 import copy
-import fnmatch
 import functools
 import hashlib
 import math
@@ -43,6 +42,7 @@ from LabelTransformer import (
     CombinedMetric,
     SmoothingMethod,
     SmoothingMode,
+    get_label_column_config,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -166,6 +166,9 @@ PARAM_DEPRECATIONS: Final[dict[str, dict[str, str]]] = {
         "label_weighting": "extrema_weighting",
         "label_smoothing": "extrema_smoothing",
         "label_prediction": "predictions_extrema",
+    },
+    "label_smoothing": {
+        "window_candles": "window",
     },
     "label_prediction": {
         "threshold_method": "threshold_smoothing_method",
@@ -453,30 +456,6 @@ def get_label_pipeline_config(
         _validate_pipeline_params,
         DEFAULTS_LABEL_PIPELINE,
     )
-
-
-def get_label_column_config(
-    column_name: str,
-    default_config: dict[str, Any],
-    columns_config: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    result = copy.deepcopy(default_config)
-
-    matches: list[tuple[float, str, dict[str, Any]]] = []
-    for pattern, col_config in columns_config.items():
-        if fnmatch.fnmatch(column_name, pattern):
-            if "*" not in pattern and "?" not in pattern and "[" not in pattern:
-                specificity = float("inf")
-            else:
-                specificity = float(sum(1 for c in pattern if c not in "*?[]"))
-            matches.append((specificity, pattern, col_config))
-
-    matches.sort(key=lambda x: x[0])
-
-    for _, _, col_config in matches:
-        result.update(col_config)
-
-    return result
 
 
 def _validate_smoothing_params(

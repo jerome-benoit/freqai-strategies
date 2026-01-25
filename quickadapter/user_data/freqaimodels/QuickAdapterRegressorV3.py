@@ -42,6 +42,7 @@ from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
     EXTREMA_COLUMN,
+    LABEL_COLUMNS,
     REGRESSORS,
     Regressor,
     eval_set_and_weights,
@@ -1029,27 +1030,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
 
         label_prediction = self.label_prediction
-        label_prediction_default = label_prediction["default"]
-        logger.info("Label Prediction:")
-        logger.info(f"  method: {label_prediction_default['method']}")
-        logger.info(
-            f"  selection_method: {label_prediction_default['selection_method']}"
-        )
-        logger.info(
-            f"  threshold_method: {label_prediction_default['threshold_method']}"
-        )
-        logger.info(
-            f"  outlier_quantile: {format_number(label_prediction_default['outlier_quantile'])}"
-        )
-        logger.info(
-            f"  soft_extremum_alpha: {format_number(label_prediction_default['soft_extremum_alpha'])}"
-        )
-        logger.info(
-            f"  keep_fraction: {format_number(label_prediction_default['keep_fraction'])}"
-        )
-        if label_prediction["columns"]:
+        for label_col in LABEL_COLUMNS:
+            logger.info(f"Label Prediction [{label_col}]:")
+            col_prediction = get_label_column_config(
+                label_col, label_prediction["default"], label_prediction["columns"]
+            )
+            logger.info(f"  method: {col_prediction['method']}")
+            logger.info(f"  selection_method: {col_prediction['selection_method']}")
+            logger.info(f"  threshold_method: {col_prediction['threshold_method']}")
             logger.info(
-                f"  per-column overrides: {list(label_prediction['columns'].keys())}"
+                f"  outlier_quantile: {format_number(col_prediction['outlier_quantile'])}"
+            )
+            logger.info(
+                f"  soft_extremum_alpha: {format_number(col_prediction['soft_extremum_alpha'])}"
+            )
+            logger.info(
+                f"  keep_fraction: {format_number(col_prediction['keep_fraction'])}"
             )
 
         default_label_period_candles, default_label_natr_multiplier = (
