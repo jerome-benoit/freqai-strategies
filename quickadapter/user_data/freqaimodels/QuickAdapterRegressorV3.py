@@ -218,6 +218,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         _DENSITY_AGGREGATIONS[0]  # "power_mean"
     )
 
+    OPTUNA_N_JOBS_DEFAULT: Final[int] = 1
+    OPTUNA_N_STARTUP_TRIALS_DEFAULT: Final[int] = 15
+    OPTUNA_N_TRIALS_DEFAULT: Final[int] = 50
+    OPTUNA_TIMEOUT_DEFAULT: Final[int] = 7200
+    OPTUNA_MIN_RESOURCE_DEFAULT: Final[int] = 3
+    OPTUNA_LABEL_CANDLES_STEP_DEFAULT: Final[int] = 1
+    OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
+    OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
+    OPTUNA_SEED_DEFAULT: Final[int] = 1
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
@@ -598,7 +608,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _resolve_label_method_config(self, label_method: str) -> dict[str, Any]:
         QuickAdapterRegressorV3._validate_enum_value(
             label_method,
-            self._selection_methods_set(),
+            QuickAdapterRegressorV3._selection_methods_set(),
             QuickAdapterRegressorV3._SELECTION_METHODS,
             ctx="label_method",
         )
@@ -755,24 +765,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "n_jobs": min(
                 self.config.get("freqai", {})
                 .get("optuna_hyperopt", {})
-                .get("n_jobs", 1),
+                .get("n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT),
                 max(int(self.max_system_threads / 4), 1),
             ),
             "sampler": QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS[0],  # "tpe"
             "storage": QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[0],  # "file"
             "continuous": True,
             "warm_start": True,
-            "n_startup_trials": 15,
-            "n_trials": 50,
-            "timeout": 7200,
+            "n_startup_trials": QuickAdapterRegressorV3.OPTUNA_N_STARTUP_TRIALS_DEFAULT,
+            "n_trials": QuickAdapterRegressorV3.OPTUNA_N_TRIALS_DEFAULT,
+            "timeout": QuickAdapterRegressorV3.OPTUNA_TIMEOUT_DEFAULT,
             "label_sampler": QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS[
                 0
             ],  # "auto"
-            "label_candles_step": 1,
-            "space_reduction": False,
-            "space_fraction": 0.4,
-            "min_resource": 3,
-            "seed": 1,
+            "label_candles_step": QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
+            "space_reduction": QuickAdapterRegressorV3.OPTUNA_SPACE_REDUCTION_DEFAULT,
+            "space_fraction": QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
+            "min_resource": QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT,
+            "seed": QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT,
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
         return {
@@ -902,7 +912,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_candle_pool_full_cache: dict[int, list[int]] = {}
-        self._optuna_label_shuffle_rng = random.Random(self._optuna_config.get("seed"))
+        self._optuna_label_shuffle_rng = random.Random(
+            self._optuna_config.get("seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT)
+        )
         self.init_optuna_label_candle_pool()
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
@@ -984,7 +996,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(f"  label_method: {label_method}")
 
             label_config = self._resolve_label_method_config(label_method)
-            self._log_label_method_config(label_config)
+            QuickAdapterRegressorV3._log_label_method_config(label_config)
 
             label_weights = self.ft_params.get("label_weights")
             if label_weights is not None:
@@ -1343,8 +1355,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dk.pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
                     ),  # "hp"
                     model_training_parameters,
-                    self._optuna_config.get("space_reduction"),
-                    self._optuna_config.get("space_fraction"),
+                    self._optuna_config.get(
+                        "space_reduction",
+                        QuickAdapterRegressorV3.OPTUNA_SPACE_REDUCTION_DEFAULT,
+                    ),
+                    self._optuna_config.get(
+                        "space_fraction",
+                        QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
+                    ),
                     dk.data_path,
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
@@ -1444,7 +1462,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             pair=pair, timeframe=self.config.get("timeframe")
                         ),
                         fit_live_predictions_candles,
-                        self._optuna_config.get("label_candles_step"),
+                        self._optuna_config.get(
+                            "label_candles_step",
+                            QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
+                        ),
                         min_label_period_candles=self._min_label_period_candles,
                         max_label_period_candles=self._max_label_period_candles,
                         min_label_natr_multiplier=self._min_label_natr_multiplier,
@@ -1541,7 +1562,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ).get("label_natr_multiplier")
         )
 
-        hp_rmse = self.optuna_validate_value(
+        hp_rmse = QuickAdapterRegressorV3.optuna_validate_value(
             self.get_optuna_value(pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0])
         )  # "hp"
         dk.data["extra_returns_per_train"]["hp_rmse"] = (
@@ -1558,11 +1579,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         col_prediction_config: dict[str, Any],
         pred_df: pd.DataFrame,
         fit_live_predictions_candles: int,
-        label_period_candles: int,
+        label_period_candles: Optional[int],
     ) -> tuple[float, float]:
-        if not isinstance(label_period_candles, int) or label_period_candles <= 0:
-            label_period_candles = self.ft_params.get(
-                "label_period_candles", self._label_defaults[0]
+        if label_period_candles is None or label_period_candles <= 0:
+            label_period_candles = int(
+                self.ft_params.get("label_period_candles", self._label_defaults[0])
             )
         thresholds_candles = (
             max(2, int(fit_live_predictions_candles / label_period_candles))
@@ -1989,6 +2010,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if (
             distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
         ):  # "weighted_sum"
+            assert weights is not None
             return QuickAdapterRegressorV3._weighted_sum_distance(
                 normalized_matrix,
                 ideal_point,
@@ -2144,6 +2166,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif (
             distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
         ):  # "weighted_sum"
+            assert weights is not None
             dist_to_ideal = np.abs(
                 QuickAdapterRegressorV3._weighted_sum_distance(
                     normalized_matrix,
@@ -2211,13 +2234,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> tuple[int, float]:
         if best_cluster_indices.size == 1:
             best_trial_index = best_cluster_indices[0]
-            best_trial_distance = self._calculate_trial_distance_to_ideal(
-                normalized_matrix,
-                best_trial_index,
-                ideal_point_2d,
-                distance_metric,
-                weights=weights,
-                p=p,
+            best_trial_distance = (
+                QuickAdapterRegressorV3._calculate_trial_distance_to_ideal(
+                    normalized_matrix,
+                    best_trial_index,
+                    ideal_point_2d,
+                    distance_metric,
+                    weights=weights,
+                    p=p,
+                )
             )
             return best_trial_index, best_trial_distance
 
@@ -2247,13 +2272,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         min_score_position = np.nanargmin(scores)
         best_trial_index = best_cluster_indices[min_score_position]
-        best_trial_distance = self._calculate_trial_distance_to_ideal(
-            normalized_matrix,
-            best_trial_index,
-            ideal_point_2d,
-            distance_metric,
-            weights=weights,
-            p=p,
+        best_trial_distance = (
+            QuickAdapterRegressorV3._calculate_trial_distance_to_ideal(
+                normalized_matrix,
+                best_trial_index,
+                ideal_point_2d,
+                distance_metric,
+                weights=weights,
+                p=p,
+            )
         )
         return best_trial_index, best_trial_distance
 
@@ -2457,7 +2484,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 power,
                 ctx="label_density_aggregation_param",
             )
-            return sp.stats.pmean(neighbor_distances, p=power, axis=1)
+            assert power is not None
+            return np.asarray(sp.stats.pmean(neighbor_distances, p=power, axis=1))
         elif (
             aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[1]
         ):  # "quantile"
@@ -2474,7 +2502,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 quantile,
                 ctx="label_density_aggregation_param",
             )
-            return np.nanquantile(neighbor_distances, quantile, axis=1)
+            assert quantile is not None
+            return np.asarray(np.nanquantile(neighbor_distances, quantile, axis=1))
         elif aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[2]:  # "min"
             return np.nanmin(neighbor_distances, axis=1)
         elif aggregation == QuickAdapterRegressorV3._DENSITY_AGGREGATIONS[3]:  # "max"
@@ -2815,9 +2844,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         try:
             study.optimize(
                 objective,
-                n_trials=self._optuna_config.get("n_trials"),
-                n_jobs=self._optuna_config.get("n_jobs"),
-                timeout=self._optuna_config.get("timeout"),
+                n_trials=self._optuna_config.get(
+                    "n_trials", QuickAdapterRegressorV3.OPTUNA_N_TRIALS_DEFAULT
+                ),
+                n_jobs=self._optuna_config.get(
+                    "n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT
+                ),
+                timeout=self._optuna_config.get(
+                    "timeout", QuickAdapterRegressorV3.OPTUNA_TIMEOUT_DEFAULT
+                ),
                 gc_after_trial=True,
             )
         except Exception as e:
@@ -2865,7 +2900,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 **self.get_optuna_params(pair, namespace),
             }
             label_config = self._resolve_label_method_config(
-                self.ft_params.get("label_method", self.LABEL_METHOD_DEFAULT)
+                self.ft_params.get(
+                    "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
+                )
             )
             metric_log_msg = f" ({QuickAdapterRegressorV3._format_label_method_config(label_config)})"
         logger.info(
@@ -2930,7 +2967,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> optuna.pruners.BasePruner:
         if is_single_objective:
             return optuna.pruners.HyperbandPruner(
-                min_resource=self._optuna_config.get("min_resource")
+                min_resource=self._optuna_config.get(
+                    "min_resource", QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT
+                )
             )
         else:
             return optuna.pruners.NopPruner()
@@ -2944,23 +2983,37 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         if sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[0]:  # "tpe"
             return optuna.samplers.TPESampler(
-                n_startup_trials=self._optuna_config.get("n_startup_trials"),
+                n_startup_trials=self._optuna_config.get(
+                    "n_startup_trials",
+                    QuickAdapterRegressorV3.OPTUNA_N_STARTUP_TRIALS_DEFAULT,
+                ),
                 multivariate=True,
                 group=True,
-                constant_liar=self._optuna_config.get("n_jobs") > 1,
-                seed=self._optuna_config.get("seed"),
+                constant_liar=self._optuna_config.get(
+                    "n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT
+                )
+                > 1,
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                ),
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[1]:  # "auto"
             return optunahub.load_module("samplers/auto_sampler").AutoSampler(
-                seed=self._optuna_config.get("seed")
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                )
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[2]:  # "nsgaii"
             return optuna.samplers.NSGAIISampler(
-                seed=self._optuna_config.get("seed"),
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                ),
             )
         elif sampler == QuickAdapterRegressorV3._OPTUNA_SAMPLERS[3]:  # "nsgaiii"
             return optuna.samplers.NSGAIIISampler(
-                seed=self._optuna_config.get("seed"),
+                seed=self._optuna_config.get(
+                    "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
+                ),
             )
         else:
             raise ValueError(
@@ -2975,12 +3028,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
             return (
                 QuickAdapterRegressorV3._optuna_hpo_samplers_set(),
-                self._optuna_config.get("sampler"),
+                self._optuna_config.get(
+                    "sampler", QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS[0]
+                ),
             )
         elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
             return (
                 QuickAdapterRegressorV3._optuna_label_samplers_set(),
-                self._optuna_config.get("label_sampler"),
+                self._optuna_config.get(
+                    "label_sampler", QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS[0]
+                ),
             )
         else:
             raise ValueError(
@@ -3061,13 +3118,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 isinstance(best_values, list)
                 and len(best_values) == n_objectives
                 and all(
-                    self.optuna_validate_value(value) is not None
+                    QuickAdapterRegressorV3.optuna_validate_value(value) is not None
                     for value in best_values
                 )
             )
         else:
             best_value = self.get_optuna_value(pair, namespace)
-            return self.optuna_validate_value(best_value) is not None
+            return QuickAdapterRegressorV3.optuna_validate_value(best_value) is not None
 
     def optuna_enqueue_previous_best_params(
         self, pair: str, namespace: OptunaNamespace, study: Optional[optuna.study.Study]
