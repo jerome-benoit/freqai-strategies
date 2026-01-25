@@ -53,7 +53,7 @@ from Utils import (
     get_label_prediction_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
-    resolve_deprecated_params,
+    migrate_config,
     soft_extremum,
     zigzag,
 )
@@ -878,23 +878,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        resolve_deprecated_params(self.freqai_info, "freqai", logger)
-        resolve_deprecated_params(
-            self.freqai_info.get("label_prediction", {}),
-            "freqai.label_prediction",
-            logger,
-        )
-        resolve_deprecated_params(
-            self.freqai_info.get("optuna_hyperopt", {}),
-            "freqai.optuna_hyperopt",
-            logger,
-        )
-        resolve_deprecated_params(
-            self.freqai_info.get("label_pipeline", {}),
-            "freqai.label_pipeline",
-            logger,
-            root_config=self.freqai_info,
-        )
+        migrate_config(self.config, logger)
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1535,13 +1519,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         DEFAULTS_LABEL_PREDICTION["outlier_quantile"],
                     )
                     cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
-                    dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
+                dk.data["extra_returns_per_train"]["DI_value_param1"] = f[0]
+                dk.data["extra_returns_per_train"]["DI_value_param2"] = f[1]
+                dk.data["extra_returns_per_train"]["DI_value_param3"] = f[2]
+                dk.data["extra_returns_per_train"]["DI_cutoff"] = cutoff
 
         dk.data["DI_value_mean"] = di_values.mean()
         dk.data["DI_value_std"] = di_values.std(ddof=1)
-        dk.data["extra_returns_per_train"]["DI_value_param1"] = f[0]
-        dk.data["extra_returns_per_train"]["DI_value_param2"] = f[1]
-        dk.data["extra_returns_per_train"]["DI_value_param3"] = f[2]
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
         for label in dk.label_list + dk.unique_class_list:

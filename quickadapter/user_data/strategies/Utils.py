@@ -160,94 +160,150 @@ DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
 
 
-# Deprecation mapping: section -> new_key -> old_key_or_source
-# If str: rename within same section (old_key in same config dict)
-# If tuple[str, str]: move from another section (old_section, old_key)
-PARAM_DEPRECATIONS: Final[dict[str, dict[str, str | tuple[str, str]]]] = {
-    "freqai": {
-        "label_weighting": "extrema_weighting",
-        "label_smoothing": "extrema_smoothing",
-        "label_prediction": "predictions_extrema",
-    },
-    "freqai.label_smoothing": {
-        "window_candles": "window",
-    },
-    "freqai.label_pipeline": {
-        # Moved from label_weighting (was in extrema_weighting)
-        "standardization": ("label_weighting", "standardization"),
-        "robust_quantiles": ("label_weighting", "robust_quantiles"),
-        "mmad_scaling_factor": ("label_weighting", "mmad_scaling_factor"),
-        "normalization": ("label_weighting", "normalization"),
-        "minmax_range": ("label_weighting", "minmax_range"),
-        "sigmoid_scale": ("label_weighting", "sigmoid_scale"),
-        "gamma": ("label_weighting", "gamma"),
-    },
-    "freqai.label_prediction": {
-        "threshold_method": "threshold_smoothing_method",
-        "keep_fraction": "keep_extrema_fraction",
-        "outlier_quantile": "outlier_threshold_quantile",
-        "soft_extremum_alpha": "thresholds_alpha",
-    },
-    "exit_pricing": {
-        "trade_price_target_method": "trade_price_target",
-    },
-    "reversal_confirmation": {
-        "lookback_period_candles": "lookback_period",
-        "decay_fraction": "decay_ratio",
-        "min_natr_multiplier_fraction": "min_natr_ratio_percent",
-        "max_natr_multiplier_fraction": "max_natr_ratio_percent",
-    },
-    "freqai.feature_parameters": {
-        "min_label_natr_multiplier": "min_label_natr_ratio",
-        "max_label_natr_multiplier": "max_label_natr_ratio",
-        "label_natr_multiplier": "label_natr_ratio",
-    },
-    "freqai.optuna_hyperopt": {
-        "space_fraction": "expansion_ratio",
-    },
-}
+_MISSING: Final = object()
 
 
-def resolve_deprecated_params(
-    config: dict[str, Any],
-    section: str,
-    logger: Logger,
-    root_config: dict[str, Any] | None = None,
-) -> None:
-    deprecations = PARAM_DEPRECATIONS.get(section, {})
-    if not deprecations:
-        return
+def _get_path(config: dict[str, Any], path: str) -> Any:
+    keys = path.split(".")
+    current = config
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return _MISSING
+        current = current[key]
+    return current
 
-    for new_key, old_source in deprecations.items():
-        if isinstance(old_source, tuple):
-            # Cross-section move: (old_section, old_key)
-            old_section, old_key = old_source
-            source_config = root_config.get(old_section, {}) if root_config else None
-            if source_config and old_key in source_config and new_key not in config:
-                logger.warning(
-                    f"{old_section}.{old_key} has moved to {section}.{new_key}"
-                )
-                config[new_key] = source_config.pop(old_key)
-            elif source_config and old_key in source_config and new_key in config:
-                logger.warning(
-                    f"{section} has {new_key} and deprecated {old_section}.{old_key}, "
-                    f"using {section}.{new_key}"
-                )
-                del source_config[old_key]
+
+def _set_path(config: dict[str, Any], path: str, value: Any) -> None:
+    keys = path.split(".")
+    current = config
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        current = current[key]
+    current[keys[-1]] = value
+
+
+def _delete_path(config: dict[str, Any], path: str) -> bool:
+    keys = path.split(".")
+    current = config
+    for key in keys[:-1]:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        current = current[key]
+    if isinstance(current, dict) and keys[-1] in current:
+        del current[keys[-1]]
+        return True
+    return False
+
+
+# Order matters: section renames before key moves (e.g. extrema_weighting.gamma -> label_weighting.gamma -> label_pipeline.gamma)
+CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("freqai.extrema_weighting", "freqai.label_weighting"),
+    ("freqai.extrema_smoothing", "freqai.label_smoothing"),
+    ("freqai.predictions_extrema", "freqai.label_prediction"),
+    ("freqai.label_smoothing.window", "freqai.label_smoothing.window_candles"),
+    (
+        "freqai.label_prediction.thresholds_smoothing",
+        "freqai.label_prediction.threshold_smoothing_method",
+    ),
+    (
+        "freqai.label_prediction.threshold_smoothing_method",
+        "freqai.label_prediction.threshold_method",
+    ),
+    (
+        "freqai.label_prediction.threshold_outlier",
+        "freqai.label_prediction.outlier_threshold_quantile",
+    ),
+    (
+        "freqai.label_prediction.outlier_threshold_quantile",
+        "freqai.label_prediction.outlier_quantile",
+    ),
+    (
+        "freqai.label_prediction.extrema_fraction",
+        "freqai.label_prediction.keep_extrema_fraction",
+    ),
+    (
+        "freqai.label_prediction.keep_extrema_fraction",
+        "freqai.label_prediction.keep_fraction",
+    ),
+    (
+        "freqai.label_prediction.thresholds_alpha",
+        "freqai.label_prediction.soft_extremum_alpha",
+    ),
+    ("exit_pricing.trade_price_target", "exit_pricing.trade_price_target_method"),
+    (
+        "reversal_confirmation.lookback_period",
+        "reversal_confirmation.lookback_period_candles",
+    ),
+    ("reversal_confirmation.decay_ratio", "reversal_confirmation.decay_fraction"),
+    (
+        "reversal_confirmation.min_natr_ratio_percent",
+        "reversal_confirmation.min_natr_multiplier_fraction",
+    ),
+    (
+        "reversal_confirmation.max_natr_ratio_percent",
+        "reversal_confirmation.max_natr_multiplier_fraction",
+    ),
+    (
+        "freqai.feature_parameters.min_label_natr_ratio",
+        "freqai.feature_parameters.min_label_natr_multiplier",
+    ),
+    (
+        "freqai.feature_parameters.max_label_natr_ratio",
+        "freqai.feature_parameters.max_label_natr_multiplier",
+    ),
+    (
+        "freqai.feature_parameters.label_natr_ratio",
+        "freqai.feature_parameters.label_natr_multiplier",
+    ),
+    ("freqai.optuna_hyperopt.expansion_ratio", "freqai.optuna_hyperopt.space_fraction"),
+    (
+        "freqai.label_weighting.standardization",
+        "freqai.label_pipeline.standardization",
+    ),
+    (
+        "freqai.label_weighting.robust_quantiles",
+        "freqai.label_pipeline.robust_quantiles",
+    ),
+    (
+        "freqai.label_weighting.mmad_scaling_factor",
+        "freqai.label_pipeline.mmad_scaling_factor",
+    ),
+    ("freqai.label_weighting.normalization", "freqai.label_pipeline.normalization"),
+    ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
+    ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
+    ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+)
+
+
+def migrate_config(config: dict[str, Any], logger: Logger) -> None:
+    for old_path, new_path in CONFIG_MIGRATIONS:
+        old_value = _get_path(config, old_path)
+        if old_value is _MISSING:
+            continue
+
+        old_section = old_path.rsplit(".", 1)[0] if "." in old_path else ""
+        new_section = new_path.rsplit(".", 1)[0] if "." in new_path else ""
+        new_key = new_path.rsplit(".", 1)[-1]
+
+        new_value = _get_path(config, new_path)
+        if new_value is _MISSING:
+            _set_path(config, new_path, old_value)
+            _delete_path(config, old_path)
+            if old_section == new_section:
+                logger.warning(f"{old_path} is deprecated, use {new_key} instead")
+            else:
+                logger.warning(f"{old_path} has moved to {new_path}")
         else:
-            # Same-section rename: old_key is a string
-            old_key = old_source
-            if old_key in config and new_key not in config:
+            _delete_path(config, old_path)
+            if old_section == new_section:
                 logger.warning(
-                    f"{section}.{old_key} is deprecated, use {new_key} instead"
+                    f"{new_section} has both {new_key} and deprecated {old_path.rsplit('.', 1)[-1]}, using {new_key}"
                 )
-                config[new_key] = config.pop(old_key)
-            elif old_key in config and new_key in config:
+            else:
                 logger.warning(
-                    f"{section} has both {new_key} and deprecated {old_key}, "
-                    f"using {new_key}"
+                    f"{new_section} has {new_key} and deprecated {old_path}, using {new_path}"
                 )
-                del config[old_key]
 
 
 def _get_label_config(

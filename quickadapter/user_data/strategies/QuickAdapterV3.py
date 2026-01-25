@@ -49,10 +49,10 @@ from Utils import (
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
+    migrate_config,
     nan_average,
     non_zero_diff,
     price_retracement_percent,
-    resolve_deprecated_params,
     smooth_label,
     top_log_return,
     validate_range,
@@ -163,34 +163,9 @@ class QuickAdapterV3(IStrategy):
 
     process_only_new_candles = True
 
-    def __init__(self, config: dict) -> None:
-        super().__init__(config)
-        freqai_config = self.config.get("freqai", {})
-        resolve_deprecated_params(freqai_config, "freqai", logger)
-        resolve_deprecated_params(
-            freqai_config.get("label_smoothing", {}),
-            "freqai.label_smoothing",
-            logger,
-        )
-        resolve_deprecated_params(
-            freqai_config.get("feature_parameters", {}),
-            "freqai.feature_parameters",
-            logger,
-        )
-        resolve_deprecated_params(
-            self.config.get("exit_pricing", {}), "exit_pricing", logger
-        )
-        resolve_deprecated_params(
-            self.config.get("reversal_confirmation", {}),
-            "reversal_confirmation",
-            logger,
-        )
-        resolve_deprecated_params(
-            freqai_config.get("label_pipeline", {}),
-            "freqai.label_pipeline",
-            logger,
-            root_config=freqai_config,
-        )
+    def __init__(self, config: dict[str, Any], *args, **kwargs) -> None:
+        super().__init__(config, *args, **kwargs)
+        migrate_config(self.config, logger)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -847,6 +822,19 @@ class QuickAdapterV3(IStrategy):
                     f"[{pair}] {len(label_data.indices)} {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
                 )
 
+            col_weighting_config = get_label_column_config(
+                label_col, label_weighting["default"], label_weighting["columns"]
+            )
+
+            weighted_label, _ = apply_label_weighting(
+                label=label_data.series,
+                indices=label_data.indices,
+                metrics=label_data.metrics,
+                weighting_config=col_weighting_config,
+            )
+
+            dataframe[label_col] = weighted_label
+
             if label_col == EXTREMA_COLUMN:
                 extrema = dataframe[label_col]
                 extrema_direction = label_data.series
@@ -873,19 +861,6 @@ class QuickAdapterV3(IStrategy):
                     )
                 )
 
-            col_weighting_config = get_label_column_config(
-                label_col, label_weighting["default"], label_weighting["columns"]
-            )
-
-            weighted_label, _ = apply_label_weighting(
-                label=label_data.series,
-                indices=label_data.indices,
-                metrics=label_data.metrics,
-                weighting_config=col_weighting_config,
-            )
-
-            dataframe[label_col] = weighted_label
-
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
@@ -900,7 +875,8 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config["sigma"],
             )
 
-        dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[EXTREMA_COLUMN]
+            if label_col == EXTREMA_COLUMN:
+                dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[label_col]
 
         return dataframe
 
