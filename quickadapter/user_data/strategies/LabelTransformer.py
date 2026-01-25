@@ -167,7 +167,7 @@ THRESHOLD_METHODS: Final[tuple[ThresholdMethod, ...]] = (
 )
 
 DEFAULTS_LABEL_PREDICTION: Final[dict[str, Any]] = {
-    "method": PREDICTION_METHODS[0],  # "none"
+    "method": PREDICTION_METHODS[1],  # "thresholding"
     "selection_method": EXTREMA_SELECTION_METHODS[0],  # "rank_extrema"
     "threshold_method": SKIMAGE_THRESHOLD_METHODS[0],  # "mean"
     "outlier_quantile": 0.999,
