@@ -35,7 +35,11 @@ from LabelTransformer import (
     PREDICTION_METHODS,
     SKIMAGE_THRESHOLD_METHODS,
     THRESHOLD_METHODS,
+    CustomThresholdMethod,
+    ExtremaSelectionMethod,
     LabelTransformer,
+    SkimageThresholdMethod,
+    ThresholdMethod,
     get_label_column_config,
 )
 
@@ -58,15 +62,9 @@ from Utils import (
     zigzag,
 )
 
-ExtremaSelectionMethod = Literal["rank_extrema", "rank_peaks", "partition"]
 OptunaSampler = Literal["tpe", "auto", "nsgaii", "nsgaiii"]
 OptunaNamespace = Literal["hp", "label"]
 ScalerType = Literal["minmax", "maxabs", "standard", "robust"]
-CustomThresholdMethod = Literal["median", "soft_extremum"]
-SkimageThresholdMethod = Literal[
-    "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
-]
-ThresholdMethod = Union[SkimageThresholdMethod, CustomThresholdMethod]
 DensityAggregation = Literal["power_mean", "quantile", "min", "max"]
 DistanceMethod = Literal["compromise_programming", "topsis"]
 ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
@@ -921,19 +919,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
                 )  # "hp"
-                if self.optuna_load_best_params(
-                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]
-                )
-                else {}
+                or {}
             )
             self._optuna_label_params[pair] = (
                 self.optuna_load_best_params(
                     pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
                 )  # "label"
-                if self.optuna_load_best_params(
-                    pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
-                )
-                else {
+                or {
                     "label_period_candles": self.ft_params.get(
                         "label_period_candles",
                         default_label_period_candles,
@@ -1125,9 +1117,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, pair: str, namespace: OptunaNamespace
     ) -> dict[str, Any]:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
-            params = self._optuna_hp_params.get(pair)
+            params = self._optuna_hp_params.get(pair, {})
         elif namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
-            params = self._optuna_label_params.get(pair)
+            params = self._optuna_label_params.get(pair, {})
         else:
             raise ValueError(
                 f"Invalid namespace value {namespace!r}: "
@@ -1150,7 +1142,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def get_optuna_value(self, pair: str, namespace: OptunaNamespace) -> float:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[0]:  # "hp"
-            value = self._optuna_hp_value.get(pair)
+            value = self._optuna_hp_value.get(pair, np.nan)
         else:
             raise ValueError(
                 f"Invalid namespace value {namespace!r}: "
@@ -1173,7 +1165,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, pair: str, namespace: OptunaNamespace
     ) -> list[float | int]:
         if namespace == QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]:  # "label"
-            values = self._optuna_label_values.get(pair)
+            values = self._optuna_label_values.get(
+                pair, [np.nan] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
+            )
         else:
             raise ValueError(
                 f"Invalid namespace value {namespace!r}: "
@@ -1409,8 +1403,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if pair not in self._optuna_label_incremented_pairs:
             self._optuna_label_incremented_pairs.append(pair)
         optuna_label_remaining_candles = self._optuna_label_candle.get(
-            pair
-        ) - self._optuna_label_candles.get(pair)
+            pair, 0
+        ) - self._optuna_label_candles.get(pair, 0)
         if optuna_label_remaining_candles <= 0:
             try:
                 callback()
@@ -1749,7 +1743,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and isinstance(pred_minimum, (int, float, np.number))
             and np.isfinite(pred_minimum)
         ):
-            return pred_minimum
+            return float(pred_minimum)
         return -2.0
 
     @staticmethod
@@ -1763,7 +1757,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and isinstance(pred_maximum, (int, float, np.number))
             and np.isfinite(pred_maximum)
         ):
-            return pred_maximum
+            return float(pred_maximum)
         return 2.0
 
     @staticmethod

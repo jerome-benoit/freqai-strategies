@@ -22,17 +22,6 @@ from sklearn.preprocessing import (
 
 logger = logging.getLogger(__name__)
 
-WeightStrategy = Literal[
-    "none",
-    "amplitude",
-    "amplitude_threshold_ratio",
-    "volume_rate",
-    "speed",
-    "efficiency_ratio",
-    "volume_weighted_efficiency_ratio",
-    "combined",
-]
-
 CombinedMetric = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
@@ -67,14 +56,10 @@ COMBINED_AGGREGATIONS: Final[tuple[CombinedAggregation, ...]] = (
     "softmax",
 )
 
+WeightStrategy = Literal["none", "combined"] | CombinedMetric
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
-    "amplitude",
-    "amplitude_threshold_ratio",
-    "volume_rate",
-    "speed",
-    "efficiency_ratio",
-    "volume_weighted_efficiency_ratio",
+    *COMBINED_METRICS,
     "combined",
 )
 
@@ -158,18 +143,10 @@ EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
     "partition",
 )
 
-ThresholdMethod = Literal[
-    "mean",
-    "isodata",
-    "li",
-    "minimum",
-    "otsu",
-    "triangle",
-    "yen",
-    "median",
-    "soft_extremum",
+SkimageThresholdMethod = Literal[
+    "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
 ]
-SKIMAGE_THRESHOLD_METHODS: Final[tuple[str, ...]] = (
+SKIMAGE_THRESHOLD_METHODS: Final[tuple[SkimageThresholdMethod, ...]] = (
     "mean",
     "isodata",
     "li",
@@ -178,10 +155,12 @@ SKIMAGE_THRESHOLD_METHODS: Final[tuple[str, ...]] = (
     "triangle",
     "yen",
 )
-CUSTOM_THRESHOLD_METHODS: Final[tuple[str, ...]] = (
+CustomThresholdMethod = Literal["median", "soft_extremum"]
+CUSTOM_THRESHOLD_METHODS: Final[tuple[CustomThresholdMethod, ...]] = (
     "median",
     "soft_extremum",
 )
+ThresholdMethod = SkimageThresholdMethod | CustomThresholdMethod
 THRESHOLD_METHODS: Final[tuple[ThresholdMethod, ...]] = (
     *SKIMAGE_THRESHOLD_METHODS,
     *CUSTOM_THRESHOLD_METHODS,

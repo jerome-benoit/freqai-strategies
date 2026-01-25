@@ -56,6 +56,198 @@ else:
 T = TypeVar("T", pd.Series, float)
 
 
+@dataclass(frozen=True, slots=True)
+class _EnumValidator:
+    valid_values: tuple[str, ...]
+
+    def __call__(self, value: Any) -> bool:
+        return value in self.valid_values
+
+    def message(self, param: str) -> str:
+        return f"supported values are {', '.join(self.valid_values)}"
+
+
+@dataclass(frozen=True, slots=True)
+class _NumericValidator:
+    min_value: float | None = None
+    max_value: float | None = None
+    min_exclusive: bool = False
+    max_exclusive: bool = False
+    require_int: bool = False
+
+    def __call__(self, value: Any) -> bool:
+        if self.require_int and not isinstance(value, int):
+            return False
+        if not isinstance(value, (int, float)) or not np.isfinite(value):
+            return False
+        if self.min_value is not None:
+            if self.min_exclusive and value <= self.min_value:
+                return False
+            if not self.min_exclusive and value < self.min_value:
+                return False
+        if self.max_value is not None:
+            if self.max_exclusive and value >= self.max_value:
+                return False
+            if not self.max_exclusive and value > self.max_value:
+                return False
+        return True
+
+    def message(self, param: str) -> str:
+        parts = []
+        if self.require_int:
+            parts.append("must be an integer")
+        else:
+            parts.append("must be a finite number")
+        if self.min_value is not None:
+            op = ">" if self.min_exclusive else ">="
+            parts.append(f"{op} {self.min_value}")
+        if self.max_value is not None:
+            op = "<" if self.max_exclusive else "<="
+            parts.append(f"{op} {self.max_value}")
+        return " ".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class _RangeValidator:
+    min_bound: float | None = None
+    max_bound: float | None = None
+
+    def __call__(self, value: Any) -> bool:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return False
+        if not all(isinstance(x, (int, float)) and np.isfinite(x) for x in value):
+            return False
+        if value[0] >= value[1]:
+            return False
+        if self.min_bound is not None and value[0] < self.min_bound:
+            return False
+        if self.max_bound is not None and value[1] > self.max_bound:
+            return False
+        return True
+
+    def message(self, param: str) -> str:
+        if self.min_bound is not None and self.max_bound is not None:
+            return f"must be (low, high) with {self.min_bound} <= low < high <= {self.max_bound}"
+        return "must be (low, high) with low < high"
+
+
+@dataclass(frozen=True, slots=True)
+class _DictValidator:
+    valid_keys: tuple[str, ...] | None = None
+
+    def __call__(self, value: Any) -> bool:
+        return isinstance(value, dict)
+
+    def message(self, param: str) -> str:
+        return "must be a mapping"
+
+
+_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator
+
+
+@dataclass(frozen=True, slots=True)
+class _ParamSpec:
+    validator: _Validator
+    output_type: type | None = None
+
+
+def _validate_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str,
+    specs: dict[str, _ParamSpec],
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for param, spec in specs.items():
+        value = config.get(param, defaults[param])
+        if not spec.validator(value):
+            logger.warning(
+                f"Invalid {config_name} {param} value {value!r}: "
+                f"{spec.validator.message(param)}, using default {defaults[param]!r}"
+            )
+            value = defaults[param]
+        elif isinstance(spec.validator, _DictValidator) and spec.validator.valid_keys:
+            invalid_keys = set(value.keys()) - set(spec.validator.valid_keys)
+            if invalid_keys:
+                logger.warning(
+                    f"Invalid {config_name} {param} keys {sorted(invalid_keys)!r}, "
+                    f"valid keys: {', '.join(spec.validator.valid_keys)}"
+                )
+                value = {
+                    k: v for k, v in value.items() if k in spec.validator.valid_keys
+                }
+        if spec.output_type is not None:
+            if spec.output_type is tuple and isinstance(value, (list, tuple)):
+                value = (value[0], value[1])
+            else:
+                value = spec.output_type(value)
+        result[param] = value
+    return result
+
+
+_WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "strategy": _ParamSpec(_EnumValidator(WEIGHT_STRATEGIES)),
+    "metric_coefficients": _ParamSpec(_DictValidator(COMBINED_METRICS)),
+    "aggregation": _ParamSpec(_EnumValidator(COMBINED_AGGREGATIONS)),
+    "softmax_temperature": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True)
+    ),
+}
+
+_PIPELINE_SPECS: Final[dict[str, _ParamSpec]] = {
+    "standardization": _ParamSpec(_EnumValidator(STANDARDIZATION_TYPES)),
+    "robust_quantiles": _ParamSpec(
+        _RangeValidator(min_bound=0, max_bound=1), output_type=tuple
+    ),
+    "mmad_scaling_factor": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True)
+    ),
+    "normalization": _ParamSpec(_EnumValidator(NORMALIZATION_TYPES)),
+    "minmax_range": _ParamSpec(_RangeValidator(), output_type=tuple),
+    "sigmoid_scale": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True)),
+    "gamma": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=10, min_exclusive=True)
+    ),
+}
+
+_SMOOTHING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "method": _ParamSpec(_EnumValidator(SMOOTHING_METHODS)),
+    "window_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "beta": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
+    ),
+    "polyorder": _ParamSpec(
+        _NumericValidator(min_value=0, require_int=True), output_type=int
+    ),
+    "mode": _ParamSpec(_EnumValidator(SMOOTHING_MODES)),
+    "sigma": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
+    ),
+}
+
+_PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "method": _ParamSpec(_EnumValidator(PREDICTION_METHODS)),
+    "selection_method": _ParamSpec(_EnumValidator(EXTREMA_SELECTION_METHODS)),
+    "threshold_method": _ParamSpec(_EnumValidator(THRESHOLD_METHODS)),
+    "outlier_quantile": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+    "soft_extremum_alpha": _ParamSpec(
+        _NumericValidator(min_value=0), output_type=float
+    ),
+    "keep_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+
 EXTREMA_COLUMN: Final = "&s-extrema"
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 
@@ -365,57 +557,9 @@ def _validate_weighting_params(
     logger: Logger,
     config_name: str = "label_weighting",
 ) -> dict[str, Any]:
-    strategy = config.get("strategy", DEFAULTS_LABEL_WEIGHTING["strategy"])
-    if strategy not in set(WEIGHT_STRATEGIES):
-        logger.warning(
-            f"Invalid {config_name} strategy value {strategy!r}: supported values are {', '.join(WEIGHT_STRATEGIES)}, using default {WEIGHT_STRATEGIES[0]!r}"
-        )
-        strategy = WEIGHT_STRATEGIES[0]
-
-    metric_coefficients = config.get(
-        "metric_coefficients", DEFAULTS_LABEL_WEIGHTING["metric_coefficients"]
+    return _validate_params(
+        config, logger, config_name, _WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING
     )
-    if not isinstance(metric_coefficients, dict):
-        logger.warning(
-            f"Invalid {config_name} metric_coefficients value {metric_coefficients!r}: must be a mapping, using default {DEFAULTS_LABEL_WEIGHTING['metric_coefficients']!r}"
-        )
-        metric_coefficients = DEFAULTS_LABEL_WEIGHTING["metric_coefficients"]
-    elif invalid_keys := set(metric_coefficients.keys()) - set(COMBINED_METRICS):
-        logger.warning(
-            f"Invalid {config_name} metric_coefficients keys {sorted(invalid_keys)!r}, valid keys: {', '.join(COMBINED_METRICS)}"
-        )
-        metric_coefficients = {
-            k: v for k, v in metric_coefficients.items() if k in set(COMBINED_METRICS)
-        }
-
-    aggregation: CombinedAggregation = config.get(
-        "aggregation", DEFAULTS_LABEL_WEIGHTING["aggregation"]
-    )
-    if aggregation not in set(COMBINED_AGGREGATIONS):
-        logger.warning(
-            f"Invalid {config_name} aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}, using default {DEFAULTS_LABEL_WEIGHTING['aggregation']!r}"
-        )
-        aggregation = DEFAULTS_LABEL_WEIGHTING["aggregation"]
-
-    softmax_temperature = config.get(
-        "softmax_temperature", DEFAULTS_LABEL_WEIGHTING["softmax_temperature"]
-    )
-    if (
-        not isinstance(softmax_temperature, (int, float))
-        or not np.isfinite(softmax_temperature)
-        or softmax_temperature <= 0
-    ):
-        logger.warning(
-            f"Invalid {config_name} softmax_temperature value {softmax_temperature!r}: must be a finite number > 0, using default {DEFAULTS_LABEL_WEIGHTING['softmax_temperature']!r}"
-        )
-        softmax_temperature = DEFAULTS_LABEL_WEIGHTING["softmax_temperature"]
-
-    return {
-        "strategy": strategy,
-        "metric_coefficients": metric_coefficients,
-        "aggregation": aggregation,
-        "softmax_temperature": softmax_temperature,
-    }
 
 
 def get_label_weighting_config(
@@ -436,103 +580,9 @@ def _validate_pipeline_params(
     logger: Logger,
     config_name: str = "label_pipeline",
 ) -> dict[str, Any]:
-    standardization = config.get(
-        "standardization", DEFAULTS_LABEL_PIPELINE["standardization"]
+    return _validate_params(
+        config, logger, config_name, _PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE
     )
-    if standardization not in set(STANDARDIZATION_TYPES):
-        logger.warning(
-            f"Invalid {config_name} standardization value {standardization!r}: supported values are {', '.join(STANDARDIZATION_TYPES)}, using default {STANDARDIZATION_TYPES[0]!r}"
-        )
-        standardization = STANDARDIZATION_TYPES[0]
-
-    robust_quantiles = config.get(
-        "robust_quantiles", DEFAULTS_LABEL_PIPELINE["robust_quantiles"]
-    )
-    if (
-        not isinstance(robust_quantiles, (list, tuple))
-        or len(robust_quantiles) != 2
-        or not all(
-            isinstance(q, (int, float)) and np.isfinite(q) and 0 <= q <= 1
-            for q in robust_quantiles
-        )
-        or robust_quantiles[0] >= robust_quantiles[1]
-    ):
-        logger.warning(
-            f"Invalid {config_name} robust_quantiles value {robust_quantiles!r}: must be (q1, q3) with 0 <= q1 < q3 <= 1, using default {DEFAULTS_LABEL_PIPELINE['robust_quantiles']!r}"
-        )
-        robust_quantiles = DEFAULTS_LABEL_PIPELINE["robust_quantiles"]
-    else:
-        robust_quantiles = (robust_quantiles[0], robust_quantiles[1])
-
-    mmad_scaling_factor = config.get(
-        "mmad_scaling_factor", DEFAULTS_LABEL_PIPELINE["mmad_scaling_factor"]
-    )
-    if (
-        not isinstance(mmad_scaling_factor, (int, float))
-        or not np.isfinite(mmad_scaling_factor)
-        or mmad_scaling_factor <= 0
-    ):
-        logger.warning(
-            f"Invalid {config_name} mmad_scaling_factor value {mmad_scaling_factor!r}: must be a finite number > 0, using default {DEFAULTS_LABEL_PIPELINE['mmad_scaling_factor']!r}"
-        )
-        mmad_scaling_factor = DEFAULTS_LABEL_PIPELINE["mmad_scaling_factor"]
-
-    normalization = config.get(
-        "normalization", DEFAULTS_LABEL_PIPELINE["normalization"]
-    )
-    if normalization not in set(NORMALIZATION_TYPES):
-        logger.warning(
-            f"Invalid {config_name} normalization value {normalization!r}: supported values are {', '.join(NORMALIZATION_TYPES)}, using default {NORMALIZATION_TYPES[0]!r}"
-        )
-        normalization = NORMALIZATION_TYPES[0]
-
-    minmax_range = config.get("minmax_range", DEFAULTS_LABEL_PIPELINE["minmax_range"])
-    if (
-        not isinstance(minmax_range, (list, tuple))
-        or len(minmax_range) != 2
-        or not all(isinstance(x, (int, float)) and np.isfinite(x) for x in minmax_range)
-        or minmax_range[0] >= minmax_range[1]
-    ):
-        logger.warning(
-            f"Invalid {config_name} minmax_range value {minmax_range!r}: must be (min, max) with min < max, using default {DEFAULTS_LABEL_PIPELINE['minmax_range']!r}"
-        )
-        minmax_range = DEFAULTS_LABEL_PIPELINE["minmax_range"]
-    else:
-        minmax_range = (minmax_range[0], minmax_range[1])
-
-    sigmoid_scale = config.get(
-        "sigmoid_scale", DEFAULTS_LABEL_PIPELINE["sigmoid_scale"]
-    )
-    if (
-        not isinstance(sigmoid_scale, (int, float))
-        or not np.isfinite(sigmoid_scale)
-        or sigmoid_scale <= 0
-    ):
-        logger.warning(
-            f"Invalid {config_name} sigmoid_scale value {sigmoid_scale!r}: must be a finite number > 0, using default {DEFAULTS_LABEL_PIPELINE['sigmoid_scale']!r}"
-        )
-        sigmoid_scale = DEFAULTS_LABEL_PIPELINE["sigmoid_scale"]
-
-    gamma = config.get("gamma", DEFAULTS_LABEL_PIPELINE["gamma"])
-    if (
-        not isinstance(gamma, (int, float))
-        or not np.isfinite(gamma)
-        or not (0 < gamma <= 10.0)
-    ):
-        logger.warning(
-            f"Invalid {config_name} gamma value {gamma!r}: must be in range (0, 10], using default {DEFAULTS_LABEL_PIPELINE['gamma']!r}"
-        )
-        gamma = DEFAULTS_LABEL_PIPELINE["gamma"]
-
-    return {
-        "standardization": standardization,
-        "robust_quantiles": robust_quantiles,
-        "mmad_scaling_factor": mmad_scaling_factor,
-        "normalization": normalization,
-        "minmax_range": minmax_range,
-        "sigmoid_scale": sigmoid_scale,
-        "gamma": gamma,
-    }
 
 
 def get_label_pipeline_config(
@@ -553,62 +603,9 @@ def _validate_smoothing_params(
     logger: Logger,
     config_name: str = "label_smoothing",
 ) -> dict[str, Any]:
-    method = config.get("method", DEFAULTS_LABEL_SMOOTHING["method"])
-    if method not in set(SMOOTHING_METHODS):
-        logger.warning(
-            f"Invalid {config_name} method value {method!r}: supported values are {', '.join(SMOOTHING_METHODS)}, using default {DEFAULTS_LABEL_SMOOTHING['method']!r}"
-        )
-        method = DEFAULTS_LABEL_SMOOTHING["method"]
-
-    window_candles = config.get(
-        "window_candles", DEFAULTS_LABEL_SMOOTHING["window_candles"]
+    return _validate_params(
+        config, logger, config_name, _SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING
     )
-    if (
-        not isinstance(window_candles, int)
-        or not np.isfinite(window_candles)
-        or window_candles < 1
-    ):
-        logger.warning(
-            f"Invalid {config_name} window_candles value {window_candles!r}: must be an integer >= 1, using default {DEFAULTS_LABEL_SMOOTHING['window_candles']!r}"
-        )
-        window_candles = DEFAULTS_LABEL_SMOOTHING["window_candles"]
-
-    beta = config.get("beta", DEFAULTS_LABEL_SMOOTHING["beta"])
-    if not isinstance(beta, (int, float)) or not np.isfinite(beta) or beta <= 0:
-        logger.warning(
-            f"Invalid {config_name} beta value {beta!r}: must be a finite number > 0, using default {DEFAULTS_LABEL_SMOOTHING['beta']!r}"
-        )
-        beta = DEFAULTS_LABEL_SMOOTHING["beta"]
-
-    polyorder = config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])
-    if not isinstance(polyorder, int) or not np.isfinite(polyorder) or polyorder < 0:
-        logger.warning(
-            f"Invalid {config_name} polyorder value {polyorder!r}: must be an integer >= 0, using default {DEFAULTS_LABEL_SMOOTHING['polyorder']!r}"
-        )
-        polyorder = DEFAULTS_LABEL_SMOOTHING["polyorder"]
-
-    mode = config.get("mode", DEFAULTS_LABEL_SMOOTHING["mode"])
-    if mode not in set(SMOOTHING_MODES):
-        logger.warning(
-            f"Invalid {config_name} mode value {mode!r}: supported values are {', '.join(SMOOTHING_MODES)}, using default {DEFAULTS_LABEL_SMOOTHING['mode']!r}"
-        )
-        mode = DEFAULTS_LABEL_SMOOTHING["mode"]
-
-    sigma = config.get("sigma", DEFAULTS_LABEL_SMOOTHING["sigma"])
-    if not isinstance(sigma, (int, float)) or not np.isfinite(sigma) or sigma <= 0:
-        logger.warning(
-            f"Invalid {config_name} sigma value {sigma!r}: must be a finite number > 0, using default {DEFAULTS_LABEL_SMOOTHING['sigma']!r}"
-        )
-        sigma = DEFAULTS_LABEL_SMOOTHING["sigma"]
-
-    return {
-        "method": method,
-        "window_candles": int(window_candles),
-        "beta": float(beta),
-        "polyorder": int(polyorder),
-        "mode": mode,
-        "sigma": float(sigma),
-    }
 
 
 def get_label_smoothing_config(
@@ -629,78 +626,9 @@ def _validate_prediction_params(
     logger: Logger,
     config_name: str = "label_prediction",
 ) -> dict[str, Any]:
-    method = config.get("method", DEFAULTS_LABEL_PREDICTION["method"])
-    if method not in set(PREDICTION_METHODS):
-        logger.warning(
-            f"Invalid {config_name} method value {method!r}: supported values are {', '.join(PREDICTION_METHODS)}, using default {DEFAULTS_LABEL_PREDICTION['method']!r}"
-        )
-        method = DEFAULTS_LABEL_PREDICTION["method"]
-
-    selection_method = config.get(
-        "selection_method", DEFAULTS_LABEL_PREDICTION["selection_method"]
+    return _validate_params(
+        config, logger, config_name, _PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION
     )
-    if selection_method not in set(EXTREMA_SELECTION_METHODS):
-        logger.warning(
-            f"Invalid {config_name} selection_method value {selection_method!r}: supported values are {', '.join(EXTREMA_SELECTION_METHODS)}, using default {DEFAULTS_LABEL_PREDICTION['selection_method']!r}"
-        )
-        selection_method = DEFAULTS_LABEL_PREDICTION["selection_method"]
-
-    threshold_method = config.get(
-        "threshold_method", DEFAULTS_LABEL_PREDICTION["threshold_method"]
-    )
-    if threshold_method not in set(THRESHOLD_METHODS):
-        logger.warning(
-            f"Invalid {config_name} threshold_method value {threshold_method!r}: supported values are {', '.join(THRESHOLD_METHODS)}, using default {DEFAULTS_LABEL_PREDICTION['threshold_method']!r}"
-        )
-        threshold_method = DEFAULTS_LABEL_PREDICTION["threshold_method"]
-
-    outlier_quantile = config.get(
-        "outlier_quantile", DEFAULTS_LABEL_PREDICTION["outlier_quantile"]
-    )
-    if (
-        not isinstance(outlier_quantile, (int, float))
-        or not np.isfinite(outlier_quantile)
-        or not (0 < outlier_quantile < 1)
-    ):
-        logger.warning(
-            f"Invalid {config_name} outlier_quantile value {outlier_quantile!r}: must be in range (0, 1), using default {DEFAULTS_LABEL_PREDICTION['outlier_quantile']!r}"
-        )
-        outlier_quantile = DEFAULTS_LABEL_PREDICTION["outlier_quantile"]
-
-    soft_extremum_alpha = config.get(
-        "soft_extremum_alpha", DEFAULTS_LABEL_PREDICTION["soft_extremum_alpha"]
-    )
-    if (
-        not isinstance(soft_extremum_alpha, (int, float))
-        or not np.isfinite(soft_extremum_alpha)
-        or soft_extremum_alpha < 0
-    ):
-        logger.warning(
-            f"Invalid {config_name} soft_extremum_alpha value {soft_extremum_alpha!r}: must be a finite number >= 0, using default {DEFAULTS_LABEL_PREDICTION['soft_extremum_alpha']!r}"
-        )
-        soft_extremum_alpha = DEFAULTS_LABEL_PREDICTION["soft_extremum_alpha"]
-
-    keep_fraction = config.get(
-        "keep_fraction", DEFAULTS_LABEL_PREDICTION["keep_fraction"]
-    )
-    if (
-        not isinstance(keep_fraction, (int, float))
-        or not np.isfinite(keep_fraction)
-        or not (0 < keep_fraction <= 1)
-    ):
-        logger.warning(
-            f"Invalid {config_name} keep_fraction value {keep_fraction!r}: must be in range (0, 1], using default {DEFAULTS_LABEL_PREDICTION['keep_fraction']!r}"
-        )
-        keep_fraction = DEFAULTS_LABEL_PREDICTION["keep_fraction"]
-
-    return {
-        "method": method,
-        "selection_method": selection_method,
-        "threshold_method": threshold_method,
-        "outlier_quantile": float(outlier_quantile),
-        "soft_extremum_alpha": float(soft_extremum_alpha),
-        "keep_fraction": float(keep_fraction),
-    }
 
 
 def get_label_prediction_config(
@@ -734,14 +662,14 @@ def nan_average(
         return np.nan
 
     if weights is None:
-        return np.nanmean(values)
+        return float(np.nanmean(values))
 
     weights = np.asarray(weights, dtype=float)
     mask = np.isfinite(values) & np.isfinite(weights)
     if not mask.any():
         return np.nan
 
-    return np.average(values[mask], weights=weights[mask])
+    return float(np.average(values[mask], weights=weights[mask]))
 
 
 def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
@@ -979,13 +907,21 @@ def _aggregate_metrics(
     softmax_temperature: float,
 ) -> NDArray[np.floating]:
     if aggregation == COMBINED_AGGREGATIONS[0]:  # "arithmetic_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[1]:  # "geometric_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[2]:  # "harmonic_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[3]:  # "quadratic_mean"
-        return sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1)
+        return np.asarray(
+            sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1)
+        )
     elif aggregation == COMBINED_AGGREGATIONS[4]:  # "weighted_median"
         return np.array(
             [
@@ -2069,7 +2005,12 @@ def fit_regressor(
     """Fit a regressor model."""
     fit_callbacks = list(callbacks) if callbacks else []
 
-    has_eval_set = eval_set is not None and len(eval_set) > 0
+    has_eval_set = (
+        eval_set is not None
+        and len(eval_set) > 0
+        and eval_weights is not None
+        and len(eval_weights) > 0
+    )
     if not has_eval_set:
         eval_set = None
         eval_weights = None
@@ -2332,13 +2273,15 @@ def fit_regressor(
 
         model.fit(
             Pool(data=X, label=y, weight=train_weights),
-            eval_set=Pool(
-                data=eval_set[0][0],
-                label=eval_set[0][1],
-                weight=eval_weights[0] if eval_weights else None,
-            )
-            if has_eval_set
-            else None,
+            eval_set=(
+                Pool(
+                    data=eval_set[0][0],
+                    label=eval_set[0][1],
+                    weight=eval_weights[0],
+                )
+                if has_eval_set and eval_set is not None and eval_weights is not None
+                else None
+            ),
             early_stopping_rounds=early_stopping_rounds
             if early_stopping_rounds is not None and has_eval_set
             else None,
@@ -3049,7 +2992,7 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
     if not finite_mask.any():
         return np.nan
     if np.isclose(alpha, 0.0):
-        return np.nanmean(values)
+        return float(np.nanmean(values))
     scaled_values = alpha * values
     max_scaled_values = np.nanmax(scaled_values)
     if not np.isfinite(max_scaled_values):

@@ -133,7 +133,6 @@
       // "columns": {
       //   "&s-extrema": {
       //     "strategy": "amplitude",
-      //     "aggregation": "softmax"
       //   }
       // }
     },
