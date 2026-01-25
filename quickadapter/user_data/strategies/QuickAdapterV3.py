@@ -26,7 +26,7 @@ from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 
-from LabelTransformer import COMBINED_AGGREGATIONS
+from LabelTransformer import COMBINED_AGGREGATIONS, get_label_column_config
 
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
@@ -45,7 +45,6 @@ from Utils import (
     generate_label_data,
     get_callable_sha256,
     get_distance,
-    get_label_column_config,
     get_label_defaults,
     get_label_smoothing_config,
     get_label_weighting_config,

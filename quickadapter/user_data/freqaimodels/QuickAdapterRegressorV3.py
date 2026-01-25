@@ -36,6 +36,7 @@ from LabelTransformer import (
     SKIMAGE_THRESHOLD_METHODS,
     THRESHOLD_METHODS,
     LabelTransformer,
+    get_label_column_config,
 )
 
 from Utils import (
@@ -48,7 +49,6 @@ from Utils import (
     eval_set_and_weights,
     fit_regressor,
     format_number,
-    get_label_column_config,
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
