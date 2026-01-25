@@ -815,11 +815,11 @@ class QuickAdapterV3(IStrategy):
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
+                    f"[{pair}] No {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] {len(label_data.indices)} {label_col} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
+                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
                 )
 
             col_weighting_config = get_label_column_config(
