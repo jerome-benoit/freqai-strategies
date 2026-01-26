@@ -1,5 +1,9 @@
 ## ADDED Requirements
 
+> **Foundation Status (PR #45)**: The `LabelGenerator` architecture is implemented.
+> The `set_freqai_targets()` loop, `LabelTransformer`, and per-column config are ready.
+> Requirements below specify new functionality to build on this foundation.
+
 ### Requirement: Multi-Target Configuration
 
 The system SHALL support a `prediction_targets` configuration key within the
@@ -319,8 +323,11 @@ The system SHALL apply early stopping based on the regressor's native capabiliti
 ### Requirement: Target Normalization
 
 The system SHALL apply standardization and normalization to all prediction target
-columns using `LabelTransformer`
-to ensure MultiRMSE optimization is balanced across targets with different scales.
+columns using `LabelTransformer` to ensure MultiRMSE optimization is balanced
+across targets with different scales.
+
+> **Note**: `LabelTransformer` is already implemented (PR #45) and will automatically
+> process new prediction target columns when added to `LABEL_COLUMNS`.
 
 The `LabelTransformer` supports multiple standardization methods (zscore, robust,
 mmad, power_yj) and normalization methods (maxabs, minmax, sigmoid), configured
