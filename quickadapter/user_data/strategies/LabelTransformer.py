@@ -187,7 +187,7 @@ def get_label_column_config(
     for pattern, col_config in columns_config.items():
         if fnmatch.fnmatch(column_name, pattern):
             if "*" not in pattern and "?" not in pattern and "[" not in pattern:
-                specificity = float("inf")
+                specificity = np.inf
             else:
                 specificity = float(sum(1 for c in pattern if c not in "*?[]"))
             matches.append((specificity, pattern, col_config))

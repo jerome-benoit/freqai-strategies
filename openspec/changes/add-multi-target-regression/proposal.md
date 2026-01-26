@@ -100,3 +100,25 @@ original scale.
   - `Utils.py`: `fit_regressor()` function, new multi-target wrapper, `compute_multi_rmse()`
 - **No new model files**: Implementation uses `QuickAdapterRegressorV3.py`
 - **All 5 regressors supported**: XGBoost, LightGBM, HistGradientBoosting, NGBoost, CatBoost
+
+### Foundation in Place (PR #45)
+
+The `LabelGenerator` architecture introduced in PR #45 provides the extensible
+foundation for multi-target support. The following is **already implemented**:
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| `LabelData` dataclass | ✅ Done | `Utils.py:256` |
+| `LabelGenerator` type alias | ✅ Done | `Utils.py:262` |
+| `register_label_generator()` | ✅ Done | `Utils.py:266` |
+| `generate_label_data()` | ✅ Done | `Utils.py:312` |
+| `_generate_extrema_label()` | ✅ Done | `Utils.py:270` |
+| `LABEL_COLUMNS` loop in `set_freqai_targets()` | ✅ Done | `QuickAdapterV3.py:812` |
+| `get_label_column_config()` | ✅ Done | `LabelTransformer.py:179` |
+| `LabelTransformer` | ✅ Done | `LabelTransformer.py` |
+
+This proposal extends the existing infrastructure by:
+1. Adding `PREDICTION_TARGETS` mapping and config parsing
+2. Registering additional generators for each prediction target
+3. Implementing multi-output regressor support per backend
+4. Integrating with HPO via unified MultiRMSE metric

@@ -145,22 +145,63 @@ def compute_multi_rmse(
 
 ### Decision 4: Label Computation in Strategy
 
-**What**: Compute all enabled target columns in `set_freqai_targets()` using
-a **separate helper function** that takes `zigzag()` output plus the OHLCV DataFrame.
+**What**: Compute all enabled target columns in `set_freqai_targets()` using the
+**extensible `LabelGenerator` pattern** established in PR #45.
 
 **Why**: 
 - `zigzag()` detects pivots and computes per-move metrics (amplitude, efficiency at pivot)
 - Auxiliary targets require **per-candle** computation (not interpolation)
-- Separating concerns: `zigzag()` handles pivot detection, helper handles target expansion
+- Separating concerns: `zigzag()` handles pivot detection, generators handle target expansion
 - Each candle gets an **exact calculated value** based on its position and OHLCV data
+- The `LabelGenerator` pattern enables clean extension without modifying existing code
 
-**Architecture**:
+**Existing infrastructure (implemented in PR #45)**:
+
+```python
+# Already in Utils.py:
+@dataclass
+class LabelData:
+    series: pd.Series      # Label values for all candles
+    indices: list[int]     # Pivot/key indices
+    metrics: dict[str, list[float]]  # Per-pivot metrics for weighting
+
+LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
+_LABEL_GENERATORS: dict[str, LabelGenerator] = {}
+
+def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
+    _LABEL_GENERATORS[label_column] = generator
+
+def generate_label_data(df, label_column, params) -> LabelData:
+    return _LABEL_GENERATORS[label_column](df, params)
+
+# Extrema generator registered
+register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
 ```
-zigzag(df) → (pivots_indices, pivots_values_log, ...)
-                           ↓
-compute_prediction_targets(df, pivots_indices, pivots_values_log, enabled_targets)
-                           ↓
-               DataFrame with per-candle target columns
+
+**Multi-target extension** (to be implemented):
+
+```python
+# New constants to add:
+PREDICTION_TARGETS: dict[str, str] = {
+    "amplitude": "&-amplitude",
+    "time_to_pivot": "&-time_to_pivot",
+    "efficiency": "&-efficiency",
+    "natr": "&-natr",
+}
+
+# Register new generators for each prediction target
+register_label_generator("&-amplitude", _generate_amplitude_label)
+register_label_generator("&-time_to_pivot", _generate_time_to_pivot_label)
+register_label_generator("&-efficiency", _generate_efficiency_label)
+register_label_generator("&-natr", _generate_natr_label)
+
+# Dynamic label columns based on config
+def get_label_columns(prediction_targets: list[str]) -> tuple[str, ...]:
+    columns = [EXTREMA_COLUMN]  # Always included
+    for target in prediction_targets:
+        if target in PREDICTION_TARGETS:
+            columns.append(PREDICTION_TARGETS[target])
+    return tuple(columns)
 ```
 
 **Target Column Naming**:
@@ -172,59 +213,47 @@ compute_prediction_targets(df, pivots_indices, pivots_values_log, enabled_target
 | efficiency | `&-efficiency` | Cumulative move efficiency so far |
 | natr | `&-natr` | Forward-looking NATR |
 
-**Label computation approach**:
+**Label generator example**:
 ```python
-def compute_prediction_targets(
-    df: pd.DataFrame,
-    pivots_indices: list[int],
-    pivots_values_log: list[float],
-    enabled_targets: list[str],
-) -> pd.DataFrame:
-    """
-    Compute per-candle target values using zigzag output and OHLCV data.
+def _generate_amplitude_label(
+    dataframe: pd.DataFrame,
+    params: dict[str, Any],
+) -> LabelData:
+    """Generate remaining amplitude labels for each candle."""
+    # Get pivot information from extrema generator or params
+    pivots_indices = params.get("pivots_indices", [])
+    pivots_values_log = params.get("pivots_values_log", [])
     
-    No interpolation - each candle gets an exact calculated value based on:
-    - Its position relative to surrounding pivots
-    - Its actual OHLCV values
-    """
-    targets_df = pd.DataFrame(index=df.index)
-    closes_log = np.log(df["close"].to_numpy())
+    # Build pivot lookup for O(1) access
+    pivot_lookup = _build_pivot_lookup(len(dataframe), pivots_indices)
     
-    # Build pivot lookup: for each candle, find prev/next pivot
-    # ... (implementation details)
-    
-    if "amplitude" in enabled_targets:
-        # For each candle: log(next_pivot_price / current_price)
-        targets_df["&-amplitude"] = _compute_remaining_amplitude(
-            closes_log, pivots_indices, pivots_values_log
-        )
-    
-    if "time_to_pivot" in enabled_targets:
-        # For each candle: next_pivot_index - current_index
-        targets_df["&-time_to_pivot"] = _compute_time_to_pivot(
-            len(df), pivots_indices
-        )
-    
-    if "efficiency" in enabled_targets:
-        # For each candle: cumulative efficiency from prev_pivot to current
-        targets_df["&-efficiency"] = _compute_cumulative_efficiency(
-            closes_log, pivots_indices
-        )
-    
-    return targets_df
-
-# In set_freqai_targets():
-targets = self.freqai_info.get("prediction_targets", [])
-if targets:
-    targets_df = compute_prediction_targets(
-        dataframe, pivots_indices, pivots_values_log, targets
+    # Compute per-candle remaining amplitude
+    closes_log = np.log(dataframe["close"].to_numpy())
+    amplitudes = _compute_remaining_amplitude(
+        closes_log, pivots_indices, pivots_values_log, pivot_lookup
     )
-    dataframe = dataframe.join(targets_df)
+    
+    return LabelData(
+        series=pd.Series(amplitudes, index=dataframe.index),
+        indices=pivots_indices,
+        metrics={},  # No weighting metrics for auxiliary targets
+    )
+
+register_label_generator("&-amplitude", _generate_amplitude_label)
+```
+
+**In set_freqai_targets()** (existing loop handles multi-target naturally):
+```python
+# LABEL_COLUMNS includes prediction targets based on config
+for label_col in LABEL_COLUMNS:
+    label_params = self.get_label_params(pair, label_col)
+    label_data = generate_label_data(dataframe, label_col, label_params)
+    # ... weighting, smoothing applied per-column
 ```
 
 **Key Implementation Note**: The helper functions iterate over ALL candles, not just
 pivots. For efficiency, we pre-compute a mapping of `candle_index → (prev_pivot, next_pivot)`
-to avoid repeated searches.
+to avoid repeated searches. The `_build_pivot_lookup()` function is shared across generators.
 
 ### Decision 5: Continuous Position-Aware Labeling
 
@@ -344,8 +373,9 @@ Monitor XGBoost releases for breaking changes.
 `LabelTransformer`. This transformer supports multiple standardization methods
 (zscore, robust, mmad, power_yj) and normalization methods (maxabs, minmax, sigmoid).
 
-**Rename**: `ExtremaWeightingTransformer` → `LabelTransformer` to reflect its
-generalized role in processing all label columns, not just extrema weighting.
+**Status**: ✅ **IMPLEMENTED** - `LabelTransformer` exists in `LabelTransformer.py`
+(renamed from `ExtremaWeightingTransformer` in PR #45). The transformer handles all
+label columns uniformly and will automatically process new prediction target columns.
 
 **Why**: MultiRMSE sums squared errors across all targets without weighting.
 Targets have vastly different scales:
