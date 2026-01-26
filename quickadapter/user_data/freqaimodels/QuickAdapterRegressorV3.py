@@ -2908,26 +2908,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed"
             f"{metric_log_msg} ({time_spent:.2f} secs)"
         )
-        max_study_results_key_length = (
-            max(len(str(key)) for key in study_best_results.keys())
-            if study_best_results
-            else 20
-        )
         if study_best_results:
             logger.info(
                 f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params: {format_dict(study_best_results, style='dict')}"
-            )
-        for key, value in study_best_results.items():
-            if isinstance(value, list):
-                formatted_value = (
-                    f"[{', '.join([format_number(item) for item in value])}]"
-                )
-            elif isinstance(value, (int, float)):
-                formatted_value = format_number(value)
-            else:
-                formatted_value = repr(value)
-            logger.info(
-                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt | {key:>{max_study_results_key_length}s} : {formatted_value}"
             )
         if not self.optuna_validate_params(pair, namespace, study):
             logger.warning(
