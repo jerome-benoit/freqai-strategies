@@ -41,6 +41,7 @@ from Utils import (
     bottom_log_return,
     calculate_quantile,
     ewo,
+    format_dict,
     format_number,
     generate_label_data,
     get_callable_sha256,
@@ -108,7 +109,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.11.0"
+        return "3.11.1"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -477,7 +478,7 @@ class QuickAdapterV3(IStrategy):
             logger.info("  Weighting:")
             logger.info(f"    strategy: {col_weighting['strategy']}")
             logger.info(
-                f"    metric_coefficients: {col_weighting['metric_coefficients']}"
+                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style='dict')}"
             )
             logger.info(f"    aggregation: {col_weighting['aggregation']}")
             if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
@@ -512,7 +513,9 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Exit Pricing:")
         logger.info(f"  trade_price_target_method: {self.trade_price_target_method}")
-        logger.info(f"  thresholds_calibration: {self._exit_thresholds_calibration}")
+        logger.info(
+            f"  thresholds_calibration: {format_dict(self._exit_thresholds_calibration, style='dict')}"
+        )
 
         logger.info("Custom Stoploss:")
         logger.info(
@@ -538,15 +541,12 @@ class QuickAdapterV3(IStrategy):
         if self.protections:
             for protection in self.protections:
                 method = protection.get("method", "Unknown")
-                logger.info(f"  {method}:")
-                for key, value in protection.items():
-                    if key != "method":
-                        if isinstance(value, bool):
-                            logger.info(f"    {key}: {value}")
-                        elif isinstance(value, (int, float)):
-                            logger.info(f"    {key}: {format_number(value)}")
-                        else:
-                            logger.info(f"    {key}: {value}")
+                protection_params = {
+                    k: v for k, v in protection.items() if k != "method"
+                }
+                logger.info(
+                    f"  {method}: {format_dict(protection_params, style='dict')}"
+                )
         else:
             logger.info("  No protections enabled")
 
@@ -815,11 +815,11 @@ class QuickAdapterV3(IStrategy):
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
+                    f"[{pair}] No {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {format_dict(label_params, style='params')}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {label_params!r}"
+                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {format_dict(label_params, style='params')}"
                 )
 
             col_weighting_config = get_label_column_config(
@@ -1730,7 +1730,7 @@ class QuickAdapterV3(IStrategy):
             return False
         if not (0.0 < decay_fraction <= 1.0):
             logger.debug(
-                f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction {decay_fraction}, must be in (0, 1]"
+                f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction {format_number(decay_fraction)}, must be in (0, 1]"
             )
             return False
 
