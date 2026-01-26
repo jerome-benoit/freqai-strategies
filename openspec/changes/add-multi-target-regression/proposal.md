@@ -15,7 +15,7 @@ enables:
 ## What Changes
 
 - **Configuration**: Add `prediction_targets` list in freqai config section
-- **Labeling**: Extend `set_freqai_targets()` to compute additional label columns based on enabled targets
+- **Labeling**: Register additional label generators for each prediction target
 - **Training**: Use native multi-output for CatBoost (MultiRMSE) and XGBoost (one_output_per_tree), wrap others with `FreqaiMultiOutputRegressor`
 - **Prediction**: Handle multi-column predictions and route to strategy via `&` column convention
 - **HPO**: Single-objective optimization using `compute_multi_rmse()` aligned with CatBoost formula
@@ -95,30 +95,20 @@ original scale.
 
 - Affected specs: `quickadapter-ml` (new capability)
 - Affected code:
-  - `QuickAdapterV3.py`: `set_freqai_targets()` method
+  - `QuickAdapterV3.py`: `set_freqai_targets()` method (extend dynamic label columns)
   - `QuickAdapterRegressorV3.py`: `fit()`, `predict()` methods
-  - `Utils.py`: `fit_regressor()` function, new multi-target wrapper, `compute_multi_rmse()`
+  - `Utils.py`: `fit_regressor()` function, new multi-target wrapper, `compute_multi_rmse()`, new label generators
 - **No new model files**: Implementation uses `QuickAdapterRegressorV3.py`
 - **All 5 regressors supported**: XGBoost, LightGBM, HistGradientBoosting, NGBoost, CatBoost
 
-### Foundation in Place (PR #45)
+## Remaining Work
 
-The `LabelGenerator` architecture introduced in PR #45 provides the extensible
-foundation for multi-target support. The following is **already implemented**:
+This proposal extends the existing `LabelGenerator` infrastructure by:
 
-| Component | Status | Location |
-|-----------|--------|----------|
-| `LabelData` dataclass | ✅ Done | `Utils.py:256` |
-| `LabelGenerator` type alias | ✅ Done | `Utils.py:262` |
-| `register_label_generator()` | ✅ Done | `Utils.py:266` |
-| `generate_label_data()` | ✅ Done | `Utils.py:312` |
-| `_generate_extrema_label()` | ✅ Done | `Utils.py:270` |
-| `LABEL_COLUMNS` loop in `set_freqai_targets()` | ✅ Done | `QuickAdapterV3.py:812` |
-| `get_label_column_config()` | ✅ Done | `LabelTransformer.py:179` |
-| `LabelTransformer` | ✅ Done | `LabelTransformer.py` |
-
-This proposal extends the existing infrastructure by:
 1. Adding `PREDICTION_TARGETS` mapping and config parsing
 2. Registering additional generators for each prediction target
-3. Implementing multi-output regressor support per backend
-4. Integrating with HPO via unified MultiRMSE metric
+3. Making `LABEL_COLUMNS` dynamic based on config
+4. Implementing `FreqaiMultiOutputRegressor` wrapper
+5. Adding multi-output support per regressor backend in `fit_regressor()`
+6. Implementing `compute_multi_rmse()` metric
+7. Integrating with HPO via unified MultiRMSE metric
