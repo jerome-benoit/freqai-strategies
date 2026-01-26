@@ -37,12 +37,18 @@ enhance position sizing, risk management, and signal quality filtering.
 | amplitude | `&-amplitude` | Remaining log move to next pivot | `log(pivot_price / current_price)` |
 | time_to_pivot | `&-time_to_pivot` | Countdown to next pivot | `pivot_index - current_index` |
 | efficiency | `&-efficiency` | Cumulative move efficiency so far | `abs(net_move) / path_length` |
-| natr | `&-natr` | Forward-looking NATR | `NATR.shift(-label_period_candles)` |
+| natr | `&-natr` | Forward-looking NATR | `NATR(period=label_period_candles).shift(-label_period_candles)` |
 
 **Position-Aware Labeling**: Each candle has a **unique target value** reflecting its
 position within the current move. This ensures gradient boosting receives strong
 learning signals (unlike forward-fill which creates degenerate targets).
 See design.md Decision 11 for mathematical justification.
+
+**Trading Usage Note**: The `amplitude` target is a log-return. To compute target
+prices for TP/SL, apply exponential transformation:
+```python
+target_price = current_price * np.exp(predicted_amplitude)
+```
 
 ### Configuration Example
 
