@@ -831,7 +831,6 @@ def smooth_label(
 
 def _impute_weights(
     weights: NDArray[np.floating],
-    *,
     default_weight: float = DEFAULT_LABEL_WEIGHT,
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
@@ -859,23 +858,23 @@ def _impute_weights(
 
 
 def _build_weights_array(
-    n_extrema: int,
+    n_values: int,
     indices: list[int],
     weights: NDArray[np.floating],
     default_weight: float = DEFAULT_LABEL_WEIGHT,
 ) -> NDArray[np.floating]:
     if len(indices) == 0 or weights.size == 0:
-        return np.full(n_extrema, DEFAULT_LABEL_WEIGHT, dtype=float)
+        return np.full(n_values, default_weight, dtype=float)
 
     if len(indices) != weights.size:
         raise ValueError(
             f"Invalid indices/weights values: length mismatch, got {len(indices)} indices but {weights.size} weights"
         )
 
-    weights_array = np.full(n_extrema, default_weight, dtype=float)
+    weights_array = np.full(n_values, default_weight, dtype=float)
 
     indices_array = np.array(indices)
-    mask = (indices_array >= 0) & (indices_array < n_extrema)
+    mask = (indices_array >= 0) & (indices_array < n_values)
 
     if not np.any(mask):
         return weights_array
@@ -1019,7 +1018,7 @@ def compute_label_weights(
     )
 
     return _build_weights_array(
-        n_extrema=n_values,
+        n_values=n_values,
         indices=indices,
         weights=weights,
         default_weight=float(np.nanmedian(weights)),
@@ -1052,7 +1051,7 @@ def apply_label_weighting(
 ) -> tuple[pd.Series, pd.Series]:
     label_values = label.to_numpy(dtype=float)
     label_index = label.index
-    n_values = len(label_values)
+    n_values = label_values.size
 
     weights = compute_label_weights(
         n_values=n_values,
