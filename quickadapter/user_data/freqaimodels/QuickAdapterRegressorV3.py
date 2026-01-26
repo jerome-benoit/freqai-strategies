@@ -51,6 +51,7 @@ from Utils import (
     Regressor,
     eval_set_and_weights,
     fit_regressor,
+    format_dict,
     format_number,
     get_label_defaults,
     get_label_pipeline_config,
@@ -93,7 +94,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.0"
+    version = "3.11.1"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -736,10 +737,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return config
 
-    @staticmethod
-    def _format_label_method_config(config: dict[str, Any]) -> str:
-        return ", ".join(f"{k}={v}" for k, v in config.items())
-
     _CONFIG_KEY_TO_TUNABLE_SUFFIX: Final[dict[str, str]] = {
         "distance_metric": "metric",
     }
@@ -1121,7 +1118,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         logger.info("Feature Parameters Configuration:")
         logger.info(f"  scaler: {scaler}")
-        logger.info(f"  range: {feature_range}")
+        logger.info(
+            f"  range: ({format_number(feature_range[0])}, {format_number(feature_range[1])})"
+        )
 
         logger.info("=" * 60)
 
@@ -2904,7 +2903,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
                 )
             )
-            metric_log_msg = f" ({QuickAdapterRegressorV3._format_label_method_config(label_config)})"
+            metric_log_msg = f" ({format_dict(label_config, style='params')})"
         logger.info(
             f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed"
             f"{metric_log_msg} ({time_spent:.2f} secs)"
@@ -2914,6 +2913,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if study_best_results
             else 20
         )
+        if study_best_results:
+            logger.info(
+                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params: {format_dict(study_best_results, style='dict')}"
+            )
         for key, value in study_best_results.items():
             if isinstance(value, list):
                 formatted_value = (

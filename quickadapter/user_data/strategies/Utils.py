@@ -4,7 +4,7 @@ import hashlib
 import math
 from dataclasses import dataclass
 from enum import IntEnum
-from functools import lru_cache
+from functools import lru_cache, singledispatch
 from logging import Logger
 from pathlib import Path
 from typing import (
@@ -1086,10 +1086,16 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
     return hashlib.sha256(code.co_code).hexdigest()
 
 
+_SCIENTIFIC_THRESHOLD_HIGH = 1e12
+_SCIENTIFIC_THRESHOLD_LOW = 1e-6
+
+
 @lru_cache(maxsize=128)
 def format_number(value: int | float, significant_digits: int = 5) -> str:
-    if not isinstance(value, (int, float)):
+    if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
+    if isinstance(value, (np.integer, np.floating)):
+        value = float(value)
 
     if np.isposinf(value):
         return "+∞"
@@ -1098,27 +1104,182 @@ def format_number(value: int | float, significant_digits: int = 5) -> str:
     if np.isnan(value):
         return "NaN"
 
-    if value == int(value):
-        return str(int(value))
-
     abs_value = abs(value)
 
-    if abs_value >= 1.0:
-        precision = significant_digits
-    else:
-        if abs_value == 0:
-            return "0"
-        order_of_magnitude = math.floor(math.log10(abs_value))
-        leading_zeros = abs(order_of_magnitude) - 1
-        precision = leading_zeros + significant_digits
-    precision = max(0, int(precision))
+    if abs_value >= _SCIENTIFIC_THRESHOLD_HIGH or (
+        0 < abs_value <= _SCIENTIFIC_THRESHOLD_LOW
+    ):
+        return f"{value:.{significant_digits - 1}e}"
 
-    formatted_value = f"{value:.{precision}f}"
+    if abs_value == 0:
+        return "0"
 
-    if "." in formatted_value:
-        formatted_value = formatted_value.rstrip("0").rstrip(".")
+    magnitude = math.floor(math.log10(abs_value))
+    precision = significant_digits - 1 - magnitude
 
-    return formatted_value
+    if precision < 0:
+        factor = 10 ** (-precision)
+        rounded = round(value / factor) * factor
+        return f"{rounded:.0f}"
+
+    formatted = f"{value:.{precision}f}"
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted
+
+
+_MAX_STR_LEN = 50
+_MAX_ITEMS = 10
+_MAX_DEPTH = 2
+
+
+class _FormatContext:
+    __slots__ = ("quote_strings", "sig_digits", "seen")
+
+    def __init__(self, quote_strings: bool, sig_digits: int):
+        self.quote_strings = quote_strings
+        self.sig_digits = sig_digits
+        self.seen: set[int] = set()
+
+
+@singledispatch
+def _format_value(value: Any, ctx: _FormatContext, depth: int) -> str:
+    return repr(value)
+
+
+@_format_value.register(type(None))
+def _(value: None, ctx: _FormatContext, depth: int) -> str:
+    return "None"
+
+
+@_format_value.register(bool)
+def _(value: bool, ctx: _FormatContext, depth: int) -> str:
+    return str(value)
+
+
+@_format_value.register(int)
+def _(value: int, ctx: _FormatContext, depth: int) -> str:
+    return format_number(float(value), significant_digits=ctx.sig_digits)
+
+
+@_format_value.register(float)
+def _(value: float, ctx: _FormatContext, depth: int) -> str:
+    return format_number(value, significant_digits=ctx.sig_digits)
+
+
+@_format_value.register(np.integer)
+def _(value: np.integer, ctx: _FormatContext, depth: int) -> str:
+    return format_number(float(value), significant_digits=ctx.sig_digits)
+
+
+@_format_value.register(np.floating)
+def _(value: np.floating, ctx: _FormatContext, depth: int) -> str:
+    return format_number(float(value), significant_digits=ctx.sig_digits)
+
+
+@_format_value.register(np.bool_)
+def _(value: np.bool_, ctx: _FormatContext, depth: int) -> str:
+    return str(bool(value))
+
+
+@_format_value.register(str)
+def _(value: str, ctx: _FormatContext, depth: int) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    if len(escaped) > _MAX_STR_LEN:
+        escaped = escaped[:_MAX_STR_LEN] + "..."
+    if ctx.quote_strings:
+        escaped = escaped.replace("'", "\\'")
+        return f"'{escaped}'"
+    return escaped
+
+
+def _format_collection(
+    value: list | tuple | set,
+    ctx: _FormatContext,
+    depth: int,
+    brackets: tuple[str, str],
+    empty: str,
+    trailing_comma: bool = False,
+) -> str:
+    if not value:
+        return empty
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return f"{brackets[0]}<circular>{brackets[1]}"
+    if depth >= _MAX_DEPTH:
+        return f"{brackets[0]}...{brackets[1]}"
+    ctx.seen.add(obj_id)
+    items_iter = sorted(value, key=str) if isinstance(value, set) else value
+    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    content = ", ".join(items)
+    if trailing_comma and len(value) == 1 and len(items) == 1:
+        content += ","
+    ctx.seen.discard(obj_id)
+    return f"{brackets[0]}{content}{brackets[1]}"
+
+
+@_format_value.register(list)
+def _(value: list, ctx: _FormatContext, depth: int) -> str:
+    return _format_collection(value, ctx, depth, ("[", "]"), "[]")
+
+
+@_format_value.register(tuple)
+def _(value: tuple, ctx: _FormatContext, depth: int) -> str:
+    return _format_collection(value, ctx, depth, ("(", ")"), "()", trailing_comma=True)
+
+
+@_format_value.register(set)
+def _(value: set, ctx: _FormatContext, depth: int) -> str:
+    return _format_collection(value, ctx, depth, ("{", "}"), "set()")
+
+
+@_format_value.register(dict)
+def _(value: dict, ctx: _FormatContext, depth: int) -> str:
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return "{<circular>}"
+    if depth >= _MAX_DEPTH:
+        return "{...}"
+    if not value:
+        return "{}"
+    ctx.seen.add(obj_id)
+    sep = ": " if ctx.quote_strings else "="
+    items = [
+        f"{k}{sep}{_format_value(v, ctx, depth + 1)}"
+        for k, v in list(value.items())[:_MAX_ITEMS]
+    ]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    ctx.seen.discard(obj_id)
+    return f"{{{', '.join(items)}}}"
+
+
+@_format_value.register(np.ndarray)
+def _(value: np.ndarray, ctx: _FormatContext, depth: int) -> str:
+    return f"array{value.shape}"
+
+
+def format_dict(
+    d: dict[str, Any],
+    style: Literal["dict", "params"] = "dict",
+    significant_digits: int = 5,
+) -> str:
+    if not d:
+        return "{}" if style == "dict" else ""
+
+    ctx = _FormatContext(quote_strings=(style == "dict"), sig_digits=significant_digits)
+    sep = ": " if style == "dict" else "="
+    items = [f"{k}{sep}{_format_value(v, ctx, 0)}" for k, v in d.items()]
+    joined = ", ".join(items)
+
+    return f"{{{joined}}}" if style == "dict" else joined
 
 
 @lru_cache(maxsize=128)
