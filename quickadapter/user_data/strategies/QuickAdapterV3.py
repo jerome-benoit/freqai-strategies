@@ -1833,7 +1833,7 @@ class QuickAdapterV3(IStrategy):
         """
         unrealized_pnl_history_array = np.asarray(unrealized_pnl_history, dtype=float)
 
-        if window_size > 0 and len(unrealized_pnl_history_array) > window_size:
+        if window_size > 0 and unrealized_pnl_history_array.size > window_size:
             unrealized_pnl_history_array = unrealized_pnl_history_array[-window_size:]
 
         velocity = np.diff(unrealized_pnl_history_array)
