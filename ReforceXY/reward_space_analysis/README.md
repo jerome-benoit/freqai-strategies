@@ -201,7 +201,8 @@ be overridden via `--params`.
 - **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate
   statistical diagnostics (zero-width CIs, undefined distribution metrics)
   instead of graceful fallbacks.
-- **`--exit_factor_threshold`** (float, default: 1000.0) – Emits a warning if the absolute value of the exit factor exceeds the threshold.
+- **`--exit_factor_threshold`** (float, default: 1000.0) – Emits a warning if
+  the absolute value of the exit factor exceeds the threshold.
 - **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple
   testing p-value adjustment method.
 - **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for
@@ -233,7 +234,8 @@ be overridden via `--params`.
 
 The exit factor is computed as:
 
-`exit_factor` = `base_factor` · `pnl_target_coefficient` · `efficiency_coefficient` · `time_attenuation_coefficient`
+`exit_factor` = `base_factor` · `pnl_target_coefficient` ·
+`efficiency_coefficient` · `time_attenuation_coefficient`
 
 ##### PnL Target
 
@@ -248,7 +250,8 @@ The exit factor is computed as:
 
 **Formula:**
 
-Let `pnl_target = profit_aim · risk_reward_ratio`, `pnl_ratio = pnl / pnl_target`.
+Let `pnl_target = profit_aim · risk_reward_ratio`,
+`pnl_ratio = pnl / pnl_target`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
@@ -290,7 +293,8 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 
 `time_attenuation_coefficient = kernel_function(duration_ratio)`
 
-where `kernel_function` depends on `exit_attenuation_mode`. See [Exit Attenuation Kernels](#exit-attenuation-kernels) for detailed formulas.
+where `kernel_function` depends on `exit_attenuation_mode`. See
+[Exit Attenuation Kernels](#exit-attenuation-kernels) for detailed formulas.
 
 #### Duration Penalties
 
