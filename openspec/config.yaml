@@ -1,0 +1,41 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.11+, FreqAI (Freqtrade), Docker
+  ML libraries: XGBoost, LightGBM, CatBoost, NGBoost, scikit-learn, NumPy, pandas
+  Reinforcement learning: Stable-Baselines3 (ReforceXY strategy)
+  Testing: pytest
+  Domain: Algorithmic crypto trading strategies with machine learning
+
+  Key strategies:
+  - QuickAdapter: Regression-based strategy with zigzag labeling and adaptive thresholds
+  - ReforceXY: Reinforcement learning strategy with customizable reward functions
+
+  Conventions from .github/copilot-instructions.md:
+  - Prefer established design patterns (factory, singleton, strategy)
+  - DRY: avoid duplication of logic, data, and naming
+  - Single source of truth: maintain canonical defaults for configuration tunables
+  - Naming coherence: semantically accurate names, avoid ambiguous synonyms
+  - English-only: code, tests, logs, comments, documentation
+  - Tests-first mindset: add or update tests before refactoring or feature changes
+  - Conventional Commits format for PR titles and commit messages
+
+  Configuration guidelines:
+  - Dynamic generation: derive CLI/config options from canonical defaults
+  - Merge precedence: defaults < user options < explicit overrides
+  - Validation: enforce constraints (choices, ranges, types) at the option layer
+
+  Statistical conventions:
+  - Report effect sizes alongside test statistics and p-values
+  - Document divergence metric direction explicitly
+  - Use confidence intervals when feasible
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
