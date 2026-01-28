@@ -8,8 +8,7 @@ policies, maintenance workflows, and full coverage mapping.
 The suite enforces:
 
 - Reward component mathematics & transform correctness
-- PBRS shaping mechanics (canonical exit semantics, near-zero
-  classification)
+- PBRS shaping mechanics (canonical exit semantics, near-zero classification)
 - Robustness under extreme / invalid parameter settings
 - Statistical metrics integrity (bootstrap, constant distributions)
 - CLI parameter propagation & report formatting
@@ -93,7 +92,9 @@ seed_all(SEEDS.FIXED_UNIT)
 
 ### Tolerance Selection
 
-Choose appropriate numerical tolerances to prevent flaky tests. All tolerance constants are defined and documented in `tests/constants.py` with their rationale.
+Choose appropriate numerical tolerances to prevent flaky tests. All tolerance
+constants are defined and documented in `tests/constants.py` with their
+rationale.
 
 **Common tolerances:**
 
@@ -101,7 +102,8 @@ Choose appropriate numerical tolerances to prevent flaky tests. All tolerance co
 - `IDENTITY_RELAXED` (1e-09) - Multi-step operations with accumulated errors
 - `GENERIC_EQ` (1e-08) - General floating-point equality (default)
 
-Always document non-default tolerance choices with inline comments explaining the error accumulation model.
+Always document non-default tolerance choices with inline comments explaining
+the error accumulation model.
 
 ### Test Documentation
 
@@ -246,7 +248,8 @@ Table tracks approximate line ranges and source ownership:
    selection.
 4. Follow the docstring template in `.docstring_template.md`.
 5. Use constants from `tests/constants.py` - never use magic numbers.
-6. Document tolerance choices with inline comments explaining error accumulation.
+6. Document tolerance choices with inline comments explaining error
+   accumulation.
 7. Optionally declare inline ownership:
    ```python
    # Owns invariant: <id>
@@ -320,8 +323,8 @@ before publishing analysis reliant on invariants.
   dataclasses with comprehensive documentation)
 - **`helpers/assertions.py`** - 20+ custom assertion functions for invariant
   validation
-- **`test_base.py`** - Base class with common utilities (`make_ctx`,
-  `seed_all`, etc.)
+- **`test_base.py`** - Base class with common utilities (`make_ctx`, `seed_all`,
+  etc.)
 
 ---
 
