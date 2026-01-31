@@ -1177,7 +1177,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                     **action_masks_param,
                 )
                 episode_start[:] = False
-                logger.debug("Predict [%s]: predicted action=%d", dk.pair, int(action))
+                action = int(action.item())
+                logger.debug("Predict [%s]: predicted action=%d", dk.pair, action)
             else:
                 logger.debug(
                     "Predict [%s]: model.predict (observations.shape=%s)",
@@ -1187,9 +1188,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 action, _ = model.predict(
                     observations, deterministic=True, **action_masks_param
                 )
-                logger.debug("Predict [%s]: predicted action=%d", dk.pair, int(action))
+                action = int(action.item())
+                logger.debug("Predict [%s]: predicted action=%d", dk.pair, action)
 
-            return int(action)
+            return action
 
         predicted_actions: List[int] = []
         for start_idx in range(0, n - window_size + 1):
