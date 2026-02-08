@@ -37,6 +37,59 @@ docker compose up -d --build
 
 ### Configuration tunables
 
+### Data Split Parameters
+
+The `data_split_parameters` section controls how training data is split into train/test sets.
+
+#### Available Methods
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `data_split_parameters.method` | string | Splitting strategy: `"train_test_split"` (random) or `"timeseries_split"` (temporal) | `"train_test_split"` |
+| `data_split_parameters.test_size` | float | Fraction of data for testing (train_test_split only) | `0.333` |
+| `data_split_parameters.shuffle` | bool | Whether to shuffle before splitting (train_test_split only) | `false` |
+| `data_split_parameters.random_state` | int | Random seed for reproducibility (train_test_split only) | `1` |
+
+#### TimeSeriesSplit Parameters
+
+When using `data_split_parameters.method: "timeseries_split"`, the following parameters apply:
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `data_split_parameters.n_splits` | int | Number of temporal folds (must be ≥ 2) | `5` |
+| `data_split_parameters.gap` | int | Number of samples to exclude between train and test sets | `0` |
+| `data_split_parameters.max_train_size` | int or null | Maximum number of samples in training set (null = no limit) | `null` |
+
+#### Configuration Examples
+
+**Default: Random Train/Test Split**
+```json
+"data_split_parameters": {
+  "method": "train_test_test",
+  "test_size": 0.333,
+  "random_state": 1,
+  "shuffle": false
+}
+```
+
+**TimeSeriesSplit: Temporal Ordering**
+```json
+"data_split_parameters": {
+  "method": "timeseries_split",
+  "n_splits": 5,
+  "gap": 0,
+  "max_train_size": null
+}
+```
+
+#### When to Use Each Method
+
+- **train_test_split**: Use when data points are independent and identically distributed (i.i.d.). Suitable for strategies that don't rely on temporal patterns.
+
+- **timeseries_split**: Use when temporal ordering matters. Prevents data leakage by ensuring training data always precedes test data chronologically. The implementation uses the **last fold only** from sklearn's TimeSeriesSplit, not k-fold cross-validation.
+
+For more details on TimeSeriesSplit parameters, see [sklearn documentation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html).
+
 | Path                                                           | Default                       | Type / Range                                                                                                                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | -------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | _Protections_                                                  |                               |                                                                                                                                              |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
