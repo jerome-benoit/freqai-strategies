@@ -17,6 +17,7 @@ import skimage
 import sklearn
 from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
+from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
@@ -1424,8 +1425,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param pair: Trading pair (for error messages)
         :return: data_dictionary with transformed features/labels
         """
-        from freqtrade.exceptions import DependencyException
-
         dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
 
