@@ -1507,8 +1507,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         feat_dict = self.freqai_info.get("feature_parameters", {})
         if feat_dict.get("weight_factor", 0) > 0:
-            train_weights = dk.set_weights_higher_recent(len(train_idx))
-            test_weights = dk.set_weights_higher_recent(len(test_idx))
+            total_weights = dk.set_weights_higher_recent(len(train_idx) + len(test_idx))
+            train_weights = total_weights[: len(train_idx)]
+            test_weights = total_weights[len(train_idx) :]
         else:
             train_weights = np.ones(len(train_idx))
             test_weights = np.ones(len(test_idx))
