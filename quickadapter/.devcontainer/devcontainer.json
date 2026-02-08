@@ -1,5 +1,6 @@
 {
   "name": "QuickAdapter Dev",
+  "initializeCommand": "test -f .env || echo 'GH_TOKEN=\nGITHUB_TOKEN=' > .env",
   "dockerComposeFile": [
     "../docker-compose.yml",
     "docker-compose.dev.yml"
@@ -56,9 +57,9 @@
       }
     }
   },
-  "remoteEnv": {
-    "GH_TOKEN": "${localEnv:GH_TOKEN}",
-    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
-  },
+  // "remoteEnv": {
+  //   "GH_TOKEN": "${localEnv:GH_TOKEN}",
+  //   "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
+  // },
   "remoteUser": "ftuser"
 }

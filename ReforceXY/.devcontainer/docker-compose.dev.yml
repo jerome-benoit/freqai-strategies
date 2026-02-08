@@ -1,3 +1,5 @@
 services:
   freqtrade:
     container_name: freqtrade-ReforceXY-dev
+    env_file:
+      - .env
