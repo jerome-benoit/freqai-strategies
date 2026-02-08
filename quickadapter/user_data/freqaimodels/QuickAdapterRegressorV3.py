@@ -1393,47 +1393,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ):
                 dk.fit_labels()
 
-            # Define pipelines (same as parent)
-            dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
-            dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
-
-            # Apply feature pipeline to train data
-            (dd["train_features"], dd["train_labels"], dd["train_weights"]) = (
-                dk.feature_pipeline.fit_transform(
-                    dd["train_features"], dd["train_labels"], dd["train_weights"]
-                )
-            )
-
-            # Apply label pipeline to train data
-            dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(
-                dd["train_labels"]
-            )
-
-            # Apply pipelines to test data if test_size is not 0
-            if (
-                self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1)
-                != 0
-            ):
-                if dd["test_labels"].shape[0] == 0:
-                    from freqtrade.exceptions import DependencyException
-
-                    raise DependencyException(
-                        f"{pair}: test set is empty after filtering. "
-                        f"This is usually caused by overly strict SVM thresholds or insufficient data. "
-                        f"Try reducing 'test_size' or relaxing your SVM conditions."
-                    )
-                else:
-                    (dd["test_features"], dd["test_labels"], dd["test_weights"]) = (
-                        dk.feature_pipeline.transform(
-                            dd["test_features"], dd["test_labels"], dd["test_weights"]
-                        )
-                    )
-                    dd["test_labels"], _, _ = dk.label_pipeline.transform(
-                        dd["test_labels"]
-                    )
-
-            # Keep data_dictionary consistent with the datasets used for training
-            dk.data_dictionary = dd
+            # Apply pipelines (extracted to reduce duplication with parent)
+            dd = self._apply_pipelines(dd, dk, pair)
 
             logger.info(
                 f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
@@ -1451,6 +1412,60 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
             return model
+
+    def _apply_pipelines(
+        self,
+        dd: dict,
+        dk: FreqaiDataKitchen,
+        pair: str,
+    ) -> dict:
+        """
+        Apply feature and label pipelines to train/test data.
+
+        This helper reduces code duplication between train() methods that need
+        custom data splitting but share the same pipeline application logic.
+
+        :param dd: data_dictionary with train/test features/labels/weights
+        :param dk: FreqaiDataKitchen instance
+        :param pair: Trading pair (for error messages)
+        :return: data_dictionary with transformed features/labels
+        """
+        from freqtrade.exceptions import DependencyException
+
+        # Define pipelines
+        dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
+        dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
+
+        # Apply feature pipeline to train data
+        (dd["train_features"], dd["train_labels"], dd["train_weights"]) = (
+            dk.feature_pipeline.fit_transform(
+                dd["train_features"], dd["train_labels"], dd["train_weights"]
+            )
+        )
+
+        # Apply label pipeline to train data
+        dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
+
+        # Apply pipelines to test data if test_size is not 0
+        if self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1) != 0:
+            if dd["test_labels"].shape[0] == 0:
+                raise DependencyException(
+                    f"{pair}: test set is empty after filtering. "
+                    f"This is usually caused by overly strict SVM thresholds or insufficient data. "
+                    f"Try reducing 'test_size' or relaxing your SVM conditions."
+                )
+            else:
+                (dd["test_features"], dd["test_labels"], dd["test_weights"]) = (
+                    dk.feature_pipeline.transform(
+                        dd["test_features"], dd["test_labels"], dd["test_weights"]
+                    )
+                )
+                dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
+
+        # Keep data_dictionary consistent
+        dk.data_dictionary = dd
+
+        return dd
 
     def _make_timeseries_split_datasets(
         self,
