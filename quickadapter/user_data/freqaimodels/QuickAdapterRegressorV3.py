@@ -315,6 +315,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
 
     @staticmethod
+    @lru_cache(maxsize=None)
+    def _data_split_methods_set() -> set[str]:
+        return set(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)
+
+    @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
         for (
             category,
@@ -1342,10 +1347,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "method", self.DATA_SPLIT_METHOD_DEFAULT
         )
 
-        if method not in self._DATA_SPLIT_METHODS:
+        if method not in QuickAdapterRegressorV3._data_split_methods_set():
             raise ValueError(
                 f"Invalid data_split_parameters.method value {method!r}: "
-                f"supported values are {', '.join(self._DATA_SPLIT_METHODS)}"
+                f"supported values are {', '.join(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)}"
             )
 
         logger.info(f"Using data split method: {method}")
