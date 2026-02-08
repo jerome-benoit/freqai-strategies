@@ -1456,32 +1456,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return dd
 
-    @staticmethod
-    def _compute_timeseries_min_samples(
-        n_splits: int, gap: int, test_size: int | None
-    ) -> int:
-        """
-        Compute minimum samples required for TimeSeriesSplit.
-
-        When test_size is specified, sklearn validates:
-        n_samples - gap - (test_size * n_splits) > 0
-        So minimum required is: test_size * n_splits + gap + 1
-
-        When test_size is None, sklearn computes test_size = n_samples // (n_splits + 1)
-        and applies the same constraint. Solving for n_samples:
-        n_samples > gap + (n_samples // (n_splits + 1)) * n_splits
-        Approximating: n_samples > gap * (n_splits + 1)
-        So minimum required is: gap * (n_splits + 1) + 1
-
-        :param n_splits: Number of folds
-        :param gap: Gap between train and test sets
-        :param test_size: Fixed test size per fold (None for dynamic sizing)
-        :return: Minimum number of samples required
-        """
-        if test_size is not None:
-            return test_size * n_splits + gap + 1
-        return gap * (n_splits + 1) + 1
-
     def _make_timeseries_split_datasets(
         self,
         filtered_dataframe: pd.DataFrame,
@@ -1551,14 +1525,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             gap = label_period_candles
             logger.info(
                 f"TimeSeriesSplit gap auto-calculated from label_period_candles: {gap}"
-            )
-
-        min_samples = self._compute_timeseries_min_samples(n_splits, gap, test_size)
-        if len(filtered_dataframe) < min_samples:
-            raise ValueError(
-                f"Dataset size ({len(filtered_dataframe)}) too small for "
-                f"n_splits={n_splits}, gap={gap}, test_size={test_size}. "
-                f"Minimum required: {min_samples}"
             )
 
         tscv = TimeSeriesSplit(
