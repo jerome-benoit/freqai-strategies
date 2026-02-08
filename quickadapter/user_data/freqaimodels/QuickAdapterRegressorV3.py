@@ -1494,6 +1494,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         that respects temporal ordering. Delegates weight calculation and dictionary
         building to FreqaiDataKitchen to maintain consistency with FreqAI conventions.
 
+        If gap=0 is configured, it is auto-calculated from label_period_candles to
+        prevent look-ahead bias from overlapping label windows.
+
         :param filtered_dataframe: Feature data to split
         :param labels: Label data to split
         :param dk: FreqaiDataKitchen instance for weight calculation and data building
@@ -1540,18 +1543,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"Increase test_size or provide more data."
                 )
 
+        if gap == 0:
+            label_period_candles = int(
+                self.ft_params.get("label_period_candles", self._label_defaults[0])
+            )
+            gap = label_period_candles
+            logger.info(
+                f"TimeSeriesSplit gap auto-calculated from label_period_candles: {gap}"
+            )
+
         min_samples = self._compute_timeseries_min_samples(n_splits, gap, test_size)
         if len(filtered_dataframe) < min_samples:
             raise ValueError(
                 f"Dataset size ({len(filtered_dataframe)}) too small for "
                 f"n_splits={n_splits}, gap={gap}, test_size={test_size}. "
                 f"Minimum required: {min_samples}"
-            )
-
-        if gap == 0:
-            logger.warning(
-                "TimeSeriesSplit with gap=0 risks look-ahead bias. "
-                "Consider setting gap >= label_period_candles to prevent data leakage."
             )
 
         tscv = TimeSeriesSplit(
