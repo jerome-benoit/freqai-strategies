@@ -1453,6 +1453,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return dd
 
+    @staticmethod
+    def _compute_timeseries_min_samples(
+        n_splits: int, gap: int, test_size: int | None
+    ) -> int:
+        """
+        Compute minimum samples required for TimeSeriesSplit.
+
+        sklearn's TimeSeriesSplit requires: n_samples >= n_splits + 1 + gap + test_size.
+        When test_size is None, sklearn computes it as n_samples // (n_splits + 1).
+
+        :param n_splits: Number of folds
+        :param gap: Gap between train and test sets
+        :param test_size: Fixed test size per fold (None for dynamic sizing)
+        :return: Minimum number of samples required
+        """
+        if test_size is not None:
+            return n_splits * (test_size + gap) + test_size
+        return n_splits + 1 + gap
+
     def _make_timeseries_split_datasets(
         self,
         filtered_dataframe: pd.DataFrame,
@@ -1481,15 +1500,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if n_splits < 2:
             raise ValueError(f"TimeSeriesSplit requires n_splits >= 2, got {n_splits}")
-        if len(filtered_dataframe) < n_splits + 1:
+
+        test_size_param = self.data_split_parameters.get("test_size", None)
+        test_size: int | None = None
+        if test_size_param is not None:
+            test_size = int(len(filtered_dataframe) * test_size_param)
+
+        min_samples = self._compute_timeseries_min_samples(n_splits, gap, test_size)
+        if len(filtered_dataframe) < min_samples:
             raise ValueError(
-                f"Dataset size ({len(filtered_dataframe)}) too small for n_splits={n_splits}. "
-                f"Minimum required: {n_splits + 1}"
+                f"Dataset size ({len(filtered_dataframe)}) too small for "
+                f"n_splits={n_splits}, gap={gap}, test_size={test_size}. "
+                f"Minimum required: {min_samples}"
             )
 
-        test_size = self.data_split_parameters.get("test_size", None)
-        if test_size is not None:
-            test_size = int(len(filtered_dataframe) * test_size)
+        if gap == 0:
+            logger.warning(
+                "TimeSeriesSplit with gap=0 risks look-ahead bias. "
+                "Consider setting gap >= label_period_candles to prevent data leakage."
+            )
 
         tscv = TimeSeriesSplit(
             n_splits=n_splits,
