@@ -1359,13 +1359,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return super().train(unfiltered_df, pair, dk, **kwargs)
 
         elif method == "timeseries_split":
-            from time import time
-
             logger.info(
                 f"-------------------- Starting training {pair} --------------------"
             )
 
-            start_time = time()
+            start_time = time.time()
 
             features_filtered, labels_filtered = dk.filter_features(
                 unfiltered_df,
@@ -1400,7 +1398,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             model = self.fit(dd, dk)
 
-            end_time = time()
+            end_time = time.time()
 
             logger.info(
                 f"-------------------- Done training {pair} "
