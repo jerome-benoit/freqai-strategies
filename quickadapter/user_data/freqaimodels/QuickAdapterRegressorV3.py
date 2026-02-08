@@ -1383,7 +1383,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             # Use custom TimeSeriesSplit instead of dk.make_train_test_datasets()
             dd = self._make_timeseries_split_datasets(
-                features_filtered, labels_filtered, dk
+                features_filtered, labels_filtered
             )
 
             # Fit labels if needed (same as parent)
@@ -1432,6 +1432,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dd["test_labels"]
                     )
 
+            # Keep data_dictionary consistent with the datasets used for training
+            dk.data_dictionary = dd
+
             logger.info(
                 f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
             )
@@ -1453,7 +1456,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         filtered_dataframe: pd.DataFrame,
         labels: pd.DataFrame,
-        dk: FreqaiDataKitchen,
     ) -> dict:
         """
         Split data using TimeSeriesSplit with exponential weight decay.
@@ -1464,7 +1466,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         :param filtered_dataframe: Feature data to split
         :param labels: Label data to split
-        :param dk: FreqaiDataKitchen object containing configuration
         :return: data_dictionary with train/test features/labels/weights
         """
         n_splits = self.data_split_parameters.get(
@@ -1484,9 +1485,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Minimum required: {n_splits + 1}"
             )
 
+        # Get test_size for TimeSeriesSplit
+        test_size = self.data_split_parameters.get("test_size", None)
+        if test_size is not None:
+            # Convert fraction to number of samples
+            test_size = int(len(filtered_dataframe) * test_size)
+
         # Create TimeSeriesSplit and get LAST fold
         tscv = TimeSeriesSplit(
-            n_splits=n_splits, gap=gap, max_train_size=max_train_size
+            n_splits=n_splits,
+            gap=gap,
+            max_train_size=max_train_size,
+            test_size=test_size,
         )
         splits = list(tscv.split(filtered_dataframe))
         train_idx, test_idx = splits[-1]  # LAST fold only

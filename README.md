@@ -65,7 +65,7 @@ When using `data_split_parameters.method: "timeseries_split"`, the following par
 **Default: Random Train/Test Split**
 ```json
 "data_split_parameters": {
-  "method": "train_test_test",
+  "method": "train_test_split",
   "test_size": 0.333,
   "random_state": 1,
   "shuffle": false
