@@ -1394,7 +1394,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             dd = self._apply_pipelines(dd, dk, pair)
 
             logger.info(
-                f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
+                f"Training model on {len(dd['train_features'].columns)} features"
             )
             logger.info(f"Training model on {len(dd['train_features'])} data points")
 
@@ -1439,7 +1439,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
-        if self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1) != 0:
+        if self.data_split_parameters.get("test_size", 0.1) != 0:
             if dd["test_labels"].shape[0] == 0:
                 raise DependencyException(
                     f"{pair}: test set is empty after filtering. "
@@ -1465,8 +1465,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """
         Compute minimum samples required for TimeSeriesSplit.
 
-        sklearn's TimeSeriesSplit requires: n_samples >= n_splits + 1 + gap + test_size.
-        When test_size is None, sklearn computes it as n_samples // (n_splits + 1).
+        When test_size is specified, each fold needs test_size samples plus gap.
+        The formula (n_splits + 1) * test_size + n_splits * gap provides a safe
+        lower bound that ensures meaningful train/test splits across all folds.
+
+        When test_size is None, sklearn computes it dynamically as
+        n_samples // (n_splits + 1), so we only need n_splits + 1 + gap samples.
 
         :param n_splits: Number of folds
         :param gap: Gap between train and test sets
@@ -1474,7 +1478,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :return: Minimum number of samples required
         """
         if test_size is not None:
-            return n_splits * (test_size + gap) + test_size
+            return (n_splits + 1) * test_size + n_splits * gap
         return n_splits + 1 + gap
 
     def _make_timeseries_split_datasets(
@@ -1495,23 +1499,46 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen instance for weight calculation and data building
         :return: data_dictionary with train/test features/labels/weights
         """
-        n_splits = self.data_split_parameters.get(
-            "n_splits", self.TIMESERIES_N_SPLITS_DEFAULT
+        n_splits = int(
+            self.data_split_parameters.get("n_splits", self.TIMESERIES_N_SPLITS_DEFAULT)
         )
-        gap = self.data_split_parameters.get("gap", self.TIMESERIES_GAP_DEFAULT)
-        max_train_size = self.data_split_parameters.get(
+        gap = int(self.data_split_parameters.get("gap", self.TIMESERIES_GAP_DEFAULT))
+        max_train_size_param = self.data_split_parameters.get(
             "max_train_size", self.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
         )
+        max_train_size = int(max_train_size_param) if max_train_size_param else None
 
         if n_splits < 2:
             raise ValueError(
                 f"Invalid data_split_parameters.n_splits value {n_splits!r}: must be >= 2"
             )
+        if gap < 0:
+            raise ValueError(
+                f"Invalid data_split_parameters.gap value {gap!r}: must be >= 0"
+            )
+        if max_train_size is not None and max_train_size < 1:
+            raise ValueError(
+                f"Invalid data_split_parameters.max_train_size value {max_train_size!r}: "
+                f"must be >= 1 or None"
+            )
 
         test_size_param = self.data_split_parameters.get("test_size", None)
         test_size: int | None = None
         if test_size_param is not None:
-            test_size = int(len(filtered_dataframe) * test_size_param)
+            if isinstance(test_size_param, float) and 0 < test_size_param < 1:
+                test_size = int(len(filtered_dataframe) * test_size_param)
+            elif isinstance(test_size_param, int) and test_size_param >= 1:
+                test_size = test_size_param
+            else:
+                raise ValueError(
+                    f"Invalid data_split_parameters.test_size value {test_size_param!r}: "
+                    f"must be float in (0, 1) as fraction, int >= 1 as count, or None"
+                )
+            if test_size < 1:
+                raise ValueError(
+                    f"Computed test_size ({test_size}) is too small. "
+                    f"Increase test_size or provide more data."
+                )
 
         min_samples = self._compute_timeseries_min_samples(n_splits, gap, test_size)
         if len(filtered_dataframe) < min_samples:
@@ -1533,8 +1560,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             max_train_size=max_train_size,
             test_size=test_size,
         )
-        splits = list(tscv.split(filtered_dataframe))
-        train_idx, test_idx = splits[-1]
+        train_idx: np.ndarray = np.array([])
+        test_idx: np.ndarray = np.array([])
+        for train_idx, test_idx in tscv.split(filtered_dataframe):
+            pass
 
         train_features = filtered_dataframe.iloc[train_idx]
         test_features = filtered_dataframe.iloc[test_idx]
