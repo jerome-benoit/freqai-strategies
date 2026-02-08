@@ -1344,8 +1344,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if method not in self._DATA_SPLIT_METHODS:
             raise ValueError(
-                f"Unknown data split method: '{method}'. "
-                f"Valid options: {self._DATA_SPLIT_METHODS}"
+                f"Invalid data_split_parameters.method value {method!r}: "
+                f"supported values are {', '.join(self._DATA_SPLIT_METHODS)}"
             )
 
         logger.info(f"Using data split method: {method}")
@@ -1499,7 +1499,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         if n_splits < 2:
-            raise ValueError(f"TimeSeriesSplit requires n_splits >= 2, got {n_splits}")
+            raise ValueError(
+                f"Invalid data_split_parameters.n_splits value {n_splits!r}: must be >= 2"
+            )
 
         test_size_param = self.data_split_parameters.get("test_size", None)
         test_size: int | None = None
