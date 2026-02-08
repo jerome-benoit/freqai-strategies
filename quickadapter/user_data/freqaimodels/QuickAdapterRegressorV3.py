@@ -1360,7 +1360,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if method == QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
             return super().train(unfiltered_df, pair, dk, **kwargs)
 
-        elif method == "timeseries_split":
+        elif (
+            method == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
+        ):  # timeseries_split
             logger.info(
                 f"-------------------- Starting training {pair} --------------------"
             )
@@ -1442,7 +1444,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 method = self.data_split_parameters.get(
                     "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
                 )
-                if method == "timeseries_split":
+                if (
+                    method == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
+                ):  # timeseries_split
                     n_splits = self.data_split_parameters.get(
                         "n_splits", QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT
                     )
@@ -1527,16 +1531,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"must be >= 1 or None"
             )
 
-        test_size_param = self.data_split_parameters.get("test_size", None)
+        test_size = self.data_split_parameters.get("test_size", None)
         test_size: int | None = None
-        if test_size_param is not None:
-            if isinstance(test_size_param, float) and 0 < test_size_param < 1:
-                test_size = int(len(filtered_dataframe) * test_size_param)
-            elif isinstance(test_size_param, int) and test_size_param >= 1:
-                test_size = test_size_param
+        if test_size is not None:
+            if isinstance(test_size, float) and 0 < test_size < 1:
+                test_size = int(len(filtered_dataframe) * test_size)
+            elif isinstance(test_size, int) and test_size >= 1:
+                test_size = test_size
             else:
                 raise ValueError(
-                    f"Invalid data_split_parameters.test_size value {test_size_param!r}: "
+                    f"Invalid data_split_parameters.test_size value {test_size!r}: "
                     f"must be float in (0, 1) as fraction, int >= 1 as count, or None"
                 )
             if test_size < 1:
@@ -1570,8 +1574,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
 
-        feat_dict = self.freqai_info.get("feature_parameters", {})
-        if feat_dict.get("weight_factor", 0) > 0:
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        if feature_parameters.get("weight_factor", 0) > 0:
             total_weights = dk.set_weights_higher_recent(len(train_idx) + len(test_idx))
             train_weights = total_weights[: len(train_idx)]
             test_weights = total_weights[len(train_idx) :]
