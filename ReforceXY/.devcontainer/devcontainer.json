@@ -1,5 +1,6 @@
 {
   "name": "ReforceXY Dev",
+  "initializeCommand": "test -f .env || echo 'GH_TOKEN=\nGITHUB_TOKEN=' > .env",
   "dockerComposeFile": [
     "../docker-compose.yml",
     "docker-compose.dev.yml"
@@ -12,7 +13,9 @@
     "source=${localEnv:HOME}/.config/opencode,target=/home/ftuser/.config/opencode,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/gh,target=/home/ftuser/.config/gh,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.local/share/opencode,target=/home/ftuser/.local/share/opencode,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.local/state/opencode,target=/home/ftuser/.local/state/opencode,type=bind,consistency=cached"
+    "source=${localEnv:HOME}/.local/state/opencode,target=/home/ftuser/.local/state/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.cache/opencode,target=/home/ftuser/.cache/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.cache/oh-my-opencode,target=/home/ftuser/.cache/oh-my-opencode,type=bind,consistency=cached"
   ],
   "features": {
     "ghcr.io/devcontainers/features/nix:1": {
@@ -56,9 +59,9 @@
       }
     }
   },
-  "remoteEnv": {
-    "GH_TOKEN": "${localEnv:GH_TOKEN}",
-    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
-  },
+  // "remoteEnv": {
+  //   "GH_TOKEN": "${localEnv:GH_TOKEN}",
+  //   "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
+  // },
   "remoteUser": "ftuser"
 }

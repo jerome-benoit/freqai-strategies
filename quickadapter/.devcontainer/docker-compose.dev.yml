@@ -1,3 +1,5 @@
 services:
   freqtrade:
     container_name: freqtrade-quickadapter-dev
+    env_file:
+      - .env
