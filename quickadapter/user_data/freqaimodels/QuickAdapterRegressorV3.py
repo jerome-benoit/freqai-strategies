@@ -1489,7 +1489,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         max_train_size = self.data_split_parameters.get(
             "max_train_size", QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
         )
-        max_train_size = int(max_train_size) if max_train_size else None
+        max_train_size = int(max_train_size) if max_train_size is not None else None
 
         if n_splits < 2:
             raise ValueError(
