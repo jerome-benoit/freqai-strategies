@@ -1463,12 +1463,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """
         Compute minimum samples required for TimeSeriesSplit.
 
-        When test_size is specified, each fold needs test_size samples plus gap.
-        sklearn validates: n_samples - gap - (test_size * n_splits) > 0
+        When test_size is specified, sklearn validates:
+        n_samples - gap - (test_size * n_splits) > 0
         So minimum required is: test_size * n_splits + gap + 1
 
-        When test_size is None, sklearn computes it dynamically as
-        n_samples // (n_splits + 1), so we only need n_splits + 1 + gap samples.
+        When test_size is None, sklearn computes test_size = n_samples // (n_splits + 1)
+        and applies the same constraint. Solving for n_samples:
+        n_samples > gap + (n_samples // (n_splits + 1)) * n_splits
+        Approximating: n_samples > gap * (n_splits + 1)
+        So minimum required is: gap * (n_splits + 1) + 1
 
         :param n_splits: Number of folds
         :param gap: Gap between train and test sets
@@ -1477,7 +1480,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """
         if test_size is not None:
             return test_size * n_splits + gap + 1
-        return n_splits + 1 + gap
+        return gap * (n_splits + 1) + 1
 
     def _make_timeseries_split_datasets(
         self,
