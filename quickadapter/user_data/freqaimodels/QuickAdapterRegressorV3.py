@@ -1383,7 +1383,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             # Use custom TimeSeriesSplit instead of dk.make_train_test_datasets()
             dd = self._make_timeseries_split_datasets(
-                features_filtered, labels_filtered
+                features_filtered, labels_filtered, dk
             )
 
             # Fit labels if needed (same as parent)
@@ -1456,16 +1456,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         filtered_dataframe: pd.DataFrame,
         labels: pd.DataFrame,
+        dk: FreqaiDataKitchen,
     ) -> dict:
         """
-        Split data using TimeSeriesSplit with exponential weight decay.
+        Split data using TimeSeriesSplit for temporal validation.
 
         Uses the LAST fold from TimeSeriesSplit to create a single train/test split
-        that respects temporal ordering. Applies exponential decay weights favoring
-        recent samples following FreqAI convention.
+        that respects temporal ordering. Delegates weight calculation and dictionary
+        building to FreqaiDataKitchen to maintain consistency with FreqAI conventions.
 
         :param filtered_dataframe: Feature data to split
         :param labels: Label data to split
+        :param dk: FreqaiDataKitchen instance for weight calculation and data building
         :return: data_dictionary with train/test features/labels/weights
         """
         n_splits = self.data_split_parameters.get(
@@ -1507,28 +1509,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
 
-        # Calculate weights with exponential decay (FreqAI convention)
-        # Formula: np.exp(-np.arange(num_weights) / (wfactor * num_weights))[::-1]
-        wfactor = self.freqai_info["data_kitchen_thread_count"]
+        # Calculate weights using FreqAI's method (respects weight_factor config)
+        # dk.set_weights_higher_recent() checks feature_parameters.weight_factor > 0
+        # and returns uniform weights if not set
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        if feat_dict.get("weight_factor", 0) > 0:
+            train_weights = dk.set_weights_higher_recent(len(train_idx))
+            test_weights = dk.set_weights_higher_recent(len(test_idx))
+        else:
+            train_weights = np.ones(len(train_idx))
+            test_weights = np.ones(len(test_idx))
 
-        num_train_weights = len(train_idx)
-        train_weights = np.exp(
-            -np.arange(num_train_weights) / (wfactor * num_train_weights)
-        )[::-1]
-
-        num_test_weights = len(test_idx)
-        test_weights = np.exp(
-            -np.arange(num_test_weights) / (wfactor * num_test_weights)
-        )[::-1]
-
-        return {
-            "train_features": train_features,
-            "test_features": test_features,
-            "train_labels": train_labels,
-            "test_labels": test_labels,
-            "train_weights": train_weights,
-            "test_weights": test_weights,
-        }
+        # Use FreqAI's build_data_dictionary to maintain consistency
+        return dk.build_data_dictionary(
+            train_features,
+            test_features,
+            train_labels,
+            test_labels,
+            train_weights,
+            test_weights,
+        )
 
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs
