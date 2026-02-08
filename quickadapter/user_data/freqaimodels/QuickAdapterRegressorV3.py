@@ -230,11 +230,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
     OPTUNA_SEED_DEFAULT: Final[int] = 1
 
-    DATA_SPLIT_METHOD_DEFAULT: Final[str] = "train_test_split"
-    DATA_SPLIT_METHODS: Final[tuple[str, ...]] = (
+    _DATA_SPLIT_METHODS: Final[tuple[str, ...]] = (
         "train_test_split",
         "timeseries_split",
     )
+    DATA_SPLIT_METHOD_DEFAULT: Final[str] = _DATA_SPLIT_METHODS[0]
     TIMESERIES_N_SPLITS_DEFAULT: Final[int] = 5
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
@@ -1338,25 +1338,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen object containing configuration
         :return: Trained model
         """
-        # Get split method from configuration
         method = self.data_split_parameters.get(
             "method", self.DATA_SPLIT_METHOD_DEFAULT
         )
 
-        # Validate method
-        if method not in self.DATA_SPLIT_METHODS:
+        if method not in self._DATA_SPLIT_METHODS:
             raise ValueError(
                 f"Unknown data split method: '{method}'. "
-                f"Valid options: {self.DATA_SPLIT_METHODS}"
+                f"Valid options: {self._DATA_SPLIT_METHODS}"
             )
 
         logger.info(f"Using data split method: {method}")
 
-        # Default case: delegate to parent for exact original behavior
         if method == self.DATA_SPLIT_METHOD_DEFAULT:
             return super().train(unfiltered_df, pair, dk, **kwargs)
 
-        # Custom TimeSeriesSplit implementation
         elif method == "timeseries_split":
             from time import time
 
@@ -1366,7 +1362,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             start_time = time()
 
-            # Filter features (same as parent)
             features_filtered, labels_filtered = dk.filter_features(
                 unfiltered_df,
                 dk.training_features_list,
@@ -1381,19 +1376,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"{end_date} --------------------"
             )
 
-            # Use custom TimeSeriesSplit instead of dk.make_train_test_datasets()
             dd = self._make_timeseries_split_datasets(
                 features_filtered, labels_filtered, dk
             )
 
-            # Fit labels if needed (same as parent)
             if (
                 not self.freqai_info.get("fit_live_predictions_candles", 0)
                 or not self.live
             ):
                 dk.fit_labels()
 
-            # Apply pipelines (extracted to reduce duplication with parent)
             dd = self._apply_pipelines(dd, dk, pair)
 
             logger.info(
@@ -1401,7 +1393,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"Training model on {len(dd['train_features'])} data points")
 
-            # Fit the model
             model = self.fit(dd, dk)
 
             end_time = time()
@@ -1432,21 +1423,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """
         from freqtrade.exceptions import DependencyException
 
-        # Define pipelines
         dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
 
-        # Apply feature pipeline to train data
         (dd["train_features"], dd["train_labels"], dd["train_weights"]) = (
             dk.feature_pipeline.fit_transform(
                 dd["train_features"], dd["train_labels"], dd["train_weights"]
             )
         )
 
-        # Apply label pipeline to train data
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
-        # Apply pipelines to test data if test_size is not 0
         if self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1) != 0:
             if dd["test_labels"].shape[0] == 0:
                 raise DependencyException(
@@ -1462,7 +1449,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
 
-        # Keep data_dictionary consistent
         dk.data_dictionary = dd
 
         return dd
@@ -1493,7 +1479,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "max_train_size", self.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
         )
 
-        # Validation
         if n_splits < 2:
             raise ValueError(f"TimeSeriesSplit requires n_splits >= 2, got {n_splits}")
         if len(filtered_dataframe) < n_splits + 1:
@@ -1502,13 +1487,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Minimum required: {n_splits + 1}"
             )
 
-        # Get test_size for TimeSeriesSplit
         test_size = self.data_split_parameters.get("test_size", None)
         if test_size is not None:
-            # Convert fraction to number of samples
             test_size = int(len(filtered_dataframe) * test_size)
 
-        # Create TimeSeriesSplit and get LAST fold
         tscv = TimeSeriesSplit(
             n_splits=n_splits,
             gap=gap,
@@ -1516,17 +1498,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             test_size=test_size,
         )
         splits = list(tscv.split(filtered_dataframe))
-        train_idx, test_idx = splits[-1]  # LAST fold only
+        train_idx, test_idx = splits[-1]
 
-        # Split data using indices
         train_features = filtered_dataframe.iloc[train_idx]
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
 
-        # Calculate weights using FreqAI's method (respects weight_factor config)
-        # dk.set_weights_higher_recent() checks feature_parameters.weight_factor > 0
-        # and returns uniform weights if not set
         feat_dict = self.freqai_info.get("feature_parameters", {})
         if feat_dict.get("weight_factor", 0) > 0:
             train_weights = dk.set_weights_higher_recent(len(train_idx))
@@ -1535,7 +1513,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             train_weights = np.ones(len(train_idx))
             test_weights = np.ones(len(test_idx))
 
-        # Use FreqAI's build_data_dictionary to maintain consistency
         return dk.build_data_dictionary(
             train_features,
             test_features,
