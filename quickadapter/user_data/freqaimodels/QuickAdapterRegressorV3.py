@@ -1439,7 +1439,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
-        if self.data_split_parameters.get("test_size", 0.1) != 0:
+        if (
+            self.data_split_parameters.get(
+                "test_size", QuickAdapterRegressorV3._TEST_SIZE
+            )
+            != 0
+        ):
             if dd["test_labels"].shape[0] == 0:
                 method = self.data_split_parameters.get(
                     "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
@@ -1464,7 +1469,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"Try reducing n_splits/gap or increasing data period."
                     )
                 else:
-                    test_size = self.data_split_parameters.get("test_size", 0.1)
+                    test_size = self.data_split_parameters.get(
+                        "test_size", QuickAdapterRegressorV3._TEST_SIZE
+                    )
                     error_msg = (
                         f"{pair}: test set is empty after filtering. "
                         f"Possible causes: overly strict SVM thresholds or insufficient data. "
