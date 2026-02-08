@@ -1397,7 +1397,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"Training model on {len(dd['train_features'])} data points")
 
-            model = self.fit(dd, dk)
+            model = self.fit(dd, dk, **kwargs)
 
             end_time = time.time()
 
