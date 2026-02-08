@@ -21,6 +21,7 @@ from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import (
     MaxAbsScaler,
     MinMaxScaler,
@@ -228,6 +229,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
     OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
     OPTUNA_SEED_DEFAULT: Final[int] = 1
+
+    DATA_SPLIT_METHOD_DEFAULT: Final[str] = "train_test_split"
+    DATA_SPLIT_METHODS: Final[tuple[str, ...]] = (
+        "train_test_split",
+        "timeseries_split",
+    )
+    TIMESERIES_N_SPLITS_DEFAULT: Final[int] = 5
+    TIMESERIES_GAP_DEFAULT: Final[int] = 0
+    TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -1312,6 +1322,203 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ),
             ]
         )
+
+    def train(
+        self, unfiltered_df: pd.DataFrame, pair: str, dk: FreqaiDataKitchen, **kwargs
+    ) -> Any:
+        """
+        Filter the training data and train a model to it.
+
+        Supports two data split methods:
+        - 'train_test_split' (default): Delegates to BaseRegressionModel.train()
+        - 'timeseries_split': Uses TimeSeriesSplit for temporal validation
+
+        :param unfiltered_df: Full dataframe for the current training period
+        :param pair: Trading pair being trained
+        :param dk: FreqaiDataKitchen object containing configuration
+        :return: Trained model
+        """
+        # Get split method from configuration
+        method = self.data_split_parameters.get(
+            "method", self.DATA_SPLIT_METHOD_DEFAULT
+        )
+
+        # Validate method
+        if method not in self.DATA_SPLIT_METHODS:
+            raise ValueError(
+                f"Unknown data split method: '{method}'. "
+                f"Valid options: {self.DATA_SPLIT_METHODS}"
+            )
+
+        logger.info(f"Using data split method: {method}")
+
+        # Default case: delegate to parent for exact original behavior
+        if method == self.DATA_SPLIT_METHOD_DEFAULT:
+            return super().train(unfiltered_df, pair, dk, **kwargs)
+
+        # Custom TimeSeriesSplit implementation
+        elif method == "timeseries_split":
+            from time import time
+
+            logger.info(
+                f"-------------------- Starting training {pair} --------------------"
+            )
+
+            start_time = time()
+
+            # Filter features (same as parent)
+            features_filtered, labels_filtered = dk.filter_features(
+                unfiltered_df,
+                dk.training_features_list,
+                dk.label_list,
+                training_filter=True,
+            )
+
+            start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
+            end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
+            logger.info(
+                f"-------------------- Training on data from {start_date} to "
+                f"{end_date} --------------------"
+            )
+
+            # Use custom TimeSeriesSplit instead of dk.make_train_test_datasets()
+            dd = self._make_timeseries_split_datasets(
+                features_filtered, labels_filtered, dk
+            )
+
+            # Fit labels if needed (same as parent)
+            if (
+                not self.freqai_info.get("fit_live_predictions_candles", 0)
+                or not self.live
+            ):
+                dk.fit_labels()
+
+            # Define pipelines (same as parent)
+            dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
+            dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
+
+            # Apply feature pipeline to train data
+            (dd["train_features"], dd["train_labels"], dd["train_weights"]) = (
+                dk.feature_pipeline.fit_transform(
+                    dd["train_features"], dd["train_labels"], dd["train_weights"]
+                )
+            )
+
+            # Apply label pipeline to train data
+            dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(
+                dd["train_labels"]
+            )
+
+            # Apply pipelines to test data if test_size is not 0
+            if (
+                self.freqai_info.get("data_split_parameters", {}).get("test_size", 0.1)
+                != 0
+            ):
+                if dd["test_labels"].shape[0] == 0:
+                    from freqtrade.exceptions import DependencyException
+
+                    raise DependencyException(
+                        f"{pair}: test set is empty after filtering. "
+                        f"This is usually caused by overly strict SVM thresholds or insufficient data. "
+                        f"Try reducing 'test_size' or relaxing your SVM conditions."
+                    )
+                else:
+                    (dd["test_features"], dd["test_labels"], dd["test_weights"]) = (
+                        dk.feature_pipeline.transform(
+                            dd["test_features"], dd["test_labels"], dd["test_weights"]
+                        )
+                    )
+                    dd["test_labels"], _, _ = dk.label_pipeline.transform(
+                        dd["test_labels"]
+                    )
+
+            logger.info(
+                f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
+            )
+            logger.info(f"Training model on {len(dd['train_features'])} data points")
+
+            # Fit the model
+            model = self.fit(dd, dk)
+
+            end_time = time()
+
+            logger.info(
+                f"-------------------- Done training {pair} "
+                f"({end_time - start_time:.2f} secs) --------------------"
+            )
+
+            return model
+
+    def _make_timeseries_split_datasets(
+        self,
+        filtered_dataframe: pd.DataFrame,
+        labels: pd.DataFrame,
+        dk: FreqaiDataKitchen,
+    ) -> dict:
+        """
+        Split data using TimeSeriesSplit with exponential weight decay.
+
+        Uses the LAST fold from TimeSeriesSplit to create a single train/test split
+        that respects temporal ordering. Applies exponential decay weights favoring
+        recent samples following FreqAI convention.
+
+        :param filtered_dataframe: Feature data to split
+        :param labels: Label data to split
+        :param dk: FreqaiDataKitchen object containing configuration
+        :return: data_dictionary with train/test features/labels/weights
+        """
+        n_splits = self.data_split_parameters.get(
+            "n_splits", self.TIMESERIES_N_SPLITS_DEFAULT
+        )
+        gap = self.data_split_parameters.get("gap", self.TIMESERIES_GAP_DEFAULT)
+        max_train_size = self.data_split_parameters.get(
+            "max_train_size", self.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
+        )
+
+        # Validation
+        if n_splits < 2:
+            raise ValueError(f"TimeSeriesSplit requires n_splits >= 2, got {n_splits}")
+        if len(filtered_dataframe) < n_splits + 1:
+            raise ValueError(
+                f"Dataset size ({len(filtered_dataframe)}) too small for n_splits={n_splits}. "
+                f"Minimum required: {n_splits + 1}"
+            )
+
+        # Create TimeSeriesSplit and get LAST fold
+        tscv = TimeSeriesSplit(
+            n_splits=n_splits, gap=gap, max_train_size=max_train_size
+        )
+        splits = list(tscv.split(filtered_dataframe))
+        train_idx, test_idx = splits[-1]  # LAST fold only
+
+        # Split data using indices
+        train_features = filtered_dataframe.iloc[train_idx]
+        test_features = filtered_dataframe.iloc[test_idx]
+        train_labels = labels.iloc[train_idx]
+        test_labels = labels.iloc[test_idx]
+
+        # Calculate weights with exponential decay (FreqAI convention)
+        # Formula: np.exp(-np.arange(num_weights) / (wfactor * num_weights))[::-1]
+        wfactor = self.freqai_info["data_kitchen_thread_count"]
+
+        num_train_weights = len(train_idx)
+        train_weights = np.exp(
+            -np.arange(num_train_weights) / (wfactor * num_train_weights)
+        )[::-1]
+
+        num_test_weights = len(test_idx)
+        test_weights = np.exp(
+            -np.arange(num_test_weights) / (wfactor * num_test_weights)
+        )[::-1]
+
+        return {
+            "train_features": train_features,
+            "test_features": test_features,
+            "train_labels": train_labels,
+            "test_labels": test_labels,
+            "train_weights": train_weights,
+            "test_weights": test_weights,
+        }
 
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs
