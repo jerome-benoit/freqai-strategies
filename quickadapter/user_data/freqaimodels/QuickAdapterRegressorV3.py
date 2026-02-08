@@ -1539,12 +1539,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         test_size = self.data_split_parameters.get("test_size", None)
-        test_size: int | None = None
         if test_size is not None:
             if isinstance(test_size, float) and 0 < test_size < 1:
                 test_size = int(len(filtered_dataframe) * test_size)
             elif isinstance(test_size, int) and test_size >= 1:
-                test_size = test_size
+                pass
             else:
                 raise ValueError(
                     f"Invalid data_split_parameters.test_size value {test_size!r}: "
