@@ -109,7 +109,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.11.1"
+        return "3.11.2"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -470,7 +470,7 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         for label_col in LABEL_COLUMNS:
-            logger.info(f"Label Configuration [{label_col}]:")
+            logger.info(f"Label [{label_col}]:")
 
             col_weighting = get_label_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]
