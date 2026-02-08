@@ -1345,7 +1345,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :return: Trained model
         """
         method = self.data_split_parameters.get(
-            "method", self.DATA_SPLIT_METHOD_DEFAULT
+            "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
         )
 
         if method not in QuickAdapterRegressorV3._data_split_methods_set():
@@ -1356,7 +1356,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.info(f"Using data split method: {method}")
 
-        if method == self.DATA_SPLIT_METHOD_DEFAULT:
+        if method == QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
             return super().train(unfiltered_df, pair, dk, **kwargs)
 
         elif method == "timeseries_split":
@@ -1477,13 +1477,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :return: data_dictionary with train/test features/labels/weights
         """
         n_splits = int(
-            self.data_split_parameters.get("n_splits", self.TIMESERIES_N_SPLITS_DEFAULT)
+            self.data_split_parameters.get(
+                "n_splits", QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT
+            )
         )
-        gap = int(self.data_split_parameters.get("gap", self.TIMESERIES_GAP_DEFAULT))
-        max_train_size_param = self.data_split_parameters.get(
-            "max_train_size", self.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
+        gap = int(
+            self.data_split_parameters.get(
+                "gap", QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
+            )
         )
-        max_train_size = int(max_train_size_param) if max_train_size_param else None
+        max_train_size = self.data_split_parameters.get(
+            "max_train_size", QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
+        )
+        max_train_size = int(max_train_size) if max_train_size else None
 
         if n_splits < 2:
             raise ValueError(
