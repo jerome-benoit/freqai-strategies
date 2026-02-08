@@ -1337,7 +1337,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         Supports two data split methods:
         - 'train_test_split' (default): Delegates to BaseRegressionModel.train()
-        - 'timeseries_split': Uses TimeSeriesSplit for temporal validation
+        - 'timeseries_split': Chronological split with configurable gap. Uses the final
+          fold from sklearn's TimeSeriesSplit.
 
         :param unfiltered_df: Full dataframe for the current training period
         :param pair: Trading pair being trained
@@ -1462,14 +1463,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
     ) -> dict:
         """
-        Split data using TimeSeriesSplit for temporal validation.
+        Chronological train/test split using the final fold from sklearn's TimeSeriesSplit.
 
-        Uses the LAST fold from TimeSeriesSplit to create a single train/test split
-        that respects temporal ordering. Delegates weight calculation and dictionary
-        building to FreqaiDataKitchen to maintain consistency with FreqAI conventions.
-
-        If gap=0 is configured, it is auto-calculated from label_period_candles to
-        prevent look-ahead bias from overlapping label windows.
+        n_splits controls train/test proportions (higher = larger train set).
+        gap excludes samples between train/test; when 0, auto-calculated from
+        label_period_candles. max_train_size enables sliding window mode.
 
         :param filtered_dataframe: Feature data to split
         :param labels: Label data to split
