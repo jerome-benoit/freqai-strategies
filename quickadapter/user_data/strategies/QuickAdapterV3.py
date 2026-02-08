@@ -470,7 +470,7 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         for label_col in LABEL_COLUMNS:
-            logger.info(f"Label Configuration [{label_col}]:")
+            logger.info(f"Label [{label_col}]:")
 
             col_weighting = get_label_column_config(
                 label_col, label_weighting["default"], label_weighting["columns"]

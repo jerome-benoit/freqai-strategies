@@ -980,7 +980,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(f"Model Version: {self.version}")
         logger.info(f"Regressor: {self.regressor}")
 
-        logger.info("Optuna Hyperopt Configuration:")
+        logger.info("Optuna Hyperopt:")
         optuna_config = self._optuna_config
         logger.info(f"  enabled: {optuna_config.get('enabled')}")
         if optuna_config.get("enabled"):
@@ -1043,7 +1043,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_pipeline = self.label_pipeline
         label_prediction = self.label_prediction
         for label_col in LABEL_COLUMNS:
-            logger.info(f"Label Configuration [{label_col}]:")
+            logger.info(f"Label [{label_col}]:")
 
             col_pipeline = get_label_column_config(
                 label_col, label_pipeline["default"], label_pipeline["columns"]
@@ -1132,7 +1132,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         feature_range = self.ft_params.get(
             "range", QuickAdapterRegressorV3.RANGE_DEFAULT
         )
-        logger.info("Feature Parameters Configuration:")
+        logger.info("Feature Parameters:")
         logger.info(f"  scaler: {scaler}")
         logger.info(
             f"  range: ({format_number(feature_range[0])}, {format_number(feature_range[1])})"
@@ -1439,11 +1439,35 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if self.data_split_parameters.get("test_size", 0.1) != 0:
             if dd["test_labels"].shape[0] == 0:
-                raise DependencyException(
-                    f"{pair}: test set is empty after filtering. "
-                    f"This is usually caused by overly strict SVM thresholds or insufficient data. "
-                    f"Try reducing 'test_size' or relaxing your SVM conditions."
+                method = self.data_split_parameters.get(
+                    "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
                 )
+                if method == "timeseries_split":
+                    n_splits = self.data_split_parameters.get(
+                        "n_splits", QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT
+                    )
+                    gap = self.data_split_parameters.get(
+                        "gap", QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
+                    )
+                    max_train_size = self.data_split_parameters.get("max_train_size")
+                    test_size = self.data_split_parameters.get("test_size")
+                    error_msg = (
+                        f"{pair}: test set is empty after filtering. "
+                        f"Possible causes: n_splits too high, gap too large, "
+                        f"max_train_size too restrictive, or insufficient data. "
+                        f"Current parameters: n_splits={n_splits}, gap={gap}, "
+                        f"max_train_size={max_train_size}, test_size={test_size}. "
+                        f"Try reducing n_splits/gap or increasing data period."
+                    )
+                else:
+                    test_size = self.data_split_parameters.get("test_size", 0.1)
+                    error_msg = (
+                        f"{pair}: test set is empty after filtering. "
+                        f"Possible causes: overly strict SVM thresholds or insufficient data. "
+                        f"Current test_size={test_size}. "
+                        f"Try reducing test_size or relaxing SVM conditions."
+                    )
+                raise DependencyException(error_msg)
             else:
                 (dd["test_features"], dd["test_labels"], dd["test_weights"]) = (
                     dk.feature_pipeline.transform(
