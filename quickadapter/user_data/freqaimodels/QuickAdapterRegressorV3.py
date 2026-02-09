@@ -1461,7 +1461,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     max_train_size = self.data_split_parameters.get("max_train_size")
                     test_size = self.data_split_parameters.get("test_size")
                     error_msg = (
-                        f"{pair}: test set is empty after filtering. "
+                        f"[{pair}] test set is empty after filtering. "
                         f"Possible causes: n_splits too high, gap too large, "
                         f"max_train_size too restrictive, or insufficient data. "
                         f"Current parameters: n_splits={n_splits}, gap={gap}, "
@@ -1473,7 +1473,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         "test_size", QuickAdapterRegressorV3._TEST_SIZE
                     )
                     error_msg = (
-                        f"{pair}: test set is empty after filtering. "
+                        f"[{pair}] test set is empty after filtering. "
                         f"Possible causes: overly strict SVM thresholds or insufficient data. "
                         f"Current test_size={test_size}. "
                         f"Try reducing test_size or relaxing SVM conditions."
@@ -1556,12 +1556,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
 
         if gap == 0:
-            label_period_candles = int(
-                self.ft_params.get("label_period_candles", self._label_defaults[0])
-            )
-            gap = label_period_candles
+            gap = self.get_optuna_params(
+                dk.pair,
+                QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1],  # "label"
+            ).get("label_period_candles")
             logger.info(
-                f"TimeSeriesSplit gap auto-calculated from label_period_candles: {gap}"
+                f"[{dk.pair}] TimeSeriesSplit gap auto-calculated from label_period_candles: {gap}"
             )
 
         tscv = TimeSeriesSplit(
