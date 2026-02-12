@@ -270,8 +270,11 @@ Let `pnl_target = profit_aim · risk_reward_ratio`,
 **Formula:**
 
 Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
-`range = max_u - min_u`, `ratio = (pnl - min_u)/range`. Then:
+`range = max_u - min_u`, `ratio = (pnl - min_u)/range`,
+`min_range = max(1e-6, 0.01 · pnl_target)`. Then:
 
+- If `range < min_range`: `efficiency_coefficient = 1` (guard against division
+  explosion)
 - If `pnl > 0`:
   `efficiency_coefficient = 1 + efficiency_weight · (ratio - efficiency_center)`
 - If `pnl < 0`:
