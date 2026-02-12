@@ -99,6 +99,8 @@ INTERNAL_GUARDS: dict[str, float] = {
     "sim_extreme_pnl_threshold": 0.2,
     "histogram_epsilon": 1e-10,
     "distribution_identity_epsilon": 1e-12,
+    "efficiency_min_range_epsilon": 1e-6,
+    "efficiency_min_range_fraction": 0.01,
 }
 
 # PBRS constants
@@ -943,7 +945,7 @@ def _get_exit_factor(
             pnl_target,
             risk_reward_ratio,
         )
-        * _compute_efficiency_coefficient(params, context, pnl)
+        * _compute_efficiency_coefficient(params, context, pnl, pnl_target)
     )
 
     if _get_bool_param(
@@ -1013,6 +1015,7 @@ def _compute_efficiency_coefficient(
     params: RewardParams,
     context: RewardContext,
     pnl: float,
+    pnl_target: float,
 ) -> float:
     """
     Compute exit efficiency coefficient based on PnL position relative to unrealized extremes.
@@ -1027,6 +1030,7 @@ def _compute_efficiency_coefficient(
             - efficiency_center: Target efficiency ratio (0.0-1.0)
         context: Trade context with unrealized profit/loss extremes
         pnl: Realized profit/loss
+        pnl_target: Target profit threshold for context-aware range validation
 
     Returns:
         float: Coefficient ≥ 0.0 (typically 0.5-1.5 range)
@@ -1038,7 +1042,11 @@ def _compute_efficiency_coefficient(
         max_pnl = max(context.max_unrealized_profit, pnl)
         min_pnl = min(context.min_unrealized_profit, pnl)
         range_pnl = max_pnl - min_pnl
-        if np.isfinite(range_pnl) and not np.isclose(range_pnl, 0.0):
+        # Guard against division explosion when max_pnl ≈ min_pnl
+        eps = float(INTERNAL_GUARDS.get("efficiency_min_range_epsilon", 1e-6))
+        frac = float(INTERNAL_GUARDS.get("efficiency_min_range_fraction", 0.01))
+        min_meaningful_range = max(eps, frac * pnl_target)
+        if np.isfinite(range_pnl) and range_pnl >= min_meaningful_range:
             efficiency_ratio = (pnl - min_pnl) / range_pnl
             # For profits (pnl > 0): high ratio = good exit → higher coefficient → amplify gain
             # For losses (pnl < 0): high ratio = good exit → LOWER coefficient → attenuate penalty

@@ -33,6 +33,8 @@ from ..helpers import (
 )
 from ..test_base import RewardSpaceTestBase
 
+_DEFAULT_PNL_TARGET = PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO
+
 pytestmark = pytest.mark.components
 
 
@@ -301,7 +303,9 @@ class TestRewardComponents(RewardSpaceTestBase):
             action=Actions.Long_exit,
         )
 
-        coefficient = _compute_efficiency_coefficient(params, ctx, ctx.current_pnl)
+        coefficient = _compute_efficiency_coefficient(
+            params, ctx, ctx.current_pnl, _DEFAULT_PNL_TARGET
+        )
 
         self.assertFinite(coefficient, name="efficiency_coefficient")
         self.assertAlmostEqualFloat(coefficient, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
@@ -339,7 +343,9 @@ class TestRewardComponents(RewardSpaceTestBase):
                 position=Positions.Long,
                 action=Actions.Long_exit,
             )
-            coefficient = _compute_efficiency_coefficient(params, ctx, ctx.current_pnl)
+            coefficient = _compute_efficiency_coefficient(
+                params, ctx, ctx.current_pnl, _DEFAULT_PNL_TARGET
+            )
             self.assertFinite(coefficient, name=f"efficiency_coefficient[pnl={pnl}]")
             coefficients.append(coefficient)
 
@@ -420,7 +426,9 @@ class TestRewardComponents(RewardSpaceTestBase):
                 position=Positions.Long,
                 action=Actions.Long_exit,
             )
-            coefficient = _compute_efficiency_coefficient(params, ctx, ctx.current_pnl)
+            coefficient = _compute_efficiency_coefficient(
+                params, ctx, ctx.current_pnl, _DEFAULT_PNL_TARGET
+            )
             self.assertFinite(coefficient, name=f"efficiency_coefficient[pnl={pnl}]")
             coefficients.append(coefficient)
             # Simplified reward calculation (ignoring other factors for this test)

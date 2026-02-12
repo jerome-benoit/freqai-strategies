@@ -668,7 +668,9 @@ def assert_exit_mode_mathematical_validation(
     pnl_target_coefficient = _compute_pnl_target_coefficient(
         params, context.current_pnl, pnl_target, risk_reward_ratio
     )
-    efficiency_coefficient = _compute_efficiency_coefficient(params, context, context.current_pnl)
+    efficiency_coefficient = _compute_efficiency_coefficient(
+        params, context, context.current_pnl, pnl_target
+    )
 
     observed_exit_factor = _get_exit_factor(
         base_factor,
