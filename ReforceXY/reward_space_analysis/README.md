@@ -244,7 +244,7 @@ The exit factor is computed as:
 | `profit_aim`                    | 0.03    | Profit target threshold       |
 | `risk_reward_ratio`             | 2.0     | Risk/reward multiplier        |
 | `win_reward_factor`             | 2.0     | Profit target bonus factor    |
-| `pnl_amplification_sensitivity` | 0.5     | PnL amplification sensitivity |
+| `pnl_amplification_sensitivity` | 2.0     | PnL amplification sensitivity |
 
 **Note:** In ReforceXY, `risk_reward_ratio` maps to `rr`.
 

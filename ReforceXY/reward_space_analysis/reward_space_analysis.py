@@ -153,7 +153,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "efficiency_center": 0.5,
     # Profit factor defaults
     "win_reward_factor": 2.0,
-    "pnl_amplification_sensitivity": 0.5,
+    "pnl_amplification_sensitivity": 2.0,
     # Invariant / safety defaults
     "check_invariants": True,
     "exit_factor_threshold": 1000.0,
