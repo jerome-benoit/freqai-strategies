@@ -172,7 +172,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EXIT_LINEAR_SLOPE: Final[float] = 1.0
     DEFAULT_EXIT_HALF_LIFE: Final[float] = 0.5
 
-    DEFAULT_PNL_AMPLIFICATION_SENSITIVITY: Final[float] = 0.5
+    DEFAULT_PNL_AMPLIFICATION_SENSITIVITY: Final[float] = 2.0
     DEFAULT_WIN_REWARD_FACTOR: Final[float] = 2.0
     DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
