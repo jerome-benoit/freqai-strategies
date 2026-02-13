@@ -172,7 +172,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EXIT_LINEAR_SLOPE: Final[float] = 1.0
     DEFAULT_EXIT_HALF_LIFE: Final[float] = 0.5
 
-    DEFAULT_PNL_AMPLIFICATION_SENSITIVITY: Final[float] = 0.5
+    DEFAULT_PNL_AMPLIFICATION_SENSITIVITY: Final[float] = 2.0
     DEFAULT_WIN_REWARD_FACTOR: Final[float] = 2.0
     DEFAULT_EFFICIENCY_WEIGHT: Final[float] = 1.0
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
@@ -185,6 +185,9 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_CHECK_INVARIANTS: Final[bool] = True
     DEFAULT_EXIT_FACTOR_THRESHOLD: Final[float] = 1_000.0
+
+    DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON: Final[float] = 1e-6
+    DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION: Final[float] = 0.01
 
     _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
         "PPO",
@@ -1940,6 +1943,12 @@ class MyRLEnv(Base5ActionRLEnv):
         self._potential_gamma = float(
             model_reward_parameters.get("potential_gamma", 0.95)
         )
+        if np.isclose(self._potential_gamma, 0.0):
+            logger.warning(
+                "PBRS [%s]: potential_gamma=0 detected; PBRS delta will be -Φ(s) "
+                "instead of γΦ(s')-Φ(s). This may cause unexpected reward behavior.",
+                self.id,
+            )
 
         # === EXIT POTENTIAL MODE ===
         # exit_potential_mode options:
@@ -2083,6 +2092,16 @@ class MyRLEnv(Base5ActionRLEnv):
 
         # === PNL TARGET ===
         self._pnl_target = float(self.profit_aim * self.rr)
+        if self._pnl_target <= 0:
+            logger.warning(
+                "PBRS [%s]: pnl_target=%.6f must be > 0 (profit_aim=%.4f, rr=%.4f); "
+                "defaulting to 0.01",
+                self.id,
+                self._pnl_target,
+                self.profit_aim,
+                self.rr,
+            )
+            self._pnl_target = 0.01
 
     def _get_next_position(self, action: int) -> Positions:
         if action == Actions.Long_enter.value and self._position == Positions.Neutral:
@@ -3028,7 +3047,12 @@ class MyRLEnv(Base5ActionRLEnv):
             max_pnl = max(self.get_max_unrealized_profit(), pnl)
             min_pnl = min(self.get_min_unrealized_profit(), pnl)
             range_pnl = max_pnl - min_pnl
-            if np.isfinite(range_pnl) and not np.isclose(range_pnl, 0.0):
+            # Guard against division explosion when max_pnl ≈ min_pnl
+            min_meaningful_range = max(
+                ReforceXY.DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON,
+                ReforceXY.DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION * self._pnl_target,
+            )
+            if np.isfinite(range_pnl) and range_pnl >= min_meaningful_range:
                 efficiency_ratio = (pnl - min_pnl) / range_pnl
                 if pnl > 0.0:
                     efficiency_coefficient = 1.0 + efficiency_weight * (
