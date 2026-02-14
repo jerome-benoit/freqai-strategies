@@ -169,7 +169,7 @@
     "label_prediction": {
       "method": "thresholding",
       "threshold_method": "isodata",
-      "keep_fraction": 0.5
+      "keep_fraction": 0.25
       // Per-label format:
       // "default": {
       //   "method": "thresholding",
@@ -221,7 +221,7 @@
         1.0,
         1.0,
         1.0,
-        2.5,
+        5.0,
         1.0
       ],
       "include_shifted_candles": 6,
