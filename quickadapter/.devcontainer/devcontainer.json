@@ -11,7 +11,7 @@
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=${localWorkspaceFolder}/..,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/opencode,target=/home/ftuser/.config/opencode,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.config/gh,target=/home/ftuser/.config/gh,type=bind,consistency=cached",
+    // "source=${localEnv:HOME}/.config/gh,target=/home/ftuser/.config/gh,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.local/share/opencode,target=/home/ftuser/.local/share/opencode,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.local/state/opencode,target=/home/ftuser/.local/state/opencode,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.cache/opencode,target=/home/ftuser/.cache/opencode,type=bind,consistency=cached",
