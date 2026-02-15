@@ -760,6 +760,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )  # "adamw"
         )
 
+        model_params.pop("gpu_memory_fraction", None)
+
         self._model_params_cache = model_params
         return copy.deepcopy(self._model_params_cache)
 
