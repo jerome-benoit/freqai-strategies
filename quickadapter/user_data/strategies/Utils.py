@@ -2129,7 +2129,7 @@ _CATBOOST_GPU_PAIRWISE_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
     "QueryCrossEntropy",
 )
 
-# CatBoost GPU param ranges keyed by VRAM capacity (GB).
+# CatBoost GPU param ranges keyed by available VRAM (GB), not total.
 # Formula: VRAM_MB = 58778 * 2^(depth-12) * (border_count+1) / 256
 _CATBOOST_GPU_VRAM_PARAM_RANGES: Final[dict[int, dict[str, tuple[int, int]]]] = {
     8: {"depth": (4, 9), "border_count": (32, 192), "max_ctr_complexity": (1, 4)},
