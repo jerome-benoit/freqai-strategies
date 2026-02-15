@@ -109,7 +109,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.11.2"
+        return "3.11.3"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)

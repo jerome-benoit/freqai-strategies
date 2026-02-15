@@ -2129,6 +2129,23 @@ _CATBOOST_GPU_PAIRWISE_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
     "QueryCrossEntropy",
 )
 
+# CatBoost GPU param ranges keyed by VRAM capacity (GB).
+# Formula: VRAM_MB = 58778 * 2^(depth-12) * (border_count+1) / 256
+_CATBOOST_GPU_VRAM_PARAM_RANGES: Final[dict[int, dict[str, tuple[int, int]]]] = {
+    8: {"depth": (4, 9), "border_count": (32, 192), "max_ctr_complexity": (1, 4)},
+    10: {"depth": (4, 9), "border_count": (32, 255), "max_ctr_complexity": (1, 4)},
+    12: {"depth": (4, 10), "border_count": (32, 160), "max_ctr_complexity": (1, 4)},
+    16: {"depth": (4, 10), "border_count": (32, 224), "max_ctr_complexity": (1, 5)},
+    24: {"depth": (4, 10), "border_count": (32, 255), "max_ctr_complexity": (1, 5)},
+    32: {"depth": (4, 11), "border_count": (32, 192), "max_ctr_complexity": (1, 5)},
+    40: {"depth": (4, 11), "border_count": (32, 255), "max_ctr_complexity": (1, 6)},
+    48: {"depth": (4, 11), "border_count": (32, 255), "max_ctr_complexity": (1, 6)},
+    64: {"depth": (4, 12), "border_count": (32, 192), "max_ctr_complexity": (1, 6)},
+    80: {"depth": (4, 12), "border_count": (32, 255), "max_ctr_complexity": (1, 6)},
+}
+
+_CATBOOST_GPU_VRAM_DEFAULT: Final[int] = 80
+
 
 def get_ngboost_dist(dist_name: str) -> type:
     from ngboost.distns import Exponential, Laplace, LogNormal, Normal, T
@@ -2397,8 +2414,9 @@ def fit_regressor(
         task_type = model_training_parameters.get("task_type", "CPU")
         loss_function = model_training_parameters.get("loss_function", "RMSE")
         if task_type == "GPU":
-            model_training_parameters.setdefault("max_ctr_complexity", 4)
+            model_training_parameters.pop("gpu_vram_gb", None)
             model_training_parameters.pop("n_jobs", None)
+            model_training_parameters.setdefault("max_ctr_complexity", 4)
             if loss_function not in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
                 model_training_parameters.pop("rsm", None)
         else:
@@ -2962,26 +2980,30 @@ def get_optuna_study_model_parameters(
         task_type = model_training_parameters.get("task_type", "CPU")
         loss_function = model_training_parameters.get("loss_function", "RMSE")
 
-        if (
-            task_type == "GPU"
-            and loss_function in _CATBOOST_GPU_PAIRWISE_LOSS_FUNCTIONS
-        ):
-            max_depth = 8
-        elif task_type == "GPU":
-            max_depth = 12
-        else:  # CPU
-            max_depth = 10
-
         if task_type == "GPU":
+            gpu_vram_gb = model_training_parameters.get(
+                "gpu_vram_gb", _CATBOOST_GPU_VRAM_DEFAULT
+            )
+            matched_vram_gb = max(
+                (v for v in _CATBOOST_GPU_VRAM_PARAM_RANGES if v <= gpu_vram_gb),
+                default=min(_CATBOOST_GPU_VRAM_PARAM_RANGES.keys()),
+            )
+            param_ranges = _CATBOOST_GPU_VRAM_PARAM_RANGES[matched_vram_gb]
+
+            if loss_function in _CATBOOST_GPU_PAIRWISE_LOSS_FUNCTIONS:
+                max_depth = min(8, param_ranges["depth"][1])
+            else:
+                max_depth = param_ranges["depth"][1]
+
             default_ranges: dict[str, tuple[float, float]] = {
                 # Boosting/Training
                 "iterations": (100, 2000),
                 "learning_rate": (0.001, 0.3),
                 # Tree structure
-                "depth": (4, max_depth),
+                "depth": (param_ranges["depth"][0], max_depth),
                 "min_data_in_leaf": (1, 20),
-                "border_count": (128, 255),
-                "max_ctr_complexity": (2, 6),
+                "border_count": param_ranges["border_count"],
+                "max_ctr_complexity": param_ranges["max_ctr_complexity"],
                 # Regularization
                 "l2_leaf_reg": (1, 10),
                 "model_size_reg": (0.0, 1.0),
@@ -2999,7 +3021,7 @@ def get_optuna_study_model_parameters(
                 "iterations": (100, 2000),
                 "learning_rate": (0.001, 0.3),
                 # Tree structure
-                "depth": (4, max_depth),
+                "depth": (4, 10),
                 "min_data_in_leaf": (1, 20),
                 # Regularization
                 "l2_leaf_reg": (1, 10),
