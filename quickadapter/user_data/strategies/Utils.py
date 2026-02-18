@@ -1733,25 +1733,21 @@ def zigzag(
         candidate_pivot_value_log = np.nan
 
     def minmax_scale(values: list[float]) -> list[float]:
-        """Scale values to [0, 1] range preserving NaN.
-
-        Edge cases:
-        - Empty: return []
-        - All NaN: return all NaN
-        - All same finite value: return [0.5, 0.5, ...]
-        - Normal: return MinMaxScaler result as list
-        """
         if not values:
             return values
+
         arr = np.asarray(values, dtype=float)
         valid_mask = np.isfinite(arr)
         if not valid_mask.any():
-            return values  # all NaN → preserve
-        lo, hi = np.nanmin(arr), np.nanmax(arr)
-        if np.isclose(lo, hi):
+            return values
+
+        min_val = np.nanmin(arr)
+        max_val = np.nanmax(arr)
+        if np.isclose(min_val, max_val):
             return [0.5 if np.isfinite(v) else np.nan for v in values]
-        scaled = (arr - lo) / (hi - lo)
-        return scaled.tolist()
+
+        scaled_arr = (arr - min_val) / (max_val - min_val)
+        return scaled_arr.tolist()
 
     def calculate_pivot_metrics(
         *,
