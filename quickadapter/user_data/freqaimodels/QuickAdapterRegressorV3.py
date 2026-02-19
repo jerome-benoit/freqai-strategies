@@ -2851,7 +2851,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 finite_max_val = np.max(finite_col)
                 finite_range_val = finite_max_val - finite_min_val
 
-                if np.isclose(finite_range_val, 0.0):
+                if finite_range_val < 10 * np.finfo(float).eps:
                     if np.any(is_pos_inf_mask) and np.any(is_neg_inf_mask):
                         normalized_matrix[is_finite_mask, i] = 0.5
                     elif np.any(is_pos_inf_mask):

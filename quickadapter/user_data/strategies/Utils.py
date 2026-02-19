@@ -1743,10 +1743,11 @@ def zigzag(
 
         min_val = np.nanmin(arr)
         max_val = np.nanmax(arr)
-        if np.isclose(min_val, max_val):
+        range_val = max_val - min_val
+        if range_val < 10 * np.finfo(float).eps:
             return [0.5 if np.isfinite(v) else np.nan for v in values]
 
-        scaled_arr = (arr - min_val) / (max_val - min_val)
+        scaled_arr = (arr - min_val) / range_val
         return scaled_arr.tolist()
 
     def calculate_pivot_metrics(
