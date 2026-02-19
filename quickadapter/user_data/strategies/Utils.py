@@ -1738,7 +1738,8 @@ def zigzag(
 
         arr = np.asarray(values, dtype=float)
         valid_mask = np.isfinite(arr)
-        if not valid_mask.any():
+        n_valid = valid_mask.sum()
+        if n_valid < 2:
             return values
 
         min_val = np.nanmin(arr)
