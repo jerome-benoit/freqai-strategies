@@ -1644,6 +1644,7 @@ def zigzag(
     df: pd.DataFrame,
     natr_period: int = 14,
     natr_multiplier: float = 9.0,
+    normalize: bool = True,
 ) -> tuple[
     list[int],
     list[float],
@@ -2109,14 +2110,26 @@ def zigzag(
                 )
                 state = TrendDirection.UP
 
+    if normalize:
+        return (
+            pivots_indices,
+            pivots_values_log,
+            pivots_directions,
+            minmax_scale(pivots_amplitudes),
+            minmax_scale(pivots_amplitude_threshold_ratios),
+            minmax_scale(pivots_volume_rates),
+            minmax_scale(pivots_speeds),
+            pivots_efficiency_ratios,
+            pivots_volume_weighted_efficiency_ratios,
+        )
     return (
         pivots_indices,
         pivots_values_log,
         pivots_directions,
-        minmax_scale(pivots_amplitudes),
-        minmax_scale(pivots_amplitude_threshold_ratios),
-        minmax_scale(pivots_volume_rates),
-        minmax_scale(pivots_speeds),
+        pivots_amplitudes,
+        pivots_amplitude_threshold_ratios,
+        pivots_volume_rates,
+        pivots_speeds,
         pivots_efficiency_ratios,
         pivots_volume_weighted_efficiency_ratios,
     )
