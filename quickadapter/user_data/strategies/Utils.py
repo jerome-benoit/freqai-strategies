@@ -1644,6 +1644,7 @@ def zigzag(
     df: pd.DataFrame,
     natr_period: int = 14,
     natr_multiplier: float = 9.0,
+    normalize: bool = True,
 ) -> tuple[
     list[int],
     list[float],
@@ -1732,6 +1733,24 @@ def zigzag(
         candidate_pivot_pos = -1
         candidate_pivot_value_log = np.nan
 
+    def minmax_scale(values: list[float]) -> list[float]:
+        if not values:
+            return values
+
+        arr = np.asarray(values, dtype=float)
+        valid_mask = np.isfinite(arr)
+        if not valid_mask.any():
+            return values
+
+        min_val = np.nanmin(arr)
+        max_val = np.nanmax(arr)
+        range_val = max_val - min_val
+        if range_val < 10 * np.finfo(float).eps:
+            return [0.5 if np.isfinite(v) else np.nan for v in values]
+
+        scaled_arr = (arr - min_val) / range_val
+        return scaled_arr.tolist()
+
     def calculate_pivot_metrics(
         *,
         previous_pos: int,
@@ -1756,7 +1775,7 @@ def zigzag(
         median_threshold_log = np.nanmedian(np.log1p(thresholds[start_pos:end_pos]))
 
         amplitude_threshold_ratio = (
-            amplitude / (amplitude + median_threshold_log)
+            amplitude / median_threshold_log
             if np.isfinite(median_threshold_log) and median_threshold_log > 0
             else np.nan
         )
@@ -1816,7 +1835,7 @@ def zigzag(
             and np.isfinite(median_volume)
             and median_volume > 0
         ):
-            return avg_volume_per_candle / (avg_volume_per_candle + median_volume)
+            return avg_volume_per_candle / median_volume
         return np.nan
 
     def calculate_pivot_efficiency_ratio(
@@ -2090,6 +2109,18 @@ def zigzag(
                 )
                 state = TrendDirection.UP
 
+    if normalize:
+        return (
+            pivots_indices,
+            pivots_values_log,
+            pivots_directions,
+            minmax_scale(pivots_amplitudes),
+            minmax_scale(pivots_amplitude_threshold_ratios),
+            minmax_scale(pivots_volume_rates),
+            minmax_scale(pivots_speeds),
+            pivots_efficiency_ratios,
+            pivots_volume_weighted_efficiency_ratios,
+        )
     return (
         pivots_indices,
         pivots_values_log,

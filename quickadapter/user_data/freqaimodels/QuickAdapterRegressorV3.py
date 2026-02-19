@@ -96,7 +96,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.3"
+    version = "3.11.5"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -2029,7 +2029,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         elif selection_method == EXTREMA_SELECTION_METHODS[2]:  # "partition"
-            eps = np.finfo(float).eps
+            eps = 10 * np.finfo(float).eps
 
             pred_label_maxima = pred_label[pred_label > eps]
             pred_label_minima = pred_label[pred_label < -eps]
@@ -2851,7 +2851,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 finite_max_val = np.max(finite_col)
                 finite_range_val = finite_max_val - finite_min_val
 
-                if np.isclose(finite_range_val, 0.0):
+                if finite_range_val < 10 * np.finfo(float).eps:
                     if np.any(is_pos_inf_mask) and np.any(is_neg_inf_mask):
                         normalized_matrix[is_finite_mask, i] = 0.5
                     elif np.any(is_pos_inf_mask):
@@ -3600,6 +3600,7 @@ def label_objective(
         df,
         natr_period=label_period_candles,
         natr_multiplier=label_natr_multiplier,
+        normalize=False,
     )
 
     median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
