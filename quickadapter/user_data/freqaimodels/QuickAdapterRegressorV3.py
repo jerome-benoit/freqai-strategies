@@ -96,7 +96,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.4"
+    version = "3.11.5"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -2029,7 +2029,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         elif selection_method == EXTREMA_SELECTION_METHODS[2]:  # "partition"
-            eps = np.finfo(float).eps
+            eps = 10 * np.finfo(float).eps
 
             pred_label_maxima = pred_label[pred_label > eps]
             pred_label_minima = pred_label[pred_label < -eps]
