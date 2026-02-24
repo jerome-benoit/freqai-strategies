@@ -1,4 +1,3 @@
-
 # the encoding used by text files in the project
 # For a list of possible encodings, see https://docs.python.org/3.11/library/codecs.html#standard-encodings
 encoding: "utf-8"
@@ -88,7 +87,6 @@ included_optional_tools: []
 # This cannot be combined with non-empty excluded_tools or included_optional_tools.
 fixed_tools: []
 
-
 # list of languages for which language servers are started; choose from:
 #   al                  bash                clojure             cpp                 csharp
 #   csharp_omnisharp    dart                elixir              elm                 erlang
@@ -113,4 +111,8 @@ fixed_tools: []
 # The first language is the default language and the respective language server will be used as a fallback.
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 languages:
-- python
+  - python
+
+# override of the corresponding setting in serena_config.yml, see the documentation there.
+# If null or missing, the value from the global config is used.
+symbol_info_budget:
