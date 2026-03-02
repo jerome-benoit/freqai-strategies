@@ -1216,7 +1216,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
                 episode_start[:] = False
                 action = int(action.item())
-                logger.debug("Predict [%s]: predicted action=%d", dk.pair, action)
+                logger.debug(
+                    "Predict [%s]: predicted action=%s (%d)",
+                    dk.pair,
+                    Actions(action).name,
+                    action,
+                )
             else:
                 logger.debug(
                     "Predict [%s]: model.predict (observations.shape=%s)",
@@ -1227,7 +1232,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                     observations, deterministic=True, **action_masks_param
                 )
                 action = int(action.item())
-                logger.debug("Predict [%s]: predicted action=%d", dk.pair, action)
+                logger.debug(
+                    "Predict [%s]: predicted action=%s (%d)",
+                    dk.pair,
+                    Actions(action).name,
+                    action,
+                )
 
             return action
 
@@ -3375,6 +3385,15 @@ class MyRLEnv(Base5ActionRLEnv):
         trade_type = self.execute_trade(action)
         if trade_type is not None:
             self.append_trade_history(trade_type, self.current_price(), pre_pnl)
+        elif action != Actions.Neutral.value:
+            logger.warning(
+                "Env [%s]: invalid action=%s (%d) in position=%s at tick=%d",
+                self.id,
+                Actions(action).name,
+                action,
+                self._position.name,
+                self._current_tick,
+            )
         self._position_history.append(self._position)
         terminated = self.is_terminated()
         if terminated:

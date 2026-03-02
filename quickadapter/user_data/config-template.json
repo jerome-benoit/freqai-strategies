@@ -39,7 +39,7 @@
     "price_last_balance": 0.0
   },
   "reversal_confirmation": {
-    "max_natr_multiplier_fraction": 0.05
+    "max_natr_multiplier_fraction": 0.025
   },
   "exchange": {
     "name": "binance",
@@ -169,7 +169,7 @@
     "label_prediction": {
       "method": "thresholding",
       "threshold_method": "isodata",
-      "keep_fraction": 0.25
+      "keep_fraction": 0.015
       // Per-label format:
       // "default": {
       //   "method": "thresholding",
@@ -185,7 +185,7 @@
     "optuna_hyperopt": {
       "enabled": true,
       "n_jobs": 6,
-      "n_trials": 50,
+      "n_trials": 100,
       "timeout": 7200,
       "label_candles_step": 1,
       "storage": "file"
@@ -216,13 +216,13 @@
       "label_natr_multiplier": 10.5,
       "label_method": "topsis",
       "label_weights": [
-        1.0,
+        0.5,
         5.0,
+        3.0,
         1.0,
-        1.0,
-        1.0,
+        0.5,
         5.0,
-        1.0
+        3.0
       ],
       "include_shifted_candles": 6,
       "DI_threshold": 10,
