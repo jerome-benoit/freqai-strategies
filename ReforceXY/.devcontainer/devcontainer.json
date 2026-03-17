@@ -1,10 +1,7 @@
 {
   "name": "ReforceXY Dev",
   "initializeCommand": "test -f .env || echo 'GH_TOKEN=\nGITHUB_TOKEN=' > .env",
-  "dockerComposeFile": [
-    "../docker-compose.yml",
-    "docker-compose.dev.yml"
-  ],
+  "dockerComposeFile": ["../docker-compose.yml", "docker-compose.dev.yml"],
   "service": "freqtrade",
   "overrideCommand": true,
   "workspaceFolder": "${localWorkspaceFolder}",
@@ -53,9 +50,7 @@
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
-        "python.analysis.extraPaths": [
-          "/freqtrade"
-        ]
+        "python.analysis.extraPaths": ["/freqtrade"]
       }
     }
   },
