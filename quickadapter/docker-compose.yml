@@ -20,7 +20,7 @@ services:
         optuna_version: 4.8.0
         scikit_learn_extra_version: 0.3.0
         scikit_image_version: 0.26.0
-        ngboost_version: 0.5.9
+        ngboost_version: 0.5.10
         catboost_version: 1.2.10
     restart: unless-stopped
     container_name: freqtrade-quickadapter
