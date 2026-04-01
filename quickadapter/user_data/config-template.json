@@ -39,7 +39,8 @@
     "price_last_balance": 0.0
   },
   "reversal_confirmation": {
-    "max_natr_multiplier_fraction": 0.025
+    "min_natr_multiplier_fraction": 0.0075,
+    "max_natr_multiplier_fraction": 0.01
   },
   "exchange": {
     "name": "binance",
@@ -139,7 +140,7 @@
     "label_smoothing": {
       "method": "kaiser",
       "window_candles": 5,
-      "beta": 14.0
+      "beta": 12.0
       // Per-label format:
       // "default": {
       //   "method": "none"
@@ -148,7 +149,7 @@
       //   "&s-extrema": {
       //     "method": "kaiser",
       //     "window_candles": 5,
-      //     "beta": 14.0
+      //     "beta": 12.0
       //   }
     },
     "label_pipeline": {
@@ -162,7 +163,7 @@
       //   "&s-extrema": {
       //     "standardization": "none",
       //     "normalization": "maxabs",
-      //     "gamma": 1.5
+      //     "gamma": 1.25
       //   }
       // }
     },
@@ -178,7 +179,7 @@
       // "columns": {
       //   "&s-extrema": {
       //     "threshold_method": "isodata",
-      //     "keep_fraction": 0.5
+      //     "keep_fraction": 0.015
       //   }
       // }
     },
