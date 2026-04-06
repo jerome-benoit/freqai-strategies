@@ -39,8 +39,8 @@
     "price_last_balance": 0.0
   },
   "reversal_confirmation": {
-    "min_natr_multiplier_fraction": 0.0075,
-    "max_natr_multiplier_fraction": 0.01
+    "min_natr_multiplier_fraction": 0.0095,
+    "max_natr_multiplier_fraction": 0.0125
   },
   "exchange": {
     "name": "binance",
