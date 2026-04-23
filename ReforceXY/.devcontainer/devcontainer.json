@@ -36,7 +36,7 @@
       "moby": false
     }
   },
-  "postCreateCommand": "PARENT=\"${containerWorkspaceFolder}/..\" && CWF=\"${containerWorkspaceFolder}\" && if [ \"${CWF}\" != \"${PARENT}\" ]; then [ ! -e \"${CWF}/.serena\" ] && ln -sf \"${PARENT}/.serena\" \"${CWF}/.serena\" || true; [ ! -e \"${CWF}/openspec\" ] && ln -sf \"${PARENT}/openspec\" \"${CWF}/openspec\" || true; [ ! -e \"${CWF}/.clinerules\" ] && ln -sf \"${PARENT}/.clinerules\" \"${CWF}/.clinerules\" || true; fi; nix --extra-experimental-features 'nix-command flakes' profile add 'nixpkgs#ripgrep' 'nixpkgs#delta' 'nixpkgs#btop' || true",
+  "postCreateCommand": "PARENT=\"${containerWorkspaceFolder}/..\" && CWF=\"${containerWorkspaceFolder}\" && if [ \"${CWF}\" != \"${PARENT}\" ]; then [ ! -e \"${CWF}/.serena\" ] && ln -sf \"${PARENT}/.serena\" \"${CWF}/.serena\" || true; [ ! -e \"${CWF}/openspec\" ] && ln -sf \"${PARENT}/openspec\" \"${CWF}/openspec\" || true; fi; nix --extra-experimental-features 'nix-command flakes' profile add 'nixpkgs#ripgrep' 'nixpkgs#delta' 'nixpkgs#btop' || true",
   "postStartCommand": "npm install -g @fission-ai/openspec@latest opencode-ai@latest && pip install --user -r ${containerWorkspaceFolder}/.devcontainer/requirements-dev.txt",
   "customizations": {
     "vscode": {
@@ -45,8 +45,7 @@
         "streetsidesoftware.code-spell-checker",
         "ms-python.python",
         "charliermarsh.ruff",
-        "sst-dev.opencode",
-        "saoudrizwan.claude-dev"
+        "sst-dev.opencode"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
