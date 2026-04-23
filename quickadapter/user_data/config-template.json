@@ -49,43 +49,15 @@
     "walletAddress": "",
     "privateKey": "",
     "ccxt_config": {
-      "enableRateLimit": true,
+      "enableRateLimit": true
       // "rateLimit": 60
     },
     "ccxt_async_config": {
-      "enableRateLimit": true,
+      "enableRateLimit": true
       // "rateLimit": 60
     },
     // Spot top 5
-    "pair_whitelist": [
-      "BTC/USDT",
-      "ETH/USDT",
-      "SOL/USDT",
-      "BNB/USDT",
-      "XRP/USDT"
-    ],
-    // // Spot IA
-    // "pair_whitelist": [
-    //     "NEAR/USDT",
-    //     "ICP/USDT",
-    //     "RENDER/USDT",
-    //     "TAO/USDT",
-    //     "FET/USDT"
-    // ],
-    // // Spot restaking
-    // "pair_whitelist": [
-    //     "PENDLE/USDT",
-    //     "EIGEN/USDT",
-    //     "ETHFI/USDT"
-    // ],
-    // // Spot meme
-    // "pair_whitelist": [
-    //     "DOGE/USDT",
-    //     "SHIB/USDT",
-    //     "PEPE/USDT",
-    //     "BONK/USDT",
-    //     "WIF/USDT",
-    // ],
+    "pair_whitelist": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
   },
   "pairlists": [
     {
@@ -170,7 +142,7 @@
     "label_prediction": {
       "method": "thresholding",
       "threshold_method": "isodata",
-      "keep_fraction": 0.015
+      "keep_fraction": 0.0075
       // Per-label format:
       // "default": {
       //   "method": "thresholding",
@@ -203,39 +175,19 @@
       "hp_rmse": -1
     },
     "feature_parameters": {
-      "include_corr_pairlist": [
-        "BTC/USDT",
-        "ETH/USDT"
-      ],
-      "include_timeframes": [
-        "5m",
-        "15m",
-        "1h",
-        "4h"
-      ],
+      "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
+      "include_timeframes": ["5m", "15m", "1h", "4h"],
       "label_period_candles": 18,
       "label_natr_multiplier": 10.5,
       "label_method": "topsis",
-      "label_weights": [
-        0.5,
-        5.0,
-        3.0,
-        1.0,
-        0.5,
-        5.0,
-        3.0
-      ],
+      "label_weights": [0.5, 5.0, 3.0, 1.0, 0.5, 5.0, 3.0],
       "include_shifted_candles": 6,
       "DI_threshold": 10,
       "weight_factor": 0.9,
       "principal_component_analysis": false,
       "use_SVM_to_remove_outliers": false,
       "use_DBSCAN_to_remove_outliers": false,
-      "indicator_periods_candles": [
-        8,
-        16,
-        32
-      ],
+      "indicator_periods_candles": [8, 16, 32],
       "inlier_metric_window": 0,
       "noise_standard_deviation": 0.02,
       "reverse_test_train_order": false,
