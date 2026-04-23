@@ -1,13 +1,13 @@
-# Copilot Instructions (repository-wide, language-agnostic)
+# Coding Agent Instructions (repository-wide, language-agnostic)
 
-These instructions guide GitHub Copilot to generate changes consistent with this repository's conventions, regardless of programming language.
+These instructions guide coding agents to generate changes consistent with this repository's conventions, regardless of programming language.
 
 ## Glossary
 
 - **Tunables**: user-adjustable parameters that shape behavior, exposed via options or configuration files.
 - **Canonical defaults**: the single, authoritative definition of all tunables and their defaults.
 
-## Implementation guidance for Copilot
+## Implementation guidance
 
 - **Before coding**:
   - Perform a comprehensive inventory of the codebase. Search for and read:
@@ -140,4 +140,4 @@ def add_cli_options(parser):
 
 ---
 
-By following these instructions, Copilot should propose changes that are consistent and maintainable across languages.
+By following these instructions, coding agents should propose changes that are consistent and maintainable across languages.
