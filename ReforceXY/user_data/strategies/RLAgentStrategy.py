@@ -5,6 +5,7 @@ from typing import Any, Final, Literal, Optional
 
 import numpy as np
 import pandas as pd
+
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
@@ -16,6 +17,12 @@ TradeDirection = Literal["long", "short"]
 logger = logging.getLogger(__name__)
 
 ACTION_COLUMN: Final = "&-action"
+
+
+def _ensure_datetime_series(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_integer_dtype(series):
+        return pd.to_datetime(series, unit="ms", utc=True)
+    return pd.to_datetime(series, utc=True)
 
 
 class RLAgentStrategy(IStrategy):
@@ -55,7 +62,7 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = pd.to_datetime(dataframe["date"], utc=True)
+        dates = _ensure_datetime_series(dataframe["date"])
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
 

@@ -16,7 +16,6 @@ from typing import (
 )
 
 import numpy as np
-import pandas as pd
 import pandas_ta as pta
 import talib.abstract as ta
 from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
@@ -40,6 +39,7 @@ from Utils import (
     apply_label_weighting,
     bottom_log_return,
     calculate_quantile,
+    ensure_datetime_series,
     ewo,
     format_dict,
     format_number,
@@ -724,7 +724,7 @@ class QuickAdapterV3(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = pd.to_datetime(dataframe["date"], utc=True)
+        dates = ensure_datetime_series(dataframe["date"])
 
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25

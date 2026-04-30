@@ -51,6 +51,7 @@ from Utils import (
     LABEL_COLUMNS,
     REGRESSORS,
     Regressor,
+    ensure_datetime_series,
     eval_set_and_weights,
     fit_regressor,
     format_dict,
@@ -1376,12 +1377,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 training_filter=True,
             )
 
-            start_date = pd.to_datetime(
-                unfiltered_df["date"].iloc[0], utc=True
-            ).strftime("%Y-%m-%d")
-            end_date = pd.to_datetime(
-                unfiltered_df["date"].iloc[-1], utc=True
-            ).strftime("%Y-%m-%d")
+            dates = ensure_datetime_series(unfiltered_df["date"])
+            start_date = dates.iloc[0].strftime("%Y-%m-%d")
+            end_date = dates.iloc[-1].strftime("%Y-%m-%d")
             logger.info(
                 f"-------------------- Training on data from {start_date} to "
                 f"{end_date} --------------------"
