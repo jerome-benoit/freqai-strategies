@@ -1376,8 +1376,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 training_filter=True,
             )
 
-            start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
-            end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
+            start_date = pd.to_datetime(
+                unfiltered_df["date"].iloc[0], utc=True
+            ).strftime("%Y-%m-%d")
+            end_date = pd.to_datetime(
+                unfiltered_df["date"].iloc[-1], utc=True
+            ).strftime("%Y-%m-%d")
             logger.info(
                 f"-------------------- Training on data from {start_date} to "
                 f"{end_date} --------------------"
