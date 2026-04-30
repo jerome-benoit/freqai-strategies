@@ -16,17 +16,17 @@ from typing import (
 )
 
 import numpy as np
+import pandas as pd
 import pandas_ta as pta
 import talib.abstract as ta
 from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
+from LabelTransformer import COMBINED_AGGREGATIONS, get_label_column_config
 from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
-
-from LabelTransformer import COMBINED_AGGREGATIONS, get_label_column_config
 
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
@@ -724,7 +724,7 @@ class QuickAdapterV3(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = dataframe.get("date")
+        dates = pd.to_datetime(dataframe["date"], utc=True)
 
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25

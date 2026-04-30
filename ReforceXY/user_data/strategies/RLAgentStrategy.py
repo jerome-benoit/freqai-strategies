@@ -4,7 +4,7 @@ from functools import reduce
 from typing import Any, Final, Literal, Optional
 
 import numpy as np
-
+import pandas as pd
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
@@ -55,7 +55,7 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = dataframe.get("date")
+        dates = pd.to_datetime(dataframe["date"], utc=True)
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
 
