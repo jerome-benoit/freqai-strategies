@@ -1,6 +1,5 @@
 import datetime
 import hashlib
-import json
 import logging
 import math
 from functools import cached_property, lru_cache, reduce
@@ -169,6 +168,10 @@ class QuickAdapterV3(IStrategy):
         super().__init__(config, *args, **kwargs)
         migrate_config(self.config, logger)
 
+    @cached_property
+    def timeframe_minutes(self) -> int:
+        return timeframe_to_minutes(self.config.get("timeframe"))
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _trade_directions_set() -> set[TradeDirection]:
@@ -178,10 +181,6 @@ class QuickAdapterV3(IStrategy):
     @lru_cache(maxsize=None)
     def _order_types_set() -> set[OrderType]:
         return set(QuickAdapterV3._ORDER_TYPES)
-
-    @cached_property
-    def timeframe_minutes(self) -> int:
-        return timeframe_to_minutes(self.config.get("timeframe"))
 
     @property
     def can_short(self) -> bool:
@@ -1913,7 +1912,9 @@ class QuickAdapterV3(IStrategy):
         try:
             rho1, _ = pearsonr(x_centered[:-1], x_centered[1:])
         except (ValueError, TypeError) as exc:
-            logger.debug("[%s] pearsonr failed, using standard df: %r", "effective_df", exc)
+            logger.debug(
+                "[%s] pearsonr failed, using standard df: %r", "effective_df", exc
+            )
             return n - 1
 
         if not np.isfinite(rho1):
