@@ -645,9 +645,10 @@ def get_label_prediction_config(
 
 
 def ensure_datetime_series(series: pd.Series) -> pd.Series:
+    """Ensure a date series is datetime64[ms, UTC], following freqtrade's data handler pattern."""
     if pd.api.types.is_integer_dtype(series):
-        return pd.to_datetime(series, unit="ms", utc=True)
-    return pd.to_datetime(series, utc=True)
+        return pd.to_datetime(series, unit="ms", utc=True).dt.as_unit("ms")
+    return series.dt.as_unit("ms")
 
 
 def get_distance(p1: T, p2: T) -> T:
