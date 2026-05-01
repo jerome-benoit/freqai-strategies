@@ -62,6 +62,8 @@ from Utils import (
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     migrate_config,
+    optuna_load_best_params,
+    optuna_save_best_params,
     soft_extremum,
     zigzag,
 )
@@ -3426,29 +3428,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
     def optuna_save_best_params(self, pair: str, namespace: OptunaNamespace) -> None:
-        best_params_path = Path(
-            self.full_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+        optuna_save_best_params(
+            self.full_path,
+            pair,
+            namespace,
+            self.get_optuna_params(pair, namespace),
+            logger,
         )
-        try:
-            with best_params_path.open("w", encoding="utf-8") as write_file:
-                json.dump(self.get_optuna_params(pair, namespace), write_file, indent=4)
-        except Exception as e:
-            logger.error(
-                f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
-                exc_info=True,
-            )
-            raise
 
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
-        best_params_path = Path(
-            self.full_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-        )
-        if best_params_path.is_file():
-            with best_params_path.open("r", encoding="utf-8") as read_file:
-                return json.load(read_file)
-        return None
+        return optuna_load_best_params(self.full_path, pair, namespace)
 
     @staticmethod
     def optuna_delete_study(

@@ -1,6 +1,7 @@
 import copy
 import functools
 import hashlib
+import json
 import math
 from dataclasses import dataclass
 from enum import IntEnum
@@ -2565,6 +2566,35 @@ def _optuna_suggest_int_from_range(
 ) -> int:
     int_range = _build_int_range(frange, min_val=min_val)
     return trial.suggest_int(name, int_range[0], int_range[1], log=log)
+
+
+def optuna_load_best_params(
+    base_path: Path, pair: str, namespace: str
+) -> Optional[dict[str, Any]]:
+    best_params_path = base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+    if best_params_path.is_file():
+        with best_params_path.open("r", encoding="utf-8") as read_file:
+            return json.load(read_file)
+    return None
+
+
+def optuna_save_best_params(
+    base_path: Path,
+    pair: str,
+    namespace: str,
+    params: dict[str, Any],
+    logger: Logger,
+) -> None:
+    best_params_path = base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+    try:
+        with best_params_path.open("w", encoding="utf-8") as write_file:
+            json.dump(params, write_file, indent=4)
+    except Exception as e:
+        logger.error(
+            f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
+            exc_info=True,
+        )
+        raise
 
 
 def get_optuna_study_model_parameters(

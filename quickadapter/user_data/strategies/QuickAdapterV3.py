@@ -53,6 +53,7 @@ from Utils import (
     migrate_config,
     nan_average,
     non_zero_diff,
+    optuna_load_best_params,
     price_retracement_percent,
     smooth_label,
     top_log_return,
@@ -2312,11 +2313,4 @@ class QuickAdapterV3(IStrategy):
     def optuna_load_best_params(
         self, pair: str, namespace: str
     ) -> Optional[dict[str, Any]]:
-        best_params_path = Path(
-            self.models_full_path
-            / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-        )
-        if best_params_path.is_file():
-            with best_params_path.open("r", encoding="utf-8") as read_file:
-                return json.load(read_file)
-        return None
+        return optuna_load_best_params(self.models_full_path, pair, namespace)
