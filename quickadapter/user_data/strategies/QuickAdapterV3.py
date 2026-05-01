@@ -151,7 +151,7 @@ class QuickAdapterV3(IStrategy):
     # FreqAI is crashing if minimal_roi is a property
     # @property
     # def minimal_roi(self) -> dict[str, Any]:
-    #     timeframe_minutes = self.get_timeframe_minutes()
+    #     timeframe_minutes = self.timeframe_minutes
     #     fit_live_predictions_candles = int(
     #         self.config.get("freqai", {}).get(
     #             "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
@@ -179,8 +179,8 @@ class QuickAdapterV3(IStrategy):
     def _order_types_set() -> set[OrderType]:
         return set(QuickAdapterV3._ORDER_TYPES)
 
-    @lru_cache(maxsize=None)
-    def get_timeframe_minutes(self) -> int:
+    @cached_property
+    def timeframe_minutes(self) -> int:
         return timeframe_to_minutes(self.config.get("timeframe"))
 
     @property
@@ -446,7 +446,7 @@ class QuickAdapterV3(IStrategy):
                     ),
                 }
             )
-        self._candle_duration_secs = int(self.get_timeframe_minutes() * 60)
+        self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
         process_throttle_secs = self.config.get("internals", {}).get(
             "process_throttle_secs", 5
@@ -804,7 +804,7 @@ class QuickAdapterV3(IStrategy):
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
         label_period = datetime.timedelta(
-            minutes=len(dataframe) * self.get_timeframe_minutes()
+            minutes=len(dataframe) * self.timeframe_minutes
         )
 
         label_weighting = self.label_weighting
@@ -964,7 +964,7 @@ class QuickAdapterV3(IStrategy):
             return None
         return int(
             ((current_date - entry_date).total_seconds() / 60.0)
-            / self.get_timeframe_minutes()
+            / self.timeframe_minutes
         )
 
     def get_trade_annotation_line_start_date(
@@ -982,7 +982,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         offset_timedelta = datetime.timedelta(
-            minutes=offset_candles_remaining * self.get_timeframe_minutes()
+            minutes=offset_candles_remaining * self.timeframe_minutes
         )
 
         return trade.open_date_utc - offset_timedelta
