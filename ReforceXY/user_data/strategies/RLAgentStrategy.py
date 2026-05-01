@@ -23,8 +23,13 @@ _EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
 _EPOCH_MS_MAX = 2_051_222_400_000  # 2035-01-01T00:00:00Z
 
 
-def _ensure_datetime_series(series: pd.Series) -> pd.Series:
+def _ensure_datetime_series(series: pd.Series | None) -> pd.Series:
     """Ensure a date series is datetime64[ms, UTC], following freqtrade's data handler pattern."""
+    if series is None:
+        raise ValueError(
+            "Expected a date Series but received None. "
+            "The 'date' column is missing from the dataframe."
+        )
     if pd.api.types.is_integer_dtype(series):
         sample = series.dropna()
         if sample.empty:
@@ -77,7 +82,7 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = _ensure_datetime_series(dataframe["date"])
+        dates = _ensure_datetime_series(dataframe.get("date"))
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
 

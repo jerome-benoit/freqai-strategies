@@ -724,7 +724,7 @@ class QuickAdapterV3(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = ensure_datetime_series(dataframe["date"])
+        dates = ensure_datetime_series(dataframe.get("date"))
 
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
