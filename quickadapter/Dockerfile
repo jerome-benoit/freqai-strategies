@@ -12,6 +12,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 USER ftuser
 RUN pip install --user --no-cache-dir \
+    "pandas>=3.0" \
     optuna==${optuna_version} \
     optuna-integration==${optuna_version} \
     optuna-dashboard \
