@@ -1912,7 +1912,8 @@ class QuickAdapterV3(IStrategy):
 
         try:
             rho1, _ = pearsonr(x_centered[:-1], x_centered[1:])
-        except Exception:
+        except (ValueError, TypeError) as exc:
+            logger.debug("[%s] pearsonr failed, using standard df: %r", "effective_df", exc)
             return n - 1
 
         if not np.isfinite(rho1):
@@ -1949,7 +1950,8 @@ class QuickAdapterV3(IStrategy):
             if not np.isfinite(t_crit):
                 return default_t
             return t_crit
-        except Exception:
+        except (ValueError, TypeError, OverflowError) as exc:
+            logger.debug("[%s] t.ppf failed, using default_t: %r", "t_critical", exc)
             return default_t
 
     def custom_exit(
