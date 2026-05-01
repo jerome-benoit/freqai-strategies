@@ -1,6 +1,5 @@
 import datetime
 import hashlib
-import json
 import logging
 import math
 from functools import cached_property, lru_cache, reduce
@@ -22,11 +21,10 @@ from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
+from LabelTransformer import COMBINED_AGGREGATIONS, get_label_column_config
 from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
-
-from LabelTransformer import COMBINED_AGGREGATIONS, get_label_column_config
 
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
@@ -40,6 +38,7 @@ from Utils import (
     apply_label_weighting,
     bottom_log_return,
     calculate_quantile,
+    ensure_datetime_series,
     ewo,
     format_dict,
     format_number,
@@ -53,6 +52,7 @@ from Utils import (
     migrate_config,
     nan_average,
     non_zero_diff,
+    optuna_load_best_params,
     price_retracement_percent,
     smooth_label,
     top_log_return,
@@ -109,7 +109,7 @@ class QuickAdapterV3(IStrategy):
     _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
 
     def version(self) -> str:
-        return "3.11.5"
+        return "3.11.6"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -150,7 +150,7 @@ class QuickAdapterV3(IStrategy):
     # FreqAI is crashing if minimal_roi is a property
     # @property
     # def minimal_roi(self) -> dict[str, Any]:
-    #     timeframe_minutes = self.get_timeframe_minutes()
+    #     timeframe_minutes = self.timeframe_minutes
     #     fit_live_predictions_candles = int(
     #         self.config.get("freqai", {}).get(
     #             "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
@@ -168,6 +168,10 @@ class QuickAdapterV3(IStrategy):
         super().__init__(config, *args, **kwargs)
         migrate_config(self.config, logger)
 
+    @cached_property
+    def timeframe_minutes(self) -> int:
+        return timeframe_to_minutes(self.config.get("timeframe"))
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _trade_directions_set() -> set[TradeDirection]:
@@ -177,10 +181,6 @@ class QuickAdapterV3(IStrategy):
     @lru_cache(maxsize=None)
     def _order_types_set() -> set[OrderType]:
         return set(QuickAdapterV3._ORDER_TYPES)
-
-    @lru_cache(maxsize=None)
-    def get_timeframe_minutes(self) -> int:
-        return timeframe_to_minutes(self.config.get("timeframe"))
 
     @property
     def can_short(self) -> bool:
@@ -445,7 +445,7 @@ class QuickAdapterV3(IStrategy):
                     ),
                 }
             )
-        self._candle_duration_secs = int(self.get_timeframe_minutes() * 60)
+        self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
         process_throttle_secs = self.config.get("internals", {}).get(
             "process_throttle_secs", 5
@@ -724,7 +724,7 @@ class QuickAdapterV3(IStrategy):
     def feature_engineering_standard(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dates = dataframe.get("date")
+        dates = ensure_datetime_series(dataframe["date"])
 
         dataframe["%-day_of_week"] = (dates.dt.dayofweek + 1) / 7
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
@@ -803,7 +803,7 @@ class QuickAdapterV3(IStrategy):
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
         label_period = datetime.timedelta(
-            minutes=len(dataframe) * self.get_timeframe_minutes()
+            minutes=len(dataframe) * self.timeframe_minutes
         )
 
         label_weighting = self.label_weighting
@@ -963,7 +963,7 @@ class QuickAdapterV3(IStrategy):
             return None
         return int(
             ((current_date - entry_date).total_seconds() / 60.0)
-            / self.get_timeframe_minutes()
+            / self.timeframe_minutes
         )
 
     def get_trade_annotation_line_start_date(
@@ -981,7 +981,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         offset_timedelta = datetime.timedelta(
-            minutes=offset_candles_remaining * self.get_timeframe_minutes()
+            minutes=offset_candles_remaining * self.timeframe_minutes
         )
 
         return trade.open_date_utc - offset_timedelta
@@ -1911,7 +1911,10 @@ class QuickAdapterV3(IStrategy):
 
         try:
             rho1, _ = pearsonr(x_centered[:-1], x_centered[1:])
-        except Exception:
+        except (ValueError, TypeError) as exc:
+            logger.debug(
+                "[%s] pearsonr failed, using standard df: %r", "effective_df", exc
+            )
             return n - 1
 
         if not np.isfinite(rho1):
@@ -1948,7 +1951,8 @@ class QuickAdapterV3(IStrategy):
             if not np.isfinite(t_crit):
                 return default_t
             return t_crit
-        except Exception:
+        except (ValueError, TypeError, OverflowError) as exc:
+            logger.debug("[%s] t.ppf failed, using default_t: %r", "t_critical", exc)
             return default_t
 
     def custom_exit(
@@ -2312,11 +2316,4 @@ class QuickAdapterV3(IStrategy):
     def optuna_load_best_params(
         self, pair: str, namespace: str
     ) -> Optional[dict[str, Any]]:
-        best_params_path = Path(
-            self.models_full_path
-            / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-        )
-        if best_params_path.is_file():
-            with best_params_path.open("r", encoding="utf-8") as read_file:
-                return json.load(read_file)
-        return None
+        return optuna_load_best_params(self.models_full_path, pair, namespace)

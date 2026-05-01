@@ -1,6 +1,7 @@
 import copy
 import functools
 import hashlib
+import json
 import math
 from dataclasses import dataclass
 from enum import IntEnum
@@ -642,6 +643,27 @@ def get_label_prediction_config(
         _validate_prediction_params,
         DEFAULTS_LABEL_PREDICTION,
     )
+
+
+_EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
+_EPOCH_MS_MAX = 2_051_222_400_000  # 2035-01-01T00:00:00Z
+
+
+def ensure_datetime_series(series: pd.Series) -> pd.Series:
+    """Ensure a date series is datetime64[ms, UTC], following freqtrade's data handler pattern."""
+    if pd.api.types.is_integer_dtype(series):
+        sample = series.dropna()
+        if sample.empty:
+            return pd.to_datetime(series, unit="ms", utc=True).dt.as_unit("ms")
+        probe = int(sample.iat[0])
+        if not (_EPOCH_MS_MIN <= probe <= _EPOCH_MS_MAX):
+            raise ValueError(
+                f"Integer date column value {probe} is outside the expected epoch-ms "
+                f"range [{_EPOCH_MS_MIN}, {_EPOCH_MS_MAX}]. "
+                "Data is likely corrupted or uses a different unit."
+            )
+        return pd.to_datetime(series, unit="ms", utc=True).dt.as_unit("ms")
+    return series.dt.as_unit("ms")
 
 
 def get_distance(p1: T, p2: T) -> T:
@@ -1509,14 +1531,12 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     if zero_lag:
         series = calculate_zero_lag(series, period=period)
 
-    values = series.to_numpy()
-
-    smma_values = np.full(n, np.nan)
-    smma_values[period - 1] = np.nanmean(values[:period])
-    for i in range(period, n):
-        smma_values[i] = (smma_values[i - 1] * (period - 1) + values[i]) / period
-
-    smma = pd.Series(smma_values, index=series.index)
+    alpha = 1.0 / period
+    seeded = series.copy()
+    sma_seed = seeded.iloc[:period].mean()
+    seeded.iloc[: period - 1] = np.nan
+    seeded.iloc[period - 1] = sma_seed
+    smma = seeded.ewm(alpha=alpha, adjust=False).mean()
 
     if offset != 0:
         smma = smma.shift(offset)
@@ -2544,6 +2564,39 @@ def _optuna_suggest_int_from_range(
 ) -> int:
     int_range = _build_int_range(frange, min_val=min_val)
     return trial.suggest_int(name, int_range[0], int_range[1], log=log)
+
+
+def optuna_load_best_params(
+    base_path: Path, pair: str, namespace: str
+) -> Optional[dict[str, Any]]:
+    best_params_path = (
+        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+    )
+    if best_params_path.is_file():
+        with best_params_path.open("r", encoding="utf-8") as read_file:
+            return json.load(read_file)
+    return None
+
+
+def optuna_save_best_params(
+    base_path: Path,
+    pair: str,
+    namespace: str,
+    params: dict[str, Any],
+    logger: Logger,
+) -> None:
+    best_params_path = (
+        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+    )
+    try:
+        with best_params_path.open("w", encoding="utf-8") as write_file:
+            json.dump(params, write_file, indent=4)
+    except Exception as e:
+        logger.error(
+            f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
+            exc_info=True,
+        )
+        raise
 
 
 def get_optuna_study_model_parameters(

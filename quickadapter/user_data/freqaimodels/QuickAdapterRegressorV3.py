@@ -1,5 +1,4 @@
 import copy
-import json
 import logging
 import random
 import time
@@ -51,6 +50,7 @@ from Utils import (
     LABEL_COLUMNS,
     REGRESSORS,
     Regressor,
+    ensure_datetime_series,
     eval_set_and_weights,
     fit_regressor,
     format_dict,
@@ -61,6 +61,8 @@ from Utils import (
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     migrate_config,
+    optuna_load_best_params,
+    optuna_save_best_params,
     soft_extremum,
     zigzag,
 )
@@ -96,7 +98,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.5"
+    version = "3.11.6"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -1376,8 +1378,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 training_filter=True,
             )
 
-            start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
-            end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
+            dates = ensure_datetime_series(unfiltered_df["date"])
+            start_date = dates.iloc[0].strftime("%Y-%m-%d")
+            end_date = dates.iloc[-1].strftime("%Y-%m-%d")
             logger.info(
                 f"-------------------- Training on data from {start_date} to "
                 f"{end_date} --------------------"
@@ -3424,29 +3427,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
     def optuna_save_best_params(self, pair: str, namespace: OptunaNamespace) -> None:
-        best_params_path = Path(
-            self.full_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+        optuna_save_best_params(
+            self.full_path,
+            pair,
+            namespace,
+            self.get_optuna_params(pair, namespace),
+            logger,
         )
-        try:
-            with best_params_path.open("w", encoding="utf-8") as write_file:
-                json.dump(self.get_optuna_params(pair, namespace), write_file, indent=4)
-        except Exception as e:
-            logger.error(
-                f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
-                exc_info=True,
-            )
-            raise
 
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
-        best_params_path = Path(
-            self.full_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-        )
-        if best_params_path.is_file():
-            with best_params_path.open("r", encoding="utf-8") as read_file:
-                return json.load(read_file)
-        return None
+        return optuna_load_best_params(self.full_path, pair, namespace)
 
     @staticmethod
     def optuna_delete_study(
