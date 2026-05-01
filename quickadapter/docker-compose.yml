@@ -22,7 +22,6 @@ services:
         scikit_image_version: 0.26.0
         ngboost_version: 0.5.10
         catboost_version: 1.2.10
-    stop_grace_period: 1800s
     restart: unless-stopped
     container_name: freqtrade-quickadapter
     environment:
