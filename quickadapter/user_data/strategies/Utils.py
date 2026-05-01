@@ -1531,14 +1531,12 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     if zero_lag:
         series = calculate_zero_lag(series, period=period)
 
-    values = series.to_numpy()
-
-    smma_values = np.full(n, np.nan)
-    smma_values[period - 1] = np.nanmean(values[:period])
-    for i in range(period, n):
-        smma_values[i] = (smma_values[i - 1] * (period - 1) + values[i]) / period
-
-    smma = pd.Series(smma_values, index=series.index)
+    alpha = 1.0 / period
+    prepared = series.copy()
+    sma_seed = prepared.iloc[:period].mean()
+    prepared.iloc[: period - 1] = np.nan
+    prepared.iloc[period - 1] = sma_seed
+    smma = prepared.ewm(alpha=alpha, adjust=False).mean()
 
     if offset != 0:
         smma = smma.shift(offset)
