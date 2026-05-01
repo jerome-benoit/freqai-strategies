@@ -644,9 +644,23 @@ def get_label_prediction_config(
     )
 
 
+_EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
+_EPOCH_MS_MAX = 2_051_222_400_000  # 2035-01-01T00:00:00Z
+
+
 def ensure_datetime_series(series: pd.Series) -> pd.Series:
     """Ensure a date series is datetime64[ms, UTC], following freqtrade's data handler pattern."""
     if pd.api.types.is_integer_dtype(series):
+        sample = series.dropna()
+        if sample.empty:
+            return pd.to_datetime(series, unit="ms", utc=True).dt.as_unit("ms")
+        probe = int(sample.iat[0])
+        if not (_EPOCH_MS_MIN <= probe <= _EPOCH_MS_MAX):
+            raise ValueError(
+                f"Integer date column value {probe} is outside the expected epoch-ms "
+                f"range [{_EPOCH_MS_MIN}, {_EPOCH_MS_MAX}]. "
+                "Data is likely corrupted or uses a different unit."
+            )
         return pd.to_datetime(series, unit="ms", utc=True).dt.as_unit("ms")
     return series.dt.as_unit("ms")
 
