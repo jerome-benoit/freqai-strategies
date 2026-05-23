@@ -1669,7 +1669,7 @@ def zigzag(
     df: pd.DataFrame,
     natr_period: int = 14,
     natr_multiplier: float = 9.0,
-    normalize: bool = True,
+    normalize: bool = False,
 ) -> tuple[
     list[int],
     list[float],
