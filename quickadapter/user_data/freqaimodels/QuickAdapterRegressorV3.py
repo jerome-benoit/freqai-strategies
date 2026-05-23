@@ -98,7 +98,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.7"
+    version = "3.11.8"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -3592,7 +3592,6 @@ def label_objective(
         df,
         natr_period=label_period_candles,
         natr_multiplier=label_natr_multiplier,
-        normalize=False,
     )
 
     median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
