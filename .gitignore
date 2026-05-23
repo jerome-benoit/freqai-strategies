@@ -387,5 +387,11 @@ config.json
 */.clinerules/**
 */openspec
 */openspec/**
-*/.sisyphus/
+.omo
+.omo/**
+*/.omo
+*/.omo/**
+.sisyphus
+.sisyphus/**
+*/.sisyphus
 */.sisyphus/**
