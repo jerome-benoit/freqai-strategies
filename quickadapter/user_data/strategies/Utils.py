@@ -680,6 +680,31 @@ def midpoint(value1: T, value2: T) -> T:
     return (value1 + value2) / 2
 
 
+def compose_sample_weights(
+    temporal: NDArray[np.floating],
+    label_weights_map: dict[str, NDArray[np.floating]],
+) -> NDArray[np.floating]:
+    if not label_weights_map:
+        return temporal
+    normalized_per_label: list[NDArray[np.floating]] = []
+    for w in label_weights_map.values():
+        arr = np.asarray(w, dtype=float)
+        arr = np.where(np.isfinite(arr) & (arr > 0), arr, 1.0)
+        total = arr.sum()
+        if total <= 0 or not np.isfinite(total):
+            arr = np.ones_like(arr)
+        else:
+            arr = arr * (len(arr) / total)
+        normalized_per_label.append(arr)
+    stacked = np.vstack(normalized_per_label)
+    agg = np.exp(np.log(stacked).mean(axis=0))
+    combined = np.asarray(temporal, dtype=float) * agg
+    combined_sum = combined.sum()
+    if combined_sum <= 0 or not np.isfinite(combined_sum):
+        return np.asarray(temporal, dtype=float)
+    return combined * (len(combined) / combined_sum)
+
+
 def nan_average(
     values: NDArray[np.floating],
     weights: NDArray[np.floating] | None = None,
