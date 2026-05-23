@@ -826,14 +826,15 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
-            weighted_label, _ = apply_label_weighting(
+            _, label_weights = apply_label_weighting(
                 label=label_data.series,
                 indices=label_data.indices,
                 metrics=label_data.metrics,
                 weighting_config=col_weighting_config,
             )
 
-            dataframe[label_col] = weighted_label
+            dataframe[label_col] = label_data.series
+            dataframe[f"{label_col}_weight"] = label_weights
 
             if label_col == EXTREMA_COLUMN:
                 extrema = dataframe[label_col]
