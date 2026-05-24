@@ -1395,7 +1395,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         **kwargs,
     ) -> Any:
         def split_fn(features: pd.DataFrame, labels: pd.DataFrame) -> dict[str, Any]:
-            return self._make_timeseries_split_datasets(features, labels, dk)
+            feature_parameters = self.freqai_info.get("feature_parameters", {})
+            if feature_parameters.get("weight_factor", 0) > 0:
+                weights = np.asarray(
+                    dk.set_weights_higher_recent(len(features)), dtype=float
+                )
+            else:
+                weights = np.ones(len(features), dtype=float)
+            return self._make_timeseries_split_datasets(features, labels, weights, dk)
 
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
 
@@ -1729,6 +1736,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         filtered_dataframe: pd.DataFrame,
         labels: pd.DataFrame,
+        weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
     ) -> dict:
         """
@@ -1740,7 +1748,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         :param filtered_dataframe: Feature data to split
         :param labels: Label data to split
-        :param dk: FreqaiDataKitchen instance for weight calculation and data building
+        :param weights: Pre-computed per-row sample weights aligned to
+                        filtered_dataframe rows by position; sliced via
+                        ``weights[train_idx]`` / ``weights[test_idx]``.
+        :param dk: FreqaiDataKitchen instance for data building
         :return: data_dictionary with train/test features/labels/weights
         """
         n_splits = int(
@@ -1813,15 +1824,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
-
-        feature_parameters = self.freqai_info.get("feature_parameters", {})
-        if feature_parameters.get("weight_factor", 0) > 0:
-            total_weights = dk.set_weights_higher_recent(len(train_idx) + len(test_idx))
-            train_weights = total_weights[: len(train_idx)]
-            test_weights = total_weights[len(train_idx) :]
-        else:
-            train_weights = np.ones(len(train_idx))
-            test_weights = np.ones(len(test_idx))
+        train_weights = weights[train_idx]
+        test_weights = weights[test_idx]
 
         return dk.build_data_dictionary(
             train_features,
