@@ -1661,7 +1661,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         )
         dd["train_weights"] = sanitize_and_renormalize(dd["train_weights"])
-
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
         if (
