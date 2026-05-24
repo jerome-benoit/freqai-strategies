@@ -325,6 +325,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
 
     @staticmethod
+    def _renormalize_to_unit_mean(weights: Any) -> NDArray[np.floating]:
+        arr = np.asarray(weights, dtype=float)
+        if arr.size == 0:
+            return arr
+        total = float(np.sum(arr))
+        if total > 0 and np.isfinite(total):
+            ratio = arr.size / total
+            if np.isfinite(ratio):
+                scaled = arr * ratio
+                if np.all(np.isfinite(scaled)):
+                    return scaled
+        return np.ones_like(arr)
+
+    @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(
@@ -1490,6 +1504,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     .to_numpy()[:, 0]
                 )
 
+        train_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(train_weights)
+        if test_size != 0:
+            test_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(
+                test_weights
+            )
+
         if feat_dict.get("reverse_train_test_order", False):
             return dk.build_data_dictionary(
                 test_features,
@@ -1631,6 +1651,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["train_features"], dd["train_labels"], dd["train_weights"]
             )
         )
+        dd["train_weights"] = QuickAdapterRegressorV3._renormalize_to_unit_mean(
+            dd["train_weights"]
+        )
 
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
@@ -1679,6 +1702,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     dk.feature_pipeline.transform(
                         dd["test_features"], dd["test_labels"], dd["test_weights"]
                     )
+                )
+                dd["test_weights"] = QuickAdapterRegressorV3._renormalize_to_unit_mean(
+                    dd["test_weights"]
                 )
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
 
@@ -1780,8 +1806,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
-        train_weights = weights[train_idx]
-        test_weights = weights[test_idx]
+        train_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(
+            weights[train_idx]
+        )
+        test_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(
+            weights[test_idx]
+        )
 
         return dk.build_data_dictionary(
             train_features,
