@@ -732,6 +732,17 @@ def compose_sample_weights(
     temporal: NDArray[np.floating],
     label_weights_map: dict[str, NDArray[np.floating]],
 ) -> NDArray[np.floating]:
+    """Combine temporal recency weights with per-label importance weights.
+
+    Returns w in R+^N with mean(w) == 1. Per-label arrays are sanitized
+    (non-finite or <= 0 -> row dropped), individually mean-normalized,
+    aggregated row-wise via geometric mean, multiplied with temporal,
+    zeroed on dropped rows, and renormalized to mean=1.
+
+    Raises ValueError on shape mismatch or when every row is dropped.
+    Default-weight imputation in compute_label_weights uses full-series
+    median (bounded leakage; see AFML section 7.4).
+    """
     temporal = np.asarray(temporal, dtype=float)
     if not label_weights_map:
         return _sanitize_and_renormalize(temporal)
