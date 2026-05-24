@@ -325,9 +325,9 @@ def generate_label_data(
 
 
 EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
-SMOOTHED_EXTREMA_COLUMN: Final = "smoothed_extrema"
+EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
-SMOOTHED_EXTREMA_WEIGHT_COLUMN: Final = "smoothed_extrema_weight"
+EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (

@@ -30,10 +30,10 @@ from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
+    EXTREMA_DIRECTION_SMOOTHED_COLUMN,
     EXTREMA_WEIGHT_COLUMN,
+    EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
-    SMOOTHED_EXTREMA_COLUMN,
-    SMOOTHED_EXTREMA_WEIGHT_COLUMN,
     TRADE_PRICE_TARGETS,
     alligator,
     bottom_log_return,
@@ -206,11 +206,14 @@ class QuickAdapterV3(IStrategy):
                 },
                 "direction": {
                     EXTREMA_DIRECTION_COLUMN: {"color": "wheat", "type": "line"},
-                    SMOOTHED_EXTREMA_COLUMN: {"color": "orange", "type": "line"},
+                    EXTREMA_DIRECTION_SMOOTHED_COLUMN: {
+                        "color": "orange",
+                        "type": "line",
+                    },
                 },
                 "weight": {
                     EXTREMA_WEIGHT_COLUMN: {"color": "wheat", "type": "line"},
-                    SMOOTHED_EXTREMA_WEIGHT_COLUMN: {
+                    EXTREMA_WEIGHT_SMOOTHED_COLUMN: {
                         "color": "orange",
                         "type": "line",
                     },
@@ -857,8 +860,8 @@ class QuickAdapterV3(IStrategy):
             )
 
             if label_col == EXTREMA_COLUMN:
-                dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[label_col]
-                dataframe[SMOOTHED_EXTREMA_WEIGHT_COLUMN] = dataframe[
+                dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
+                dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[
                     f"{label_col}_weight"
                 ]
 
