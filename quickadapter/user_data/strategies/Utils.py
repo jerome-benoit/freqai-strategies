@@ -3,6 +3,7 @@ import functools
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
@@ -252,10 +253,38 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 EXTREMA_COLUMN: Final = "&s-extrema"
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+_LABEL_WEIGHT_PREFIX_PATTERN: Final = re.compile(r"^&-?")
 EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
+
+
+def label_weight_column(label_col: str) -> str:
+    """Return the weight column name for a label column.
+
+    Strips the freqtrade label sigil (``&`` and its optional immediate ``-``
+    separator) so the resulting column does NOT collide with
+    ``FreqaiDataKitchen.find_labels`` (which selects columns containing ``&``)
+    nor with ``find_features`` (which selects columns containing ``%``).
+    Preserves the project convention where a leading ``s`` denotes a smoothed
+    target series (e.g. ``&s-extrema``); no ``s`` denotes a raw target.
+    Raises ``ValueError`` if the result still contains ``&`` or ``%``.
+
+    Examples:
+        ``"&s-extrema"``      -> ``"s-extrema_weight"`` (smoothed marker preserved)
+        ``"&-amplitude"``     -> ``"amplitude_weight"`` (raw target)
+        ``"&-time_to_pivot"`` -> ``"time_to_pivot_weight"`` (raw target)
+        ``"&-natr"``          -> ``"natr_weight"`` (raw target)
+    """
+    stripped = _LABEL_WEIGHT_PREFIX_PATTERN.sub("", label_col, count=1)
+    result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
+    if "&" in result or "%" in result:
+        raise ValueError(
+            f"label_weight_column produced collision-prone name {result!r} "
+            f"from {label_col!r}; weight columns must not contain '&' or '%'"
+        )
+    return result
 
 
 @dataclass
