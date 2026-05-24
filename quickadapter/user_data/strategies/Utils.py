@@ -254,13 +254,16 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 EXTREMA_COLUMN: Final = "&s-extrema"
-LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
-LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
-_FREQAI_LABEL_SIGIL_PATTERN: Final = re.compile(r"^&-?")
 EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
+
+LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+
+LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+
+_FREQAI_LABEL_SIGIL_PATTERN: Final = re.compile(r"^&-?")
 
 
 @lru_cache(maxsize=16)
