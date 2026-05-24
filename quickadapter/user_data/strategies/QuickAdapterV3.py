@@ -29,10 +29,11 @@ from technical.pivots_points import pivots_points
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
+    EXTREMA_DIRECTION_COLUMN,
+    EXTREMA_WEIGHT_COLUMN,
     LABEL_COLUMNS,
-    MAXIMA_COLUMN,
-    MINIMA_COLUMN,
     SMOOTHED_EXTREMA_COLUMN,
+    SMOOTHED_EXTREMA_WEIGHT_COLUMN,
     TRADE_PRICE_TARGETS,
     alligator,
     bottom_log_return,
@@ -203,10 +204,16 @@ class QuickAdapterV3(IStrategy):
                     },
                     EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
-                "min_max": {
-                    SMOOTHED_EXTREMA_COLUMN: {"color": "wheat", "type": "line"},
-                    MAXIMA_COLUMN: {"color": "red", "type": "bar"},
-                    MINIMA_COLUMN: {"color": "green", "type": "bar"},
+                "direction": {
+                    EXTREMA_DIRECTION_COLUMN: {"color": "wheat", "type": "line"},
+                    SMOOTHED_EXTREMA_COLUMN: {"color": "orange", "type": "line"},
+                },
+                "weight": {
+                    EXTREMA_WEIGHT_COLUMN: {"color": "wheat", "type": "line"},
+                    SMOOTHED_EXTREMA_WEIGHT_COLUMN: {
+                        "color": "orange",
+                        "type": "line",
+                    },
                 },
             },
         }
@@ -835,13 +842,8 @@ class QuickAdapterV3(IStrategy):
             dataframe[f"{label_col}_weight"] = label_weights
 
             if label_col == EXTREMA_COLUMN:
-                extrema_direction = label_data.series
-                dataframe[MAXIMA_COLUMN] = extrema_direction.where(
-                    extrema_direction.gt(0), 0.0
-                )
-                dataframe[MINIMA_COLUMN] = extrema_direction.where(
-                    extrema_direction.lt(0), 0.0
-                )
+                dataframe[EXTREMA_DIRECTION_COLUMN] = dataframe[label_col]
+                dataframe[EXTREMA_WEIGHT_COLUMN] = dataframe[f"{label_col}_weight"]
 
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
@@ -856,6 +858,9 @@ class QuickAdapterV3(IStrategy):
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[label_col]
+                dataframe[SMOOTHED_EXTREMA_WEIGHT_COLUMN] = dataframe[
+                    f"{label_col}_weight"
+                ]
 
         return dataframe
 

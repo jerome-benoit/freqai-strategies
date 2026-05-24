@@ -324,9 +324,10 @@ def generate_label_data(
     return generator(dataframe, params)
 
 
-MAXIMA_COLUMN: Final = "maxima"
-MINIMA_COLUMN: Final = "minima"
+EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
 SMOOTHED_EXTREMA_COLUMN: Final = "smoothed_extrema"
+EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
+SMOOTHED_EXTREMA_WEIGHT_COLUMN: Final = "smoothed_extrema_weight"
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
