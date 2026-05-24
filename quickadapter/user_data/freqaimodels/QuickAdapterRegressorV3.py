@@ -1425,26 +1425,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
     ) -> dict[str, Any]:
-        """Random train/test split via sklearn's ``train_test_split``.
+        """Train/test split via sklearn's ``train_test_split``.
 
         Routes ``data_split_parameters`` to sklearn through a whitelist of
         sklearn-recognized keys; project-custom keys (``method``,
         ``n_splits``, ``gap``, ``max_train_size``) are filtered out.
-        Honors ``feature_parameters.shuffle_after_split`` (deterministic
-        when ``random_state`` is set) and ``feature_parameters.reverse_train_test_order``.
+        ``shuffle`` and ``test_size`` default to ``False`` and ``_TEST_SIZE``
+        respectively when absent from ``data_split_parameters``. Honors
+        ``feature_parameters.shuffle_after_split`` (deterministic when
+        ``random_state`` is set) and ``feature_parameters.reverse_train_test_order``.
         Per-row sample weights are sliced positionally and propagate to both
         train and test sets.
         """
         feat_dict = self.freqai_info.get("feature_parameters", {})
         dsp = dict(self.data_split_parameters)
-        if "shuffle" not in dsp:
-            dsp["shuffle"] = False
+        dsp.setdefault("shuffle", False)
+        dsp.setdefault("test_size", QuickAdapterRegressorV3._TEST_SIZE)
         sklearn_kwargs = {
             k: v
             for k, v in dsp.items()
             if k in QuickAdapterRegressorV3._SKLEARN_TRAIN_TEST_SPLIT_KEYS
         }
-        test_size = dsp.get("test_size", QuickAdapterRegressorV3._TEST_SIZE)
+        test_size = dsp["test_size"]
         if isinstance(test_size, bool) or not isinstance(test_size, (int, float)):
             raise ValueError(
                 f"Invalid data_split_parameters.test_size value {test_size!r}: "
