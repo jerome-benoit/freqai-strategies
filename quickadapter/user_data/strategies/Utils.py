@@ -745,7 +745,7 @@ def compose_sample_weights(
 
     Raises ValueError on shape mismatch or when every row is dropped.
     Default-weight imputation in compute_label_weights uses full-series
-    median (bounded leakage; see AFML section 7.4).
+    median (bounded leakage; see AFML chapter 4).
     """
     base_weights = np.asarray(base_weights, dtype=float)
     if not label_weights_map:
@@ -1071,6 +1071,8 @@ def _aggregate_metrics(
             ]
         )
     elif aggregation == COMBINED_AGGREGATIONS[5]:  # "softmax"
+        # Per-column softmax-weighted convex combination of stacked rows.
+        # T -> 0 collapses to argmax row; T -> +inf collapses to coefficient-weighted mean.
         scaled_metrics = stacked_metrics / softmax_temperature
         softmax_weights = sp.special.softmax(scaled_metrics, axis=0)
         combined_weights = softmax_weights * coefficients[:, np.newaxis]

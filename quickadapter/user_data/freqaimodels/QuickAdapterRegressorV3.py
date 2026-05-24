@@ -1383,18 +1383,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def train(
         self, unfiltered_df: pd.DataFrame, pair: str, dk: FreqaiDataKitchen, **kwargs
     ) -> Any:
-        """
-        Filter the training data and train a model to it.
+        """Train a model with per-row sample weights.
 
-        Supports two data split methods:
-        - 'train_test_split' (default): Delegates to BaseRegressionModel.train()
-        - 'timeseries_split': Chronological split with configurable gap. Uses the final
-          fold from sklearn's TimeSeriesSplit.
-
-        :param unfiltered_df: Full dataframe for the current training period
-        :param pair: Trading pair being trained
-        :param dk: FreqaiDataKitchen object containing configuration
-        :return: Trained model
+        Dispatches on ``data_split_parameters.method``:
+        - ``train_test_split``: random sklearn split.
+        - ``timeseries_split``: chronological final-fold split.
+        Both paths compose per-row weights via ``_compose_per_row_weights``
+        before splitting and feed them to ``model.fit(sample_weight=...)``
+        through ``_train_common``. Train and test weights are renormalized
+        to mean=1 after ``feature_pipeline.fit_transform`` to preserve the
+        invariant despite pipeline-level row drops.
         """
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
@@ -1547,13 +1545,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> NDArray[np.floating]:
         """Build a per-row sample weight vector aligned to features_filtered.index.
 
-        Combines freqtrade's temporal recency weight with the geometric mean
-        of all per-target weight columns present on ``unfiltered_df``.
-        Alignment is done BEFORE any shuffle/split, on
-        ``features_filtered.index`` (a subset of ``unfiltered_df.index``),
-        avoiding any post-hoc reindex against shuffled data.
-
-        Generic over N targets: iterates ``dk.label_list`` and only includes
+        Composes freqtrade's temporal recency weight with the configured
+        per-label aggregation (default ``arithmetic_mean``) of every
+        per-target weight column present on ``unfiltered_df``. Alignment
+        runs before any shuffle/split on ``features_filtered.index``
+        (a subset of ``unfiltered_df.index``) to avoid post-hoc reindex
+        against shuffled data. Iterates ``dk.label_list`` and only includes
         labels whose ``label_weight_column(label)`` exists on
         ``unfiltered_df``.
         """
