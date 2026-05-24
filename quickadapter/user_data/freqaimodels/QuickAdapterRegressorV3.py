@@ -1483,12 +1483,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             test_weights = np.zeros(2)
 
         if feat_dict.get("shuffle_after_split", False):
+            parent_seed = sklearn_kwargs.get("random_state")
+            shuffle_rng = (
+                random.Random(parent_seed)
+                if parent_seed is not None
+                else random.Random()
+            )
             train_features, train_labels, train_weights = (
                 QuickAdapterRegressorV3._shuffle_in_unison(
                     train_features,
                     train_labels,
                     train_weights,
-                    random.randint(0, 2**31 - 1),
+                    shuffle_rng.randint(0, 2**31 - 1),
                 )
             )
             if test_size != 0:
@@ -1497,7 +1503,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         test_features,
                         test_labels,
                         test_weights,
-                        random.randint(0, 2**31 - 1),
+                        shuffle_rng.randint(0, 2**31 - 1),
                     )
                 )
 
