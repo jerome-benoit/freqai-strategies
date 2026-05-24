@@ -3,6 +3,7 @@ import logging
 import random
 import time
 import warnings
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import AbstractSet, Any, Callable, Final, Literal, Optional, Union, cast
@@ -1418,11 +1419,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ) -> dict[str, Any]:
             return split_builder(features, labels, weights, dk)
 
-        weight_cols = {label_weight_column(label) for label in dk.label_list}
-        if len(weight_cols) != len(dk.label_list):
+        weight_col_counts = Counter(
+            label_weight_column(label) for label in dk.label_list
+        )
+        duplicates = {col: n for col, n in weight_col_counts.items() if n > 1}
+        if duplicates:
             raise ValueError(
-                f"Duplicate weight column names from labels {dk.label_list}: "
-                f"each label must produce a unique weight_column_name"
+                f"Duplicate weight column names {duplicates!r} from labels "
+                f"{dk.label_list}: each label must produce a unique weight_column_name"
             )
 
         logger.info(f"Using data split method: {method}")
@@ -1460,7 +1464,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         feed the HPO eval objective).
         """
         feat_dict = self.freqai_info.get("feature_parameters", {})
-        dsp = dict(self.config["freqai"]["data_split_parameters"])
+        dsp = dict(self.data_split_parameters)
         if "shuffle" not in dsp:
             dsp["shuffle"] = False
         sklearn_kwargs = {
@@ -1498,7 +1502,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     train_features,
                     train_labels,
                     train_weights,
-                    random.randint(0, 100),
+                    random.randint(0, 2**31 - 1),
                 )
             )
             if test_size != 0:
@@ -1507,7 +1511,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         test_features,
                         test_labels,
                         test_weights,
-                        random.randint(0, 100),
+                        random.randint(0, 2**31 - 1),
                     )
                 )
 

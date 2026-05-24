@@ -260,6 +260,7 @@ EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
 
 
+@lru_cache(maxsize=16)
 def label_weight_column(label_col: str) -> str:
     """Return the weight column name for a label column.
 
@@ -750,8 +751,8 @@ def compose_sample_weights(
     if not label_weights_map:
         return _sanitize_and_renormalize(base_weights)
     n = len(base_weights)
-    for label, w in label_weights_map.items():
-        arr = np.asarray(w, dtype=float)
+    for label, label_values in label_weights_map.items():
+        arr = np.asarray(label_values, dtype=float)
         if arr.shape != (n,):
             raise ValueError(
                 f"compose_sample_weights: label {label!r} has shape {arr.shape}, "
@@ -759,8 +760,8 @@ def compose_sample_weights(
             )
     normalized_per_label: list[NDArray[np.floating]] = []
     drop_mask = np.zeros(n, dtype=bool)
-    for w in label_weights_map.values():
-        arr = np.asarray(w, dtype=float)
+    for label_values in label_weights_map.values():
+        arr = np.asarray(label_values, dtype=float)
         invalid = ~np.isfinite(arr) | (arr <= 0.0)
         drop_mask |= invalid
         arr = np.where(invalid, 1.0, np.maximum(arr, np.finfo(float).tiny))
