@@ -78,6 +78,7 @@ ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
 DensityMethod = Literal["knn", "medoid"]
 SelectionMethod = Union[DistanceMethod, ClusterMethod, DensityMethod]
 ValidationMode = Literal["warn", "raise", "none"]
+SplitFn = Callable[[pd.DataFrame, pd.DataFrame, NDArray[np.floating]], dict[str, Any]]
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
@@ -244,10 +245,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "timeseries_split",
     )
     DATA_SPLIT_METHOD_DEFAULT: Final[str] = _DATA_SPLIT_METHODS[0]
-    _DATA_SPLIT_DISPATCH: Final[dict[str, str]] = {
-        _DATA_SPLIT_METHODS[0]: "_train_default",
-        _DATA_SPLIT_METHODS[1]: "_train_timeseries_split",
-    }
     TIMESERIES_N_SPLITS_DEFAULT: Final[int] = 5
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
@@ -326,11 +323,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @lru_cache(maxsize=None)
     def _power_mean_metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _data_split_methods_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)
 
     @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
@@ -1361,12 +1353,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
         )
 
-        if method not in QuickAdapterRegressorV3._DATA_SPLIT_DISPATCH:
-            raise ValueError(
-                f"Invalid data_split_parameters.method value {method!r}: "
-                f"supported values are "
-                f"{', '.join(QuickAdapterRegressorV3._DATA_SPLIT_DISPATCH)}"
-            )
+        match method:
+            case "train_test_split":
+                split_builder = self._make_default_split_datasets
+            case "timeseries_split":
+                split_builder = self._make_timeseries_split_datasets
+            case _:
+                raise ValueError(
+                    f"Invalid data_split_parameters.method value {method!r}: "
+                    f"supported values are "
+                    f"{', '.join(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)}"
+                )
+
+        def split_fn(
+            features: pd.DataFrame,
+            labels: pd.DataFrame,
+            weights: NDArray[np.floating],
+        ) -> dict[str, Any]:
+            return split_builder(features, labels, weights, dk)
 
         weight_cols = {label_weight_column(label) for label in dk.label_list}
         if len(weight_cols) != len(dk.label_list):
@@ -1376,42 +1380,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         logger.info(f"Using data split method: {method}")
-
-        handler = getattr(
-            self, QuickAdapterRegressorV3._DATA_SPLIT_DISPATCH[method]
-        )
-        return handler(unfiltered_df, pair, dk, **kwargs)
-
-    def _train_default(
-        self,
-        unfiltered_df: pd.DataFrame,
-        pair: str,
-        dk: FreqaiDataKitchen,
-        **kwargs,
-    ) -> Any:
-        def split_fn(
-            features: pd.DataFrame,
-            labels: pd.DataFrame,
-            weights: NDArray[np.floating],
-        ) -> dict[str, Any]:
-            return self._make_default_split_datasets(features, labels, weights, dk)
-
-        return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
-
-    def _train_timeseries_split(
-        self,
-        unfiltered_df: pd.DataFrame,
-        pair: str,
-        dk: FreqaiDataKitchen,
-        **kwargs,
-    ) -> Any:
-        def split_fn(
-            features: pd.DataFrame,
-            labels: pd.DataFrame,
-            weights: NDArray[np.floating],
-        ) -> dict[str, Any]:
-            return self._make_timeseries_split_datasets(features, labels, weights, dk)
-
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
 
     def _make_default_split_datasets(
@@ -1479,9 +1447,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             train_features = train_features.sample(
                 frac=1, random_state=rint1
             ).reset_index(drop=True)
-            train_labels = train_labels.sample(
-                frac=1, random_state=rint1
-            ).reset_index(drop=True)
+            train_labels = train_labels.sample(frac=1, random_state=rint1).reset_index(
+                drop=True
+            )
             train_weights = (
                 pd.DataFrame(train_weights)
                 .sample(frac=1, random_state=rint1)
@@ -1552,9 +1520,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         n_rows = len(features_filtered)
         feat_dict = self.freqai_info.get("feature_parameters", {})
         if feat_dict.get("weight_factor", 0) > 0:
-            temporal = np.asarray(
-                dk.set_weights_higher_recent(n_rows), dtype=float
-            )
+            temporal = np.asarray(dk.set_weights_higher_recent(n_rows), dtype=float)
         else:
             temporal = np.ones(n_rows, dtype=float)
 
@@ -1562,10 +1528,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         for label in dk.label_list:
             col = label_weight_column(label)
             if col in unfiltered_df.columns:
-                per_label[label] = (
-                    unfiltered_df.loc[features_filtered.index, col]
-                    .to_numpy(dtype=float)
-                )
+                per_label[label] = unfiltered_df.loc[
+                    features_filtered.index, col
+                ].to_numpy(dtype=float)
         return compose_sample_weights(temporal, per_label)
 
     def _train_common(
@@ -1573,9 +1538,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         unfiltered_df: pd.DataFrame,
         pair: str,
         dk: FreqaiDataKitchen,
-        split_fn: Callable[
-            [pd.DataFrame, pd.DataFrame, NDArray[np.floating]], dict[str, Any]
-        ],
+        split_fn: SplitFn,
         **kwargs,
     ) -> Any:
         logger.info(
