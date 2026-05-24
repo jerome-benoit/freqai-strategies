@@ -796,7 +796,7 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-def smooth_label(
+def smooth(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
     window_candles: int = DEFAULTS_LABEL_SMOOTHING["window_candles"],

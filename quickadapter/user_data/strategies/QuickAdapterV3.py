@@ -54,7 +54,7 @@ from Utils import (
     non_zero_diff,
     optuna_load_best_params,
     price_retracement_percent,
-    smooth_label,
+    smooth,
     top_log_return,
     validate_range,
     vwapb,
@@ -847,7 +847,7 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
 
-            dataframe[label_col] = smooth_label(
+            dataframe[label_col] = smooth(
                 dataframe[label_col],
                 col_smoothing_config["method"],
                 col_smoothing_config["window_candles"],
