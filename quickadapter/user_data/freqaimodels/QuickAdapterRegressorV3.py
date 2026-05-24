@@ -60,7 +60,6 @@ from Utils import (
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
-    get_sample_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     label_weight_column_name,
@@ -1577,16 +1576,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"no per-label weight columns found (expected: {sorted(missing)}); "
                 f"falling back to temporal weights only"
             )
-        sample_weighting = get_sample_weighting_config(
-            self.freqai_info.get("sample_weighting", {}), logger
-        )
-        sample_weighting_default = sample_weighting["default"]
         return compose_sample_weights(
             temporal,
             per_label,
             logger=logger,
-            aggregation=sample_weighting_default["aggregation"],
-            softmax_temperature=sample_weighting_default["softmax_temperature"],
         )
 
     def _train_common(

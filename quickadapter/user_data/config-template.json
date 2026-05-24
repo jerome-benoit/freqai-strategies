@@ -109,10 +109,6 @@
       //   }
       // }
     },
-    "sample_weighting": {
-      "aggregation": "arithmetic_mean",
-      "softmax_temperature": 1.0
-    },
     "label_smoothing": {
       "method": "kaiser",
       "window_candles": 5,

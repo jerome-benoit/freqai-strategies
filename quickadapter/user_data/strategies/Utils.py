@@ -32,7 +32,6 @@ from LabelTransformer import (
     DEFAULTS_LABEL_PREDICTION,
     DEFAULTS_LABEL_SMOOTHING,
     DEFAULTS_LABEL_WEIGHTING,
-    DEFAULTS_SAMPLE_WEIGHTING,
     EXTREMA_SELECTION_METHODS,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
@@ -228,13 +227,6 @@ _SMOOTHING_SPECS: Final[dict[str, _ParamSpec]] = {
     "mode": _ParamSpec(_EnumValidator(SMOOTHING_MODES)),
     "sigma": _ParamSpec(
         _NumericValidator(min_value=0, min_exclusive=True), output_type=float
-    ),
-}
-
-_SAMPLE_WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
-    "aggregation": _ParamSpec(_EnumValidator(COMBINED_AGGREGATIONS)),
-    "softmax_temperature": _ParamSpec(
-        _NumericValidator(min_value=0, min_exclusive=True)
     ),
 }
 
@@ -661,29 +653,6 @@ def get_label_smoothing_config(
         "label_smoothing",
         _validate_smoothing_params,
         DEFAULTS_LABEL_SMOOTHING,
-    )
-
-
-def _validate_sample_weighting_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "sample_weighting",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _SAMPLE_WEIGHTING_SPECS, DEFAULTS_SAMPLE_WEIGHTING
-    )
-
-
-def get_sample_weighting_config(
-    config: dict[str, Any],
-    logger: Logger,
-) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "sample_weighting",
-        _validate_sample_weighting_params,
-        DEFAULTS_SAMPLE_WEIGHTING,
     )
 
 
