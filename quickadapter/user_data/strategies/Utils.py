@@ -253,7 +253,7 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 EXTREMA_COLUMN: Final = "&s-extrema"
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
-_LABEL_WEIGHT_PREFIX_PATTERN: Final = re.compile(r"^&-?")
+_FREQAI_LABEL_SIGIL_PATTERN: Final = re.compile(r"^&-?")
 EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
@@ -277,7 +277,7 @@ def label_weight_column(label_col: str) -> str:
         ``"&-time_to_pivot"`` -> ``"time_to_pivot_weight"`` (raw target)
         ``"&-natr"``          -> ``"natr_weight"`` (raw target)
     """
-    stripped = _LABEL_WEIGHT_PREFIX_PATTERN.sub("", label_col, count=1)
+    stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
     result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
     if "&" in result or "%" in result:
         raise ValueError(
@@ -729,27 +729,27 @@ def _sanitize_and_renormalize(
 
 
 def compose_sample_weights(
-    temporal: NDArray[np.floating],
+    base_weights: NDArray[np.floating],
     label_weights_map: dict[str, NDArray[np.floating]],
     aggregation: CombinedAggregation = COMBINED_AGGREGATIONS[0],
     softmax_temperature: float = 1.0,
 ) -> NDArray[np.floating]:
-    """Combine temporal recency weights with per-label importance weights.
+    """Combine base sample weights with per-label importance weights.
 
     Returns w in R+^N with mean(w) == 1. Per-label arrays are sanitized
     (non-finite or <= 0 -> row dropped), individually mean-normalized,
     aggregated row-wise via ``aggregation`` (default arithmetic_mean),
-    multiplied with temporal, zeroed on dropped rows, and renormalized
+    multiplied with base_weights, zeroed on dropped rows, and renormalized
     to mean=1.
 
     Raises ValueError on shape mismatch or when every row is dropped.
     Default-weight imputation in compute_label_weights uses full-series
     median (bounded leakage; see AFML section 7.4).
     """
-    temporal = np.asarray(temporal, dtype=float)
+    base_weights = np.asarray(base_weights, dtype=float)
     if not label_weights_map:
-        return _sanitize_and_renormalize(temporal)
-    n = len(temporal)
+        return _sanitize_and_renormalize(base_weights)
+    n = len(base_weights)
     for label, w in label_weights_map.items():
         arr = np.asarray(w, dtype=float)
         if arr.shape != (n,):
@@ -777,7 +777,7 @@ def compose_sample_weights(
         aggregation=aggregation,
         softmax_temperature=softmax_temperature,
     )
-    combined = temporal * agg
+    combined = base_weights * agg
     combined[drop_mask] = 0.0
     combined_sum = combined.sum()
     if combined_sum > 0 and np.isfinite(combined_sum):
@@ -786,7 +786,7 @@ def compose_sample_weights(
             scaled = combined * ratio
             if np.all(np.isfinite(scaled)):
                 return scaled
-    return _sanitize_and_renormalize(temporal, drop_mask=drop_mask)
+    return _sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
 
 
 def nan_average(
@@ -993,7 +993,7 @@ def _impute_weights(
     return weights
 
 
-def _build_weights_array(
+def _scatter_weights(
     n_values: int,
     indices: list[int],
     weights: NDArray[np.floating],
@@ -1153,7 +1153,7 @@ def compute_label_weights(
         weights=weights,
     )
 
-    return _build_weights_array(
+    return _scatter_weights(
         n_values=n_values,
         indices=indices,
         weights=weights,
@@ -2603,7 +2603,7 @@ def fit_regressor(
     return model
 
 
-def eval_set_and_weights(
+def make_test_set_and_weights(
     X_test: pd.DataFrame,
     y_test: pd.DataFrame,
     test_weights: NDArray[np.floating],

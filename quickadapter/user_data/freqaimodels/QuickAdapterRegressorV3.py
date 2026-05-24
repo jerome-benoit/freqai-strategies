@@ -52,7 +52,7 @@ from Utils import (
     Regressor,
     compose_sample_weights,
     ensure_datetime_series,
-    eval_set_and_weights,
+    make_test_set_and_weights,
     fit_regressor,
     format_dict,
     format_number,
@@ -1528,7 +1528,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             test_weights,
         )
 
-    def _build_per_row_weights(
+    def _compose_per_row_weights(
         self,
         features_filtered: pd.DataFrame,
         unfiltered_df: pd.DataFrame,
@@ -1603,7 +1603,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             dk.label_list,
             training_filter=True,
         )
-        weights = self._build_per_row_weights(features_filtered, unfiltered_df, dk)
+        weights = self._compose_per_row_weights(features_filtered, unfiltered_df, dk)
         dates = ensure_datetime_series(unfiltered_df["date"])
         start_date = dates.iloc[0].strftime("%Y-%m-%d")
         end_date = dates.iloc[-1].strftime("%Y-%m-%d")
@@ -1892,7 +1892,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     **optuna_hp_params,
                 }
 
-        eval_set, eval_weights = eval_set_and_weights(
+        eval_set, eval_weights = make_test_set_and_weights(
             X_test,
             y_test,
             test_weights,
@@ -3740,7 +3740,7 @@ def hp_objective(
     )
     model_training_parameters = {**model_training_parameters, **study_model_parameters}
 
-    eval_set, eval_weights = eval_set_and_weights(
+    eval_set, eval_weights = make_test_set_and_weights(
         X_test, y_test, test_weights, test_size
     )
 
