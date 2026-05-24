@@ -34,6 +34,7 @@ from Utils import (
     EXTREMA_WEIGHT_COLUMN,
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
+    LABEL_WEIGHT_SUFFIX,
     TRADE_PRICE_TARGETS,
     alligator,
     bottom_log_return,
@@ -841,12 +842,14 @@ class QuickAdapterV3(IStrategy):
                 weighting_config=col_weighting_config,
             )
 
+            label_weight_col = f"{label_col}{LABEL_WEIGHT_SUFFIX}"
+
             dataframe[label_col] = label_data.series
-            dataframe[f"{label_col}_weight"] = label_weights
+            dataframe[label_weight_col] = label_weights
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_COLUMN] = dataframe[label_col]
-                dataframe[EXTREMA_WEIGHT_COLUMN] = dataframe[f"{label_col}_weight"]
+                dataframe[EXTREMA_WEIGHT_COLUMN] = dataframe[label_weight_col]
 
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
@@ -855,15 +858,13 @@ class QuickAdapterV3(IStrategy):
             dataframe[label_col] = smooth(
                 dataframe[label_col], **col_smoothing_config
             )
-            dataframe[f"{label_col}_weight"] = smooth(
-                dataframe[f"{label_col}_weight"], **col_smoothing_config
+            dataframe[label_weight_col] = smooth(
+                dataframe[label_weight_col], **col_smoothing_config
             )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
-                dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[
-                    f"{label_col}_weight"
-                ]
+                dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[label_weight_col]
 
         return dataframe
 

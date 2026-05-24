@@ -251,6 +251,7 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 
 EXTREMA_COLUMN: Final = "&s-extrema"
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"

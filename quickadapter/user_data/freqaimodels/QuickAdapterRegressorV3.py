@@ -48,6 +48,7 @@ from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
     LABEL_COLUMNS,
+    LABEL_WEIGHT_SUFFIX,
     REGRESSORS,
     Regressor,
     compose_sample_weights,
@@ -102,8 +103,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     version = "3.11.9"
 
     _TEST_SIZE: Final[float] = 0.1
-
-    _LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -1521,12 +1520,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _label_weight_column_name(label_col: str) -> str:
-        return f"{label_col}{QuickAdapterRegressorV3._LABEL_WEIGHT_SUFFIX}"
+        return f"{label_col}{LABEL_WEIGHT_SUFFIX}"
 
     def _strip_label_weight_columns(self, dk: FreqaiDataKitchen) -> None:
         dk.label_list = [
             c for c in dk.label_list
-            if not c.endswith(self._LABEL_WEIGHT_SUFFIX)
+            if not c.endswith(LABEL_WEIGHT_SUFFIX)
         ]
 
     @staticmethod
