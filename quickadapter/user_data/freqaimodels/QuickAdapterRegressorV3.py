@@ -1394,6 +1394,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen object containing configuration
         :return: Trained model
         """
+        self._strip_label_weight_columns(dk)
+
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
         )
@@ -1407,7 +1409,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(f"Using data split method: {method}")
 
         if method == QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
-            return super().train(unfiltered_df, pair, dk, **kwargs)
+            return self._train_default(unfiltered_df, pair, dk, **kwargs)
 
         elif (
             method == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
@@ -1443,6 +1445,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ):
                 dk.fit_labels()
 
+            dd = self._compose_train_weights(dd, unfiltered_df, dk)
+
             dd = self._apply_pipelines(dd, dk, pair)
 
             logger.info(
@@ -1460,6 +1464,52 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
             return model
+
+    def _train_default(
+        self,
+        unfiltered_df: pd.DataFrame,
+        pair: str,
+        dk: FreqaiDataKitchen,
+        **kwargs,
+    ) -> Any:
+        logger.info(f"-------------------- Starting training {pair} --------------------")
+        start_time = time.time()
+
+        features_filtered, labels_filtered = dk.filter_features(
+            unfiltered_df,
+            dk.training_features_list,
+            dk.label_list,
+            training_filter=True,
+        )
+
+        dates = ensure_datetime_series(unfiltered_df["date"])
+        start_date = dates.iloc[0].strftime("%Y-%m-%d")
+        end_date = dates.iloc[-1].strftime("%Y-%m-%d")
+        logger.info(
+            f"-------------------- Training on data from {start_date} to "
+            f"{end_date} --------------------"
+        )
+
+        dd = dk.make_train_test_datasets(features_filtered, labels_filtered)
+        if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
+            dk.fit_labels()
+
+        dd = self._compose_train_weights(dd, unfiltered_df, dk)
+
+        dd = self._apply_pipelines(dd, dk, pair)
+
+        logger.info(f"Training model on {len(dd['train_features'].columns)} features")
+        logger.info(f"Training model on {len(dd['train_features'])} data points")
+
+        model = self.fit(dd, dk, **kwargs)
+
+        end_time = time.time()
+        logger.info(
+            f"-------------------- Done training {pair} "
+            f"({end_time - start_time:.2f} secs) --------------------"
+        )
+
+        return model
 
     def _apply_pipelines(
         self,
