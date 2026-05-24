@@ -1466,9 +1466,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             train_features = features
             train_labels = labels
             train_weights = weights
-            test_features = pd.DataFrame()
-            test_labels = np.zeros(2)
-            test_weights = np.zeros(2)
+            test_features = features.iloc[:0]
+            test_labels = labels.iloc[:0]
+            test_weights = weights[:0]
 
         if feat_dict.get("shuffle_after_split", False):
             parent_seed = sklearn_kwargs.get("random_state")
