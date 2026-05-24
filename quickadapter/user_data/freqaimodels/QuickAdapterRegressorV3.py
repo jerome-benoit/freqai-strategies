@@ -51,7 +51,6 @@ from Utils import (
     REGRESSORS,
     Regressor,
     compose_sample_weights,
-    ensure_datetime_series,
     eval_set_and_weights,
     fit_regressor,
     format_dict,
@@ -1409,7 +1408,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(f"Using data split method: {method}")
 
         if method == QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
-            return self._train_default(unfiltered_df, pair, dk, **kwargs)
+            return self._train(unfiltered_df, pair, dk, **kwargs)
 
         elif (
             method == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
@@ -1427,9 +1426,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 training_filter=True,
             )
 
-            dates = ensure_datetime_series(unfiltered_df["date"])
-            start_date = dates.iloc[0].strftime("%Y-%m-%d")
-            end_date = dates.iloc[-1].strftime("%Y-%m-%d")
+            start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
+            end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
             logger.info(
                 f"-------------------- Training on data from {start_date} to "
                 f"{end_date} --------------------"
@@ -1450,11 +1448,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             dd = self._apply_pipelines(dd, dk, pair)
 
             logger.info(
-                f"Training model on {len(dd['train_features'].columns)} features"
+                f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
             )
             logger.info(f"Training model on {len(dd['train_features'])} data points")
 
-            model = self.fit(dd, dk, **kwargs)
+            model = self.fit(dd, dk)
 
             end_time = time.time()
 
@@ -1465,14 +1463,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             return model
 
-    def _train_default(
+    def _train(
         self,
         unfiltered_df: pd.DataFrame,
         pair: str,
         dk: FreqaiDataKitchen,
         **kwargs,
     ) -> Any:
+        """
+        Mirror of ``BaseRegressionModel.train`` with a single insertion: composition
+        of per-label sample weights via :meth:`_compose_train_weights` between the
+        train/test split and the pipeline application. Routed from :meth:`train`
+        when ``data_split_parameters.method`` is ``train_test_split``.
+        """
         logger.info(f"-------------------- Starting training {pair} --------------------")
+
         start_time = time.time()
 
         features_filtered, labels_filtered = dk.filter_features(
@@ -1482,9 +1487,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             training_filter=True,
         )
 
-        dates = ensure_datetime_series(unfiltered_df["date"])
-        start_date = dates.iloc[0].strftime("%Y-%m-%d")
-        end_date = dates.iloc[-1].strftime("%Y-%m-%d")
+        start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
+        end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
         logger.info(
             f"-------------------- Training on data from {start_date} to "
             f"{end_date} --------------------"
@@ -1498,12 +1502,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         dd = self._apply_pipelines(dd, dk, pair)
 
-        logger.info(f"Training model on {len(dd['train_features'].columns)} features")
+        logger.info(
+            f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
+        )
         logger.info(f"Training model on {len(dd['train_features'])} data points")
 
-        model = self.fit(dd, dk, **kwargs)
+        model = self.fit(dd, dk)
 
         end_time = time.time()
+
         logger.info(
             f"-------------------- Done training {pair} "
             f"({end_time - start_time:.2f} secs) --------------------"
