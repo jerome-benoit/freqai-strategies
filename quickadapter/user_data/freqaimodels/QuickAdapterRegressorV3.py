@@ -62,6 +62,7 @@ from Utils import (
     get_label_prediction_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
+    label_weight_column,
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
@@ -1393,6 +1394,54 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return self._make_timeseries_split_datasets(features, labels, dk)
 
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
+
+    def _build_per_row_weights(
+        self,
+        features_filtered: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+        dk: FreqaiDataKitchen,
+    ) -> NDArray[np.floating]:
+        """Build a per-row sample weight vector aligned to features_filtered.index.
+
+        Combines freqtrade's temporal recency weight with the geometric mean
+        of all per-target weight columns present on ``unfiltered_df``.
+        Alignment is done BEFORE any shuffle/split, on
+        ``features_filtered.index`` (a subset of ``unfiltered_df.index``),
+        avoiding any post-hoc reindex against shuffled data.
+
+        Generic over N targets: iterates ``dk.label_list`` and only includes
+        labels whose ``label_weight_column(label)`` exists on
+        ``unfiltered_df``.
+        """
+        if not unfiltered_df.index.is_unique:
+            raise ValueError(
+                "unfiltered_df.index must be unique for label-based weight "
+                "alignment; received non-unique index"
+            )
+        if not features_filtered.index.isin(unfiltered_df.index).all():
+            raise ValueError(
+                "features_filtered.index must be a subset of "
+                "unfiltered_df.index (filter_features should preserve original "
+                "row labels)"
+            )
+        n_rows = len(features_filtered)
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        if feat_dict.get("weight_factor", 0) > 0:
+            temporal = np.asarray(
+                dk.set_weights_higher_recent(n_rows), dtype=float
+            )
+        else:
+            temporal = np.ones(n_rows, dtype=float)
+
+        per_label: dict[str, NDArray[np.floating]] = {}
+        for label in dk.label_list:
+            col = label_weight_column(label)
+            if col in unfiltered_df.columns:
+                per_label[label] = (
+                    unfiltered_df.loc[features_filtered.index, col]
+                    .to_numpy(dtype=float)
+                )
+        return compose_sample_weights(temporal, per_label)
 
     def _train_common(
         self,
