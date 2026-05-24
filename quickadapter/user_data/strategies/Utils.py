@@ -731,13 +731,16 @@ def _sanitize_and_renormalize(
 def compose_sample_weights(
     temporal: NDArray[np.floating],
     label_weights_map: dict[str, NDArray[np.floating]],
+    aggregation: CombinedAggregation = COMBINED_AGGREGATIONS[0],
+    softmax_temperature: float = 1.0,
 ) -> NDArray[np.floating]:
     """Combine temporal recency weights with per-label importance weights.
 
     Returns w in R+^N with mean(w) == 1. Per-label arrays are sanitized
     (non-finite or <= 0 -> row dropped), individually mean-normalized,
-    aggregated row-wise via geometric mean, multiplied with temporal,
-    zeroed on dropped rows, and renormalized to mean=1.
+    aggregated row-wise via ``aggregation`` (default arithmetic_mean),
+    multiplied with temporal, zeroed on dropped rows, and renormalized
+    to mean=1.
 
     Raises ValueError on shape mismatch or when every row is dropped.
     Default-weight imputation in compute_label_weights uses full-series
@@ -768,7 +771,12 @@ def compose_sample_weights(
             f"(labels={list(label_weights_map)}); no surviving training samples"
         )
     stacked = np.vstack(normalized_per_label)
-    agg = np.exp(np.log(stacked).mean(axis=0))
+    agg = _aggregate_metrics(
+        stacked_metrics=stacked,
+        coefficients=np.ones(stacked.shape[0], dtype=float),
+        aggregation=aggregation,
+        softmax_temperature=softmax_temperature,
+    )
     combined = temporal * agg
     combined[drop_mask] = 0.0
     combined_sum = combined.sum()

@@ -1576,7 +1576,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 per_label[label] = unfiltered_df.loc[
                     features_filtered.index, col
                 ].to_numpy(dtype=float)
-        return compose_sample_weights(temporal, per_label)
+        aggregation = feat_dict.get("label_weights_aggregation", "arithmetic_mean")
+        softmax_temperature = feat_dict.get("label_weights_softmax_temperature", 1.0)
+        return compose_sample_weights(
+            temporal,
+            per_label,
+            aggregation=aggregation,
+            softmax_temperature=softmax_temperature,
+        )
 
     def _train_common(
         self,
