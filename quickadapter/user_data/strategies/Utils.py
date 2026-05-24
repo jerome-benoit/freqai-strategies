@@ -714,6 +714,7 @@ def compose_sample_weights(
     temporal: NDArray[np.floating],
     label_weights_map: dict[str, NDArray[np.floating]],
 ) -> NDArray[np.floating]:
+    temporal = np.asarray(temporal, dtype=float)
     if not label_weights_map:
         return temporal
     normalized_per_label: list[NDArray[np.floating]] = []
@@ -730,12 +731,21 @@ def compose_sample_weights(
         normalized_per_label.append(arr)
     stacked = np.vstack(normalized_per_label)
     agg = np.exp(np.log(stacked).mean(axis=0))
-    combined = np.asarray(temporal, dtype=float) * agg
+    combined = temporal * agg
     combined[drop_mask] = 0.0
     combined_sum = combined.sum()
-    if combined_sum <= 0 or not np.isfinite(combined_sum):
-        return np.asarray(temporal, dtype=float)
-    return combined * (len(combined) / combined_sum)
+    if combined_sum > 0 and np.isfinite(combined_sum):
+        return combined * (len(combined) / combined_sum)
+    # Degenerate path: sanitize temporal, honour drop_mask, never return NaN/Inf.
+    fallback = np.where(np.isfinite(temporal) & (temporal >= 0), temporal, 0.0)
+    fallback[drop_mask] = 0.0
+    fb_sum = fallback.sum()
+    if fb_sum > 0 and np.isfinite(fb_sum):
+        return fallback * (len(fallback) / fb_sum)
+    # Last resort: uniform on survivors (rows not in drop_mask).
+    fallback = np.ones_like(temporal)
+    fallback[drop_mask] = 0.0
+    return fallback
 
 
 def nan_average(
