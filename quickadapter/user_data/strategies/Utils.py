@@ -710,42 +710,64 @@ def midpoint(value1: T, value2: T) -> T:
     return (value1 + value2) / 2
 
 
+def _sanitize_and_renormalize(
+    arr: NDArray[np.floating],
+    drop_mask: NDArray[np.bool_] | None = None,
+) -> NDArray[np.floating]:
+    safe = np.where(np.isfinite(arr) & (arr > 0), arr, 0.0)
+    if drop_mask is not None:
+        safe = safe.copy()
+        safe[drop_mask] = 0.0
+    total = safe.sum()
+    if total > 0 and np.isfinite(total):
+        ratio = len(safe) / total
+        if np.isfinite(ratio):
+            scaled = safe * ratio
+            if np.all(np.isfinite(scaled)):
+                return scaled
+    return np.ones_like(arr)
+
+
 def compose_sample_weights(
     temporal: NDArray[np.floating],
     label_weights_map: dict[str, NDArray[np.floating]],
 ) -> NDArray[np.floating]:
     temporal = np.asarray(temporal, dtype=float)
     if not label_weights_map:
-        return temporal
+        return _sanitize_and_renormalize(temporal)
+    n = len(temporal)
+    for label, w in label_weights_map.items():
+        arr = np.asarray(w, dtype=float)
+        if arr.shape != (n,):
+            raise ValueError(
+                f"compose_sample_weights: label {label!r} has shape {arr.shape}, "
+                f"expected ({n},)"
+            )
     normalized_per_label: list[NDArray[np.floating]] = []
-    drop_mask = np.zeros(len(temporal), dtype=bool)
+    drop_mask = np.zeros(n, dtype=bool)
     for w in label_weights_map.values():
         arr = np.asarray(w, dtype=float)
-        drop_mask |= arr == 0.0
-        arr = np.where(np.isfinite(arr) & (arr > 0), arr, 1.0)
-        total = arr.sum()
-        if total <= 0 or not np.isfinite(total):
-            arr = np.ones_like(arr)
-        else:
-            arr = arr * (len(arr) / total)
-        normalized_per_label.append(arr)
+        invalid = ~np.isfinite(arr) | (arr <= 0.0)
+        drop_mask |= invalid
+        arr = np.where(invalid, 1.0, np.maximum(arr, np.finfo(float).tiny))
+        normalized_per_label.append(_sanitize_and_renormalize(arr))
+    if drop_mask.all():
+        raise ValueError(
+            f"compose_sample_weights: all rows dropped by per-label zero weights "
+            f"(labels={list(label_weights_map)}); no surviving training samples"
+        )
     stacked = np.vstack(normalized_per_label)
     agg = np.exp(np.log(stacked).mean(axis=0))
     combined = temporal * agg
     combined[drop_mask] = 0.0
     combined_sum = combined.sum()
     if combined_sum > 0 and np.isfinite(combined_sum):
-        return combined * (len(combined) / combined_sum)
-    # Degenerate path: sanitize temporal, honour drop_mask, never return NaN/Inf.
-    fallback = np.where(np.isfinite(temporal) & (temporal >= 0), temporal, 0.0)
-    fallback[drop_mask] = 0.0
-    fb_sum = fallback.sum()
-    if fb_sum > 0 and np.isfinite(fb_sum):
-        return fallback * (len(fallback) / fb_sum)
-    # Last resort: uniform on survivors (rows not in drop_mask).
-    fallback = np.ones_like(temporal)
-    fallback[drop_mask] = 0.0
-    return fallback
+        ratio = n / combined_sum
+        if np.isfinite(ratio):
+            scaled = combined * ratio
+            if np.all(np.isfinite(scaled)):
+                return scaled
+    return _sanitize_and_renormalize(temporal, drop_mask=drop_mask)
 
 
 def nan_average(
