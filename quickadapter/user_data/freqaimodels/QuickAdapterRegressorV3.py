@@ -1425,29 +1425,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
     ) -> dict[str, Any]:
-        """Mirror freqtrade's make_train_test_datasets accepting external weights.
+        """Random train/test split via sklearn's ``train_test_split``.
 
-        Reproduces upstream behavior (data_kitchen.py:126-209) with deviations:
-
-        1. Accepts pre-computed per-row weights (avoids re-deriving temporal-only).
-        2. Whitelists sklearn-safe kwargs from data_split_parameters; drops
-           project-custom keys (``method``, ``n_splits``, ``gap``,
-           ``max_train_size``).
-        3. Uses ``.get("shuffle_after_split", False)`` for safer default;
-           upstream uses bare key access which raises KeyError on configs
-           without the key (including this project's config-template.json).
-        4. Does not mutate ``self.config`` in-place; upstream injects
-           ``shuffle=False`` via ``dict.update`` on the live config.
-        5. Skips test-side shuffle when ``test_size==0``. Upstream shuffles
-           test unconditionally, but its synthetic ``test_labels=np.zeros(2)``
-           and ``test_weights=np.zeros(2)`` raise AttributeError on
-           ``.sample()``. This deviation only fires under ``test_size==0``
-           plus ``shuffle_after_split=True``, a configuration upstream itself
-           would crash on.
-
-        Per-label weights are propagated to BOTH ``train_weights`` AND
-        ``test_weights`` (matches existing PR #72 behavior; ``test_weights``
-        feed the HPO eval objective).
+        Routes ``data_split_parameters`` to sklearn through a whitelist of
+        sklearn-recognized keys; project-custom keys (``method``,
+        ``n_splits``, ``gap``, ``max_train_size``) are filtered out.
+        Honors ``feature_parameters.shuffle_after_split`` (deterministic
+        when ``random_state`` is set) and ``feature_parameters.reverse_train_test_order``.
+        Per-row sample weights are sliced positionally and propagate to both
+        train and test sets.
         """
         feat_dict = self.freqai_info.get("feature_parameters", {})
         dsp = dict(self.data_split_parameters)
