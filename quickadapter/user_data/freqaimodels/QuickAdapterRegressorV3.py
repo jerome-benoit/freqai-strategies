@@ -50,6 +50,7 @@ from Utils import (
     LABEL_COLUMNS,
     REGRESSORS,
     Regressor,
+    compose_sample_weights,
     ensure_datetime_series,
     eval_set_and_weights,
     fit_regressor,
@@ -113,6 +114,40 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             c for c in dk.label_list
             if not c.endswith(self._LABEL_WEIGHT_SUFFIX)
         ]
+
+    def _compose_train_weights(
+        self,
+        dd: dict[str, Any],
+        unfiltered_df: pd.DataFrame,
+        dk: FreqaiDataKitchen,
+    ) -> dict[str, Any]:
+        weight_cols = {
+            label: f"{label}{self._LABEL_WEIGHT_SUFFIX}"
+            for label in dk.label_list
+            if f"{label}{self._LABEL_WEIGHT_SUFFIX}" in unfiltered_df.columns
+        }
+        if not weight_cols:
+            return dd
+        label_weights_map: dict[str, NDArray] = {}
+        for label, weight_col in weight_cols.items():
+            series = unfiltered_df[weight_col]
+            train_w = series.reindex(dd["train_features"].index, fill_value=1.0).to_numpy(dtype=float)
+            label_weights_map[label] = train_w
+        dd["train_weights"] = compose_sample_weights(
+            np.asarray(dd["train_weights"], dtype=float),
+            label_weights_map,
+        )
+        if dd.get("test_features") is not None and len(dd["test_features"]) > 0:
+            test_map: dict[str, NDArray] = {}
+            for label, weight_col in weight_cols.items():
+                series = unfiltered_df[weight_col]
+                test_w = series.reindex(dd["test_features"].index, fill_value=1.0).to_numpy(dtype=float)
+                test_map[label] = test_w
+            dd["test_weights"] = compose_sample_weights(
+                np.asarray(dd["test_weights"], dtype=float),
+                test_map,
+            )
+        return dd
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
