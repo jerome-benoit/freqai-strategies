@@ -106,8 +106,6 @@ class QuickAdapterV3(IStrategy):
 
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
-    _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
-
     def version(self) -> str:
         return "3.11.9"
 
@@ -837,29 +835,12 @@ class QuickAdapterV3(IStrategy):
             dataframe[f"{label_col}_weight"] = label_weights
 
             if label_col == EXTREMA_COLUMN:
-                extrema = dataframe[label_col]
                 extrema_direction = label_data.series
-                plot_eps = extrema.abs().where(extrema.ne(0.0)).min()
-                if not np.isfinite(plot_eps):
-                    plot_eps = 0.0
-                plot_eps = max(
-                    float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS
+                dataframe[MAXIMA_COLUMN] = extrema_direction.where(
+                    extrema_direction.gt(0), 0.0
                 )
-                dataframe[MAXIMA_COLUMN] = (
-                    extrema.where(extrema_direction.gt(0), 0.0)
-                    .clip(lower=0.0)
-                    .mask(
-                        extrema_direction.gt(0) & extrema.eq(0.0),
-                        plot_eps,
-                    )
-                )
-                dataframe[MINIMA_COLUMN] = (
-                    extrema.where(extrema_direction.lt(0), 0.0)
-                    .clip(upper=0.0)
-                    .mask(
-                        extrema_direction.lt(0) & extrema.eq(0.0),
-                        -plot_eps,
-                    )
+                dataframe[MINIMA_COLUMN] = extrema_direction.where(
+                    extrema_direction.lt(0), 0.0
                 )
 
             col_smoothing_config = get_label_column_config(
