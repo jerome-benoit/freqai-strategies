@@ -102,6 +102,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     _TEST_SIZE: Final[float] = 0.1
 
+    _LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+
+    @staticmethod
+    def _label_weight_column_name(label_col: str) -> str:
+        return f"{label_col}{QuickAdapterRegressorV3._LABEL_WEIGHT_SUFFIX}"
+
+    def _strip_label_weight_columns(self, dk: FreqaiDataKitchen) -> None:
+        dk.label_list = [
+            c for c in dk.label_list
+            if not c.endswith(self._LABEL_WEIGHT_SUFFIX)
+        ]
+
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
