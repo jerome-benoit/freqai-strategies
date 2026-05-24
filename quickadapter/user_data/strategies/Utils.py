@@ -3,6 +3,7 @@ import functools
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
@@ -31,6 +32,7 @@ from LabelTransformer import (
     DEFAULTS_LABEL_PREDICTION,
     DEFAULTS_LABEL_SMOOTHING,
     DEFAULTS_LABEL_WEIGHTING,
+    DEFAULTS_SAMPLE_WEIGHTING,
     EXTREMA_SELECTION_METHODS,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
@@ -229,6 +231,13 @@ _SMOOTHING_SPECS: Final[dict[str, _ParamSpec]] = {
     ),
 }
 
+_SAMPLE_WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "aggregation": _ParamSpec(_EnumValidator(COMBINED_AGGREGATIONS)),
+    "softmax_temperature": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True)
+    ),
+}
+
 _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
     "method": _ParamSpec(_EnumValidator(PREDICTION_METHODS)),
     "selection_method": _ParamSpec(_EnumValidator(EXTREMA_SELECTION_METHODS)),
@@ -250,7 +259,44 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 EXTREMA_COLUMN: Final = "&s-extrema"
+EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
+EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
+EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
+EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
+
+LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+
+_FREQAI_LABEL_SIGIL_PATTERN: Final = re.compile(r"^&-?")
+
+
+@lru_cache(maxsize=16)
+def label_weight_column_name(label_col: str) -> str:
+    """Return the weight column name for a label column.
+
+    Strips the freqtrade label sigil (``&`` and its optional immediate ``-``
+    separator) so the resulting column does NOT collide with
+    ``FreqaiDataKitchen.find_labels`` (which selects columns containing ``&``)
+    nor with ``find_features`` (which selects columns containing ``%``).
+    Preserves the project convention where a leading ``s`` denotes a smoothed
+    target series (e.g. ``&s-extrema``); no ``s`` denotes a raw target.
+    Raises ``ValueError`` if the result still contains ``&`` or ``%``.
+
+    Examples:
+        ``"&s-extrema"``      -> ``"s-extrema_weight"`` (smoothed marker preserved)
+        ``"&-amplitude"``     -> ``"amplitude_weight"`` (raw target)
+        ``"&-time_to_pivot"`` -> ``"time_to_pivot_weight"`` (raw target)
+        ``"&-natr"``          -> ``"natr_weight"`` (raw target)
+    """
+    stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
+    result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
+    if "&" in result or "%" in result:
+        raise ValueError(
+            f"label_weight_column_name produced collision-prone name {result!r} "
+            f"from {label_col!r}; weight columns must not contain '&' or '%'"
+        )
+    return result
 
 
 @dataclass
@@ -323,10 +369,6 @@ def generate_label_data(
         )
     return generator(dataframe, params)
 
-
-MAXIMA_COLUMN: Final = "maxima"
-MINIMA_COLUMN: Final = "minima"
-SMOOTHED_EXTREMA_COLUMN: Final = "smoothed_extrema"
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
@@ -622,6 +664,29 @@ def get_label_smoothing_config(
     )
 
 
+def _validate_sample_weighting_params(
+    config: dict[str, Any],
+    logger: Logger,
+    config_name: str = "sample_weighting",
+) -> dict[str, Any]:
+    return _validate_params(
+        config, logger, config_name, _SAMPLE_WEIGHTING_SPECS, DEFAULTS_SAMPLE_WEIGHTING
+    )
+
+
+def get_sample_weighting_config(
+    config: dict[str, Any],
+    logger: Logger,
+) -> dict[str, Any]:
+    return _get_label_config(
+        config,
+        logger,
+        "sample_weighting",
+        _validate_sample_weighting_params,
+        DEFAULTS_SAMPLE_WEIGHTING,
+    )
+
+
 def _validate_prediction_params(
     config: dict[str, Any],
     logger: Logger,
@@ -678,6 +743,96 @@ def get_distance(p1: T, p2: T) -> T:
 def midpoint(value1: T, value2: T) -> T:
     """Calculate the midpoint between two values."""
     return (value1 + value2) / 2
+
+
+def sanitize_and_renormalize(
+    arr: NDArray[np.floating],
+    drop_mask: NDArray[np.bool_] | None = None,
+) -> NDArray[np.floating]:
+    arr = np.asarray(arr, dtype=float)
+    if arr.size == 0:
+        return arr
+    safe = np.where(np.isfinite(arr) & (arr > 0), arr, 0.0)
+    if drop_mask is not None:
+        safe = safe.copy()
+        safe[drop_mask] = 0.0
+    total = safe.sum()
+    if total > 0 and np.isfinite(total):
+        return safe * (len(safe) / total)
+    fallback = np.ones_like(arr)
+    if drop_mask is not None:
+        fallback[drop_mask] = 0.0
+    return fallback
+
+
+def compose_sample_weights(
+    base_weights: NDArray[np.floating],
+    label_weights_map: dict[str, NDArray[np.floating]],
+    *,
+    logger: Logger,
+    aggregation: CombinedAggregation = COMBINED_AGGREGATIONS[0],
+    softmax_temperature: float = 1.0,
+) -> NDArray[np.floating]:
+    """Combine base sample weights with per-label importance weights.
+
+    Returns w in R+^N with mean(w) == 1. Per-label arrays are sanitized
+    (non-finite or <= 0 -> row dropped), individually mean-normalized,
+    aggregated row-wise via ``aggregation`` (default arithmetic_mean),
+    multiplied with base_weights, zeroed on dropped rows, and renormalized
+    to mean=1.
+
+    Raises ValueError on shape mismatch or when every row is dropped.
+    Default-weight imputation in compute_label_weights uses full-series
+    median (bounded leakage; see AFML chapter 4).
+    """
+    base_weights = np.asarray(base_weights, dtype=float)
+    if not label_weights_map:
+        return sanitize_and_renormalize(base_weights)
+    n = len(base_weights)
+    for label, label_values in label_weights_map.items():
+        arr = np.asarray(label_values, dtype=float)
+        if arr.shape != (n,):
+            raise ValueError(
+                f"compose_sample_weights: label {label!r} has shape {arr.shape}, "
+                f"expected ({n},)"
+            )
+    normalized_per_label: list[NDArray[np.floating]] = []
+    drop_mask = np.zeros(n, dtype=bool)
+    for label_values in label_weights_map.values():
+        arr = np.asarray(label_values, dtype=float)
+        invalid = ~np.isfinite(arr) | (arr <= 0.0)
+        drop_mask |= invalid
+        arr = np.where(invalid, 1.0, np.maximum(arr, np.finfo(float).tiny))
+        normalized_per_label.append(sanitize_and_renormalize(arr))
+    if drop_mask.all():
+        raise ValueError(
+            f"compose_sample_weights: all rows dropped by per-label zero weights "
+            f"(labels={list(label_weights_map)}); no surviving training samples"
+        )
+    stacked = np.vstack(normalized_per_label)
+    agg = _aggregate_metrics(
+        stacked_metrics=stacked,
+        coefficients=np.ones(stacked.shape[0], dtype=float),
+        aggregation=aggregation,
+        softmax_temperature=softmax_temperature,
+    )
+    combined = base_weights * agg
+    combined[drop_mask] = 0.0
+    combined_sum = combined.sum()
+    if combined_sum > 0 and np.isfinite(combined_sum):
+        ratio = n / combined_sum
+        if np.isfinite(ratio):
+            scaled = combined * ratio
+            if np.all(np.isfinite(scaled)):
+                return scaled
+    logger.warning(
+        "compose_sample_weights: aggregated weights collapsed (labels=%s, "
+        "aggregation=%s, combined_sum=%r); falling back to base weights",
+        list(label_weights_map),
+        aggregation,
+        combined_sum,
+    )
+    return sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
 
 
 def nan_average(
@@ -771,7 +926,7 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-def smooth_label(
+def smooth(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
     window_candles: int = DEFAULTS_LABEL_SMOOTHING["window_candles"],
@@ -884,7 +1039,7 @@ def _impute_weights(
     return weights
 
 
-def _build_weights_array(
+def _scatter_weights(
     n_values: int,
     indices: list[int],
     weights: NDArray[np.floating],
@@ -961,6 +1116,8 @@ def _aggregate_metrics(
             ]
         )
     elif aggregation == COMBINED_AGGREGATIONS[5]:  # "softmax"
+        # Per-column softmax-weighted convex combination of stacked rows.
+        # T -> 0 collapses to argmax row; T -> +inf collapses to coefficient-weighted mean.
         scaled_metrics = stacked_metrics / softmax_temperature
         softmax_weights = sp.special.softmax(scaled_metrics, axis=0)
         combined_weights = softmax_weights * coefficients[:, np.newaxis]
@@ -1044,52 +1201,12 @@ def compute_label_weights(
         weights=weights,
     )
 
-    return _build_weights_array(
+    return _scatter_weights(
         n_values=n_values,
         indices=indices,
         weights=weights,
         default_weight=float(np.nanmedian(weights)),
     )
-
-
-def _apply_label_weights(
-    values: NDArray[np.floating], weights: NDArray[np.floating]
-) -> NDArray[np.floating]:
-    if weights.size == 0:
-        return values
-
-    if not np.isfinite(weights).all():
-        return values
-
-    if np.allclose(weights, weights[0]):
-        return values
-
-    if np.allclose(weights, DEFAULT_LABEL_WEIGHT):
-        return values
-
-    return values * weights
-
-
-def apply_label_weighting(
-    label: pd.Series,
-    indices: list[int],
-    metrics: dict[str, list[float]],
-    weighting_config: dict[str, Any],
-) -> tuple[pd.Series, pd.Series]:
-    label_values = label.to_numpy(dtype=float)
-    label_index = label.index
-    n_values = label_values.size
-
-    weights = compute_label_weights(
-        n_values=n_values,
-        indices=indices,
-        metrics=metrics,
-        weighting_config=weighting_config,
-    )
-
-    return pd.Series(
-        _apply_label_weights(label_values, weights), index=label_index
-    ), pd.Series(weights, index=label_index)
 
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
@@ -2534,7 +2651,7 @@ def fit_regressor(
     return model
 
 
-def eval_set_and_weights(
+def make_test_set_and_weights(
     X_test: pd.DataFrame,
     y_test: pd.DataFrame,
     test_weights: NDArray[np.floating],

@@ -3,6 +3,7 @@ import logging
 import random
 import time
 import warnings
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import AbstractSet, Any, Callable, Final, Literal, Optional, Union, cast
@@ -21,7 +22,7 @@ from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.preprocessing import (
     MaxAbsScaler,
     MinMaxScaler,
@@ -50,19 +51,23 @@ from Utils import (
     LABEL_COLUMNS,
     REGRESSORS,
     Regressor,
+    compose_sample_weights,
     ensure_datetime_series,
-    eval_set_and_weights,
+    make_test_set_and_weights,
     fit_regressor,
     format_dict,
     format_number,
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
+    get_sample_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
+    label_weight_column_name,
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
+    sanitize_and_renormalize,
     soft_extremum,
     zigzag,
 )
@@ -76,6 +81,7 @@ ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
 DensityMethod = Literal["knn", "medoid"]
 SelectionMethod = Union[DistanceMethod, ClusterMethod, DensityMethod]
 ValidationMode = Literal["warn", "raise", "none"]
+SplitFn = Callable[[pd.DataFrame, pd.DataFrame, NDArray[np.floating]], dict[str, Any]]
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
@@ -98,9 +104,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.8"
+    version = "3.11.9"
 
     _TEST_SIZE: Final[float] = 0.1
+
+    _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
+        {"test_size", "train_size", "random_state", "shuffle", "stratify"}
+    )
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -318,9 +328,36 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
 
     @staticmethod
-    @lru_cache(maxsize=None)
-    def _data_split_methods_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)
+    def _shuffle_in_unison(
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        weights: NDArray[np.floating],
+        seed: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
+        features = features.sample(frac=1, random_state=seed).reset_index(drop=True)
+        labels = labels.sample(frac=1, random_state=seed).reset_index(drop=True)
+        weights = (
+            pd.DataFrame(weights)
+            .sample(frac=1, random_state=seed)
+            .reset_index(drop=True)
+            .to_numpy()[:, 0]
+        )
+        return features, labels, weights
+
+    @staticmethod
+    def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(
+                f"Invalid data_split_parameters.{name} value {value!r}: "
+                f"must be int >= {minimum}"
+            )
+        return value
+
+    @staticmethod
+    def _coerce_optional_int(value: Any, name: str, *, minimum: int) -> Optional[int]:
+        if value is None:
+            return None
+        return QuickAdapterRegressorV3._coerce_int(value, name, minimum=minimum)
 
     @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
@@ -1334,85 +1371,269 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def train(
         self, unfiltered_df: pd.DataFrame, pair: str, dk: FreqaiDataKitchen, **kwargs
     ) -> Any:
-        """
-        Filter the training data and train a model to it.
+        """Train a model with per-row sample weights.
 
-        Supports two data split methods:
-        - 'train_test_split' (default): Delegates to BaseRegressionModel.train()
-        - 'timeseries_split': Chronological split with configurable gap. Uses the final
-          fold from sklearn's TimeSeriesSplit.
-
-        :param unfiltered_df: Full dataframe for the current training period
-        :param pair: Trading pair being trained
-        :param dk: FreqaiDataKitchen object containing configuration
-        :return: Trained model
+        Dispatches on ``data_split_parameters.method``:
+        - ``train_test_split``: random sklearn split.
+        - ``timeseries_split``: chronological final-fold split.
+        Both paths compose per-row weights via ``_compose_per_row_weights``
+        before splitting and feed them to ``model.fit(sample_weight=...)``
+        through ``_train_common``. Train and test weights are renormalized
+        to mean=1 after ``feature_pipeline.fit_transform`` to preserve the
+        invariant despite pipeline-level row drops.
         """
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
         )
 
-        if method not in QuickAdapterRegressorV3._data_split_methods_set():
+        match method:
+            case "train_test_split":
+                split_builder = self._make_train_test_split_datasets
+            case "timeseries_split":
+                split_builder = self._make_timeseries_split_datasets
+            case _:
+                raise ValueError(
+                    f"Invalid data_split_parameters.method value {method!r}: "
+                    f"supported values are "
+                    f"{', '.join(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)}"
+                )
+
+        def split_fn(
+            features: pd.DataFrame,
+            labels: pd.DataFrame,
+            weights: NDArray[np.floating],
+        ) -> dict[str, Any]:
+            return split_builder(features, labels, weights, dk)
+
+        weight_col_counts = Counter(
+            label_weight_column_name(label) for label in dk.label_list
+        )
+        duplicates = {col: n for col, n in weight_col_counts.items() if n > 1}
+        if duplicates:
             raise ValueError(
-                f"Invalid data_split_parameters.method value {method!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)}"
+                f"Duplicate weight column names {duplicates!r} from labels "
+                f"{dk.label_list}: each label must produce a unique weight_column_name"
             )
 
         logger.info(f"Using data split method: {method}")
+        return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
 
-        if method == QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
-            return super().train(unfiltered_df, pair, dk, **kwargs)
+    def _make_train_test_split_datasets(
+        self,
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        weights: NDArray[np.floating],
+        dk: FreqaiDataKitchen,
+    ) -> dict[str, Any]:
+        """Train/test split via sklearn's ``train_test_split``.
 
-        elif (
-            method == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
-        ):  # timeseries_split
-            logger.info(
-                f"-------------------- Starting training {pair} --------------------"
+        Routes ``data_split_parameters`` to sklearn through a whitelist of
+        sklearn-recognized keys; project-custom keys (``method``,
+        ``n_splits``, ``gap``, ``max_train_size``) are filtered out.
+        ``shuffle`` and ``test_size`` default to ``False`` and ``_TEST_SIZE``
+        respectively when absent from ``data_split_parameters``. Honors
+        ``feature_parameters.shuffle_after_split`` (deterministic when
+        ``random_state`` is set) and ``feature_parameters.reverse_train_test_order``.
+        Per-row sample weights are sliced positionally and propagate to both
+        train and test sets.
+        """
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        dsp = dict(self.data_split_parameters)
+        dsp.setdefault("shuffle", False)
+        dsp.setdefault("test_size", QuickAdapterRegressorV3._TEST_SIZE)
+        sklearn_kwargs = {
+            k: v
+            for k, v in dsp.items()
+            if k in QuickAdapterRegressorV3._SKLEARN_TRAIN_TEST_SPLIT_KEYS
+        }
+        test_size = dsp["test_size"]
+        if isinstance(test_size, bool) or not isinstance(test_size, (int, float)):
+            raise ValueError(
+                f"Invalid data_split_parameters.test_size value {test_size!r}: "
+                f"must be int or float"
             )
 
-            start_time = time.time()
+        if test_size != 0:
+            (
+                train_features,
+                test_features,
+                train_labels,
+                test_labels,
+                train_weights,
+                test_weights,
+            ) = train_test_split(features, labels, weights, **sklearn_kwargs)
+        else:
+            train_features = features
+            train_labels = labels
+            train_weights = weights
+            test_features = features.iloc[:0]
+            test_labels = labels.iloc[:0]
+            test_weights = weights[:0]
 
-            features_filtered, labels_filtered = dk.filter_features(
-                unfiltered_df,
-                dk.training_features_list,
-                dk.label_list,
-                training_filter=True,
+        if feat_dict.get("shuffle_after_split", False):
+            parent_seed = sklearn_kwargs.get("random_state")
+            shuffle_rng = (
+                random.Random(parent_seed)
+                if parent_seed is not None
+                else random.Random()
             )
-
-            dates = ensure_datetime_series(unfiltered_df["date"])
-            start_date = dates.iloc[0].strftime("%Y-%m-%d")
-            end_date = dates.iloc[-1].strftime("%Y-%m-%d")
-            logger.info(
-                f"-------------------- Training on data from {start_date} to "
-                f"{end_date} --------------------"
+            train_features, train_labels, train_weights = (
+                QuickAdapterRegressorV3._shuffle_in_unison(
+                    train_features,
+                    train_labels,
+                    train_weights,
+                    shuffle_rng.randint(0, 2**31 - 1),
+                )
             )
+            if test_size != 0:
+                test_features, test_labels, test_weights = (
+                    QuickAdapterRegressorV3._shuffle_in_unison(
+                        test_features,
+                        test_labels,
+                        test_weights,
+                        shuffle_rng.randint(0, 2**31 - 1),
+                    )
+                )
 
-            dd = self._make_timeseries_split_datasets(
-                features_filtered, labels_filtered, dk
+        train_weights = sanitize_and_renormalize(train_weights)
+        if test_size != 0:
+            test_weights = sanitize_and_renormalize(test_weights)
+
+        if feat_dict.get("reverse_train_test_order", False):
+            return dk.build_data_dictionary(
+                test_features,
+                train_features,
+                test_labels,
+                train_labels,
+                test_weights,
+                train_weights,
             )
+        return dk.build_data_dictionary(
+            train_features,
+            test_features,
+            train_labels,
+            test_labels,
+            train_weights,
+            test_weights,
+        )
 
-            if (
-                not self.freqai_info.get("fit_live_predictions_candles", 0)
-                or not self.live
-            ):
-                dk.fit_labels()
+    def _compose_per_row_weights(
+        self,
+        features_filtered: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+        dk: FreqaiDataKitchen,
+    ) -> NDArray[np.floating]:
+        """Build a per-row sample weight vector aligned to features_filtered.index.
 
-            dd = self._apply_pipelines(dd, dk, pair)
-
-            logger.info(
-                f"Training model on {len(dd['train_features'].columns)} features"
+        Composes freqtrade's temporal recency weight with the configured
+        per-label aggregation (default ``arithmetic_mean``) of every
+        per-target weight column present on ``unfiltered_df``. Alignment
+        runs before any shuffle/split on ``features_filtered.index``
+        (a subset of ``unfiltered_df.index``) to avoid post-hoc reindex
+        against shuffled data. Iterates ``dk.label_list`` and only includes
+        labels whose ``label_weight_column_name(label)`` exists on
+        ``unfiltered_df``.
+        """
+        if not unfiltered_df.index.is_unique:
+            raise ValueError(
+                "unfiltered_df.index must be unique for label-based weight "
+                "alignment; received non-unique index"
             )
-            logger.info(f"Training model on {len(dd['train_features'])} data points")
-
-            model = self.fit(dd, dk, **kwargs)
-
-            end_time = time.time()
-
-            logger.info(
-                f"-------------------- Done training {pair} "
-                f"({end_time - start_time:.2f} secs) --------------------"
+        if not features_filtered.index.isin(unfiltered_df.index).all():
+            raise ValueError(
+                "features_filtered.index must be a subset of "
+                "unfiltered_df.index (filter_features should preserve original "
+                "row labels)"
             )
+        n_rows = len(features_filtered)
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        weight_factor = feat_dict.get("weight_factor", 0)
+        if (
+            not isinstance(weight_factor, bool)
+            and isinstance(weight_factor, (int, float))
+            and weight_factor > 0
+        ):
+            temporal = np.asarray(dk.set_weights_higher_recent(n_rows), dtype=float)
+        else:
+            temporal = np.ones(n_rows, dtype=float)
 
-            return model
+        per_label: dict[str, NDArray[np.floating]] = {}
+        missing: list[str] = []
+        for label in dk.label_list:
+            col = label_weight_column_name(label)
+            if col in unfiltered_df.columns:
+                per_label[label] = unfiltered_df.loc[
+                    features_filtered.index, col
+                ].to_numpy(dtype=float)
+            else:
+                missing.append(col)
+        if per_label:
+            logger.debug(
+                f"per-label weight columns active: {sorted(per_label)}"
+                + (f" (no weight column for: {sorted(missing)})" if missing else "")
+            )
+        else:
+            logger.warning(
+                f"no per-label weight columns found (expected: {sorted(missing)}); "
+                f"falling back to temporal weights only"
+            )
+        sample_weighting = get_sample_weighting_config(
+            self.freqai_info.get("sample_weighting", {}), logger
+        )
+        sample_weighting_default = sample_weighting["default"]
+        return compose_sample_weights(
+            temporal,
+            per_label,
+            logger=logger,
+            aggregation=sample_weighting_default["aggregation"],
+            softmax_temperature=sample_weighting_default["softmax_temperature"],
+        )
+
+    def _train_common(
+        self,
+        unfiltered_df: pd.DataFrame,
+        pair: str,
+        dk: FreqaiDataKitchen,
+        split_fn: SplitFn,
+        **kwargs,
+    ) -> Any:
+        logger.info(
+            f"-------------------- Starting training {pair} --------------------"
+        )
+        start_time = time.time()
+        features_filtered, labels_filtered = dk.filter_features(
+            unfiltered_df,
+            dk.training_features_list,
+            dk.label_list,
+            training_filter=True,
+        )
+        weights = self._compose_per_row_weights(features_filtered, unfiltered_df, dk)
+        dates = ensure_datetime_series(unfiltered_df["date"])
+        start_date = dates.iloc[0].strftime("%Y-%m-%d")
+        end_date = dates.iloc[-1].strftime("%Y-%m-%d")
+        logger.info(
+            f"-------------------- Training on data from {start_date} to "
+            f"{end_date} --------------------"
+        )
+        dd = split_fn(features_filtered, labels_filtered, weights)
+        if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
+            dk.fit_labels()
+        dd = self._apply_pipelines(dd, dk, pair)
+        if len(dd["train_features"]) != len(dd["train_weights"]):
+            raise RuntimeError(
+                f"Pipeline broke shape invariant: "
+                f"len(train_features)={len(dd['train_features'])} != "
+                f"len(train_weights)={len(dd['train_weights'])}"
+            )
+        logger.info(f"Training model on {len(dd['train_features'].columns)} features")
+        logger.info(f"Training model on {len(dd['train_features'])} data points")
+        model = self.fit(dd, dk, **kwargs)
+        end_time = time.time()
+        logger.info(
+            f"-------------------- Done training {pair} "
+            f"({end_time - start_time:.2f} secs) --------------------"
+        )
+        return model
 
     def _apply_pipelines(
         self,
@@ -1439,6 +1660,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["train_features"], dd["train_labels"], dd["train_weights"]
             )
         )
+        dd["train_weights"] = sanitize_and_renormalize(dd["train_weights"])
 
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
@@ -1488,9 +1710,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dd["test_features"], dd["test_labels"], dd["test_weights"]
                     )
                 )
+                dd["test_weights"] = sanitize_and_renormalize(dd["test_weights"])
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
-
-        dk.data_dictionary = dd
 
         return dd
 
@@ -1498,6 +1719,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         filtered_dataframe: pd.DataFrame,
         labels: pd.DataFrame,
+        weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
     ) -> dict:
         """
@@ -1509,43 +1731,55 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         :param filtered_dataframe: Feature data to split
         :param labels: Label data to split
-        :param dk: FreqaiDataKitchen instance for weight calculation and data building
+        :param weights: Pre-computed per-row sample weights aligned to
+                        filtered_dataframe rows by position; sliced via
+                        ``weights[train_idx]`` / ``weights[test_idx]``.
+        :param dk: FreqaiDataKitchen instance for data building
         :return: data_dictionary with train/test features/labels/weights
         """
-        n_splits = int(
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        if feat_dict.get("shuffle_after_split", False):
+            raise ValueError(
+                "feature_parameters.shuffle_after_split=True is incompatible "
+                "with data_split_parameters.method='timeseries_split': "
+                "chronological split must preserve temporal ordering"
+            )
+        n_splits = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
                 "n_splits", QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT
-            )
+            ),
+            "n_splits",
+            minimum=2,
         )
-        gap = int(
+        gap = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
                 "gap", QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
-            )
+            ),
+            "gap",
+            minimum=0,
         )
-        max_train_size = self.data_split_parameters.get(
-            "max_train_size", QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
+        max_train_size = QuickAdapterRegressorV3._coerce_optional_int(
+            self.data_split_parameters.get(
+                "max_train_size",
+                QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT,
+            ),
+            "max_train_size",
+            minimum=1,
         )
-        max_train_size = int(max_train_size) if max_train_size is not None else None
-
-        if n_splits < 2:
-            raise ValueError(
-                f"Invalid data_split_parameters.n_splits value {n_splits!r}: must be >= 2"
-            )
-        if gap < 0:
-            raise ValueError(
-                f"Invalid data_split_parameters.gap value {gap!r}: must be >= 0"
-            )
-        if max_train_size is not None and max_train_size < 1:
-            raise ValueError(
-                f"Invalid data_split_parameters.max_train_size value {max_train_size!r}: "
-                f"must be >= 1 or None"
-            )
 
         test_size = self.data_split_parameters.get("test_size", None)
         if test_size is not None:
-            if isinstance(test_size, float) and 0 < test_size < 1:
+            if (
+                not isinstance(test_size, bool)
+                and isinstance(test_size, float)
+                and 0 < test_size < 1
+            ):
                 test_size = int(len(filtered_dataframe) * test_size)
-            elif isinstance(test_size, int) and test_size >= 1:
+            elif (
+                not isinstance(test_size, bool)
+                and isinstance(test_size, int)
+                and test_size >= 1
+            ):
                 pass
             else:
                 raise ValueError(
@@ -1573,25 +1807,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             max_train_size=max_train_size,
             test_size=test_size,
         )
-        train_idx: np.ndarray = np.array([])
-        test_idx: np.ndarray = np.array([])
-        for train_idx, test_idx in tscv.split(filtered_dataframe):
-            pass
+        folds = list(tscv.split(filtered_dataframe))
+        if not folds:
+            raise ValueError(
+                f"TimeSeriesSplit yielded no folds for {len(filtered_dataframe)} "
+                f"samples (n_splits={n_splits}, gap={gap}, "
+                f"max_train_size={max_train_size}, test_size={test_size})"
+            )
+        train_idx, test_idx = folds[-1]
 
         train_features = filtered_dataframe.iloc[train_idx]
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
+        train_weights = sanitize_and_renormalize(weights[train_idx])
+        test_weights = sanitize_and_renormalize(weights[test_idx])
 
-        feature_parameters = self.freqai_info.get("feature_parameters", {})
-        if feature_parameters.get("weight_factor", 0) > 0:
-            total_weights = dk.set_weights_higher_recent(len(train_idx) + len(test_idx))
-            train_weights = total_weights[: len(train_idx)]
-            test_weights = total_weights[len(train_idx) :]
-        else:
-            train_weights = np.ones(len(train_idx))
-            test_weights = np.ones(len(test_idx))
-
+        if feat_dict.get("reverse_train_test_order", False):
+            return dk.build_data_dictionary(
+                test_features,
+                train_features,
+                test_labels,
+                train_labels,
+                test_weights,
+                train_weights,
+            )
         return dk.build_data_dictionary(
             train_features,
             test_features,
@@ -1664,7 +1904,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     **optuna_hp_params,
                 }
 
-        eval_set, eval_weights = eval_set_and_weights(
+        eval_set, eval_weights = make_test_set_and_weights(
             X_test,
             y_test,
             test_weights,
@@ -3512,7 +3752,7 @@ def hp_objective(
     )
     model_training_parameters = {**model_training_parameters, **study_model_parameters}
 
-    eval_set, eval_weights = eval_set_and_weights(
+    eval_set, eval_weights = make_test_set_and_weights(
         X_test, y_test, test_weights, test_size
     )
 

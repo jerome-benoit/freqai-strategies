@@ -29,15 +29,16 @@ from technical.pivots_points import pivots_points
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
+    EXTREMA_DIRECTION_COLUMN,
+    EXTREMA_DIRECTION_SMOOTHED_COLUMN,
+    EXTREMA_WEIGHT_COLUMN,
+    EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
-    MAXIMA_COLUMN,
-    MINIMA_COLUMN,
-    SMOOTHED_EXTREMA_COLUMN,
     TRADE_PRICE_TARGETS,
     alligator,
-    apply_label_weighting,
     bottom_log_return,
     calculate_quantile,
+    compute_label_weights,
     ensure_datetime_series,
     ewo,
     format_dict,
@@ -49,12 +50,13 @@ from Utils import (
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
+    label_weight_column_name,
     migrate_config,
     nan_average,
     non_zero_diff,
     optuna_load_best_params,
     price_retracement_percent,
-    smooth_label,
+    smooth,
     top_log_return,
     validate_range,
     vwapb,
@@ -106,10 +108,8 @@ class QuickAdapterV3(IStrategy):
 
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
-    _PLOT_EXTREMA_MIN_EPS: Final[float] = 0.01
-
     def version(self) -> str:
-        return "3.11.8"
+        return "3.11.9"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -205,10 +205,19 @@ class QuickAdapterV3(IStrategy):
                     },
                     EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
-                "min_max": {
-                    SMOOTHED_EXTREMA_COLUMN: {"color": "wheat", "type": "line"},
-                    MAXIMA_COLUMN: {"color": "red", "type": "bar"},
-                    MINIMA_COLUMN: {"color": "green", "type": "bar"},
+                "direction": {
+                    EXTREMA_DIRECTION_COLUMN: {"color": "wheat", "type": "line"},
+                    EXTREMA_DIRECTION_SMOOTHED_COLUMN: {
+                        "color": "orange",
+                        "type": "line",
+                    },
+                },
+                "weight": {
+                    EXTREMA_WEIGHT_COLUMN: {"color": "wheat", "type": "line"},
+                    EXTREMA_WEIGHT_SMOOTHED_COLUMN: {
+                        "color": "orange",
+                        "type": "line",
+                    },
                 },
             },
         }
@@ -826,57 +835,37 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
-            weighted_label, _ = apply_label_weighting(
-                label=label_data.series,
+            label_weights = compute_label_weights(
+                n_values=len(label_data.series),
                 indices=label_data.indices,
                 metrics=label_data.metrics,
                 weighting_config=col_weighting_config,
             )
 
-            dataframe[label_col] = weighted_label
+            label_weight_col = label_weight_column_name(label_col)
+
+            dataframe[label_col] = label_data.series
+            dataframe[label_weight_col] = label_weights
 
             if label_col == EXTREMA_COLUMN:
-                extrema = dataframe[label_col]
-                extrema_direction = label_data.series
-                plot_eps = extrema.abs().where(extrema.ne(0.0)).min()
-                if not np.isfinite(plot_eps):
-                    plot_eps = 0.0
-                plot_eps = max(
-                    float(plot_eps) * 0.5, QuickAdapterV3._PLOT_EXTREMA_MIN_EPS
-                )
-                dataframe[MAXIMA_COLUMN] = (
-                    extrema.where(extrema_direction.gt(0), 0.0)
-                    .clip(lower=0.0)
-                    .mask(
-                        extrema_direction.gt(0) & extrema.eq(0.0),
-                        plot_eps,
-                    )
-                )
-                dataframe[MINIMA_COLUMN] = (
-                    extrema.where(extrema_direction.lt(0), 0.0)
-                    .clip(upper=0.0)
-                    .mask(
-                        extrema_direction.lt(0) & extrema.eq(0.0),
-                        -plot_eps,
-                    )
-                )
+                dataframe[EXTREMA_DIRECTION_COLUMN] = dataframe[label_col]
+                dataframe[EXTREMA_WEIGHT_COLUMN] = dataframe[label_weight_col]
 
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
 
-            dataframe[label_col] = smooth_label(
-                dataframe[label_col],
-                col_smoothing_config["method"],
-                col_smoothing_config["window_candles"],
-                col_smoothing_config["beta"],
-                col_smoothing_config["polyorder"],
-                col_smoothing_config["mode"],
-                col_smoothing_config["sigma"],
+            dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
+            smoothed_label_weights = smooth(
+                dataframe[label_weight_col], **col_smoothing_config
+            )
+            dataframe[label_weight_col] = smoothed_label_weights.where(
+                smoothed_label_weights.gt(0) & smoothed_label_weights.notna(), 0.0
             )
 
             if label_col == EXTREMA_COLUMN:
-                dataframe[SMOOTHED_EXTREMA_COLUMN] = dataframe[label_col]
+                dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
+                dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[label_weight_col]
 
         return dataframe
 
