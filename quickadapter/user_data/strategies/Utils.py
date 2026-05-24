@@ -2,7 +2,6 @@ import copy
 import functools
 import hashlib
 import json
-import logging
 import math
 import re
 from dataclasses import dataclass
@@ -58,8 +57,6 @@ else:
     XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
-
-_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,6 +768,8 @@ def sanitize_and_renormalize(
 def compose_sample_weights(
     base_weights: NDArray[np.floating],
     label_weights_map: dict[str, NDArray[np.floating]],
+    *,
+    logger: Logger,
     aggregation: CombinedAggregation = COMBINED_AGGREGATIONS[0],
     softmax_temperature: float = 1.0,
 ) -> NDArray[np.floating]:
@@ -826,7 +825,7 @@ def compose_sample_weights(
             scaled = combined * ratio
             if np.all(np.isfinite(scaled)):
                 return scaled
-    _logger.warning(
+    logger.warning(
         "compose_sample_weights: aggregated weights collapsed (labels=%s, "
         "aggregation=%s, combined_sum=%r); falling back to base weights",
         list(label_weights_map),

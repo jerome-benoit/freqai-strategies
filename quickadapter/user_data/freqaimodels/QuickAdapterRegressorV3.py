@@ -1558,12 +1558,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             temporal = np.ones(n_rows, dtype=float)
 
         per_label: dict[str, NDArray[np.floating]] = {}
+        missing: list[str] = []
         for label in dk.label_list:
             col = label_weight_column_name(label)
             if col in unfiltered_df.columns:
                 per_label[label] = unfiltered_df.loc[
                     features_filtered.index, col
                 ].to_numpy(dtype=float)
+            else:
+                missing.append(col)
+        if per_label:
+            logger.debug(
+                f"per-label weight columns active: {sorted(per_label)}"
+                + (f" (no weight column for: {sorted(missing)})" if missing else "")
+            )
+        else:
+            logger.warning(
+                f"no per-label weight columns found (expected: {sorted(missing)}); "
+                f"falling back to temporal weights only"
+            )
         sample_weighting = get_sample_weighting_config(
             self.freqai_info.get("sample_weighting", {}), logger
         )
@@ -1571,6 +1584,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return compose_sample_weights(
             temporal,
             per_label,
+            logger=logger,
             aggregation=sample_weighting_default["aggregation"],
             softmax_temperature=sample_weighting_default["softmax_temperature"],
         )
