@@ -60,6 +60,7 @@ from Utils import (
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
+    get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     label_weight_column,
@@ -1569,13 +1570,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 per_label[label] = unfiltered_df.loc[
                     features_filtered.index, col
                 ].to_numpy(dtype=float)
-        aggregation = feat_dict.get("label_weights_aggregation", "arithmetic_mean")
-        softmax_temperature = feat_dict.get("label_weights_softmax_temperature", 1.0)
+        weighting_config = get_label_weighting_config(self.config, logger)
         return compose_sample_weights(
             temporal,
             per_label,
-            aggregation=aggregation,
-            softmax_temperature=softmax_temperature,
+            aggregation=weighting_config["aggregation"],
+            softmax_temperature=weighting_config["softmax_temperature"],
         )
 
     def _train_common(
@@ -1728,6 +1728,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen instance for data building
         :return: data_dictionary with train/test features/labels/weights
         """
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        if feat_dict.get("shuffle_after_split", False):
+            raise ValueError(
+                "feature_parameters.shuffle_after_split=True is incompatible "
+                "with data_split_parameters.method='timeseries_split': "
+                "chronological split must preserve temporal ordering"
+            )
         n_splits = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
                 "n_splits", QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT
@@ -1807,6 +1814,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         train_weights = sanitize_and_renormalize(weights[train_idx])
         test_weights = sanitize_and_renormalize(weights[test_idx])
 
+        if feat_dict.get("reverse_train_test_order", False):
+            return dk.build_data_dictionary(
+                test_features,
+                train_features,
+                test_labels,
+                train_labels,
+                test_weights,
+                train_weights,
+            )
         return dk.build_data_dictionary(
             train_features,
             test_features,

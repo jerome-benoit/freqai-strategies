@@ -2,6 +2,7 @@ import copy
 import functools
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -56,6 +57,8 @@ else:
     XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,6 +500,14 @@ CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
     ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
     ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+    (
+        "freqai.feature_parameters.label_weights_aggregation",
+        "freqai.label_weighting.aggregation",
+    ),
+    (
+        "freqai.feature_parameters.label_weights_softmax_temperature",
+        "freqai.label_weighting.softmax_temperature",
+    ),
 )
 
 
@@ -786,6 +797,13 @@ def compose_sample_weights(
             scaled = combined * ratio
             if np.all(np.isfinite(scaled)):
                 return scaled
+    _logger.warning(
+        "compose_sample_weights: aggregated weights collapsed (labels=%s, "
+        "aggregation=%s, combined_sum=%r); falling back to base weights",
+        list(label_weights_map),
+        aggregation,
+        combined_sum,
+    )
     return sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
 
 
