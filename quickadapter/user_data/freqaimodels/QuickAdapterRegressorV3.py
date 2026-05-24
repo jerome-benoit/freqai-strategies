@@ -60,7 +60,7 @@ from Utils import (
     get_label_defaults,
     get_label_pipeline_config,
     get_label_prediction_config,
-    get_label_weighting_config,
+    get_sample_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     label_weight_column_name,
@@ -1564,15 +1564,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 per_label[label] = unfiltered_df.loc[
                     features_filtered.index, col
                 ].to_numpy(dtype=float)
-        weighting_config = get_label_weighting_config(
-            self.freqai_info.get("label_weighting", {}), logger
+        sample_weighting = get_sample_weighting_config(
+            self.freqai_info.get("sample_weighting", {}), logger
         )
-        weighting_default = weighting_config["default"]
+        sample_weighting_default = sample_weighting["default"]
         return compose_sample_weights(
             temporal,
             per_label,
-            aggregation=weighting_default["aggregation"],
-            softmax_temperature=weighting_default["softmax_temperature"],
+            aggregation=sample_weighting_default["aggregation"],
+            softmax_temperature=sample_weighting_default["softmax_temperature"],
         )
 
     def _train_common(

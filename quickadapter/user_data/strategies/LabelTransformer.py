@@ -87,6 +87,11 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "softmax_temperature": 1.0,
 }
 
+DEFAULTS_SAMPLE_WEIGHTING: Final[dict[str, Any]] = {
+    "aggregation": COMBINED_AGGREGATIONS[0],  # "arithmetic_mean"
+    "softmax_temperature": 1.0,
+}
+
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
     "standardization": STANDARDIZATION_TYPES[0],  # "none"
     "robust_quantiles": (0.25, 0.75),
