@@ -325,6 +325,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
 
     @staticmethod
+    def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(
+                f"Invalid data_split_parameters.{name} value {value!r}: "
+                f"must be int >= {minimum}"
+            )
+        return value
+
+    @staticmethod
+    def _coerce_optional_int(value: Any, name: str, *, minimum: int) -> Optional[int]:
+        if value is None:
+            return None
+        return QuickAdapterRegressorV3._coerce_int(value, name, minimum=minimum)
+
+    @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
         for (
             category,
@@ -1423,6 +1438,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if k in QuickAdapterRegressorV3._SKLEARN_TRAIN_TEST_SPLIT_KEYS
         }
         test_size = dsp.get("test_size", QuickAdapterRegressorV3._TEST_SIZE)
+        if isinstance(test_size, bool) or not isinstance(test_size, (int, float)):
+            raise ValueError(
+                f"Invalid data_split_parameters.test_size value {test_size!r}: "
+                f"must be int or float"
+            )
 
         if test_size != 0:
             (
@@ -1519,7 +1539,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         n_rows = len(features_filtered)
         feat_dict = self.freqai_info.get("feature_parameters", {})
-        if feat_dict.get("weight_factor", 0) > 0:
+        weight_factor = feat_dict.get("weight_factor", 0)
+        if (
+            not isinstance(weight_factor, bool)
+            and isinstance(weight_factor, (int, float))
+            and weight_factor > 0
+        ):
             temporal = np.asarray(dk.set_weights_higher_recent(n_rows), dtype=float)
         else:
             temporal = np.ones(n_rows, dtype=float)
@@ -1683,40 +1708,42 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen instance for data building
         :return: data_dictionary with train/test features/labels/weights
         """
-        n_splits = int(
+        n_splits = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
                 "n_splits", QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT
-            )
+            ),
+            "n_splits",
+            minimum=2,
         )
-        gap = int(
+        gap = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
                 "gap", QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
-            )
+            ),
+            "gap",
+            minimum=0,
         )
-        max_train_size = self.data_split_parameters.get(
-            "max_train_size", QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT
+        max_train_size = QuickAdapterRegressorV3._coerce_optional_int(
+            self.data_split_parameters.get(
+                "max_train_size",
+                QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT,
+            ),
+            "max_train_size",
+            minimum=1,
         )
-        max_train_size = int(max_train_size) if max_train_size is not None else None
-
-        if n_splits < 2:
-            raise ValueError(
-                f"Invalid data_split_parameters.n_splits value {n_splits!r}: must be >= 2"
-            )
-        if gap < 0:
-            raise ValueError(
-                f"Invalid data_split_parameters.gap value {gap!r}: must be >= 0"
-            )
-        if max_train_size is not None and max_train_size < 1:
-            raise ValueError(
-                f"Invalid data_split_parameters.max_train_size value {max_train_size!r}: "
-                f"must be >= 1 or None"
-            )
 
         test_size = self.data_split_parameters.get("test_size", None)
         if test_size is not None:
-            if isinstance(test_size, float) and 0 < test_size < 1:
+            if (
+                not isinstance(test_size, bool)
+                and isinstance(test_size, float)
+                and 0 < test_size < 1
+            ):
                 test_size = int(len(filtered_dataframe) * test_size)
-            elif isinstance(test_size, int) and test_size >= 1:
+            elif (
+                not isinstance(test_size, bool)
+                and isinstance(test_size, int)
+                and test_size >= 1
+            ):
                 pass
             else:
                 raise ValueError(
