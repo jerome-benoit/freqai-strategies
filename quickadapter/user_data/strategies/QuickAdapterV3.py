@@ -848,13 +848,10 @@ class QuickAdapterV3(IStrategy):
             )
 
             dataframe[label_col] = smooth(
-                dataframe[label_col],
-                col_smoothing_config["method"],
-                col_smoothing_config["window_candles"],
-                col_smoothing_config["beta"],
-                col_smoothing_config["polyorder"],
-                col_smoothing_config["mode"],
-                col_smoothing_config["sigma"],
+                dataframe[label_col], **col_smoothing_config
+            )
+            dataframe[f"{label_col}_weight"] = smooth(
+                dataframe[f"{label_col}_weight"], **col_smoothing_config
             )
 
             if label_col == EXTREMA_COLUMN:
