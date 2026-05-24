@@ -21,7 +21,7 @@ from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.study.study import ObjectiveFuncType
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.preprocessing import (
     MaxAbsScaler,
     MinMaxScaler,
@@ -104,6 +104,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     version = "3.11.9"
 
     _TEST_SIZE: Final[float] = 0.1
+
+    _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
+        {"test_size", "train_size", "random_state", "shuffle", "stratify"}
+    )
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -1394,6 +1398,112 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return self._make_timeseries_split_datasets(features, labels, dk)
 
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
+
+    def _make_default_split_datasets(
+        self,
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        weights: NDArray[np.floating],
+        dk: FreqaiDataKitchen,
+    ) -> dict[str, Any]:
+        """Mirror freqtrade's make_train_test_datasets accepting external weights.
+
+        Reproduces upstream behavior (data_kitchen.py:126-209) with deviations:
+
+        1. Accepts pre-computed per-row weights (avoids re-deriving temporal-only).
+        2. Whitelists sklearn-safe kwargs from data_split_parameters; drops
+           project-custom keys (``method``, ``n_splits``, ``gap``,
+           ``max_train_size``).
+        3. Uses ``.get("shuffle_after_split", False)`` for safer default;
+           upstream uses bare key access which raises KeyError on configs
+           without the key (including this project's config-template.json).
+        4. Does not mutate ``self.config`` in-place; upstream injects
+           ``shuffle=False`` via ``dict.update`` on the live config.
+        5. Skips test-side shuffle when ``test_size==0``. Upstream shuffles
+           test unconditionally, but its synthetic ``test_labels=np.zeros(2)``
+           and ``test_weights=np.zeros(2)`` raise AttributeError on
+           ``.sample()``. This deviation only fires under ``test_size==0``
+           plus ``shuffle_after_split=True``, a configuration upstream itself
+           would crash on.
+
+        Per-label weights are propagated to BOTH ``train_weights`` AND
+        ``test_weights`` (matches existing PR #72 behavior; ``test_weights``
+        feed the HPO eval objective).
+        """
+        feat_dict = self.freqai_info.get("feature_parameters", {})
+        dsp = dict(self.config["freqai"]["data_split_parameters"])
+        if "shuffle" not in dsp:
+            dsp["shuffle"] = False
+        sklearn_kwargs = {
+            k: v
+            for k, v in dsp.items()
+            if k in QuickAdapterRegressorV3._SKLEARN_TRAIN_TEST_SPLIT_KEYS
+        }
+        test_size = dsp.get("test_size", QuickAdapterRegressorV3._TEST_SIZE)
+
+        if test_size != 0:
+            (
+                train_features,
+                test_features,
+                train_labels,
+                test_labels,
+                train_weights,
+                test_weights,
+            ) = train_test_split(features, labels, weights, **sklearn_kwargs)
+        else:
+            train_features = features
+            train_labels = labels
+            train_weights = weights
+            test_features = pd.DataFrame()
+            test_labels = np.zeros(2)
+            test_weights = np.zeros(2)
+
+        if feat_dict.get("shuffle_after_split", False):
+            rint1 = random.randint(0, 100)
+            rint2 = random.randint(0, 100)
+            train_features = train_features.sample(
+                frac=1, random_state=rint1
+            ).reset_index(drop=True)
+            train_labels = train_labels.sample(
+                frac=1, random_state=rint1
+            ).reset_index(drop=True)
+            train_weights = (
+                pd.DataFrame(train_weights)
+                .sample(frac=1, random_state=rint1)
+                .reset_index(drop=True)
+                .to_numpy()[:, 0]
+            )
+            if test_size != 0:
+                test_features = test_features.sample(
+                    frac=1, random_state=rint2
+                ).reset_index(drop=True)
+                test_labels = test_labels.sample(
+                    frac=1, random_state=rint2
+                ).reset_index(drop=True)
+                test_weights = (
+                    pd.DataFrame(test_weights)
+                    .sample(frac=1, random_state=rint2)
+                    .reset_index(drop=True)
+                    .to_numpy()[:, 0]
+                )
+
+        if feat_dict.get("reverse_train_test_order", False):
+            return dk.build_data_dictionary(
+                test_features,
+                train_features,
+                test_labels,
+                train_labels,
+                test_weights,
+                train_weights,
+            )
+        return dk.build_data_dictionary(
+            train_features,
+            test_features,
+            train_labels,
+            test_labels,
+            train_weights,
+            test_weights,
+        )
 
     def _build_per_row_weights(
         self,
