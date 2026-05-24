@@ -28,10 +28,10 @@
       "username": "ftuser",
       "upgradePackages": false
     },
-    "ghcr.io/devcontainers/features/node:1": {
+    "ghcr.io/devcontainers/features/node:2": {
       "version": "lts"
     },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+    "ghcr.io/devcontainers/features/docker-in-docker:3": {
       "version": "latest",
       "moby": false
     }
