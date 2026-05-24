@@ -48,7 +48,6 @@ from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
     LABEL_COLUMNS,
-    LABEL_WEIGHT_SUFFIX,
     REGRESSORS,
     Regressor,
     compose_sample_weights,
@@ -1354,8 +1353,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen object containing configuration
         :return: Trained model
         """
-        self._strip_label_weight_columns(dk)
-
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
         )
@@ -1383,9 +1380,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         **kwargs,
     ) -> Any:
-        return self._train_common(
-            unfiltered_df, pair, dk, dk.make_train_test_datasets, **kwargs
-        )
+        def split_fn(
+            features: pd.DataFrame,
+            labels: pd.DataFrame,
+            weights: NDArray[np.floating],
+        ) -> dict[str, Any]:
+            return self._make_default_split_datasets(features, labels, weights, dk)
+
+        return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
 
     def _train_timeseries_split(
         self,
@@ -1394,14 +1396,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         **kwargs,
     ) -> Any:
-        def split_fn(features: pd.DataFrame, labels: pd.DataFrame) -> dict[str, Any]:
-            feature_parameters = self.freqai_info.get("feature_parameters", {})
-            if feature_parameters.get("weight_factor", 0) > 0:
-                weights = np.asarray(
-                    dk.set_weights_higher_recent(len(features)), dtype=float
-                )
-            else:
-                weights = np.ones(len(features), dtype=float)
+        def split_fn(
+            features: pd.DataFrame,
+            labels: pd.DataFrame,
+            weights: NDArray[np.floating],
+        ) -> dict[str, Any]:
             return self._make_timeseries_split_datasets(features, labels, weights, dk)
 
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
@@ -1565,7 +1564,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         unfiltered_df: pd.DataFrame,
         pair: str,
         dk: FreqaiDataKitchen,
-        split_fn: Callable[[pd.DataFrame, pd.DataFrame], dict[str, Any]],
+        split_fn: Callable[
+            [pd.DataFrame, pd.DataFrame, NDArray[np.floating]], dict[str, Any]
+        ],
         **kwargs,
     ) -> Any:
         logger.info(
@@ -1578,6 +1579,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             dk.label_list,
             training_filter=True,
         )
+        weights = self._build_per_row_weights(features_filtered, unfiltered_df, dk)
         dates = ensure_datetime_series(unfiltered_df["date"])
         start_date = dates.iloc[0].strftime("%Y-%m-%d")
         end_date = dates.iloc[-1].strftime("%Y-%m-%d")
@@ -1585,16 +1587,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"-------------------- Training on data from {start_date} to "
             f"{end_date} --------------------"
         )
-        dd = split_fn(features_filtered, labels_filtered)
+        dd = split_fn(features_filtered, labels_filtered, weights)
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
-        dd = self._compose_train_weights(dd, unfiltered_df, dk)
         dd = self._apply_pipelines(dd, dk, pair)
+        if len(dd["train_features"]) != len(dd["train_weights"]):
+            raise RuntimeError(
+                f"Pipeline broke shape invariant: "
+                f"len(train_features)={len(dd['train_features'])} != "
+                f"len(train_weights)={len(dd['train_weights'])}"
+            )
         logger.info(
             f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
         )
         logger.info(f"Training model on {len(dd['train_features'])} data points")
-        model = self.fit(dd, dk)
+        model = self.fit(dd, dk, **kwargs)
         end_time = time.time()
         logger.info(
             f"-------------------- Done training {pair} "
@@ -1680,56 +1687,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         dk.data_dictionary = dd
 
-        return dd
-
-    @staticmethod
-    def _label_weight_column_name(label_col: str) -> str:
-        return f"{label_col}{LABEL_WEIGHT_SUFFIX}"
-
-    def _strip_label_weight_columns(self, dk: FreqaiDataKitchen) -> None:
-        dk.label_list = [
-            c for c in dk.label_list if not c.endswith(LABEL_WEIGHT_SUFFIX)
-        ]
-
-    @staticmethod
-    def _extract_split_weights(
-        weight_cols: dict[str, str],
-        split_index: pd.Index,
-        unfiltered_df: pd.DataFrame,
-    ) -> dict[str, NDArray]:
-        return {
-            label: unfiltered_df[weight_col]
-            .reindex(split_index, fill_value=1.0)
-            .to_numpy(dtype=float)
-            for label, weight_col in weight_cols.items()
-        }
-
-    def _compose_train_weights(
-        self,
-        dd: dict[str, Any],
-        unfiltered_df: pd.DataFrame,
-        dk: FreqaiDataKitchen,
-    ) -> dict[str, Any]:
-        weight_cols = {
-            label: self._label_weight_column_name(label)
-            for label in dk.label_list
-            if self._label_weight_column_name(label) in unfiltered_df.columns
-        }
-        if not weight_cols:
-            return dd
-        dd["train_weights"] = compose_sample_weights(
-            np.asarray(dd["train_weights"], dtype=float),
-            self._extract_split_weights(
-                weight_cols, dd["train_features"].index, unfiltered_df
-            ),
-        )
-        if dd.get("test_features") is not None and len(dd["test_features"]) > 0:
-            dd["test_weights"] = compose_sample_weights(
-                np.asarray(dd["test_weights"], dtype=float),
-                self._extract_split_weights(
-                    weight_cols, dd["test_features"].index, unfiltered_df
-                ),
-            )
         return dd
 
     def _make_timeseries_split_datasets(
