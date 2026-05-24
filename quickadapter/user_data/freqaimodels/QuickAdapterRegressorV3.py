@@ -325,6 +325,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
 
     @staticmethod
+    def _shuffle_in_unison(
+        features: Any,
+        labels: Any,
+        weights: Any,
+        seed: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
+        features = features.sample(frac=1, random_state=seed).reset_index(drop=True)
+        labels = labels.sample(frac=1, random_state=seed).reset_index(drop=True)
+        weights = (
+            pd.DataFrame(weights)
+            .sample(frac=1, random_state=seed)
+            .reset_index(drop=True)
+            .to_numpy()[:, 0]
+        )
+        return features, labels, weights
+
+    @staticmethod
     def _renormalize_to_unit_mean(weights: Any) -> NDArray[np.floating]:
         arr = np.asarray(weights, dtype=float)
         if arr.size == 0:
@@ -1476,32 +1493,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             test_weights = np.zeros(2)
 
         if feat_dict.get("shuffle_after_split", False):
-            rint1 = random.randint(0, 100)
-            rint2 = random.randint(0, 100)
-            train_features = train_features.sample(
-                frac=1, random_state=rint1
-            ).reset_index(drop=True)
-            train_labels = train_labels.sample(frac=1, random_state=rint1).reset_index(
-                drop=True
-            )
-            train_weights = (
-                pd.DataFrame(train_weights)
-                .sample(frac=1, random_state=rint1)
-                .reset_index(drop=True)
-                .to_numpy()[:, 0]
+            train_features, train_labels, train_weights = (
+                QuickAdapterRegressorV3._shuffle_in_unison(
+                    train_features,
+                    train_labels,
+                    train_weights,
+                    random.randint(0, 100),
+                )
             )
             if test_size != 0:
-                test_features = test_features.sample(
-                    frac=1, random_state=rint2
-                ).reset_index(drop=True)
-                test_labels = test_labels.sample(
-                    frac=1, random_state=rint2
-                ).reset_index(drop=True)
-                test_weights = (
-                    pd.DataFrame(test_weights)
-                    .sample(frac=1, random_state=rint2)
-                    .reset_index(drop=True)
-                    .to_numpy()[:, 0]
+                test_features, test_labels, test_weights = (
+                    QuickAdapterRegressorV3._shuffle_in_unison(
+                        test_features,
+                        test_labels,
+                        test_weights,
+                        random.randint(0, 100),
+                    )
                 )
 
         train_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(train_weights)
@@ -1621,9 +1628,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"len(train_features)={len(dd['train_features'])} != "
                 f"len(train_weights)={len(dd['train_weights'])}"
             )
-        logger.info(
-            f"Training model on {len(dk.data_dictionary['train_features'].columns)} features"
-        )
+        logger.info(f"Training model on {len(dd['train_features'].columns)} features")
         logger.info(f"Training model on {len(dd['train_features'])} data points")
         model = self.fit(dd, dk, **kwargs)
         end_time = time.time()
