@@ -244,6 +244,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "timeseries_split",
     )
     DATA_SPLIT_METHOD_DEFAULT: Final[str] = _DATA_SPLIT_METHODS[0]
+    _DATA_SPLIT_DISPATCH: Final[dict[str, str]] = {
+        _DATA_SPLIT_METHODS[0]: "_train_default",
+        _DATA_SPLIT_METHODS[1]: "_train_timeseries_split",
+    }
     TIMESERIES_N_SPLITS_DEFAULT: Final[int] = 5
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
@@ -1357,21 +1361,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
         )
 
-        if method not in QuickAdapterRegressorV3._data_split_methods_set():
+        if method not in QuickAdapterRegressorV3._DATA_SPLIT_DISPATCH:
             raise ValueError(
                 f"Invalid data_split_parameters.method value {method!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)}"
+                f"supported values are "
+                f"{', '.join(QuickAdapterRegressorV3._DATA_SPLIT_DISPATCH)}"
+            )
+
+        weight_cols = {label_weight_column(label) for label in dk.label_list}
+        if len(weight_cols) != len(dk.label_list):
+            raise ValueError(
+                f"Duplicate weight column names from labels {dk.label_list}: "
+                f"each label must produce a unique weight_column_name"
             )
 
         logger.info(f"Using data split method: {method}")
 
-        if method == QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
-            return self._train_default(unfiltered_df, pair, dk, **kwargs)
-
-        elif (
-            method == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
-        ):  # timeseries_split
-            return self._train_timeseries_split(unfiltered_df, pair, dk, **kwargs)
+        handler = getattr(
+            self, QuickAdapterRegressorV3._DATA_SPLIT_DISPATCH[method]
+        )
+        return handler(unfiltered_df, pair, dk, **kwargs)
 
     def _train_default(
         self,
