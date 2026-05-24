@@ -739,7 +739,10 @@ def sanitize_and_renormalize(
     total = safe.sum()
     if total > 0 and np.isfinite(total):
         return safe * (len(safe) / total)
-    return np.ones_like(arr)
+    fallback = np.ones_like(arr)
+    if drop_mask is not None:
+        fallback[drop_mask] = 0.0
+    return fallback
 
 
 def compose_sample_weights(
