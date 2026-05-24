@@ -264,7 +264,7 @@ EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
 
 
 @lru_cache(maxsize=16)
-def label_weight_column(label_col: str) -> str:
+def label_weight_column_name(label_col: str) -> str:
     """Return the weight column name for a label column.
 
     Strips the freqtrade label sigil (``&`` and its optional immediate ``-``
@@ -285,7 +285,7 @@ def label_weight_column(label_col: str) -> str:
     result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
     if "&" in result or "%" in result:
         raise ValueError(
-            f"label_weight_column produced collision-prone name {result!r} "
+            f"label_weight_column_name produced collision-prone name {result!r} "
             f"from {label_col!r}; weight columns must not contain '&' or '%'"
         )
     return result

@@ -50,7 +50,7 @@ from Utils import (
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
-    label_weight_column,
+    label_weight_column_name,
     migrate_config,
     nan_average,
     non_zero_diff,
@@ -842,7 +842,7 @@ class QuickAdapterV3(IStrategy):
                 weighting_config=col_weighting_config,
             )
 
-            label_weight_col = label_weight_column(label_col)
+            label_weight_col = label_weight_column_name(label_col)
 
             dataframe[label_col] = label_data.series
             dataframe[label_weight_col] = label_weights

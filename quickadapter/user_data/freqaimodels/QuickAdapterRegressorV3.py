@@ -63,7 +63,7 @@ from Utils import (
     get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
-    label_weight_column,
+    label_weight_column_name,
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
@@ -1388,7 +1388,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         match method:
             case "train_test_split":
-                split_builder = self._make_default_split_datasets
+                split_builder = self._make_train_test_split_datasets
             case "timeseries_split":
                 split_builder = self._make_timeseries_split_datasets
             case _:
@@ -1406,7 +1406,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return split_builder(features, labels, weights, dk)
 
         weight_col_counts = Counter(
-            label_weight_column(label) for label in dk.label_list
+            label_weight_column_name(label) for label in dk.label_list
         )
         duplicates = {col: n for col, n in weight_col_counts.items() if n > 1}
         if duplicates:
@@ -1418,7 +1418,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(f"Using data split method: {method}")
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
 
-    def _make_default_split_datasets(
+    def _make_train_test_split_datasets(
         self,
         features: pd.DataFrame,
         labels: pd.DataFrame,
@@ -1543,7 +1543,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         runs before any shuffle/split on ``features_filtered.index``
         (a subset of ``unfiltered_df.index``) to avoid post-hoc reindex
         against shuffled data. Iterates ``dk.label_list`` and only includes
-        labels whose ``label_weight_column(label)`` exists on
+        labels whose ``label_weight_column_name(label)`` exists on
         ``unfiltered_df``.
         """
         if not unfiltered_df.index.is_unique:
@@ -1571,7 +1571,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         per_label: dict[str, NDArray[np.floating]] = {}
         for label in dk.label_list:
-            col = label_weight_column(label)
+            col = label_weight_column_name(label)
             if col in unfiltered_df.columns:
                 per_label[label] = unfiltered_df.loc[
                     features_filtered.index, col
@@ -1707,8 +1707,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 dd["test_weights"] = sanitize_and_renormalize(dd["test_weights"])
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
-
-        dk.data_dictionary = dd
 
         return dd
 
