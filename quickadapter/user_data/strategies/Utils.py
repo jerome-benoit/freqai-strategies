@@ -711,21 +711,20 @@ def midpoint(value1: T, value2: T) -> T:
     return (value1 + value2) / 2
 
 
-def _sanitize_and_renormalize(
+def sanitize_and_renormalize(
     arr: NDArray[np.floating],
     drop_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.floating]:
+    arr = np.asarray(arr, dtype=float)
+    if arr.size == 0:
+        return arr
     safe = np.where(np.isfinite(arr) & (arr > 0), arr, 0.0)
     if drop_mask is not None:
         safe = safe.copy()
         safe[drop_mask] = 0.0
     total = safe.sum()
     if total > 0 and np.isfinite(total):
-        ratio = len(safe) / total
-        if np.isfinite(ratio):
-            scaled = safe * ratio
-            if np.all(np.isfinite(scaled)):
-                return scaled
+        return safe * (len(safe) / total)
     return np.ones_like(arr)
 
 
@@ -749,7 +748,7 @@ def compose_sample_weights(
     """
     base_weights = np.asarray(base_weights, dtype=float)
     if not label_weights_map:
-        return _sanitize_and_renormalize(base_weights)
+        return sanitize_and_renormalize(base_weights)
     n = len(base_weights)
     for label, label_values in label_weights_map.items():
         arr = np.asarray(label_values, dtype=float)
@@ -765,7 +764,7 @@ def compose_sample_weights(
         invalid = ~np.isfinite(arr) | (arr <= 0.0)
         drop_mask |= invalid
         arr = np.where(invalid, 1.0, np.maximum(arr, np.finfo(float).tiny))
-        normalized_per_label.append(_sanitize_and_renormalize(arr))
+        normalized_per_label.append(sanitize_and_renormalize(arr))
     if drop_mask.all():
         raise ValueError(
             f"compose_sample_weights: all rows dropped by per-label zero weights "
@@ -787,7 +786,7 @@ def compose_sample_weights(
             scaled = combined * ratio
             if np.all(np.isfinite(scaled)):
                 return scaled
-    return _sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
+    return sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
 
 
 def nan_average(

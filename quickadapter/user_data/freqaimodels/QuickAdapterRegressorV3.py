@@ -66,6 +66,7 @@ from Utils import (
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
+    sanitize_and_renormalize,
     soft_extremum,
     zigzag,
 )
@@ -327,9 +328,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _shuffle_in_unison(
-        features: Any,
-        labels: Any,
-        weights: Any,
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        weights: NDArray[np.floating],
         seed: int,
     ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
         features = features.sample(frac=1, random_state=seed).reset_index(drop=True)
@@ -341,20 +342,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             .to_numpy()[:, 0]
         )
         return features, labels, weights
-
-    @staticmethod
-    def _renormalize_to_unit_mean(weights: Any) -> NDArray[np.floating]:
-        arr = np.asarray(weights, dtype=float)
-        if arr.size == 0:
-            return arr
-        total = float(np.sum(arr))
-        if total > 0 and np.isfinite(total):
-            ratio = arr.size / total
-            if np.isfinite(ratio):
-                scaled = arr * ratio
-                if np.all(np.isfinite(scaled)):
-                    return scaled
-        return np.ones_like(arr)
 
     @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
@@ -1513,11 +1500,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
                 )
 
-        train_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(train_weights)
+        train_weights = sanitize_and_renormalize(train_weights)
         if test_size != 0:
-            test_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(
-                test_weights
-            )
+            test_weights = sanitize_and_renormalize(test_weights)
 
         if feat_dict.get("reverse_train_test_order", False):
             return dk.build_data_dictionary(
@@ -1664,9 +1649,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["train_features"], dd["train_labels"], dd["train_weights"]
             )
         )
-        dd["train_weights"] = QuickAdapterRegressorV3._renormalize_to_unit_mean(
-            dd["train_weights"]
-        )
+        dd["train_weights"] = sanitize_and_renormalize(dd["train_weights"])
 
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
@@ -1716,9 +1699,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dd["test_features"], dd["test_labels"], dd["test_weights"]
                     )
                 )
-                dd["test_weights"] = QuickAdapterRegressorV3._renormalize_to_unit_mean(
-                    dd["test_weights"]
-                )
+                dd["test_weights"] = sanitize_and_renormalize(dd["test_weights"])
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
 
         dk.data_dictionary = dd
@@ -1810,21 +1791,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             max_train_size=max_train_size,
             test_size=test_size,
         )
-        train_idx: np.ndarray = np.array([])
-        test_idx: np.ndarray = np.array([])
-        for train_idx, test_idx in tscv.split(filtered_dataframe):
-            pass
+        folds = list(tscv.split(filtered_dataframe))
+        if not folds:
+            raise ValueError(
+                f"TimeSeriesSplit yielded no folds for {len(filtered_dataframe)} "
+                f"samples (n_splits={n_splits}, gap={gap}, "
+                f"max_train_size={max_train_size}, test_size={test_size})"
+            )
+        train_idx, test_idx = folds[-1]
 
         train_features = filtered_dataframe.iloc[train_idx]
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
-        train_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(
-            weights[train_idx]
-        )
-        test_weights = QuickAdapterRegressorV3._renormalize_to_unit_mean(
-            weights[test_idx]
-        )
+        train_weights = sanitize_and_renormalize(weights[train_idx])
+        test_weights = sanitize_and_renormalize(weights[test_idx])
 
         return dk.build_data_dictionary(
             train_features,
