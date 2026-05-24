@@ -1389,9 +1389,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         **kwargs,
     ) -> Any:
-        def split_fn(
-            features: pd.DataFrame, labels: pd.DataFrame
-        ) -> dict[str, Any]:
+        def split_fn(features: pd.DataFrame, labels: pd.DataFrame) -> dict[str, Any]:
             return self._make_timeseries_split_datasets(features, labels, dk)
 
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
@@ -1524,8 +1522,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     def _strip_label_weight_columns(self, dk: FreqaiDataKitchen) -> None:
         dk.label_list = [
-            c for c in dk.label_list
-            if not c.endswith(LABEL_WEIGHT_SUFFIX)
+            c for c in dk.label_list if not c.endswith(LABEL_WEIGHT_SUFFIX)
         ]
 
     @staticmethod

@@ -855,9 +855,7 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
 
-            dataframe[label_col] = smooth(
-                dataframe[label_col], **col_smoothing_config
-            )
+            dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
             dataframe[label_weight_col] = smooth(
                 dataframe[label_weight_col], **col_smoothing_config
             )
