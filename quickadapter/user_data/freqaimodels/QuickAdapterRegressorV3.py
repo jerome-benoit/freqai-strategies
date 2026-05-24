@@ -51,6 +51,7 @@ from Utils import (
     REGRESSORS,
     Regressor,
     compose_sample_weights,
+    ensure_datetime_series,
     eval_set_and_weights,
     fit_regressor,
     format_dict,
@@ -121,9 +122,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
     ) -> dict[str, Any]:
         weight_cols = {
-            label: f"{label}{self._LABEL_WEIGHT_SUFFIX}"
+            label: self._label_weight_column_name(label)
             for label in dk.label_list
-            if f"{label}{self._LABEL_WEIGHT_SUFFIX}" in unfiltered_df.columns
+            if self._label_weight_column_name(label) in unfiltered_df.columns
         }
         if not weight_cols:
             return dd
@@ -1384,7 +1385,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         Filter the training data and train a model to it.
 
         Supports two data split methods:
-        - 'train_test_split' (default): Delegates to BaseRegressionModel.train()
+        - 'train_test_split' (default): Routes to :meth:`_train`, a mirror of
+          ``BaseRegressionModel.train`` augmented with per-label sample weight
+          composition.
         - 'timeseries_split': Chronological split with configurable gap. Uses the final
           fold from sklearn's TimeSeriesSplit.
 
@@ -1426,8 +1429,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 training_filter=True,
             )
 
-            start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
-            end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
+            dates = ensure_datetime_series(unfiltered_df["date"])
+            start_date = dates.iloc[0].strftime("%Y-%m-%d")
+            end_date = dates.iloc[-1].strftime("%Y-%m-%d")
             logger.info(
                 f"-------------------- Training on data from {start_date} to "
                 f"{end_date} --------------------"
@@ -1470,12 +1474,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         **kwargs,
     ) -> Any:
-        """
-        Mirror of ``BaseRegressionModel.train`` with a single insertion: composition
-        of per-label sample weights via :meth:`_compose_train_weights` between the
-        train/test split and the pipeline application. Routed from :meth:`train`
-        when ``data_split_parameters.method`` is ``train_test_split``.
-        """
         logger.info(f"-------------------- Starting training {pair} --------------------")
 
         start_time = time.time()
@@ -1487,8 +1485,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             training_filter=True,
         )
 
-        start_date = unfiltered_df["date"].iloc[0].strftime("%Y-%m-%d")
-        end_date = unfiltered_df["date"].iloc[-1].strftime("%Y-%m-%d")
+        dates = ensure_datetime_series(unfiltered_df["date"])
+        start_date = dates.iloc[0].strftime("%Y-%m-%d")
+        end_date = dates.iloc[-1].strftime("%Y-%m-%d")
         logger.info(
             f"-------------------- Training on data from {start_date} to "
             f"{end_date} --------------------"

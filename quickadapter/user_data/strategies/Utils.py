@@ -688,8 +688,10 @@ def compose_sample_weights(
     if not label_weights_map:
         return temporal
     normalized_per_label: list[NDArray[np.floating]] = []
+    drop_mask = np.zeros(len(temporal), dtype=bool)
     for w in label_weights_map.values():
         arr = np.asarray(w, dtype=float)
+        drop_mask |= arr == 0.0
         arr = np.where(np.isfinite(arr) & (arr > 0), arr, 1.0)
         total = arr.sum()
         if total <= 0 or not np.isfinite(total):
@@ -700,6 +702,7 @@ def compose_sample_weights(
     stacked = np.vstack(normalized_per_label)
     agg = np.exp(np.log(stacked).mean(axis=0))
     combined = np.asarray(temporal, dtype=float) * agg
+    combined[drop_mask] = 0.0
     combined_sum = combined.sum()
     if combined_sum <= 0 or not np.isfinite(combined_sum):
         return np.asarray(temporal, dtype=float)
