@@ -35,9 +35,9 @@ from Utils import (
     SMOOTHED_EXTREMA_COLUMN,
     TRADE_PRICE_TARGETS,
     alligator,
-    apply_label_weighting,
     bottom_log_return,
     calculate_quantile,
+    compute_label_weights,
     ensure_datetime_series,
     ewo,
     format_dict,
@@ -826,8 +826,8 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
-            _, label_weights = apply_label_weighting(
-                label=label_data.series,
+            label_weights = compute_label_weights(
+                n_values=len(label_data.series),
                 indices=label_data.indices,
                 metrics=label_data.metrics,
                 weighting_config=col_weighting_config,

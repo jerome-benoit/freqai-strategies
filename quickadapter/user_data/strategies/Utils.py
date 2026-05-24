@@ -1077,46 +1077,6 @@ def compute_label_weights(
     )
 
 
-def _apply_label_weights(
-    values: NDArray[np.floating], weights: NDArray[np.floating]
-) -> NDArray[np.floating]:
-    if weights.size == 0:
-        return values
-
-    if not np.isfinite(weights).all():
-        return values
-
-    if np.allclose(weights, weights[0]):
-        return values
-
-    if np.allclose(weights, DEFAULT_LABEL_WEIGHT):
-        return values
-
-    return values * weights
-
-
-def apply_label_weighting(
-    label: pd.Series,
-    indices: list[int],
-    metrics: dict[str, list[float]],
-    weighting_config: dict[str, Any],
-) -> tuple[pd.Series, pd.Series]:
-    label_values = label.to_numpy(dtype=float)
-    label_index = label.index
-    n_values = label_values.size
-
-    weights = compute_label_weights(
-        n_values=n_values,
-        indices=indices,
-        metrics=metrics,
-        weighting_config=weighting_config,
-    )
-
-    return pd.Series(
-        _apply_label_weights(label_values, weights), index=label_index
-    ), pd.Series(weights, index=label_index)
-
-
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
         raise ValueError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
