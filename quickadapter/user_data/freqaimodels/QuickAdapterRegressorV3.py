@@ -1562,12 +1562,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 per_label[label] = unfiltered_df.loc[
                     features_filtered.index, col
                 ].to_numpy(dtype=float)
-        weighting_config = get_label_weighting_config(self.config, logger)
+        weighting_config = get_label_weighting_config(
+            self.freqai_info.get("label_weighting", {}), logger
+        )
+        weighting_default = weighting_config["default"]
         return compose_sample_weights(
             temporal,
             per_label,
-            aggregation=weighting_config["aggregation"],
-            softmax_temperature=weighting_config["softmax_temperature"],
+            aggregation=weighting_default["aggregation"],
+            softmax_temperature=weighting_default["softmax_temperature"],
         )
 
     def _train_common(
