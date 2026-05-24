@@ -251,6 +251,10 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 
 EXTREMA_COLUMN: Final = "&s-extrema"
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
+EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
+EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
+EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
 
 
 @dataclass
@@ -323,11 +327,6 @@ def generate_label_data(
         )
     return generator(dataframe, params)
 
-
-EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
-EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
-EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
-EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
 
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
