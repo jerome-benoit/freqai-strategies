@@ -872,9 +872,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _label_frequency_candles(self) -> int:
         default_label_frequency_candles = max(2, 2 * len(self.pairs))
 
-        label_frequency_candles = self.config.get("feature_parameters", {}).get(
-            "label_frequency_candles"
-        )
+        label_frequency_candles = self.ft_params.get("label_frequency_candles")
 
         if label_frequency_candles is None:
             label_frequency_candles = default_label_frequency_candles
@@ -1431,7 +1429,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         Per-row sample weights are sliced positionally and propagate to both
         train and test sets.
         """
-        feat_dict = self.freqai_info.get("feature_parameters", {})
+        feat_dict = self.ft_params
         dsp = dict(self.data_split_parameters)
         dsp.setdefault("shuffle", False)
         dsp.setdefault("test_size", QuickAdapterRegressorV3._TEST_SIZE)
@@ -1552,7 +1550,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"diverged from freqtrade's runtime label list"
             )
         n_rows = len(features_filtered)
-        feat_dict = self.freqai_info.get("feature_parameters", {})
+        feat_dict = self.ft_params
         weight_factor = feat_dict.get("weight_factor", 0)
         if (
             not isinstance(weight_factor, bool)
@@ -1738,7 +1736,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         :param dk: FreqaiDataKitchen instance for data building
         :return: data_dictionary with train/test features/labels/weights
         """
-        feat_dict = self.freqai_info.get("feature_parameters", {})
+        feat_dict = self.ft_params
         if feat_dict.get("shuffle_after_split", False):
             raise ValueError(
                 "feature_parameters.shuffle_after_split=True is incompatible "
@@ -2026,8 +2024,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         di_values = pred_df.get("DI_values")
-        dk.data["DI_value_mean"] = di_values.mean()
-        dk.data["DI_value_std"] = di_values.std(ddof=1)
+        if di_values is not None:
+            dk.data["DI_value_mean"] = di_values.mean()
+            dk.data["DI_value_std"] = di_values.std(ddof=1)
+        else:
+            dk.data["DI_value_mean"] = 0.0
+            dk.data["DI_value_std"] = 0.0
 
         label_prediction = self.label_prediction
         for label_col in dk.label_list:
