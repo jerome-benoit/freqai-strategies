@@ -1176,7 +1176,7 @@ def compute_label_weights(
         n_values=n_values,
         indices=indices,
         weights=weights,
-        default_weight=float(np.nanmedian(weights)),
+        default_weight=0.0,
     )
 
 
