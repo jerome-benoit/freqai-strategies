@@ -142,7 +142,7 @@
       ],
       "inlier_metric_window": 0,
       "noise_standard_deviation": 0.02,
-      "reverse_test_train_order": false,
+      "reverse_train_test_order": false,
       "plot_feature_importances": 0,
       "buffer_train_data_candles": 100
     },
