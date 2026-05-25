@@ -1193,7 +1193,7 @@ def compute_label_weights(
 
     if strategy == WEIGHT_STRATEGIES[0]:  # "none"
         raise ValueError(
-            "compute_label_weights must not be called with strategy='none'; "
+            f"compute_label_weights must not be called with strategy={strategy!r}; "
             "callers must skip invocation when weighting is disabled"
         )
 
