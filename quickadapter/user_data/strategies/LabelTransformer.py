@@ -63,6 +63,19 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "combined",
 )
 
+FillMethod = Literal["zero", "epsilon", "gaussian"]
+FILL_METHODS: Final[tuple[FillMethod, ...]] = (
+    "zero",  # 0 - hard zero (current behavior)
+    "epsilon",  # 1 - flat fraction of pivot baseline
+    "gaussian",  # 2 - per-row Gaussian decay around each pivot
+)
+
+FillEpsilonBaseline = Literal["mean", "median"]
+FILL_EPSILON_BASELINES: Final[tuple[FillEpsilonBaseline, ...]] = (
+    "mean",  # 0 - arithmetic mean (default)
+    "median",  # 1 - robust against pivot-weight skew
+)
+
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
 STANDARDIZATION_TYPES: Final[tuple[StandardizationType, ...]] = (
     "none",  # 0 - w
@@ -85,6 +98,10 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "metric_coefficients": {},
     "aggregation": COMBINED_AGGREGATIONS[0],  # "arithmetic_mean"
     "softmax_temperature": 1.0,
+    "fill_method": FILL_METHODS[0],  # "zero"
+    "fill_epsilon": 1e-3,
+    "fill_epsilon_baseline": FILL_EPSILON_BASELINES[0],  # "mean"
+    "fill_sigma_candles": 3.0,
 }
 
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {

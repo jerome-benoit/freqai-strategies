@@ -875,6 +875,7 @@ class QuickAdapterV3(IStrategy):
                     indices=label_data.indices,
                     metrics=label_data.metrics,
                     weighting_config=col_weighting_config,
+                    logger=logger,
                 )
 
             if label_col == EXTREMA_COLUMN:

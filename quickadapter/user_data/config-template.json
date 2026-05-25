@@ -98,7 +98,11 @@
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
     "label_weighting": {
-      "strategy": "none"
+      "strategy": "none",
+      "fill_method": "zero",
+      "fill_epsilon": 0.001,
+      "fill_epsilon_baseline": "mean",
+      "fill_sigma_candles": 3.0
       // Per-label format:
       // "default": {
       //   "strategy": "none"
