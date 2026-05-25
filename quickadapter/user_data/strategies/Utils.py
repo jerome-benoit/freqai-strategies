@@ -3,6 +3,7 @@ import functools
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
@@ -32,6 +33,8 @@ from LabelTransformer import (
     DEFAULTS_LABEL_SMOOTHING,
     DEFAULTS_LABEL_WEIGHTING,
     EXTREMA_SELECTION_METHODS,
+    FILL_EPSILON_BASELINES,
+    FILL_METHODS,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
     SMOOTHING_METHODS,
@@ -194,6 +197,14 @@ _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     "softmax_temperature": _ParamSpec(
         _NumericValidator(min_value=0, min_exclusive=True)
     ),
+    "fill_method": _ParamSpec(_EnumValidator(FILL_METHODS)),
+    "fill_epsilon": _ParamSpec(
+        _NumericValidator(min_value=0.0, max_value=1.0), output_type=float
+    ),
+    "fill_epsilon_baseline": _ParamSpec(_EnumValidator(FILL_EPSILON_BASELINES)),
+    "fill_sigma_candles": _ParamSpec(
+        _NumericValidator(min_value=0.5), output_type=float
+    ),
 }
 
 _PIPELINE_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -249,8 +260,45 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-EXTREMA_COLUMN: Final = "&s-extrema"
+EXTREMA_COLUMN: Final[str] = "&s-extrema"
+EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
+EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
+EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
+EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
+
+LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
+
+_FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
+
+
+@lru_cache(maxsize=16)
+def label_weight_column_name(label_col: str) -> str:
+    """Return the weight column name for a label column.
+
+    Strips the freqtrade label sigil (``&`` and its optional immediate ``-``
+    separator) so the resulting column does NOT collide with
+    ``FreqaiDataKitchen.find_labels`` (which selects columns containing ``&``)
+    nor with ``find_features`` (which selects columns containing ``%``).
+    Preserves the project convention where a leading ``s`` denotes a smoothed
+    target series (e.g. ``&s-extrema``); no ``s`` denotes a raw target.
+    Raises ``ValueError`` if the result still contains ``&`` or ``%``.
+
+    Examples:
+        ``"&s-extrema"``      -> ``"s-extrema_weight"`` (smoothed marker preserved)
+        ``"&-amplitude"``     -> ``"amplitude_weight"`` (raw target)
+        ``"&-time_to_pivot"`` -> ``"time_to_pivot_weight"`` (raw target)
+        ``"&-natr"``          -> ``"natr_weight"`` (raw target)
+    """
+    stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
+    result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
+    if "&" in result or "%" in result:
+        raise ValueError(
+            f"label_weight_column_name produced collision-prone name {result!r} "
+            f"from {label_col!r}; weight columns must not contain '&' or '%'"
+        )
+    return result
 
 
 @dataclass
@@ -324,10 +372,6 @@ def generate_label_data(
     return generator(dataframe, params)
 
 
-MAXIMA_COLUMN: Final = "maxima"
-MINIMA_COLUMN: Final = "minima"
-SMOOTHED_EXTREMA_COLUMN: Final = "smoothed_extrema"
-
 SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
     "gaussian",
@@ -345,7 +389,7 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
 )
 
 
-DEFAULT_LABEL_WEIGHT: Final[float] = 1.0
+SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
@@ -484,18 +528,18 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             _set_path(config, new_path, old_value)
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(f"{old_path} is deprecated, use {new_key} instead")
+                logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
             else:
-                logger.warning(f"{old_path} has moved to {new_path}")
+                logger.warning(f"{old_path!r} has moved to {new_path!r}")
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
                 logger.warning(
-                    f"{new_section} has both {new_key} and deprecated {old_path.rsplit('.', 1)[-1]}, using {new_key}"
+                    f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
                 )
             else:
                 logger.warning(
-                    f"{new_section} has {new_key} and deprecated {old_path}, using {new_path}"
+                    f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
                 )
 
 
@@ -680,6 +724,173 @@ def midpoint(value1: T, value2: T) -> T:
     return (value1 + value2) / 2
 
 
+def sanitize_and_renormalize(
+    arr: NDArray[np.floating],
+    drop_mask: NDArray[np.bool_] | None = None,
+    *,
+    logger: Logger | None = None,
+    context: str | None = None,
+) -> NDArray[np.floating]:
+    """Sanitize a weight vector and renormalize so ``mean(out) == 1``.
+
+    Non-finite or non-positive entries are treated as ``0``; rows in
+    ``drop_mask`` are forced to ``0``. On collapse (no positive finite
+    entry survives), returns ones on surviving rows and zeros on dropped
+    rows, rescaled so ``mean(out) == 1`` still holds.
+    """
+    arr = np.asarray(arr, dtype=float)
+    n = arr.size
+    if n == 0:
+        return arr
+    safe = np.where(np.isfinite(arr) & (arr > 0.0), arr, 0.0)
+    if drop_mask is not None:
+        drop_mask = np.asarray(drop_mask)
+        if drop_mask.shape != arr.shape:
+            raise ValueError(
+                f"sanitize_and_renormalize: drop_mask shape "
+                f"{drop_mask.shape} != arr shape {arr.shape}"
+            )
+        if not np.issubdtype(drop_mask.dtype, np.bool_):
+            raise ValueError(
+                f"sanitize_and_renormalize: drop_mask dtype "
+                f"{drop_mask.dtype} is not boolean"
+            )
+        safe = np.where(drop_mask, 0.0, safe)
+    total = safe.sum()
+    rescale_overflow = False
+    if total > 0.0 and np.isfinite(total):
+        c = n / total
+        if np.isfinite(c):
+            return safe * c
+        rescale_overflow = True
+    if logger is not None:
+        if rescale_overflow:
+            logger.warning(
+                "sanitize_and_renormalize: rescale factor non-finite "
+                "(context=%s, n=%d, total=%r); falling back to uniform "
+                "weights",
+                context or "unspecified",
+                n,
+                total,
+            )
+        else:
+            logger.warning(
+                "sanitize_and_renormalize: weights collapsed (context=%s, "
+                "total=%r, n=%d); falling back to uniform weights",
+                context or "unspecified",
+                total,
+                n,
+            )
+    fallback = np.ones(n, dtype=float)
+    if drop_mask is not None:
+        masked = np.where(drop_mask, 0.0, fallback)
+        total = masked.sum()
+        if total > 0.0:
+            return masked * (n / total)
+        if logger is not None:
+            logger.warning(
+                "sanitize_and_renormalize: drop_mask covers all rows in "
+                "fallback; ignoring mask to preserve mean=1 (context=%s)",
+                context or "unspecified",
+            )
+    return fallback
+
+
+_PIVOT_EQUIVALENT_MAX_FRACTION: Final[float] = 0.1
+
+
+def _pivot_equivalent_count(
+    label_weights: NDArray[np.floating],
+    drop_mask: NDArray[np.bool_],
+) -> int:
+    """Count rows whose label weight is at least a fraction of the surviving max.
+
+    A max-relative threshold (``_PIVOT_EQUIVALENT_MAX_FRACTION``) separates
+    pivot-class rows from off-pivot fill across the bimodal regimes that
+    ``fill_method`` introduces (where a median-based threshold would
+    saturate at ``N`` once the off-pivot floor dominates the median).
+    """
+    survivors = label_weights[~drop_mask]
+    if survivors.size == 0:
+        return 0
+    threshold = _PIVOT_EQUIVALENT_MAX_FRACTION * float(survivors.max())
+    if threshold <= 0.0:
+        return 0
+    return int((survivors >= threshold).sum())
+
+
+def compose_sample_weights(
+    base_weights: NDArray[np.floating],
+    label_weights: NDArray[np.floating] | None,
+    *,
+    logger: Logger,
+) -> NDArray[np.floating]:
+    """Combine base sample weights with the label importance weights.
+
+    Returns ``w in R+^N`` with ``mean(w) == 1``. Rows where
+    ``label_weights[i]`` is non-finite or ``<= 0`` are dropped
+    (``out[i] == 0``); surviving rows carry ``base_weights * label_weights``
+    rescaled to global ``mean == 1``. On collapse of the label-weighted
+    product, falls back to ``base_weights`` (with the label-derived
+    drop_mask) so the recency signal is preserved.
+
+    Raises ValueError on shape mismatch or when every row is dropped.
+    """
+    base_weights = np.asarray(base_weights, dtype=float)
+    if label_weights is None:
+        return sanitize_and_renormalize(
+            base_weights, logger=logger, context="compose:base_only"
+        )
+    n = base_weights.shape[0]
+    arr = np.asarray(label_weights, dtype=float)
+    if arr.shape != (n,):
+        raise ValueError(
+            f"compose_sample_weights: label_weights has shape {arr.shape}, "
+            f"expected ({n},)"
+        )
+    drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
+    if drop_mask.all():
+        raise ValueError(
+            "compose_sample_weights: all rows dropped by zero or non-finite "
+            "label weights; no surviving training samples"
+        )
+    nonzero = _pivot_equivalent_count(arr, drop_mask)
+    if nonzero / n < SPARSE_TRAINING_MASS_THRESHOLD:
+        logger.warning(
+            "compose_sample_weights: sparse training mass "
+            "(%d/%d rows above %.0f%% of surviving max = %.2f%%, "
+            "threshold=%.2f%%)",
+            nonzero,
+            n,
+            100.0 * _PIVOT_EQUIVALENT_MAX_FRACTION,
+            100.0 * nonzero / n,
+            100.0 * SPARSE_TRAINING_MASS_THRESHOLD,
+        )
+    combined = base_weights * arr
+    # Detect collapse on surviving rows up front so the fallback can route
+    # to base weights rather than the uniform fallback inside sanitize.
+    survivor_mask = ~(drop_mask | ~np.isfinite(combined) | (combined <= 0.0))
+    survivor_total = float(np.where(survivor_mask, combined, 0.0).sum())
+    if survivor_total > 0.0 and np.isfinite(survivor_total):
+        return sanitize_and_renormalize(
+            combined,
+            drop_mask=drop_mask,
+            logger=logger,
+            context="compose:label_weighted",
+        )
+    logger.warning(
+        "compose_sample_weights: composed weights collapsed on surviving "
+        "rows (survivor_total=%g); falling back to base weights",
+        survivor_total,
+    )
+    return sanitize_and_renormalize(
+        base_weights,
+        drop_mask=drop_mask,
+        logger=logger,
+        context="compose:base_fallback",
+    )
+
+
 def nan_average(
     values: NDArray[np.floating],
     weights: NDArray[np.floating] | None = None,
@@ -771,7 +982,7 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-def smooth_label(
+def smooth(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
     window_candles: int = DEFAULTS_LABEL_SMOOTHING["window_candles"],
@@ -858,56 +1069,146 @@ def smooth_label(
 
 def _impute_weights(
     weights: NDArray[np.floating],
-    default_weight: float = DEFAULT_LABEL_WEIGHT,
+    default_weight: float = 1.0,
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
 
     if weights.size == 0:
         return np.full_like(weights, default_weight, dtype=float)
 
-    # Weights computed by `zigzag` can be NaN on boundary pivots
+    # Zigzag emits NaN at unconfirmed boundary pivots; zero them out and
+    # exclude from the median so they don't drag interior imputation.
+    boundary_mask = np.zeros(weights.size, dtype=bool)
     if not np.isfinite(weights[0]):
-        weights[0] = 0.0
+        boundary_mask[0] = True
     if not np.isfinite(weights[-1]):
-        weights[-1] = 0.0
+        boundary_mask[-1] = True
 
     finite_mask = np.isfinite(weights)
-    if not finite_mask.any():
-        return np.full_like(weights, default_weight, dtype=float)
+    interior_finite_mask = finite_mask & ~boundary_mask
+    if not interior_finite_mask.any():
+        weights[~finite_mask] = default_weight
+        weights[boundary_mask] = 0.0
+        return weights
 
-    median_weight = np.nanmedian(weights[finite_mask])
+    median_weight = np.nanmedian(weights[interior_finite_mask])
     if not np.isfinite(median_weight):
         median_weight = default_weight
 
     weights[~finite_mask] = median_weight
+    weights[boundary_mask] = 0.0
 
     return weights
 
 
-def _build_weights_array(
+_GAUSSIAN_FILL_CHUNK_BUDGET: Final[int] = 50_000_000
+_GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
+
+
+def _gaussian_fill_weights(
+    n_values: int,
+    pivot_indices: NDArray[np.integer],
+    pivot_weights: NDArray[np.floating],
+    sigma_candles: float,
+    *,
+    logger: Logger | None = None,
+) -> NDArray[np.floating]:
+    """Per-row max of Gaussian-decayed pivot weights.
+
+    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma**2))``.
+    With clustered pivots within ``~sigma_candles``, the per-row max
+    lets a stronger neighbor dominate weaker ones; pick
+    ``sigma_candles <= label_period_candles / 2`` to preserve pivot
+    identity.
+    """
+    if sigma_candles < 0.5:
+        raise ValueError(
+            f"Invalid sigma_candles value {sigma_candles!r}: must be >= 0.5"
+        )
+    if pivot_indices.size == 0:
+        return np.zeros(n_values, dtype=float)
+    if np.any(pivot_weights < 0.0):
+        raise ValueError(
+            f"Invalid pivot_weights min={float(pivot_weights.min())!r}: "
+            f"must be >= 0"
+        )
+    pivot_indices_array = pivot_indices.astype(float)
+    pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
+    inv_two_sigma_sq = 0.5 / (sigma_candles * sigma_candles)
+    M = pivot_indices_array.size
+    if (
+        logger is not None
+        and n_values > 0
+        and M / n_values > _GAUSSIAN_FILL_DENSITY_WARN
+    ):
+        logger.warning(
+            "gaussian_fill: pivot density M/N=%.3f > %.2f (M=%d, N=%d); "
+            "consider tightening zigzag detection",
+            M / n_values,
+            _GAUSSIAN_FILL_DENSITY_WARN,
+            M,
+            n_values,
+        )
+    chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
+    if logger is not None and chunk < n_values:
+        logger.debug(
+            "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer",
+            n_values,
+            M,
+            chunk,
+            chunk * M * 8 / 1e6,
+        )
+    out = np.zeros(n_values, dtype=float)
+    for start in range(0, n_values, chunk):
+        stop = min(start + chunk, n_values)
+        positions = np.arange(start, stop, dtype=float)
+        buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
+        np.multiply(buf, buf, out=buf)
+        np.multiply(buf, -inv_two_sigma_sq, out=buf)
+        np.exp(buf, out=buf)
+        np.multiply(buf, pivot_weights_row, out=buf)
+        np.max(buf, axis=1, out=out[start:stop])
+    return out
+
+
+def _scatter_weights(
     n_values: int,
     indices: list[int],
     weights: NDArray[np.floating],
-    default_weight: float = DEFAULT_LABEL_WEIGHT,
+    fill_weights: NDArray[np.floating],
+    *,
+    indices_array: NDArray[np.integer] | None = None,
+    valid_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.floating]:
-    if len(indices) == 0 or weights.size == 0:
-        return np.full(n_values, default_weight, dtype=float)
+    """Scatter per-pivot weights into a full-length array.
 
+    Pivot rows (validated via ``valid_mask``) receive ``weights``; off-pivot
+    rows receive the corresponding entry of ``fill_weights`` (shape
+    ``(n_values,)``). Callers may pre-compute ``indices_array`` and
+    ``valid_mask`` and pass them in to avoid recomputation when the dispatch
+    needs the same mask for both filtered pivot extraction and the scatter.
+    """
+    if fill_weights.shape != (n_values,):
+        raise ValueError(
+            f"Invalid fill_weights shape {fill_weights.shape!r}: "
+            f"must be ({n_values},)"
+        )
+    # Empty-input early return precedes the length-mismatch check on purpose.
+    if len(indices) == 0 or weights.size == 0:
+        return fill_weights.astype(float, copy=True)
     if len(indices) != weights.size:
         raise ValueError(
-            f"Invalid indices/weights values: length mismatch, got {len(indices)} indices but {weights.size} weights"
+            f"Invalid indices/weights values: length mismatch, "
+            f"got {len(indices)} indices but {weights.size} weights"
         )
-
-    weights_array = np.full(n_values, default_weight, dtype=float)
-
-    indices_array = np.array(indices)
-    mask = (indices_array >= 0) & (indices_array < n_values)
-
-    if not np.any(mask):
+    if indices_array is None:
+        indices_array = np.asarray(indices, dtype=int)
+    if valid_mask is None:
+        valid_mask = (indices_array >= 0) & (indices_array < n_values)
+    weights_array = fill_weights.astype(float, copy=True)
+    if not np.any(valid_mask):
         return weights_array
-
-    valid_indices = indices_array[mask]
-    weights_array[valid_indices] = weights[mask]
+    weights_array[indices_array[valid_mask]] = weights[valid_mask]
     return weights_array
 
 
@@ -961,6 +1262,8 @@ def _aggregate_metrics(
             ]
         )
     elif aggregation == COMBINED_AGGREGATIONS[5]:  # "softmax"
+        # Per-column softmax-weighted convex combination of stacked rows.
+        # T -> 0 collapses to argmax row; T -> +inf collapses to coefficient-weighted mean.
         scaled_metrics = stacked_metrics / softmax_temperature
         softmax_weights = sp.special.softmax(scaled_metrics, axis=0)
         combined_weights = softmax_weights * coefficients[:, np.newaxis]
@@ -985,7 +1288,7 @@ def _compute_combined_label_weights(
 
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
-        coefficients = {k: DEFAULT_LABEL_WEIGHT for k in metrics.keys()}
+        coefficients = {k: 1.0 for k in metrics.keys()}
 
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
@@ -1016,12 +1319,24 @@ def compute_label_weights(
     indices: list[int],
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
+    *,
+    logger: Logger,
 ) -> NDArray[np.floating]:
+    """Compute per-row label importance weights.
+
+    Returns an array with positive values at pivot ``indices`` (scaled by
+    strategy) and off-pivot values controlled by ``fill_method``. Callers
+    must skip invocation when strategy is ``'none'``; this raises
+    ValueError otherwise.
+    """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
 
-    if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
-        return np.full(n_values, DEFAULT_LABEL_WEIGHT, dtype=float)
+    if strategy == WEIGHT_STRATEGIES[0]:  # "none"
+        raise ValueError(
+            f"compute_label_weights must not be called with strategy={strategy!r}; "
+            "callers must skip invocation when weighting is disabled"
+        )
 
     weights: Optional[NDArray[np.floating]] = None
 
@@ -1044,52 +1359,53 @@ def compute_label_weights(
         weights=weights,
     )
 
-    return _build_weights_array(
+    if weights.size == 0:
+        return np.zeros(n_values, dtype=float)
+
+    indices_array = np.asarray(indices, dtype=int)
+    valid_mask = (indices_array >= 0) & (indices_array < n_values)
+
+    fill_method = label_weighting["fill_method"]
+
+    if fill_method == FILL_METHODS[0]:  # "zero"
+        fill_weights = np.zeros(n_values, dtype=float)
+    elif fill_method == FILL_METHODS[1]:  # "epsilon"
+        eps = label_weighting["fill_epsilon"]
+        baseline = label_weighting["fill_epsilon_baseline"]
+        if valid_mask.any():
+            pivot_values = weights[valid_mask]
+            if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
+                pivot_baseline = float(np.nanmean(pivot_values))
+            elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
+                pivot_baseline = float(np.nanmedian(pivot_values))
+            else:
+                raise ValueError(
+                    f"Invalid fill_epsilon_baseline value {baseline!r}"
+                )
+            if not np.isfinite(pivot_baseline):
+                pivot_baseline = 0.0
+        else:
+            pivot_baseline = 0.0
+        fill_weights = np.full(n_values, eps * pivot_baseline, dtype=float)
+    elif fill_method == FILL_METHODS[2]:  # "gaussian"
+        fill_weights = _gaussian_fill_weights(
+            n_values=n_values,
+            pivot_indices=indices_array[valid_mask],
+            pivot_weights=weights[valid_mask],
+            sigma_candles=label_weighting["fill_sigma_candles"],
+            logger=logger,
+        )
+    else:
+        raise ValueError(f"Invalid fill_method value {fill_method!r}")
+
+    return _scatter_weights(
         n_values=n_values,
         indices=indices,
         weights=weights,
-        default_weight=float(np.nanmedian(weights)),
+        fill_weights=fill_weights,
+        indices_array=indices_array,
+        valid_mask=valid_mask,
     )
-
-
-def _apply_label_weights(
-    values: NDArray[np.floating], weights: NDArray[np.floating]
-) -> NDArray[np.floating]:
-    if weights.size == 0:
-        return values
-
-    if not np.isfinite(weights).all():
-        return values
-
-    if np.allclose(weights, weights[0]):
-        return values
-
-    if np.allclose(weights, DEFAULT_LABEL_WEIGHT):
-        return values
-
-    return values * weights
-
-
-def apply_label_weighting(
-    label: pd.Series,
-    indices: list[int],
-    metrics: dict[str, list[float]],
-    weighting_config: dict[str, Any],
-) -> tuple[pd.Series, pd.Series]:
-    label_values = label.to_numpy(dtype=float)
-    label_index = label.index
-    n_values = label_values.size
-
-    weights = compute_label_weights(
-        n_values=n_values,
-        indices=indices,
-        metrics=metrics,
-        weighting_config=weighting_config,
-    )
-
-    return pd.Series(
-        _apply_label_weights(label_values, weights), index=label_index
-    ), pd.Series(weights, index=label_index)
 
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
@@ -1320,15 +1636,10 @@ def calculate_n_extrema(series: pd.Series) -> int:
 
 
 def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
-    """
-    Logarithmic return from rolling maximum: log(close / rolling_max).
+    """Logarithmic return from rolling maximum: ``log(close / rolling_max)``.
 
-    Measures distance below the highest close in previous `period` bars.
-    Returns ≤ 0 (e.g., -0.10 ≈ -9.5% below peak). Zero when at peak.
-
-    :param dataframe: OHLCV DataFrame with 'close' column
-    :param period: Lookback window (>=1)
-    :return: Log return series (≤ 0)
+    Measures distance below the highest close in previous ``period`` bars.
+    Returns <= 0 (e.g. -0.10 ~ -9.5% below peak), zero when at peak.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -1341,15 +1652,10 @@ def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
 
 
 def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
-    """
-    Logarithmic return from rolling minimum: log(close / rolling_min).
+    """Logarithmic return from rolling minimum: ``log(close / rolling_min)``.
 
-    Measures distance above the lowest close in previous `period` bars.
-    Returns ≥ 0 (e.g., +0.10 ≈ +10.5% above bottom). Zero when at bottom.
-
-    :param dataframe: OHLCV DataFrame with 'close' column
-    :param period: Lookback window (>=1)
-    :return: Log return series (≥ 0)
+    Measures distance above the lowest close in previous ``period`` bars.
+    Returns >= 0 (e.g. +0.10 ~ +10.5% above bottom), zero when at bottom.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -1362,17 +1668,11 @@ def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
 
 
 def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
-    """
-    Normalized position (0-1) of close within rolling high/low range, using log scale.
+    """Normalized log-scale position of close within rolling high/low range.
 
-    Formula: log(close / low) / log(high / low)
-
-    Returns 0 at bottom, 1 at top, 0.5 at geometric midpoint (not arithmetic).
-    Example: range [100, 200] → midpoint at ~141, not 150.
-
-    :param dataframe: OHLCV DataFrame with 'close' column
-    :param period: Lookback window (>=1)
-    :return: Normalized position (0 to 1)
+    Formula: ``log(close / low) / log(high / low)``. Returns 0 at bottom, 1
+    at top, 0.5 at geometric (not arithmetic) midpoint; e.g. range [100,
+    200] has midpoint at ~141.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -2235,7 +2535,6 @@ def fit_regressor(
     model_path: Optional[Path] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
-    """Fit a regressor model."""
     fit_callbacks = list(callbacks) if callbacks else []
 
     has_eval_set = (
@@ -2534,7 +2833,7 @@ def fit_regressor(
     return model
 
 
-def eval_set_and_weights(
+def make_test_set_and_weights(
     X_test: pd.DataFrame,
     y_test: pd.DataFrame,
     test_weights: NDArray[np.floating],
@@ -2543,6 +2842,10 @@ def eval_set_and_weights(
     Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
     Optional[list[NDArray[np.floating]]],
 ]:
+    """Wrap test data for ``model.fit`` ``eval_set`` when ``test_size > 0``.
+
+    Returns ``(None, None)`` when ``test_size <= 0`` to suppress evaluation.
+    """
     if test_size <= 0:
         return None, None
 

@@ -98,7 +98,11 @@
     "data_kitchen_thread_count": 6, // set to number of CPU threads / 4
     "track_performance": false,
     "label_weighting": {
-      "strategy": "none"
+      "strategy": "none",
+      "fill_method": "zero",
+      "fill_epsilon": 0.001,
+      "fill_epsilon_baseline": "mean",
+      "fill_sigma_candles": 3.0
       // Per-label format:
       // "default": {
       //   "strategy": "none"
@@ -190,7 +194,7 @@
       "indicator_periods_candles": [8, 16, 32],
       "inlier_metric_window": 0,
       "noise_standard_deviation": 0.02,
-      "reverse_test_train_order": false,
+      "reverse_train_test_order": false,
       "plot_feature_importances": 0,
       "buffer_train_data_candles": 100
     },
