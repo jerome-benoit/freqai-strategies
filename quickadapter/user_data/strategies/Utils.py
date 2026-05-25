@@ -744,18 +744,43 @@ def sanitize_and_renormalize(
         return arr
     safe = np.where(np.isfinite(arr) & (arr > 0.0), arr, 0.0)
     if drop_mask is not None:
+        drop_mask = np.asarray(drop_mask)
+        if drop_mask.shape != arr.shape:
+            raise ValueError(
+                f"sanitize_and_renormalize: drop_mask shape "
+                f"{drop_mask.shape} != arr shape {arr.shape}"
+            )
+        if not np.issubdtype(drop_mask.dtype, np.bool_):
+            raise ValueError(
+                f"sanitize_and_renormalize: drop_mask dtype "
+                f"{drop_mask.dtype} is not boolean"
+            )
         safe = np.where(drop_mask, 0.0, safe)
     total = safe.sum()
+    rescale_overflow = False
     if total > 0.0 and np.isfinite(total):
-        return safe * (n / total)
+        c = n / total
+        if np.isfinite(c):
+            return safe * c
+        rescale_overflow = True
     if logger is not None:
-        logger.warning(
-            "sanitize_and_renormalize: weights collapsed (context=%s, "
-            "total=%r, n=%d); falling back to uniform weights",
-            context or "unspecified",
-            total,
-            n,
-        )
+        if rescale_overflow:
+            logger.warning(
+                "sanitize_and_renormalize: rescale factor non-finite "
+                "(context=%s, n=%d, total=%r); falling back to uniform "
+                "weights",
+                context or "unspecified",
+                n,
+                total,
+            )
+        else:
+            logger.warning(
+                "sanitize_and_renormalize: weights collapsed (context=%s, "
+                "total=%r, n=%d); falling back to uniform weights",
+                context or "unspecified",
+                total,
+                n,
+            )
     fallback = np.ones(n, dtype=float)
     if drop_mask is not None:
         masked = np.where(drop_mask, 0.0, fallback)

@@ -65,7 +65,7 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
 
 FillMethod = Literal["zero", "epsilon", "gaussian"]
 FILL_METHODS: Final[tuple[FillMethod, ...]] = (
-    "zero",  # 0 - hard zero (current behavior)
+    "zero",  # 0 - hard zero (default)
     "epsilon",  # 1 - flat fraction of pivot baseline
     "gaussian",  # 2 - per-row Gaussian decay around each pivot
 )
