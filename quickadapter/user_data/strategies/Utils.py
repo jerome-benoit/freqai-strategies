@@ -749,9 +749,9 @@ def sanitize_and_renormalize(
     fallback = np.ones(n, dtype=float)
     if drop_mask is not None:
         masked = np.where(drop_mask, 0.0, fallback)
-        fb_total = masked.sum()
-        if fb_total > 0.0:
-            return masked * (n / fb_total)
+        total = masked.sum()
+        if total > 0.0:
+            return masked * (n / total)
         if logger is not None:
             logger.warning(
                 "sanitize_and_renormalize: drop_mask covers all rows in "
