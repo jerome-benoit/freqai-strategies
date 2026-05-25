@@ -1108,24 +1108,13 @@ def _gaussian_fill_weights(
     *,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
-    """Compute per-row Gaussian-decayed weights from pivots.
+    """Per-row max of Gaussian-decayed pivot weights.
 
-    For row ``i``, returns ``max_p [ w_p * exp(-(i - p)^2 / (2 sigma^2)) ]``
-    over the pivot set. Heatmap-regression analogue used in keypoint
-    estimation (CenterNet, HRNet); ``scipy.signal.windows.gaussian`` cannot
-    be reused because pivot positions are arbitrary.
-
-    Cluster collapse: when pivots cluster within ``~sigma_candles`` and have
-    heterogeneous weights, the per-row max collapses the discrimination
-    among them. Example: pivots at ``(100, w=1)`` and ``(102, w=10)`` with
-    ``sigma=3`` produce ``out[100] ≈ 8.0`` (the small-weight pivot inherits
-    the dominant neighbor's loss scale). To preserve per-pivot weight
-    identity, choose ``sigma_candles <= label_period_candles / 2``.
-
-    Underflow regime: contributions at ``|i - p| > ~38.6 * sigma_candles``
-    flush to ``0.0`` (IEEE-754 denormal). At ``sigma_candles`` near the
-    validator floor (0.5), the boundary is ~19 candles; gaussian mode
-    degenerates toward ``zero`` mode.
+    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma**2))``.
+    With clustered pivots within ``~sigma_candles``, the per-row max
+    lets a stronger neighbor dominate weaker ones; pick
+    ``sigma_candles <= label_period_candles / 2`` to preserve pivot
+    identity.
     """
     if sigma_candles < 0.5:
         raise ValueError(
@@ -1168,7 +1157,6 @@ def _gaussian_fill_weights(
     for start in range(0, n_values, chunk):
         stop = min(start + chunk, n_values)
         positions = np.arange(start, stop, dtype=float)
-        # In-place pipeline: one (chunk, M) buffer alive at a time.
         buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
         np.multiply(buf, buf, out=buf)
         np.multiply(buf, -inv_two_sigma_sq, out=buf)
@@ -1367,6 +1355,9 @@ def compute_label_weights(
     weights = _impute_weights(
         weights=weights,
     )
+
+    if weights.size == 0:
+        return np.zeros(n_values, dtype=float)
 
     indices_array = np.asarray(indices, dtype=int)
     valid_mask = (indices_array >= 0) & (indices_array < n_values)
