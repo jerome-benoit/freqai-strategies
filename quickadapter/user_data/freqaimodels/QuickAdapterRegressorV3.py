@@ -1118,6 +1118,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(
                 f"    keep_fraction: {format_number(col_prediction['keep_fraction'])}"
             )
+            if col_prediction["method"] == PREDICTION_METHODS[0]:  # "none"
+                logger.warning(
+                    f"  Prediction method is 'none' for label [{label_col}]: "
+                    f"minima_threshold/maxima_threshold will not be computed and "
+                    f"entry signals based on them will never trigger."
+                )
 
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
@@ -1483,9 +1489,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
                 )
 
-        train_weights = sanitize_and_renormalize(train_weights)
+        train_weights = sanitize_and_renormalize(
+            train_weights, logger=logger, context="train_test_split:train"
+        )
         if test_size != 0:
-            test_weights = sanitize_and_renormalize(test_weights)
+            test_weights = sanitize_and_renormalize(
+                test_weights, logger=logger, context="train_test_split:test"
+            )
 
         if feat_dict.get("reverse_train_test_order", False):
             return dk.build_data_dictionary(
@@ -1644,7 +1654,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["train_features"], dd["train_labels"], dd["train_weights"]
             )
         )
-        dd["train_weights"] = sanitize_and_renormalize(dd["train_weights"])
+        dd["train_weights"] = sanitize_and_renormalize(
+            dd["train_weights"],
+            logger=logger,
+            context="post_feature_pipeline:train",
+        )
         dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
 
         if (
@@ -1693,7 +1707,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dd["test_features"], dd["test_labels"], dd["test_weights"]
                     )
                 )
-                dd["test_weights"] = sanitize_and_renormalize(dd["test_weights"])
+                dd["test_weights"] = sanitize_and_renormalize(
+                    dd["test_weights"],
+                    logger=logger,
+                    context="post_feature_pipeline:test",
+                )
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
 
         return dd
@@ -1803,8 +1821,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
-        train_weights = sanitize_and_renormalize(weights[train_idx])
-        test_weights = sanitize_and_renormalize(weights[test_idx])
+        train_weights = sanitize_and_renormalize(
+            weights[train_idx], logger=logger, context="timeseries_split:train"
+        )
+        test_weights = sanitize_and_renormalize(
+            weights[test_idx], logger=logger, context="timeseries_split:test"
+        )
 
         if feat_dict.get("reverse_train_test_order", False):
             return dk.build_data_dictionary(

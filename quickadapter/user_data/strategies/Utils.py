@@ -717,6 +717,9 @@ def midpoint(value1: T, value2: T) -> T:
 def sanitize_and_renormalize(
     arr: NDArray[np.floating],
     drop_mask: NDArray[np.bool_] | None = None,
+    *,
+    logger: Logger | None = None,
+    context: str | None = None,
 ) -> NDArray[np.floating]:
     arr = np.asarray(arr, dtype=float)
     if arr.size == 0:
@@ -728,6 +731,14 @@ def sanitize_and_renormalize(
     total = safe.sum()
     if total > 0 and np.isfinite(total):
         return safe * (len(safe) / total)
+    if logger is not None:
+        logger.warning(
+            "sanitize_and_renormalize: weights collapsed (context=%s, total=%r, "
+            "n=%d); falling back to uniform weights",
+            context or "unspecified",
+            total,
+            len(arr),
+        )
     fallback = np.ones_like(arr)
     if drop_mask is not None:
         fallback[drop_mask] = 0.0
@@ -974,21 +985,27 @@ def _impute_weights(
     if weights.size == 0:
         return np.full_like(weights, default_weight, dtype=float)
 
-    # Weights computed by `zigzag` can be NaN on boundary pivots
+    # Zigzag emits NaN at unconfirmed boundary pivots; zero them out and
+    # exclude from the median so they don't drag interior imputation.
+    boundary_mask = np.zeros(weights.size, dtype=bool)
     if not np.isfinite(weights[0]):
-        weights[0] = 0.0
+        boundary_mask[0] = True
     if not np.isfinite(weights[-1]):
-        weights[-1] = 0.0
+        boundary_mask[-1] = True
 
     finite_mask = np.isfinite(weights)
-    if not finite_mask.any():
-        return np.full_like(weights, default_weight, dtype=float)
+    interior_finite_mask = finite_mask & ~boundary_mask
+    if not interior_finite_mask.any():
+        weights[~finite_mask] = default_weight
+        weights[boundary_mask] = 0.0
+        return weights
 
-    median_weight = np.nanmedian(weights[finite_mask])
+    median_weight = np.nanmedian(weights[interior_finite_mask])
     if not np.isfinite(median_weight):
         median_weight = default_weight
 
     weights[~finite_mask] = median_weight
+    weights[boundary_mask] = 0.0
 
     return weights
 

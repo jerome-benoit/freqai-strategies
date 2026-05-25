@@ -860,7 +860,8 @@ class QuickAdapterV3(IStrategy):
                 dataframe[label_weight_col], **col_smoothing_config
             )
             dataframe[label_weight_col] = smoothed_label_weights.where(
-                smoothed_label_weights.gt(0) & smoothed_label_weights.notna(), 0.0
+                np.isfinite(smoothed_label_weights) & smoothed_label_weights.gt(0),
+                0.0,
             )
 
             if label_col == EXTREMA_COLUMN:
