@@ -21,7 +21,12 @@ from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
-from LabelTransformer import COMBINED_AGGREGATIONS, get_label_column_config
+from LabelTransformer import (
+    COMBINED_AGGREGATIONS,
+    SMOOTHING_METHODS,
+    WEIGHT_STRATEGIES,
+    get_label_column_config,
+)
 from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
@@ -505,6 +510,26 @@ class QuickAdapterV3(IStrategy):
             logger.info(f"    polyorder: {col_smoothing['polyorder']}")
             logger.info(f"    mode: {col_smoothing['mode']}")
             logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
+
+            method = col_smoothing["method"]
+            if col_weighting["strategy"] != WEIGHT_STRATEGIES[0] and (  # "none"
+                method == SMOOTHING_METHODS[4]  # "smm"
+                or (
+                    method == SMOOTHING_METHODS[6]  # "savgol"
+                    and col_smoothing["polyorder"] >= 2
+                )
+            ):
+                logger.warning(
+                    f"  Label [{label_col}]: smoothing method {method!r} can "
+                    f"collapse sparse weight signals (smm zeroes them when "
+                    f"fewer than half the window rows are nonzero; savgol "
+                    f"with polyorder>=2 adds negative lobes that are clipped "
+                    f"to zero), which may trip the all-rows-dropped guard in "
+                    f"compose_sample_weights once a non-'none' "
+                    f"label_weighting strategy is configured. Prefer a "
+                    f"non-negative linear kernel (gaussian, kaiser, triang, "
+                    f"sma, gaussian_filter1d)."
+                )
 
         logger.info("Reversal Confirmation:")
         logger.info(

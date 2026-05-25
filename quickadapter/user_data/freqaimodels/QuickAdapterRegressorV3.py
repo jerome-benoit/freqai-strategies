@@ -1557,9 +1557,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and isinstance(weight_factor, (int, float))
             and weight_factor > 0
         ):
-            base_weights = np.asarray(
-                dk.set_weights_higher_recent(n_rows), dtype=float
-            )
+            base_weights = np.asarray(dk.set_weights_higher_recent(n_rows), dtype=float)
         else:
             base_weights = np.ones(n_rows, dtype=float)
 

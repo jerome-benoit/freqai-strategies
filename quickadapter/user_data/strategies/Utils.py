@@ -381,6 +381,8 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
 
 DEFAULT_LABEL_WEIGHT: Final[float] = 1.0
 
+SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
+
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
 
@@ -721,27 +723,37 @@ def sanitize_and_renormalize(
     logger: Logger | None = None,
     context: str | None = None,
 ) -> NDArray[np.floating]:
+    """Sanitize a weight vector and renormalize so ``mean(out) == 1``.
+
+    Non-finite or non-positive entries are treated as ``0``; rows in
+    ``drop_mask`` are forced to ``0``. On collapse (no positive finite
+    entry survives), returns ones on surviving rows and zeros on dropped
+    rows, rescaled so ``mean(out) == 1`` still holds.
+    """
     arr = np.asarray(arr, dtype=float)
-    if arr.size == 0:
+    n = arr.size
+    if n == 0:
         return arr
-    safe = np.where(np.isfinite(arr) & (arr > 0), arr, 0.0)
+    safe = np.where(np.isfinite(arr) & (arr > 0.0), arr, 0.0)
     if drop_mask is not None:
-        safe = safe.copy()
-        safe[drop_mask] = 0.0
+        safe = np.where(drop_mask, 0.0, safe)
     total = safe.sum()
-    if total > 0 and np.isfinite(total):
-        return safe * (len(safe) / total)
+    if total > 0.0 and np.isfinite(total):
+        return safe * (n / total)
     if logger is not None:
         logger.warning(
-            "sanitize_and_renormalize: weights collapsed (context=%s, total=%r, "
-            "n=%d); falling back to uniform weights",
+            "sanitize_and_renormalize: weights collapsed (context=%s, "
+            "total=%r, n=%d); falling back to uniform weights",
             context or "unspecified",
             total,
-            len(arr),
+            n,
         )
-    fallback = np.ones_like(arr)
+    fallback = np.ones(n, dtype=float)
     if drop_mask is not None:
-        fallback[drop_mask] = 0.0
+        fallback = np.where(drop_mask, 0.0, fallback)
+        fb_total = fallback.sum()
+        if fb_total > 0.0:
+            fallback = fallback * (n / fb_total)
     return fallback
 
 
@@ -753,22 +765,21 @@ def compose_sample_weights(
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
 
-    Returns w in R+^N with mean(w) == 1. The label weight vector is sanitized
-    (non-finite or <= 0 -> row dropped) and mean-normalized, multiplied with
-    base_weights, zeroed on dropped rows, and renormalized to mean=1.
-
-    The label weight vector is the output of ``compute_label_weights`` (which
-    already aggregates the configured metric sources via ``label_weighting``),
-    co-smoothed with the label column in ``set_freqai_targets`` and clipped
-    to a finite non-negative range. ``LABEL_COLUMNS`` is single-target by
-    design (one prediction target per model).
+    Returns ``w in R+^N`` with ``mean(w) == 1``. Rows where
+    ``label_weights[i]`` is non-finite or ``<= 0`` are dropped
+    (``out[i] == 0``); surviving rows carry ``base_weights * label_weights``
+    rescaled to global ``mean == 1``. On collapse of the label-weighted
+    product, falls back to ``base_weights`` (with the label-derived
+    drop_mask) so the recency signal is preserved.
 
     Raises ValueError on shape mismatch or when every row is dropped.
     """
     base_weights = np.asarray(base_weights, dtype=float)
     if label_weights is None:
-        return sanitize_and_renormalize(base_weights)
-    n = len(base_weights)
+        return sanitize_and_renormalize(
+            base_weights, logger=logger, context="compose:base_only"
+        )
+    n = base_weights.shape[0]
     arr = np.asarray(label_weights, dtype=float)
     if arr.shape != (n,):
         raise ValueError(
@@ -781,23 +792,39 @@ def compose_sample_weights(
             "compose_sample_weights: all rows dropped by zero or non-finite "
             "label weights; no surviving training samples"
         )
-    sanitized = np.where(drop_mask, 1.0, np.maximum(arr, np.finfo(float).tiny))
-    normalized = sanitize_and_renormalize(sanitized)
-    combined = base_weights * normalized
-    combined[drop_mask] = 0.0
-    combined_sum = combined.sum()
-    if combined_sum > 0 and np.isfinite(combined_sum):
-        ratio = n / combined_sum
-        if np.isfinite(ratio):
-            scaled = combined * ratio
-            if np.all(np.isfinite(scaled)):
-                return scaled
+    nonzero = int((~drop_mask).sum())
+    if nonzero / n < SPARSE_TRAINING_MASS_THRESHOLD:
+        logger.warning(
+            "compose_sample_weights: sparse training mass "
+            "(%d/%d rows = %.2f%% nonzero, threshold=%.2f%%)",
+            nonzero,
+            n,
+            100.0 * nonzero / n,
+            100.0 * SPARSE_TRAINING_MASS_THRESHOLD,
+        )
+    combined = base_weights * arr
+    # Detect collapse on surviving rows up front so the fallback can route
+    # to base weights rather than the uniform fallback inside sanitize.
+    survivor_mask = ~(drop_mask | ~np.isfinite(combined) | (combined <= 0.0))
+    survivor_total = float(np.where(survivor_mask, combined, 0.0).sum())
+    if survivor_total > 0.0 and np.isfinite(survivor_total):
+        return sanitize_and_renormalize(
+            combined,
+            drop_mask=drop_mask,
+            logger=logger,
+            context="compose:label_weighted",
+        )
     logger.warning(
-        "compose_sample_weights: composed weights collapsed "
-        "(combined_sum=%r); falling back to base weights",
-        combined_sum,
+        "compose_sample_weights: composed weights collapsed on surviving "
+        "rows (survivor_total=%g); falling back to base weights",
+        survivor_total,
     )
-    return sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
+    return sanitize_and_renormalize(
+        base_weights,
+        drop_mask=drop_mask,
+        logger=logger,
+        context="compose:base_fallback",
+    )
 
 
 def nan_average(
