@@ -518,18 +518,18 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             _set_path(config, new_path, old_value)
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(f"{old_path} is deprecated, use {new_key} instead")
+                logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
             else:
-                logger.warning(f"{old_path} has moved to {new_path}")
+                logger.warning(f"{old_path!r} has moved to {new_path!r}")
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
                 logger.warning(
-                    f"{new_section} has both {new_key} and deprecated {old_path.rsplit('.', 1)[-1]}, using {new_key}"
+                    f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
                 )
             else:
                 logger.warning(
-                    f"{new_section} has {new_key} and deprecated {old_path}, using {new_path}"
+                    f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
                 )
 
 
@@ -1454,15 +1454,10 @@ def calculate_n_extrema(series: pd.Series) -> int:
 
 
 def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
-    """
-    Logarithmic return from rolling maximum: log(close / rolling_max).
+    """Logarithmic return from rolling maximum: ``log(close / rolling_max)``.
 
-    Measures distance below the highest close in previous `period` bars.
-    Returns ≤ 0 (e.g., -0.10 ≈ -9.5% below peak). Zero when at peak.
-
-    :param dataframe: OHLCV DataFrame with 'close' column
-    :param period: Lookback window (>=1)
-    :return: Log return series (≤ 0)
+    Measures distance below the highest close in previous ``period`` bars.
+    Returns <= 0 (e.g. -0.10 ~ -9.5% below peak), zero when at peak.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -1475,15 +1470,10 @@ def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
 
 
 def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
-    """
-    Logarithmic return from rolling minimum: log(close / rolling_min).
+    """Logarithmic return from rolling minimum: ``log(close / rolling_min)``.
 
-    Measures distance above the lowest close in previous `period` bars.
-    Returns ≥ 0 (e.g., +0.10 ≈ +10.5% above bottom). Zero when at bottom.
-
-    :param dataframe: OHLCV DataFrame with 'close' column
-    :param period: Lookback window (>=1)
-    :return: Log return series (≥ 0)
+    Measures distance above the lowest close in previous ``period`` bars.
+    Returns >= 0 (e.g. +0.10 ~ +10.5% above bottom), zero when at bottom.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -1496,17 +1486,11 @@ def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
 
 
 def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
-    """
-    Normalized position (0-1) of close within rolling high/low range, using log scale.
+    """Normalized log-scale position of close within rolling high/low range.
 
-    Formula: log(close / low) / log(high / low)
-
-    Returns 0 at bottom, 1 at top, 0.5 at geometric midpoint (not arithmetic).
-    Example: range [100, 200] → midpoint at ~141, not 150.
-
-    :param dataframe: OHLCV DataFrame with 'close' column
-    :param period: Lookback window (>=1)
-    :return: Normalized position (0 to 1)
+    Formula: ``log(close / low) / log(high / low)``. Returns 0 at bottom, 1
+    at top, 0.5 at geometric (not arithmetic) midpoint; e.g. range [100,
+    200] has midpoint at ~141.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -2369,7 +2353,6 @@ def fit_regressor(
     model_path: Optional[Path] = None,
     trial: Optional[optuna.trial.Trial] = None,
 ) -> Any:
-    """Fit a regressor model."""
     fit_callbacks = list(callbacks) if callbacks else []
 
     has_eval_set = (
@@ -2677,6 +2660,10 @@ def make_test_set_and_weights(
     Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
     Optional[list[NDArray[np.floating]]],
 ]:
+    """Wrap test data for ``model.fit`` ``eval_set`` when ``test_size > 0``.
+
+    Returns ``(None, None)`` when ``test_size <= 0`` to suppress evaluation.
+    """
     if test_size <= 0:
         return None, None
 

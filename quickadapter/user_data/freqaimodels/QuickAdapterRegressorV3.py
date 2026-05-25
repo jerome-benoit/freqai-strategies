@@ -1380,9 +1380,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         - ``timeseries_split``: chronological final-fold split.
         Both paths compose per-row weights via ``_compose_per_row_weights``
         before splitting and feed them to ``model.fit(sample_weight=...)``
-        through ``_train_common``. Train and test weights are renormalized
-        to mean=1 after ``feature_pipeline.fit_transform`` to preserve the
-        invariant despite pipeline-level row drops.
+        through ``_train_common``.
         """
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
@@ -1631,17 +1629,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         pair: str,
     ) -> dict:
-        """
-        Apply feature and label pipelines to train/test data.
-
-        This helper reduces code duplication between train() methods that need
-        custom data splitting but share the same pipeline application logic.
-
-        :param dd: data_dictionary with train/test features/labels/weights
-        :param dk: FreqaiDataKitchen instance
-        :param pair: Trading pair (for error messages)
-        :return: data_dictionary with transformed features/labels
-        """
+        """Apply feature and label pipelines; renormalize weights post-transform."""
         dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
 
@@ -1719,20 +1707,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
     ) -> dict:
-        """
-        Chronological train/test split using the final fold from sklearn's TimeSeriesSplit.
+        """Chronological train/test split using sklearn's TimeSeriesSplit final fold.
 
-        n_splits controls train/test proportions (higher = larger train set).
-        gap excludes samples between train/test; when 0, auto-calculated from
-        label_period_candles. max_train_size enables sliding window mode.
-
-        :param filtered_dataframe: Feature data to split
-        :param labels: Label data to split
-        :param weights: Pre-computed per-row sample weights aligned to
-                        filtered_dataframe rows by position; sliced via
-                        ``weights[train_idx]`` / ``weights[test_idx]``.
-        :param dk: FreqaiDataKitchen instance for data building
-        :return: data_dictionary with train/test features/labels/weights
+        ``n_splits`` controls train/test proportions (higher = larger train).
+        ``gap`` excludes samples between train and test; when 0, auto-derived
+        from ``label_period_candles``. ``max_train_size`` enables sliding
+        window mode. ``weights`` is sliced positionally via ``train_idx`` /
+        ``test_idx``.
         """
         feat_dict = self.ft_params
         if feat_dict.get("shuffle_after_split", False):
@@ -1845,13 +1826,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs
     ) -> Any:
-        """
-        User sets up the training and test data to fit their desired model here
-        :param data_dictionary: the dictionary constructed by DataHandler to hold
-                                all the training and test data/labels.
-        :param dk: the FreqaiDataKitchen object
-        """
-
         X = data_dictionary.get("train_features")
         y = data_dictionary.get("train_labels")
         train_weights = data_dictionary.get("train_weights")

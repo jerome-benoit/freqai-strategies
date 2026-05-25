@@ -973,12 +973,6 @@ class QuickAdapterV3(IStrategy):
         return timeframe_to_prev_date(self.config.get("timeframe"), trade.open_date_utc)
 
     def get_trade_duration_candles(self, df: DataFrame, trade: Trade) -> Optional[int]:
-        """
-        Get the number of candles since the trade entry.
-        :param df: DataFrame with the current data
-        :param trade: Trade object
-        :return: Number of candles since the trade entry
-        """
         entry_date = self.get_trade_entry_date(trade)
         dates = df.get("date")
         if dates is None or dates.empty:
@@ -1657,71 +1651,19 @@ class QuickAdapterV3(IStrategy):
         min_natr_multiplier_fraction: float,
         max_natr_multiplier_fraction: float,
     ) -> bool:
-        """Confirm a directional reversal using a volatility-adaptive current-candle
-        threshold and optionally a backward confirmation chain with geometric decay.
+        """Confirm a directional reversal using a volatility-adaptive threshold.
 
-        Overview
-        --------
-        1. Compute a deviation-based threshold on the latest candle (-1). The current
-           rate must strictly break it (long: rate > threshold; short: rate < threshold).
-        2. If lookback_period_candles > 0, for each k = 1..lookback_period_candles:
-             - Decay (min_natr_multiplier_fraction, max_natr_multiplier_fraction) by
-               (decay_fraction ** k), clamped to [0, 1].
-             - Recompute the threshold on candle index -(k+1).
-             - Require close[-k] to have strictly broken that historical threshold.
-        3. If an intermediate close or threshold is non-finite, chain evaluation aborts
-           and the function falls back to step 1 result only (permissive fallback).
-
-        Parameters
-        ----------
-        df : DataFrame
-            Must contain 'open', 'close' and the NATR label series used indirectly.
-        pair : str
-            Trading pair identifier.
-        side : {'long','short'}
-            Direction to confirm.
-        order : {'entry','exit'}
-            Context (affects log wording only).
-        rate : float
-            Candidate execution price; must break the current threshold.
-        lookback_period_candles : int
-            Number of historical confirmation steps requested; truncated to history.
-        decay_fraction : float
-            Geometric decay factor per step (0 < decay_fraction <= 1); 1.0 disables decay.
-        min_natr_multiplier_fraction : float
-            Lower-bound fraction (e.g. 0.009 = 0.9%).
-        max_natr_multiplier_fraction : float
-            Upper-bound fraction (>= lower bound).
-
-        Returns
-        -------
-        bool
-            True iff the current threshold is broken AND (lookback chain succeeded OR
-            a permissive fallback occurred). False otherwise.
-
-        Fallback Semantics
-        ------------------
-        Missing / non-finite intermediate data -> stop chain; return current candle result.
-        This may yield True on partial history, weakening strict multi-candle guarantees.
-
-        Rejection Conditions
-        --------------------
-        Empty dataframe, invalid side/order, non-finite rate, negative lookback,
-        decay_fraction outside (0,1], invalid min/max ordering, failure to break current
-        threshold, or failed historical step comparison.
-
-        Complexity
-        ----------
-        O(lookback_period_candles) threshold computations.
-
-        Logging
-        -------
-        Logs rejection reasons (invalid decay_fraction, threshold not broken, failed step).
-        Fallback aborts are silent.
-
-        Limitations
-        -----------
-        No strict mode; partial data may still confirm.
+        Computes a deviation-based threshold on the latest candle (-1); ``rate``
+        must strictly break it (long: ``rate > threshold``; short: ``rate <
+        threshold``). When ``lookback_period_candles > 0``, requires that for
+        each ``k = 1..lookback_period_candles`` the close at ``-k`` strictly
+        broke the threshold recomputed at ``-(k+1)`` with the natr-multiplier
+        bounds geometrically decayed by ``decay_fraction ** k`` clamped to
+        ``[0, 1]``. Non-finite intermediate close or threshold aborts the chain
+        and falls back permissively to the current-candle result, which may
+        weaken strict multi-candle guarantees. Returns False on empty
+        dataframe, invalid side/order, non-finite rate, negative lookback,
+        ``decay_fraction`` outside ``(0, 1]``, or invalid min/max ordering.
         """
         if df.empty:
             return False
@@ -1844,17 +1786,12 @@ class QuickAdapterV3(IStrategy):
         float,
         float,
     ]:
-        """Compute velocity and acceleration from PnL history.
+        """Compute velocity (first derivative) and acceleration (second) from PnL history.
 
-        Velocity is the first derivative of PnL, acceleration is the second.
-
-        Args:
-            unrealized_pnl_history: PnL values sequence.
-            window_size: Recent window size (0 = no windowing).
-
-        Returns:
-            (velocity_values, velocity_mean, velocity_std,
-             acceleration_values, acceleration_mean, acceleration_std)
+        ``window_size > 0`` truncates to the most recent window before
+        differencing. Returns
+        ``(velocity_values, velocity_mean, velocity_std, acceleration_values,
+        acceleration_mean, acceleration_std)``.
         """
         unrealized_pnl_history_array = np.asarray(unrealized_pnl_history, dtype=float)
 
@@ -1883,17 +1820,10 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     @lru_cache(maxsize=128)
     def _t_statistic(mean: float, std: float, n: int) -> float:
-        """Compute t-statistic for H₀: μ = 0.
+        """Compute t-statistic for H0: mu = 0 as ``mean * sqrt(n) / std``.
 
-        Formula: t = mean * √n / std
-
-        Args:
-            mean: Sample mean.
-            std: Sample standard deviation (ddof=1).
-            n: Sample size.
-
-        Returns:
-            t-statistic, or NaN if n < 2 or std ≈ 0.
+        Returns NaN when ``n < 2``, ``std`` is approximately zero, or any
+        input is non-finite.
         """
         if n < 2:
             return np.nan
@@ -1917,15 +1847,12 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     @lru_cache(maxsize=128)
     def _effective_df(x: tuple[float, ...]) -> float:
-        """Compute effective degrees of freedom with Bartlett's autocorrelation correction.
+        """Effective degrees of freedom with Bartlett's autocorrelation correction.
 
-        Formula: df_eff = (n - 1) * (1 - ρ₁) / (1 + ρ₁), where ρ₁ is lag-1 autocorrelation.
-
-        Args:
-            x: Observations tuple.
-
-        Returns:
-            Effective df (≥ 1). Falls back to n - 1 if n < 4 or on error.
+        Computes ``df_eff = (n - 1) * (1 - rho1) / (1 + rho1)`` where ``rho1``
+        is the lag-1 autocorrelation clamped to ``[-0.99, 0.99]``. Falls back
+        to ``n - 1`` when ``n < 4`` or pearsonr fails. Result is bounded
+        below by 1.
         """
         n = len(x)
         if n < 4:
@@ -1957,15 +1884,9 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     @lru_cache(maxsize=128)
     def _t_critical(q: float, df: float, default_t: float) -> float:
-        """Compute critical t-value from Student's t-distribution.
+        """Critical t-value from Student's t-distribution at quantile ``q``.
 
-        Args:
-            q: Quantile in (0, 1), e.g. 0.75.
-            df: Degrees of freedom.
-            default_t: Fallback value on error.
-
-        Returns:
-            t.ppf(q, df), or default_t if invalid inputs.
+        Returns ``default_t`` on invalid inputs or scipy failure.
         """
         if not (0.0 < q < 1.0):
             return default_t
@@ -2243,20 +2164,6 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs: Any,
     ) -> float:
-        """
-        Customize leverage for each new trade. This method is only called in trading modes
-        which allow leverage (margin / futures). The strategy is expected to return a
-        leverage value between 1.0 and max_leverage.
-
-        :param pair: Pair that's currently analyzed
-        :param current_time: datetime object, containing the current datetime
-        :param current_rate: Rate, calculated based on pricing settings in exit_pricing.
-        :param proposed_leverage: A leverage proposed by the bot.
-        :param max_leverage: Max leverage allowed on this pair
-        :param entry_tag: Optional entry_tag (buy_tag) if provided with the buy signal.
-        :param side: 'long' or 'short' - indicating the direction of the proposed trade
-        :return: A leverage amount, which will be between 1.0 and max_leverage.
-        """
         return min(self.config.get("leverage", proposed_leverage), max_leverage)
 
     def plot_annotations(
@@ -2267,16 +2174,6 @@ class QuickAdapterV3(IStrategy):
         dataframe: DataFrame,
         **kwargs: Any,
     ) -> list[AnnotationType]:
-        """
-        Plot annotations.
-
-        :param pair: Pair that's currently being plotted
-        :param start_date: Start date of the chart range
-        :param end_date: End date of the chart range
-        :param dataframe: DataFrame with analyzed data for this pair
-        :param **kwargs: Additional arguments
-        :return: List of annotations to display on the chart
-        """
         annotations: list[AnnotationType] = []
 
         open_trades = Trade.get_trades_proxy(pair=pair, is_open=True)
