@@ -211,14 +211,14 @@ class QuickAdapterV3(IStrategy):
                     EXTREMA_COLUMN: {"color": "orange", "type": "line"},
                 },
                 "direction": {
-                    EXTREMA_DIRECTION_COLUMN: {"color": "wheat", "type": "line"},
+                    EXTREMA_DIRECTION_COLUMN: {"color": "steelblue", "type": "bar"},
                     EXTREMA_DIRECTION_SMOOTHED_COLUMN: {
                         "color": "orange",
                         "type": "line",
                     },
                 },
                 "weight": {
-                    EXTREMA_WEIGHT_COLUMN: {"color": "wheat", "type": "line"},
+                    EXTREMA_WEIGHT_COLUMN: {"color": "steelblue", "type": "bar"},
                     EXTREMA_WEIGHT_SMOOTHED_COLUMN: {
                         "color": "orange",
                         "type": "line",
