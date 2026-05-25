@@ -23,6 +23,7 @@ from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
+    FILL_METHODS,
     SMOOTHING_METHODS,
     WEIGHT_STRATEGIES,
     get_label_column_config,
@@ -498,6 +499,18 @@ class QuickAdapterV3(IStrategy):
             if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
                 logger.info(
                     f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
+                )
+            logger.info(f"    fill_method: {col_weighting['fill_method']}")
+            if col_weighting["fill_method"] == FILL_METHODS[1]:  # "epsilon"
+                logger.info(
+                    f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}"
+                )
+                logger.info(
+                    f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
+                )
+            elif col_weighting["fill_method"] == FILL_METHODS[2]:  # "gaussian"
+                logger.info(
+                    f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
                 )
 
             col_smoothing = get_label_column_config(
