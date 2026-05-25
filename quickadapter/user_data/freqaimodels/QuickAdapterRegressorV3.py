@@ -1528,9 +1528,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before
         any shuffle/split on ``features_filtered.index`` (a subset of
         ``unfiltered_df.index``) to avoid post-hoc reindex against shuffled
-        data. When the weight column is absent, ``label_weights=None`` is
-        forwarded to ``compose_sample_weights`` and only the base weights
-        contribute.
+        data. The weight column is absent when ``label_weighting.strategy``
+        is ``'none'`` (no per-label importance applied); in that case
+        ``label_weights=None`` is forwarded to ``compose_sample_weights``
+        and only the base weights contribute.
         """
         if not unfiltered_df.index.is_unique:
             raise ValueError(
@@ -1566,12 +1567,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weights = unfiltered_df.loc[
                 features_filtered.index, weight_col
             ].to_numpy(dtype=float)
-            logger.debug(f"label weight column active: {weight_col}")
+            logger.debug(f"label weight column active: {weight_col!r}")
         else:
             label_weights = None
-            logger.warning(
-                f"label weight column not found ({weight_col!r}); "
-                f"falling back to base weights only"
+            logger.debug(
+                f"label weight column absent ({weight_col!r}); using base weights only"
             )
         return compose_sample_weights(
             base_weights,

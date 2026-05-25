@@ -860,38 +860,48 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
-            label_weights = compute_label_weights(
-                n_values=len(label_data.series),
-                indices=label_data.indices,
-                metrics=label_data.metrics,
-                weighting_config=col_weighting_config,
+            # Absent column routes downstream to base-weights-only fallback.
+            is_weighting_active = (
+                col_weighting_config["strategy"] != WEIGHT_STRATEGIES[0]  # "none"
+                and len(label_data.indices) > 0
             )
 
-            label_weight_col = label_weight_column_name(label_col)
-
             dataframe[label_col] = label_data.series
-            dataframe[label_weight_col] = label_weights
+
+            label_weight_col = label_weight_column_name(label_col)
+            if is_weighting_active:
+                dataframe[label_weight_col] = compute_label_weights(
+                    n_values=len(label_data.series),
+                    indices=label_data.indices,
+                    metrics=label_data.metrics,
+                    weighting_config=col_weighting_config,
+                )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_COLUMN] = dataframe[label_col]
-                dataframe[EXTREMA_WEIGHT_COLUMN] = dataframe[label_weight_col]
+                if is_weighting_active:
+                    dataframe[EXTREMA_WEIGHT_COLUMN] = dataframe[label_weight_col]
 
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
 
             dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
-            smoothed_label_weights = smooth(
-                dataframe[label_weight_col], **col_smoothing_config
-            )
-            dataframe[label_weight_col] = smoothed_label_weights.where(
-                np.isfinite(smoothed_label_weights) & smoothed_label_weights.gt(0),
-                0.0,
-            )
+            if is_weighting_active:
+                smoothed_label_weights = smooth(
+                    dataframe[label_weight_col], **col_smoothing_config
+                )
+                dataframe[label_weight_col] = smoothed_label_weights.where(
+                    np.isfinite(smoothed_label_weights) & smoothed_label_weights.gt(0),
+                    0.0,
+                )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
-                dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[label_weight_col]
+                if is_weighting_active:
+                    dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[
+                        label_weight_col
+                    ]
 
         return dataframe
 

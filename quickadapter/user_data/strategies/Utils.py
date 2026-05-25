@@ -250,17 +250,17 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-EXTREMA_COLUMN: Final = "&s-extrema"
-EXTREMA_DIRECTION_COLUMN: Final = "extrema_direction"
-EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final = "extrema_direction_smoothed"
-EXTREMA_WEIGHT_COLUMN: Final = "extrema_weight"
-EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final = "extrema_weight_smoothed"
+EXTREMA_COLUMN: Final[str] = "&s-extrema"
+EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
+EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
+EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
+EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
 
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 
-_FREQAI_LABEL_SIGIL_PATTERN: Final = re.compile(r"^&-?")
+_FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
 
 
 @lru_cache(maxsize=16)
@@ -378,8 +378,6 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
     "weighted_average",
 )
 
-
-DEFAULT_LABEL_WEIGHT: Final[float] = 1.0
 
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
@@ -750,10 +748,16 @@ def sanitize_and_renormalize(
         )
     fallback = np.ones(n, dtype=float)
     if drop_mask is not None:
-        fallback = np.where(drop_mask, 0.0, fallback)
-        fb_total = fallback.sum()
+        masked = np.where(drop_mask, 0.0, fallback)
+        fb_total = masked.sum()
         if fb_total > 0.0:
-            fallback = fallback * (n / fb_total)
+            return masked * (n / fb_total)
+        if logger is not None:
+            logger.warning(
+                "sanitize_and_renormalize: drop_mask covers all rows in "
+                "fallback; ignoring mask to preserve mean=1 (context=%s)",
+                context or "unspecified",
+            )
     return fallback
 
 
@@ -1005,7 +1009,7 @@ def smooth(
 
 def _impute_weights(
     weights: NDArray[np.floating],
-    default_weight: float = DEFAULT_LABEL_WEIGHT,
+    default_weight: float = 1.0,
 ) -> NDArray[np.floating]:
     weights = weights.astype(float, copy=True)
 
@@ -1041,8 +1045,14 @@ def _scatter_weights(
     n_values: int,
     indices: list[int],
     weights: NDArray[np.floating],
-    default_weight: float = DEFAULT_LABEL_WEIGHT,
+    default_weight: float,
 ) -> NDArray[np.floating]:
+    """Scatter per-pivot weights into a full-length array.
+
+    Non-pivot rows are filled with ``default_weight``. Callers pass ``0.0``
+    to exclude non-pivot rows from training (pivot-only weighting), or a
+    positive value to give them a baseline weight.
+    """
     if len(indices) == 0 or weights.size == 0:
         return np.full(n_values, default_weight, dtype=float)
 
@@ -1140,7 +1150,7 @@ def _compute_combined_label_weights(
 
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
-        coefficients = {k: DEFAULT_LABEL_WEIGHT for k in metrics.keys()}
+        coefficients = {k: 1.0 for k in metrics.keys()}
 
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
@@ -1172,11 +1182,20 @@ def compute_label_weights(
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
 ) -> NDArray[np.floating]:
+    """Compute per-row label importance weights.
+
+    Returns an array with positive values at pivot ``indices`` (scaled by
+    strategy) and ``0.0`` elsewhere. Callers must skip invocation when
+    strategy is ``'none'``; this raises ValueError otherwise.
+    """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
 
-    if len(indices) == 0 or strategy == WEIGHT_STRATEGIES[0]:  # "none"
-        return np.full(n_values, DEFAULT_LABEL_WEIGHT, dtype=float)
+    if strategy == WEIGHT_STRATEGIES[0]:  # "none"
+        raise ValueError(
+            "compute_label_weights must not be called with strategy='none'; "
+            "callers must skip invocation when weighting is disabled"
+        )
 
     weights: Optional[NDArray[np.floating]] = None
 
