@@ -3,7 +3,6 @@ import logging
 import random
 import time
 import warnings
-from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import AbstractSet, Any, Callable, Final, Literal, Optional, Union, cast
@@ -1404,16 +1403,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ) -> dict[str, Any]:
             return split_builder(features, labels, weights, dk)
 
-        weight_col_counts = Counter(
-            label_weight_column_name(label) for label in dk.label_list
-        )
-        duplicates = {col: n for col, n in weight_col_counts.items() if n > 1}
-        if duplicates:
-            raise ValueError(
-                f"Duplicate weight column names {duplicates!r} from labels "
-                f"{dk.label_list}: each label must produce a unique weight_column_name"
-            )
-
         logger.info(f"Using data split method: {method}")
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
 
@@ -1524,14 +1513,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> NDArray[np.floating]:
         """Build a per-row sample weight vector aligned to features_filtered.index.
 
-        Composes freqtrade's temporal recency weight with the configured
-        per-label aggregation (default ``arithmetic_mean``) of every
-        per-target weight column present on ``unfiltered_df``. Alignment
-        runs before any shuffle/split on ``features_filtered.index``
-        (a subset of ``unfiltered_df.index``) to avoid post-hoc reindex
-        against shuffled data. Iterates ``dk.label_list`` and only includes
-        labels whose ``label_weight_column_name(label)`` exists on
-        ``unfiltered_df``.
+        Multiplies freqtrade's per-row base weights (recency-decayed via
+        ``dk.set_weights_higher_recent`` when ``feature_parameters.weight_factor > 0``,
+        else ones) with the label importance weight column produced by
+        ``compute_label_weights`` and stored on ``unfiltered_df`` under
+        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before
+        any shuffle/split on ``features_filtered.index`` (a subset of
+        ``unfiltered_df.index``) to avoid post-hoc reindex against shuffled
+        data. When the weight column is absent, ``label_weights=None`` is
+        forwarded to ``compose_sample_weights`` and only the base weights
+        contribute.
         """
         if not unfiltered_df.index.is_unique:
             raise ValueError(
@@ -1544,6 +1535,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "unfiltered_df.index (filter_features should preserve original "
                 "row labels)"
             )
+        if LABEL_COLUMNS[0] not in dk.label_list:
+            raise ValueError(
+                f"LABEL_COLUMNS[0]={LABEL_COLUMNS[0]!r} is not in "
+                f"dk.label_list={dk.label_list!r}: project label constant "
+                f"diverged from freqtrade's runtime label list"
+            )
         n_rows = len(features_filtered)
         feat_dict = self.freqai_info.get("feature_parameters", {})
         weight_factor = feat_dict.get("weight_factor", 0)
@@ -1552,33 +1549,27 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and isinstance(weight_factor, (int, float))
             and weight_factor > 0
         ):
-            temporal = np.asarray(dk.set_weights_higher_recent(n_rows), dtype=float)
-        else:
-            temporal = np.ones(n_rows, dtype=float)
-
-        per_label: dict[str, NDArray[np.floating]] = {}
-        missing: list[str] = []
-        for label in dk.label_list:
-            col = label_weight_column_name(label)
-            if col in unfiltered_df.columns:
-                per_label[label] = unfiltered_df.loc[
-                    features_filtered.index, col
-                ].to_numpy(dtype=float)
-            else:
-                missing.append(col)
-        if per_label:
-            logger.debug(
-                f"per-label weight columns active: {sorted(per_label)}"
-                + (f" (no weight column for: {sorted(missing)})" if missing else "")
+            base_weights = np.asarray(
+                dk.set_weights_higher_recent(n_rows), dtype=float
             )
         else:
+            base_weights = np.ones(n_rows, dtype=float)
+
+        weight_col = label_weight_column_name(LABEL_COLUMNS[0])
+        if weight_col in unfiltered_df.columns:
+            label_weights = unfiltered_df.loc[
+                features_filtered.index, weight_col
+            ].to_numpy(dtype=float)
+            logger.debug(f"label weight column active: {weight_col}")
+        else:
+            label_weights = None
             logger.warning(
-                f"no per-label weight columns found (expected: {sorted(missing)}); "
-                f"falling back to temporal weights only"
+                f"label weight column not found ({weight_col!r}); "
+                f"falling back to base weights only"
             )
         return compose_sample_weights(
-            temporal,
-            per_label,
+            base_weights,
+            label_weights,
             logger=logger,
         )
 

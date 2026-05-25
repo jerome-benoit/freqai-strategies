@@ -736,56 +736,43 @@ def sanitize_and_renormalize(
 
 def compose_sample_weights(
     base_weights: NDArray[np.floating],
-    label_weights_map: dict[str, NDArray[np.floating]],
+    label_weights: NDArray[np.floating] | None,
     *,
     logger: Logger,
-    aggregation: CombinedAggregation = COMBINED_AGGREGATIONS[0],
-    softmax_temperature: float = 1.0,
 ) -> NDArray[np.floating]:
-    """Combine base sample weights with per-label importance weights.
+    """Combine base sample weights with the label importance weights.
 
-    Returns w in R+^N with mean(w) == 1. Per-label arrays are sanitized
-    (non-finite or <= 0 -> row dropped), individually mean-normalized,
-    aggregated row-wise via ``aggregation`` (default arithmetic_mean),
-    multiplied with base_weights, zeroed on dropped rows, and renormalized
-    to mean=1.
+    Returns w in R+^N with mean(w) == 1. The label weight vector is sanitized
+    (non-finite or <= 0 -> row dropped) and mean-normalized, multiplied with
+    base_weights, zeroed on dropped rows, and renormalized to mean=1.
+
+    The label weight vector is the output of ``compute_label_weights`` (which
+    already aggregates the configured metric sources via ``label_weighting``),
+    co-smoothed with the label column in ``set_freqai_targets`` and clipped
+    to a finite non-negative range. ``LABEL_COLUMNS`` is single-target by
+    design (one prediction target per model).
 
     Raises ValueError on shape mismatch or when every row is dropped.
-    Default-weight imputation in compute_label_weights uses full-series
-    median (bounded leakage; see AFML chapter 4).
     """
     base_weights = np.asarray(base_weights, dtype=float)
-    if not label_weights_map:
+    if label_weights is None:
         return sanitize_and_renormalize(base_weights)
     n = len(base_weights)
-    for label, label_values in label_weights_map.items():
-        arr = np.asarray(label_values, dtype=float)
-        if arr.shape != (n,):
-            raise ValueError(
-                f"compose_sample_weights: label {label!r} has shape {arr.shape}, "
-                f"expected ({n},)"
-            )
-    normalized_per_label: list[NDArray[np.floating]] = []
-    drop_mask = np.zeros(n, dtype=bool)
-    for label_values in label_weights_map.values():
-        arr = np.asarray(label_values, dtype=float)
-        invalid = ~np.isfinite(arr) | (arr <= 0.0)
-        drop_mask |= invalid
-        arr = np.where(invalid, 1.0, np.maximum(arr, np.finfo(float).tiny))
-        normalized_per_label.append(sanitize_and_renormalize(arr))
+    arr = np.asarray(label_weights, dtype=float)
+    if arr.shape != (n,):
+        raise ValueError(
+            f"compose_sample_weights: label_weights has shape {arr.shape}, "
+            f"expected ({n},)"
+        )
+    drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
     if drop_mask.all():
         raise ValueError(
-            f"compose_sample_weights: all rows dropped by per-label zero weights "
-            f"(labels={list(label_weights_map)}); no surviving training samples"
+            "compose_sample_weights: all rows dropped by zero or non-finite "
+            "label weights; no surviving training samples"
         )
-    stacked = np.vstack(normalized_per_label)
-    agg = _aggregate_metrics(
-        stacked_metrics=stacked,
-        coefficients=np.ones(stacked.shape[0], dtype=float),
-        aggregation=aggregation,
-        softmax_temperature=softmax_temperature,
-    )
-    combined = base_weights * agg
+    sanitized = np.where(drop_mask, 1.0, np.maximum(arr, np.finfo(float).tiny))
+    normalized = sanitize_and_renormalize(sanitized)
+    combined = base_weights * normalized
     combined[drop_mask] = 0.0
     combined_sum = combined.sum()
     if combined_sum > 0 and np.isfinite(combined_sum):
@@ -795,10 +782,8 @@ def compose_sample_weights(
             if np.all(np.isfinite(scaled)):
                 return scaled
     logger.warning(
-        "compose_sample_weights: aggregated weights collapsed (labels=%s, "
-        "aggregation=%s, combined_sum=%r); falling back to base weights",
-        list(label_weights_map),
-        aggregation,
+        "compose_sample_weights: composed weights collapsed "
+        "(combined_sum=%r); falling back to base weights",
         combined_sum,
     )
     return sanitize_and_renormalize(base_weights, drop_mask=drop_mask)
