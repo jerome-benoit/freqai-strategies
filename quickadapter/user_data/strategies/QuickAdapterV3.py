@@ -114,7 +114,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.11.10"
+        return "3.11.11"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
