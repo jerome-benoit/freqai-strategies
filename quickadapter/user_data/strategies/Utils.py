@@ -796,20 +796,24 @@ def sanitize_and_renormalize(
     return fallback
 
 
+_PIVOT_EQUIVALENT_MAX_FRACTION: Final[float] = 0.1
+
+
 def _pivot_equivalent_count(
     label_weights: NDArray[np.floating],
     drop_mask: NDArray[np.bool_],
 ) -> int:
-    """Count rows whose label weight is at least half the surviving median.
+    """Count rows whose label weight is at least a fraction of the surviving max.
 
-    Used as a pivot-equivalent diagnostic that remains meaningful when
-    off-pivot rows carry small but positive weights (``epsilon``/``gaussian``
-    fill modes), where the raw nonzero count would saturate at N.
+    A max-relative threshold (``_PIVOT_EQUIVALENT_MAX_FRACTION``) separates
+    pivot-class rows from off-pivot fill across the bimodal regimes that
+    ``fill_method`` introduces (where a median-based threshold would
+    saturate at ``N`` once the off-pivot floor dominates the median).
     """
     survivors = label_weights[~drop_mask]
     if survivors.size == 0:
         return 0
-    threshold = 0.5 * float(np.median(survivors))
+    threshold = _PIVOT_EQUIVALENT_MAX_FRACTION * float(survivors.max())
     if threshold <= 0.0:
         return 0
     return int((survivors >= threshold).sum())
@@ -854,10 +858,11 @@ def compose_sample_weights(
     if nonzero / n < SPARSE_TRAINING_MASS_THRESHOLD:
         logger.warning(
             "compose_sample_weights: sparse training mass "
-            "(%d/%d pivot-equivalent rows = %.2f%% above half-median, "
+            "(%d/%d rows above %.0f%% of surviving max = %.2f%%, "
             "threshold=%.2f%%)",
             nonzero,
             n,
+            100.0 * _PIVOT_EQUIVALENT_MAX_FRACTION,
             100.0 * nonzero / n,
             100.0 * SPARSE_TRAINING_MASS_THRESHOLD,
         )
@@ -1188,9 +1193,7 @@ def _scatter_weights(
             f"Invalid fill_weights shape {fill_weights.shape!r}: "
             f"must be ({n_values},)"
         )
-    # Order matters: empty-input early return runs FIRST to preserve the
-    # pre-change semantics where `indices=[1], weights=array([])` returned
-    # the default-filled array silently.
+    # Empty-input early return precedes the length-mismatch check on purpose.
     if len(indices) == 0 or weights.size == 0:
         return fill_weights.astype(float, copy=True)
     if len(indices) != weights.size:
