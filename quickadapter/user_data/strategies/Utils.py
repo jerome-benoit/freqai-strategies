@@ -1229,12 +1229,14 @@ def _aggregate_metrics(
             sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
         )
     elif aggregation == COMBINED_AGGREGATIONS[1]:  # "geometric_mean"
+        floored = np.maximum(stacked_metrics, np.finfo(float).tiny)
         return np.asarray(
-            sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
+            sp.stats.pmean(floored.T, p=0.0, weights=coefficients, axis=1)
         )
     elif aggregation == COMBINED_AGGREGATIONS[2]:  # "harmonic_mean"
+        floored = np.maximum(stacked_metrics, np.finfo(float).tiny)
         return np.asarray(
-            sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
+            sp.stats.pmean(floored.T, p=-1.0, weights=coefficients, axis=1)
         )
     elif aggregation == COMBINED_AGGREGATIONS[3]:  # "quadratic_mean"
         return np.asarray(
