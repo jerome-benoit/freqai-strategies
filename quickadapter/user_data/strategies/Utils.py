@@ -1172,37 +1172,29 @@ def _gaussian_fill_weights(
 
 def _scatter_weights(
     n_values: int,
-    indices: list[int],
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
     weights: NDArray[np.floating],
     fill_weights: NDArray[np.floating],
-    *,
-    indices_array: NDArray[np.integer] | None = None,
-    valid_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.floating]:
     """Scatter per-pivot weights into a full-length array.
 
     Pivot rows (validated via ``valid_mask``) receive ``weights``; off-pivot
     rows receive the corresponding entry of ``fill_weights`` (shape
-    ``(n_values,)``). Callers may pre-compute ``indices_array`` and
-    ``valid_mask`` and pass them in to avoid recomputation when the dispatch
-    needs the same mask for both filtered pivot extraction and the scatter.
+    ``(n_values,)``).
     """
     if fill_weights.shape != (n_values,):
         raise ValueError(
             f"Invalid fill_weights shape {fill_weights.shape!r}: must be ({n_values},)"
         )
     # Empty-input early return precedes the length-mismatch check on purpose.
-    if len(indices) == 0 or weights.size == 0:
+    if indices_array.size == 0 or weights.size == 0:
         return fill_weights.astype(float, copy=True)
-    if len(indices) != weights.size:
+    if indices_array.size != weights.size:
         raise ValueError(
-            f"Invalid indices/weights values: length mismatch, "
-            f"got {len(indices)} indices but {weights.size} weights"
+            f"Invalid indices_array/weights values: length mismatch, "
+            f"got {indices_array.size} indices but {weights.size} weights"
         )
-    if indices_array is None:
-        indices_array = np.asarray(indices, dtype=int)
-    if valid_mask is None:
-        valid_mask = (indices_array >= 0) & (indices_array < n_values)
     weights_array = fill_weights.astype(float, copy=True)
     if not np.any(valid_mask):
         return weights_array
@@ -1399,11 +1391,10 @@ def compute_label_weights(
 
     return _scatter_weights(
         n_values=n_values,
-        indices=indices,
-        weights=weights,
-        fill_weights=fill_weights,
         indices_array=indices_array,
         valid_mask=valid_mask,
+        weights=weights,
+        fill_weights=fill_weights,
     )
 
 
