@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
+from collections.abc import Sequence
 from logging import Logger
 from pathlib import Path
 from typing import (
@@ -15,7 +16,6 @@ from typing import (
     Callable,
     Final,
     Literal,
-    Optional,
     TypeVar,
     Union,
 )
@@ -734,9 +734,11 @@ def sanitize_and_renormalize(
     """Sanitize a weight vector and renormalize so ``mean(out) == 1``.
 
     Non-finite or non-positive entries are treated as ``0``; rows in
-    ``drop_mask`` are forced to ``0``. On collapse (no positive finite
-    entry survives), returns ones on surviving rows and zeros on dropped
-    rows, rescaled so ``mean(out) == 1`` still holds.
+    ``drop_mask`` are forced to ``0``. Empty input is returned unchanged
+    (the ``mean == 1`` invariant does not apply to a zero-length vector).
+    On collapse (no positive finite entry survives), returns ones on
+    surviving rows and zeros on dropped rows, rescaled so
+    ``mean(out) == 1`` still holds.
     """
     arr = np.asarray(arr, dtype=float)
     n = arr.size
@@ -814,8 +816,6 @@ def _pivot_equivalent_count(
     if survivors.size == 0:
         return 0
     threshold = _PIVOT_EQUIVALENT_MAX_FRACTION * float(survivors.max())
-    if threshold <= 0.0:
-        return 0
     return int((survivors >= threshold).sum())
 
 
@@ -1196,8 +1196,6 @@ def _scatter_weights(
             f"got {indices_array.size} indices but {weights.size} weights"
         )
     weights_array = fill_weights.astype(float, copy=True)
-    if not np.any(valid_mask):
-        return weights_array
     weights_array[indices_array[valid_mask]] = weights[valid_mask]
     return weights_array
 
@@ -1290,7 +1288,7 @@ def _compute_combined_label_weights(
         values_array = np.asarray(metric_values, dtype=float)
         if values_array.size == 0:
             continue
-        imputed_metrics.append(_impute_weights(weights=values_array))
+        imputed_metrics.append(_impute_weights(values_array))
         coefficients_list.append(float(coefficient))
 
     if len(imputed_metrics) == 0:
@@ -1306,7 +1304,7 @@ def _compute_combined_label_weights(
 
 def compute_label_weights(
     n_values: int,
-    indices: list[int],
+    indices: Sequence[int] | NDArray[np.integer],
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
     *,
@@ -1332,7 +1330,7 @@ def compute_label_weights(
     valid_mask = (indices_array >= 0) & (indices_array < n_values)
     n_indices = indices_array.size
 
-    weights: Optional[NDArray[np.floating]] = None
+    weights: NDArray[np.floating]
 
     if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
         weights = np.ones(n_indices, dtype=float)
@@ -1351,9 +1349,7 @@ def compute_label_weights(
             f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
         )
 
-    weights = _impute_weights(
-        weights=weights,
-    )
+    weights = _impute_weights(weights)
 
     if weights.size == 0:
         return np.zeros(n_values, dtype=float)
@@ -2517,13 +2513,13 @@ def fit_regressor(
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
-    eval_set: Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
-    eval_weights: Optional[list[NDArray[np.floating]]],
+    eval_set: list[tuple[pd.DataFrame, pd.DataFrame]] | None,
+    eval_weights: list[NDArray[np.floating]] | None,
     model_training_parameters: dict[str, Any],
     init_model: Any = None,
-    callbacks: Optional[list[RegressorCallback]] = None,
-    model_path: Optional[Path] = None,
-    trial: Optional[optuna.trial.Trial] = None,
+    callbacks: list[RegressorCallback] | None = None,
+    model_path: Path | None = None,
+    trial: optuna.trial.Trial | None = None,
 ) -> Any:
     fit_callbacks = list(callbacks) if callbacks else []
 
@@ -2829,8 +2825,8 @@ def make_test_set_and_weights(
     test_weights: NDArray[np.floating],
     test_size: float,
 ) -> tuple[
-    Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
-    Optional[list[NDArray[np.floating]]],
+    list[tuple[pd.DataFrame, pd.DataFrame]] | None,
+    list[NDArray[np.floating]] | None,
 ]:
     """Wrap test data for ``model.fit`` ``eval_set`` when ``test_size > 0``.
 
@@ -2866,7 +2862,7 @@ def _optuna_suggest_int_from_range(
 
 def optuna_load_best_params(
     base_path: Path, pair: str, namespace: str
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
@@ -3523,7 +3519,7 @@ def get_optuna_study_model_parameters(
 
 
 @lru_cache(maxsize=128)
-def largest_divisor_to_step(integer: int, step: int) -> Optional[int]:
+def largest_divisor_to_step(integer: int, step: int) -> int | None:
     if not isinstance(integer, int) or integer <= 0:
         raise ValueError(
             f"Invalid integer value {integer!r}: must be a positive integer"
@@ -3534,7 +3530,7 @@ def largest_divisor_to_step(integer: int, step: int) -> Optional[int]:
     if step == 1 or integer % step == 0:
         return integer
 
-    best_divisor: Optional[int] = None
+    best_divisor: int | None = None
     max_divisor = int(math.isqrt(integer))
     for i in range(1, max_divisor + 1):
         if integer % i != 0:
