@@ -1129,8 +1129,7 @@ def _gaussian_fill_weights(
         return np.zeros(n_values, dtype=float)
     if np.any(pivot_weights < 0.0):
         raise ValueError(
-            f"Invalid pivot_weights min={float(pivot_weights.min())!r}: "
-            f"must be >= 0"
+            f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0"
         )
     pivot_indices_array = pivot_indices.astype(float)
     pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
@@ -1190,8 +1189,7 @@ def _scatter_weights(
     """
     if fill_weights.shape != (n_values,):
         raise ValueError(
-            f"Invalid fill_weights shape {fill_weights.shape!r}: "
-            f"must be ({n_values},)"
+            f"Invalid fill_weights shape {fill_weights.shape!r}: must be ({n_values},)"
         )
     # Empty-input early return precedes the length-mismatch check on purpose.
     if len(indices) == 0 or weights.size == 0:
@@ -1340,9 +1338,11 @@ def compute_label_weights(
 
     weights: Optional[NDArray[np.floating]] = None
 
-    if strategy in metrics:
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        weights = np.ones(len(indices), dtype=float)
+    elif strategy in metrics:
         weights = np.asarray(metrics[strategy], dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
+    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
         weights = _compute_combined_label_weights(
             metrics=metrics,
             metric_coefficients=label_weighting["metric_coefficients"],
@@ -1379,9 +1379,7 @@ def compute_label_weights(
             elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
                 pivot_baseline = float(np.nanmedian(pivot_values))
             else:
-                raise ValueError(
-                    f"Invalid fill_epsilon_baseline value {baseline!r}"
-                )
+                raise ValueError(f"Invalid fill_epsilon_baseline value {baseline!r}")
             if not np.isfinite(pivot_baseline):
                 pivot_baseline = 0.0
         else:
