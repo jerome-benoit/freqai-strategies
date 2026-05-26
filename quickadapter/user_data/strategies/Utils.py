@@ -1336,10 +1336,14 @@ def compute_label_weights(
             "callers must skip invocation when weighting is disabled"
         )
 
+    indices_array = np.asarray(indices, dtype=int)
+    valid_mask = (indices_array >= 0) & (indices_array < n_values)
+    n_indices = indices_array.size
+
     weights: Optional[NDArray[np.floating]] = None
 
     if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
-        weights = np.ones(len(indices), dtype=float)
+        weights = np.ones(n_indices, dtype=float)
     elif strategy in metrics:
         weights = np.asarray(metrics[strategy], dtype=float)
     elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
@@ -1361,9 +1365,6 @@ def compute_label_weights(
 
     if weights.size == 0:
         return np.zeros(n_values, dtype=float)
-
-    indices_array = np.asarray(indices, dtype=int)
-    valid_mask = (indices_array >= 0) & (indices_array < n_values)
 
     fill_method = label_weighting["fill_method"]
 
