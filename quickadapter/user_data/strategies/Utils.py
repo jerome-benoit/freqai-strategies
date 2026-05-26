@@ -1076,15 +1076,18 @@ def _impute_weights(
     if weights.size == 0:
         return np.full_like(weights, default_weight, dtype=float)
 
-    # Zigzag emits NaN at unconfirmed boundary pivots; zero them out and
-    # exclude from the median so they don't drag interior imputation.
-    boundary_mask = np.zeros(weights.size, dtype=bool)
-    if not np.isfinite(weights[0]):
-        boundary_mask[0] = True
-    if not np.isfinite(weights[-1]):
-        boundary_mask[-1] = True
-
     finite_mask = np.isfinite(weights)
+    if not finite_mask.any():
+        return np.full_like(weights, default_weight, dtype=float)
+
+    # Zigzag emits NaN at unconfirmed boundary pivots; zero out the leading
+    # and trailing non-finite runs so they don't drag interior imputation.
+    boundary_mask = np.zeros(weights.size, dtype=bool)
+    first_finite = int(np.argmax(finite_mask))
+    last_finite = weights.size - 1 - int(np.argmax(finite_mask[::-1]))
+    boundary_mask[:first_finite] = True
+    boundary_mask[last_finite + 1 :] = True
+
     interior_finite_mask = finite_mask & ~boundary_mask
     if not interior_finite_mask.any():
         weights[~finite_mask] = default_weight
