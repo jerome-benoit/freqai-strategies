@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
+from collections.abc import Sequence
 from logging import Logger
 from pathlib import Path
 from typing import (
@@ -15,7 +16,6 @@ from typing import (
     Callable,
     Final,
     Literal,
-    Optional,
     TypeVar,
     Union,
 )
@@ -597,13 +597,40 @@ def _get_label_config(
         return {"default": validated_default, "columns": {}}
 
 
-def _validate_weighting_params(
+_LABEL_KIND_REGISTRY: Final[dict[str, tuple[dict[str, _ParamSpec], dict[str, Any]]]] = {
+    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING),
+    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE),
+    "label_smoothing": (_SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING),
+    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION),
+}
+
+
+def _label_kind_validator(kind: str) -> ValidateParamsFn:
+    specs, defaults = _LABEL_KIND_REGISTRY[kind]
+
+    def validate(
+        config: dict[str, Any],
+        logger: Logger,
+        config_name: str = kind,
+    ) -> dict[str, Any]:
+        return _validate_params(config, logger, config_name, specs, defaults)
+
+    return validate
+
+
+def get_label_kind_config(
+    kind: str,
     config: dict[str, Any],
     logger: Logger,
-    config_name: str = "label_weighting",
 ) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING
+    if kind not in _LABEL_KIND_REGISTRY:
+        raise ValueError(
+            f"Unknown label kind {kind!r}: supported values are "
+            f"{', '.join(_LABEL_KIND_REGISTRY)}"
+        )
+    _, defaults = _LABEL_KIND_REGISTRY[kind]
+    return _get_label_config(
+        config, logger, kind, _label_kind_validator(kind), defaults
     )
 
 
@@ -611,82 +638,28 @@ def get_label_weighting_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_weighting",
-        _validate_weighting_params,
-        DEFAULTS_LABEL_WEIGHTING,
-    )
-
-
-def _validate_pipeline_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "label_pipeline",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE
-    )
+    return get_label_kind_config("label_weighting", config, logger)
 
 
 def get_label_pipeline_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_pipeline",
-        _validate_pipeline_params,
-        DEFAULTS_LABEL_PIPELINE,
-    )
-
-
-def _validate_smoothing_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "label_smoothing",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING
-    )
+    return get_label_kind_config("label_pipeline", config, logger)
 
 
 def get_label_smoothing_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_smoothing",
-        _validate_smoothing_params,
-        DEFAULTS_LABEL_SMOOTHING,
-    )
-
-
-def _validate_prediction_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "label_prediction",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION
-    )
+    return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_prediction",
-        _validate_prediction_params,
-        DEFAULTS_LABEL_PREDICTION,
-    )
+    return get_label_kind_config("label_prediction", config, logger)
 
 
 _EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
@@ -814,8 +787,6 @@ def _pivot_equivalent_count(
     if survivors.size == 0:
         return 0
     threshold = _PIVOT_EQUIVALENT_MAX_FRACTION * float(survivors.max())
-    if threshold <= 0.0:
-        return 0
     return int((survivors >= threshold).sum())
 
 
@@ -1076,15 +1047,18 @@ def _impute_weights(
     if weights.size == 0:
         return np.full_like(weights, default_weight, dtype=float)
 
-    # Zigzag emits NaN at unconfirmed boundary pivots; zero them out and
-    # exclude from the median so they don't drag interior imputation.
-    boundary_mask = np.zeros(weights.size, dtype=bool)
-    if not np.isfinite(weights[0]):
-        boundary_mask[0] = True
-    if not np.isfinite(weights[-1]):
-        boundary_mask[-1] = True
-
     finite_mask = np.isfinite(weights)
+    if not finite_mask.any():
+        return np.full_like(weights, default_weight, dtype=float)
+
+    # Zigzag emits NaN at unconfirmed boundary pivots; zero out the leading
+    # and trailing non-finite runs so they don't drag interior imputation.
+    boundary_mask = np.zeros(weights.size, dtype=bool)
+    first_finite = int(np.argmax(finite_mask))
+    last_finite = weights.size - 1 - int(np.argmax(finite_mask[::-1]))
+    boundary_mask[:first_finite] = True
+    boundary_mask[last_finite + 1 :] = True
+
     interior_finite_mask = finite_mask & ~boundary_mask
     if not interior_finite_mask.any():
         weights[~finite_mask] = default_weight
@@ -1129,8 +1103,7 @@ def _gaussian_fill_weights(
         return np.zeros(n_values, dtype=float)
     if np.any(pivot_weights < 0.0):
         raise ValueError(
-            f"Invalid pivot_weights min={float(pivot_weights.min())!r}: "
-            f"must be >= 0"
+            f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0"
         )
     pivot_indices_array = pivot_indices.astype(float)
     pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
@@ -1173,41 +1146,30 @@ def _gaussian_fill_weights(
 
 def _scatter_weights(
     n_values: int,
-    indices: list[int],
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
     weights: NDArray[np.floating],
     fill_weights: NDArray[np.floating],
-    *,
-    indices_array: NDArray[np.integer] | None = None,
-    valid_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.floating]:
     """Scatter per-pivot weights into a full-length array.
 
     Pivot rows (validated via ``valid_mask``) receive ``weights``; off-pivot
     rows receive the corresponding entry of ``fill_weights`` (shape
-    ``(n_values,)``). Callers may pre-compute ``indices_array`` and
-    ``valid_mask`` and pass them in to avoid recomputation when the dispatch
-    needs the same mask for both filtered pivot extraction and the scatter.
+    ``(n_values,)``).
     """
     if fill_weights.shape != (n_values,):
         raise ValueError(
-            f"Invalid fill_weights shape {fill_weights.shape!r}: "
-            f"must be ({n_values},)"
+            f"Invalid fill_weights shape {fill_weights.shape!r}: must be ({n_values},)"
         )
     # Empty-input early return precedes the length-mismatch check on purpose.
-    if len(indices) == 0 or weights.size == 0:
+    if indices_array.size == 0 or weights.size == 0:
         return fill_weights.astype(float, copy=True)
-    if len(indices) != weights.size:
+    if indices_array.size != weights.size:
         raise ValueError(
-            f"Invalid indices/weights values: length mismatch, "
-            f"got {len(indices)} indices but {weights.size} weights"
+            f"Invalid indices_array/weights values: length mismatch, "
+            f"got {indices_array.size} indices but {weights.size} weights"
         )
-    if indices_array is None:
-        indices_array = np.asarray(indices, dtype=int)
-    if valid_mask is None:
-        valid_mask = (indices_array >= 0) & (indices_array < n_values)
     weights_array = fill_weights.astype(float, copy=True)
-    if not np.any(valid_mask):
-        return weights_array
     weights_array[indices_array[valid_mask]] = weights[valid_mask]
     return weights_array
 
@@ -1300,7 +1262,7 @@ def _compute_combined_label_weights(
         values_array = np.asarray(metric_values, dtype=float)
         if values_array.size == 0:
             continue
-        imputed_metrics.append(_impute_weights(weights=values_array))
+        imputed_metrics.append(_impute_weights(values_array))
         coefficients_list.append(float(coefficient))
 
     if len(imputed_metrics) == 0:
@@ -1316,7 +1278,7 @@ def _compute_combined_label_weights(
 
 def compute_label_weights(
     n_values: int,
-    indices: list[int],
+    indices: Sequence[int] | NDArray[np.integer],
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
     *,
@@ -1338,11 +1300,25 @@ def compute_label_weights(
             "callers must skip invocation when weighting is disabled"
         )
 
-    weights: Optional[NDArray[np.floating]] = None
+    indices_array = np.asarray(indices, dtype=int)
+    valid_mask = (indices_array >= 0) & (indices_array < n_values)
+    n_indices = indices_array.size
+    n_dropped = n_indices - int(valid_mask.sum())
+    if n_dropped > 0:
+        logger.warning(
+            "compute_label_weights: %d/%d pivot indices out of range [0, %d); dropped",
+            n_dropped,
+            n_indices,
+            n_values,
+        )
 
-    if strategy in metrics:
+    weights: NDArray[np.floating]
+
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        weights = np.ones(n_indices, dtype=float)
+    elif strategy in metrics:
         weights = np.asarray(metrics[strategy], dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[7]:  # "combined"
+    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
         weights = _compute_combined_label_weights(
             metrics=metrics,
             metric_coefficients=label_weighting["metric_coefficients"],
@@ -1355,15 +1331,10 @@ def compute_label_weights(
             f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
         )
 
-    weights = _impute_weights(
-        weights=weights,
-    )
+    weights = _impute_weights(weights)
 
     if weights.size == 0:
         return np.zeros(n_values, dtype=float)
-
-    indices_array = np.asarray(indices, dtype=int)
-    valid_mask = (indices_array >= 0) & (indices_array < n_values)
 
     fill_method = label_weighting["fill_method"]
 
@@ -1379,9 +1350,7 @@ def compute_label_weights(
             elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
                 pivot_baseline = float(np.nanmedian(pivot_values))
             else:
-                raise ValueError(
-                    f"Invalid fill_epsilon_baseline value {baseline!r}"
-                )
+                raise ValueError(f"Invalid fill_epsilon_baseline value {baseline!r}")
             if not np.isfinite(pivot_baseline):
                 pivot_baseline = 0.0
         else:
@@ -1400,11 +1369,10 @@ def compute_label_weights(
 
     return _scatter_weights(
         n_values=n_values,
-        indices=indices,
-        weights=weights,
-        fill_weights=fill_weights,
         indices_array=indices_array,
         valid_mask=valid_mask,
+        weights=weights,
+        fill_weights=fill_weights,
     )
 
 
@@ -2527,13 +2495,13 @@ def fit_regressor(
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
-    eval_set: Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
-    eval_weights: Optional[list[NDArray[np.floating]]],
+    eval_set: list[tuple[pd.DataFrame, pd.DataFrame]] | None,
+    eval_weights: list[NDArray[np.floating]] | None,
     model_training_parameters: dict[str, Any],
     init_model: Any = None,
-    callbacks: Optional[list[RegressorCallback]] = None,
-    model_path: Optional[Path] = None,
-    trial: Optional[optuna.trial.Trial] = None,
+    callbacks: list[RegressorCallback] | None = None,
+    model_path: Path | None = None,
+    trial: optuna.trial.Trial | None = None,
 ) -> Any:
     fit_callbacks = list(callbacks) if callbacks else []
 
@@ -2839,8 +2807,8 @@ def make_test_set_and_weights(
     test_weights: NDArray[np.floating],
     test_size: float,
 ) -> tuple[
-    Optional[list[tuple[pd.DataFrame, pd.DataFrame]]],
-    Optional[list[NDArray[np.floating]]],
+    list[tuple[pd.DataFrame, pd.DataFrame]] | None,
+    list[NDArray[np.floating]] | None,
 ]:
     """Wrap test data for ``model.fit`` ``eval_set`` when ``test_size > 0``.
 
@@ -2876,7 +2844,7 @@ def _optuna_suggest_int_from_range(
 
 def optuna_load_best_params(
     base_path: Path, pair: str, namespace: str
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
@@ -3533,7 +3501,7 @@ def get_optuna_study_model_parameters(
 
 
 @lru_cache(maxsize=128)
-def largest_divisor_to_step(integer: int, step: int) -> Optional[int]:
+def largest_divisor_to_step(integer: int, step: int) -> int | None:
     if not isinstance(integer, int) or integer <= 0:
         raise ValueError(
             f"Invalid integer value {integer!r}: must be a positive integer"
@@ -3544,7 +3512,7 @@ def largest_divisor_to_step(integer: int, step: int) -> Optional[int]:
     if step == 1 or integer % step == 0:
         return integer
 
-    best_divisor: Optional[int] = None
+    best_divisor: int | None = None
     max_divisor = int(math.isqrt(integer))
     for i in range(1, max_divisor + 1):
         if integer % i != 0:
