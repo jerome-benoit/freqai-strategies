@@ -597,13 +597,46 @@ def _get_label_config(
         return {"default": validated_default, "columns": {}}
 
 
-def _validate_weighting_params(
+_LABEL_KIND_REGISTRY: Final[dict[str, tuple[dict[str, _ParamSpec], dict[str, Any]]]] = {
+    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING),
+    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE),
+    "label_smoothing": (_SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING),
+    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION),
+}
+
+
+def _label_kind_validator(kind: str) -> ValidateParamsFn:
+    specs, defaults = _LABEL_KIND_REGISTRY[kind]
+
+    def validate(
+        config: dict[str, Any],
+        logger: Logger,
+        config_name: str = kind,
+    ) -> dict[str, Any]:
+        return _validate_params(config, logger, config_name, specs, defaults)
+
+    return validate
+
+
+def get_label_kind_config(
+    kind: str,
     config: dict[str, Any],
     logger: Logger,
-    config_name: str = "label_weighting",
 ) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING
+    """Resolve and validate a ``freqai.<kind>`` config block.
+
+    ``kind`` selects the spec/defaults registered in ``_LABEL_KIND_REGISTRY``;
+    callers receive a ``{"default": ..., "columns": ...}`` mapping ready for
+    ``get_label_column_config`` lookups.
+    """
+    if kind not in _LABEL_KIND_REGISTRY:
+        raise ValueError(
+            f"Unknown label kind {kind!r}: supported values are "
+            f"{', '.join(_LABEL_KIND_REGISTRY)}"
+        )
+    _, defaults = _LABEL_KIND_REGISTRY[kind]
+    return _get_label_config(
+        config, logger, kind, _label_kind_validator(kind), defaults
     )
 
 
@@ -611,82 +644,28 @@ def get_label_weighting_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_weighting",
-        _validate_weighting_params,
-        DEFAULTS_LABEL_WEIGHTING,
-    )
-
-
-def _validate_pipeline_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "label_pipeline",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE
-    )
+    return get_label_kind_config("label_weighting", config, logger)
 
 
 def get_label_pipeline_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_pipeline",
-        _validate_pipeline_params,
-        DEFAULTS_LABEL_PIPELINE,
-    )
-
-
-def _validate_smoothing_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "label_smoothing",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING
-    )
+    return get_label_kind_config("label_pipeline", config, logger)
 
 
 def get_label_smoothing_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_smoothing",
-        _validate_smoothing_params,
-        DEFAULTS_LABEL_SMOOTHING,
-    )
-
-
-def _validate_prediction_params(
-    config: dict[str, Any],
-    logger: Logger,
-    config_name: str = "label_prediction",
-) -> dict[str, Any]:
-    return _validate_params(
-        config, logger, config_name, _PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION
-    )
+    return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return _get_label_config(
-        config,
-        logger,
-        "label_prediction",
-        _validate_prediction_params,
-        DEFAULTS_LABEL_PREDICTION,
-    )
+    return get_label_kind_config("label_prediction", config, logger)
 
 
 _EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
