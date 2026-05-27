@@ -1334,6 +1334,14 @@ def compute_label_weights(
     indices_array = np.asarray(indices, dtype=int)
     valid_mask = (indices_array >= 0) & (indices_array < n_values)
     n_indices = indices_array.size
+    n_dropped = n_indices - int(valid_mask.sum())
+    if n_dropped > 0:
+        logger.warning(
+            "compute_label_weights: %d/%d pivot indices out of range [0, %d); dropped",
+            n_dropped,
+            n_indices,
+            n_values,
+        )
 
     weights: NDArray[np.floating]
 
