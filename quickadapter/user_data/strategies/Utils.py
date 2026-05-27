@@ -713,11 +713,9 @@ def sanitize_and_renormalize(
     """Sanitize a weight vector and renormalize so ``mean(out) == 1``.
 
     Non-finite or non-positive entries are treated as ``0``; rows in
-    ``drop_mask`` are forced to ``0``. Empty input is returned unchanged
-    (the ``mean == 1`` invariant does not apply to a zero-length vector).
-    On collapse (no positive finite entry survives), returns ones on
-    surviving rows and zeros on dropped rows, rescaled so
-    ``mean(out) == 1`` still holds.
+    ``drop_mask`` are forced to ``0``. On collapse (no positive finite
+    entry survives), returns ones on surviving rows and zeros on dropped
+    rows, rescaled so ``mean(out) == 1`` still holds.
     """
     arr = np.asarray(arr, dtype=float)
     n = arr.size
