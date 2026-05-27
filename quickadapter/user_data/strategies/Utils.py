@@ -623,12 +623,6 @@ def get_label_kind_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    """Resolve and validate a ``freqai.<kind>`` config block.
-
-    ``kind`` selects the spec/defaults registered in ``_LABEL_KIND_REGISTRY``;
-    callers receive a ``{"default": ..., "columns": ...}`` mapping ready for
-    ``get_label_column_config`` lookups.
-    """
     if kind not in _LABEL_KIND_REGISTRY:
         raise ValueError(
             f"Unknown label kind {kind!r}: supported values are "
