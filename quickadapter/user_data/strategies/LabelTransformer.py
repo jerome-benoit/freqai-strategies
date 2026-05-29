@@ -56,9 +56,10 @@ COMBINED_AGGREGATIONS: Final[tuple[CombinedAggregation, ...]] = (
     "softmax",
 )
 
-WeightStrategy = Literal["none", "combined"] | CombinedMetric
+WeightStrategy = Literal["none", "uniform", "combined"] | CombinedMetric
 WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "none",
+    "uniform",
     *COMBINED_METRICS,
     "combined",
 )
