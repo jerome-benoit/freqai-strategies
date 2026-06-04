@@ -1107,9 +1107,8 @@ def _compute_pivot_sigmas(
         sigma_p = clip( alpha * d_k(p),  sigma_min_candles,  sigma_candles )
 
     where ``d_k(p)`` is the index distance from pivot ``p`` to its ``k``-th
-    pivot neighbor. Pivots are emitted chronologically by zigzag, hence sorted,
-    so neighbor lookup reduces to an O(M) sliding ``k``-window over sorted
-    indices, no spatial index required.
+    nearest pivot neighbor. Only the ``k`` candidates on either side can contain
+    the ``k``-th nearest neighbor on the 1D candle index.
     """
     M = pivot_indices.size
     if bandwidth == FILL_BANDWIDTHS[0] or M <= 1:  # "fixed" or trivial
@@ -1124,13 +1123,19 @@ def _compute_pivot_sigmas(
     sorted_positions = pivot_indices[sorted_idx]
     k = min(int(neighbors), M - 1)
 
-    # Forward and backward k-th neighbor distances on sorted positions.
-    fwd = np.full(M, np.inf, dtype=float)
-    bwd = np.full(M, np.inf, dtype=float)
-    fwd[: M - k] = sorted_positions[k:] - sorted_positions[: M - k]
-    bwd[k:] = sorted_positions[k:] - sorted_positions[: M - k]
-    d_k_sorted = np.minimum(fwd, bwd)
-    # Inverse permutation back to caller order.
+    d_k_sorted = np.empty(M, dtype=float)
+    for i, position in enumerate(sorted_positions):
+        left = max(0, i - k)
+        right = min(M, i + k + 1)
+        candidate_distances = np.abs(
+            np.concatenate(
+                (
+                    sorted_positions[left:i] - position,
+                    sorted_positions[i + 1 : right] - position,
+                )
+            )
+        )
+        d_k_sorted[i] = np.partition(candidate_distances, k - 1)[k - 1]
     d_k = np.empty(M, dtype=float)
     d_k[sorted_idx] = d_k_sorted
 
@@ -1165,9 +1170,8 @@ def _gaussian_fill_weights(
 
     With ``bandwidth == "knn"``, ``sigma_p`` contracts to ``alpha * d_k(p)``
     (clipped to ``[sigma_min_candles, sigma_candles]``) so neighboring
-    Gaussians stop overlapping in dense regions, eliminating the crushing
-    effect at its source while preserving the upper bound
-    ``Out[i] <= max_p w_p``.
+    Gaussians overlap less in dense regions, mitigating the crushing effect
+    while preserving the upper bound ``Out[i] <= max_p w_p``.
     """
     if sigma_candles < 0.5:
         raise ValueError(

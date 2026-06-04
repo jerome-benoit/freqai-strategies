@@ -512,6 +512,16 @@ class QuickAdapterV3(IStrategy):
                 logger.info(
                     f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
                 )
+                logger.info(
+                    f"    fill_sigma_min_candles: {format_number(col_weighting['fill_sigma_min_candles'])}"
+                )
+                logger.info(f"    fill_bandwidth: {col_weighting['fill_bandwidth']}")
+                logger.info(
+                    f"    fill_bandwidth_neighbors: {col_weighting['fill_bandwidth_neighbors']}"
+                )
+                logger.info(
+                    f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
+                )
 
             col_smoothing = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
