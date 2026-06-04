@@ -77,6 +77,12 @@ FILL_EPSILON_BASELINES: Final[tuple[FillEpsilonBaseline, ...]] = (
     "median",  # 1 - robust against pivot-weight skew
 )
 
+FillBandwidth = Literal["fixed", "knn"]
+FILL_BANDWIDTHS: Final[tuple[FillBandwidth, ...]] = (
+    "fixed",  # 0 - constant sigma = fill_sigma_candles
+    "knn",    # 1 - per-pivot sigma from k-nearest-neighbor index distance
+)
+
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
 STANDARDIZATION_TYPES: Final[tuple[StandardizationType, ...]] = (
     "none",  # 0 - w
@@ -103,6 +109,10 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "fill_epsilon": 1e-3,
     "fill_epsilon_baseline": FILL_EPSILON_BASELINES[0],  # "mean"
     "fill_sigma_candles": 3.0,
+    "fill_sigma_min_candles": 0.5,
+    "fill_bandwidth": FILL_BANDWIDTHS[0],  # "fixed"
+    "fill_bandwidth_neighbors": 1,
+    "fill_bandwidth_alpha": 1.0,
 }
 
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
