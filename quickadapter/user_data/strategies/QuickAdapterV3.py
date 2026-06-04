@@ -115,7 +115,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.11.12"
+        return "3.11.13"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -511,6 +511,16 @@ class QuickAdapterV3(IStrategy):
             elif col_weighting["fill_method"] == FILL_METHODS[2]:  # "gaussian"
                 logger.info(
                     f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
+                )
+                logger.info(
+                    f"    fill_sigma_min_candles: {format_number(col_weighting['fill_sigma_min_candles'])}"
+                )
+                logger.info(f"    fill_bandwidth: {col_weighting['fill_bandwidth']}")
+                logger.info(
+                    f"    fill_bandwidth_neighbors: {col_weighting['fill_bandwidth_neighbors']}"
+                )
+                logger.info(
+                    f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
                 )
 
             col_smoothing = get_label_column_config(

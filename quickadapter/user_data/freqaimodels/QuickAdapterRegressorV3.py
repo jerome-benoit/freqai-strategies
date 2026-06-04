@@ -102,7 +102,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.12"
+    version = "3.11.13"
 
     _TEST_SIZE: Final[float] = 0.1
 
