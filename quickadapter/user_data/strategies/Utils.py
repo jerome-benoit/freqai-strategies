@@ -33,6 +33,7 @@ from LabelTransformer import (
     DEFAULTS_LABEL_SMOOTHING,
     DEFAULTS_LABEL_WEIGHTING,
     EXTREMA_SELECTION_METHODS,
+    FILL_BANDWIDTHS,
     FILL_EPSILON_BASELINES,
     FILL_METHODS,
     NORMALIZATION_TYPES,
@@ -204,6 +205,16 @@ _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     "fill_epsilon_baseline": _ParamSpec(_EnumValidator(FILL_EPSILON_BASELINES)),
     "fill_sigma_candles": _ParamSpec(
         _NumericValidator(min_value=0.5), output_type=float
+    ),
+    "fill_sigma_min_candles": _ParamSpec(
+        _NumericValidator(min_value=0.5), output_type=float
+    ),
+    "fill_bandwidth": _ParamSpec(_EnumValidator(FILL_BANDWIDTHS)),
+    "fill_bandwidth_neighbors": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "fill_bandwidth_alpha": _ParamSpec(
+        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
     ),
 }
 
@@ -1079,21 +1090,84 @@ _GAUSSIAN_FILL_CHUNK_BUDGET: Final[int] = 50_000_000
 _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 
 
+def _compute_pivot_sigmas(
+    pivot_indices: NDArray[np.floating],
+    sigma_candles: float,
+    bandwidth: str,
+    neighbors: int,
+    alpha: float,
+    sigma_min_candles: float,
+) -> NDArray[np.floating]:
+    """Per-pivot Gaussian standard deviation in candles.
+
+    For ``bandwidth == "fixed"`` returns a scalar broadcast (constant ``sigma_candles``).
+    For ``bandwidth == "knn"`` applies a k-nearest-neighbor bandwidth selector
+    (Loftsgaarden & Quesenberry 1965; Silverman 1986, §5.2):
+
+        sigma_p = clip( alpha * d_k(p),  sigma_min_candles,  sigma_candles )
+
+    where ``d_k(p)`` is the index distance from pivot ``p`` to its ``k``-th
+    pivot neighbor. Pivots are emitted chronologically by zigzag, hence sorted,
+    so neighbor lookup reduces to an O(M) sliding ``k``-window over sorted
+    indices, no spatial index required.
+    """
+    M = pivot_indices.size
+    if bandwidth == FILL_BANDWIDTHS[0] or M <= 1:  # "fixed" or trivial
+        return np.full(M, float(sigma_candles), dtype=float)
+    if bandwidth != FILL_BANDWIDTHS[1]:  # "knn"
+        raise ValueError(
+            f"Invalid fill_bandwidth value {bandwidth!r}: "
+            f"supported values are {', '.join(FILL_BANDWIDTHS)}"
+        )
+
+    sorted_idx = np.argsort(pivot_indices, kind="stable")
+    sorted_positions = pivot_indices[sorted_idx]
+    k = min(int(neighbors), M - 1)
+
+    # Forward and backward k-th neighbor distances on sorted positions.
+    fwd = np.full(M, np.inf, dtype=float)
+    bwd = np.full(M, np.inf, dtype=float)
+    fwd[: M - k] = sorted_positions[k:] - sorted_positions[: M - k]
+    bwd[k:] = sorted_positions[k:] - sorted_positions[: M - k]
+    d_k_sorted = np.minimum(fwd, bwd)
+    # Inverse permutation back to caller order.
+    d_k = np.empty(M, dtype=float)
+    d_k[sorted_idx] = d_k_sorted
+
+    sigmas = float(alpha) * d_k
+    sigma_max = float(sigma_candles)
+    sigma_min = float(sigma_min_candles)
+    if sigma_min > sigma_max:
+        sigma_min = sigma_max
+    return np.clip(sigmas, sigma_min, sigma_max)
+
+
 def _gaussian_fill_weights(
     n_values: int,
     pivot_indices: NDArray[np.integer],
     pivot_weights: NDArray[np.floating],
     sigma_candles: float,
     *,
+    bandwidth: str = FILL_BANDWIDTHS[0],
+    bandwidth_neighbors: int = 1,
+    bandwidth_alpha: float = 1.0,
+    sigma_min_candles: float = 0.5,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
     """Per-row max of Gaussian-decayed pivot weights.
 
-    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma**2))``.
-    With clustered pivots within ``~sigma_candles``, the per-row max
-    lets a stronger neighbor dominate weaker ones; pick
-    ``sigma_candles <= label_period_candles / 2`` to preserve pivot
-    identity.
+    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``.
+
+    With ``bandwidth == "fixed"``, ``sigma_p == sigma_candles`` for every
+    pivot. Clustered pivots within ``~sigma_candles`` then let the strongest
+    neighbor dominate weaker ones in the per-row max ("crushing" effect):
+    pick ``sigma_candles <= label_period_candles / 2`` to mitigate.
+
+    With ``bandwidth == "knn"``, ``sigma_p`` contracts to ``alpha * d_k(p)``
+    (clipped to ``[sigma_min_candles, sigma_candles]``) so neighboring
+    Gaussians stop overlapping in dense regions, eliminating the crushing
+    effect at its source while preserving the upper bound
+    ``Out[i] <= max_p w_p``.
     """
     if sigma_candles < 0.5:
         raise ValueError(
@@ -1107,7 +1181,15 @@ def _gaussian_fill_weights(
         )
     pivot_indices_array = pivot_indices.astype(float)
     pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
-    inv_two_sigma_sq = 0.5 / (sigma_candles * sigma_candles)
+    pivot_sigmas = _compute_pivot_sigmas(
+        pivot_indices=pivot_indices_array,
+        sigma_candles=sigma_candles,
+        bandwidth=bandwidth,
+        neighbors=bandwidth_neighbors,
+        alpha=bandwidth_alpha,
+        sigma_min_candles=sigma_min_candles,
+    )
+    inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
     M = pivot_indices_array.size
     if (
         logger is not None
@@ -1125,11 +1207,15 @@ def _gaussian_fill_weights(
     chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
     if logger is not None and chunk < n_values:
         logger.debug(
-            "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer",
+            "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
+            "bandwidth=%s, sigma=[%.2f, %.2f]",
             n_values,
             M,
             chunk,
             chunk * M * 8 / 1e6,
+            bandwidth,
+            float(pivot_sigmas.min()),
+            float(pivot_sigmas.max()),
         )
     out = np.zeros(n_values, dtype=float)
     for start in range(0, n_values, chunk):
@@ -1137,7 +1223,7 @@ def _gaussian_fill_weights(
         positions = np.arange(start, stop, dtype=float)
         buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
         np.multiply(buf, buf, out=buf)
-        np.multiply(buf, -inv_two_sigma_sq, out=buf)
+        np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
         np.exp(buf, out=buf)
         np.multiply(buf, pivot_weights_row, out=buf)
         np.max(buf, axis=1, out=out[start:stop])
@@ -1362,6 +1448,10 @@ def compute_label_weights(
             pivot_indices=indices_array[valid_mask],
             pivot_weights=weights[valid_mask],
             sigma_candles=label_weighting["fill_sigma_candles"],
+            bandwidth=label_weighting["fill_bandwidth"],
+            bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
+            bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
+            sigma_min_candles=label_weighting["fill_sigma_min_candles"],
             logger=logger,
         )
     else:
