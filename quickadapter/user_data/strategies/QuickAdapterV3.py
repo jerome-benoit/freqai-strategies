@@ -136,7 +136,7 @@ class QuickAdapterV3(IStrategy):
         "lookback_period_candles": 0,
         "decay_fraction": 0.5,
         "min_natr_multiplier_fraction": 0.0095,
-        "max_natr_multiplier_fraction": 0.075,
+        "max_natr_multiplier_fraction": 0.0125,
     }
 
     position_adjustment_enable = True
