@@ -129,14 +129,14 @@ class QuickAdapterV3(IStrategy):
     }
 
     default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
-        "decline_quantile": 0.75,
+        "decline_quantile": 0.5,
     }
 
     default_reversal_confirmation: ClassVar[dict[str, int | float]] = {
         "lookback_period_candles": 0,
         "decay_fraction": 0.5,
         "min_natr_multiplier_fraction": 0.0095,
-        "max_natr_multiplier_fraction": 0.075,
+        "max_natr_multiplier_fraction": 0.0125,
     }
 
     position_adjustment_enable = True
@@ -536,9 +536,9 @@ class QuickAdapterV3(IStrategy):
 
             method = col_smoothing["method"]
             if col_weighting["strategy"] != WEIGHT_STRATEGIES[0] and (  # "none"
-                method == SMOOTHING_METHODS[4]  # "smm"
+                method == SMOOTHING_METHODS[5]  # "smm"
                 or (
-                    method == SMOOTHING_METHODS[6]  # "savgol"
+                    method == SMOOTHING_METHODS[7]  # "savgol"
                     and col_smoothing["polyorder"] >= 2
                 )
             ):
@@ -550,8 +550,8 @@ class QuickAdapterV3(IStrategy):
                     f"to zero), which may trip the all-rows-dropped guard in "
                     f"compose_sample_weights once a non-'none' "
                     f"label_weighting strategy is configured. Prefer a "
-                    f"non-negative linear kernel (gaussian, kaiser, triang, "
-                    f"sma, gaussian_filter1d)."
+                    f"non-negative linear kernel (gaussian, kaiser, "
+                    f"kaiser_bessel_derived, triang, sma, gaussian_filter1d)."
                 )
 
         logger.info("Reversal Confirmation:")

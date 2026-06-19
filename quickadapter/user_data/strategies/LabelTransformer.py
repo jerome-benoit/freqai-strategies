@@ -80,7 +80,7 @@ FILL_EPSILON_BASELINES: Final[tuple[FillEpsilonBaseline, ...]] = (
 FillBandwidth = Literal["fixed", "knn"]
 FILL_BANDWIDTHS: Final[tuple[FillBandwidth, ...]] = (
     "fixed",  # 0 - constant sigma = fill_sigma_candles
-    "knn",    # 1 - per-pivot sigma from k-nearest-neighbor index distance
+    "knn",  # 1 - per-pivot sigma from k-nearest-neighbor index distance
 )
 
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
@@ -106,13 +106,13 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "aggregation": COMBINED_AGGREGATIONS[0],  # "arithmetic_mean"
     "softmax_temperature": 1.0,
     "fill_method": FILL_METHODS[0],  # "zero"
-    "fill_epsilon": 1e-3,
+    "fill_epsilon": 1e-6,
     "fill_epsilon_baseline": FILL_EPSILON_BASELINES[0],  # "mean"
-    "fill_sigma_candles": 3.0,
+    "fill_sigma_candles": 10.0,
     "fill_sigma_min_candles": 0.5,
     "fill_bandwidth": FILL_BANDWIDTHS[0],  # "fixed"
     "fill_bandwidth_neighbors": 1,
-    "fill_bandwidth_alpha": 1.0,
+    "fill_bandwidth_alpha": 0.5,
 }
 
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
@@ -127,12 +127,21 @@ DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
 
 
 SmoothingMethod = Literal[
-    "none", "gaussian", "kaiser", "triang", "smm", "sma", "savgol", "gaussian_filter1d"
+    "none",
+    "gaussian",
+    "kaiser",
+    "kaiser_bessel_derived",
+    "triang",
+    "smm",
+    "sma",
+    "savgol",
+    "gaussian_filter1d",
 ]
 SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
     "none",
     "gaussian",
     "kaiser",
+    "kaiser_bessel_derived",
     "triang",
     "smm",
     "sma",
@@ -200,7 +209,7 @@ DEFAULTS_LABEL_PREDICTION: Final[dict[str, Any]] = {
     "threshold_method": SKIMAGE_THRESHOLD_METHODS[0],  # "mean"
     "outlier_quantile": 0.999,
     "soft_extremum_alpha": 12.0,
-    "keep_fraction": 0.5,
+    "keep_fraction": 0.0075,
 }
 
 
