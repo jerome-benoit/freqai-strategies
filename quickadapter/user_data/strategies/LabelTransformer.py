@@ -106,13 +106,13 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "aggregation": COMBINED_AGGREGATIONS[0],  # "arithmetic_mean"
     "softmax_temperature": 1.0,
     "fill_method": FILL_METHODS[0],  # "zero"
-    "fill_epsilon": 1e-3,
+    "fill_epsilon": 1e-6,
     "fill_epsilon_baseline": FILL_EPSILON_BASELINES[0],  # "mean"
-    "fill_sigma_candles": 3.0,
+    "fill_sigma_candles": 10.0,
     "fill_sigma_min_candles": 0.5,
     "fill_bandwidth": FILL_BANDWIDTHS[0],  # "fixed"
     "fill_bandwidth_neighbors": 1,
-    "fill_bandwidth_alpha": 1.0,
+    "fill_bandwidth_alpha": 0.5,
 }
 
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
