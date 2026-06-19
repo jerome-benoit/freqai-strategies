@@ -80,7 +80,7 @@ FILL_EPSILON_BASELINES: Final[tuple[FillEpsilonBaseline, ...]] = (
 FillBandwidth = Literal["fixed", "knn"]
 FILL_BANDWIDTHS: Final[tuple[FillBandwidth, ...]] = (
     "fixed",  # 0 - constant sigma = fill_sigma_candles
-    "knn",    # 1 - per-pivot sigma from k-nearest-neighbor index distance
+    "knn",  # 1 - per-pivot sigma from k-nearest-neighbor index distance
 )
 
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
