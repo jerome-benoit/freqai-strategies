@@ -391,6 +391,10 @@ config.json
 .omo/**
 */.omo
 */.omo/**
+.codegraph
+.codegraph/**
+*/.codegraph
+*/.codegraph/**
 .sisyphus
 .sisyphus/**
 */.sisyphus
