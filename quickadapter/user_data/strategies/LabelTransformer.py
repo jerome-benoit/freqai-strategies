@@ -127,12 +127,21 @@ DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
 
 
 SmoothingMethod = Literal[
-    "none", "gaussian", "kaiser", "triang", "smm", "sma", "savgol", "gaussian_filter1d"
+    "none",
+    "gaussian",
+    "kaiser",
+    "kaiser_bessel_derived",
+    "triang",
+    "smm",
+    "sma",
+    "savgol",
+    "gaussian_filter1d",
 ]
 SMOOTHING_METHODS: Final[tuple[SmoothingMethod, ...]] = (
     "none",
     "gaussian",
     "kaiser",
+    "kaiser_bessel_derived",
     "triang",
     "smm",
     "sma",

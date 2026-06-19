@@ -383,10 +383,11 @@ def generate_label_data(
     return generator(dataframe, params)
 
 
-SmoothingKernel = Literal["gaussian", "kaiser", "triang"]
+SmoothingKernel = Literal["gaussian", "kaiser", "kaiser_bessel_derived", "triang"]
 SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
     "gaussian",
     "kaiser",
+    "kaiser_bessel_derived",
     "triang",
 )
 
@@ -906,6 +907,13 @@ def get_odd_window(window: int) -> int:
 
 
 @lru_cache(maxsize=8)
+def get_even_window(window: int) -> int:
+    if window < 1:
+        raise ValueError(f"Invalid window value {window!r}: must be > 0")
+    return window if window % 2 == 0 else window + 1
+
+
+@lru_cache(maxsize=8)
 def get_gaussian_std(window: int) -> float:
     return (window - 1) / 6.0 if window > 1 else 0.5
 
@@ -931,7 +939,13 @@ def _calculate_coeffs(
         coeffs = sp.signal.windows.gaussian(M=window, std=std, sym=True)
     elif win_type == SMOOTHING_KERNELS[1]:  # "kaiser"
         coeffs = sp.signal.windows.kaiser(M=window, beta=beta, sym=True)
-    elif win_type == SMOOTHING_KERNELS[2]:  # "triang"
+    elif win_type == SMOOTHING_KERNELS[2]:  # "kaiser_bessel_derived"
+        coeffs = sp.signal.windows.kaiser_bessel_derived(
+            M=window,
+            beta=beta,
+            sym=True,
+        )
+    elif win_type == SMOOTHING_KERNELS[3]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
         raise ValueError(
@@ -1005,19 +1019,28 @@ def smooth(
             std=std,
             beta=beta,
         )
-    elif method == SMOOTHING_METHODS[3]:  # "triang"
+    elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
+        even_window = get_even_window(window_candles)
         return zero_phase_filter(
             series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[2],  # "triang"
+            window=even_window,
+            win_type=SMOOTHING_KERNELS[2],  # "kaiser_bessel_derived"
             std=std,
             beta=beta,
         )
-    elif method == SMOOTHING_METHODS[4]:  # "smm" (Simple Moving Median)
+    elif method == SMOOTHING_METHODS[4]:  # "triang"
+        return zero_phase_filter(
+            series=series,
+            window=odd_window,
+            win_type=SMOOTHING_KERNELS[3],  # "triang"
+            std=std,
+            beta=beta,
+        )
+    elif method == SMOOTHING_METHODS[5]:  # "smm" (Simple Moving Median)
         return series.rolling(window=odd_window, center=True, min_periods=1).median()
-    elif method == SMOOTHING_METHODS[5]:  # "sma" (Simple Moving Average)
+    elif method == SMOOTHING_METHODS[6]:  # "sma" (Simple Moving Average)
         return series.rolling(window=odd_window, center=True, min_periods=1).mean()
-    elif method == SMOOTHING_METHODS[6]:  # "savgol" (Savitzky-Golay)
+    elif method == SMOOTHING_METHODS[7]:  # "savgol" (Savitzky-Golay)
         w, p, m = get_savgol_params(odd_window, polyorder, mode)
         if n < w:
             return series
@@ -1030,7 +1053,7 @@ def smooth(
             ),
             index=series.index,
         )
-    elif method == SMOOTHING_METHODS[7]:  # "gaussian_filter1d"
+    elif method == SMOOTHING_METHODS[8]:  # "gaussian_filter1d"
         return pd.Series(
             gaussian_filter1d(
                 series.to_numpy(),
