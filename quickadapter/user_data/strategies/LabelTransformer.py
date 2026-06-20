@@ -22,6 +22,17 @@ from sklearn.preprocessing import (
 
 logger = logging.getLogger(__name__)
 
+
+def _clip_sigmoid_domain(values: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Clip ``values`` to the open interval ``(-1, 1)``.
+
+    The clip bounds are ``[-1 + eps, 1 - eps]`` with
+    ``eps = np.finfo(float).eps`` so that downstream ``logit((x + 1) / 2)``
+    stays finite at the boundary. NaN values pass through unchanged.
+    """
+    eps = np.finfo(float).eps
+    return np.clip(values, -1.0 + eps, 1.0 - eps)
+
 CombinedMetric = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
@@ -342,7 +353,18 @@ class LabelTransformer(BaseTransform):
             return values
         out = values.copy()
         if inverse:
-            out[mask] = sp.special.logit((values[mask] + 1.0) / 2.0) / scale
+            clipped = _clip_sigmoid_domain(values[mask])
+            clipped_count = int(
+                np.count_nonzero(
+                    (clipped != values[mask]) & ~np.isnan(values[mask])
+                )
+            )
+            if clipped_count:
+                logger.warning(
+                    "sigmoid_inverse_normalize: clipped %d value(s) outside the open (-1, 1) domain",
+                    clipped_count,
+                )
+            out[mask] = sp.special.logit((clipped + 1.0) / 2.0) / scale
         else:
             out[mask] = 2.0 * sp.special.expit(scale * values[mask]) - 1.0
         return out
