@@ -56,11 +56,14 @@ from Utils import (
     fit_regressor,
     format_dict,
     format_number,
+    get_causal_mode,
     get_label_defaults,
+    get_label_horizon_candles,
     get_label_pipeline_config,
     get_label_prediction_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
+    label_known_at_column_name,
     label_weight_column_name,
     migrate_config,
     optuna_load_best_params,
@@ -79,10 +82,25 @@ ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
 DensityMethod = Literal["knn", "medoid"]
 SelectionMethod = Union[DistanceMethod, ClusterMethod, DensityMethod]
 ValidationMode = Literal["warn", "raise", "none"]
-SplitFn = Callable[[pd.DataFrame, pd.DataFrame, NDArray[np.floating]], dict[str, Any]]
+SplitFn = Callable[
+    [pd.DataFrame, pd.DataFrame, NDArray[np.floating], pd.DataFrame], dict[str, Any]
+]
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_AT_NONE_LOGGED: set[tuple[str, str]] = set()
+
+
+def _log_known_at_none_once(pair: str, context: str) -> None:
+    key = (pair, context)
+    if key in _KNOWN_AT_NONE_LOGGED:
+        return
+    _KNOWN_AT_NONE_LOGGED.add(key)
+    logger.info(
+        f"[{pair}] {context}: no <label>_known_at_index column present; "
+        "causal guards use position-based purge only (label-aware filtering disabled)"
+    )
 
 
 class QuickAdapterRegressorV3(BaseRegressionModel):
@@ -102,7 +120,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.13"
+    version = "3.12.0"
 
     _TEST_SIZE: Final[float] = 0.1
 
@@ -356,6 +374,80 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if value is None:
             return None
         return QuickAdapterRegressorV3._coerce_int(value, name, minimum=minimum)
+
+    @staticmethod
+    def _validate_index_alignment(
+        filtered_dataframe: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+    ) -> None:
+        if not unfiltered_df.index.is_unique:
+            raise ValueError("unfiltered_df.index must be unique for causal split guards")
+        if not filtered_dataframe.index.isin(unfiltered_df.index).all():
+            raise ValueError(
+                "filtered_dataframe.index must be a subset of unfiltered_df.index"
+            )
+
+    @staticmethod
+    def _row_positions(
+        filtered_dataframe: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+    ) -> pd.Series:
+        QuickAdapterRegressorV3._validate_index_alignment(
+            filtered_dataframe, unfiltered_df
+        )
+        positions = pd.Series(np.arange(len(unfiltered_df), dtype=np.int64), index=unfiltered_df.index)
+        return positions.loc[filtered_dataframe.index]
+
+    @staticmethod
+    def _known_at_index(
+        filtered_dataframe: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+    ) -> pd.Series | None:
+        """Per-row leak boundary across all registered labels.
+
+        Returns the row-wise ``max`` of every present
+        ``<label>_known_at_index`` column. A label whose column is missing
+        or contains any NaN is skipped (silently — labels can opt in by
+        emitting the column). Returns ``None`` only when no label exposes
+        a usable column, in which case the caller falls back to the
+        position-based purge.
+        """
+        QuickAdapterRegressorV3._validate_index_alignment(
+            filtered_dataframe, unfiltered_df
+        )
+        series_list: list[pd.Series] = []
+        for label_col in LABEL_COLUMNS:
+            known_at_col = label_known_at_column_name(label_col)
+            if known_at_col not in unfiltered_df.columns:
+                continue
+            known_at = unfiltered_df.loc[filtered_dataframe.index, known_at_col]
+            if known_at.isna().any():
+                continue
+            series_list.append(pd.to_numeric(known_at, errors="raise"))
+        if not series_list:
+            return None
+        if len(series_list) == 1:
+            return series_list[0]
+        return pd.concat(series_list, axis=1).max(axis=1).astype(np.int64)
+
+    @staticmethod
+    def _filter_train_by_mask(
+        train_features: pd.DataFrame,
+        train_labels: pd.DataFrame,
+        train_weights: NDArray[np.floating],
+        keep_mask: NDArray[np.bool_],
+        context: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
+        removed = int((~keep_mask).sum())
+        if removed:
+            logger.info(f"{context}: removed {removed} causal-unsafe train rows")
+        if not keep_mask.any():
+            raise ValueError(f"{context}: causal guard removed all train rows")
+        return (
+            train_features.loc[keep_mask],
+            train_labels.loc[keep_mask],
+            train_weights[keep_mask],
+        )
 
     @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
@@ -919,6 +1011,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return get_label_defaults(self.ft_params, logger)
 
     @property
+    def _causal_mode(self) -> bool:
+        return get_causal_mode(self.ft_params, logger)
+
+    def _label_horizon_candles(self, pair: str | None = None) -> int:
+        label_params = self.get_optuna_params(pair, "label") if pair else {}
+        return get_label_horizon_candles({**self.ft_params, **label_params}, logger)
+
+    @property
     def _optuna_label_candle_pool_full(self) -> list[int]:
         label_frequency_candles = self._label_frequency_candles
         cache_key = label_frequency_candles
@@ -989,6 +1089,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     "label_period_candles": self.ft_params.get(
                         "label_period_candles",
                         default_label_period_candles,
+                    ),
+                    "label_horizon_candles": get_label_horizon_candles(
+                        self.ft_params, logger
                     ),
                     "label_natr_multiplier": float(
                         self.ft_params.get(
@@ -1402,8 +1505,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             features: pd.DataFrame,
             labels: pd.DataFrame,
             weights: NDArray[np.floating],
+            unfiltered: pd.DataFrame,
         ) -> dict[str, Any]:
-            return split_builder(features, labels, weights, dk)
+            return split_builder(features, labels, weights, dk, unfiltered)
 
         logger.info(f"Using data split method: {method}")
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
@@ -1414,6 +1518,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         labels: pd.DataFrame,
         weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
+        unfiltered_df: pd.DataFrame,
     ) -> dict[str, Any]:
         """Train/test split via sklearn's ``train_test_split``.
 
@@ -1431,6 +1536,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dsp = dict(self.data_split_parameters)
         dsp.setdefault("shuffle", False)
         dsp.setdefault("test_size", QuickAdapterRegressorV3._TEST_SIZE)
+        causal_mode = self._causal_mode
+        if causal_mode and dsp.get("shuffle", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "data_split_parameters.shuffle=True"
+            )
+        if causal_mode and feat_dict.get("shuffle_after_split", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "feature_parameters.shuffle_after_split=True"
+            )
+        if causal_mode and feat_dict.get("reverse_train_test_order", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "feature_parameters.reverse_train_test_order=True"
+            )
         sklearn_kwargs = {
             k: v
             for k, v in dsp.items()
@@ -1452,6 +1573,38 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 train_weights,
                 test_weights,
             ) = train_test_split(features, labels, weights, **sklearn_kwargs)
+            if causal_mode:
+                row_positions = QuickAdapterRegressorV3._row_positions(
+                    features, unfiltered_df
+                )
+                first_test_position = int(row_positions.loc[test_features.index].min())
+                label_horizon_candles = self._label_horizon_candles(dk.pair)
+                train_positions = row_positions.loc[train_features.index]
+                keep_mask = (
+                    train_positions.to_numpy(dtype=np.int64)
+                    < first_test_position - label_horizon_candles
+                )
+                known_at_index = QuickAdapterRegressorV3._known_at_index(
+                    features, unfiltered_df
+                )
+                if known_at_index is not None:
+                    known_at_train = known_at_index.loc[train_features.index]
+                    keep_mask &= (
+                        known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                    )
+                else:
+                    _log_known_at_none_once(
+                        dk.pair, "train_test_split causal guard"
+                    )
+                train_features, train_labels, train_weights = (
+                    QuickAdapterRegressorV3._filter_train_by_mask(
+                        train_features,
+                        train_labels,
+                        train_weights,
+                        keep_mask,
+                        f"[{dk.pair}] train_test_split causal guard",
+                    )
+                )
         else:
             train_features = features
             train_labels = labels
@@ -1603,7 +1756,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"-------------------- Training on data from {start_date} to "
             f"{end_date} --------------------"
         )
-        dd = split_fn(features_filtered, labels_filtered, weights)
+        dd = split_fn(features_filtered, labels_filtered, weights, unfiltered_df)
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
         dd = self._apply_pipelines(dd, dk, pair)
@@ -1706,6 +1859,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         labels: pd.DataFrame,
         weights: NDArray[np.floating],
         dk: FreqaiDataKitchen,
+        unfiltered_df: pd.DataFrame,
     ) -> dict:
         """Chronological train/test split using sklearn's TimeSeriesSplit final fold.
 
@@ -1716,11 +1870,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``test_idx``.
         """
         feat_dict = self.ft_params
+        causal_mode = self._causal_mode
         if feat_dict.get("shuffle_after_split", False):
             raise ValueError(
                 "feature_parameters.shuffle_after_split=True is incompatible "
                 "with data_split_parameters.method='timeseries_split': "
                 "chronological split must preserve temporal ordering"
+            )
+        if causal_mode and self.data_split_parameters.get("shuffle", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "data_split_parameters.shuffle=True"
+            )
+        if causal_mode and feat_dict.get("reverse_train_test_order", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "feature_parameters.reverse_train_test_order=True"
             )
         n_splits = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
@@ -1729,10 +1894,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "n_splits",
             minimum=2,
         )
+        raw_gap = self.data_split_parameters.get("gap", None)
         gap = QuickAdapterRegressorV3._coerce_int(
-            self.data_split_parameters.get(
-                "gap", QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
-            ),
+            raw_gap
+            if raw_gap is not None
+            else QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT,
             "gap",
             minimum=0,
         )
@@ -1770,13 +1936,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"Increase test_size or provide more data."
                 )
 
-        if gap == 0:
+        if causal_mode:
+            label_horizon_candles = self._label_horizon_candles(dk.pair)
+            if raw_gap is None or gap == 0:
+                gap = label_horizon_candles
+                logger.info(
+                    f"[{dk.pair}] TimeSeriesSplit gap auto-set from label_horizon_candles: {gap}"
+                )
+            elif gap < label_horizon_candles:
+                raise ValueError(
+                    f"data_split_parameters.gap={gap!r} is smaller than "
+                    f"label_horizon_candles={label_horizon_candles!r} while "
+                    "feature_parameters.causal_mode=True"
+                )
+        elif gap == 0:
             gap = self.get_optuna_params(
                 dk.pair,
                 QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1],  # "label"
             ).get("label_period_candles")
             logger.info(
-                f"[{dk.pair}] TimeSeriesSplit gap auto-calculated from label_period_candles: {gap}"
+                f"[{dk.pair}] TimeSeriesSplit gap auto-set from label_period_candles: {gap}"
             )
 
         tscv = TimeSeriesSplit(
@@ -1798,11 +1977,38 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
-        train_weights = sanitize_and_renormalize(
-            weights[train_idx], logger=logger, context="timeseries_split:train"
-        )
+        train_weights = weights[train_idx]
         test_weights = sanitize_and_renormalize(
             weights[test_idx], logger=logger, context="timeseries_split:test"
+        )
+
+        if causal_mode:
+            row_positions = QuickAdapterRegressorV3._row_positions(
+                filtered_dataframe, unfiltered_df
+            )
+            first_test_position = int(row_positions.iloc[test_idx].min())
+            known_at_index = QuickAdapterRegressorV3._known_at_index(
+                filtered_dataframe, unfiltered_df
+            )
+            if known_at_index is not None:
+                known_at_train = known_at_index.iloc[train_idx]
+                keep_mask = known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                train_features, train_labels, train_weights = (
+                    QuickAdapterRegressorV3._filter_train_by_mask(
+                        train_features,
+                        train_labels,
+                        train_weights,
+                        keep_mask,
+                        f"[{dk.pair}] timeseries_split causal guard",
+                    )
+                )
+            else:
+                _log_known_at_none_once(
+                    dk.pair, "timeseries_split causal guard"
+                )
+
+        train_weights = sanitize_and_renormalize(
+            train_weights, logger=logger, context="timeseries_split:train"
         )
 
         if feat_dict.get("reverse_train_test_order", False):
@@ -3657,7 +3863,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
-        return optuna_load_best_params(self.full_path, pair, namespace)
+        return optuna_load_best_params(self.full_path, pair, namespace, logger)
 
     @staticmethod
     def optuna_delete_study(
