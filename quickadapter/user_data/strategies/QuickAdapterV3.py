@@ -500,15 +500,22 @@ class QuickAdapterV3(IStrategy):
                 logger.info(
                     f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
                 )
-            logger.info(f"    fill_method: {col_weighting['fill_method']}")
-            if col_weighting["fill_method"] == FILL_METHODS[1]:  # "epsilon"
+            fill_method = col_weighting["fill_method"]
+            logger.info(f"    fill_method: {fill_method}")
+            if fill_method in (
+                FILL_METHODS[1],  # "epsilon"
+                FILL_METHODS[3],  # "epsilon_gaussian"
+            ):
                 logger.info(
                     f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}"
                 )
                 logger.info(
                     f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
                 )
-            elif col_weighting["fill_method"] == FILL_METHODS[2]:  # "gaussian"
+            if fill_method in (
+                FILL_METHODS[2],  # "gaussian"
+                FILL_METHODS[3],  # "epsilon_gaussian"
+            ):
                 logger.info(
                     f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
                 )

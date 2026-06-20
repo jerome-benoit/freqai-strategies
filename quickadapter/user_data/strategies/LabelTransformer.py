@@ -64,11 +64,12 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "combined",
 )
 
-FillMethod = Literal["zero", "epsilon", "gaussian"]
+FillMethod = Literal["zero", "epsilon", "gaussian", "epsilon_gaussian"]
 FILL_METHODS: Final[tuple[FillMethod, ...]] = (
     "zero",  # 0 - hard zero (default)
-    "epsilon",  # 1 - flat fraction of pivot baseline
-    "gaussian",  # 2 - per-row Gaussian decay around each pivot
+    "epsilon",  # 1 - epsilon floor
+    "gaussian",  # 2 - per-pivot Gaussian bumps
+    "epsilon_gaussian",  # 3 - additive: epsilon floor + per-pivot Gaussian bumps
 )
 
 FillEpsilonBaseline = Literal["mean", "median"]

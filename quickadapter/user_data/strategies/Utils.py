@@ -45,6 +45,7 @@ from LabelTransformer import (
     WEIGHT_STRATEGIES,
     CombinedAggregation,
     CombinedMetric,
+    FillEpsilonBaseline,
     SmoothingMethod,
     SmoothingMode,
 )
@@ -1182,7 +1183,7 @@ def _gaussian_fill_weights(
     sigma_min_candles: float = 0.5,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
-    """Per-row max of Gaussian-decayed pivot weights.
+    """Per-row max of per-pivot Gaussian bumps.
 
     Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``.
 
@@ -1266,9 +1267,15 @@ def _scatter_weights(
 ) -> NDArray[np.floating]:
     """Scatter per-pivot weights into a full-length array.
 
-    Pivot rows (validated via ``valid_mask``) receive ``weights``; off-pivot
-    rows receive the corresponding entry of ``fill_weights`` (shape
-    ``(n_values,)``).
+    Pivot rows (validated via ``valid_mask``) take
+    ``max(weights, fill_weights)`` so a pivot row is never written below
+    the off-pivot field at its index. Off-pivot rows receive the
+    corresponding entry of ``fill_weights`` (shape ``(n_values,)``). The
+    ``max`` fixes the sub-floor / sub-bump pivot-row dip that arises when
+    the off-pivot field exceeds the pivot's raw weight: via the floor for
+    ``epsilon`` / ``epsilon_gaussian``, via a stronger neighbor's bump for
+    ``gaussian`` / ``epsilon_gaussian``. ``zero`` is bit-identical to a
+    plain assignment because its fill is 0.
     """
     if fill_weights.shape != (n_values,):
         raise ValueError(
@@ -1283,7 +1290,8 @@ def _scatter_weights(
             f"got {indices_array.size} indices but {weights.size} weights"
         )
     weights_array = fill_weights.astype(float, copy=True)
-    weights_array[indices_array[valid_mask]] = weights[valid_mask]
+    pivot_idx = indices_array[valid_mask]
+    weights_array[pivot_idx] = np.maximum(weights[valid_mask], weights_array[pivot_idx])
     return weights_array
 
 
@@ -1389,6 +1397,62 @@ def _compute_combined_label_weights(
     )
 
 
+def _compute_epsilon_floor(
+    weights: NDArray[np.floating],
+    valid_mask: NDArray[np.bool_],
+    eps: float,
+    baseline: FillEpsilonBaseline,
+) -> float:
+    """Flat off-pivot weight value ``phi = eps * B(W)``.
+
+    ``B(W)`` is the mean or median of valid pivot weights, selected by
+    ``baseline`` (``FILL_EPSILON_BASELINES``). Returns ``0.0`` on degenerate
+    inputs (no valid pivots, non-finite baseline).
+    """
+    if not valid_mask.any():
+        return 0.0
+    pivot_values = weights[valid_mask]
+    if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
+        b = float(np.nanmean(pivot_values))
+    elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
+        b = float(np.nanmedian(pivot_values))
+    else:
+        raise ValueError(
+            f"Invalid fill_epsilon_baseline value {baseline!r}: "
+            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+        )
+    if not np.isfinite(b):
+        b = 0.0
+    return float(eps) * b
+
+
+def _compute_gaussian_bumps(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    weights: NDArray[np.floating],
+    label_weighting: dict[str, Any],
+    *,
+    logger: Logger | None,
+) -> NDArray[np.floating]:
+    """Per-row max of per-pivot Gaussian bumps.
+
+    Adapter over ``_gaussian_fill_weights`` that pulls tunables from
+    ``label_weighting`` and applies the ``valid_mask``.
+    """
+    return _gaussian_fill_weights(
+        n_values=n_values,
+        pivot_indices=indices_array[valid_mask],
+        pivot_weights=weights[valid_mask],
+        sigma_candles=label_weighting["fill_sigma_candles"],
+        bandwidth=label_weighting["fill_bandwidth"],
+        bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
+        bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
+        sigma_min_candles=label_weighting["fill_sigma_min_candles"],
+        logger=logger,
+    )
+
+
 def compute_label_weights(
     n_values: int,
     indices: Sequence[int] | NDArray[np.integer],
@@ -1454,35 +1518,39 @@ def compute_label_weights(
     if fill_method == FILL_METHODS[0]:  # "zero"
         fill_weights = np.zeros(n_values, dtype=float)
     elif fill_method == FILL_METHODS[1]:  # "epsilon"
-        eps = label_weighting["fill_epsilon"]
-        baseline = label_weighting["fill_epsilon_baseline"]
-        if valid_mask.any():
-            pivot_values = weights[valid_mask]
-            if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
-                pivot_baseline = float(np.nanmean(pivot_values))
-            elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
-                pivot_baseline = float(np.nanmedian(pivot_values))
-            else:
-                raise ValueError(f"Invalid fill_epsilon_baseline value {baseline!r}")
-            if not np.isfinite(pivot_baseline):
-                pivot_baseline = 0.0
-        else:
-            pivot_baseline = 0.0
-        fill_weights = np.full(n_values, eps * pivot_baseline, dtype=float)
+        fill_weights = np.full(
+            n_values,
+            _compute_epsilon_floor(
+                weights,
+                valid_mask,
+                label_weighting["fill_epsilon"],
+                label_weighting["fill_epsilon_baseline"],
+            ),
+            dtype=float,
+        )
     elif fill_method == FILL_METHODS[2]:  # "gaussian"
-        fill_weights = _gaussian_fill_weights(
-            n_values=n_values,
-            pivot_indices=indices_array[valid_mask],
-            pivot_weights=weights[valid_mask],
-            sigma_candles=label_weighting["fill_sigma_candles"],
-            bandwidth=label_weighting["fill_bandwidth"],
-            bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
-            bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
-            sigma_min_candles=label_weighting["fill_sigma_min_candles"],
-            logger=logger,
+        fill_weights = _compute_gaussian_bumps(
+            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+        )
+    elif fill_method == FILL_METHODS[3]:  # "epsilon_gaussian"
+        fill_weights = _compute_gaussian_bumps(
+            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+        )
+        np.add(
+            fill_weights,
+            _compute_epsilon_floor(
+                weights,
+                valid_mask,
+                label_weighting["fill_epsilon"],
+                label_weighting["fill_epsilon_baseline"],
+            ),
+            out=fill_weights,
         )
     else:
-        raise ValueError(f"Invalid fill_method value {fill_method!r}")
+        raise ValueError(
+            f"Invalid fill_method value {fill_method!r}: "
+            f"supported values are {', '.join(FILL_METHODS)}"
+        )
 
     return _scatter_weights(
         n_values=n_values,
