@@ -17,6 +17,7 @@ from typing import (
     Final,
     Literal,
     TypeVar,
+    assert_never,
 )
 
 import numpy as np
@@ -35,6 +36,7 @@ from LabelTransformer import (
     FILL_BANDWIDTHS,
     FILL_EPSILON_BASELINES,
     FILL_METHODS,
+    LABEL_WEIGHT_SUPPORT_POLICIES,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
     SMOOTHING_METHODS,
@@ -455,6 +457,16 @@ _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     ),
     "fill_bandwidth_alpha": _ParamSpec(
         _NumericValidator(min_value=0, min_exclusive=True), output_type=float
+    ),
+    "support_policy": _ParamSpec(_EnumValidator(LABEL_WEIGHT_SUPPORT_POLICIES)),
+    "min_pivot_equivalent_count": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "min_positive_label_weight_fraction": _ParamSpec(
+        _NumericValidator(min_value=0.0, max_value=1.0), output_type=float
+    ),
+    "min_effective_sample_size": _ParamSpec(
+        _NumericValidator(min_value=1), output_type=float
     ),
 }
 
@@ -1112,22 +1124,103 @@ def _pivot_equivalent_count(
     return int((survivors >= threshold).sum())
 
 
+@dataclass(frozen=True, slots=True)
+class LabelWeightSupportSummary:
+    """Diagnostics for label-weighting support on a training split.
+
+    - ``total_rows``: filtered training row count
+    - ``positive_label_weight_count``/``positive_label_weight_fraction``:
+      rows with finite positive **label** weights (pre-composition)
+    - ``pivot_equivalent_count``: rows whose label weight is at least
+      ``_PIVOT_EQUIVALENT_MAX_FRACTION`` (10%) of the surviving maximum
+    - ``effective_sample_size``: Kish's ESS computed on the final
+      composed **sample** weights, ``(Sigma w)^2 / Sigma(w^2)``
+    """
+    total_rows: int
+    positive_label_weight_count: int
+    positive_label_weight_fraction: float
+    pivot_equivalent_count: int
+    effective_sample_size: float
+
+
+def _effective_sample_size(weights: NDArray[np.floating]) -> float:
+    """Kish's effective sample size ``(Sigma w)^2 / Sigma(w^2)`` over
+    finite strictly-positive entries. Returns 0.0 on empty/degenerate input.
+    """
+    arr = np.asarray(weights, dtype=float)
+    positive = arr[np.isfinite(arr) & (arr > 0.0)]
+    if positive.size == 0:
+        return 0.0
+    total = float(positive.sum())
+    sum_squares = float(np.square(positive).sum())
+    if total <= 0.0 or sum_squares <= 0.0 or not np.isfinite(total + sum_squares):
+        return 0.0
+    return float((total * total) / sum_squares)
+
+
+def summarize_label_weight_support(
+    label_weights: NDArray[np.floating],
+    sample_weights: NDArray[np.floating],
+) -> LabelWeightSupportSummary:
+    """Compute support diagnostics for one training split.
+
+    ``positive_label_weight_*`` and ``pivot_equivalent_count`` are derived from
+    ``label_weights``; ``effective_sample_size`` is Kish's ESS on
+    ``sample_weights`` (the composed output of ``compose_sample_weights``).
+    """
+    labels = np.asarray(label_weights, dtype=float)
+    samples = np.asarray(sample_weights, dtype=float)
+    if labels.shape != samples.shape:
+        raise ValueError(
+            f"summarize_label_weight_support: label_weights shape {labels.shape} "
+            f"!= sample_weights shape {samples.shape}"
+        )
+    n = int(labels.size)
+    positive_mask = np.isfinite(labels) & (labels > 0.0)
+    positive_count = int(positive_mask.sum())
+    positive_fraction = float(positive_count / n) if n else 0.0
+    return LabelWeightSupportSummary(
+        total_rows=n,
+        positive_label_weight_count=positive_count,
+        positive_label_weight_fraction=positive_fraction,
+        pivot_equivalent_count=_pivot_equivalent_count(labels, ~positive_mask),
+        effective_sample_size=_effective_sample_size(samples),
+    )
+
+
+class LabelWeightSupportError(ValueError):
+    """Raised by ``compose_sample_weights`` when label-weighted composition
+    fails a support condition that callers may want to route through a
+    ``support_policy`` (all rows dropped, or collapse with
+    ``on_collapse="raise"``). Shape-parity violations are bare
+    ``ValueError`` and propagate as hard contract failures.
+    """
+
+
 def compose_sample_weights(
     base_weights: NDArray[np.floating],
     label_weights: NDArray[np.floating] | None,
     *,
     logger: Logger,
+    on_collapse: Literal["raise", "fallback"] = "raise",
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
 
     Returns ``w in R+^N`` with ``mean(w) == 1``. Rows where
     ``label_weights[i]`` is non-finite or ``<= 0`` are dropped
     (``out[i] == 0``); surviving rows carry ``base_weights * label_weights``
-    rescaled to global ``mean == 1``. On collapse of the label-weighted
-    product, falls back to ``base_weights`` (with the label-derived
-    drop_mask) so the recency signal is preserved.
+    rescaled to global ``mean == 1``.
 
-    Raises ValueError on shape mismatch or when every row is dropped.
+    ``on_collapse`` controls the response when the label-weighted product
+    collapses on every surviving row: ``"raise"`` (default) surfaces the
+    collapse as ``LabelWeightSupportError`` so callers can route it through
+    their support policy; ``"fallback"`` warns and returns ``base_weights``
+    sanitized with the label-derived ``drop_mask`` so the recency signal
+    is preserved (used by eval splits that bypass support thresholds).
+
+    Raises ``ValueError`` on shape mismatch (hard contract failure).
+    Raises ``LabelWeightSupportError`` when every row is dropped or when
+    collapse occurs with ``on_collapse="raise"``.
     """
     base_weights = np.asarray(base_weights, dtype=float)
     if label_weights is None:
@@ -1143,7 +1236,7 @@ def compose_sample_weights(
         )
     drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
     if drop_mask.all():
-        raise ValueError(
+        raise LabelWeightSupportError(
             "compose_sample_weights: all rows dropped by zero or non-finite "
             "label weights; no surviving training samples"
         )
@@ -1160,8 +1253,6 @@ def compose_sample_weights(
             100.0 * SPARSE_TRAINING_MASS_THRESHOLD,
         )
     combined = base_weights * arr
-    # Detect collapse on surviving rows up front so the fallback can route
-    # to base weights rather than the uniform fallback inside sanitize.
     survivor_mask = ~(drop_mask | ~np.isfinite(combined) | (combined <= 0.0))
     survivor_total = float(np.where(survivor_mask, combined, 0.0).sum())
     if survivor_total > 0.0 and np.isfinite(survivor_total):
@@ -1171,17 +1262,26 @@ def compose_sample_weights(
             logger=logger,
             context="compose:label_weighted",
         )
-    logger.warning(
-        "compose_sample_weights: composed weights collapsed on surviving "
-        "rows (survivor_total=%g); falling back to base weights",
-        survivor_total,
-    )
-    return sanitize_and_renormalize(
-        base_weights,
-        drop_mask=drop_mask,
-        logger=logger,
-        context="compose:base_fallback",
-    )
+    match on_collapse:
+        case "raise":
+            raise LabelWeightSupportError(
+                f"compose_sample_weights: composed weights collapsed on "
+                f"surviving rows (survivor_total={survivor_total:.6g})"
+            )
+        case "fallback":
+            logger.warning(
+                "compose_sample_weights: composed weights collapsed on surviving "
+                "rows (survivor_total=%.6g); falling back to base weights",
+                survivor_total,
+            )
+            return sanitize_and_renormalize(
+                base_weights,
+                drop_mask=drop_mask,
+                logger=logger,
+                context="compose:base_fallback",
+            )
+        case _:
+            assert_never(on_collapse)
 
 
 def nan_average(
