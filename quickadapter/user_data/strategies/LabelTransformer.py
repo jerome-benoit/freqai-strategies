@@ -96,6 +96,12 @@ FILL_BANDWIDTHS: Final[tuple[FillBandwidth, ...]] = (
     "knn",  # 1 - per-pivot sigma from k-nearest-neighbor index distance
 )
 
+LabelWeightSupportPolicy = Literal["fallback", "raise"]
+LABEL_WEIGHT_SUPPORT_POLICIES: Final[tuple[LabelWeightSupportPolicy, ...]] = (
+    "fallback",  # 0 - warn and use sanitized base weights (default)
+    "raise",  # 1 - abort the fit with ValueError
+)
+
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
 STANDARDIZATION_TYPES: Final[tuple[StandardizationType, ...]] = (
     "none",  # 0 - w
@@ -126,6 +132,10 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "fill_bandwidth": FILL_BANDWIDTHS[0],  # "fixed"
     "fill_bandwidth_neighbors": 1,
     "fill_bandwidth_alpha": 0.5,
+    "support_policy": LABEL_WEIGHT_SUPPORT_POLICIES[0],  # "fallback"
+    "min_pivot_equivalent_count": 3,
+    "min_positive_label_weight_fraction": 0.01,
+    "min_effective_sample_size": 3.0,
 }
 
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
