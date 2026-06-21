@@ -2134,6 +2134,33 @@ def _(value: str, ctx: _FormatContext, depth: int) -> str:
     return escaped
 
 
+def _format_collection(
+    value: list | tuple | set,
+    ctx: _FormatContext,
+    depth: int,
+    brackets: tuple[str, str],
+    empty: str,
+    trailing_comma: bool = False,
+) -> str:
+    if not value:
+        return empty
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return f"{brackets[0]}<circular>{brackets[1]}"
+    if depth >= _MAX_DEPTH:
+        return f"{brackets[0]}...{brackets[1]}"
+    ctx.seen.add(obj_id)
+    items_iter = sorted(value, key=str) if isinstance(value, set) else value
+    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    content = ", ".join(items)
+    if trailing_comma and len(value) == 1 and len(items) == 1:
+        content += ","
+    ctx.seen.discard(obj_id)
+    return f"{brackets[0]}{content}{brackets[1]}"
+
+
 @_format_value.register(list)
 def _(value: list, ctx: _FormatContext, depth: int) -> str:
     return _format_collection(value, ctx, depth, ("[", "]"), "[]")
@@ -2173,33 +2200,6 @@ def _(value: dict, ctx: _FormatContext, depth: int) -> str:
 @_format_value.register(np.ndarray)
 def _(value: np.ndarray, ctx: _FormatContext, depth: int) -> str:
     return f"array{value.shape}"
-
-
-def _format_collection(
-    value: list | tuple | set,
-    ctx: _FormatContext,
-    depth: int,
-    brackets: tuple[str, str],
-    empty: str,
-    trailing_comma: bool = False,
-) -> str:
-    if not value:
-        return empty
-    obj_id = id(value)
-    if obj_id in ctx.seen:
-        return f"{brackets[0]}<circular>{brackets[1]}"
-    if depth >= _MAX_DEPTH:
-        return f"{brackets[0]}...{brackets[1]}"
-    ctx.seen.add(obj_id)
-    items_iter = sorted(value, key=str) if isinstance(value, set) else value
-    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
-    if len(value) > _MAX_ITEMS:
-        items.append(f"...+{len(value) - _MAX_ITEMS}")
-    content = ", ".join(items)
-    if trailing_comma and len(value) == 1 and len(items) == 1:
-        content += ","
-    ctx.seen.discard(obj_id)
-    return f"{brackets[0]}{content}{brackets[1]}"
 
 
 def format_dict(
