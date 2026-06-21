@@ -536,6 +536,16 @@ class QuickAdapterV3(IStrategy):
                 logger.info(
                     f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
                 )
+            logger.info(f"    support_policy: {col_weighting['support_policy']}")
+            logger.info(
+                f"    min_pivot_equivalent_count: {col_weighting['min_pivot_equivalent_count']}"
+            )
+            logger.info(
+                f"    min_positive_label_weight_fraction: {format_number(col_weighting['min_positive_label_weight_fraction'])}"
+            )
+            logger.info(
+                f"    min_effective_sample_size: {format_number(col_weighting['min_effective_sample_size'])}"
+            )
 
             col_smoothing = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
