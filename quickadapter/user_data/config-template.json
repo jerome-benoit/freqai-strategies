@@ -183,7 +183,9 @@
     "feature_parameters": {
       "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
       "include_timeframes": ["5m", "15m", "1h", "4h"],
+      "causal_mode": true,
       "label_period_candles": 18,
+      "label_horizon_candles": 18,
       "label_natr_multiplier": 10.5,
       "label_method": "topsis",
       "label_weights": [0.5, 5.0, 3.0, 1.0, 0.5, 5.0, 3.0],

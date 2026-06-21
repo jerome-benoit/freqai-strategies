@@ -53,9 +53,11 @@ from Utils import (
     get_callable_sha256,
     get_distance,
     get_label_defaults,
+    get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
+    label_known_at_column_name,
     label_weight_column_name,
     migrate_config,
     nan_average,
@@ -444,13 +446,17 @@ class QuickAdapterV3(IStrategy):
         )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
+            label_best_params = self.optuna_load_best_params(pair, "label")
             self._label_params[pair] = (
-                self.optuna_load_best_params(pair, "label")
-                if self.optuna_load_best_params(pair, "label")
+                label_best_params
+                if label_best_params
                 else {
                     "label_period_candles": feature_parameters.get(
                         "label_period_candles",
                         default_label_period_candles,
+                    ),
+                    "label_horizon_candles": get_label_horizon_candles(
+                        feature_parameters, logger
                     ),
                     "label_natr_multiplier": float(
                         feature_parameters.get(
@@ -809,6 +815,11 @@ class QuickAdapterV3(IStrategy):
         if isinstance(label_period_candles, int):
             self._label_params[pair]["label_period_candles"] = label_period_candles
 
+    def get_label_horizon_candles(self, pair: str) -> int:
+        label_params = self._label_params.get(pair, {})
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        return get_label_horizon_candles({**feature_parameters, **label_params}, logger)
+
     def get_label_natr_multiplier(self, pair: str) -> float:
         label_natr_multiplier = self._label_params.get(pair, {}).get(
             "label_natr_multiplier"
@@ -840,6 +851,7 @@ class QuickAdapterV3(IStrategy):
             return {
                 "natr_period": self.get_label_period_candles(pair),
                 "natr_multiplier": self.get_label_natr_multiplier(pair),
+                "label_horizon_candles": self.get_label_horizon_candles(pair),
             }
         return {}
 
@@ -897,6 +909,9 @@ class QuickAdapterV3(IStrategy):
             )
 
             dataframe[label_col] = label_data.series
+
+            if label_data.known_at_index is not None:
+                dataframe[label_known_at_column_name(label_col)] = label_data.known_at_index
 
             label_weight_col = label_weight_column_name(label_col)
             if is_weighting_active:
@@ -2269,4 +2284,4 @@ class QuickAdapterV3(IStrategy):
     def optuna_load_best_params(
         self, pair: str, namespace: str
     ) -> Optional[dict[str, Any]]:
-        return optuna_load_best_params(self.models_full_path, pair, namespace)
+        return optuna_load_best_params(self.models_full_path, pair, namespace, logger)

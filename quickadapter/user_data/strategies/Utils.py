@@ -277,6 +277,7 @@ EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
+_LABEL_KNOWN_AT_SUFFIX: Final[str] = "_known_at_index"
 
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 
@@ -285,9 +286,9 @@ LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 _FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
 
 
-@lru_cache(maxsize=16)
-def label_weight_column_name(label_col: str) -> str:
-    """Return the weight column name for a label column.
+@lru_cache(maxsize=64)
+def _label_aux_column_name(label_col: str, suffix: str) -> str:
+    """Derive a freqtrade-safe auxiliary column name from a label column.
 
     Strips the freqtrade label sigil (``&`` and its optional immediate ``-``
     separator) so the resulting column does NOT collide with
@@ -298,19 +299,34 @@ def label_weight_column_name(label_col: str) -> str:
     Raises ``ValueError`` if the result still contains ``&`` or ``%``.
 
     Examples:
-        ``"&s-extrema"``      -> ``"s-extrema_weight"`` (smoothed marker preserved)
-        ``"&-amplitude"``     -> ``"amplitude_weight"`` (raw target)
-        ``"&-time_to_pivot"`` -> ``"time_to_pivot_weight"`` (raw target)
-        ``"&-natr"``          -> ``"natr_weight"`` (raw target)
+        ``("&s-extrema", "_weight")``  -> ``"s-extrema_weight"``
+        ``("&-amplitude", "_weight")`` -> ``"amplitude_weight"``
+        ``("&s-extrema", "_known_at_index")`` -> ``"s-extrema_known_at_index"``
     """
     stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
-    result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
+    if not stripped or not any(c.isalpha() for c in stripped):
+        raise ValueError(
+            f"Auxiliary label column name derived from {label_col!r} with "
+            f"suffix {suffix!r} has empty or non-alphabetic stem after "
+            f"sigil strip"
+        )
+    result = f"{stripped}{suffix}"
     if "&" in result or "%" in result:
         raise ValueError(
-            f"label_weight_column_name produced collision-prone name {result!r} "
-            f"from {label_col!r}; weight columns must not contain '&' or '%'"
+            f"Auxiliary label column name {result!r} (derived from "
+            f"{label_col!r} with suffix {suffix!r}) must not contain '&' or '%'"
         )
     return result
+
+
+def label_weight_column_name(label_col: str) -> str:
+    """Return the weight column name for a label column."""
+    return _label_aux_column_name(label_col, LABEL_WEIGHT_SUFFIX)
+
+
+def label_known_at_column_name(label_col: str) -> str:
+    """Return the known-at-index column name for a label column."""
+    return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_SUFFIX)
 
 
 @dataclass
@@ -318,6 +334,7 @@ class LabelData:
     series: pd.Series
     indices: list[int]
     metrics: dict[str, list[float]]
+    known_at_index: pd.Series | None = None
 
 
 LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
@@ -334,6 +351,7 @@ def _generate_extrema_label(
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
+    label_horizon_candles = get_label_horizon_candles(params, logger)
 
     (
         pivots_indices,
@@ -364,7 +382,17 @@ def _generate_extrema_label(
         "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
     }
 
-    return LabelData(series=series, indices=pivots_indices, metrics=metrics)
+    known_at_index = pd.Series(
+        np.arange(len(dataframe), dtype=np.int64) + label_horizon_candles,
+        index=dataframe.index,
+    )
+
+    return LabelData(
+        series=series,
+        indices=pivots_indices,
+        metrics=metrics,
+        known_at_index=known_at_index,
+    )
 
 
 register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
@@ -673,6 +701,48 @@ def get_label_prediction_config(
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_prediction", config, logger)
+
+
+_CAUSAL_MODE_FALSE_WARNED: bool = False
+
+
+def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
+    causal_mode = config.get("causal_mode", True)
+    if not isinstance(causal_mode, bool):
+        logger.warning(
+            f"Invalid causal_mode value {causal_mode!r}: must be bool, using True"
+        )
+        return True
+    global _CAUSAL_MODE_FALSE_WARNED
+    if causal_mode is False and not _CAUSAL_MODE_FALSE_WARNED:
+        logger.warning(
+            "feature_parameters.causal_mode=false is deprecated: "
+            "causal split guards disabled; label lookahead leakage possible. "
+            "Default causal_mode=true; causal_mode=false for acausal baselines only."
+        )
+        _CAUSAL_MODE_FALSE_WARNED = True
+    return causal_mode
+
+
+def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
+    def _is_positive_int(value: Any) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, np.integer))
+            and value >= 1
+        )
+
+    fallback = config.get("label_period_candles", 1)
+    if not _is_positive_int(fallback):
+        fallback = 1
+    label_horizon_candles = config.get("label_horizon_candles", fallback)
+    if not _is_positive_int(label_horizon_candles):
+        logger.warning(
+            f"Invalid label_horizon_candles value {label_horizon_candles!r}: "
+            f"must be int >= 1, using {fallback!r}"
+        )
+        return fallback
+    return int(label_horizon_candles)
 
 
 _EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
@@ -3027,15 +3097,132 @@ def _optuna_suggest_int_from_range(
     return trial.suggest_int(name, int_range[0], int_range[1], log=log)
 
 
+_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
+"""Wire format version of optuna-label-best-params-{pair}.json.
+
+Incremented on every on-disk JSON shape change (top-level keys, params layout).
+"""
+
+
+def _is_unversioned_label_best_params_shape(best_params: Any) -> bool:
+    """Detect an unversioned Optuna label best-params dict.
+
+    An unversioned dict is a raw best-params mapping missing
+    ``schema_version``; its field shape matches the inner ``params`` of
+    a schema-versioned ``{schema_version, params}`` dict.
+    """
+    return (
+        isinstance(best_params, dict)
+        and "schema_version" not in best_params
+        and "label_period_candles" in best_params
+        and "label_natr_multiplier" in best_params
+    )
+
+
+def _validate_optuna_label_best_params(
+    best_params: Any,
+    pair: str,
+    logger: Logger | None,
+) -> dict[str, Any] | None:
+    if _is_unversioned_label_best_params_shape(best_params):
+        if logger is not None:
+            logger.info(
+                f"[{pair}] Optuna label best-params (no schema_version) "
+                f"read as v{_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION} in-memory."
+            )
+        best_params = {
+            "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
+            "params": best_params,
+        }
+    if not isinstance(best_params, dict):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: not a dict"
+            )
+        return None
+    schema_version = best_params.get("schema_version")
+    if schema_version is None:
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: missing schema_version"
+            )
+        return None
+    if isinstance(schema_version, bool) or not isinstance(
+        schema_version, (int, np.integer)
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"schema_version={schema_version!r} type "
+                f"(must be int)"
+            )
+        return None
+    if schema_version != _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION:
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: incompatible "
+                f"schema_version={schema_version!r} "
+                f"(expected {_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION})"
+            )
+        return None
+    params = best_params.get("params")
+    if not isinstance(params, dict):
+        if logger is not None:
+            logger.warning(f"[{pair}] Ignoring Optuna label best-params without params")
+        return None
+    label_period_candles = params.get("label_period_candles")
+    label_natr_multiplier = params.get("label_natr_multiplier")
+    if (
+        isinstance(label_period_candles, bool)
+        or not isinstance(label_period_candles, (int, np.integer))
+        or label_period_candles < 1
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"label_period_candles={label_period_candles!r} (must be int >= 1)"
+            )
+        return None
+    if (
+        isinstance(label_natr_multiplier, bool)
+        or not isinstance(label_natr_multiplier, (int, float, np.integer, np.floating))
+        or not np.isfinite(label_natr_multiplier)
+        or label_natr_multiplier <= 0
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"label_natr_multiplier={label_natr_multiplier!r} "
+                f"(must be finite number > 0)"
+            )
+        return None
+    label_horizon_candles = params.get("label_horizon_candles")
+    if label_horizon_candles is not None and (
+        isinstance(label_horizon_candles, bool)
+        or not isinstance(label_horizon_candles, (int, np.integer))
+        or label_horizon_candles < 1
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"label_horizon_candles={label_horizon_candles!r} (must be int >= 1)"
+            )
+        return None
+    return params
+
+
 def optuna_load_best_params(
-    base_path: Path, pair: str, namespace: str
+    base_path: Path, pair: str, namespace: str, logger: Logger | None = None
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
     if best_params_path.is_file():
         with best_params_path.open("r", encoding="utf-8") as read_file:
-            return json.load(read_file)
+            best_params = json.load(read_file)
+        if namespace == "label":
+            return _validate_optuna_label_best_params(best_params, pair, logger)
+        return best_params
     return None
 
 
@@ -3050,8 +3237,15 @@ def optuna_save_best_params(
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
     try:
+        if namespace == "label":
+            best_params: dict[str, Any] = {
+                "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
+                "params": params,
+            }
+        else:
+            best_params = params
         with best_params_path.open("w", encoding="utf-8") as write_file:
-            json.dump(params, write_file, indent=4)
+            json.dump(best_params, write_file, indent=4)
     except Exception as e:
         logger.error(
             f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
