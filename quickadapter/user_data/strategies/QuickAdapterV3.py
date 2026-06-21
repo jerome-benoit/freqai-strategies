@@ -41,6 +41,8 @@ from Utils import (
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
     TRADE_PRICE_TARGETS,
+    _OPTUNA_NAMESPACES,
+    OptunaNamespace,
     alligator,
     bottom_log_return,
     calculate_quantile,
@@ -447,7 +449,9 @@ class QuickAdapterV3(IStrategy):
         )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
-            label_best_params = self.optuna_load_best_params(pair, "label")
+            label_best_params = self.optuna_load_best_params(
+                pair, _OPTUNA_NAMESPACES.label
+            )
             self._label_params[pair] = (
                 label_best_params
                 if label_best_params
@@ -2329,6 +2333,6 @@ class QuickAdapterV3(IStrategy):
         return annotations
 
     def optuna_load_best_params(
-        self, pair: str, namespace: str
+        self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
         return optuna_load_best_params(self.models_full_path, pair, namespace, logger)

@@ -16,6 +16,7 @@ from typing import (
     Callable,
     Final,
     Literal,
+    NamedTuple,
     TypeVar,
     assert_never,
 )
@@ -3542,6 +3543,19 @@ def _optuna_suggest_int_from_range(
     return trial.suggest_int(name, int_range[0], int_range[1], log=log)
 
 
+OptunaNamespace = Literal["hp", "label"]
+
+
+class _OptunaNamespaces(NamedTuple):
+    hp: Literal["hp"] = "hp"
+    label: Literal["label"] = "label"
+
+
+# Exported for cross-module use; consumers may import despite the leading
+# underscore on the instance (the class ``_OptunaNamespaces`` stays private).
+_OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
+
+
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
 """Wire format version of optuna-label-best-params-{pair}.json.
 
@@ -3655,7 +3669,10 @@ def _validate_optuna_label_best_params(
 
 
 def optuna_load_best_params(
-    base_path: Path, pair: str, namespace: str, logger: Logger | None = None
+    base_path: Path,
+    pair: str,
+    namespace: OptunaNamespace,
+    logger: Logger | None = None,
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -3663,7 +3680,7 @@ def optuna_load_best_params(
     if best_params_path.is_file():
         with best_params_path.open("r", encoding="utf-8") as read_file:
             best_params = json.load(read_file)
-        if namespace == "label":
+        if namespace == _OPTUNA_NAMESPACES.label:
             return _validate_optuna_label_best_params(best_params, pair, logger)
         return best_params
     return None
@@ -3672,19 +3689,22 @@ def optuna_load_best_params(
 def optuna_save_best_params(
     base_path: Path,
     pair: str,
-    namespace: str,
+    namespace: OptunaNamespace,
     params: dict[str, Any],
     logger: Logger,
+    selection_metadata: dict[str, Any] | None = None,
 ) -> None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
     try:
-        if namespace == "label":
+        if namespace == _OPTUNA_NAMESPACES.label:
             best_params: dict[str, Any] = {
                 "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
                 "params": params,
             }
+            if selection_metadata is not None:
+                best_params["selection_metadata"] = selection_metadata
         else:
             best_params = params
         with best_params_path.open("w", encoding="utf-8") as write_file:
