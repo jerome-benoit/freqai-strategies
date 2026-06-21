@@ -104,7 +104,11 @@
       "fill_epsilon_baseline": "mean",
       "fill_sigma_candles": 10.0,
       "fill_sigma_min_candles": 0.5,
-      "fill_bandwidth_alpha": 0.5
+      "fill_bandwidth_alpha": 0.5,
+      "support_policy": "fallback",
+      "min_pivot_equivalent_count": 3,
+      "min_positive_label_weight_fraction": 0.01,
+      "min_effective_sample_size": 3.0
       // Per-label format:
       // "default": {
       //   "strategy": "none"
@@ -183,7 +187,9 @@
     "feature_parameters": {
       "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
       "include_timeframes": ["5m", "15m", "1h", "4h"],
+      "causal_mode": true,
       "label_period_candles": 18,
+      "label_horizon_candles": 18,
       "label_natr_multiplier": 10.5,
       "label_method": "topsis",
       "label_weights": [0.5, 5.0, 3.0, 1.0, 0.5, 5.0, 3.0],

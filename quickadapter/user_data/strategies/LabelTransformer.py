@@ -22,6 +22,18 @@ from sklearn.preprocessing import (
 
 logger = logging.getLogger(__name__)
 
+
+def _clip_sigmoid_domain(values: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Clip ``values`` to the open interval ``(-1, 1)``.
+
+    The clip bounds are ``[-1 + eps, 1 - eps]`` with
+    ``eps = np.finfo(float).eps`` so that downstream ``logit((x + 1) / 2)``
+    stays finite at the boundary. NaN values pass through unchanged.
+    """
+    eps = np.finfo(float).eps
+    return np.clip(values, -1.0 + eps, 1.0 - eps)
+
+
 CombinedMetric = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
@@ -64,11 +76,12 @@ WEIGHT_STRATEGIES: Final[tuple[WeightStrategy, ...]] = (
     "combined",
 )
 
-FillMethod = Literal["zero", "epsilon", "gaussian"]
+FillMethod = Literal["zero", "epsilon", "gaussian", "epsilon_gaussian"]
 FILL_METHODS: Final[tuple[FillMethod, ...]] = (
     "zero",  # 0 - hard zero (default)
-    "epsilon",  # 1 - flat fraction of pivot baseline
-    "gaussian",  # 2 - per-row Gaussian decay around each pivot
+    "epsilon",  # 1 - epsilon floor
+    "gaussian",  # 2 - per-pivot Gaussian bumps
+    "epsilon_gaussian",  # 3 - additive: epsilon floor + per-pivot Gaussian bumps
 )
 
 FillEpsilonBaseline = Literal["mean", "median"]
@@ -81,6 +94,12 @@ FillBandwidth = Literal["fixed", "knn"]
 FILL_BANDWIDTHS: Final[tuple[FillBandwidth, ...]] = (
     "fixed",  # 0 - constant sigma = fill_sigma_candles
     "knn",  # 1 - per-pivot sigma from k-nearest-neighbor index distance
+)
+
+LabelWeightSupportPolicy = Literal["fallback", "raise"]
+LABEL_WEIGHT_SUPPORT_POLICIES: Final[tuple[LabelWeightSupportPolicy, ...]] = (
+    "fallback",  # 0 - warn and use sanitized base weights (default)
+    "raise",  # 1 - abort the fit with ValueError
 )
 
 StandardizationType = Literal["none", "zscore", "robust", "mmad", "power_yj"]
@@ -113,6 +132,10 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "fill_bandwidth": FILL_BANDWIDTHS[0],  # "fixed"
     "fill_bandwidth_neighbors": 1,
     "fill_bandwidth_alpha": 0.5,
+    "support_policy": LABEL_WEIGHT_SUPPORT_POLICIES[0],  # "fallback"
+    "min_pivot_equivalent_count": 3,
+    "min_positive_label_weight_fraction": 0.01,
+    "min_effective_sample_size": 3.0,
 }
 
 DEFAULTS_LABEL_PIPELINE: Final[dict[str, Any]] = {
@@ -341,7 +364,16 @@ class LabelTransformer(BaseTransform):
             return values
         out = values.copy()
         if inverse:
-            out[mask] = sp.special.logit((values[mask] + 1.0) / 2.0) / scale
+            clipped = _clip_sigmoid_domain(values[mask])
+            clipped_count = int(
+                np.count_nonzero((clipped != values[mask]) & ~np.isnan(values[mask]))
+            )
+            if clipped_count:
+                logger.warning(
+                    "sigmoid_inverse_normalize: clipped %d value(s) outside the open (-1, 1) domain",
+                    clipped_count,
+                )
+            out[mask] = sp.special.logit((clipped + 1.0) / 2.0) / scale
         else:
             out[mask] = 2.0 * sp.special.expit(scale * values[mask]) - 1.0
         return out

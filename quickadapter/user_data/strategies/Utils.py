@@ -4,10 +4,10 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
-from collections.abc import Sequence
 from logging import Logger
 from pathlib import Path
 from typing import (
@@ -17,7 +17,7 @@ from typing import (
     Final,
     Literal,
     TypeVar,
-    Union,
+    assert_never,
 )
 
 import numpy as np
@@ -36,6 +36,7 @@ from LabelTransformer import (
     FILL_BANDWIDTHS,
     FILL_EPSILON_BASELINES,
     FILL_METHODS,
+    LABEL_WEIGHT_SUPPORT_POLICIES,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
     SMOOTHING_METHODS,
@@ -45,6 +46,7 @@ from LabelTransformer import (
     WEIGHT_STRATEGIES,
     CombinedAggregation,
     CombinedMetric,
+    FillEpsilonBaseline,
     SmoothingMethod,
     SmoothingMode,
 )
@@ -59,6 +61,246 @@ else:
     XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
+
+
+@dataclass(frozen=True, slots=True)
+class FiniteSample:
+    """Filtered finite-only sample produced by :func:`finite_sample`.
+
+    ``values`` holds the subset of the input that survives the finite (and
+    optionally positive) mask. ``total_count``, ``finite_count`` and
+    ``dropped_count`` describe the input partition; the invariant
+    ``dropped_count == total_count - finite_count`` always holds. Construct
+    via :func:`finite_sample`; instances bypassing the factory do NOT
+    enforce the finite-only invariant on ``values``.
+    """
+
+    values: NDArray[np.floating]
+    total_count: int
+    finite_count: int
+    dropped_count: int
+
+
+def finite_sample(
+    values: Any,
+    *,
+    positive_only: bool = False,
+) -> FiniteSample:
+    """Return a :class:`FiniteSample` from ``values``.
+
+    Flattens ``values`` to 1-d, coerces to ``float64``, strips non-finite
+    entries. With ``positive_only=True`` also strips entries ``<= 0.0``
+    (strict; signed zero is rejected).
+    """
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    mask = np.isfinite(arr)
+    if positive_only:
+        mask &= arr > 0.0
+    sample = arr[mask]
+    return FiniteSample(
+        values=sample,
+        total_count=int(arr.size),
+        finite_count=int(sample.size),
+        dropped_count=int(arr.size - sample.size),
+    )
+
+
+def safe_distribution_fit(
+    sample: FiniteSample,
+    fit_fn: Callable[..., Any],
+    *,
+    fallback: Sequence[float],
+    context: str,
+    logger: Logger | None = None,
+    min_count: int = 2,
+    require_variance: bool = True,
+    **fit_kwargs: Any,
+) -> tuple[float, ...]:
+    """Fit a scipy distribution with finite/variance/error guards.
+
+    Caller is responsible for constructing ``sample`` via
+    :func:`finite_sample` (with ``positive_only=True`` for strictly
+    positive distributions like ``weibull_min``). The ``fallback`` length
+    must match the parameter count returned by ``fit_fn`` (e.g. 3 for
+    ``weibull_min`` with ``floc=0``, 2 for ``norm``); a length mismatch
+    is treated as a fit failure and ``fallback`` is returned.
+    """
+    fallback_tuple = tuple(float(v) for v in fallback)
+
+    if sample.finite_count < min_count:
+        if logger is not None:
+            logger.warning(
+                "%s: insufficient finite sample for distribution fit "
+                "(usable=%d, total=%d, dropped=%d); using fallback %r",
+                context,
+                sample.finite_count,
+                sample.total_count,
+                sample.dropped_count,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    sample_range = float(np.max(sample.values) - np.min(sample.values))
+    if require_variance and np.isclose(sample_range, 0.0):
+        if logger is not None:
+            logger.warning(
+                "%s: constant finite sample for distribution fit "
+                "(usable=%d, dropped=%d); using fallback %r",
+                context,
+                sample.finite_count,
+                sample.dropped_count,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    try:
+        params = tuple(float(v) for v in fit_fn(sample.values, **fit_kwargs))
+    except (RuntimeError, ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        if logger is not None:
+            logger.warning(
+                "%s: distribution fit failed (%s); using fallback %r",
+                context,
+                exc,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    if len(params) != len(fallback_tuple) or not all(np.isfinite(params)):
+        if logger is not None:
+            logger.warning(
+                "%s: distribution fit returned invalid params %r; using fallback %r",
+                context,
+                params,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    if sample.dropped_count and logger is not None:
+        logger.debug(
+            "%s: dropped %d/%d non-finite values before distribution fit",
+            context,
+            sample.dropped_count,
+            sample.total_count,
+        )
+    return params
+
+
+def _result_index(*values: Any) -> pd.Index | None:
+    for value in values:
+        if isinstance(value, pd.Series):
+            return value.index
+    return None
+
+
+def _safe_numeric_result(result: NDArray[np.floating], *values: Any) -> Any:
+    """Attach the first input Series's index to a numeric result (positional).
+
+    The result is positionally aligned with the first input Series found in
+    ``values``; pandas index alignment is NOT performed. Callers passing
+    multiple Series must ensure they share a common index.
+    """
+    index = _result_index(*values)
+    if index is not None and result.ndim == 1 and result.size == len(index):
+        return pd.Series(result, index=index)
+    if result.ndim == 0:
+        return float(result)
+    return result
+
+
+def safe_divide(
+    numerator: Any,
+    denominator: Any,
+    *,
+    fallback: float = np.nan,
+    context: str = "safe_divide",
+    logger: Logger | None = None,
+) -> Any:
+    """Element-wise division with non-finite and near-zero denominator guards.
+
+    Replaces results from divisions whose numerator or denominator is non-finite,
+    or whose denominator satisfies ``np.isclose(denom, 0.0)`` (default
+    ``atol=1e-8``), with ``fallback``. The fallback is also substituted for
+    any non-finite division output (e.g. ``inf`` from a subnormal denominator
+    that escapes the ``np.isclose`` gate).
+
+    Returns a ``pd.Series`` indexed on the first Series among the inputs when
+    shapes align, a Python ``float`` for 0-d results, otherwise an ``ndarray``.
+    """
+    numerator_arr = np.asarray(numerator, dtype=float)
+    denominator_arr = np.asarray(denominator, dtype=float)
+    valid_mask = (
+        np.isfinite(numerator_arr)
+        & np.isfinite(denominator_arr)
+        & ~np.isclose(denominator_arr, 0.0)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = np.divide(
+            numerator_arr,
+            denominator_arr,
+            out=np.full(
+                np.broadcast_shapes(numerator_arr.shape, denominator_arr.shape),
+                fallback,
+                dtype=float,
+            ),
+            where=valid_mask,
+        )
+    finite_mask = np.isfinite(result)
+    invalid_count = int(np.size(result) - np.count_nonzero(finite_mask))
+    result = np.where(finite_mask, result, fallback)
+    if invalid_count and logger is not None:
+        logger.debug(
+            "%s: replaced %d invalid division result(s) with %r",
+            context,
+            invalid_count,
+            fallback,
+        )
+    return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
+
+
+def safe_log_ratio(
+    numerator: Any,
+    denominator: Any,
+    *,
+    fallback: float = np.nan,
+    context: str = "safe_log_ratio",
+    logger: Logger | None = None,
+) -> Any:
+    """Element-wise ``log(numerator / denominator)`` with positivity guards.
+
+    Requires both operands to be finite and strictly positive; otherwise the
+    output position is set to ``fallback``. Any non-finite log output is also
+    coerced to ``fallback``.
+
+    Returns a ``pd.Series`` indexed on the first Series among the inputs when
+    shapes align, a Python ``float`` for 0-d results, otherwise an ``ndarray``.
+    """
+    numerator_arr = np.asarray(numerator, dtype=float)
+    denominator_arr = np.asarray(denominator, dtype=float)
+    valid_mask = (
+        np.isfinite(numerator_arr)
+        & np.isfinite(denominator_arr)
+        & (numerator_arr > 0.0)
+        & (denominator_arr > 0.0)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_num = np.log(
+            np.where(valid_mask, numerator_arr, 1.0),
+        )
+        log_den = np.log(
+            np.where(valid_mask, denominator_arr, 1.0),
+        )
+        result = np.where(valid_mask, log_num - log_den, fallback)
+    finite_mask = np.isfinite(result)
+    invalid_count = int(np.size(result) - np.count_nonzero(finite_mask))
+    result = np.where(finite_mask, result, fallback)
+    if invalid_count and logger is not None:
+        logger.debug(
+            "%s: replaced %d invalid log-ratio result(s) with %r",
+            context,
+            invalid_count,
+            fallback,
+        )
+    return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +458,16 @@ _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     "fill_bandwidth_alpha": _ParamSpec(
         _NumericValidator(min_value=0, min_exclusive=True), output_type=float
     ),
+    "support_policy": _ParamSpec(_EnumValidator(LABEL_WEIGHT_SUPPORT_POLICIES)),
+    "min_pivot_equivalent_count": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "min_positive_label_weight_fraction": _ParamSpec(
+        _NumericValidator(min_value=0.0, max_value=1.0), output_type=float
+    ),
+    "min_effective_sample_size": _ParamSpec(
+        _NumericValidator(min_value=1), output_type=float
+    ),
 }
 
 _PIPELINE_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -276,6 +528,7 @@ EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
+_LABEL_KNOWN_AT_SUFFIX: Final[str] = "_known_at_index"
 
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 
@@ -284,9 +537,9 @@ LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 _FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
 
 
-@lru_cache(maxsize=16)
-def label_weight_column_name(label_col: str) -> str:
-    """Return the weight column name for a label column.
+@lru_cache(maxsize=64)
+def _label_aux_column_name(label_col: str, suffix: str) -> str:
+    """Derive a freqtrade-safe auxiliary column name from a label column.
 
     Strips the freqtrade label sigil (``&`` and its optional immediate ``-``
     separator) so the resulting column does NOT collide with
@@ -297,19 +550,34 @@ def label_weight_column_name(label_col: str) -> str:
     Raises ``ValueError`` if the result still contains ``&`` or ``%``.
 
     Examples:
-        ``"&s-extrema"``      -> ``"s-extrema_weight"`` (smoothed marker preserved)
-        ``"&-amplitude"``     -> ``"amplitude_weight"`` (raw target)
-        ``"&-time_to_pivot"`` -> ``"time_to_pivot_weight"`` (raw target)
-        ``"&-natr"``          -> ``"natr_weight"`` (raw target)
+        ``("&s-extrema", "_weight")``  -> ``"s-extrema_weight"``
+        ``("&-amplitude", "_weight")`` -> ``"amplitude_weight"``
+        ``("&s-extrema", "_known_at_index")`` -> ``"s-extrema_known_at_index"``
     """
     stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
-    result = f"{stripped}{LABEL_WEIGHT_SUFFIX}"
+    if not stripped or not any(c.isalpha() for c in stripped):
+        raise ValueError(
+            f"Auxiliary label column name derived from {label_col!r} with "
+            f"suffix {suffix!r} has empty or non-alphabetic stem after "
+            f"sigil strip"
+        )
+    result = f"{stripped}{suffix}"
     if "&" in result or "%" in result:
         raise ValueError(
-            f"label_weight_column_name produced collision-prone name {result!r} "
-            f"from {label_col!r}; weight columns must not contain '&' or '%'"
+            f"Auxiliary label column name {result!r} (derived from "
+            f"{label_col!r} with suffix {suffix!r}) must not contain '&' or '%'"
         )
     return result
+
+
+def label_weight_column_name(label_col: str) -> str:
+    """Return the weight column name for a label column."""
+    return _label_aux_column_name(label_col, LABEL_WEIGHT_SUFFIX)
+
+
+def label_known_at_column_name(label_col: str) -> str:
+    """Return the known-at-index column name for a label column."""
+    return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_SUFFIX)
 
 
 @dataclass
@@ -317,6 +585,7 @@ class LabelData:
     series: pd.Series
     indices: list[int]
     metrics: dict[str, list[float]]
+    known_at_index: pd.Series | None = None
 
 
 LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
@@ -333,6 +602,7 @@ def _generate_extrema_label(
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
+    label_horizon_candles = get_label_horizon_candles(params, logger)
 
     (
         pivots_indices,
@@ -363,7 +633,17 @@ def _generate_extrema_label(
         "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
     }
 
-    return LabelData(series=series, indices=pivots_indices, metrics=metrics)
+    known_at_index = pd.Series(
+        np.arange(len(dataframe), dtype=np.int64) + label_horizon_candles,
+        index=dataframe.index,
+    )
+
+    return LabelData(
+        series=series,
+        indices=pivots_indices,
+        metrics=metrics,
+        known_at_index=known_at_index,
+    )
 
 
 register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
@@ -674,6 +954,48 @@ def get_label_prediction_config(
     return get_label_kind_config("label_prediction", config, logger)
 
 
+_CAUSAL_MODE_FALSE_WARNED: bool = False
+
+
+def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
+    causal_mode = config.get("causal_mode", True)
+    if not isinstance(causal_mode, bool):
+        logger.warning(
+            f"Invalid causal_mode value {causal_mode!r}: must be bool, using True"
+        )
+        return True
+    global _CAUSAL_MODE_FALSE_WARNED
+    if causal_mode is False and not _CAUSAL_MODE_FALSE_WARNED:
+        logger.warning(
+            "feature_parameters.causal_mode=false is deprecated: "
+            "causal split guards disabled; label lookahead leakage possible. "
+            "Default causal_mode=true; causal_mode=false for acausal baselines only."
+        )
+        _CAUSAL_MODE_FALSE_WARNED = True
+    return causal_mode
+
+
+def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
+    def _is_positive_int(value: Any) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, np.integer))
+            and value >= 1
+        )
+
+    fallback = config.get("label_period_candles", 1)
+    if not _is_positive_int(fallback):
+        fallback = 1
+    label_horizon_candles = config.get("label_horizon_candles", fallback)
+    if not _is_positive_int(label_horizon_candles):
+        logger.warning(
+            f"Invalid label_horizon_candles value {label_horizon_candles!r}: "
+            f"must be int >= 1, using {fallback!r}"
+        )
+        return fallback
+    return int(label_horizon_candles)
+
+
 _EPOCH_MS_MIN = 1_262_304_000_000  # 2010-01-01T00:00:00Z
 _EPOCH_MS_MAX = 2_051_222_400_000  # 2035-01-01T00:00:00Z
 
@@ -802,22 +1124,104 @@ def _pivot_equivalent_count(
     return int((survivors >= threshold).sum())
 
 
+@dataclass(frozen=True, slots=True)
+class LabelWeightSupportSummary:
+    """Diagnostics for label-weighting support on a training split.
+
+    - ``total_rows``: filtered training row count
+    - ``positive_label_weight_count``/``positive_label_weight_fraction``:
+      rows with finite positive **label** weights (pre-composition)
+    - ``pivot_equivalent_count``: rows whose label weight is at least
+      ``_PIVOT_EQUIVALENT_MAX_FRACTION`` (10%) of the surviving maximum
+    - ``effective_sample_size``: Kish's ESS computed on the final
+      composed **sample** weights, ``(Sigma w)^2 / Sigma(w^2)``
+    """
+
+    total_rows: int
+    positive_label_weight_count: int
+    positive_label_weight_fraction: float
+    pivot_equivalent_count: int
+    effective_sample_size: float
+
+
+def _effective_sample_size(weights: NDArray[np.floating]) -> float:
+    """Kish's effective sample size ``(Sigma w)^2 / Sigma(w^2)`` over
+    finite strictly-positive entries. Returns 0.0 on empty/degenerate input.
+    """
+    arr = np.asarray(weights, dtype=float)
+    positive = arr[np.isfinite(arr) & (arr > 0.0)]
+    if positive.size == 0:
+        return 0.0
+    total = float(positive.sum())
+    sum_squares = float(np.square(positive).sum())
+    if total <= 0.0 or sum_squares <= 0.0 or not np.isfinite(total + sum_squares):
+        return 0.0
+    return float((total * total) / sum_squares)
+
+
+def summarize_label_weight_support(
+    label_weights: NDArray[np.floating],
+    sample_weights: NDArray[np.floating],
+) -> LabelWeightSupportSummary:
+    """Compute support diagnostics for one training split.
+
+    ``positive_label_weight_*`` and ``pivot_equivalent_count`` are derived from
+    ``label_weights``; ``effective_sample_size`` is Kish's ESS on
+    ``sample_weights`` (the composed output of ``compose_sample_weights``).
+    """
+    labels = np.asarray(label_weights, dtype=float)
+    samples = np.asarray(sample_weights, dtype=float)
+    if labels.shape != samples.shape:
+        raise ValueError(
+            f"summarize_label_weight_support: label_weights shape {labels.shape} "
+            f"!= sample_weights shape {samples.shape}"
+        )
+    n = int(labels.size)
+    positive_mask = np.isfinite(labels) & (labels > 0.0)
+    positive_count = int(positive_mask.sum())
+    positive_fraction = float(positive_count / n) if n else 0.0
+    return LabelWeightSupportSummary(
+        total_rows=n,
+        positive_label_weight_count=positive_count,
+        positive_label_weight_fraction=positive_fraction,
+        pivot_equivalent_count=_pivot_equivalent_count(labels, ~positive_mask),
+        effective_sample_size=_effective_sample_size(samples),
+    )
+
+
+class LabelWeightSupportError(ValueError):
+    """Raised by ``compose_sample_weights`` when label-weighted composition
+    fails a support condition that callers may want to route through a
+    ``support_policy`` (all rows dropped, or collapse with
+    ``on_collapse="raise"``). Shape-parity violations are bare
+    ``ValueError`` and propagate as hard contract failures.
+    """
+
+
 def compose_sample_weights(
     base_weights: NDArray[np.floating],
     label_weights: NDArray[np.floating] | None,
     *,
     logger: Logger,
+    on_collapse: Literal["raise", "fallback"] = "raise",
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
 
     Returns ``w in R+^N`` with ``mean(w) == 1``. Rows where
     ``label_weights[i]`` is non-finite or ``<= 0`` are dropped
     (``out[i] == 0``); surviving rows carry ``base_weights * label_weights``
-    rescaled to global ``mean == 1``. On collapse of the label-weighted
-    product, falls back to ``base_weights`` (with the label-derived
-    drop_mask) so the recency signal is preserved.
+    rescaled to global ``mean == 1``.
 
-    Raises ValueError on shape mismatch or when every row is dropped.
+    ``on_collapse`` controls the response when the label-weighted product
+    collapses on every surviving row: ``"raise"`` (default) surfaces the
+    collapse as ``LabelWeightSupportError`` so callers can route it through
+    their support policy; ``"fallback"`` warns and returns ``base_weights``
+    sanitized with the label-derived ``drop_mask`` so the recency signal
+    is preserved (used by eval splits that bypass support thresholds).
+
+    Raises ``ValueError`` on shape mismatch (hard contract failure).
+    Raises ``LabelWeightSupportError`` when every row is dropped or when
+    collapse occurs with ``on_collapse="raise"``.
     """
     base_weights = np.asarray(base_weights, dtype=float)
     if label_weights is None:
@@ -833,7 +1237,7 @@ def compose_sample_weights(
         )
     drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
     if drop_mask.all():
-        raise ValueError(
+        raise LabelWeightSupportError(
             "compose_sample_weights: all rows dropped by zero or non-finite "
             "label weights; no surviving training samples"
         )
@@ -850,8 +1254,6 @@ def compose_sample_weights(
             100.0 * SPARSE_TRAINING_MASS_THRESHOLD,
         )
     combined = base_weights * arr
-    # Detect collapse on surviving rows up front so the fallback can route
-    # to base weights rather than the uniform fallback inside sanitize.
     survivor_mask = ~(drop_mask | ~np.isfinite(combined) | (combined <= 0.0))
     survivor_total = float(np.where(survivor_mask, combined, 0.0).sum())
     if survivor_total > 0.0 and np.isfinite(survivor_total):
@@ -861,33 +1263,73 @@ def compose_sample_weights(
             logger=logger,
             context="compose:label_weighted",
         )
-    logger.warning(
-        "compose_sample_weights: composed weights collapsed on surviving "
-        "rows (survivor_total=%g); falling back to base weights",
-        survivor_total,
-    )
-    return sanitize_and_renormalize(
-        base_weights,
-        drop_mask=drop_mask,
-        logger=logger,
-        context="compose:base_fallback",
-    )
+    match on_collapse:
+        case "raise":
+            raise LabelWeightSupportError(
+                f"compose_sample_weights: composed weights collapsed on "
+                f"surviving rows (survivor_total={survivor_total:.6g})"
+            )
+        case "fallback":
+            logger.warning(
+                "compose_sample_weights: composed weights collapsed on surviving "
+                "rows (survivor_total=%.6g); falling back to base weights",
+                survivor_total,
+            )
+            return sanitize_and_renormalize(
+                base_weights,
+                drop_mask=drop_mask,
+                logger=logger,
+                context="compose:base_fallback",
+            )
+        case _:
+            assert_never(on_collapse)
 
 
 def nan_average(
     values: NDArray[np.floating],
     weights: NDArray[np.floating] | None = None,
+    *,
+    logger: Logger | None = None,
 ) -> float:
+    """Weighted nan-aware mean with finite/zero-weight guards.
+
+    Returns ``np.nan`` when no finite (value, weight) pair survives, when
+    ``weights.shape != values.shape``, or when the finite-weights subset
+    sums to zero. Diverges from ``np.nanmean`` by stripping ``+/-inf``
+    along with ``NaN``; current call sites feed bounded quantities so the
+    ``+/-inf`` strip is a no-op in practice.
+    """
     values = np.asarray(values, dtype=float)
     if values.size == 0:
         return np.nan
 
     if weights is None:
-        return float(np.nanmean(values))
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            return np.nan
+        return float(np.mean(finite_values))
 
     weights = np.asarray(weights, dtype=float)
+    if weights.shape != values.shape:
+        if logger is not None:
+            logger.warning(
+                "nan_average: values/weights shape mismatch (%r != %r); using fallback NaN",
+                values.shape,
+                weights.shape,
+            )
+        return np.nan
+
     mask = np.isfinite(values) & np.isfinite(weights)
     if not mask.any():
+        return np.nan
+
+    weight_sum = float(np.sum(weights[mask]))
+    if not np.isfinite(weight_sum) or np.isclose(weight_sum, 0.0):
+        if logger is not None:
+            logger.warning(
+                "nan_average: finite weights sum to %g; using fallback NaN",
+                weight_sum,
+            )
         return np.nan
 
     return float(np.average(values[mask], weights=weights[mask]))
@@ -1182,7 +1624,7 @@ def _gaussian_fill_weights(
     sigma_min_candles: float = 0.5,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
-    """Per-row max of Gaussian-decayed pivot weights.
+    """Per-row max of per-pivot Gaussian bumps.
 
     Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``.
 
@@ -1266,9 +1708,15 @@ def _scatter_weights(
 ) -> NDArray[np.floating]:
     """Scatter per-pivot weights into a full-length array.
 
-    Pivot rows (validated via ``valid_mask``) receive ``weights``; off-pivot
-    rows receive the corresponding entry of ``fill_weights`` (shape
-    ``(n_values,)``).
+    Pivot rows (validated via ``valid_mask``) take
+    ``max(weights, fill_weights)`` so a pivot row is never written below
+    the off-pivot field at its index. Off-pivot rows receive the
+    corresponding entry of ``fill_weights`` (shape ``(n_values,)``). The
+    ``max`` fixes the sub-floor / sub-bump pivot-row dip that arises when
+    the off-pivot field exceeds the pivot's raw weight: via the floor for
+    ``epsilon`` / ``epsilon_gaussian``, via a stronger neighbor's bump for
+    ``gaussian`` / ``epsilon_gaussian``. ``zero`` is bit-identical to a
+    plain assignment because its fill is 0.
     """
     if fill_weights.shape != (n_values,):
         raise ValueError(
@@ -1283,7 +1731,8 @@ def _scatter_weights(
             f"got {indices_array.size} indices but {weights.size} weights"
         )
     weights_array = fill_weights.astype(float, copy=True)
-    weights_array[indices_array[valid_mask]] = weights[valid_mask]
+    pivot_idx = indices_array[valid_mask]
+    weights_array[pivot_idx] = np.maximum(weights[valid_mask], weights_array[pivot_idx])
     return weights_array
 
 
@@ -1389,6 +1838,62 @@ def _compute_combined_label_weights(
     )
 
 
+def _compute_epsilon_floor(
+    weights: NDArray[np.floating],
+    valid_mask: NDArray[np.bool_],
+    eps: float,
+    baseline: FillEpsilonBaseline,
+) -> float:
+    """Flat off-pivot weight value ``phi = eps * B(W)``.
+
+    ``B(W)`` is the mean or median of valid pivot weights, selected by
+    ``baseline`` (``FILL_EPSILON_BASELINES``). Returns ``0.0`` on degenerate
+    inputs (no valid pivots, non-finite baseline).
+    """
+    if not valid_mask.any():
+        return 0.0
+    pivot_values = weights[valid_mask]
+    if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
+        b = float(np.nanmean(pivot_values))
+    elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
+        b = float(np.nanmedian(pivot_values))
+    else:
+        raise ValueError(
+            f"Invalid fill_epsilon_baseline value {baseline!r}: "
+            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+        )
+    if not np.isfinite(b):
+        b = 0.0
+    return float(eps) * b
+
+
+def _compute_gaussian_bumps(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    weights: NDArray[np.floating],
+    label_weighting: dict[str, Any],
+    *,
+    logger: Logger | None,
+) -> NDArray[np.floating]:
+    """Per-row max of per-pivot Gaussian bumps.
+
+    Adapter over ``_gaussian_fill_weights`` that pulls tunables from
+    ``label_weighting`` and applies the ``valid_mask``.
+    """
+    return _gaussian_fill_weights(
+        n_values=n_values,
+        pivot_indices=indices_array[valid_mask],
+        pivot_weights=weights[valid_mask],
+        sigma_candles=label_weighting["fill_sigma_candles"],
+        bandwidth=label_weighting["fill_bandwidth"],
+        bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
+        bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
+        sigma_min_candles=label_weighting["fill_sigma_min_candles"],
+        logger=logger,
+    )
+
+
 def compute_label_weights(
     n_values: int,
     indices: Sequence[int] | NDArray[np.integer],
@@ -1454,35 +1959,39 @@ def compute_label_weights(
     if fill_method == FILL_METHODS[0]:  # "zero"
         fill_weights = np.zeros(n_values, dtype=float)
     elif fill_method == FILL_METHODS[1]:  # "epsilon"
-        eps = label_weighting["fill_epsilon"]
-        baseline = label_weighting["fill_epsilon_baseline"]
-        if valid_mask.any():
-            pivot_values = weights[valid_mask]
-            if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
-                pivot_baseline = float(np.nanmean(pivot_values))
-            elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
-                pivot_baseline = float(np.nanmedian(pivot_values))
-            else:
-                raise ValueError(f"Invalid fill_epsilon_baseline value {baseline!r}")
-            if not np.isfinite(pivot_baseline):
-                pivot_baseline = 0.0
-        else:
-            pivot_baseline = 0.0
-        fill_weights = np.full(n_values, eps * pivot_baseline, dtype=float)
+        fill_weights = np.full(
+            n_values,
+            _compute_epsilon_floor(
+                weights,
+                valid_mask,
+                label_weighting["fill_epsilon"],
+                label_weighting["fill_epsilon_baseline"],
+            ),
+            dtype=float,
+        )
     elif fill_method == FILL_METHODS[2]:  # "gaussian"
-        fill_weights = _gaussian_fill_weights(
-            n_values=n_values,
-            pivot_indices=indices_array[valid_mask],
-            pivot_weights=weights[valid_mask],
-            sigma_candles=label_weighting["fill_sigma_candles"],
-            bandwidth=label_weighting["fill_bandwidth"],
-            bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
-            bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
-            sigma_min_candles=label_weighting["fill_sigma_min_candles"],
-            logger=logger,
+        fill_weights = _compute_gaussian_bumps(
+            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+        )
+    elif fill_method == FILL_METHODS[3]:  # "epsilon_gaussian"
+        fill_weights = _compute_gaussian_bumps(
+            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+        )
+        np.add(
+            fill_weights,
+            _compute_epsilon_floor(
+                weights,
+                valid_mask,
+                label_weighting["fill_epsilon"],
+                label_weighting["fill_epsilon_baseline"],
+            ),
+            out=fill_weights,
         )
     else:
-        raise ValueError(f"Invalid fill_method value {fill_method!r}")
+        raise ValueError(
+            f"Invalid fill_method value {fill_method!r}: "
+            f"supported values are {', '.join(FILL_METHODS)}"
+        )
 
     return _scatter_weights(
         n_values=n_values,
@@ -1720,7 +2229,12 @@ def calculate_n_extrema(series: pd.Series) -> int:
     return sp.signal.find_peaks(-series)[0].size + sp.signal.find_peaks(series)[0].size
 
 
-def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
+def top_log_return(
+    dataframe: pd.DataFrame,
+    period: int,
+    *,
+    logger: Logger | None = None,
+) -> pd.Series:
     """Logarithmic return from rolling maximum: ``log(close / rolling_max)``.
 
     Measures distance below the highest close in previous ``period`` bars.
@@ -1733,10 +2247,20 @@ def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     )
 
-    return np.log(dataframe.get("close") / previous_close_top)
+    return safe_log_ratio(
+        dataframe.get("close"),
+        previous_close_top,
+        context="top_log_return",
+        logger=logger,
+    )
 
 
-def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
+def bottom_log_return(
+    dataframe: pd.DataFrame,
+    period: int,
+    *,
+    logger: Logger | None = None,
+) -> pd.Series:
     """Logarithmic return from rolling minimum: ``log(close / rolling_min)``.
 
     Measures distance above the lowest close in previous ``period`` bars.
@@ -1749,10 +2273,20 @@ def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
     )
 
-    return np.log(dataframe.get("close") / previous_close_bottom)
+    return safe_log_ratio(
+        dataframe.get("close"),
+        previous_close_bottom,
+        context="bottom_log_return",
+        logger=logger,
+    )
 
 
-def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
+def price_retracement_percent(
+    dataframe: pd.DataFrame,
+    period: int,
+    *,
+    logger: Logger | None = None,
+) -> pd.Series:
     """Normalized log-scale position of close within rolling high/low range.
 
     Formula: ``log(close / low) / log(high / low)``. Returns 0 at bottom, 1
@@ -1768,10 +2302,26 @@ def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series
     previous_close_high = (
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     )
-    denominator = np.log(previous_close_high / previous_close_low)
-    return (np.log(dataframe.get("close") / previous_close_low) / denominator).where(
-        ~np.isclose(denominator, 0.0), 0.0
+    denominator = safe_log_ratio(
+        previous_close_high,
+        previous_close_low,
+        context="price_retracement_percent:denominator",
+        logger=logger,
     )
+    numerator = safe_log_ratio(
+        dataframe.get("close"),
+        previous_close_low,
+        context="price_retracement_percent:numerator",
+        logger=logger,
+    )
+    result = safe_divide(
+        numerator,
+        denominator,
+        fallback=np.nan,
+        context="price_retracement_percent",
+        logger=logger,
+    )
+    return result.where(~np.isclose(denominator, 0.0), 0.0)
 
 
 # VWAP bands
@@ -1954,6 +2504,8 @@ def ewo(
     mamode: str = "sma",
     zero_lag: bool = False,
     normalize: bool = False,
+    *,
+    logger: Logger | None = None,
 ) -> pd.Series:
     """
     Calculate the Elliott Wave Oscillator (EWO) using two moving averages.
@@ -1974,7 +2526,15 @@ def ewo(
     ma2 = ma_fn(prices, timeperiod=ma2_length)
     madiff = ma1 - ma2
     if normalize:
-        madiff = (madiff / prices) * 100.0
+        madiff = (
+            safe_divide(
+                madiff,
+                prices,
+                context="ewo:normalize",
+                logger=logger,
+            )
+            * 100.0
+        )
     return madiff
 
 
@@ -2055,6 +2615,8 @@ def zigzag(
     natr_period: int = 14,
     natr_multiplier: float = 9.0,
     normalize: bool = False,
+    *,
+    logger: Logger | None = None,
 ) -> tuple[
     list[int],
     list[float],
@@ -2084,9 +2646,30 @@ def zigzag(
 
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
-    closes_log = np.log(df.get("close").to_numpy())
-    highs_log = np.log(df.get("high").to_numpy())
-    lows_log = np.log(df.get("low").to_numpy())
+    closes = df.get("close").to_numpy(dtype=float)
+    highs = df.get("high").to_numpy(dtype=float)
+    lows = df.get("low").to_numpy(dtype=float)
+    invalid_price_count = int(
+        np.count_nonzero(
+            ~np.isfinite(closes)
+            | ~np.isfinite(highs)
+            | ~np.isfinite(lows)
+            | (closes <= 0.0)
+            | (highs <= 0.0)
+            | (lows <= 0.0)
+        )
+    )
+    if invalid_price_count and logger is not None:
+        logger.debug(
+            "zigzag: %d rows have non-finite or non-positive OHLC values; derived pivot metrics are NaN at those positions",
+            invalid_price_count,
+        )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        closes_log = np.where(
+            np.isfinite(closes) & (closes > 0.0), np.log(closes), np.nan
+        )
+        highs_log = np.where(np.isfinite(highs) & (highs > 0.0), np.log(highs), np.nan)
+        lows_log = np.where(np.isfinite(lows) & (lows > 0.0), np.log(lows), np.nan)
     volumes = df.get("volume").to_numpy()
 
     state: TrendDirection = TrendDirection.NEUTRAL
@@ -2555,7 +3138,7 @@ REGRESSORS: Final[tuple[Regressor, ...]] = (
     "catboost",
 )
 
-RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
+RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 
@@ -2959,15 +3542,130 @@ def _optuna_suggest_int_from_range(
     return trial.suggest_int(name, int_range[0], int_range[1], log=log)
 
 
+_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
+"""Wire format version of optuna-label-best-params-{pair}.json.
+
+Incremented on every on-disk JSON shape change (top-level keys, params layout).
+"""
+
+
+def _is_unversioned_label_best_params_shape(best_params: Any) -> bool:
+    """Detect an unversioned Optuna label best params dict.
+
+    An unversioned dict is a raw best params mapping missing
+    ``schema_version``; its field shape matches the inner ``params`` of
+    a schema-versioned ``{schema_version, params}`` dict.
+    """
+    return (
+        isinstance(best_params, dict)
+        and "schema_version" not in best_params
+        and "label_period_candles" in best_params
+        and "label_natr_multiplier" in best_params
+    )
+
+
+def _validate_optuna_label_best_params(
+    best_params: Any,
+    pair: str,
+    logger: Logger | None,
+) -> dict[str, Any] | None:
+    if _is_unversioned_label_best_params_shape(best_params):
+        if logger is not None:
+            logger.info(
+                f"[{pair}] Optuna label best params (no schema_version) "
+                f"read as v{_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION} in-memory."
+            )
+        best_params = {
+            "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
+            "params": best_params,
+        }
+    if not isinstance(best_params, dict):
+        if logger is not None:
+            logger.warning(f"[{pair}] Ignoring Optuna label best params: not a dict")
+        return None
+    schema_version = best_params.get("schema_version")
+    if schema_version is None:
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: missing schema_version"
+            )
+        return None
+    if isinstance(schema_version, bool) or not isinstance(
+        schema_version, (int, np.integer)
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: invalid "
+                f"schema_version={schema_version!r} type "
+                f"(must be int)"
+            )
+        return None
+    if schema_version != _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION:
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: incompatible "
+                f"schema_version={schema_version!r} "
+                f"(expected {_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION})"
+            )
+        return None
+    params = best_params.get("params")
+    if not isinstance(params, dict):
+        if logger is not None:
+            logger.warning(f"[{pair}] Ignoring Optuna label best params without params")
+        return None
+    label_period_candles = params.get("label_period_candles")
+    label_natr_multiplier = params.get("label_natr_multiplier")
+    if (
+        isinstance(label_period_candles, bool)
+        or not isinstance(label_period_candles, (int, np.integer))
+        or label_period_candles < 1
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: invalid "
+                f"label_period_candles={label_period_candles!r} (must be int >= 1)"
+            )
+        return None
+    if (
+        isinstance(label_natr_multiplier, bool)
+        or not isinstance(label_natr_multiplier, (int, float, np.integer, np.floating))
+        or not np.isfinite(label_natr_multiplier)
+        or label_natr_multiplier <= 0
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: invalid "
+                f"label_natr_multiplier={label_natr_multiplier!r} "
+                f"(must be finite number > 0)"
+            )
+        return None
+    label_horizon_candles = params.get("label_horizon_candles")
+    if label_horizon_candles is not None and (
+        isinstance(label_horizon_candles, bool)
+        or not isinstance(label_horizon_candles, (int, np.integer))
+        or label_horizon_candles < 1
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: invalid "
+                f"label_horizon_candles={label_horizon_candles!r} (must be int >= 1)"
+            )
+        return None
+    return params
+
+
 def optuna_load_best_params(
-    base_path: Path, pair: str, namespace: str
+    base_path: Path, pair: str, namespace: str, logger: Logger | None = None
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
     if best_params_path.is_file():
         with best_params_path.open("r", encoding="utf-8") as read_file:
-            return json.load(read_file)
+            best_params = json.load(read_file)
+        if namespace == "label":
+            return _validate_optuna_label_best_params(best_params, pair, logger)
+        return best_params
     return None
 
 
@@ -2982,8 +3680,15 @@ def optuna_save_best_params(
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
     try:
+        if namespace == "label":
+            best_params: dict[str, Any] = {
+                "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
+                "params": params,
+            }
+        else:
+            best_params = params
         with best_params_path.open("w", encoding="utf-8") as write_file:
-            json.dump(params, write_file, indent=4)
+            json.dump(best_params, write_file, indent=4)
     except Exception as e:
         logger.error(
             f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",

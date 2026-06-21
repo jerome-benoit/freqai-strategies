@@ -53,15 +53,18 @@ from Utils import (
     get_callable_sha256,
     get_distance,
     get_label_defaults,
+    get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
+    label_known_at_column_name,
     label_weight_column_name,
     migrate_config,
     nan_average,
     non_zero_diff,
     optuna_load_best_params,
     price_retracement_percent,
+    safe_divide,
     smooth,
     top_log_return,
     validate_range,
@@ -444,13 +447,17 @@ class QuickAdapterV3(IStrategy):
         )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
+            label_best_params = self.optuna_load_best_params(pair, "label")
             self._label_params[pair] = (
-                self.optuna_load_best_params(pair, "label")
-                if self.optuna_load_best_params(pair, "label")
+                label_best_params
+                if label_best_params
                 else {
                     "label_period_candles": feature_parameters.get(
                         "label_period_candles",
                         default_label_period_candles,
+                    ),
+                    "label_horizon_candles": get_label_horizon_candles(
+                        feature_parameters, logger
                     ),
                     "label_natr_multiplier": float(
                         feature_parameters.get(
@@ -500,15 +507,22 @@ class QuickAdapterV3(IStrategy):
                 logger.info(
                     f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
                 )
-            logger.info(f"    fill_method: {col_weighting['fill_method']}")
-            if col_weighting["fill_method"] == FILL_METHODS[1]:  # "epsilon"
+            fill_method = col_weighting["fill_method"]
+            logger.info(f"    fill_method: {fill_method}")
+            if fill_method in (
+                FILL_METHODS[1],  # "epsilon"
+                FILL_METHODS[3],  # "epsilon_gaussian"
+            ):
                 logger.info(
                     f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}"
                 )
                 logger.info(
                     f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
                 )
-            elif col_weighting["fill_method"] == FILL_METHODS[2]:  # "gaussian"
+            if fill_method in (
+                FILL_METHODS[2],  # "gaussian"
+                FILL_METHODS[3],  # "epsilon_gaussian"
+            ):
                 logger.info(
                     f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
                 )
@@ -522,6 +536,16 @@ class QuickAdapterV3(IStrategy):
                 logger.info(
                     f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
                 )
+            logger.info(f"    support_policy: {col_weighting['support_policy']}")
+            logger.info(
+                f"    min_pivot_equivalent_count: {col_weighting['min_pivot_equivalent_count']}"
+            )
+            logger.info(
+                f"    min_positive_label_weight_fraction: {format_number(col_weighting['min_positive_label_weight_fraction'])}"
+            )
+            logger.info(
+                f"    min_effective_sample_size: {format_number(col_weighting['min_effective_sample_size'])}"
+            )
 
             col_smoothing = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
@@ -641,10 +665,16 @@ class QuickAdapterV3(IStrategy):
             length=period,
         )
         # TODO [BREAKING]: Rename %-tcp-period -> %-top_log_return-period
-        dataframe["%-tcp-period"] = top_log_return(dataframe, period=period)
+        dataframe["%-tcp-period"] = top_log_return(
+            dataframe, period=period, logger=logger
+        )
         # TODO [BREAKING]: Rename %-bcp-period -> %-bottom_log_return-period
-        dataframe["%-bcp-period"] = bottom_log_return(dataframe, period=period)
-        dataframe["%-prp-period"] = price_retracement_percent(dataframe, period=period)
+        dataframe["%-bcp-period"] = bottom_log_return(
+            dataframe, period=period, logger=logger
+        )
+        dataframe["%-prp-period"] = price_retracement_percent(
+            dataframe, period=period, logger=logger
+        )
         dataframe["%-cti-period"] = pta.cti(closes, length=period)
         dataframe["%-chop-period"] = pta.chop(
             highs,
@@ -669,7 +699,24 @@ class QuickAdapterV3(IStrategy):
         volumes = dataframe.get("volume")
 
         # TODO [BREAKING]: Rename %-close_pct_change -> %-close_log_return
-        dataframe["%-close_pct_change"] = np.log(closes).diff()
+        close_values = closes.to_numpy(dtype=float)
+        invalid_close_count = int(
+            np.count_nonzero(~np.isfinite(close_values) | (close_values <= 0.0))
+        )
+        if invalid_close_count:
+            logger.debug(
+                "feature_engineering_expand_basic: %d close values are non-finite or non-positive; close log return is NaN at those positions",
+                invalid_close_count,
+            )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dataframe["%-close_pct_change"] = Series(
+                np.where(
+                    np.isfinite(close_values) & (close_values > 0.0),
+                    np.log(close_values),
+                    np.nan,
+                ),
+                index=dataframe.index,
+            ).diff()
         dataframe["%-raw_volume"] = volumes
         dataframe["%-obv"] = ta.OBV(dataframe)
         label_period_candles = self.get_label_period_candles(str(metadata.get("pair")))
@@ -685,6 +732,7 @@ class QuickAdapterV3(IStrategy):
             mamode="ema",
             zero_lag=True,
             normalize=True,
+            logger=logger,
         )
         dataframe["%-diff_to_psar"] = closes - ta.SAR(
             dataframe, acceleration=0.02, maximum=0.2
@@ -699,9 +747,12 @@ class QuickAdapterV3(IStrategy):
         dataframe["kc_lowerband"] = kc["KCLe_14_2.0"]
         dataframe["kc_middleband"] = kc["KCBe_14_2.0"]
         dataframe["kc_upperband"] = kc["KCUe_14_2.0"]
-        dataframe["%-kc_width"] = (
-            dataframe["kc_upperband"] - dataframe["kc_lowerband"]
-        ) / dataframe["kc_middleband"]
+        dataframe["%-kc_width"] = safe_divide(
+            dataframe["kc_upperband"] - dataframe["kc_lowerband"],
+            dataframe["kc_middleband"],
+            context="feature_engineering_expand_basic:kc_width",
+            logger=logger,
+        )
         (
             dataframe["bb_upperband"],
             dataframe["bb_middleband"],
@@ -712,9 +763,12 @@ class QuickAdapterV3(IStrategy):
             nbdevup=2.2,
             nbdevdn=2.2,
         )
-        dataframe["%-bb_width"] = (
-            dataframe["bb_upperband"] - dataframe["bb_lowerband"]
-        ) / dataframe["bb_middleband"]
+        dataframe["%-bb_width"] = safe_divide(
+            dataframe["bb_upperband"] - dataframe["bb_lowerband"],
+            dataframe["bb_middleband"],
+            context="feature_engineering_expand_basic:bb_width",
+            logger=logger,
+        )
         dataframe["%-ibs"] = (closes - lows) / non_zero_diff(highs, lows)
         dataframe["jaw"], dataframe["teeth"], dataframe["lips"] = alligator(
             dataframe, pricemode="median", zero_lag=True
@@ -744,9 +798,12 @@ class QuickAdapterV3(IStrategy):
             dataframe["vwap_middleband"],
             dataframe["vwap_upperband"],
         ) = vwapb(dataframe, 20, 1.0)
-        dataframe["%-vwap_width"] = (
-            dataframe["vwap_upperband"] - dataframe["vwap_lowerband"]
-        ) / dataframe["vwap_middleband"]
+        dataframe["%-vwap_width"] = safe_divide(
+            dataframe["vwap_upperband"] - dataframe["vwap_lowerband"],
+            dataframe["vwap_middleband"],
+            context="feature_engineering_expand_basic:vwap_width",
+            logger=logger,
+        )
         dataframe["%-dist_to_vwap_upperband"] = get_distance(
             closes, dataframe["vwap_upperband"]
         )
@@ -802,6 +859,11 @@ class QuickAdapterV3(IStrategy):
         if isinstance(label_period_candles, int):
             self._label_params[pair]["label_period_candles"] = label_period_candles
 
+    def get_label_horizon_candles(self, pair: str) -> int:
+        label_params = self._label_params.get(pair, {})
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        return get_label_horizon_candles({**feature_parameters, **label_params}, logger)
+
     def get_label_natr_multiplier(self, pair: str) -> float:
         label_natr_multiplier = self._label_params.get(pair, {}).get(
             "label_natr_multiplier"
@@ -833,6 +895,7 @@ class QuickAdapterV3(IStrategy):
             return {
                 "natr_period": self.get_label_period_candles(pair),
                 "natr_multiplier": self.get_label_natr_multiplier(pair),
+                "label_horizon_candles": self.get_label_horizon_candles(pair),
             }
         return {}
 
@@ -890,6 +953,11 @@ class QuickAdapterV3(IStrategy):
             )
 
             dataframe[label_col] = label_data.series
+
+            if label_data.known_at_index is not None:
+                dataframe[label_known_at_column_name(label_col)] = (
+                    label_data.known_at_index
+                )
 
             label_weight_col = label_weight_column_name(label_col)
             if is_weighting_active:
@@ -1089,6 +1157,7 @@ class QuickAdapterV3(IStrategy):
         return nan_average(
             np.array([entry_natr, current_natr, median_natr]),
             weights=np.array([entry_weight, current_weight, median_weight]),
+            logger=logger,
         )
 
     def get_trade_quantile_interpolation_natr(
@@ -2262,4 +2331,4 @@ class QuickAdapterV3(IStrategy):
     def optuna_load_best_params(
         self, pair: str, namespace: str
     ) -> Optional[dict[str, Any]]:
-        return optuna_load_best_params(self.models_full_path, pair, namespace)
+        return optuna_load_best_params(self.models_full_path, pair, namespace, logger)

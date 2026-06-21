@@ -3,9 +3,21 @@ import logging
 import random
 import time
 import warnings
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import AbstractSet, Any, Callable, Final, Literal, Optional, Union, cast
+from typing import (
+    AbstractSet,
+    Any,
+    Callable,
+    ClassVar,
+    Final,
+    Literal,
+    Optional,
+    Union,
+    assert_never,
+    cast,
+)
 
 import numpy as np
 import optuna
@@ -33,12 +45,14 @@ from sklearn_extra.cluster import KMedoids
 from LabelTransformer import (
     CUSTOM_THRESHOLD_METHODS,
     EXTREMA_SELECTION_METHODS,
+    LABEL_WEIGHT_SUPPORT_POLICIES,
     PREDICTION_METHODS,
     SKIMAGE_THRESHOLD_METHODS,
     THRESHOLD_METHODS,
     CustomThresholdMethod,
     ExtremaSelectionMethod,
     LabelTransformer,
+    LabelWeightSupportPolicy,
     SkimageThresholdMethod,
     ThresholdMethod,
     get_label_column_config,
@@ -48,24 +62,32 @@ from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULTS_LABEL_PREDICTION,
     LABEL_COLUMNS,
+    LabelWeightSupportError,
     REGRESSORS,
     Regressor,
     compose_sample_weights,
     ensure_datetime_series,
     make_test_set_and_weights,
     fit_regressor,
+    finite_sample,
     format_dict,
     format_number,
+    get_causal_mode,
     get_label_defaults,
+    get_label_horizon_candles,
     get_label_pipeline_config,
     get_label_prediction_config,
+    get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
+    label_known_at_column_name,
     label_weight_column_name,
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
     sanitize_and_renormalize,
+    safe_distribution_fit,
+    summarize_label_weight_support,
     soft_extremum,
     zigzag,
 )
@@ -79,10 +101,66 @@ ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
 DensityMethod = Literal["knn", "medoid"]
 SelectionMethod = Union[DistanceMethod, ClusterMethod, DensityMethod]
 ValidationMode = Literal["warn", "raise", "none"]
-SplitFn = Callable[[pd.DataFrame, pd.DataFrame, NDArray[np.floating]], dict[str, Any]]
+SplitFn = Callable[
+    [pd.DataFrame, pd.DataFrame, "SampleWeightInputs", pd.DataFrame], dict[str, Any]
+]
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_AT_NONE_LOGGED: set[tuple[str, str]] = set()
+
+
+def _log_known_at_none_once(pair: str, context: str) -> None:
+    key = (pair, context)
+    if key in _KNOWN_AT_NONE_LOGGED:
+        return
+    _KNOWN_AT_NONE_LOGGED.add(key)
+    logger.info(
+        f"[{pair}] {context}: no <label>_known_at_index column present; "
+        "causal guards use position-based purge only (label-aware filtering disabled)"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SampleWeightInputs:
+    base: NDArray[np.floating]
+    label: NDArray[np.floating] | None
+    label_weighting_config: dict[str, Any]
+
+    _REQUIRED_LABEL_WEIGHTING_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "support_policy",
+            "min_pivot_equivalent_count",
+            "min_positive_label_weight_fraction",
+            "min_effective_sample_size",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        if self.base.ndim != 1:
+            raise ValueError(
+                f"SampleWeightInputs.base: must be 1-D (ndim={self.base.ndim})"
+            )
+        if self.label is not None and self.base.shape != self.label.shape:
+            raise ValueError(
+                f"SampleWeightInputs.label: shape {self.label.shape} "
+                f"!= base shape {self.base.shape}"
+            )
+        missing = (
+            self._REQUIRED_LABEL_WEIGHTING_KEYS - self.label_weighting_config.keys()
+        )
+        if missing:
+            raise KeyError(
+                f"SampleWeightInputs.label_weighting_config: missing required keys "
+                f"{sorted(missing)}"
+            )
+        policy = self.label_weighting_config["support_policy"]
+        if policy not in LABEL_WEIGHT_SUPPORT_POLICIES:
+            raise ValueError(
+                f"SampleWeightInputs.label_weighting_config.support_policy: "
+                f"{policy!r} not in {LABEL_WEIGHT_SUPPORT_POLICIES}"
+            )
 
 
 class QuickAdapterRegressorV3(BaseRegressionModel):
@@ -102,10 +180,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.11.13"
+    version = "3.12.0"
 
     _TEST_SIZE: Final[float] = 0.1
-
+    # Substituted whenever the Weibull DI cutoff (``weibull_min.ppf``) is
+    # non-finite (cold start or degenerate fit). Preserves the prior
+    # pre-warm-up heuristic for the outlier-quantile cutoff scale.
+    _DI_CUTOFF_DEFAULT: Final[float] = 2.0
     _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
         {"test_size", "train_size", "random_state", "shuffle", "stratify"}
     )
@@ -326,23 +407,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
 
     @staticmethod
-    def _shuffle_in_unison(
-        features: pd.DataFrame,
-        labels: pd.DataFrame,
-        weights: NDArray[np.floating],
-        seed: int,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
-        features = features.sample(frac=1, random_state=seed).reset_index(drop=True)
-        labels = labels.sample(frac=1, random_state=seed).reset_index(drop=True)
-        weights = (
-            pd.DataFrame(weights)
-            .sample(frac=1, random_state=seed)
-            .reset_index(drop=True)
-            .to_numpy()[:, 0]
-        )
-        return features, labels, weights
-
-    @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(
@@ -356,6 +420,246 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if value is None:
             return None
         return QuickAdapterRegressorV3._coerce_int(value, name, minimum=minimum)
+
+    @staticmethod
+    def _validate_index_alignment(
+        filtered_dataframe: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+    ) -> None:
+        if not unfiltered_df.index.is_unique:
+            raise ValueError(
+                "unfiltered_df.index must be unique for causal split guards"
+            )
+        if not filtered_dataframe.index.isin(unfiltered_df.index).all():
+            raise ValueError(
+                "filtered_dataframe.index must be a subset of unfiltered_df.index"
+            )
+
+    @staticmethod
+    def _row_positions(
+        filtered_dataframe: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+    ) -> pd.Series:
+        QuickAdapterRegressorV3._validate_index_alignment(
+            filtered_dataframe, unfiltered_df
+        )
+        positions = pd.Series(
+            np.arange(len(unfiltered_df), dtype=np.int64), index=unfiltered_df.index
+        )
+        return positions.loc[filtered_dataframe.index]
+
+    @staticmethod
+    def _known_at_index(
+        filtered_dataframe: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+    ) -> pd.Series | None:
+        """Per-row leak boundary across all registered labels.
+
+        Returns the row-wise ``max`` of every present
+        ``<label>_known_at_index`` column. A label whose column is missing
+        or contains any NaN is skipped (silently — labels can opt in by
+        emitting the column). Returns ``None`` only when no label exposes
+        a usable column, in which case the caller falls back to the
+        position-based purge.
+        """
+        QuickAdapterRegressorV3._validate_index_alignment(
+            filtered_dataframe, unfiltered_df
+        )
+        series_list: list[pd.Series] = []
+        for label_col in LABEL_COLUMNS:
+            known_at_col = label_known_at_column_name(label_col)
+            if known_at_col not in unfiltered_df.columns:
+                continue
+            known_at = unfiltered_df.loc[filtered_dataframe.index, known_at_col]
+            if known_at.isna().any():
+                continue
+            series_list.append(pd.to_numeric(known_at, errors="raise"))
+        if not series_list:
+            return None
+        if len(series_list) == 1:
+            return series_list[0]
+        return pd.concat(series_list, axis=1).max(axis=1).astype(np.int64)
+
+    @staticmethod
+    def _filter_train_by_mask(
+        train_features: pd.DataFrame,
+        train_labels: pd.DataFrame,
+        train_weights: NDArray[np.floating],
+        keep_mask: NDArray[np.bool_],
+        context: str,
+        train_label_weights: NDArray[np.floating] | None = None,
+    ) -> tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        NDArray[np.floating],
+        NDArray[np.floating] | None,
+    ]:
+        removed = int((~keep_mask).sum())
+        if removed:
+            logger.info(f"{context}: removed {removed} causal-unsafe train rows")
+        if not keep_mask.any():
+            raise ValueError(f"{context}: causal guard removed all train rows")
+        return (
+            train_features.loc[keep_mask],
+            train_labels.loc[keep_mask],
+            train_weights[keep_mask],
+            None if train_label_weights is None else train_label_weights[keep_mask],
+        )
+
+    @staticmethod
+    def _shuffle_split_rows(
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        base_weights: NDArray[np.floating],
+        label_weights: NDArray[np.floating] | None,
+        seed: int,
+    ) -> tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        NDArray[np.floating],
+        NDArray[np.floating] | None,
+    ]:
+        shuffled_features = features.sample(frac=1, random_state=seed)
+        order = features.index.get_indexer(shuffled_features.index)
+        if (order < 0).any():
+            raise ValueError(
+                f"_shuffle_split_rows: unable to align shuffled feature rows "
+                f"to sample weights (missing={int((order < 0).sum())} rows)"
+            )
+        shuffled_labels = labels.loc[shuffled_features.index]
+        shuffled_label_weights = None if label_weights is None else label_weights[order]
+        return (
+            shuffled_features,
+            shuffled_labels,
+            base_weights[order],
+            shuffled_label_weights,
+        )
+
+    @staticmethod
+    def _compose_eval_weights(
+        base_weights: NDArray[np.floating],
+        label_weights: NDArray[np.floating] | None,
+        *,
+        context: str,
+    ) -> NDArray[np.floating]:
+        """Compose eval (test/val) sample weights, bypassing ``support_policy``.
+
+        Support thresholds are training-fit invariants and routine test/val
+        splits trip them by construction. With ``on_collapse="fallback"``,
+        the label-derived ``drop_mask`` propagates on collapse-on-survivors
+        so framework-side early-stopping that consumes eval sample weights
+        sees the row-survival pattern of the training-time label weighting.
+        The all-dropped path raises ``LabelWeightSupportError`` and falls
+        back to base weights only; no survival pattern exists to propagate.
+        Shape-parity ``ValueError`` is left uncaught: a hard contract
+        failure, not a support condition.
+        """
+        try:
+            return compose_sample_weights(
+                base_weights,
+                label_weights,
+                logger=logger,
+                on_collapse="fallback",
+            )
+        except LabelWeightSupportError as exc:
+            logger.warning(
+                "%s: label-weighted eval weights failed (%s); using base weights",
+                context,
+                exc,
+            )
+            return compose_sample_weights(base_weights, None, logger=logger)
+
+    @staticmethod
+    def _apply_support_policy(
+        base_weights: NDArray[np.floating],
+        *,
+        context: str,
+        policy: LabelWeightSupportPolicy,
+        reasons: list[str],
+    ) -> NDArray[np.floating]:
+        reason_text = "; ".join(reasons)
+        match policy:
+            case "raise":
+                raise ValueError(
+                    f"{context}: label weighting support failed ({reason_text}); "
+                    "support_policy='raise'"
+                )
+            case "fallback":
+                logger.warning(
+                    "%s: label weighting support failed (%s); "
+                    "falling back to sanitized base weights (support_policy='fallback')",
+                    context,
+                    reason_text,
+                )
+                return compose_sample_weights(base_weights, None, logger=logger)
+            case _:
+                assert_never(policy)
+
+    @staticmethod
+    def _compose_train_weights_with_support(
+        base_weights: NDArray[np.floating],
+        label_weights: NDArray[np.floating] | None,
+        label_weighting_config: dict[str, Any],
+        *,
+        context: str,
+    ) -> NDArray[np.floating]:
+        if label_weights is None:
+            return compose_sample_weights(base_weights, None, logger=logger)
+
+        policy = cast(
+            LabelWeightSupportPolicy, label_weighting_config["support_policy"]
+        )
+        try:
+            composed = compose_sample_weights(
+                base_weights, label_weights, logger=logger
+            )
+        except LabelWeightSupportError as exc:
+            return QuickAdapterRegressorV3._apply_support_policy(
+                base_weights,
+                context=context,
+                policy=policy,
+                reasons=[str(exc)],
+            )
+
+        summary = summarize_label_weight_support(label_weights, composed)
+        reasons: list[str] = []
+        min_pivot_equivalent_count = label_weighting_config[
+            "min_pivot_equivalent_count"
+        ]
+        min_positive_label_weight_fraction = label_weighting_config[
+            "min_positive_label_weight_fraction"
+        ]
+        min_effective_sample_size = label_weighting_config["min_effective_sample_size"]
+        if summary.pivot_equivalent_count < min_pivot_equivalent_count:
+            reasons.append(
+                f"pivot_equivalent_count={summary.pivot_equivalent_count} "
+                f"< min_pivot_equivalent_count={min_pivot_equivalent_count}"
+            )
+        if summary.positive_label_weight_fraction < min_positive_label_weight_fraction:
+            reasons.append(
+                f"positive_label_weight_fraction={summary.positive_label_weight_fraction:.6g} "
+                f"< min_positive_label_weight_fraction={min_positive_label_weight_fraction:.6g} "
+                f"({summary.positive_label_weight_count}/{summary.total_rows} rows)"
+            )
+        if summary.effective_sample_size < min_effective_sample_size:
+            reasons.append(
+                f"effective_sample_size={summary.effective_sample_size:.6g} "
+                f"< min_effective_sample_size={min_effective_sample_size:.6g}"
+            )
+        if reasons:
+            return QuickAdapterRegressorV3._apply_support_policy(
+                base_weights, context=context, policy=policy, reasons=reasons
+            )
+        logger.debug(
+            "%s: label weighting support passed "
+            "(pivot_equivalent_count=%d, positive_label_weight_fraction=%.6g, "
+            "effective_sample_size=%.6g)",
+            context,
+            summary.pivot_equivalent_count,
+            summary.positive_label_weight_fraction,
+            summary.effective_sample_size,
+        )
+        return composed
 
     @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
@@ -901,6 +1205,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return label_frequency_candles
 
     @property
+    def label_weighting(self) -> dict[str, Any]:
+        label_weighting_raw = self.freqai_info.get("label_weighting")
+        if not isinstance(label_weighting_raw, dict):
+            label_weighting_raw = {}
+        return get_label_weighting_config(label_weighting_raw, logger)
+
+    @property
     def label_pipeline(self) -> dict[str, Any]:
         label_pipeline_raw = self.freqai_info.get("label_pipeline")
         if not isinstance(label_pipeline_raw, dict):
@@ -917,6 +1228,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @property
     def _label_defaults(self) -> tuple[int, float]:
         return get_label_defaults(self.ft_params, logger)
+
+    @property
+    def _causal_mode(self) -> bool:
+        return get_causal_mode(self.ft_params, logger)
+
+    def _label_horizon_candles(self, pair: str | None = None) -> int:
+        label_params = self.get_optuna_params(pair, "label") if pair else {}
+        return get_label_horizon_candles({**self.ft_params, **label_params}, logger)
 
     @property
     def _optuna_label_candle_pool_full(self) -> list[int]:
@@ -989,6 +1308,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     "label_period_candles": self.ft_params.get(
                         "label_period_candles",
                         default_label_period_candles,
+                    ),
+                    "label_horizon_candles": get_label_horizon_candles(
+                        self.ft_params, logger
                     ),
                     "label_natr_multiplier": float(
                         self.ft_params.get(
@@ -1378,9 +1700,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         Dispatches on ``data_split_parameters.method``:
         - ``train_test_split``: random sklearn split.
         - ``timeseries_split``: chronological final-fold split.
-        Both paths compose per-row weights via ``_compose_per_row_weights``
-        before splitting and feed them to ``model.fit(sample_weight=...)``
-        through ``_train_common``.
+        Both paths build per-row weights via ``_build_sample_weight_inputs``
+        before splitting. After split + causal-guard filtering, train weights
+        compose through ``_compose_train_weights_with_support`` (gated by
+        ``support_policy``) and eval weights through ``_compose_eval_weights``
+        (bypasses ``support_policy``). ``_train_common`` then feeds them to
+        ``model.fit(sample_weight=...)``.
         """
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
@@ -1401,9 +1726,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         def split_fn(
             features: pd.DataFrame,
             labels: pd.DataFrame,
-            weights: NDArray[np.floating],
+            weights: SampleWeightInputs,
+            unfiltered: pd.DataFrame,
         ) -> dict[str, Any]:
-            return split_builder(features, labels, weights, dk)
+            return split_builder(features, labels, weights, dk, unfiltered)
 
         logger.info(f"Using data split method: {method}")
         return self._train_common(unfiltered_df, pair, dk, split_fn, **kwargs)
@@ -1412,8 +1738,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         features: pd.DataFrame,
         labels: pd.DataFrame,
-        weights: NDArray[np.floating],
+        weights: SampleWeightInputs,
         dk: FreqaiDataKitchen,
+        unfiltered_df: pd.DataFrame,
     ) -> dict[str, Any]:
         """Train/test split via sklearn's ``train_test_split``.
 
@@ -1431,6 +1758,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dsp = dict(self.data_split_parameters)
         dsp.setdefault("shuffle", False)
         dsp.setdefault("test_size", QuickAdapterRegressorV3._TEST_SIZE)
+        causal_mode = self._causal_mode
+        if causal_mode and dsp.get("shuffle", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "data_split_parameters.shuffle=True"
+            )
+        if causal_mode and feat_dict.get("shuffle_after_split", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "feature_parameters.shuffle_after_split=True"
+            )
+        if causal_mode and feat_dict.get("reverse_train_test_order", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "feature_parameters.reverse_train_test_order=True"
+            )
         sklearn_kwargs = {
             k: v
             for k, v in dsp.items()
@@ -1444,21 +1787,73 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         if test_size != 0:
-            (
-                train_features,
-                test_features,
-                train_labels,
-                test_labels,
-                train_weights,
-                test_weights,
-            ) = train_test_split(features, labels, weights, **sklearn_kwargs)
+            if weights.label is None:
+                (
+                    train_features,
+                    test_features,
+                    train_labels,
+                    test_labels,
+                    train_base_weights,
+                    test_base_weights,
+                ) = train_test_split(features, labels, weights.base, **sklearn_kwargs)
+                train_label_weights = None
+                test_label_weights = None
+            else:
+                (
+                    train_features,
+                    test_features,
+                    train_labels,
+                    test_labels,
+                    train_base_weights,
+                    test_base_weights,
+                    train_label_weights,
+                    test_label_weights,
+                ) = train_test_split(
+                    features, labels, weights.base, weights.label, **sklearn_kwargs
+                )
+            if causal_mode:
+                row_positions = QuickAdapterRegressorV3._row_positions(
+                    features, unfiltered_df
+                )
+                first_test_position = int(row_positions.loc[test_features.index].min())
+                label_horizon_candles = self._label_horizon_candles(dk.pair)
+                train_positions = row_positions.loc[train_features.index]
+                keep_mask = (
+                    train_positions.to_numpy(dtype=np.int64)
+                    < first_test_position - label_horizon_candles
+                )
+                known_at_index = QuickAdapterRegressorV3._known_at_index(
+                    features, unfiltered_df
+                )
+                if known_at_index is not None:
+                    known_at_train = known_at_index.loc[train_features.index]
+                    keep_mask &= (
+                        known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                    )
+                else:
+                    _log_known_at_none_once(dk.pair, "train_test_split causal guard")
+                (
+                    train_features,
+                    train_labels,
+                    train_base_weights,
+                    train_label_weights,
+                ) = QuickAdapterRegressorV3._filter_train_by_mask(
+                    train_features,
+                    train_labels,
+                    train_base_weights,
+                    keep_mask,
+                    f"[{dk.pair}] train_test_split causal guard",
+                    train_label_weights=train_label_weights,
+                )
         else:
             train_features = features
             train_labels = labels
-            train_weights = weights
+            train_base_weights = weights.base
+            train_label_weights = weights.label
             test_features = features.iloc[:0]
             test_labels = labels.iloc[:0]
-            test_weights = weights[:0]
+            test_base_weights = weights.base[:0]
+            test_label_weights = None if weights.label is None else weights.label[:0]
 
         if feat_dict.get("shuffle_after_split", False):
             parent_seed = sklearn_kwargs.get("random_state")
@@ -1467,31 +1862,40 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if parent_seed is not None
                 else random.Random()
             )
-            train_features, train_labels, train_weights = (
-                QuickAdapterRegressorV3._shuffle_in_unison(
+            train_features, train_labels, train_base_weights, train_label_weights = (
+                QuickAdapterRegressorV3._shuffle_split_rows(
                     train_features,
                     train_labels,
-                    train_weights,
+                    train_base_weights,
+                    train_label_weights,
                     shuffle_rng.randint(0, 2**31 - 1),
                 )
             )
             if test_size != 0:
-                test_features, test_labels, test_weights = (
-                    QuickAdapterRegressorV3._shuffle_in_unison(
+                test_features, test_labels, test_base_weights, test_label_weights = (
+                    QuickAdapterRegressorV3._shuffle_split_rows(
                         test_features,
                         test_labels,
-                        test_weights,
+                        test_base_weights,
+                        test_label_weights,
                         shuffle_rng.randint(0, 2**31 - 1),
                     )
                 )
 
-        train_weights = sanitize_and_renormalize(
-            train_weights, logger=logger, context="train_test_split:train"
+        train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
+            train_base_weights,
+            train_label_weights,
+            weights.label_weighting_config,
+            context=f"[{dk.pair}] train_test_split:train",
         )
         if test_size != 0:
-            test_weights = sanitize_and_renormalize(
-                test_weights, logger=logger, context="train_test_split:test"
+            test_weights = QuickAdapterRegressorV3._compose_eval_weights(
+                test_base_weights,
+                test_label_weights,
+                context=f"[{dk.pair}] train_test_split:test",
             )
+        else:
+            test_weights = test_base_weights
 
         if feat_dict.get("reverse_train_test_order", False):
             return dk.build_data_dictionary(
@@ -1511,13 +1915,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             test_weights,
         )
 
-    def _compose_per_row_weights(
+    def _build_sample_weight_inputs(
         self,
         features_filtered: pd.DataFrame,
         unfiltered_df: pd.DataFrame,
         dk: FreqaiDataKitchen,
-    ) -> NDArray[np.floating]:
-        """Build a per-row sample weight vector aligned to features_filtered.index.
+    ) -> SampleWeightInputs:
+        """Build per-row base and label weight vectors aligned to features_filtered.index.
 
         Multiplies freqtrade's per-row base weights (recency-decayed via
         ``dk.set_weights_higher_recent`` when ``feature_parameters.weight_factor > 0``,
@@ -1527,9 +1931,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         any shuffle/split on ``features_filtered.index`` (a subset of
         ``unfiltered_df.index``) to avoid post-hoc reindex against shuffled
         data. The weight column is absent when ``label_weighting.strategy``
-        is ``'none'`` (no per-label importance applied); in that case
-        ``label_weights=None`` is forwarded to ``compose_sample_weights``
-        and only the base weights contribute.
+        is ``'none'`` (no per-label importance applied); in that case the
+        final split stage composes base-only sample weights.
         """
         if not unfiltered_df.index.is_unique:
             raise ValueError(
@@ -1560,6 +1963,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             base_weights = np.ones(n_rows, dtype=float)
 
+        label_weighting = self.label_weighting
+        label_weighting_config = get_label_column_config(
+            LABEL_COLUMNS[0], label_weighting["default"], label_weighting["columns"]
+        )
         weight_col = label_weight_column_name(LABEL_COLUMNS[0])
         if weight_col in unfiltered_df.columns:
             label_weights = unfiltered_df.loc[
@@ -1571,10 +1978,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.debug(
                 f"label weight column absent ({weight_col!r}); using base weights only"
             )
-        return compose_sample_weights(
-            base_weights,
-            label_weights,
-            logger=logger,
+        return SampleWeightInputs(
+            base=base_weights,
+            label=label_weights,
+            label_weighting_config=label_weighting_config,
         )
 
     def _train_common(
@@ -1595,7 +2002,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             dk.label_list,
             training_filter=True,
         )
-        weights = self._compose_per_row_weights(features_filtered, unfiltered_df, dk)
+        weights = self._build_sample_weight_inputs(features_filtered, unfiltered_df, dk)
         dates = ensure_datetime_series(unfiltered_df["date"])
         start_date = dates.iloc[0].strftime("%Y-%m-%d")
         end_date = dates.iloc[-1].strftime("%Y-%m-%d")
@@ -1603,7 +2010,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"-------------------- Training on data from {start_date} to "
             f"{end_date} --------------------"
         )
-        dd = split_fn(features_filtered, labels_filtered, weights)
+        dd = split_fn(features_filtered, labels_filtered, weights, unfiltered_df)
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
         dd = self._apply_pipelines(dd, dk, pair)
@@ -1704,8 +2111,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self,
         filtered_dataframe: pd.DataFrame,
         labels: pd.DataFrame,
-        weights: NDArray[np.floating],
+        weights: SampleWeightInputs,
         dk: FreqaiDataKitchen,
+        unfiltered_df: pd.DataFrame,
     ) -> dict:
         """Chronological train/test split using sklearn's TimeSeriesSplit final fold.
 
@@ -1716,11 +2124,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``test_idx``.
         """
         feat_dict = self.ft_params
+        causal_mode = self._causal_mode
         if feat_dict.get("shuffle_after_split", False):
             raise ValueError(
                 "feature_parameters.shuffle_after_split=True is incompatible "
                 "with data_split_parameters.method='timeseries_split': "
                 "chronological split must preserve temporal ordering"
+            )
+        if causal_mode and self.data_split_parameters.get("shuffle", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "data_split_parameters.shuffle=True"
+            )
+        if causal_mode and feat_dict.get("reverse_train_test_order", False):
+            raise ValueError(
+                "feature_parameters.causal_mode=True is incompatible with "
+                "feature_parameters.reverse_train_test_order=True"
             )
         n_splits = QuickAdapterRegressorV3._coerce_int(
             self.data_split_parameters.get(
@@ -1729,10 +2148,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "n_splits",
             minimum=2,
         )
+        raw_gap = self.data_split_parameters.get("gap", None)
         gap = QuickAdapterRegressorV3._coerce_int(
-            self.data_split_parameters.get(
-                "gap", QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
-            ),
+            raw_gap
+            if raw_gap is not None
+            else QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT,
             "gap",
             minimum=0,
         )
@@ -1753,13 +2173,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 and 0 < test_size < 1
             ):
                 test_size = int(len(filtered_dataframe) * test_size)
-            elif (
+            elif not (
                 not isinstance(test_size, bool)
                 and isinstance(test_size, int)
                 and test_size >= 1
             ):
-                pass
-            else:
                 raise ValueError(
                     f"Invalid data_split_parameters.test_size value {test_size!r}: "
                     f"must be float in (0, 1) as fraction, int >= 1 as count, or None"
@@ -1770,13 +2188,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"Increase test_size or provide more data."
                 )
 
-        if gap == 0:
+        if causal_mode:
+            label_horizon_candles = self._label_horizon_candles(dk.pair)
+            if raw_gap is None or gap == 0:
+                gap = label_horizon_candles
+                logger.info(
+                    f"[{dk.pair}] TimeSeriesSplit gap auto-set from label_horizon_candles: {gap}"
+                )
+            elif gap < label_horizon_candles:
+                raise ValueError(
+                    f"data_split_parameters.gap={gap!r} is smaller than "
+                    f"label_horizon_candles={label_horizon_candles!r} while "
+                    "feature_parameters.causal_mode=True"
+                )
+        elif gap == 0:
             gap = self.get_optuna_params(
                 dk.pair,
                 QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1],  # "label"
             ).get("label_period_candles")
             logger.info(
-                f"[{dk.pair}] TimeSeriesSplit gap auto-calculated from label_period_candles: {gap}"
+                f"[{dk.pair}] TimeSeriesSplit gap auto-set from label_period_candles: {gap}"
             )
 
         tscv = TimeSeriesSplit(
@@ -1798,11 +2229,52 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         test_features = filtered_dataframe.iloc[test_idx]
         train_labels = labels.iloc[train_idx]
         test_labels = labels.iloc[test_idx]
-        train_weights = sanitize_and_renormalize(
-            weights[train_idx], logger=logger, context="timeseries_split:train"
+        train_base_weights = weights.base[train_idx]
+        test_base_weights = weights.base[test_idx]
+        train_label_weights = (
+            None if weights.label is None else weights.label[train_idx]
         )
-        test_weights = sanitize_and_renormalize(
-            weights[test_idx], logger=logger, context="timeseries_split:test"
+        test_label_weights = None if weights.label is None else weights.label[test_idx]
+        test_weights = QuickAdapterRegressorV3._compose_eval_weights(
+            test_base_weights,
+            test_label_weights,
+            context=f"[{dk.pair}] timeseries_split:test",
+        )
+
+        if causal_mode:
+            row_positions = QuickAdapterRegressorV3._row_positions(
+                filtered_dataframe, unfiltered_df
+            )
+            first_test_position = int(row_positions.iloc[test_idx].min())
+            known_at_index = QuickAdapterRegressorV3._known_at_index(
+                filtered_dataframe, unfiltered_df
+            )
+            if known_at_index is not None:
+                known_at_train = known_at_index.iloc[train_idx]
+                keep_mask = (
+                    known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                )
+                (
+                    train_features,
+                    train_labels,
+                    train_base_weights,
+                    train_label_weights,
+                ) = QuickAdapterRegressorV3._filter_train_by_mask(
+                    train_features,
+                    train_labels,
+                    train_base_weights,
+                    keep_mask,
+                    f"[{dk.pair}] timeseries_split causal guard",
+                    train_label_weights=train_label_weights,
+                )
+            else:
+                _log_known_at_none_once(dk.pair, "timeseries_split causal guard")
+
+        train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
+            train_base_weights,
+            train_label_weights,
+            weights.label_weighting_config,
+            context=f"[{dk.pair}] timeseries_split:train",
         )
 
         if feat_dict.get("reverse_train_test_order", False):
@@ -2015,7 +2487,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if not warmed_up:
                     min_pred, max_pred = -2.0, 2.0
                     f = [0.0, 0.0, 0.0]
-                    cutoff = 2.0
+                    cutoff = QuickAdapterRegressorV3._DI_CUTOFF_DEFAULT
                 else:
                     min_pred, max_pred = self.min_max_pred(
                         label_col,
@@ -2026,14 +2498,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
                         ).get("label_period_candles"),  # "label"
                     )
-                    f = sp.stats.weibull_min.fit(
-                        pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
+                    di_sample = finite_sample(
+                        []
+                        if di_values is None
+                        else pd.to_numeric(di_values, errors="coerce"),
+                        positive_only=True,
+                    )
+                    f = safe_distribution_fit(
+                        di_sample,
+                        sp.stats.weibull_min.fit,
+                        # Intentionally non-ppf-able; the ``weibull_min.ppf``
+                        # downstream returns NaN on degenerate scale and the
+                        # ``np.isfinite(cutoff)`` guard substitutes
+                        # ``_DI_CUTOFF_DEFAULT``.
+                        fallback=(0.0, 0.0, 0.0),
+                        context=f"di_values_weibull_fit:{pair}",
+                        logger=logger,
+                        min_count=2,
+                        require_variance=True,
+                        floc=0,
                     )
                     outlier_quantile = col_prediction_config.get(
                         "outlier_quantile",
                         DEFAULTS_LABEL_PREDICTION["outlier_quantile"],
                     )
                     cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
+                    if not np.isfinite(cutoff):
+                        logger.warning(
+                            "[%s] DI_values Weibull cutoff is invalid "
+                            "(params=%r, quantile=%r); using fallback %r",
+                            pair,
+                            f,
+                            outlier_quantile,
+                            QuickAdapterRegressorV3._DI_CUTOFF_DEFAULT,
+                        )
+                        cutoff = QuickAdapterRegressorV3._DI_CUTOFF_DEFAULT
                 dk.data["extra_returns_per_train"][f"{label_col}_minima_threshold"] = (
                     min_pred
                 )
@@ -2053,7 +2552,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if not warmed_up:
                 f = [0.0, 0.0]
             else:
-                f = sp.stats.norm.fit(pred_label)
+                sample = finite_sample(pred_label)
+                if sample.finite_count == 0:
+                    fallback = (0.0, 0.0)
+                else:
+                    sample_mean = float(np.mean(sample.values))
+                    sample_std = float(np.std(sample.values, ddof=0))
+                    fallback = (
+                        sample_mean if np.isfinite(sample_mean) else 0.0,
+                        sample_std if np.isfinite(sample_std) else 0.0,
+                    )
+                f = safe_distribution_fit(
+                    sample,
+                    sp.stats.norm.fit,
+                    fallback=fallback,
+                    context=f"label_norm_fit:{pair}:{label_col}",
+                    logger=logger,
+                    min_count=2,
+                    require_variance=True,
+                )
             dk.data["labels_mean"][label_col], dk.data["labels_std"][label_col] = (
                 f[0],
                 f[1],
@@ -3657,7 +4174,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
-        return optuna_load_best_params(self.full_path, pair, namespace)
+        return optuna_load_best_params(self.full_path, pair, namespace, logger)
 
     @staticmethod
     def optuna_delete_study(
@@ -3811,6 +4328,7 @@ def label_objective(
         df,
         natr_period=label_period_candles,
         natr_multiplier=label_natr_multiplier,
+        logger=logger,
     )
 
     median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
