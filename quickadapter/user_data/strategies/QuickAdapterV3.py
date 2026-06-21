@@ -911,7 +911,9 @@ class QuickAdapterV3(IStrategy):
             dataframe[label_col] = label_data.series
 
             if label_data.known_at_index is not None:
-                dataframe[label_known_at_column_name(label_col)] = label_data.known_at_index
+                dataframe[label_known_at_column_name(label_col)] = (
+                    label_data.known_at_index
+                )
 
             label_weight_col = label_weight_column_name(label_col)
             if is_weighting_active:

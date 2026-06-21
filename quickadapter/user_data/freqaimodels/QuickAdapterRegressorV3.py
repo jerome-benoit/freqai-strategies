@@ -381,7 +381,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         unfiltered_df: pd.DataFrame,
     ) -> None:
         if not unfiltered_df.index.is_unique:
-            raise ValueError("unfiltered_df.index must be unique for causal split guards")
+            raise ValueError(
+                "unfiltered_df.index must be unique for causal split guards"
+            )
         if not filtered_dataframe.index.isin(unfiltered_df.index).all():
             raise ValueError(
                 "filtered_dataframe.index must be a subset of unfiltered_df.index"
@@ -395,7 +397,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         QuickAdapterRegressorV3._validate_index_alignment(
             filtered_dataframe, unfiltered_df
         )
-        positions = pd.Series(np.arange(len(unfiltered_df), dtype=np.int64), index=unfiltered_df.index)
+        positions = pd.Series(
+            np.arange(len(unfiltered_df), dtype=np.int64), index=unfiltered_df.index
+        )
         return positions.loc[filtered_dataframe.index]
 
     @staticmethod
@@ -1593,9 +1597,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         known_at_train.to_numpy(dtype=np.int64) < first_test_position
                     )
                 else:
-                    _log_known_at_none_once(
-                        dk.pair, "train_test_split causal guard"
-                    )
+                    _log_known_at_none_once(dk.pair, "train_test_split causal guard")
                 train_features, train_labels, train_weights = (
                     QuickAdapterRegressorV3._filter_train_by_mask(
                         train_features,
@@ -1992,7 +1994,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             if known_at_index is not None:
                 known_at_train = known_at_index.iloc[train_idx]
-                keep_mask = known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                keep_mask = (
+                    known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                )
                 train_features, train_labels, train_weights = (
                     QuickAdapterRegressorV3._filter_train_by_mask(
                         train_features,
@@ -2003,9 +2007,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
                 )
             else:
-                _log_known_at_none_once(
-                    dk.pair, "timeseries_split causal guard"
-                )
+                _log_known_at_none_once(dk.pair, "timeseries_split causal guard")
 
         train_weights = sanitize_and_renormalize(
             train_weights, logger=logger, context="timeseries_split:train"

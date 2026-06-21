@@ -3136,9 +3136,7 @@ def _validate_optuna_label_best_params(
         }
     if not isinstance(best_params, dict):
         if logger is not None:
-            logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: not a dict"
-            )
+            logger.warning(f"[{pair}] Ignoring Optuna label best-params: not a dict")
         return None
     schema_version = best_params.get("schema_version")
     if schema_version is None:
