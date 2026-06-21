@@ -65,6 +65,7 @@ from Utils import (
     nan_average,
     non_zero_diff,
     optuna_load_best_params,
+    get_smoothing_kernel_half_width,
     price_retracement_percent,
     safe_divide,
     smooth,
@@ -459,9 +460,6 @@ class QuickAdapterV3(IStrategy):
                     "label_period_candles": feature_parameters.get(
                         "label_period_candles",
                         default_label_period_candles,
-                    ),
-                    "label_horizon_candles": get_label_horizon_candles(
-                        feature_parameters, logger
                     ),
                     "label_natr_multiplier": float(
                         feature_parameters.get(
@@ -864,9 +862,13 @@ class QuickAdapterV3(IStrategy):
             self._label_params[pair]["label_period_candles"] = label_period_candles
 
     def get_label_horizon_candles(self, pair: str) -> int:
+        period = self.get_label_period_candles(pair)
         label_params = self._label_params.get(pair, {})
         feature_parameters = self.freqai_info.get("feature_parameters", {})
-        return get_label_horizon_candles({**feature_parameters, **label_params}, logger)
+        return get_label_horizon_candles(
+            {**feature_parameters, **label_params, "label_period_candles": period},
+            logger,
+        )
 
     def get_label_natr_multiplier(self, pair: str) -> float:
         label_natr_multiplier = self._label_params.get(pair, {}).get(
@@ -932,10 +934,11 @@ class QuickAdapterV3(IStrategy):
 
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
+        series_length = len(dataframe)
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
-            label_data = generate_label_data(dataframe, label_col, label_params)
+            label_data = generate_label_data(dataframe, label_col, label_params, logger)
 
             if len(label_data.indices) == 0:
                 logger.warning(
@@ -991,6 +994,19 @@ class QuickAdapterV3(IStrategy):
                     np.isfinite(smoothed_label_weights) & smoothed_label_weights.gt(0),
                     0.0,
                 )
+
+            # Zero-phase smoothing reads future candles within the kernel
+            # half-width; advance the known-at index so causal split guards
+            # account for the smoothing lookahead.
+            known_at_column = label_known_at_column_name(label_col)
+            if known_at_column in dataframe.columns:
+                kernel_half_width = get_smoothing_kernel_half_width(
+                    col_smoothing_config, series_length=series_length
+                )
+                if kernel_half_width > 0:
+                    dataframe[known_at_column] = (
+                        dataframe[known_at_column] + kernel_half_width
+                    )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
@@ -2335,4 +2351,10 @@ class QuickAdapterV3(IStrategy):
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
+        # Strategy consumes only output tunables (``label_period_candles``,
+        # ``label_horizon_candles``, ``label_natr_multiplier``);
+        # selection-metadata drift on cached label best-params is
+        # tolerable here. The regressor's ``optuna_load_best_params``
+        # passes ``expected_selection_metadata`` and rejects drift before
+        # re-running HPO selection.
         return optuna_load_best_params(self.models_full_path, pair, namespace, logger)
