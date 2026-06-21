@@ -104,7 +104,11 @@
       "fill_epsilon_baseline": "mean",
       "fill_sigma_candles": 10.0,
       "fill_sigma_min_candles": 0.5,
-      "fill_bandwidth_alpha": 0.5
+      "fill_bandwidth_alpha": 0.5,
+      "support_policy": "fallback",
+      "min_pivot_equivalent_count": 3,
+      "min_positive_label_weight_fraction": 0.01,
+      "min_effective_sample_size": 3.0
       // Per-label format:
       // "default": {
       //   "strategy": "none"
