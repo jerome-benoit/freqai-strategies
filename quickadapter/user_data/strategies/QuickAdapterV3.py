@@ -700,7 +700,11 @@ class QuickAdapterV3(IStrategy):
             )
         with np.errstate(divide="ignore", invalid="ignore"):
             dataframe["%-close_pct_change"] = Series(
-                np.where(np.isfinite(close_values) & (close_values > 0.0), np.log(close_values), np.nan),
+                np.where(
+                    np.isfinite(close_values) & (close_values > 0.0),
+                    np.log(close_values),
+                    np.nan,
+                ),
                 index=dataframe.index,
             ).diff()
         dataframe["%-raw_volume"] = volumes
@@ -733,13 +737,11 @@ class QuickAdapterV3(IStrategy):
         dataframe["kc_lowerband"] = kc["KCLe_14_2.0"]
         dataframe["kc_middleband"] = kc["KCBe_14_2.0"]
         dataframe["kc_upperband"] = kc["KCUe_14_2.0"]
-        dataframe["%-kc_width"] = (
-            safe_divide(
-                dataframe["kc_upperband"] - dataframe["kc_lowerband"],
-                dataframe["kc_middleband"],
-                context="feature_engineering_expand_basic:kc_width",
-                logger=logger,
-            )
+        dataframe["%-kc_width"] = safe_divide(
+            dataframe["kc_upperband"] - dataframe["kc_lowerband"],
+            dataframe["kc_middleband"],
+            context="feature_engineering_expand_basic:kc_width",
+            logger=logger,
         )
         (
             dataframe["bb_upperband"],
@@ -751,13 +753,11 @@ class QuickAdapterV3(IStrategy):
             nbdevup=2.2,
             nbdevdn=2.2,
         )
-        dataframe["%-bb_width"] = (
-            safe_divide(
-                dataframe["bb_upperband"] - dataframe["bb_lowerband"],
-                dataframe["bb_middleband"],
-                context="feature_engineering_expand_basic:bb_width",
-                logger=logger,
-            )
+        dataframe["%-bb_width"] = safe_divide(
+            dataframe["bb_upperband"] - dataframe["bb_lowerband"],
+            dataframe["bb_middleband"],
+            context="feature_engineering_expand_basic:bb_width",
+            logger=logger,
         )
         dataframe["%-ibs"] = (closes - lows) / non_zero_diff(highs, lows)
         dataframe["jaw"], dataframe["teeth"], dataframe["lips"] = alligator(
@@ -788,13 +788,11 @@ class QuickAdapterV3(IStrategy):
             dataframe["vwap_middleband"],
             dataframe["vwap_upperband"],
         ) = vwapb(dataframe, 20, 1.0)
-        dataframe["%-vwap_width"] = (
-            safe_divide(
-                dataframe["vwap_upperband"] - dataframe["vwap_lowerband"],
-                dataframe["vwap_middleband"],
-                context="feature_engineering_expand_basic:vwap_width",
-                logger=logger,
-            )
+        dataframe["%-vwap_width"] = safe_divide(
+            dataframe["vwap_upperband"] - dataframe["vwap_lowerband"],
+            dataframe["vwap_middleband"],
+            context="feature_engineering_expand_basic:vwap_width",
+            logger=logger,
         )
         dataframe["%-dist_to_vwap_upperband"] = get_distance(
             closes, dataframe["vwap_upperband"]

@@ -33,6 +33,7 @@ def _clip_sigmoid_domain(values: NDArray[np.floating]) -> NDArray[np.floating]:
     eps = np.finfo(float).eps
     return np.clip(values, -1.0 + eps, 1.0 - eps)
 
+
 CombinedMetric = Literal[
     "amplitude",
     "amplitude_threshold_ratio",
@@ -355,9 +356,7 @@ class LabelTransformer(BaseTransform):
         if inverse:
             clipped = _clip_sigmoid_domain(values[mask])
             clipped_count = int(
-                np.count_nonzero(
-                    (clipped != values[mask]) & ~np.isnan(values[mask])
-                )
+                np.count_nonzero((clipped != values[mask]) & ~np.isnan(values[mask]))
             )
             if clipped_count:
                 logger.warning(

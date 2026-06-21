@@ -2425,12 +2425,15 @@ def ewo(
     ma2 = ma_fn(prices, timeperiod=ma2_length)
     madiff = ma1 - ma2
     if normalize:
-        madiff = safe_divide(
-            madiff,
-            prices,
-            context="ewo:normalize",
-            logger=logger,
-        ) * 100.0
+        madiff = (
+            safe_divide(
+                madiff,
+                prices,
+                context="ewo:normalize",
+                logger=logger,
+            )
+            * 100.0
+        )
     return madiff
 
 
@@ -2561,7 +2564,9 @@ def zigzag(
             invalid_price_count,
         )
     with np.errstate(divide="ignore", invalid="ignore"):
-        closes_log = np.where(np.isfinite(closes) & (closes > 0.0), np.log(closes), np.nan)
+        closes_log = np.where(
+            np.isfinite(closes) & (closes > 0.0), np.log(closes), np.nan
+        )
         highs_log = np.where(np.isfinite(highs) & (highs > 0.0), np.log(highs), np.nan)
         lows_log = np.where(np.isfinite(lows) & (lows > 0.0), np.log(lows), np.nan)
     volumes = df.get("volume").to_numpy()
