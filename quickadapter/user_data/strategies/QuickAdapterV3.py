@@ -64,6 +64,7 @@ from Utils import (
     non_zero_diff,
     optuna_load_best_params,
     price_retracement_percent,
+    safe_divide,
     smooth,
     top_log_return,
     validate_range,
@@ -654,10 +655,16 @@ class QuickAdapterV3(IStrategy):
             length=period,
         )
         # TODO [BREAKING]: Rename %-tcp-period -> %-top_log_return-period
-        dataframe["%-tcp-period"] = top_log_return(dataframe, period=period)
+        dataframe["%-tcp-period"] = top_log_return(
+            dataframe, period=period, logger=logger
+        )
         # TODO [BREAKING]: Rename %-bcp-period -> %-bottom_log_return-period
-        dataframe["%-bcp-period"] = bottom_log_return(dataframe, period=period)
-        dataframe["%-prp-period"] = price_retracement_percent(dataframe, period=period)
+        dataframe["%-bcp-period"] = bottom_log_return(
+            dataframe, period=period, logger=logger
+        )
+        dataframe["%-prp-period"] = price_retracement_percent(
+            dataframe, period=period, logger=logger
+        )
         dataframe["%-cti-period"] = pta.cti(closes, length=period)
         dataframe["%-chop-period"] = pta.chop(
             highs,
@@ -682,7 +689,20 @@ class QuickAdapterV3(IStrategy):
         volumes = dataframe.get("volume")
 
         # TODO [BREAKING]: Rename %-close_pct_change -> %-close_log_return
-        dataframe["%-close_pct_change"] = np.log(closes).diff()
+        close_values = closes.to_numpy(dtype=float)
+        invalid_close_count = int(
+            np.count_nonzero(~np.isfinite(close_values) | (close_values <= 0.0))
+        )
+        if invalid_close_count:
+            logger.debug(
+                "feature_engineering_expand_basic: %d close values are non-finite or non-positive; close log return is NaN at those positions",
+                invalid_close_count,
+            )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dataframe["%-close_pct_change"] = Series(
+                np.where(np.isfinite(close_values) & (close_values > 0.0), np.log(close_values), np.nan),
+                index=dataframe.index,
+            ).diff()
         dataframe["%-raw_volume"] = volumes
         dataframe["%-obv"] = ta.OBV(dataframe)
         label_period_candles = self.get_label_period_candles(str(metadata.get("pair")))
@@ -698,6 +718,7 @@ class QuickAdapterV3(IStrategy):
             mamode="ema",
             zero_lag=True,
             normalize=True,
+            logger=logger,
         )
         dataframe["%-diff_to_psar"] = closes - ta.SAR(
             dataframe, acceleration=0.02, maximum=0.2
@@ -713,8 +734,13 @@ class QuickAdapterV3(IStrategy):
         dataframe["kc_middleband"] = kc["KCBe_14_2.0"]
         dataframe["kc_upperband"] = kc["KCUe_14_2.0"]
         dataframe["%-kc_width"] = (
-            dataframe["kc_upperband"] - dataframe["kc_lowerband"]
-        ) / dataframe["kc_middleband"]
+            safe_divide(
+                dataframe["kc_upperband"] - dataframe["kc_lowerband"],
+                dataframe["kc_middleband"],
+                context="feature_engineering_expand_basic:kc_width",
+                logger=logger,
+            )
+        )
         (
             dataframe["bb_upperband"],
             dataframe["bb_middleband"],
@@ -726,8 +752,13 @@ class QuickAdapterV3(IStrategy):
             nbdevdn=2.2,
         )
         dataframe["%-bb_width"] = (
-            dataframe["bb_upperband"] - dataframe["bb_lowerband"]
-        ) / dataframe["bb_middleband"]
+            safe_divide(
+                dataframe["bb_upperband"] - dataframe["bb_lowerband"],
+                dataframe["bb_middleband"],
+                context="feature_engineering_expand_basic:bb_width",
+                logger=logger,
+            )
+        )
         dataframe["%-ibs"] = (closes - lows) / non_zero_diff(highs, lows)
         dataframe["jaw"], dataframe["teeth"], dataframe["lips"] = alligator(
             dataframe, pricemode="median", zero_lag=True
@@ -758,8 +789,13 @@ class QuickAdapterV3(IStrategy):
             dataframe["vwap_upperband"],
         ) = vwapb(dataframe, 20, 1.0)
         dataframe["%-vwap_width"] = (
-            dataframe["vwap_upperband"] - dataframe["vwap_lowerband"]
-        ) / dataframe["vwap_middleband"]
+            safe_divide(
+                dataframe["vwap_upperband"] - dataframe["vwap_lowerband"],
+                dataframe["vwap_middleband"],
+                context="feature_engineering_expand_basic:vwap_width",
+                logger=logger,
+            )
+        )
         dataframe["%-dist_to_vwap_upperband"] = get_distance(
             closes, dataframe["vwap_upperband"]
         )
@@ -1113,6 +1149,7 @@ class QuickAdapterV3(IStrategy):
         return nan_average(
             np.array([entry_natr, current_natr, median_natr]),
             weights=np.array([entry_weight, current_weight, median_weight]),
+            logger=logger,
         )
 
     def get_trade_quantile_interpolation_natr(

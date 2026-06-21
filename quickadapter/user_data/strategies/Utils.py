@@ -17,7 +17,6 @@ from typing import (
     Final,
     Literal,
     TypeVar,
-    Union,
 )
 
 import numpy as np
@@ -60,6 +59,246 @@ else:
     XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
+
+
+@dataclass(frozen=True, slots=True)
+class FiniteSample:
+    """Filtered finite-only sample produced by :func:`finite_sample`.
+
+    ``values`` holds the subset of the input that survives the finite (and
+    optionally positive) mask. ``total_count``, ``finite_count`` and
+    ``dropped_count`` describe the input partition; the invariant
+    ``dropped_count == total_count - finite_count`` always holds. Construct
+    via :func:`finite_sample`; instances bypassing the factory do NOT
+    enforce the finite-only invariant on ``values``.
+    """
+
+    values: NDArray[np.floating]
+    total_count: int
+    finite_count: int
+    dropped_count: int
+
+
+def finite_sample(
+    values: Any,
+    *,
+    positive_only: bool = False,
+) -> FiniteSample:
+    """Return a :class:`FiniteSample` from ``values``.
+
+    Flattens ``values`` to 1-d, coerces to ``float64``, strips non-finite
+    entries. With ``positive_only=True`` also strips entries ``<= 0.0``
+    (strict; signed zero is rejected).
+    """
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    mask = np.isfinite(arr)
+    if positive_only:
+        mask &= arr > 0.0
+    sample = arr[mask]
+    return FiniteSample(
+        values=sample,
+        total_count=int(arr.size),
+        finite_count=int(sample.size),
+        dropped_count=int(arr.size - sample.size),
+    )
+
+
+def safe_distribution_fit(
+    sample: FiniteSample,
+    fit_fn: Callable[..., Any],
+    *,
+    fallback: Sequence[float],
+    context: str,
+    logger: Logger | None = None,
+    min_count: int = 2,
+    require_variance: bool = True,
+    **fit_kwargs: Any,
+) -> tuple[float, ...]:
+    """Fit a scipy distribution with finite/variance/error guards.
+
+    Caller is responsible for constructing ``sample`` via
+    :func:`finite_sample` (with ``positive_only=True`` for strictly
+    positive distributions like ``weibull_min``). The ``fallback`` length
+    must match the parameter count returned by ``fit_fn`` (e.g. 3 for
+    ``weibull_min`` with ``floc=0``, 2 for ``norm``); a length mismatch
+    is treated as a fit failure and ``fallback`` is returned.
+    """
+    fallback_tuple = tuple(float(v) for v in fallback)
+
+    if sample.finite_count < min_count:
+        if logger is not None:
+            logger.warning(
+                "%s: insufficient finite sample for distribution fit "
+                "(usable=%d, total=%d, dropped=%d); using fallback %r",
+                context,
+                sample.finite_count,
+                sample.total_count,
+                sample.dropped_count,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    sample_range = float(np.max(sample.values) - np.min(sample.values))
+    if require_variance and np.isclose(sample_range, 0.0):
+        if logger is not None:
+            logger.warning(
+                "%s: constant finite sample for distribution fit "
+                "(usable=%d, dropped=%d); using fallback %r",
+                context,
+                sample.finite_count,
+                sample.dropped_count,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    try:
+        params = tuple(float(v) for v in fit_fn(sample.values, **fit_kwargs))
+    except (RuntimeError, ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        if logger is not None:
+            logger.warning(
+                "%s: distribution fit failed (%s); using fallback %r",
+                context,
+                exc,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    if len(params) != len(fallback_tuple) or not all(np.isfinite(params)):
+        if logger is not None:
+            logger.warning(
+                "%s: distribution fit returned invalid params %r; using fallback %r",
+                context,
+                params,
+                fallback_tuple,
+            )
+        return fallback_tuple
+
+    if sample.dropped_count and logger is not None:
+        logger.debug(
+            "%s: dropped %d/%d non-finite values before distribution fit",
+            context,
+            sample.dropped_count,
+            sample.total_count,
+        )
+    return params
+
+
+def _result_index(*values: Any) -> pd.Index | None:
+    for value in values:
+        if isinstance(value, pd.Series):
+            return value.index
+    return None
+
+
+def _safe_numeric_result(result: NDArray[np.floating], *values: Any) -> Any:
+    """Attach the first input Series's index to a numeric result (positional).
+
+    The result is positionally aligned with the first input Series found in
+    ``values``; pandas index alignment is NOT performed. Callers passing
+    multiple Series must ensure they share a common index.
+    """
+    index = _result_index(*values)
+    if index is not None and result.ndim == 1 and result.size == len(index):
+        return pd.Series(result, index=index)
+    if result.ndim == 0:
+        return float(result)
+    return result
+
+
+def safe_divide(
+    numerator: Any,
+    denominator: Any,
+    *,
+    fallback: float = np.nan,
+    context: str = "safe_divide",
+    logger: Logger | None = None,
+) -> Any:
+    """Element-wise division with non-finite and near-zero denominator guards.
+
+    Replaces results from divisions whose numerator or denominator is non-finite,
+    or whose denominator satisfies ``np.isclose(denom, 0.0)`` (default
+    ``atol=1e-8``), with ``fallback``. The fallback is also substituted for
+    any non-finite division output (e.g. ``inf`` from a subnormal denominator
+    that escapes the ``np.isclose`` gate).
+
+    Returns a ``pd.Series`` indexed on the first Series among the inputs when
+    shapes align, a Python ``float`` for 0-d results, otherwise an ``ndarray``.
+    """
+    numerator_arr = np.asarray(numerator, dtype=float)
+    denominator_arr = np.asarray(denominator, dtype=float)
+    valid_mask = (
+        np.isfinite(numerator_arr)
+        & np.isfinite(denominator_arr)
+        & ~np.isclose(denominator_arr, 0.0)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = np.divide(
+            numerator_arr,
+            denominator_arr,
+            out=np.full(
+                np.broadcast_shapes(numerator_arr.shape, denominator_arr.shape),
+                fallback,
+                dtype=float,
+            ),
+            where=valid_mask,
+        )
+    finite_mask = np.isfinite(result)
+    invalid_count = int(np.size(result) - np.count_nonzero(finite_mask))
+    result = np.where(finite_mask, result, fallback)
+    if invalid_count and logger is not None:
+        logger.debug(
+            "%s: replaced %d invalid division result(s) with %r",
+            context,
+            invalid_count,
+            fallback,
+        )
+    return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
+
+
+def safe_log_ratio(
+    numerator: Any,
+    denominator: Any,
+    *,
+    fallback: float = np.nan,
+    context: str = "safe_log_ratio",
+    logger: Logger | None = None,
+) -> Any:
+    """Element-wise ``log(numerator / denominator)`` with positivity guards.
+
+    Requires both operands to be finite and strictly positive; otherwise the
+    output position is set to ``fallback``. Any non-finite log output is also
+    coerced to ``fallback``.
+
+    Returns a ``pd.Series`` indexed on the first Series among the inputs when
+    shapes align, a Python ``float`` for 0-d results, otherwise an ``ndarray``.
+    """
+    numerator_arr = np.asarray(numerator, dtype=float)
+    denominator_arr = np.asarray(denominator, dtype=float)
+    valid_mask = (
+        np.isfinite(numerator_arr)
+        & np.isfinite(denominator_arr)
+        & (numerator_arr > 0.0)
+        & (denominator_arr > 0.0)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_num = np.log(
+            np.where(valid_mask, numerator_arr, 1.0),
+        )
+        log_den = np.log(
+            np.where(valid_mask, denominator_arr, 1.0),
+        )
+        result = np.where(valid_mask, log_num - log_den, fallback)
+    finite_mask = np.isfinite(result)
+    invalid_count = int(np.size(result) - np.count_nonzero(finite_mask))
+    result = np.where(finite_mask, result, fallback)
+    if invalid_count and logger is not None:
+        logger.debug(
+            "%s: replaced %d invalid log-ratio result(s) with %r",
+            context,
+            invalid_count,
+            fallback,
+        )
+    return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
 
 
 @dataclass(frozen=True, slots=True)
@@ -948,17 +1187,48 @@ def compose_sample_weights(
 def nan_average(
     values: NDArray[np.floating],
     weights: NDArray[np.floating] | None = None,
+    *,
+    logger: Logger | None = None,
 ) -> float:
+    """Weighted nan-aware mean with finite/zero-weight guards.
+
+    Returns ``np.nan`` when no finite (value, weight) pair survives, when
+    ``weights.shape != values.shape``, or when the finite-weights subset
+    sums to zero. Diverges from ``np.nanmean`` by stripping ``+/-inf``
+    along with ``NaN``; current call sites feed bounded quantities so the
+    ``+/-inf`` strip is a no-op in practice.
+    """
     values = np.asarray(values, dtype=float)
     if values.size == 0:
         return np.nan
 
     if weights is None:
-        return float(np.nanmean(values))
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            return np.nan
+        return float(np.mean(finite_values))
 
     weights = np.asarray(weights, dtype=float)
+    if weights.shape != values.shape:
+        if logger is not None:
+            logger.warning(
+                "nan_average: values/weights shape mismatch (%r != %r); using fallback NaN",
+                values.shape,
+                weights.shape,
+            )
+        return np.nan
+
     mask = np.isfinite(values) & np.isfinite(weights)
     if not mask.any():
+        return np.nan
+
+    weight_sum = float(np.sum(weights[mask]))
+    if not np.isfinite(weight_sum) or np.isclose(weight_sum, 0.0):
+        if logger is not None:
+            logger.warning(
+                "nan_average: finite weights sum to %g; using fallback NaN",
+                weight_sum,
+            )
         return np.nan
 
     return float(np.average(values[mask], weights=weights[mask]))
@@ -1858,7 +2128,12 @@ def calculate_n_extrema(series: pd.Series) -> int:
     return sp.signal.find_peaks(-series)[0].size + sp.signal.find_peaks(series)[0].size
 
 
-def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
+def top_log_return(
+    dataframe: pd.DataFrame,
+    period: int,
+    *,
+    logger: Logger | None = None,
+) -> pd.Series:
     """Logarithmic return from rolling maximum: ``log(close / rolling_max)``.
 
     Measures distance below the highest close in previous ``period`` bars.
@@ -1871,10 +2146,20 @@ def top_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     )
 
-    return np.log(dataframe.get("close") / previous_close_top)
+    return safe_log_ratio(
+        dataframe.get("close"),
+        previous_close_top,
+        context="top_log_return",
+        logger=logger,
+    )
 
 
-def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
+def bottom_log_return(
+    dataframe: pd.DataFrame,
+    period: int,
+    *,
+    logger: Logger | None = None,
+) -> pd.Series:
     """Logarithmic return from rolling minimum: ``log(close / rolling_min)``.
 
     Measures distance above the lowest close in previous ``period`` bars.
@@ -1887,10 +2172,20 @@ def bottom_log_return(dataframe: pd.DataFrame, period: int) -> pd.Series:
         dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
     )
 
-    return np.log(dataframe.get("close") / previous_close_bottom)
+    return safe_log_ratio(
+        dataframe.get("close"),
+        previous_close_bottom,
+        context="bottom_log_return",
+        logger=logger,
+    )
 
 
-def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series:
+def price_retracement_percent(
+    dataframe: pd.DataFrame,
+    period: int,
+    *,
+    logger: Logger | None = None,
+) -> pd.Series:
     """Normalized log-scale position of close within rolling high/low range.
 
     Formula: ``log(close / low) / log(high / low)``. Returns 0 at bottom, 1
@@ -1906,10 +2201,26 @@ def price_retracement_percent(dataframe: pd.DataFrame, period: int) -> pd.Series
     previous_close_high = (
         dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     )
-    denominator = np.log(previous_close_high / previous_close_low)
-    return (np.log(dataframe.get("close") / previous_close_low) / denominator).where(
-        ~np.isclose(denominator, 0.0), 0.0
+    denominator = safe_log_ratio(
+        previous_close_high,
+        previous_close_low,
+        context="price_retracement_percent:denominator",
+        logger=logger,
     )
+    numerator = safe_log_ratio(
+        dataframe.get("close"),
+        previous_close_low,
+        context="price_retracement_percent:numerator",
+        logger=logger,
+    )
+    result = safe_divide(
+        numerator,
+        denominator,
+        fallback=np.nan,
+        context="price_retracement_percent",
+        logger=logger,
+    )
+    return result.where(~np.isclose(denominator, 0.0), 0.0)
 
 
 # VWAP bands
@@ -2092,6 +2403,8 @@ def ewo(
     mamode: str = "sma",
     zero_lag: bool = False,
     normalize: bool = False,
+    *,
+    logger: Logger | None = None,
 ) -> pd.Series:
     """
     Calculate the Elliott Wave Oscillator (EWO) using two moving averages.
@@ -2112,7 +2425,12 @@ def ewo(
     ma2 = ma_fn(prices, timeperiod=ma2_length)
     madiff = ma1 - ma2
     if normalize:
-        madiff = (madiff / prices) * 100.0
+        madiff = safe_divide(
+            madiff,
+            prices,
+            context="ewo:normalize",
+            logger=logger,
+        ) * 100.0
     return madiff
 
 
@@ -2193,6 +2511,8 @@ def zigzag(
     natr_period: int = 14,
     natr_multiplier: float = 9.0,
     normalize: bool = False,
+    *,
+    logger: Logger | None = None,
 ) -> tuple[
     list[int],
     list[float],
@@ -2222,9 +2542,28 @@ def zigzag(
 
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
-    closes_log = np.log(df.get("close").to_numpy())
-    highs_log = np.log(df.get("high").to_numpy())
-    lows_log = np.log(df.get("low").to_numpy())
+    closes = df.get("close").to_numpy(dtype=float)
+    highs = df.get("high").to_numpy(dtype=float)
+    lows = df.get("low").to_numpy(dtype=float)
+    invalid_price_count = int(
+        np.count_nonzero(
+            ~np.isfinite(closes)
+            | ~np.isfinite(highs)
+            | ~np.isfinite(lows)
+            | (closes <= 0.0)
+            | (highs <= 0.0)
+            | (lows <= 0.0)
+        )
+    )
+    if invalid_price_count and logger is not None:
+        logger.debug(
+            "zigzag: %d rows have non-finite or non-positive OHLC values; derived pivot metrics are NaN at those positions",
+            invalid_price_count,
+        )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        closes_log = np.where(np.isfinite(closes) & (closes > 0.0), np.log(closes), np.nan)
+        highs_log = np.where(np.isfinite(highs) & (highs > 0.0), np.log(highs), np.nan)
+        lows_log = np.where(np.isfinite(lows) & (lows > 0.0), np.log(lows), np.nan)
     volumes = df.get("volume").to_numpy()
 
     state: TrendDirection = TrendDirection.NEUTRAL
@@ -2693,7 +3032,7 @@ REGRESSORS: Final[tuple[Regressor, ...]] = (
     "catboost",
 )
 
-RegressorCallback = Union[Callable[..., Any], XGBoostTrainingCallback]
+RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 

@@ -54,6 +54,7 @@ from Utils import (
     ensure_datetime_series,
     make_test_set_and_weights,
     fit_regressor,
+    finite_sample,
     format_dict,
     format_number,
     get_causal_mode,
@@ -69,6 +70,7 @@ from Utils import (
     optuna_load_best_params,
     optuna_save_best_params,
     sanitize_and_renormalize,
+    safe_distribution_fit,
     soft_extremum,
     zigzag,
 )
@@ -123,7 +125,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     version = "3.12.0"
 
     _TEST_SIZE: Final[float] = 0.1
-
+    # Substituted whenever the Weibull DI cutoff (``weibull_min.ppf``) is
+    # non-finite (cold start or degenerate fit). Preserves the prior
+    # pre-warm-up heuristic for the outlier-quantile cutoff scale.
+    _DI_CUTOFF_DEFAULT: Final[float] = 2.0
     _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
         {"test_size", "train_size", "random_state", "shuffle", "stratify"}
     )
@@ -2223,7 +2228,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if not warmed_up:
                     min_pred, max_pred = -2.0, 2.0
                     f = [0.0, 0.0, 0.0]
-                    cutoff = 2.0
+                    cutoff = QuickAdapterRegressorV3._DI_CUTOFF_DEFAULT
                 else:
                     min_pred, max_pred = self.min_max_pred(
                         label_col,
@@ -2234,14 +2239,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                             pair, QuickAdapterRegressorV3._OPTUNA_NAMESPACES[1]
                         ).get("label_period_candles"),  # "label"
                     )
-                    f = sp.stats.weibull_min.fit(
-                        pd.to_numeric(di_values, errors="coerce").dropna(), floc=0
+                    di_sample = finite_sample(
+                        []
+                        if di_values is None
+                        else pd.to_numeric(di_values, errors="coerce"),
+                        positive_only=True,
+                    )
+                    f = safe_distribution_fit(
+                        di_sample,
+                        sp.stats.weibull_min.fit,
+                        # Intentionally non-ppf-able; the ``weibull_min.ppf``
+                        # downstream returns NaN on degenerate scale and the
+                        # ``np.isfinite(cutoff)`` guard substitutes
+                        # ``_DI_CUTOFF_DEFAULT``.
+                        fallback=(0.0, 0.0, 0.0),
+                        context=f"di_values_weibull_fit:{pair}",
+                        logger=logger,
+                        min_count=2,
+                        require_variance=True,
+                        floc=0,
                     )
                     outlier_quantile = col_prediction_config.get(
                         "outlier_quantile",
                         DEFAULTS_LABEL_PREDICTION["outlier_quantile"],
                     )
                     cutoff = sp.stats.weibull_min.ppf(outlier_quantile, *f)
+                    if not np.isfinite(cutoff):
+                        logger.warning(
+                            "[%s] DI_values Weibull cutoff is invalid "
+                            "(params=%r, quantile=%r); using fallback %r",
+                            pair,
+                            f,
+                            outlier_quantile,
+                            QuickAdapterRegressorV3._DI_CUTOFF_DEFAULT,
+                        )
+                        cutoff = QuickAdapterRegressorV3._DI_CUTOFF_DEFAULT
                 dk.data["extra_returns_per_train"][f"{label_col}_minima_threshold"] = (
                     min_pred
                 )
@@ -2261,7 +2293,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if not warmed_up:
                 f = [0.0, 0.0]
             else:
-                f = sp.stats.norm.fit(pred_label)
+                sample = finite_sample(pred_label)
+                if sample.finite_count == 0:
+                    fallback = (0.0, 0.0)
+                else:
+                    sample_mean = float(np.mean(sample.values))
+                    sample_std = float(np.std(sample.values, ddof=0))
+                    fallback = (
+                        sample_mean if np.isfinite(sample_mean) else 0.0,
+                        sample_std if np.isfinite(sample_std) else 0.0,
+                    )
+                f = safe_distribution_fit(
+                    sample,
+                    sp.stats.norm.fit,
+                    fallback=fallback,
+                    context=f"label_norm_fit:{pair}:{label_col}",
+                    logger=logger,
+                    min_count=2,
+                    require_variance=True,
+                )
             dk.data["labels_mean"][label_col], dk.data["labels_std"][label_col] = (
                 f[0],
                 f[1],
@@ -4019,6 +4069,7 @@ def label_objective(
         df,
         natr_period=label_period_candles,
         natr_multiplier=label_natr_multiplier,
+        logger=logger,
     )
 
     median_amplitude = np.nanmedian(np.asarray(pivots_amplitudes, dtype=float))
