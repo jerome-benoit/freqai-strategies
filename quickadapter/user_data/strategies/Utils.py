@@ -1136,6 +1136,7 @@ class LabelWeightSupportSummary:
     - ``effective_sample_size``: Kish's ESS computed on the final
       composed **sample** weights, ``(Sigma w)^2 / Sigma(w^2)``
     """
+
     total_rows: int
     positive_label_weight_count: int
     positive_label_weight_fraction: float

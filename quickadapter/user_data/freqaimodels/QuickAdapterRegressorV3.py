@@ -6,7 +6,18 @@ import warnings
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import AbstractSet, Any, Callable, ClassVar, Final, Literal, Optional, Union, assert_never, cast
+from typing import (
+    AbstractSet,
+    Any,
+    Callable,
+    ClassVar,
+    Final,
+    Literal,
+    Optional,
+    Union,
+    assert_never,
+    cast,
+)
 
 import numpy as np
 import optuna
@@ -517,7 +528,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         shuffled_labels = labels.loc[shuffled_features.index]
         shuffled_label_weights = None if label_weights is None else label_weights[order]
-        return shuffled_features, shuffled_labels, base_weights[order], shuffled_label_weights
+        return (
+            shuffled_features,
+            shuffled_labels,
+            base_weights[order],
+            shuffled_label_weights,
+        )
 
     @staticmethod
     def _compose_eval_weights(
@@ -590,9 +606,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if label_weights is None:
             return compose_sample_weights(base_weights, None, logger=logger)
 
-        policy = cast(LabelWeightSupportPolicy, label_weighting_config["support_policy"])
+        policy = cast(
+            LabelWeightSupportPolicy, label_weighting_config["support_policy"]
+        )
         try:
-            composed = compose_sample_weights(base_weights, label_weights, logger=logger)
+            composed = compose_sample_weights(
+                base_weights, label_weights, logger=logger
+            )
         except LabelWeightSupportError as exc:
             return QuickAdapterRegressorV3._apply_support_policy(
                 base_weights,
@@ -603,13 +623,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         summary = summarize_label_weight_support(label_weights, composed)
         reasons: list[str] = []
-        min_pivot_equivalent_count = label_weighting_config["min_pivot_equivalent_count"]
+        min_pivot_equivalent_count = label_weighting_config[
+            "min_pivot_equivalent_count"
+        ]
         min_positive_label_weight_fraction = label_weighting_config[
             "min_positive_label_weight_fraction"
         ]
-        min_effective_sample_size = label_weighting_config[
-            "min_effective_sample_size"
-        ]
+        min_effective_sample_size = label_weighting_config["min_effective_sample_size"]
         if summary.pivot_equivalent_count < min_pivot_equivalent_count:
             reasons.append(
                 f"pivot_equivalent_count={summary.pivot_equivalent_count} "
@@ -2211,7 +2231,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         test_labels = labels.iloc[test_idx]
         train_base_weights = weights.base[train_idx]
         test_base_weights = weights.base[test_idx]
-        train_label_weights = None if weights.label is None else weights.label[train_idx]
+        train_label_weights = (
+            None if weights.label is None else weights.label[train_idx]
+        )
         test_label_weights = None if weights.label is None else weights.label[test_idx]
         test_weights = QuickAdapterRegressorV3._compose_eval_weights(
             test_base_weights,
