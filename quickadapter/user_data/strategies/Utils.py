@@ -4,10 +4,10 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache, singledispatch
-from collections.abc import Sequence
 from logging import Logger
 from pathlib import Path
 from typing import (
@@ -3105,9 +3105,9 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 
 
 def _is_unversioned_label_best_params_shape(best_params: Any) -> bool:
-    """Detect an unversioned Optuna label best-params dict.
+    """Detect an unversioned Optuna label best params dict.
 
-    An unversioned dict is a raw best-params mapping missing
+    An unversioned dict is a raw best params mapping missing
     ``schema_version``; its field shape matches the inner ``params`` of
     a schema-versioned ``{schema_version, params}`` dict.
     """
@@ -3127,7 +3127,7 @@ def _validate_optuna_label_best_params(
     if _is_unversioned_label_best_params_shape(best_params):
         if logger is not None:
             logger.info(
-                f"[{pair}] Optuna label best-params (no schema_version) "
+                f"[{pair}] Optuna label best params (no schema_version) "
                 f"read as v{_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION} in-memory."
             )
         best_params = {
@@ -3136,13 +3136,13 @@ def _validate_optuna_label_best_params(
         }
     if not isinstance(best_params, dict):
         if logger is not None:
-            logger.warning(f"[{pair}] Ignoring Optuna label best-params: not a dict")
+            logger.warning(f"[{pair}] Ignoring Optuna label best params: not a dict")
         return None
     schema_version = best_params.get("schema_version")
     if schema_version is None:
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: missing schema_version"
+                f"[{pair}] Ignoring Optuna label best params: missing schema_version"
             )
         return None
     if isinstance(schema_version, bool) or not isinstance(
@@ -3150,7 +3150,7 @@ def _validate_optuna_label_best_params(
     ):
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"[{pair}] Ignoring Optuna label best params: invalid "
                 f"schema_version={schema_version!r} type "
                 f"(must be int)"
             )
@@ -3158,7 +3158,7 @@ def _validate_optuna_label_best_params(
     if schema_version != _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION:
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: incompatible "
+                f"[{pair}] Ignoring Optuna label best params: incompatible "
                 f"schema_version={schema_version!r} "
                 f"(expected {_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION})"
             )
@@ -3166,7 +3166,7 @@ def _validate_optuna_label_best_params(
     params = best_params.get("params")
     if not isinstance(params, dict):
         if logger is not None:
-            logger.warning(f"[{pair}] Ignoring Optuna label best-params without params")
+            logger.warning(f"[{pair}] Ignoring Optuna label best params without params")
         return None
     label_period_candles = params.get("label_period_candles")
     label_natr_multiplier = params.get("label_natr_multiplier")
@@ -3177,7 +3177,7 @@ def _validate_optuna_label_best_params(
     ):
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"[{pair}] Ignoring Optuna label best params: invalid "
                 f"label_period_candles={label_period_candles!r} (must be int >= 1)"
             )
         return None
@@ -3189,7 +3189,7 @@ def _validate_optuna_label_best_params(
     ):
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"[{pair}] Ignoring Optuna label best params: invalid "
                 f"label_natr_multiplier={label_natr_multiplier!r} "
                 f"(must be finite number > 0)"
             )
@@ -3202,7 +3202,7 @@ def _validate_optuna_label_best_params(
     ):
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best-params: invalid "
+                f"[{pair}] Ignoring Optuna label best params: invalid "
                 f"label_horizon_candles={label_horizon_candles!r} (must be int >= 1)"
             )
         return None
