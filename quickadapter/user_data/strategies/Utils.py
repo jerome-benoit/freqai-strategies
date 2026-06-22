@@ -1210,7 +1210,7 @@ def sanitize_and_renormalize(
     drop_mask: NDArray[np.bool_] | None = None,
     *,
     logger: Logger | None = None,
-    context: str | None = None,
+    context: str,
 ) -> NDArray[np.floating]:
     """Sanitize a weight vector and renormalize so ``mean(out) == 1``.
 
@@ -1218,6 +1218,9 @@ def sanitize_and_renormalize(
     ``drop_mask`` are forced to ``0``. On collapse (no positive finite
     entry survives), returns ones on surviving rows and zeros on dropped
     rows, rescaled so ``mean(out) == 1`` still holds.
+
+    ``context`` is the caller-supplied prefix attached to every warning
+    and error emitted from this helper.
     """
     arr = np.asarray(arr, dtype=float)
     n = arr.size
@@ -1228,13 +1231,13 @@ def sanitize_and_renormalize(
         drop_mask = np.asarray(drop_mask)
         if drop_mask.shape != arr.shape:
             raise ValueError(
-                f"sanitize_and_renormalize: drop_mask shape "
-                f"{drop_mask.shape} != arr shape {arr.shape}"
+                f"{context}: drop_mask shape {drop_mask.shape} != arr "
+                f"shape {arr.shape}"
             )
         if not np.issubdtype(drop_mask.dtype, np.bool_):
             raise ValueError(
-                f"sanitize_and_renormalize: drop_mask dtype "
-                f"{drop_mask.dtype} is not boolean"
+                f"{context}: drop_mask dtype {drop_mask.dtype} is not "
+                f"boolean"
             )
         safe = np.where(drop_mask, 0.0, safe)
     total = safe.sum()
@@ -1247,18 +1250,17 @@ def sanitize_and_renormalize(
     if logger is not None:
         if rescale_overflow:
             logger.warning(
-                "sanitize_and_renormalize: rescale factor non-finite "
-                "(context=%s, n=%d, total=%r); falling back to uniform "
-                "weights",
-                context or "unspecified",
+                "%s: rescale factor non-finite (n=%d, total=%r); "
+                "falling back to uniform weights",
+                context,
                 n,
                 total,
             )
         else:
             logger.warning(
-                "sanitize_and_renormalize: weights collapsed (context=%s, "
-                "total=%r, n=%d); falling back to uniform weights",
-                context or "unspecified",
+                "%s: weights collapsed (total=%r, n=%d); falling back "
+                "to uniform weights",
+                context,
                 total,
                 n,
             )
@@ -1270,9 +1272,9 @@ def sanitize_and_renormalize(
             return masked * (n / total)
         if logger is not None:
             logger.warning(
-                "sanitize_and_renormalize: drop_mask covers all rows in "
-                "fallback; ignoring mask to preserve mean=1 (context=%s)",
-                context or "unspecified",
+                "%s: drop_mask covers all rows in fallback; ignoring "
+                "mask to preserve mean=1",
+                context,
             )
     return fallback
 
@@ -1377,6 +1379,7 @@ def compose_sample_weights(
     label_weights: NDArray[np.floating] | None,
     *,
     logger: Logger,
+    context: str,
     on_collapse: Literal["raise", "fallback"] = "raise",
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
@@ -1385,6 +1388,13 @@ def compose_sample_weights(
     ``label_weights[i]`` is non-finite or ``<= 0`` are dropped
     (``out[i] == 0``); surviving rows carry ``base_weights * label_weights``
     rescaled to global ``mean == 1``.
+
+    ``context`` is the caller-supplied prefix attached to every warning
+    and error emitted from this helper (for example
+    ``"[ETH/USDT] train_test_split:train"``); the inner
+    ``sanitize_and_renormalize`` calls receive
+    ``f"{context}:base_only"`` / ``f"{context}:label_weighted"`` /
+    ``f"{context}:base_fallback"`` to mark the routing branch.
 
     ``on_collapse`` controls the response when the label-weighted product
     collapses on every surviving row: ``"raise"`` (default) surfaces the
@@ -1400,27 +1410,27 @@ def compose_sample_weights(
     base_weights = np.asarray(base_weights, dtype=float)
     if label_weights is None:
         return sanitize_and_renormalize(
-            base_weights, logger=logger, context="compose:base_only"
+            base_weights, logger=logger, context=f"{context}:base_only"
         )
     n = base_weights.shape[0]
     arr = np.asarray(label_weights, dtype=float)
     if arr.shape != (n,):
         raise ValueError(
-            f"compose_sample_weights: label_weights has shape {arr.shape}, "
-            f"expected ({n},)"
+            f"{context}: label_weights shape {arr.shape}, expected ({n},)"
         )
     drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
     if drop_mask.all():
         raise LabelWeightSupportError(
-            "compose_sample_weights: all rows dropped by zero or non-finite "
-            "label weights; no surviving training samples"
+            f"{context}: all rows dropped by zero or non-finite label "
+            f"weights; no surviving training samples"
         )
     nonzero = _pivot_equivalent_count(arr, drop_mask)
     if nonzero / n < SPARSE_TRAINING_MASS_THRESHOLD:
         logger.warning(
-            "compose_sample_weights: sparse training mass "
+            "%s: sparse weighting mass "
             "(%d/%d rows above %.0f%% of surviving max = %.2f%%, "
             "threshold=%.2f%%)",
+            context,
             nonzero,
             n,
             100.0 * _PIVOT_EQUIVALENT_MAX_FRACTION,
@@ -1435,25 +1445,26 @@ def compose_sample_weights(
             combined,
             drop_mask=drop_mask,
             logger=logger,
-            context="compose:label_weighted",
+            context=f"{context}:label_weighted",
         )
     match on_collapse:
         case "raise":
             raise LabelWeightSupportError(
-                f"compose_sample_weights: composed weights collapsed on "
-                f"surviving rows (survivor_total={survivor_total:.6g})"
+                f"{context}: composed weights collapsed on surviving rows "
+                f"(survivor_total={survivor_total:.6g})"
             )
         case "fallback":
             logger.warning(
-                "compose_sample_weights: composed weights collapsed on surviving "
-                "rows (survivor_total=%.6g); falling back to base weights",
+                "%s: composed weights collapsed on surviving rows "
+                "(survivor_total=%.6g); falling back to base weights",
+                context,
                 survivor_total,
             )
             return sanitize_and_renormalize(
                 base_weights,
                 drop_mask=drop_mask,
                 logger=logger,
-                context="compose:base_fallback",
+                context=f"{context}:base_fallback",
             )
         case _:
             assert_never(on_collapse)
