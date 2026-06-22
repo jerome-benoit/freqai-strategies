@@ -567,6 +567,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 base_weights,
                 label_weights,
                 logger=logger,
+                context=context,
                 on_collapse="fallback",
             )
         except LabelWeightSupportError as exc:
@@ -575,7 +576,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 context,
                 exc,
             )
-            return compose_sample_weights(base_weights, None, logger=logger)
+            return compose_sample_weights(
+                base_weights, None, logger=logger, context=context
+            )
 
     @staticmethod
     def _apply_support_policy(
@@ -599,7 +602,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     context,
                     reason_text,
                 )
-                return compose_sample_weights(base_weights, None, logger=logger)
+                return compose_sample_weights(
+                base_weights, None, logger=logger, context=context
+            )
             case _:
                 assert_never(policy)
 
@@ -631,11 +636,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"no label weights available (no pivots detected)"
                     ],
                 )
-            return compose_sample_weights(base_weights, None, logger=logger)
+            return compose_sample_weights(
+                base_weights, None, logger=logger, context=context
+            )
 
         try:
             composed = compose_sample_weights(
-                base_weights, label_weights, logger=logger
+                base_weights, label_weights, logger=logger, context=context
             )
         except LabelWeightSupportError as exc:
             return QuickAdapterRegressorV3._apply_support_policy(
