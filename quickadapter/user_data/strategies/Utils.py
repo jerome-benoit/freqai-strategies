@@ -1,6 +1,7 @@
 import copy
 import functools
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -19,6 +20,7 @@ from typing import (
     NamedTuple,
     TypeVar,
     assert_never,
+    cast,
 )
 
 import numpy as np
@@ -216,13 +218,13 @@ def safe_divide(
     context: str = "safe_divide",
     logger: Logger | None = None,
 ) -> Any:
-    """Element-wise division with non-finite and near-zero denominator guards.
+    """Element-wise division with non-finite and zero denominator guards.
 
     Replaces results from divisions whose numerator or denominator is non-finite,
-    or whose denominator satisfies ``np.isclose(denom, 0.0)`` (default
-    ``atol=1e-8``), with ``fallback``. The fallback is also substituted for
-    any non-finite division output (e.g. ``inf`` from a subnormal denominator
-    that escapes the ``np.isclose`` gate).
+    or whose denominator is exactly ``0.0``, with ``fallback``. Subnormal or
+    satoshi-scale denominators (e.g. ``1e-8`` price quotes) pass through and
+    any resulting non-finite division output (e.g. ``inf``) is then coerced
+    to ``fallback`` by the post-division finite mask.
 
     Returns a ``pd.Series`` indexed on the first Series among the inputs when
     shapes align, a Python ``float`` for 0-d results, otherwise an ``ndarray``.
@@ -232,7 +234,7 @@ def safe_divide(
     valid_mask = (
         np.isfinite(numerator_arr)
         & np.isfinite(denominator_arr)
-        & ~np.isclose(denominator_arr, 0.0)
+        & (denominator_arr != 0.0)
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         result = np.divide(
@@ -589,17 +591,103 @@ class LabelData:
     known_at_index: pd.Series | None = None
 
 
-LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
+LabelGenerator = Callable[[pd.DataFrame, dict[str, Any], Logger | None], LabelData]
 _LABEL_GENERATORS: dict[str, LabelGenerator] = {}
 
 
-def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
-    _LABEL_GENERATORS[label_column] = generator
+def _adapt_label_generator(
+    generator: Callable[..., LabelData],
+) -> LabelGenerator:
+    """Adapt a label generator to the canonical 3-arg shape.
+
+    Detects the canonical ``(dataframe, params, logger) -> LabelData``
+    shape by a positional parameter named ``logger`` at index 2 (with or
+    without a default). Generators without such a parameter are wrapped
+    to drop the logger argument at dispatch; defaulted positionals after
+    index 1 stay at their defaults. ``*args``, ``**kwargs``, keyword-only
+    ``logger``, fewer than 2 required positionals, more than 3 required
+    positionals, and 3 required positionals whose third name is not
+    ``logger`` raise ``ValueError`` at registration. Inspection runs
+    once at registration; dispatch in ``generate_label_data`` is a
+    direct call.
+    """
+    sig = inspect.signature(generator)
+    params = list(sig.parameters.values())
+    if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+        raise ValueError(
+            f"Invalid label generator {generator!r}: ``*args`` is not "
+            f"supported; declare an explicit (dataframe, params) or "
+            f"(dataframe, params, logger) signature"
+        )
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        raise ValueError(
+            f"Invalid label generator {generator!r}: ``**kwargs`` is not "
+            f"supported; declare an explicit (dataframe, params) or "
+            f"(dataframe, params, logger) signature"
+        )
+    if any(
+        p.kind == inspect.Parameter.KEYWORD_ONLY and p.name == "logger" for p in params
+    ):
+        raise ValueError(
+            f"Invalid label generator {generator!r}: keyword-only "
+            f"``logger`` is not supported; declare ``logger`` as the "
+            f"third positional parameter"
+        )
+    positional = [
+        p
+        for p in params
+        if p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    n_total = len(positional)
+    n_required = sum(1 for p in positional if p.default is inspect.Parameter.empty)
+    if n_required < 2:
+        raise ValueError(
+            f"Invalid label generator {generator!r}: {n_required} "
+            f"required positional parameter(s); expected at least 2 "
+            f"(dataframe, params)"
+        )
+    if n_required > 3:
+        raise ValueError(
+            f"Invalid label generator {generator!r}: {n_required} "
+            f"required positional parameter(s); expected 2 "
+            f"(dataframe, params) or 3 (dataframe, params, logger)"
+        )
+    has_logger_at_third = n_total >= 3 and positional[2].name == "logger"
+    if has_logger_at_third:
+        return cast(LabelGenerator, generator)
+    if n_required == 3:
+        raise ValueError(
+            f"Invalid label generator {generator!r}: third positional "
+            f"parameter is named {positional[2].name!r}, expected "
+            f"``logger``"
+        )
+
+    @functools.wraps(generator)
+    def adapted(
+        dataframe: pd.DataFrame,
+        params: dict[str, Any],
+        logger: Logger | None = None,
+    ) -> LabelData:
+        return generator(dataframe, params)
+
+    return adapted
+
+
+def register_label_generator(
+    label_column: str,
+    generator: Callable[..., LabelData],
+) -> None:
+    _LABEL_GENERATORS[label_column] = _adapt_label_generator(generator)
 
 
 def _generate_extrema_label(
     dataframe: pd.DataFrame,
     params: dict[str, Any],
+    logger: Logger | None = None,
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
@@ -654,6 +742,7 @@ def generate_label_data(
     dataframe: pd.DataFrame,
     label_column: str,
     params: dict[str, Any],
+    logger: Logger | None = None,
 ) -> LabelData:
     generator = _LABEL_GENERATORS.get(label_column)
     if generator is None:
@@ -661,16 +750,78 @@ def generate_label_data(
             f"No label generator registered for column '{label_column}'. "
             f"Available columns: {list(_LABEL_GENERATORS.keys())}"
         )
-    return generator(dataframe, params)
+    return generator(dataframe, params, logger)
 
 
 SmoothingKernel = Literal["gaussian", "kaiser", "kaiser_bessel_derived", "triang"]
-SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
+SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = SMOOTHING_METHODS[1:5]
+assert SMOOTHING_KERNELS == (
     "gaussian",
     "kaiser",
     "kaiser_bessel_derived",
     "triang",
+), (
+    f"SMOOTHING_KERNELS slice drift: {SMOOTHING_KERNELS}; "
+    "the SmoothingKernel Literal and SMOOTHING_METHODS[1:5] must agree"
 )
+
+
+def get_smoothing_kernel_half_width(
+    config: dict[str, Any],
+    *,
+    series_length: int,
+) -> int:
+    """Half-width (in candles) of the smoothing kernel's lookahead.
+
+    Equals the lookahead applied to ``known_at_index`` after smoothing.
+    Mirrors ``smooth()`` window normalization and short-series gating
+    via shared primitives (``get_odd_window``, ``get_even_window``,
+    ``get_savgol_params``).
+
+    For zero-phase ``filtfilt``-routed kernels (members of
+    ``SMOOTHING_KERNELS``) the lookahead equals ``effective_window - 1``
+    because each forward+backward pass extends the dependency window to
+    the full filter length on both sides. For ``smm``/``sma``/``savgol``
+    (single-pass centered windows) the half-width equals
+    ``effective_window // 2``. For ``gaussian_filter1d`` the lookahead
+    matches ``scipy.ndimage`` default truncation at
+    ``int(4.0 * sigma + 0.5)`` (scipy's ``round`` form). Returns 0 for
+    ``method == "none"``, for ``series_length < max(window_candles, 3)``
+    (``smooth()`` top-level no-op), and for the filtfilt/savgol routes
+    when ``series_length < effective_window`` (downstream short-series
+    no-op in ``zero_phase_filter`` / ``savgol_filter``).
+    """
+    method = config.get("method", SMOOTHING_METHODS[0])
+    if method == SMOOTHING_METHODS[0]:  # "none"
+        return 0
+    raw_window = max(
+        int(config.get("window_candles", DEFAULTS_LABEL_SMOOTHING["window_candles"])),
+        3,
+    )
+    # ``smooth()`` top-level short-series gate (``if n < window_candles: return series``)
+    if series_length < raw_window:
+        return 0
+    if method == SMOOTHING_METHODS[8]:  # "gaussian_filter1d"
+        sigma = max(float(config.get("sigma", DEFAULTS_LABEL_SMOOTHING["sigma"])), 0.0)
+        return int(4.0 * sigma + 0.5)
+    if method == SMOOTHING_METHODS[7]:  # "savgol"
+        polyorder = max(
+            int(config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])), 0
+        )
+        effective_window, _, _ = get_savgol_params(raw_window, polyorder, "mirror")
+    elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
+        effective_window = get_even_window(raw_window)
+    else:
+        effective_window = get_odd_window(raw_window)
+    # ``zero_phase_filter`` / ``savgol_filter`` short-series gate
+    if (
+        method in SMOOTHING_KERNELS or method == SMOOTHING_METHODS[7]
+    ) and series_length < effective_window:
+        return 0
+    if method in SMOOTHING_KERNELS:
+        return effective_window - 1
+    return effective_window // 2
+
 
 TradePriceTarget = Literal[
     "moving_average", "quantile_interpolation", "weighted_average"
@@ -3563,36 +3714,23 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
 
 
-def _is_unversioned_label_best_params_shape(best_params: Any) -> bool:
-    """Detect an unversioned Optuna label best params dict.
+_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 2
+"""Version of the label-namespace Optuna best-trial selection algorithm.
 
-    An unversioned dict is a raw best params mapping missing
-    ``schema_version``; its field shape matches the inner ``params`` of
-    a schema-versioned ``{schema_version, params}`` dict.
-    """
-    return (
-        isinstance(best_params, dict)
-        and "schema_version" not in best_params
-        and "label_period_candles" in best_params
-        and "label_natr_multiplier" in best_params
-    )
+Incremented on any change to tie-break, normalization, distance-metric
+whitelist, or selection metadata. Independent of
+``_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION`` (on-disk JSON layout vs
+selection-algorithm semantics are versioned separately).
+"""
 
 
 def _validate_optuna_label_best_params(
     best_params: Any,
     pair: str,
     logger: Logger | None,
+    *,
+    expected_selection_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    if _is_unversioned_label_best_params_shape(best_params):
-        if logger is not None:
-            logger.info(
-                f"[{pair}] Optuna label best params (no schema_version) "
-                f"read as v{_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION} in-memory."
-            )
-        best_params = {
-            "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
-            "params": best_params,
-        }
     if not isinstance(best_params, dict):
         if logger is not None:
             logger.warning(f"[{pair}] Ignoring Optuna label best params: not a dict")
@@ -3620,6 +3758,45 @@ def _validate_optuna_label_best_params(
                 f"[{pair}] Ignoring Optuna label best params: incompatible "
                 f"schema_version={schema_version!r} "
                 f"(expected {_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION})"
+            )
+        return None
+    selection_metadata = best_params.get("selection_metadata")
+    if not isinstance(selection_metadata, dict):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: missing or invalid "
+                f"selection_metadata"
+            )
+        return None
+    selection_schema_version = selection_metadata.get("schema_version")
+    if isinstance(selection_schema_version, bool) or not isinstance(
+        selection_schema_version, (int, np.integer)
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: invalid "
+                f"selection_metadata.schema_version={selection_schema_version!r} "
+                f"(must be int)"
+            )
+        return None
+    if selection_schema_version != _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION:
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: incompatible "
+                f"selection_metadata.schema_version={selection_schema_version!r} "
+                f"(expected {_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION})"
+            )
+        return None
+    if (
+        expected_selection_metadata is not None
+        and selection_metadata != expected_selection_metadata
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: "
+                f"selection_metadata drift "
+                f"(stored: {selection_metadata!r}, "
+                f"expected: {expected_selection_metadata!r})"
             )
         return None
     params = best_params.get("params")
@@ -3673,6 +3850,8 @@ def optuna_load_best_params(
     pair: str,
     namespace: OptunaNamespace,
     logger: Logger | None = None,
+    *,
+    expected_selection_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -3681,7 +3860,12 @@ def optuna_load_best_params(
         with best_params_path.open("r", encoding="utf-8") as read_file:
             best_params = json.load(read_file)
         if namespace == _OPTUNA_NAMESPACES.label:
-            return _validate_optuna_label_best_params(best_params, pair, logger)
+            return _validate_optuna_label_best_params(
+                best_params,
+                pair,
+                logger,
+                expected_selection_metadata=expected_selection_metadata,
+            )
         return best_params
     return None
 

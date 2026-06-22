@@ -1,5 +1,6 @@
 import copy
 import logging
+import math
 import random
 import time
 import warnings
@@ -65,7 +66,9 @@ from Utils import (
     LabelWeightSupportError,
     REGRESSORS,
     Regressor,
+    WEIGHT_STRATEGIES,
     _OPTUNA_NAMESPACES,
+    _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
     OptunaNamespace,
     compose_sample_weights,
     ensure_datetime_series,
@@ -278,14 +281,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "shellinger",
     )
 
-    _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 1
-    """Version of the label-namespace Optuna best-trial selection algorithm.
-
-    Incremented on any change to tie-break, normalization, distance-metric
-    whitelist, or selection metadata. Independent of
-    ``Utils._OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION``.
-    """
-
     # Absolute tolerance (rtol=0) for constant-column detection in
     # `_non_constant_objective_indices`; valid on the [0,1]-normalized
     # output of `_normalize_objective_values`.
@@ -437,6 +432,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @lru_cache(maxsize=None)
     def _power_mean_metrics_set() -> set[str]:
         return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _aggregate_distance_metrics_set() -> set[str]:
+        """Aggregate metrics: distance metrics computed by reduction over
+        objective coordinates rather than SciPy/sklearn pairwise routines.
+
+        Computed as the complement of SciPy and probability metrics over
+        ``_DISTANCE_METRICS``: ``harmonic_mean``, ``geometric_mean``,
+        ``arithmetic_mean``, ``quadratic_mean``, ``cubic_mean``,
+        ``power_mean``, ``weighted_sum``. Accepted by
+        ``compromise_programming``/``topsis`` via
+        ``_calculate_trial_distance_to_ideal``; rejected by
+        cluster/density categories that route to
+        ``pairwise_distances``/``KMeans``/``KMedoids``/``NearestNeighbors``.
+        """
+        return (
+            QuickAdapterRegressorV3._distance_metrics_set()
+            - QuickAdapterRegressorV3._scipy_metrics_set()
+            - QuickAdapterRegressorV3._probability_distance_metrics_set()
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _cluster_density_distance_metrics_set() -> set[str]:
+        """SciPy-compatible non-probability metrics.
+
+        Accepted by cluster/density categories that route to
+        ``pairwise_distances``/``KMeans``/``KMedoids``/``NearestNeighbors``;
+        rejected by the aggregate set and by probability metrics.
+        """
+        return (
+            QuickAdapterRegressorV3._scipy_metrics_set()
+            - QuickAdapterRegressorV3._probability_distance_metrics_set()
+        )
 
     @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
@@ -635,12 +665,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *,
         context: str,
     ) -> NDArray[np.floating]:
-        if label_weights is None:
-            return compose_sample_weights(base_weights, None, logger=logger)
-
         policy = cast(
             LabelWeightSupportPolicy, label_weighting_config["support_policy"]
         )
+        if label_weights is None:
+            # Non-"none" label-weighting strategy with no available label
+            # weights (zigzag produced zero pivots): the support policy
+            # governs the contract -- ``raise`` raises, ``fallback``
+            # warns. A direct return to base weights would bypass the
+            # policy silently.
+            strategy = label_weighting_config.get("strategy", WEIGHT_STRATEGIES[0])
+            if strategy != WEIGHT_STRATEGIES[0]:  # "none"
+                return QuickAdapterRegressorV3._apply_support_policy(
+                    base_weights,
+                    context=context,
+                    policy=policy,
+                    reasons=[
+                        f"label_weighting.strategy={strategy!r} configured but "
+                        f"no label weights available (no pivots detected)"
+                    ],
+                )
+            return compose_sample_weights(base_weights, None, logger=logger)
+
         try:
             composed = compose_sample_weights(
                 base_weights, label_weights, logger=logger
@@ -960,9 +1006,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *,
         ctx: str,
         default: str,
+        aggregate_allowed: bool,
         mode: ValidationMode = "warn",
     ) -> str:
-        valid_metrics = QuickAdapterRegressorV3._label_selection_distance_metrics_set()
+        if aggregate_allowed:
+            valid_metrics = (
+                QuickAdapterRegressorV3._label_selection_distance_metrics_set()
+            )
+        else:
+            # Cluster/density paths route the metric to SciPy/sklearn APIs
+            # (pairwise_distances, KMeans, KMedoids, NearestNeighbors) which
+            # reject `_aggregate_distance_metrics_set()`; restrict the
+            # valid set to SciPy-compatible non-probability metrics.
+            valid_metrics = (
+                QuickAdapterRegressorV3._cluster_density_distance_metrics_set()
+            )
         valid_options = tuple(
             candidate
             for candidate in QuickAdapterRegressorV3._DISTANCE_METRICS
@@ -1043,6 +1101,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ctx="label_distance_metric",
                 mode="warn",
                 default=QuickAdapterRegressorV3.LABEL_DISTANCE_METRIC_DEFAULT,
+                aggregate_allowed=True,
             )
             config["distance_metric"] = distance_metric
         elif category == "cluster":
@@ -1055,6 +1114,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ctx="label_cluster_metric",
                 mode="warn",
                 default=QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
+                aggregate_allowed=False,
             )
             config["distance_metric"] = distance_metric
 
@@ -1097,6 +1157,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ctx="label_density_metric",
                 mode="warn",
                 default=density_metric_default,
+                aggregate_allowed=False,
             )
             config["distance_metric"] = distance_metric
 
@@ -1182,9 +1243,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_method = self.ft_params.get(
             "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
         )
+        label_weights = self.ft_params.get("label_weights")
+        label_p_order = self.ft_params.get("label_p_order")
+        if label_weights is not None and not all(
+            math.isfinite(float(w)) for w in label_weights
+        ):
+            raise ValueError(
+                f"label_weights contains non-finite values: {label_weights!r}"
+            )
+        if label_p_order is not None and not math.isfinite(float(label_p_order)):
+            raise ValueError(f"label_p_order is non-finite: {label_p_order!r}")
         return {
-            "schema_version": QuickAdapterRegressorV3._OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
+            "schema_version": _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
             "method_config": self._resolve_label_method_config(label_method),
+            "label_weights": (
+                [float(w) for w in label_weights] if label_weights is not None else None
+            ),
+            "label_p_order": (
+                float(label_p_order) if label_p_order is not None else None
+            ),
         }
 
     @property
@@ -1380,9 +1457,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "label_period_candles": self.ft_params.get(
                     "label_period_candles",
                     default_label_period_candles,
-                ),
-                "label_horizon_candles": get_label_horizon_candles(
-                    self.ft_params, logger
                 ),
                 "label_natr_multiplier": float(
                     self.ft_params.get(
@@ -3802,27 +3876,46 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_weights = self.ft_params.get("label_weights")
         if (
             label_weights is not None
-            and objective_indices is not None
             and original_n_objectives is not None
+            and objective_indices is not None
             and original_n_objectives != n_objectives
         ):
             try:
                 label_weights_array = np.asarray(label_weights, dtype=float)
             except (ValueError, TypeError):
                 label_weights_array = None
-            if (
-                label_weights_array is not None
-                and label_weights_array.ndim == 1
-                and label_weights_array.size == original_n_objectives
-            ):
-                label_weights = label_weights_array[objective_indices]
-                logger.debug(
-                    "label_weights sliced to non-constant objectives "
-                    "(indices=%s, original_size=%d, sliced_size=%d)",
-                    objective_indices.tolist(),
-                    label_weights_array.size,
-                    label_weights.size,
-                )
+            if label_weights_array is not None and label_weights_array.ndim == 1:
+                if label_weights_array.size != original_n_objectives:
+                    raise ValueError(
+                        f"Invalid label_weights size {label_weights_array.size}: "
+                        f"must match original objective count "
+                        f"{original_n_objectives}"
+                    )
+                sliced_weights = label_weights_array[objective_indices]
+                if np.all(sliced_weights == 0.0):
+                    # All user-positive weights project onto dropped
+                    # (constant) objectives; uniform fallback keeps
+                    # selection deterministic and avoids
+                    # ``_validate_label_weights`` raising on sum-zero.
+                    # Negative or non-finite slices flow through to the
+                    # validator.
+                    logger.warning(
+                        "label_weights sliced to non-constant objectives "
+                        "is all-zero (indices=%s, original=%s); "
+                        "falling back to uniform weights",
+                        objective_indices.tolist(),
+                        label_weights_array.tolist(),
+                    )
+                    label_weights = None
+                else:
+                    label_weights = sliced_weights
+                    logger.debug(
+                        "label_weights sliced to non-constant objectives "
+                        "(indices=%s, original_size=%d, sliced_size=%d)",
+                        objective_indices.tolist(),
+                        label_weights_array.size,
+                        sliced_weights.size,
+                    )
         weights = QuickAdapterRegressorV3._validate_label_weights(
             label_weights,
             n_objectives,
@@ -4274,19 +4367,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     if isinstance(existing_selection_metadata, dict)
                     else None
                 )
-                target_version = (
-                    QuickAdapterRegressorV3._OPTUNA_LABEL_SELECTION_SCHEMA_VERSION
-                )
-                if existing_schema_version is None:
-                    logger.info(
-                        f"[{pair}] Optuna {namespace} study {study_name}: "
-                        f"selection schema (none -> v{target_version}); "
-                        f"{len(existing_study.trials)} trial(s) preserved"
+                target_version = _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION
+                if (
+                    isinstance(existing_schema_version, bool)
+                    or not isinstance(existing_schema_version, (int, np.integer))
+                    or existing_schema_version != target_version
+                ):
+                    version_repr = (
+                        "none"
+                        if existing_schema_version is None
+                        else f"v{existing_schema_version}"
                     )
-                elif existing_schema_version != target_version:
                     logger.warning(
                         f"[{pair}] Optuna {namespace} study {study_name}: "
-                        f"selection schema v{existing_schema_version!r} incompatible "
+                        f"selection schema {version_repr} incompatible "
                         f"with v{target_version}; resetting study"
                     )
                     QuickAdapterRegressorV3.optuna_delete_study(
@@ -4384,7 +4478,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
-        return optuna_load_best_params(self.full_path, pair, namespace, logger)
+        expected = (
+            self._optuna_label_selection_metadata()
+            if namespace == _OPTUNA_NAMESPACES.label
+            else None
+        )
+        return optuna_load_best_params(
+            self.full_path,
+            pair,
+            namespace,
+            logger,
+            expected_selection_metadata=expected,
+        )
 
     @staticmethod
     def optuna_delete_study(
