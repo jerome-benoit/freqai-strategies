@@ -4321,9 +4321,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             journal_path = storage_dir / f"{storage_filename}.log"
 
             # Pre-validate EOF: close the read_logs deferred-raise gap (see helper).
-            if QuickAdapterRegressorV3._optuna_journal_has_corrupt_tail(
-                journal_path
-            ):
+            if QuickAdapterRegressorV3._optuna_journal_has_corrupt_tail(journal_path):
                 QuickAdapterRegressorV3._optuna_quarantine_journal(
                     journal_path,
                     pair,
