@@ -206,7 +206,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.12.1"
+    version = "3.12.2"
 
     _TEST_SIZE: Final[float] = 0.1
     # Substituted whenever the Weibull DI cutoff (``weibull_min.ppf``) is
