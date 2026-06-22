@@ -1605,6 +1605,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if self._optuna_hyperopt:
             logger.info("Label Parameters:")
+            logger.info(f"  label_horizon_candles: {self._label_horizon_candles()}")
             for pair in self.pairs:
                 params = self._optuna_label_params.get(pair, {})
                 if params:
@@ -1618,6 +1619,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(
                 f"  label_natr_multiplier: {format_number(label_natr_multiplier)}"
             )
+            logger.info(f"  label_horizon_candles: {self._label_horizon_candles()}")
 
         scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
         feature_range = self.ft_params.get(
