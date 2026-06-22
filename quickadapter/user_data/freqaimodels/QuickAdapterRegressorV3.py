@@ -206,7 +206,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.12.1"
+    version = "3.12.2"
 
     _TEST_SIZE: Final[float] = 0.1
     # Substituted whenever the Weibull DI cutoff (``weibull_min.ppf``) is
@@ -1610,7 +1610,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if params:
                     logger.info(
                         f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
-                        f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}"
+                        f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}, "
+                        f"label_horizon_candles={self._label_horizon_candles(pair)}"
                     )
         else:
             logger.info("Label Parameters:")
@@ -1618,6 +1619,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(
                 f"  label_natr_multiplier: {format_number(label_natr_multiplier)}"
             )
+            logger.info(f"  label_horizon_candles: {self._label_horizon_candles()}")
 
         scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
         feature_range = self.ft_params.get(

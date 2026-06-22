@@ -125,7 +125,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.12.1"
+        return "3.12.2"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -922,7 +922,7 @@ class QuickAdapterV3(IStrategy):
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
-        label_period = datetime.timedelta(
+        series_duration = datetime.timedelta(
             minutes=len(dataframe) * self.timeframe_minutes
         )
 
@@ -936,11 +936,11 @@ class QuickAdapterV3(IStrategy):
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {format_dict(label_params, style='params')}"
+                    f"[{pair}] No {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style='params')}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | label_period: {QuickAdapterV3._td_format(label_period)} | params: {format_dict(label_params, style='params')}"
+                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style='params')}"
                 )
 
             col_weighting_config = get_label_column_config(
