@@ -209,11 +209,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "nsgaiii",
     )
     _OPTUNA_HPO_SAMPLERS: Final[tuple[OptunaSampler, ...]] = _OPTUNA_SAMPLERS[:2]
+    _OPTUNA_HPO_SAMPLERS_SET: Final[frozenset[OptunaSampler]] = frozenset(
+        _OPTUNA_HPO_SAMPLERS
+    )
     _OPTUNA_LABEL_SAMPLERS: Final[tuple[OptunaSampler, ...]] = (
         _OPTUNA_SAMPLERS[1],  # "auto"
         _OPTUNA_SAMPLERS[0],  # "tpe"
         _OPTUNA_SAMPLERS[2],  # "nsgaii"
         _OPTUNA_SAMPLERS[3],  # "nsgaiii"
+    )
+    _OPTUNA_LABEL_SAMPLERS_SET: Final[frozenset[OptunaSampler]] = frozenset(
+        _OPTUNA_LABEL_SAMPLERS
     )
 
     _SCALER_TYPES: Final[tuple[ScalerType, ...]] = (
@@ -222,6 +228,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "standard",
         "robust",
     )
+    _SCALER_TYPES_SET: Final[frozenset[ScalerType]] = frozenset(_SCALER_TYPES)
 
     SCALER_DEFAULT: Final[ScalerType] = _SCALER_TYPES[0]  # "minmax"
     RANGE_DEFAULT: Final[tuple[float, float]] = (-1.0, 1.0)
@@ -229,6 +236,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _DISTANCE_METHODS: Final[tuple[DistanceMethod, ...]] = (
         "compromise_programming",
         "topsis",
+    )
+    _DISTANCE_METHODS_SET: Final[frozenset[DistanceMethod]] = frozenset(
+        _DISTANCE_METHODS
     )
     _CLUSTER_METHODS: Final[tuple[ClusterMethod, ...]] = (
         "kmeans",
@@ -247,6 +257,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_DISTANCE_METHODS,
         *_CLUSTER_METHODS,
         *_DENSITY_METHODS,
+    )
+    _SELECTION_METHODS_SET: Final[frozenset[SelectionMethod]] = frozenset(
+        _SELECTION_METHODS
     )
 
     _DISTANCE_METRICS: Final[tuple[str, ...]] = (
@@ -268,17 +281,48 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "power_mean",
         "weighted_sum",
     )
+    _DISTANCE_METRICS_SET: Final[frozenset[str]] = frozenset(_DISTANCE_METRICS)
+    # SciPy-compatible distance metrics: the first 8 entries of
+    # ``_DISTANCE_METRICS`` route to ``scipy.spatial.distance.cdist``.
+    _SCIPY_METRICS_SET: Final[frozenset[str]] = frozenset(_DISTANCE_METRICS[:8])
 
     _UNSUPPORTED_WEIGHTS_METRICS: Final[tuple[str, ...]] = (
         _DISTANCE_METRICS[6],  # "mahalanobis"
         _DISTANCE_METRICS[5],  # "seuclidean"
         _DISTANCE_METRICS[7],  # "jensenshannon"
     )
+    _UNSUPPORTED_WEIGHTS_METRICS_SET: Final[frozenset[str]] = frozenset(
+        _UNSUPPORTED_WEIGHTS_METRICS
+    )
 
     _PROBABILITY_DISTANCE_METRICS: Final[tuple[str, ...]] = (
         "jensenshannon",
         "hellinger",
         "shellinger",
+    )
+    _PROBABILITY_DISTANCE_METRICS_SET: Final[frozenset[str]] = frozenset(
+        _PROBABILITY_DISTANCE_METRICS
+    )
+    _LABEL_SELECTION_DISTANCE_METRICS_SET: Final[frozenset[str]] = (
+        _DISTANCE_METRICS_SET - _PROBABILITY_DISTANCE_METRICS_SET
+    )
+    # Aggregate metrics: distance metrics computed by reduction over
+    # objective coordinates rather than SciPy/sklearn pairwise routines
+    # (``harmonic_mean``, ``geometric_mean``, ``arithmetic_mean``,
+    # ``quadratic_mean``, ``cubic_mean``, ``power_mean``, ``weighted_sum``).
+    # Accepted by ``compromise_programming``/``topsis`` via
+    # ``_calculate_trial_distance_to_ideal``; rejected by cluster/density
+    # categories that route to ``pairwise_distances``/``KMeans``/
+    # ``KMedoids``/``NearestNeighbors``.
+    _AGGREGATE_DISTANCE_METRICS_SET: Final[frozenset[str]] = (
+        _DISTANCE_METRICS_SET - _SCIPY_METRICS_SET - _PROBABILITY_DISTANCE_METRICS_SET
+    )
+    # SciPy-compatible non-probability metrics. Accepted by cluster/density
+    # categories that route to ``pairwise_distances``/``KMeans``/
+    # ``KMedoids``/``NearestNeighbors``; rejected by the aggregate set and
+    # by probability metrics.
+    _CLUSTER_DENSITY_DISTANCE_METRICS_SET: Final[frozenset[str]] = (
+        _SCIPY_METRICS_SET - _PROBABILITY_DISTANCE_METRICS_SET
     )
 
     # Absolute tolerance (rtol=0) for constant-column detection in
@@ -292,6 +336,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "min",
         "max",
     )
+    _DENSITY_AGGREGATIONS_SET: Final[frozenset[DensityAggregation]] = frozenset(
+        _DENSITY_AGGREGATIONS
+    )
 
     _POWER_MEAN_MAP: Final[dict[str, float]] = {
         "harmonic_mean": -1.0,
@@ -300,6 +347,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "quadratic_mean": 2.0,
         "cubic_mean": 3.0,
     }
+    _POWER_MEAN_METRICS_SET: Final[frozenset[str]] = frozenset(_POWER_MEAN_MAP)
 
     FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
         DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
@@ -345,128 +393,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
 
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _extrema_selection_methods_set() -> set[ExtremaSelectionMethod]:
-        return set(EXTREMA_SELECTION_METHODS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _custom_threshold_methods_set() -> set[CustomThresholdMethod]:
-        return set(CUSTOM_THRESHOLD_METHODS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _skimage_threshold_methods_set() -> set[SkimageThresholdMethod]:
-        return set(SKIMAGE_THRESHOLD_METHODS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _threshold_methods_set() -> set[ThresholdMethod]:
-        return set(THRESHOLD_METHODS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _optuna_namespaces_set() -> set[OptunaNamespace]:
-        return set(_OPTUNA_NAMESPACES)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _optuna_hpo_samplers_set() -> set[OptunaSampler]:
-        return set(QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _optuna_label_samplers_set() -> set[OptunaSampler]:
-        return set(QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _scaler_types_set() -> set[ScalerType]:
-        return set(QuickAdapterRegressorV3._SCALER_TYPES)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _scipy_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._DISTANCE_METRICS[:8])
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _unsupported_weights_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._UNSUPPORTED_WEIGHTS_METRICS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _probability_distance_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._PROBABILITY_DISTANCE_METRICS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _label_selection_distance_metrics_set() -> set[str]:
-        return (
-            QuickAdapterRegressorV3._distance_metrics_set()
-            - QuickAdapterRegressorV3._probability_distance_metrics_set()
-        )
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _distance_methods_set() -> set[DistanceMethod]:
-        return set(QuickAdapterRegressorV3._DISTANCE_METHODS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _selection_methods_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._SELECTION_METHODS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _distance_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._DISTANCE_METRICS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _density_aggregations_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _power_mean_metrics_set() -> set[str]:
-        return set(QuickAdapterRegressorV3._POWER_MEAN_MAP.keys())
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _aggregate_distance_metrics_set() -> set[str]:
-        """Aggregate metrics: distance metrics computed by reduction over
-        objective coordinates rather than SciPy/sklearn pairwise routines.
-
-        Computed as the complement of SciPy and probability metrics over
-        ``_DISTANCE_METRICS``: ``harmonic_mean``, ``geometric_mean``,
-        ``arithmetic_mean``, ``quadratic_mean``, ``cubic_mean``,
-        ``power_mean``, ``weighted_sum``. Accepted by
-        ``compromise_programming``/``topsis`` via
-        ``_calculate_trial_distance_to_ideal``; rejected by
-        cluster/density categories that route to
-        ``pairwise_distances``/``KMeans``/``KMedoids``/``NearestNeighbors``.
-        """
-        return (
-            QuickAdapterRegressorV3._distance_metrics_set()
-            - QuickAdapterRegressorV3._scipy_metrics_set()
-            - QuickAdapterRegressorV3._probability_distance_metrics_set()
-        )
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _cluster_density_distance_metrics_set() -> set[str]:
-        """SciPy-compatible non-probability metrics.
-
-        Accepted by cluster/density categories that route to
-        ``pairwise_distances``/``KMeans``/``KMedoids``/``NearestNeighbors``;
-        rejected by the aggregate set and by probability metrics.
-        """
-        return (
-            QuickAdapterRegressorV3._scipy_metrics_set()
-            - QuickAdapterRegressorV3._probability_distance_metrics_set()
-        )
+    _EXTREMA_SELECTION_METHODS_SET: Final[frozenset[ExtremaSelectionMethod]] = (
+        frozenset(EXTREMA_SELECTION_METHODS)
+    )
+    _CUSTOM_THRESHOLD_METHODS_SET: Final[frozenset[CustomThresholdMethod]] = frozenset(
+        CUSTOM_THRESHOLD_METHODS
+    )
+    _SKIMAGE_THRESHOLD_METHODS_SET: Final[frozenset[SkimageThresholdMethod]] = (
+        frozenset(SKIMAGE_THRESHOLD_METHODS)
+    )
+    _THRESHOLD_METHODS_SET: Final[frozenset[ThresholdMethod]] = frozenset(
+        THRESHOLD_METHODS
+    )
+    _OPTUNA_NAMESPACES_SET: Final[frozenset[OptunaNamespace]] = frozenset(
+        _OPTUNA_NAMESPACES
+    )
 
     @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
@@ -892,7 +833,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _validate_metric_weights_support(
         metric: str, *, ctx: str, mode: ValidationMode = "warn"
     ) -> Optional[str]:
-        if metric not in QuickAdapterRegressorV3._unsupported_weights_metrics_set():
+        if metric not in QuickAdapterRegressorV3._UNSUPPORTED_WEIGHTS_METRICS_SET:
             return metric
 
         if mode == "none":
@@ -1016,15 +957,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> str:
         if aggregate_allowed:
             valid_metrics = (
-                QuickAdapterRegressorV3._label_selection_distance_metrics_set()
+                QuickAdapterRegressorV3._LABEL_SELECTION_DISTANCE_METRICS_SET
             )
         else:
             # Cluster/density paths route the metric to SciPy/sklearn APIs
             # (pairwise_distances, KMeans, KMedoids, NearestNeighbors) which
-            # reject `_aggregate_distance_metrics_set()`; restrict the
+            # reject `_AGGREGATE_DISTANCE_METRICS_SET`; restrict the
             # valid set to SciPy-compatible non-probability metrics.
             valid_metrics = (
-                QuickAdapterRegressorV3._cluster_density_distance_metrics_set()
+                QuickAdapterRegressorV3._CLUSTER_DENSITY_DISTANCE_METRICS_SET
             )
         valid_options = tuple(
             candidate
@@ -1085,7 +1026,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _resolve_label_method_config(self, label_method: str) -> dict[str, Any]:
         QuickAdapterRegressorV3._validate_enum_value(
             label_method,
-            QuickAdapterRegressorV3._selection_methods_set(),
+            QuickAdapterRegressorV3._SELECTION_METHODS_SET,
             QuickAdapterRegressorV3._SELECTION_METHODS,
             ctx="label_method",
         )
@@ -1129,7 +1070,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             QuickAdapterRegressorV3._validate_enum_value(
                 selection_method,
-                QuickAdapterRegressorV3._distance_methods_set(),
+                QuickAdapterRegressorV3._DISTANCE_METHODS_SET,
                 QuickAdapterRegressorV3._DISTANCE_METHODS,
                 ctx="label_cluster_selection_method",
             )
@@ -1141,7 +1082,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             QuickAdapterRegressorV3._validate_enum_value(
                 trial_selection_method,
-                QuickAdapterRegressorV3._distance_methods_set(),
+                QuickAdapterRegressorV3._DISTANCE_METHODS_SET,
                 QuickAdapterRegressorV3._DISTANCE_METHODS,
                 ctx="label_cluster_trial_selection_method",
             )
@@ -1176,7 +1117,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 QuickAdapterRegressorV3._validate_enum_value(
                     aggregation,
-                    QuickAdapterRegressorV3._density_aggregations_set(),
+                    QuickAdapterRegressorV3._DENSITY_AGGREGATIONS_SET,
                     QuickAdapterRegressorV3._DENSITY_AGGREGATIONS,
                     ctx="label_density_aggregation",
                 )
@@ -1787,7 +1728,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         QuickAdapterRegressorV3._validate_enum_value(
             scaler,
-            QuickAdapterRegressorV3._scaler_types_set(),
+            QuickAdapterRegressorV3._SCALER_TYPES_SET,
             QuickAdapterRegressorV3._SCALER_TYPES,
             ctx="scaler",
         )
@@ -2790,7 +2731,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 keep_fraction,
             )
         elif (
-            threshold_method in QuickAdapterRegressorV3._skimage_threshold_methods_set()
+            threshold_method in QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS_SET
         ):
             return QuickAdapterRegressorV3.skimage_min_max(
                 pred_label,
@@ -3103,7 +3044,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> NDArray[np.floating]:
         power = (
             QuickAdapterRegressorV3._POWER_MEAN_MAP[distance_metric]
-            if distance_metric in QuickAdapterRegressorV3._power_mean_metrics_set()
+            if distance_metric in QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
             else (
                 QuickAdapterRegressorV3._validate_power_mean_p(p, ctx=p_ctx, mode=mode)
                 or 1.0
@@ -3147,7 +3088,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         ideal_point = np.ones(n_objectives)
 
-        if distance_metric in QuickAdapterRegressorV3._scipy_metrics_set():
+        if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
             return sp.spatial.distance.cdist(
                 normalized_matrix,
                 ideal_point.reshape(1, -1),
@@ -3177,7 +3118,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         if distance_metric in (
-            QuickAdapterRegressorV3._power_mean_metrics_set()
+            QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
             | {QuickAdapterRegressorV3._DISTANCE_METRICS[15]}  # "power_mean"
         ):
             return QuickAdapterRegressorV3._power_mean_distance(
@@ -3276,7 +3217,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point = np.ones(n_objectives)
         anti_ideal_point = np.zeros(n_objectives)
 
-        if distance_metric in QuickAdapterRegressorV3._scipy_metrics_set():
+        if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
             cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
                 distance_metric=distance_metric,
                 weights=weights,
@@ -3321,7 +3262,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ),
             )
         elif distance_metric in (
-            QuickAdapterRegressorV3._power_mean_metrics_set()
+            QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
             | {QuickAdapterRegressorV3._DISTANCE_METRICS[15]}  # "power_mean"
         ):
             dist_to_ideal = np.abs(
@@ -4007,7 +3948,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 knn_aggregation = cast(DensityAggregation, label_config["aggregation"])
                 if (
                     knn_aggregation
-                    not in QuickAdapterRegressorV3._density_aggregations_set()
+                    not in QuickAdapterRegressorV3._DENSITY_AGGREGATIONS_SET
                 ):
                     raise ValueError(
                         f"Invalid aggregation value in label_config {knn_aggregation!r}: "
@@ -4309,17 +4250,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @lru_cache(maxsize=8)
     def optuna_samplers_by_namespace(
         self, namespace: OptunaNamespace
-    ) -> tuple[set[OptunaSampler], OptunaSampler]:
+    ) -> tuple[frozenset[OptunaSampler], OptunaSampler]:
         if namespace == _OPTUNA_NAMESPACES.hp:
             return (
-                QuickAdapterRegressorV3._optuna_hpo_samplers_set(),
+                QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS_SET,
                 self._optuna_config.get(
                     "sampler", QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS[0]
                 ),
             )
         elif namespace == _OPTUNA_NAMESPACES.label:
             return (
-                QuickAdapterRegressorV3._optuna_label_samplers_set(),
+                QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS_SET,
                 self._optuna_config.get(
                     "label_sampler", QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS[0]
                 ),
