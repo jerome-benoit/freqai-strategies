@@ -2353,7 +2353,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[dict[str, Any]]:
         # Strategy consumes only output tunables (``label_period_candles``,
         # ``label_horizon_candles``, ``label_natr_multiplier``);
-        # selection-metadata drift on cached label best-params is
+        # selection-metadata drift on cached label ``best_params`` is
         # tolerable here. The regressor's ``optuna_load_best_params``
         # passes ``expected_selection_metadata`` and rejects drift before
         # re-running HPO selection.
