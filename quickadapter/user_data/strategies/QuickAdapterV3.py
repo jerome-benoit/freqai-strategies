@@ -996,8 +996,8 @@ class QuickAdapterV3(IStrategy):
                 )
 
             # Zero-phase smoothing reads future candles within the kernel
-            # half-width; advance the known-at index so causal split guards
-            # account for the smoothing lookahead.
+            # half-width; extend the per-row label lookahead so causal
+            # split guards account for the smoothing lookahead.
             known_at_column = label_known_at_column_name(label_col)
             if known_at_column in dataframe.columns:
                 kernel_half_width = get_smoothing_kernel_half_width(

@@ -531,6 +531,8 @@ EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
+# Suffix is historical; stored values are per-row label lookaheads
+# (in candles), not absolute indexes. See ``LabelData.known_at_index``.
 _LABEL_KNOWN_AT_SUFFIX: Final[str] = "_known_at_index"
 
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
@@ -579,12 +581,30 @@ def label_weight_column_name(label_col: str) -> str:
 
 
 def label_known_at_column_name(label_col: str) -> str:
-    """Return the known-at-index column name for a label column."""
+    """Return the per-row label-lookahead column name for a label column.
+
+    Column values are lookaheads in candles, not absolute positions; see
+    ``LabelData.known_at_index``.
+    """
     return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_SUFFIX)
 
 
 @dataclass
 class LabelData:
+    """Output of a label generator.
+
+    Attributes:
+        series: per-row label values aligned to ``dataframe.index``.
+        indices: positions of detected pivots in ``series``.
+        metrics: per-pivot metric lists (parallel to ``indices``).
+        known_at_index: optional per-row label lookahead in candles
+            (NOT an absolute position). Invariant under
+            ``dk.slice_dataframe``. Causal split guards recover the
+            local availability position as ``row_local_position +
+            known_at_index[row]``. ``None`` opts the label out of
+            label-aware causal filtering.
+    """
+
     series: pd.Series
     indices: list[int]
     metrics: dict[str, list[float]]
@@ -722,9 +742,14 @@ def _generate_extrema_label(
         "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
     }
 
+    # Per-row label lookahead (in candles), NOT an absolute position:
+    # freqtrade's ``dk.slice_dataframe`` runs AFTER ``set_freqai_targets``,
+    # so any pre-slice absolute position would no longer match the causal
+    # guard's local ``np.arange(len(unfiltered_df))`` coordinate system.
     known_at_index = pd.Series(
-        np.arange(len(dataframe), dtype=np.int64) + label_horizon_candles,
+        int(label_horizon_candles),
         index=dataframe.index,
+        dtype=np.int64,
     )
 
     return LabelData(
