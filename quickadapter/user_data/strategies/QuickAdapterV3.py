@@ -59,7 +59,7 @@ from Utils import (
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
-    label_known_at_column_name,
+    label_known_at_lookahead_column_name,
     label_weight_column_name,
     migrate_config,
     nan_average,
@@ -961,9 +961,9 @@ class QuickAdapterV3(IStrategy):
 
             dataframe[label_col] = label_data.series
 
-            if label_data.known_at_index is not None:
-                dataframe[label_known_at_column_name(label_col)] = (
-                    label_data.known_at_index
+            if label_data.known_at_lookahead is not None:
+                dataframe[label_known_at_lookahead_column_name(label_col)] = (
+                    label_data.known_at_lookahead
                 )
 
             label_weight_col = label_weight_column_name(label_col)
@@ -998,14 +998,14 @@ class QuickAdapterV3(IStrategy):
             # Zero-phase smoothing reads future candles within the kernel
             # half-width; extend the per-row label lookahead so causal
             # split guards account for the smoothing lookahead.
-            known_at_column = label_known_at_column_name(label_col)
-            if known_at_column in dataframe.columns:
+            known_at_lookahead_column = label_known_at_lookahead_column_name(label_col)
+            if known_at_lookahead_column in dataframe.columns:
                 kernel_half_width = get_smoothing_kernel_half_width(
                     col_smoothing_config, series_length=series_length
                 )
                 if kernel_half_width > 0:
-                    dataframe[known_at_column] = (
-                        dataframe[known_at_column] + kernel_half_width
+                    dataframe[known_at_lookahead_column] = (
+                        dataframe[known_at_lookahead_column] + kernel_half_width
                     )
 
             if label_col == EXTREMA_COLUMN:
