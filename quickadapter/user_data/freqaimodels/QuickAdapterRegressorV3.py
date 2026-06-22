@@ -603,8 +603,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     reason_text,
                 )
                 return compose_sample_weights(
-                base_weights, None, logger=logger, context=context
-            )
+                    base_weights, None, logger=logger, context=context
+                )
             case _:
                 assert_never(policy)
 
@@ -1927,10 +1927,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     train_known_at_lookahead = known_at_lookahead.loc[
                         train_features.index
                     ]
-                    train_known_at_position = (
-                        train_positions.to_numpy(dtype=np.int64)
-                        + train_known_at_lookahead.to_numpy(dtype=np.int64)
-                    )
+                    train_known_at_position = train_positions.to_numpy(
+                        dtype=np.int64
+                    ) + train_known_at_lookahead.to_numpy(dtype=np.int64)
                     keep_mask &= train_known_at_position < first_test_position
                 else:
                     _log_known_at_none_once(dk.pair, "train_test_split causal guard")
@@ -2354,10 +2353,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             if known_at_lookahead is not None:
                 train_known_at_lookahead = known_at_lookahead.iloc[train_idx]
-                train_known_at_position = (
-                    train_positions.to_numpy(dtype=np.int64)
-                    + train_known_at_lookahead.to_numpy(dtype=np.int64)
-                )
+                train_known_at_position = train_positions.to_numpy(
+                    dtype=np.int64
+                ) + train_known_at_lookahead.to_numpy(dtype=np.int64)
                 keep_mask = train_known_at_position < first_test_position
                 (
                     train_features,
@@ -2737,9 +2735,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 selection_method,
                 keep_fraction,
             )
-        elif (
-            threshold_method in QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS_SET
-        ):
+        elif threshold_method in QuickAdapterRegressorV3._SKIMAGE_THRESHOLD_METHODS_SET:
             return QuickAdapterRegressorV3.skimage_min_max(
                 pred_label,
                 threshold_method,

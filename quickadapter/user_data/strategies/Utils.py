@@ -1231,13 +1231,11 @@ def sanitize_and_renormalize(
         drop_mask = np.asarray(drop_mask)
         if drop_mask.shape != arr.shape:
             raise ValueError(
-                f"{context}: drop_mask shape {drop_mask.shape} != arr "
-                f"shape {arr.shape}"
+                f"{context}: drop_mask shape {drop_mask.shape} != arr shape {arr.shape}"
             )
         if not np.issubdtype(drop_mask.dtype, np.bool_):
             raise ValueError(
-                f"{context}: drop_mask dtype {drop_mask.dtype} is not "
-                f"boolean"
+                f"{context}: drop_mask dtype {drop_mask.dtype} is not boolean"
             )
         safe = np.where(drop_mask, 0.0, safe)
     total = safe.sum()
@@ -1415,9 +1413,7 @@ def compose_sample_weights(
     n = base_weights.shape[0]
     arr = np.asarray(label_weights, dtype=float)
     if arr.shape != (n,):
-        raise ValueError(
-            f"{context}: label_weights shape {arr.shape}, expected ({n},)"
-        )
+        raise ValueError(f"{context}: label_weights shape {arr.shape}, expected ({n},)")
     drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
     if drop_mask.all():
         raise LabelWeightSupportError(
