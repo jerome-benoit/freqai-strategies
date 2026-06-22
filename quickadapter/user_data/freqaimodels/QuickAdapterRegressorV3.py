@@ -515,14 +515,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         filtered_dataframe: pd.DataFrame,
         unfiltered_df: pd.DataFrame,
     ) -> pd.Series | None:
-        """Per-row leak boundary across all registered labels.
+        """Per-row label lookahead (in candles) across all registered labels.
 
-        Returns the row-wise ``max`` of every present
-        ``<label>_known_at_index`` column. A label whose column is missing
-        or contains any NaN is skipped (silently — labels can opt in by
-        emitting the column). Returns ``None`` only when no label exposes
-        a usable column, in which case the caller falls back to the
-        position-based purge.
+        See ``LabelData.known_at_index`` for the lookahead-vs-position
+        contract and the slice-invariance rationale; callers must add the
+        row's LOCAL position in ``unfiltered_df`` to recover the local
+        index at which the label becomes causally available.
+
+        Row-wise ``max`` of every present ``<label>_known_at_index``
+        column; labels with a missing column or any NaN are skipped
+        silently (opt-in by emission). Returns ``None`` when no label is
+        usable; callers then fall back to the position-based purge.
         """
         QuickAdapterRegressorV3._validate_index_alignment(
             filtered_dataframe, unfiltered_df
@@ -1971,10 +1974,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     features, unfiltered_df
                 )
                 if known_at_index is not None:
-                    known_at_train = known_at_index.loc[train_features.index]
-                    keep_mask &= (
-                        known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                    known_at_train_delta = known_at_index.loc[train_features.index]
+                    known_at_train_position = (
+                        train_positions.to_numpy(dtype=np.int64)
+                        + known_at_train_delta.to_numpy(dtype=np.int64)
                     )
+                    keep_mask &= known_at_train_position < first_test_position
                 else:
                     _log_known_at_none_once(dk.pair, "train_test_split causal guard")
                 (
@@ -2391,14 +2396,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 filtered_dataframe, unfiltered_df
             )
             first_test_position = int(row_positions.iloc[test_idx].min())
+            train_positions = row_positions.iloc[train_idx]
             known_at_index = QuickAdapterRegressorV3._known_at_index(
                 filtered_dataframe, unfiltered_df
             )
             if known_at_index is not None:
-                known_at_train = known_at_index.iloc[train_idx]
-                keep_mask = (
-                    known_at_train.to_numpy(dtype=np.int64) < first_test_position
+                known_at_train_delta = known_at_index.iloc[train_idx]
+                known_at_train_position = (
+                    train_positions.to_numpy(dtype=np.int64)
+                    + known_at_train_delta.to_numpy(dtype=np.int64)
                 )
+                keep_mask = known_at_train_position < first_test_position
                 (
                     train_features,
                     train_labels,
