@@ -1991,15 +1991,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if feat_dict.get("reverse_train_test_order", False):
             (
-                train_features, test_features,
-                train_labels, test_labels,
-                train_base_weights, test_base_weights,
-                train_label_weights, test_label_weights,
+                train_features,
+                test_features,
+                train_labels,
+                test_labels,
+                train_base_weights,
+                test_base_weights,
+                train_label_weights,
+                test_label_weights,
             ) = (
-                test_features, train_features,
-                test_labels, train_labels,
-                test_base_weights, train_base_weights,
-                test_label_weights, train_label_weights,
+                test_features,
+                train_features,
+                test_labels,
+                train_labels,
+                test_base_weights,
+                train_base_weights,
+                test_label_weights,
+                train_label_weights,
             )
 
         train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
@@ -2380,15 +2388,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if feat_dict.get("reverse_train_test_order", False):
             (
-                train_features, test_features,
-                train_labels, test_labels,
-                train_base_weights, test_base_weights,
-                train_label_weights, test_label_weights,
+                train_features,
+                test_features,
+                train_labels,
+                test_labels,
+                train_base_weights,
+                test_base_weights,
+                train_label_weights,
+                test_label_weights,
             ) = (
-                test_features, train_features,
-                test_labels, train_labels,
-                test_base_weights, train_base_weights,
-                test_label_weights, train_label_weights,
+                test_features,
+                train_features,
+                test_labels,
+                train_labels,
+                test_base_weights,
+                train_base_weights,
+                test_label_weights,
+                train_label_weights,
             )
 
         train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
