@@ -532,7 +532,7 @@ EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
 
-LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+_LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
 
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
@@ -550,7 +550,8 @@ def _label_aux_column_name(label_col: str, suffix: str) -> str:
     nor with ``find_features`` (which selects columns containing ``%``).
     Preserves the project convention where a leading ``s`` denotes a smoothed
     target series (e.g. ``&s-extrema``); no ``s`` denotes a raw target.
-    Raises ``ValueError`` if the result still contains ``&`` or ``%``.
+    Raises ``ValueError`` when the result contains ``&`` or ``%`` after
+    sigil strip.
 
     Examples:
         ``("&s-extrema", "_weight")``  -> ``"s-extrema_weight"``
@@ -575,7 +576,7 @@ def _label_aux_column_name(label_col: str, suffix: str) -> str:
 
 def label_weight_column_name(label_col: str) -> str:
     """Return the weight column name for a label column."""
-    return _label_aux_column_name(label_col, LABEL_WEIGHT_SUFFIX)
+    return _label_aux_column_name(label_col, _LABEL_WEIGHT_SUFFIX)
 
 
 def label_known_at_lookahead_column_name(label_col: str) -> str:
@@ -616,14 +617,15 @@ def _adapt_label_generator(
 
     Detects the canonical ``(dataframe, params, logger) -> LabelData``
     shape by a positional parameter named ``logger`` at index 2 (with or
-    without a default). Generators without such a parameter are wrapped
-    to drop the logger argument at dispatch; defaulted positionals after
-    index 1 stay at their defaults. ``*args``, ``**kwargs``, keyword-only
-    ``logger``, fewer than 2 required positionals, more than 3 required
-    positionals, and 3 required positionals whose third name is not
-    ``logger`` raise ``ValueError`` at registration. Inspection runs
-    once at registration; dispatch in ``generate_label_data`` is a
-    direct call.
+    without a default). Generators with exactly 2 positional parameters
+    are wrapped to drop the logger argument at dispatch. Generators with
+    a 3rd positional parameter whose name is not ``logger`` raise
+    ``ValueError`` at registration, regardless of whether that parameter
+    is required or has a default. ``*args``, ``**kwargs``, keyword-only
+    ``logger``, fewer than 2 required positionals, and more than 3
+    required positionals also raise ``ValueError``. Inspection runs once
+    at registration; dispatch in ``generate_label_data`` is a direct
+    call.
     """
     sig = inspect.signature(generator)
     params = list(sig.parameters.values())
@@ -670,15 +672,14 @@ def _adapt_label_generator(
             f"required positional parameter(s); expected 2 "
             f"(dataframe, params) or 3 (dataframe, params, logger)"
         )
-    has_logger_at_third = n_total >= 3 and positional[2].name == "logger"
-    if has_logger_at_third:
+    if n_total >= 3:
+        if positional[2].name != "logger":
+            raise ValueError(
+                f"Invalid label generator {generator!r}: third positional "
+                f"parameter is named {positional[2].name!r}, expected "
+                f"``logger``"
+            )
         return cast(LabelGenerator, generator)
-    if n_required == 3:
-        raise ValueError(
-            f"Invalid label generator {generator!r}: third positional "
-            f"parameter is named {positional[2].name!r}, expected "
-            f"``logger``"
-        )
 
     @functools.wraps(generator)
     def adapted(
@@ -993,7 +994,7 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             if old_section == new_section:
                 logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
             else:
-                logger.warning(f"{old_path!r} has moved to {new_path!r}")
+                logger.warning(f"{old_path!r} is deprecated, use {new_path!r} instead")
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
@@ -1214,7 +1215,7 @@ def sanitize_and_renormalize(
     Non-finite or non-positive entries are treated as ``0``; rows in
     ``drop_mask`` are forced to ``0``. On collapse (no positive finite
     entry survives), returns ones on surviving rows and zeros on dropped
-    rows, rescaled so ``mean(out) == 1`` still holds.
+    rows, rescaled so ``mean(out) == 1``.
 
     ``context`` is the caller-supplied prefix attached to every warning
     and error emitted from this helper.
@@ -3757,6 +3758,20 @@ def _validate_optuna_label_best_params(
     *,
     expected_selection_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    """Validate an Optuna ``label`` best-params payload against the v2 schema.
+
+    Returns the inner ``params`` dict on success; returns ``None`` on
+    rejection. Rejects non-dict input, missing or invalid ``schema_version``,
+    schema-version mismatch with ``_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION``,
+    missing or invalid ``selection_metadata``, missing or invalid
+    ``selection_metadata.schema_version``, schema-version mismatch with
+    ``_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION``, missing or invalid
+    ``label_period_candles`` / ``label_natr_multiplier`` /
+    ``label_horizon_candles``, and -- when ``expected_selection_metadata``
+    is provided -- any drift between the stored and the caller's current
+    ``selection_metadata``. Every rejection emits a ``[<pair>]``-prefixed
+    warning when ``logger`` is provided.
+    """
     if not isinstance(best_params, dict):
         if logger is not None:
             logger.warning(f"[{pair}] Ignoring Optuna label best params: not a dict")

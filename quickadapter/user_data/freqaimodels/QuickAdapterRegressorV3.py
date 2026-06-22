@@ -579,6 +579,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         policy: LabelWeightSupportPolicy,
         reasons: list[str],
     ) -> NDArray[np.floating]:
+        """Apply the configured ``support_policy`` to ``base_weights``.
+
+        ``policy='raise'`` raises ``ValueError`` with ``context`` and
+        ``reasons``. ``policy='fallback'`` logs a ``WARNING`` and returns
+        the sanitized base weights via
+        ``compose_sample_weights(base_weights, None, ...)``.
+        """
         reason_text = "; ".join(reasons)
         match policy:
             case "raise":
@@ -607,6 +614,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *,
         context: str,
     ) -> NDArray[np.floating]:
+        """Compose training-set weights with label-weight support gating.
+
+        When ``label_weights`` is ``None`` and
+        ``label_weighting_config['strategy'] != 'none'``, routes through
+        ``_apply_support_policy`` so the configured ``support_policy``
+        governs the outcome. Otherwise composes the label-weighted
+        product via ``compose_sample_weights`` and validates the
+        ``summarize_label_weight_support`` summary against
+        ``min_pivot_equivalent_count``,
+        ``min_positive_label_weight_fraction``, and
+        ``min_effective_sample_size``; any failure routes through
+        ``_apply_support_policy``. Returns the composed weights on
+        success or the fallback weights from the policy on failure.
+        """
         policy = cast(
             LabelWeightSupportPolicy, label_weighting_config["support_policy"]
         )
@@ -2073,11 +2094,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weights = unfiltered_df.loc[
                 features_filtered.index, weight_col
             ].to_numpy(dtype=float)
-            logger.debug(f"label weight column active: {weight_col!r}")
+            logger.debug("label weight column active: %r", weight_col)
         else:
             label_weights = None
             logger.debug(
-                f"label weight column absent ({weight_col!r}); using base weights only"
+                "label weight column absent (%r); using base weights only",
+                weight_col,
             )
         return SampleWeightInputs(
             base=base_weights,
@@ -2512,7 +2534,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 self._optuna_label_candles[pair] = 0
         else:
             logger.debug(
-                f"[{pair}] Optuna {namespace} callback throttled, still {optuna_label_remaining_candles} candles to go"
+                f"[{pair}] Optuna {namespace} callback throttled, {optuna_label_remaining_candles} candles until next emission"
             )
         if len(self._optuna_label_incremented_pairs) >= len(self.pairs):
             self._optuna_label_incremented_pairs = []
@@ -2559,7 +2581,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             if candles_diff < 0:
                 logger.warning(
-                    f"[{pair}] Fit live predictions not warmed up yet, still {abs(candles_diff)} candles to go"
+                    f"[{pair}] Fit live predictions not warmed up: {abs(candles_diff)} candles until warmup completion"
                 )
                 warmed_up = False
 
@@ -2614,7 +2636,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         # ``np.isfinite(cutoff)`` guard substitutes
                         # ``_DI_CUTOFF_DEFAULT``.
                         fallback=(0.0, 0.0, 0.0),
-                        context=f"di_values_weibull_fit:{pair}",
+                        context=f"[{pair}] di_values_weibull_fit",
                         logger=logger,
                         min_count=2,
                         require_variance=True,
@@ -2668,7 +2690,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     sample,
                     sp.stats.norm.fit,
                     fallback=fallback,
-                    context=f"label_norm_fit:{pair}:{label_col}",
+                    context=f"[{pair}] label_norm_fit:{label_col}",
                     logger=logger,
                     min_count=2,
                     require_variance=True,
