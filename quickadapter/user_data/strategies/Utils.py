@@ -531,7 +531,7 @@ EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
-_LABEL_KNOWN_AT_SUFFIX: Final[str] = "_known_at_index"
+_LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
 
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 
@@ -555,7 +555,7 @@ def _label_aux_column_name(label_col: str, suffix: str) -> str:
     Examples:
         ``("&s-extrema", "_weight")``  -> ``"s-extrema_weight"``
         ``("&-amplitude", "_weight")`` -> ``"amplitude_weight"``
-        ``("&s-extrema", "_known_at_index")`` -> ``"s-extrema_known_at_index"``
+        ``("&s-extrema", "_known_at_lookahead")`` -> ``"s-extrema_known_at_lookahead"``
     """
     stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
     if not stripped or not any(c.isalpha() for c in stripped):
@@ -578,17 +578,34 @@ def label_weight_column_name(label_col: str) -> str:
     return _label_aux_column_name(label_col, LABEL_WEIGHT_SUFFIX)
 
 
-def label_known_at_column_name(label_col: str) -> str:
-    """Return the known-at-index column name for a label column."""
-    return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_SUFFIX)
+def label_known_at_lookahead_column_name(label_col: str) -> str:
+    """Return the lookahead column name for ``label_col`` (see ``LabelData.known_at_lookahead``)."""
+    return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX)
+
+
+label_known_at_column_name = label_known_at_lookahead_column_name
 
 
 @dataclass
 class LabelData:
+    """Output of a label generator.
+
+    Attributes:
+        series: per-row label values aligned to ``dataframe.index``.
+        indices: positions of detected pivots in ``series``.
+        metrics: per-pivot metric lists (parallel to ``indices``).
+        known_at_lookahead: optional per-row label lookahead in candles
+            (NOT an absolute position). Invariant under
+            ``dk.slice_dataframe``. Causal split guards recover the
+            local availability position as ``row_local_position +
+            known_at_lookahead[row]``. ``None`` opts the label out of
+            label-aware causal filtering.
+    """
+
     series: pd.Series
     indices: list[int]
     metrics: dict[str, list[float]]
-    known_at_index: pd.Series | None = None
+    known_at_lookahead: pd.Series | None = None
 
 
 LabelGenerator = Callable[[pd.DataFrame, dict[str, Any], Logger | None], LabelData]
@@ -722,16 +739,21 @@ def _generate_extrema_label(
         "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
     }
 
-    known_at_index = pd.Series(
-        np.arange(len(dataframe), dtype=np.int64) + label_horizon_candles,
+    # Per-row label lookahead (in candles), NOT an absolute position:
+    # freqtrade's ``dk.slice_dataframe`` runs AFTER ``set_freqai_targets``,
+    # so any pre-slice absolute position would no longer match the causal
+    # guard's local ``np.arange(len(unfiltered_df))`` coordinate system.
+    known_at_lookahead = pd.Series(
+        int(label_horizon_candles),
         index=dataframe.index,
+        dtype=np.int64,
     )
 
     return LabelData(
         series=series,
         indices=pivots_indices,
         metrics=metrics,
-        known_at_index=known_at_index,
+        known_at_lookahead=known_at_lookahead,
     )
 
 
@@ -773,7 +795,7 @@ def get_smoothing_kernel_half_width(
 ) -> int:
     """Half-width (in candles) of the smoothing kernel's lookahead.
 
-    Equals the lookahead applied to ``known_at_index`` after smoothing.
+    Equals the lookahead applied to ``known_at_lookahead`` after smoothing.
     Mirrors ``smooth()`` window normalization and short-series gating
     via shared primitives (``get_odd_window``, ``get_even_window``,
     ``get_savgol_params``).
