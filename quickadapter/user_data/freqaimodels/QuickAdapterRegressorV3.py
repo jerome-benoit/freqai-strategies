@@ -1,10 +1,12 @@
 import copy
+import json
 import logging
 import math
 import random
 import time
 import warnings
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import (
@@ -222,6 +224,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
+    _OPTUNA_JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
+    _OPTUNA_JOURNAL_RECOVERABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+        KeyError,
+        ValueError,
+        json.JSONDecodeError,
+    )
+    _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
     _OPTUNA_SAMPLERS: Final[_OptunaSamplers] = _OptunaSamplers()
     _OPTUNA_HPO_SAMPLERS: Final[_OptunaHpoSamplers] = _OptunaHpoSamplers()
     _OPTUNA_HPO_SAMPLERS_SET: Final[frozenset[OptunaSampler]] = frozenset(
@@ -4195,6 +4204,59 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self.optuna_save_best_params(pair, namespace)
         return study
 
+    @staticmethod
+    def _optuna_quarantine_path(journal_path: Path, now: datetime) -> Path:
+        """Compute the quarantine target path for a corrupt Optuna journal.
+
+        The quarantine tag is appended *after* the ``.log`` suffix so that the
+        live-journal glob ``optuna-*.log`` never matches quarantined artefacts.
+        Suffix collisions are bounded by
+        ``_OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT``; microsecond UTC
+        resolution makes collisions practically impossible.
+        """
+        stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
+        tag = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TAG
+        candidate = journal_path.with_name(f"{journal_path.name}.{tag}-{stamp}")
+        for n in range(
+            1, QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1
+        ):
+            if not candidate.exists():
+                return candidate
+            candidate = journal_path.with_name(f"{journal_path.name}.{tag}-{stamp}-{n}")
+        return candidate
+
+    @staticmethod
+    def _optuna_quarantine_journal(
+        journal_path: Path, pair: str, cause: Exception
+    ) -> Optional[Path]:
+        """Atomically move a corrupt Optuna journal aside.
+
+        Returns the quarantine path on success, or ``None`` if ``journal_path``
+        does not exist (caller should propagate the original error). Re-raises
+        any ``OSError`` from the rename itself so operator-actionable
+        filesystem failures (read-only mount, cross-device, ENOSPC) are not
+        masked.
+        """
+        if not journal_path.exists():
+            return None
+        quarantine_path = QuickAdapterRegressorV3._optuna_quarantine_path(
+            journal_path, datetime.now(timezone.utc)
+        )
+        try:
+            journal_path.rename(quarantine_path)
+        except OSError as rename_exc:
+            logger.error(
+                f"[{pair}] Optuna journal {journal_path.name} "
+                f"quarantine failed: {rename_exc!r}",
+                exc_info=True,
+            )
+            raise
+        logger.warning(
+            f"[{pair}] Optuna journal {journal_path.name} corrupt ({cause!r}); "
+            f"quarantined to {quarantine_path.name}; resuming with fresh journal"
+        )
+        return quarantine_path
+
     def optuna_create_storage(self, pair: str) -> optuna.storages.BaseStorage:
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
@@ -4202,11 +4264,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if (
             storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[0]
         ):  # "file"
-            storage = optuna.storages.JournalStorage(
-                optuna.storages.journal.JournalFileBackend(
-                    f"{storage_dir}/{storage_filename}.log"
+            journal_path = storage_dir / f"{storage_filename}.log"
+
+            def _build_journal_storage() -> optuna.storages.JournalStorage:
+                return optuna.storages.JournalStorage(
+                    optuna.storages.journal.JournalFileBackend(str(journal_path))
                 )
-            )
+
+            try:
+                storage = _build_journal_storage()
+            except QuickAdapterRegressorV3._OPTUNA_JOURNAL_RECOVERABLE_ERRORS as exc:
+                # Replay-time corruption (KeyError 'type', malformed JSON,
+                # unknown distribution class). Quarantine the offending log
+                # and retry exactly once on a fresh path. OSError is
+                # intentionally NOT in the recoverable set: filesystem
+                # failures fall through to the outer handler in
+                # optuna_create_study unchanged.
+                quarantined = QuickAdapterRegressorV3._optuna_quarantine_journal(
+                    journal_path, pair, exc
+                )
+                if quarantined is None:
+                    raise
+                storage = _build_journal_storage()
         elif (
             storage_backend == QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS[1]
         ):  # "sqlite"
