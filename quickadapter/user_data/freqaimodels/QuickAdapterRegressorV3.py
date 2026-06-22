@@ -1883,6 +1883,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"Invalid data_split_parameters.test_size value {test_size!r}: "
                 f"must be int or float"
             )
+        if test_size == 0 and feat_dict.get("reverse_train_test_order", False):
+            raise ValueError(
+                "data_split_parameters.test_size=0 is incompatible with "
+                "feature_parameters.reverse_train_test_order=True: the empty "
+                "test slice cannot be promoted to the training slot"
+            )
 
         if test_size != 0:
             if weights.label is None:
@@ -1983,6 +1989,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
                 )
 
+        if feat_dict.get("reverse_train_test_order", False):
+            (
+                train_features, test_features,
+                train_labels, test_labels,
+                train_base_weights, test_base_weights,
+                train_label_weights, test_label_weights,
+            ) = (
+                test_features, train_features,
+                test_labels, train_labels,
+                test_base_weights, train_base_weights,
+                test_label_weights, train_label_weights,
+            )
+
         train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
             train_base_weights,
             train_label_weights,
@@ -1998,15 +2017,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             test_weights = test_base_weights
 
-        if feat_dict.get("reverse_train_test_order", False):
-            return dk.build_data_dictionary(
-                test_features,
-                train_features,
-                test_labels,
-                train_labels,
-                test_weights,
-                train_weights,
-            )
         return dk.build_data_dictionary(
             train_features,
             test_features,
@@ -2336,11 +2346,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             None if weights.label is None else weights.label[train_idx]
         )
         test_label_weights = None if weights.label is None else weights.label[test_idx]
-        test_weights = QuickAdapterRegressorV3._compose_eval_weights(
-            test_base_weights,
-            test_label_weights,
-            context=f"[{dk.pair}] timeseries_split:test",
-        )
 
         if causal_mode:
             row_positions = QuickAdapterRegressorV3._row_positions(
@@ -2373,22 +2378,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else:
                 _log_known_at_none_once(dk.pair, "timeseries_split causal guard")
 
+        if feat_dict.get("reverse_train_test_order", False):
+            (
+                train_features, test_features,
+                train_labels, test_labels,
+                train_base_weights, test_base_weights,
+                train_label_weights, test_label_weights,
+            ) = (
+                test_features, train_features,
+                test_labels, train_labels,
+                test_base_weights, train_base_weights,
+                test_label_weights, train_label_weights,
+            )
+
         train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
             train_base_weights,
             train_label_weights,
             weights.label_weighting_config,
             context=f"[{dk.pair}] timeseries_split:train",
         )
+        test_weights = QuickAdapterRegressorV3._compose_eval_weights(
+            test_base_weights,
+            test_label_weights,
+            context=f"[{dk.pair}] timeseries_split:test",
+        )
 
-        if feat_dict.get("reverse_train_test_order", False):
-            return dk.build_data_dictionary(
-                test_features,
-                train_features,
-                test_labels,
-                train_labels,
-                test_weights,
-                train_weights,
-            )
         return dk.build_data_dictionary(
             train_features,
             test_features,
