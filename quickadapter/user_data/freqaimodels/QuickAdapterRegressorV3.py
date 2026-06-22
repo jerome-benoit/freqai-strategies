@@ -1605,13 +1605,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if self._optuna_hyperopt:
             logger.info("Label Parameters:")
-            logger.info(f"  label_horizon_candles: {self._label_horizon_candles()}")
             for pair in self.pairs:
                 params = self._optuna_label_params.get(pair, {})
                 if params:
                     logger.info(
                         f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
-                        f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}"
+                        f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}, "
+                        f"label_horizon_candles={self._label_horizon_candles(pair)}"
                     )
         else:
             logger.info("Label Parameters:")
