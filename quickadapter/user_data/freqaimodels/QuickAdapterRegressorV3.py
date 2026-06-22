@@ -4274,11 +4274,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         Bounded tail probe (last ``_OPTUNA_JOURNAL_TAIL_PROBE_BYTES``).
         Return True iff the file is non-empty AND its trailing record
         is (a) missing the newline, (b) empty (bare ``\\n``), or
-        (c) ``json.loads``-unparseable (malformed JSON, ``ValueError``,
-        or invalid UTF-8, ``UnicodeDecodeError`` — both are
-        ``ValueError`` subclasses). Fail-open when the probe window
-        cuts a single line larger than the window; defer to the
-        post-construction handler.
+        (c) not parseable by ``json.loads`` (malformed JSON or
+        invalid UTF-8). Fail-open when the probe window cuts a single
+        line larger than the window; defer to the post-construction
+        handler.
         """
         if not journal_path.exists():
             return False
