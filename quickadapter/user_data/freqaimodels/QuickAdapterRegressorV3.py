@@ -4207,13 +4207,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _optuna_quarantine_path(journal_path: Path, now: datetime) -> Path:
-        """Compute the quarantine target path for a corrupt Optuna journal.
+        """Quarantine target path for a corrupt Optuna journal.
 
-        The quarantine tag is appended *after* the ``.log`` suffix so that the
-        live-journal glob ``optuna-*.log`` never matches quarantined artefacts.
-        Suffix collisions are bounded by
-        ``_OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT``; microsecond UTC
-        resolution makes collisions practically impossible.
+        The tag is appended *after* ``.log`` so the live-journal glob
+        ``optuna-*.log`` never matches quarantined artefacts. Collisions
+        are bounded by ``_OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT``;
+        microsecond UTC stamping makes them practically impossible.
         """
         stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
         tag = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TAG
@@ -4232,11 +4231,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> Optional[Path]:
         """Atomically move a corrupt Optuna journal aside.
 
-        Returns the quarantine path on success, or ``None`` if ``journal_path``
-        does not exist (caller should propagate the original error). Re-raises
-        any ``OSError`` from the rename itself so operator-actionable
-        filesystem failures (read-only mount, cross-device, ENOSPC) are not
-        masked.
+        Return the quarantine path on success, or ``None`` if
+        ``journal_path`` is missing (caller propagates the original
+        error). ``OSError`` from the rename is re-raised so operator-
+        actionable filesystem failures (RO mount, EXDEV, ENOSPC) are
+        not masked.
         """
         if not journal_path.exists():
             return None
@@ -4260,30 +4259,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _optuna_journal_has_corrupt_tail(journal_path: Path) -> bool:
-        """Detect a deferred-raise hazard at the end of a journal log file.
+        """Detect a deferred-raise hazard at EOF of a journal log file.
 
-        ``JournalFileBackend.read_logs`` defers ``ValueError('Invalid log
-        format.')`` (line without trailing newline) and ``json.JSONDecodeError``
-        (malformed or empty JSON line) to the *next* loop iteration. A bad
-        trailing record with no successor line therefore does NOT surface
-        during ``JournalStorage.__init__``; it surfaces only later, when a
-        subsequent ``_sync_with_backend`` call (triggered by
-        ``optuna.create_study``, ``optuna.load_study`` or
-        ``optuna.delete_study``) reads the new successor line and re-raises
-        the stored error. That site sits outside the ``optuna_create_storage``
-        try/except and falls through to the broad outer handler in
-        ``optuna_create_study``, reproducing the silent-HPO-skip symptom this
-        fix is meant to eliminate.
+        ``JournalFileBackend.read_logs`` stores ``ValueError('Invalid
+        log format.')`` (missing trailing newline) and
+        ``json.JSONDecodeError`` (malformed or empty line) as
+        ``last_decode_error`` and re-raises only on the *next*
+        iteration. A bad trailing record with no successor therefore
+        does NOT raise during ``JournalStorage.__init__``; it surfaces
+        at the next ``_sync_with_backend``, outside the
+        ``optuna_create_storage`` try/except, where the broad handler
+        in ``optuna_create_study`` returns ``None`` (silent HPO skip).
 
-        Probe: bounded tail read (last
-        ``_OPTUNA_JOURNAL_TAIL_PROBE_BYTES``; a journal log line is typically
-        < 2 KiB). Return True iff the file is non-empty AND any of:
-        (a) it lacks a trailing newline (truncated), or
-        (b) its last complete line is empty (bare trailing newline), or
-        (c) its last complete line fails ``json.loads`` (malformed).
-        Fail-open (return False) when the probe window cannot see a prior
-        newline AND the file exceeds the window: the last line is larger
-        than the window and cannot be validated here; defer to the
+        Bounded tail probe (last ``_OPTUNA_JOURNAL_TAIL_PROBE_BYTES``).
+        Return True iff the file is non-empty AND its trailing record
+        is (a) missing the newline, (b) empty (bare ``\\n``), or
+        (c) malformed JSON. Fail-open when the probe window cuts a
+        single line larger than the window; defer to the
         post-construction handler.
         """
         if not journal_path.exists():
@@ -4328,8 +4320,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ):  # "file"
             journal_path = storage_dir / f"{storage_filename}.log"
 
-            # Pre-validate the trailing record to close the deferred-raise
-            # gap in JournalFileBackend.read_logs (see helper docstring).
+            # Pre-validate EOF: close the read_logs deferred-raise gap (see helper).
             if QuickAdapterRegressorV3._optuna_journal_has_corrupt_tail(
                 journal_path
             ):
@@ -4349,12 +4340,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             try:
                 storage = _build_journal_storage()
             except QuickAdapterRegressorV3._OPTUNA_JOURNAL_RECOVERABLE_ERRORS as exc:
-                # Replay-time corruption (KeyError 'type', malformed JSON,
-                # unknown distribution class). Quarantine the offending log
-                # and retry exactly once on a fresh path. OSError is
-                # intentionally NOT in the recoverable set: filesystem
-                # failures fall through to the outer handler in
-                # optuna_create_study unchanged.
+                # Replay-time corruption: quarantine + retry once. OSError is
+                # excluded from the tuple — FS failures stay operator-actionable.
                 quarantined = QuickAdapterRegressorV3._optuna_quarantine_journal(
                     journal_path, pair, exc
                 )
