@@ -41,6 +41,8 @@ from Utils import (
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
     TRADE_PRICE_TARGETS,
+    _OPTUNA_NAMESPACES,
+    OptunaNamespace,
     alligator,
     bottom_log_return,
     calculate_quantile,
@@ -57,12 +59,13 @@ from Utils import (
     get_label_smoothing_config,
     get_label_weighting_config,
     get_zl_ma_fn,
-    label_known_at_column_name,
+    label_known_at_lookahead_column_name,
     label_weight_column_name,
     migrate_config,
     nan_average,
     non_zero_diff,
     optuna_load_best_params,
+    get_smoothing_kernel_half_width,
     price_retracement_percent,
     safe_divide,
     smooth,
@@ -106,11 +109,15 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(
+        _TRADE_DIRECTIONS
+    )
     _INTERPOLATION_DIRECTIONS: Final[tuple[InterpolationDirection, ...]] = (
         "direct",
         "inverse",
     )
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
+    _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
@@ -118,7 +125,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.11.13"
+        return "3.12.1"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -180,16 +187,6 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def timeframe_minutes(self) -> int:
         return timeframe_to_minutes(self.config.get("timeframe"))
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _trade_directions_set() -> set[TradeDirection]:
-        return set(QuickAdapterV3._TRADE_DIRECTIONS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _order_types_set() -> set[OrderType]:
-        return set(QuickAdapterV3._ORDER_TYPES)
 
     @property
     def can_short(self) -> bool:
@@ -447,7 +444,9 @@ class QuickAdapterV3(IStrategy):
         )
         self._label_params: dict[str, dict[str, Any]] = {}
         for pair in self.pairs:
-            label_best_params = self.optuna_load_best_params(pair, "label")
+            label_best_params = self.optuna_load_best_params(
+                pair, _OPTUNA_NAMESPACES.label
+            )
             self._label_params[pair] = (
                 label_best_params
                 if label_best_params
@@ -455,9 +454,6 @@ class QuickAdapterV3(IStrategy):
                     "label_period_candles": feature_parameters.get(
                         "label_period_candles",
                         default_label_period_candles,
-                    ),
-                    "label_horizon_candles": get_label_horizon_candles(
-                        feature_parameters, logger
                     ),
                     "label_natr_multiplier": float(
                         feature_parameters.get(
@@ -860,9 +856,13 @@ class QuickAdapterV3(IStrategy):
             self._label_params[pair]["label_period_candles"] = label_period_candles
 
     def get_label_horizon_candles(self, pair: str) -> int:
+        period = self.get_label_period_candles(pair)
         label_params = self._label_params.get(pair, {})
         feature_parameters = self.freqai_info.get("feature_parameters", {})
-        return get_label_horizon_candles({**feature_parameters, **label_params}, logger)
+        return get_label_horizon_candles(
+            {**feature_parameters, **label_params, "label_period_candles": period},
+            logger,
+        )
 
     def get_label_natr_multiplier(self, pair: str) -> float:
         label_natr_multiplier = self._label_params.get(pair, {}).get(
@@ -928,10 +928,11 @@ class QuickAdapterV3(IStrategy):
 
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
+        series_length = len(dataframe)
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
-            label_data = generate_label_data(dataframe, label_col, label_params)
+            label_data = generate_label_data(dataframe, label_col, label_params, logger)
 
             if len(label_data.indices) == 0:
                 logger.warning(
@@ -954,9 +955,9 @@ class QuickAdapterV3(IStrategy):
 
             dataframe[label_col] = label_data.series
 
-            if label_data.known_at_index is not None:
-                dataframe[label_known_at_column_name(label_col)] = (
-                    label_data.known_at_index
+            if label_data.known_at_lookahead is not None:
+                dataframe[label_known_at_lookahead_column_name(label_col)] = (
+                    label_data.known_at_lookahead
                 )
 
             label_weight_col = label_weight_column_name(label_col)
@@ -987,6 +988,19 @@ class QuickAdapterV3(IStrategy):
                     np.isfinite(smoothed_label_weights) & smoothed_label_weights.gt(0),
                     0.0,
                 )
+
+            # Zero-phase smoothing reads future candles within the kernel
+            # half-width; extend the per-row label lookahead so causal
+            # split guards account for the smoothing lookahead.
+            known_at_lookahead_column = label_known_at_lookahead_column_name(label_col)
+            if known_at_lookahead_column in dataframe.columns:
+                kernel_half_width = get_smoothing_kernel_half_width(
+                    col_smoothing_config, series_length=series_length
+                )
+                if kernel_half_width > 0:
+                    dataframe[known_at_lookahead_column] = (
+                        dataframe[known_at_lookahead_column] + kernel_half_width
+                    )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
@@ -1760,9 +1774,9 @@ class QuickAdapterV3(IStrategy):
         """
         if df.empty:
             return False
-        if side not in QuickAdapterV3._trade_directions_set():
+        if side not in QuickAdapterV3._TRADE_DIRECTIONS_SET:
             return False
-        if order not in QuickAdapterV3._order_types_set():
+        if order not in QuickAdapterV3._ORDER_TYPES_SET:
             return False
         if not isinstance(rate, (int, float)) or not np.isfinite(rate):
             return False
@@ -2189,7 +2203,7 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs,
     ) -> bool:
-        if side not in QuickAdapterV3._trade_directions_set():
+        if side not in QuickAdapterV3._TRADE_DIRECTIONS_SET:
             return False
         if (
             side == QuickAdapterV3._TRADE_DIRECTIONS[1] and not self.can_short
@@ -2329,6 +2343,12 @@ class QuickAdapterV3(IStrategy):
         return annotations
 
     def optuna_load_best_params(
-        self, pair: str, namespace: str
+        self, pair: str, namespace: OptunaNamespace
     ) -> Optional[dict[str, Any]]:
+        # Strategy consumes only output tunables (``label_period_candles``,
+        # ``label_horizon_candles``, ``label_natr_multiplier``);
+        # selection-metadata drift on cached label ``best_params`` is
+        # tolerable here. The regressor's ``optuna_load_best_params``
+        # passes ``expected_selection_metadata`` and rejects drift before
+        # re-running HPO selection.
         return optuna_load_best_params(self.models_full_path, pair, namespace, logger)

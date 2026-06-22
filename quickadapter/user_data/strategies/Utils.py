@@ -1,6 +1,7 @@
 import copy
 import functools
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -16,8 +17,10 @@ from typing import (
     Callable,
     Final,
     Literal,
+    NamedTuple,
     TypeVar,
     assert_never,
+    cast,
 )
 
 import numpy as np
@@ -215,13 +218,13 @@ def safe_divide(
     context: str = "safe_divide",
     logger: Logger | None = None,
 ) -> Any:
-    """Element-wise division with non-finite and near-zero denominator guards.
+    """Element-wise division with non-finite and zero denominator guards.
 
     Replaces results from divisions whose numerator or denominator is non-finite,
-    or whose denominator satisfies ``np.isclose(denom, 0.0)`` (default
-    ``atol=1e-8``), with ``fallback``. The fallback is also substituted for
-    any non-finite division output (e.g. ``inf`` from a subnormal denominator
-    that escapes the ``np.isclose`` gate).
+    or whose denominator is exactly ``0.0``, with ``fallback``. Subnormal or
+    satoshi-scale denominators (e.g. ``1e-8`` price quotes) pass through and
+    any resulting non-finite division output (e.g. ``inf``) is then coerced
+    to ``fallback`` by the post-division finite mask.
 
     Returns a ``pd.Series`` indexed on the first Series among the inputs when
     shapes align, a Python ``float`` for 0-d results, otherwise an ``ndarray``.
@@ -231,7 +234,7 @@ def safe_divide(
     valid_mask = (
         np.isfinite(numerator_arr)
         & np.isfinite(denominator_arr)
-        & ~np.isclose(denominator_arr, 0.0)
+        & (denominator_arr != 0.0)
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         result = np.divide(
@@ -528,9 +531,9 @@ EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
-_LABEL_KNOWN_AT_SUFFIX: Final[str] = "_known_at_index"
 
-LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+_LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+_LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
 
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 
@@ -547,12 +550,13 @@ def _label_aux_column_name(label_col: str, suffix: str) -> str:
     nor with ``find_features`` (which selects columns containing ``%``).
     Preserves the project convention where a leading ``s`` denotes a smoothed
     target series (e.g. ``&s-extrema``); no ``s`` denotes a raw target.
-    Raises ``ValueError`` if the result still contains ``&`` or ``%``.
+    Raises ``ValueError`` when the result contains ``&`` or ``%`` after
+    sigil strip.
 
     Examples:
         ``("&s-extrema", "_weight")``  -> ``"s-extrema_weight"``
         ``("&-amplitude", "_weight")`` -> ``"amplitude_weight"``
-        ``("&s-extrema", "_known_at_index")`` -> ``"s-extrema_known_at_index"``
+        ``("&s-extrema", "_known_at_lookahead")`` -> ``"s-extrema_known_at_lookahead"``
     """
     stripped = _FREQAI_LABEL_SIGIL_PATTERN.sub("", label_col, count=1)
     if not stripped or not any(c.isalpha() for c in stripped):
@@ -572,33 +576,133 @@ def _label_aux_column_name(label_col: str, suffix: str) -> str:
 
 def label_weight_column_name(label_col: str) -> str:
     """Return the weight column name for a label column."""
-    return _label_aux_column_name(label_col, LABEL_WEIGHT_SUFFIX)
+    return _label_aux_column_name(label_col, _LABEL_WEIGHT_SUFFIX)
 
 
-def label_known_at_column_name(label_col: str) -> str:
-    """Return the known-at-index column name for a label column."""
-    return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_SUFFIX)
+def label_known_at_lookahead_column_name(label_col: str) -> str:
+    """Return the lookahead column name for ``label_col`` (see ``LabelData.known_at_lookahead``)."""
+    return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX)
 
 
 @dataclass
 class LabelData:
+    """Output of a label generator.
+
+    Attributes:
+        series: per-row label values aligned to ``dataframe.index``.
+        indices: positions of detected pivots in ``series``.
+        metrics: per-pivot metric lists (parallel to ``indices``).
+        known_at_lookahead: optional per-row label lookahead in candles
+            (NOT an absolute position). Invariant under
+            ``dk.slice_dataframe``. Causal split guards recover the
+            local availability position as ``row_local_position +
+            known_at_lookahead[row]``. ``None`` opts the label out of
+            label-aware causal filtering.
+    """
+
     series: pd.Series
     indices: list[int]
     metrics: dict[str, list[float]]
-    known_at_index: pd.Series | None = None
+    known_at_lookahead: pd.Series | None = None
 
 
-LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
+LabelGenerator = Callable[[pd.DataFrame, dict[str, Any], Logger | None], LabelData]
 _LABEL_GENERATORS: dict[str, LabelGenerator] = {}
 
 
-def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
-    _LABEL_GENERATORS[label_column] = generator
+def _adapt_label_generator(
+    generator: Callable[..., LabelData],
+) -> LabelGenerator:
+    """Adapt a label generator to the canonical 3-arg shape.
+
+    Detects the canonical ``(dataframe, params, logger) -> LabelData``
+    shape by a positional parameter named ``logger`` at index 2 (with or
+    without a default). Generators with exactly 2 positional parameters
+    are wrapped to drop the logger argument at dispatch. Generators with
+    a 3rd positional parameter whose name is not ``logger`` raise
+    ``ValueError`` at registration, regardless of whether that parameter
+    is required or has a default. ``*args``, ``**kwargs``, keyword-only
+    ``logger``, fewer than 2 required positionals, and more than 3
+    required positionals also raise ``ValueError``. Inspection runs once
+    at registration; dispatch in ``generate_label_data`` is a direct
+    call.
+    """
+    sig = inspect.signature(generator)
+    params = list(sig.parameters.values())
+    if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+        raise ValueError(
+            f"Invalid label generator {generator!r}: ``*args`` is not "
+            f"supported; declare an explicit (dataframe, params) or "
+            f"(dataframe, params, logger) signature"
+        )
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        raise ValueError(
+            f"Invalid label generator {generator!r}: ``**kwargs`` is not "
+            f"supported; declare an explicit (dataframe, params) or "
+            f"(dataframe, params, logger) signature"
+        )
+    if any(
+        p.kind == inspect.Parameter.KEYWORD_ONLY and p.name == "logger" for p in params
+    ):
+        raise ValueError(
+            f"Invalid label generator {generator!r}: keyword-only "
+            f"``logger`` is not supported; declare ``logger`` as the "
+            f"third positional parameter"
+        )
+    positional = [
+        p
+        for p in params
+        if p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    n_total = len(positional)
+    n_required = sum(1 for p in positional if p.default is inspect.Parameter.empty)
+    if n_required < 2:
+        raise ValueError(
+            f"Invalid label generator {generator!r}: {n_required} "
+            f"required positional parameter(s); expected at least 2 "
+            f"(dataframe, params)"
+        )
+    if n_required > 3:
+        raise ValueError(
+            f"Invalid label generator {generator!r}: {n_required} "
+            f"required positional parameter(s); expected 2 "
+            f"(dataframe, params) or 3 (dataframe, params, logger)"
+        )
+    if n_total >= 3:
+        if positional[2].name != "logger":
+            raise ValueError(
+                f"Invalid label generator {generator!r}: third positional "
+                f"parameter is named {positional[2].name!r}, expected "
+                f"``logger``"
+            )
+        return cast(LabelGenerator, generator)
+
+    @functools.wraps(generator)
+    def adapted(
+        dataframe: pd.DataFrame,
+        params: dict[str, Any],
+        logger: Logger | None = None,
+    ) -> LabelData:
+        return generator(dataframe, params)
+
+    return adapted
+
+
+def register_label_generator(
+    label_column: str,
+    generator: Callable[..., LabelData],
+) -> None:
+    _LABEL_GENERATORS[label_column] = _adapt_label_generator(generator)
 
 
 def _generate_extrema_label(
     dataframe: pd.DataFrame,
     params: dict[str, Any],
+    logger: Logger | None = None,
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
@@ -633,16 +737,21 @@ def _generate_extrema_label(
         "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
     }
 
-    known_at_index = pd.Series(
-        np.arange(len(dataframe), dtype=np.int64) + label_horizon_candles,
+    # Per-row label lookahead (in candles), NOT an absolute position:
+    # freqtrade's ``dk.slice_dataframe`` runs AFTER ``set_freqai_targets``,
+    # so any pre-slice absolute position would no longer match the causal
+    # guard's local ``np.arange(len(unfiltered_df))`` coordinate system.
+    known_at_lookahead = pd.Series(
+        int(label_horizon_candles),
         index=dataframe.index,
+        dtype=np.int64,
     )
 
     return LabelData(
         series=series,
         indices=pivots_indices,
         metrics=metrics,
-        known_at_index=known_at_index,
+        known_at_lookahead=known_at_lookahead,
     )
 
 
@@ -653,6 +762,7 @@ def generate_label_data(
     dataframe: pd.DataFrame,
     label_column: str,
     params: dict[str, Any],
+    logger: Logger | None = None,
 ) -> LabelData:
     generator = _LABEL_GENERATORS.get(label_column)
     if generator is None:
@@ -660,16 +770,78 @@ def generate_label_data(
             f"No label generator registered for column '{label_column}'. "
             f"Available columns: {list(_LABEL_GENERATORS.keys())}"
         )
-    return generator(dataframe, params)
+    return generator(dataframe, params, logger)
 
 
 SmoothingKernel = Literal["gaussian", "kaiser", "kaiser_bessel_derived", "triang"]
-SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = (
+SMOOTHING_KERNELS: Final[tuple[SmoothingKernel, ...]] = SMOOTHING_METHODS[1:5]
+assert SMOOTHING_KERNELS == (
     "gaussian",
     "kaiser",
     "kaiser_bessel_derived",
     "triang",
+), (
+    f"SMOOTHING_KERNELS slice drift: {SMOOTHING_KERNELS}; "
+    "the SmoothingKernel Literal and SMOOTHING_METHODS[1:5] must agree"
 )
+
+
+def get_smoothing_kernel_half_width(
+    config: dict[str, Any],
+    *,
+    series_length: int,
+) -> int:
+    """Half-width (in candles) of the smoothing kernel's lookahead.
+
+    Equals the lookahead applied to ``known_at_lookahead`` after smoothing.
+    Mirrors ``smooth()`` window normalization and short-series gating
+    via shared primitives (``get_odd_window``, ``get_even_window``,
+    ``get_savgol_params``).
+
+    For zero-phase ``filtfilt``-routed kernels (members of
+    ``SMOOTHING_KERNELS``) the lookahead equals ``effective_window - 1``
+    because each forward+backward pass extends the dependency window to
+    the full filter length on both sides. For ``smm``/``sma``/``savgol``
+    (single-pass centered windows) the half-width equals
+    ``effective_window // 2``. For ``gaussian_filter1d`` the lookahead
+    matches ``scipy.ndimage`` default truncation at
+    ``int(4.0 * sigma + 0.5)`` (scipy's ``round`` form). Returns 0 for
+    ``method == "none"``, for ``series_length < max(window_candles, 3)``
+    (``smooth()`` top-level no-op), and for the filtfilt/savgol routes
+    when ``series_length < effective_window`` (downstream short-series
+    no-op in ``zero_phase_filter`` / ``savgol_filter``).
+    """
+    method = config.get("method", SMOOTHING_METHODS[0])
+    if method == SMOOTHING_METHODS[0]:  # "none"
+        return 0
+    raw_window = max(
+        int(config.get("window_candles", DEFAULTS_LABEL_SMOOTHING["window_candles"])),
+        3,
+    )
+    # ``smooth()`` top-level short-series gate (``if n < window_candles: return series``)
+    if series_length < raw_window:
+        return 0
+    if method == SMOOTHING_METHODS[8]:  # "gaussian_filter1d"
+        sigma = max(float(config.get("sigma", DEFAULTS_LABEL_SMOOTHING["sigma"])), 0.0)
+        return int(4.0 * sigma + 0.5)
+    if method == SMOOTHING_METHODS[7]:  # "savgol"
+        polyorder = max(
+            int(config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])), 0
+        )
+        effective_window, _, _ = get_savgol_params(raw_window, polyorder, "mirror")
+    elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
+        effective_window = get_even_window(raw_window)
+    else:
+        effective_window = get_odd_window(raw_window)
+    # ``zero_phase_filter`` / ``savgol_filter`` short-series gate
+    if (
+        method in SMOOTHING_KERNELS or method == SMOOTHING_METHODS[7]
+    ) and series_length < effective_window:
+        return 0
+    if method in SMOOTHING_KERNELS:
+        return effective_window - 1
+    return effective_window // 2
+
 
 TradePriceTarget = Literal[
     "moving_average", "quantile_interpolation", "weighted_average"
@@ -822,7 +994,7 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             if old_section == new_section:
                 logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
             else:
-                logger.warning(f"{old_path!r} has moved to {new_path!r}")
+                logger.warning(f"{old_path!r} is deprecated, use {new_path!r} instead")
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
@@ -1036,14 +1208,17 @@ def sanitize_and_renormalize(
     drop_mask: NDArray[np.bool_] | None = None,
     *,
     logger: Logger | None = None,
-    context: str | None = None,
+    context: str,
 ) -> NDArray[np.floating]:
     """Sanitize a weight vector and renormalize so ``mean(out) == 1``.
 
     Non-finite or non-positive entries are treated as ``0``; rows in
     ``drop_mask`` are forced to ``0``. On collapse (no positive finite
     entry survives), returns ones on surviving rows and zeros on dropped
-    rows, rescaled so ``mean(out) == 1`` still holds.
+    rows, rescaled so ``mean(out) == 1``.
+
+    ``context`` is the caller-supplied prefix attached to every warning
+    and error emitted from this helper.
     """
     arr = np.asarray(arr, dtype=float)
     n = arr.size
@@ -1054,13 +1229,11 @@ def sanitize_and_renormalize(
         drop_mask = np.asarray(drop_mask)
         if drop_mask.shape != arr.shape:
             raise ValueError(
-                f"sanitize_and_renormalize: drop_mask shape "
-                f"{drop_mask.shape} != arr shape {arr.shape}"
+                f"{context}: drop_mask shape {drop_mask.shape} != arr shape {arr.shape}"
             )
         if not np.issubdtype(drop_mask.dtype, np.bool_):
             raise ValueError(
-                f"sanitize_and_renormalize: drop_mask dtype "
-                f"{drop_mask.dtype} is not boolean"
+                f"{context}: drop_mask dtype {drop_mask.dtype} is not boolean"
             )
         safe = np.where(drop_mask, 0.0, safe)
     total = safe.sum()
@@ -1073,18 +1246,17 @@ def sanitize_and_renormalize(
     if logger is not None:
         if rescale_overflow:
             logger.warning(
-                "sanitize_and_renormalize: rescale factor non-finite "
-                "(context=%s, n=%d, total=%r); falling back to uniform "
-                "weights",
-                context or "unspecified",
+                "%s: rescale factor non-finite (n=%d, total=%r); "
+                "falling back to uniform weights",
+                context,
                 n,
                 total,
             )
         else:
             logger.warning(
-                "sanitize_and_renormalize: weights collapsed (context=%s, "
-                "total=%r, n=%d); falling back to uniform weights",
-                context or "unspecified",
+                "%s: weights collapsed (total=%r, n=%d); falling back "
+                "to uniform weights",
+                context,
                 total,
                 n,
             )
@@ -1096,9 +1268,9 @@ def sanitize_and_renormalize(
             return masked * (n / total)
         if logger is not None:
             logger.warning(
-                "sanitize_and_renormalize: drop_mask covers all rows in "
-                "fallback; ignoring mask to preserve mean=1 (context=%s)",
-                context or "unspecified",
+                "%s: drop_mask covers all rows in fallback; ignoring "
+                "mask to preserve mean=1",
+                context,
             )
     return fallback
 
@@ -1203,6 +1375,7 @@ def compose_sample_weights(
     label_weights: NDArray[np.floating] | None,
     *,
     logger: Logger,
+    context: str,
     on_collapse: Literal["raise", "fallback"] = "raise",
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
@@ -1211,6 +1384,13 @@ def compose_sample_weights(
     ``label_weights[i]`` is non-finite or ``<= 0`` are dropped
     (``out[i] == 0``); surviving rows carry ``base_weights * label_weights``
     rescaled to global ``mean == 1``.
+
+    ``context`` is the caller-supplied prefix attached to every warning
+    and error emitted from this helper (for example
+    ``"[ETH/USDT] train_test_split:train"``); the inner
+    ``sanitize_and_renormalize`` calls receive
+    ``f"{context}:base_only"`` / ``f"{context}:label_weighted"`` /
+    ``f"{context}:base_fallback"`` to mark the routing branch.
 
     ``on_collapse`` controls the response when the label-weighted product
     collapses on every surviving row: ``"raise"`` (default) surfaces the
@@ -1226,27 +1406,25 @@ def compose_sample_weights(
     base_weights = np.asarray(base_weights, dtype=float)
     if label_weights is None:
         return sanitize_and_renormalize(
-            base_weights, logger=logger, context="compose:base_only"
+            base_weights, logger=logger, context=f"{context}:base_only"
         )
     n = base_weights.shape[0]
     arr = np.asarray(label_weights, dtype=float)
     if arr.shape != (n,):
-        raise ValueError(
-            f"compose_sample_weights: label_weights has shape {arr.shape}, "
-            f"expected ({n},)"
-        )
+        raise ValueError(f"{context}: label_weights shape {arr.shape}, expected ({n},)")
     drop_mask = ~np.isfinite(arr) | (arr <= 0.0)
     if drop_mask.all():
         raise LabelWeightSupportError(
-            "compose_sample_weights: all rows dropped by zero or non-finite "
-            "label weights; no surviving training samples"
+            f"{context}: all rows dropped by zero or non-finite label "
+            f"weights; no surviving training samples"
         )
     nonzero = _pivot_equivalent_count(arr, drop_mask)
     if nonzero / n < SPARSE_TRAINING_MASS_THRESHOLD:
         logger.warning(
-            "compose_sample_weights: sparse training mass "
+            "%s: sparse weighting mass "
             "(%d/%d rows above %.0f%% of surviving max = %.2f%%, "
             "threshold=%.2f%%)",
+            context,
             nonzero,
             n,
             100.0 * _PIVOT_EQUIVALENT_MAX_FRACTION,
@@ -1261,25 +1439,26 @@ def compose_sample_weights(
             combined,
             drop_mask=drop_mask,
             logger=logger,
-            context="compose:label_weighted",
+            context=f"{context}:label_weighted",
         )
     match on_collapse:
         case "raise":
             raise LabelWeightSupportError(
-                f"compose_sample_weights: composed weights collapsed on "
-                f"surviving rows (survivor_total={survivor_total:.6g})"
+                f"{context}: composed weights collapsed on surviving rows "
+                f"(survivor_total={survivor_total:.6g})"
             )
         case "fallback":
             logger.warning(
-                "compose_sample_weights: composed weights collapsed on surviving "
-                "rows (survivor_total=%.6g); falling back to base weights",
+                "%s: composed weights collapsed on surviving rows "
+                "(survivor_total=%.6g); falling back to base weights",
+                context,
                 survivor_total,
             )
             return sanitize_and_renormalize(
                 base_weights,
                 drop_mask=drop_mask,
                 logger=logger,
-                context="compose:base_fallback",
+                context=f"{context}:base_fallback",
             )
         case _:
             assert_never(on_collapse)
@@ -3542,6 +3721,19 @@ def _optuna_suggest_int_from_range(
     return trial.suggest_int(name, int_range[0], int_range[1], log=log)
 
 
+OptunaNamespace = Literal["hp", "label"]
+
+
+class _OptunaNamespaces(NamedTuple):
+    hp: Literal["hp"] = "hp"
+    label: Literal["label"] = "label"
+
+
+# Exported for cross-module use; consumers may import despite the leading
+# underscore on the instance (the class ``_OptunaNamespaces`` stays private).
+_OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
+
+
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
 """Wire format version of optuna-label-best-params-{pair}.json.
 
@@ -3549,36 +3741,37 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
 
 
-def _is_unversioned_label_best_params_shape(best_params: Any) -> bool:
-    """Detect an unversioned Optuna label best params dict.
+_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 2
+"""Version of the label-namespace Optuna best-trial selection algorithm.
 
-    An unversioned dict is a raw best params mapping missing
-    ``schema_version``; its field shape matches the inner ``params`` of
-    a schema-versioned ``{schema_version, params}`` dict.
-    """
-    return (
-        isinstance(best_params, dict)
-        and "schema_version" not in best_params
-        and "label_period_candles" in best_params
-        and "label_natr_multiplier" in best_params
-    )
+Incremented on any change to tie-break, normalization, distance-metric
+whitelist, or selection metadata. Independent of
+``_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION`` (on-disk JSON layout vs
+selection-algorithm semantics are versioned separately).
+"""
 
 
 def _validate_optuna_label_best_params(
     best_params: Any,
     pair: str,
     logger: Logger | None,
+    *,
+    expected_selection_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    if _is_unversioned_label_best_params_shape(best_params):
-        if logger is not None:
-            logger.info(
-                f"[{pair}] Optuna label best params (no schema_version) "
-                f"read as v{_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION} in-memory."
-            )
-        best_params = {
-            "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
-            "params": best_params,
-        }
+    """Validate an Optuna ``label`` best-params payload against the v2 schema.
+
+    Returns the inner ``params`` dict on success; returns ``None`` on
+    rejection. Rejects non-dict input, missing or invalid ``schema_version``,
+    schema-version mismatch with ``_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION``,
+    missing or invalid ``selection_metadata``, missing or invalid
+    ``selection_metadata.schema_version``, schema-version mismatch with
+    ``_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION``, missing or invalid
+    ``label_period_candles`` / ``label_natr_multiplier`` /
+    ``label_horizon_candles``, and -- when ``expected_selection_metadata``
+    is provided -- any drift between the stored and the caller's current
+    ``selection_metadata``. Every rejection emits a ``[<pair>]``-prefixed
+    warning when ``logger`` is provided.
+    """
     if not isinstance(best_params, dict):
         if logger is not None:
             logger.warning(f"[{pair}] Ignoring Optuna label best params: not a dict")
@@ -3606,6 +3799,45 @@ def _validate_optuna_label_best_params(
                 f"[{pair}] Ignoring Optuna label best params: incompatible "
                 f"schema_version={schema_version!r} "
                 f"(expected {_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION})"
+            )
+        return None
+    selection_metadata = best_params.get("selection_metadata")
+    if not isinstance(selection_metadata, dict):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: missing or invalid "
+                f"selection_metadata"
+            )
+        return None
+    selection_schema_version = selection_metadata.get("schema_version")
+    if isinstance(selection_schema_version, bool) or not isinstance(
+        selection_schema_version, (int, np.integer)
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: invalid "
+                f"selection_metadata.schema_version={selection_schema_version!r} "
+                f"(must be int)"
+            )
+        return None
+    if selection_schema_version != _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION:
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: incompatible "
+                f"selection_metadata.schema_version={selection_schema_version!r} "
+                f"(expected {_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION})"
+            )
+        return None
+    if (
+        expected_selection_metadata is not None
+        and selection_metadata != expected_selection_metadata
+    ):
+        if logger is not None:
+            logger.warning(
+                f"[{pair}] Ignoring Optuna label best params: "
+                f"selection_metadata drift "
+                f"(stored: {selection_metadata!r}, "
+                f"expected: {expected_selection_metadata!r})"
             )
         return None
     params = best_params.get("params")
@@ -3655,7 +3887,12 @@ def _validate_optuna_label_best_params(
 
 
 def optuna_load_best_params(
-    base_path: Path, pair: str, namespace: str, logger: Logger | None = None
+    base_path: Path,
+    pair: str,
+    namespace: OptunaNamespace,
+    logger: Logger | None = None,
+    *,
+    expected_selection_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -3663,8 +3900,13 @@ def optuna_load_best_params(
     if best_params_path.is_file():
         with best_params_path.open("r", encoding="utf-8") as read_file:
             best_params = json.load(read_file)
-        if namespace == "label":
-            return _validate_optuna_label_best_params(best_params, pair, logger)
+        if namespace == _OPTUNA_NAMESPACES.label:
+            return _validate_optuna_label_best_params(
+                best_params,
+                pair,
+                logger,
+                expected_selection_metadata=expected_selection_metadata,
+            )
         return best_params
     return None
 
@@ -3672,19 +3914,22 @@ def optuna_load_best_params(
 def optuna_save_best_params(
     base_path: Path,
     pair: str,
-    namespace: str,
+    namespace: OptunaNamespace,
     params: dict[str, Any],
     logger: Logger,
+    selection_metadata: dict[str, Any] | None = None,
 ) -> None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
     try:
-        if namespace == "label":
+        if namespace == _OPTUNA_NAMESPACES.label:
             best_params: dict[str, Any] = {
                 "schema_version": _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION,
                 "params": params,
             }
+            if selection_metadata is not None:
+                best_params["selection_metadata"] = selection_metadata
         else:
             best_params = params
         with best_params_path.open("w", encoding="utf-8") as write_file:
