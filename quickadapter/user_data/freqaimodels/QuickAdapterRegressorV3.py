@@ -1886,10 +1886,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if test_size == 0 and feat_dict.get("reverse_train_test_order", False):
             raise ValueError(
                 "data_split_parameters.test_size=0 is incompatible with "
-                "feature_parameters.reverse_train_test_order=True: the swap "
-                "would route an empty slice through "
-                "_compose_train_weights_with_support and trip support_policy "
-                "on zero rows"
+                "feature_parameters.reverse_train_test_order=True: the empty "
+                "test slice cannot be promoted to the training slot"
             )
 
         if test_size != 0:
