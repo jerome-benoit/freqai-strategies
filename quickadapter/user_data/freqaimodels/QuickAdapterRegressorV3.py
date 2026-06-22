@@ -85,7 +85,7 @@ from Utils import (
     get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
-    label_known_at_column_name,
+    label_known_at_lookahead_column_name,
     label_weight_column_name,
     migrate_config,
     optuna_load_best_params,
@@ -121,7 +121,7 @@ def _log_known_at_none_once(pair: str, context: str) -> None:
         return
     _KNOWN_AT_NONE_LOGGED.add(key)
     logger.info(
-        f"[{pair}] {context}: no <label>_known_at_index column present; "
+        f"[{pair}] {context}: no <label>_known_at_lookahead column present; "
         "causal guards use position-based purge only (label-aware filtering disabled)"
     )
 
@@ -511,18 +511,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return positions.loc[filtered_dataframe.index]
 
     @staticmethod
-    def _known_at_index(
+    def _known_at_lookahead(
         filtered_dataframe: pd.DataFrame,
         unfiltered_df: pd.DataFrame,
     ) -> pd.Series | None:
         """Per-row label lookahead (in candles) across all registered labels.
 
-        See ``LabelData.known_at_index`` for the lookahead-vs-position
+        See ``LabelData.known_at_lookahead`` for the lookahead-vs-position
         contract and the slice-invariance rationale; callers must add the
         row's LOCAL position in ``unfiltered_df`` to recover the local
         index at which the label becomes causally available.
 
-        Row-wise ``max`` of every present ``<label>_known_at_index``
+        Row-wise ``max`` of every present ``<label>_known_at_lookahead``
         column; labels with a missing column or any NaN are skipped
         silently (opt-in by emission). Returns ``None`` when no label is
         usable; callers then fall back to the position-based purge.
@@ -532,13 +532,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         series_list: list[pd.Series] = []
         for label_col in LABEL_COLUMNS:
-            known_at_col = label_known_at_column_name(label_col)
-            if known_at_col not in unfiltered_df.columns:
+            known_at_lookahead_col = label_known_at_lookahead_column_name(label_col)
+            if known_at_lookahead_col not in unfiltered_df.columns:
                 continue
-            known_at = unfiltered_df.loc[filtered_dataframe.index, known_at_col]
-            if known_at.isna().any():
+            lookahead = unfiltered_df.loc[
+                filtered_dataframe.index, known_at_lookahead_col
+            ]
+            if lookahead.isna().any():
                 continue
-            series_list.append(pd.to_numeric(known_at, errors="raise"))
+            series_list.append(pd.to_numeric(lookahead, errors="raise"))
         if not series_list:
             return None
         if len(series_list) == 1:
@@ -1970,16 +1972,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     train_positions.to_numpy(dtype=np.int64)
                     < first_test_position - label_horizon_candles
                 )
-                known_at_index = QuickAdapterRegressorV3._known_at_index(
+                known_at_lookahead = QuickAdapterRegressorV3._known_at_lookahead(
                     features, unfiltered_df
                 )
-                if known_at_index is not None:
-                    known_at_train_delta = known_at_index.loc[train_features.index]
-                    known_at_train_position = (
+                if known_at_lookahead is not None:
+                    train_known_at_lookahead = known_at_lookahead.loc[
+                        train_features.index
+                    ]
+                    train_known_at_position = (
                         train_positions.to_numpy(dtype=np.int64)
-                        + known_at_train_delta.to_numpy(dtype=np.int64)
+                        + train_known_at_lookahead.to_numpy(dtype=np.int64)
                     )
-                    keep_mask &= known_at_train_position < first_test_position
+                    keep_mask &= train_known_at_position < first_test_position
                 else:
                     _log_known_at_none_once(dk.pair, "train_test_split causal guard")
                 (
@@ -2397,16 +2401,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             first_test_position = int(row_positions.iloc[test_idx].min())
             train_positions = row_positions.iloc[train_idx]
-            known_at_index = QuickAdapterRegressorV3._known_at_index(
+            known_at_lookahead = QuickAdapterRegressorV3._known_at_lookahead(
                 filtered_dataframe, unfiltered_df
             )
-            if known_at_index is not None:
-                known_at_train_delta = known_at_index.iloc[train_idx]
-                known_at_train_position = (
+            if known_at_lookahead is not None:
+                train_known_at_lookahead = known_at_lookahead.iloc[train_idx]
+                train_known_at_position = (
                     train_positions.to_numpy(dtype=np.int64)
-                    + known_at_train_delta.to_numpy(dtype=np.int64)
+                    + train_known_at_lookahead.to_numpy(dtype=np.int64)
                 )
-                keep_mask = known_at_train_position < first_test_position
+                keep_mask = train_known_at_position < first_test_position
                 (
                     train_features,
                     train_labels,
