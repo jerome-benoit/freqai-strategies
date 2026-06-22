@@ -231,6 +231,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         json.JSONDecodeError,
     )
     _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
+    _OPTUNA_JOURNAL_TAIL_PROBE_BYTES: Final[int] = 65536
     _OPTUNA_SAMPLERS: Final[_OptunaSamplers] = _OptunaSamplers()
     _OPTUNA_HPO_SAMPLERS: Final[_OptunaHpoSamplers] = _OptunaHpoSamplers()
     _OPTUNA_HPO_SAMPLERS_SET: Final[frozenset[OptunaSampler]] = frozenset(
@@ -4263,20 +4264,27 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         ``JournalFileBackend.read_logs`` defers ``ValueError('Invalid log
         format.')`` (line without trailing newline) and ``json.JSONDecodeError``
-        (malformed JSON) to the *next* loop iteration. A bad trailing record
-        with no successor line therefore does NOT surface during
-        ``JournalStorage.__init__``; it surfaces only later, when a subsequent
-        ``_sync_with_backend`` call (triggered by ``optuna.create_study``,
-        ``optuna.load_study`` or ``optuna.delete_study``) reads the new
-        successor line and re-raises the stored error. That site sits outside
-        the ``optuna_create_storage`` try/except and falls through to the
-        broad outer handler in ``optuna_create_study``, reproducing the
-        silent-HPO-skip symptom this fix is meant to eliminate.
+        (malformed or empty JSON line) to the *next* loop iteration. A bad
+        trailing record with no successor line therefore does NOT surface
+        during ``JournalStorage.__init__``; it surfaces only later, when a
+        subsequent ``_sync_with_backend`` call (triggered by
+        ``optuna.create_study``, ``optuna.load_study`` or
+        ``optuna.delete_study``) reads the new successor line and re-raises
+        the stored error. That site sits outside the ``optuna_create_storage``
+        try/except and falls through to the broad outer handler in
+        ``optuna_create_study``, reproducing the silent-HPO-skip symptom this
+        fix is meant to eliminate.
 
-        Probe: bounded tail read (last 64 KiB; a journal log line is
-        typically < 2 KiB). Return True iff the file is non-empty AND either
-        (a) lacks a trailing newline (truncated) OR (b) its last complete
-        line fails ``json.loads`` (malformed).
+        Probe: bounded tail read (last
+        ``_OPTUNA_JOURNAL_TAIL_PROBE_BYTES``; a journal log line is typically
+        < 2 KiB). Return True iff the file is non-empty AND any of:
+        (a) it lacks a trailing newline (truncated), or
+        (b) its last complete line is empty (bare trailing newline), or
+        (c) its last complete line fails ``json.loads`` (malformed).
+        Fail-open (return False) when the probe window cannot see a prior
+        newline AND the file exceeds the window: the last line is larger
+        than the window and cannot be validated here; defer to the
+        post-construction handler.
         """
         if not journal_path.exists():
             return False
@@ -4285,16 +4293,26 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if size == 0:
                 return False
             with journal_path.open("rb") as f:
-                f.seek(max(0, size - 65536))
+                f.seek(
+                    max(
+                        0,
+                        size - QuickAdapterRegressorV3._OPTUNA_JOURNAL_TAIL_PROBE_BYTES,
+                    )
+                )
                 tail = f.read()
         except OSError:
             return False
         if not tail.endswith(b"\n"):
             return True
         last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
-        last_line = tail[last_newline + 1 : -1]
+        if last_newline == -1:
+            if size > QuickAdapterRegressorV3._OPTUNA_JOURNAL_TAIL_PROBE_BYTES:
+                return False
+            last_line = tail[:-1]
+        else:
+            last_line = tail[last_newline + 1 : -1]
         if not last_line:
-            return False
+            return True
         try:
             json.loads(last_line)
         except json.JSONDecodeError:
@@ -4310,14 +4328,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ):  # "file"
             journal_path = storage_dir / f"{storage_filename}.log"
 
-            # Pre-validate the trailing record. JournalFileBackend.read_logs
-            # defers decode errors to the next iteration, so a corrupt EOF
-            # record does NOT surface during JournalStorage.__init__; it
-            # surfaces later (inside optuna.create_study / load_study /
-            # delete_study) where the broad outer handler in
-            # optuna_create_study reproduces the silent-HPO-skip symptom.
-            # Quarantining here is the single uniform fix for all downstream
-            # re-sync sites.
+            # Pre-validate the trailing record to close the deferred-raise
+            # gap in JournalFileBackend.read_logs (see helper docstring).
             if QuickAdapterRegressorV3._optuna_journal_has_corrupt_tail(
                 journal_path
             ):
