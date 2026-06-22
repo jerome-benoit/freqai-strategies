@@ -109,11 +109,15 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(
+        _TRADE_DIRECTIONS
+    )
     _INTERPOLATION_DIRECTIONS: Final[tuple[InterpolationDirection, ...]] = (
         "direct",
         "inverse",
     )
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
+    _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
 
     _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
@@ -183,16 +187,6 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def timeframe_minutes(self) -> int:
         return timeframe_to_minutes(self.config.get("timeframe"))
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _trade_directions_set() -> set[TradeDirection]:
-        return set(QuickAdapterV3._TRADE_DIRECTIONS)
-
-    @staticmethod
-    @lru_cache(maxsize=None)
-    def _order_types_set() -> set[OrderType]:
-        return set(QuickAdapterV3._ORDER_TYPES)
 
     @property
     def can_short(self) -> bool:
@@ -1780,9 +1774,9 @@ class QuickAdapterV3(IStrategy):
         """
         if df.empty:
             return False
-        if side not in QuickAdapterV3._trade_directions_set():
+        if side not in QuickAdapterV3._TRADE_DIRECTIONS_SET:
             return False
-        if order not in QuickAdapterV3._order_types_set():
+        if order not in QuickAdapterV3._ORDER_TYPES_SET:
             return False
         if not isinstance(rate, (int, float)) or not np.isfinite(rate):
             return False
@@ -2209,7 +2203,7 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs,
     ) -> bool:
-        if side not in QuickAdapterV3._trade_directions_set():
+        if side not in QuickAdapterV3._TRADE_DIRECTIONS_SET:
             return False
         if (
             side == QuickAdapterV3._TRADE_DIRECTIONS[1] and not self.can_short

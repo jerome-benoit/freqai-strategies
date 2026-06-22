@@ -531,9 +531,9 @@ EXTREMA_DIRECTION_COLUMN: Final[str] = "extrema_direction"
 EXTREMA_DIRECTION_SMOOTHED_COLUMN: Final[str] = "extrema_direction_smoothed"
 EXTREMA_WEIGHT_COLUMN: Final[str] = "extrema_weight"
 EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
-_LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
 
 LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
+_LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
 
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 
@@ -581,9 +581,6 @@ def label_weight_column_name(label_col: str) -> str:
 def label_known_at_lookahead_column_name(label_col: str) -> str:
     """Return the lookahead column name for ``label_col`` (see ``LabelData.known_at_lookahead``)."""
     return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX)
-
-
-label_known_at_column_name = label_known_at_lookahead_column_name
 
 
 @dataclass
