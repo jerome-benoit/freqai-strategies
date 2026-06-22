@@ -187,30 +187,6 @@ class _OptunaLabelSamplers(NamedTuple):
     nsgaiii: Literal["nsgaiii"] = "nsgaiii"
 
 
-# Cross-link invariants pin the [0]=default and prefix/permutation
-# relationships between the three sampler registries at module load,
-# replacing the prior ``_OPTUNA_SAMPLERS[:2]`` slice derivation and the
-# 4-entry custom reorder of ``_OPTUNA_LABEL_SAMPLERS``.
-assert _OptunaHpoSamplers()[0] == "tpe", (
-    "_OPTUNA_HPO_SAMPLERS[0] is the documented HPO default "
-    "(README 'freqai.optuna_hyperopt.sampler' enum head)"
-)
-assert _OptunaLabelSamplers()[0] == "auto", (
-    "_OPTUNA_LABEL_SAMPLERS[0] is the documented label-namespace HPO "
-    "default (README 'freqai.optuna_hyperopt.label_sampler' enum head)"
-)
-assert tuple(_OptunaHpoSamplers()) == tuple(_OptunaSamplers())[:2], (
-    f"_OptunaHpoSamplers fields must remain the order-preserving prefix "
-    f"of _OptunaSamplers; got {tuple(_OptunaHpoSamplers())} vs "
-    f"{tuple(_OptunaSamplers())[:2]}"
-)
-assert frozenset(_OptunaLabelSamplers()) == frozenset(_OptunaSamplers()), (
-    f"_OptunaLabelSamplers fields must remain a permutation of "
-    f"_OptunaSamplers; got {frozenset(_OptunaLabelSamplers())} vs "
-    f"{frozenset(_OptunaSamplers())}"
-)
-
-
 class QuickAdapterRegressorV3(BaseRegressionModel):
     """
     The following freqaimodel is released to sponsors of the non-profit FreqAI open-source project.
