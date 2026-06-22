@@ -517,17 +517,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> pd.Series | None:
         """Per-row label lookahead (in candles) across all registered labels.
 
-        Each ``<label>_known_at_index`` column stores a lookahead -- not
-        an absolute position -- because freqtrade's ``dk.slice_dataframe``
-        runs AFTER ``set_freqai_targets`` and would otherwise leave the
-        column in the pre-slice coordinate system. Callers must add the
+        See ``LabelData.known_at_index`` for the lookahead-vs-position
+        contract and the slice-invariance rationale; callers must add the
         row's LOCAL position in ``unfiltered_df`` to recover the local
         index at which the label becomes causally available.
 
-        Row-wise ``max`` of every present column; labels with a missing
-        column or any NaN are skipped silently (opt-in by emission).
-        Returns ``None`` when no label is usable; callers then fall back
-        to the position-based purge.
+        Row-wise ``max`` of every present ``<label>_known_at_index``
+        column; labels with a missing column or any NaN are skipped
+        silently (opt-in by emission). Returns ``None`` when no label is
+        usable; callers then fall back to the position-based purge.
         """
         QuickAdapterRegressorV3._validate_index_alignment(
             filtered_dataframe, unfiltered_df
