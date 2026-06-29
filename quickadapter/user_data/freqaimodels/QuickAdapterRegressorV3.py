@@ -44,7 +44,8 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-from sklearn_extra.cluster import KMedoids
+# Disabled: scikit-learn-extra 0.3.0 fails on Python 3.14 (__gxx_personality_v0).
+# from sklearn_extra.cluster import KMedoids
 
 from LabelTransformer import (
     CUSTOM_THRESHOLD_METHODS,
@@ -3546,57 +3547,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif (
             cluster_method == QuickAdapterRegressorV3._CLUSTER_METHODS[2]
         ):  # "kmedoids"
-            kmedoids_kwargs: dict[str, Any] = {
-                "metric": distance_metric,
-                "random_state": 42,
-                "init": "k-medoids++",
-                "method": "pam",
-            }
-            kmedoids = KMedoids(n_clusters=n_clusters, **kmedoids_kwargs)
-            cluster_labels = kmedoids.fit_predict(normalized_matrix)
-            medoid_indices = kmedoids.medoid_indices_
-
-            if (
-                selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[0]
-            ):  # "compromise_programming"
-                medoid_scores = QuickAdapterRegressorV3._compromise_programming_scores(
-                    normalized_matrix[medoid_indices],
-                    distance_metric,
-                    p=p,
-                )
-            elif (
-                selection_method == QuickAdapterRegressorV3._DISTANCE_METHODS[1]
-            ):  # "topsis"
-                medoid_scores = QuickAdapterRegressorV3._topsis_scores(
-                    normalized_matrix[medoid_indices],
-                    distance_metric,
-                    p=p,
-                )
-            else:
-                raise ValueError(
-                    f"Invalid selection_method value {selection_method!r}: "
-                    f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
-                )
-            best_medoid_score_position = np.nanargmin(medoid_scores)
-            best_medoid_index = medoid_indices[best_medoid_score_position]
-            cluster_index = cluster_labels[best_medoid_index]
-            best_cluster_indices = np.flatnonzero(cluster_labels == cluster_index)
-
-            trial_distances = np.full(n_samples, np.inf)
-            if best_cluster_indices is not None and best_cluster_indices.size > 0:
-                best_trial_index, best_trial_distance = (
-                    self._select_best_trial_from_cluster(
-                        normalized_matrix,
-                        trial_selection_method,
-                        best_cluster_indices,
-                        ideal_point_2d,
-                        distance_metric,
-                        weights=weights,
-                        p=p,
-                    )
-                )
-                trial_distances[best_trial_index] = best_trial_distance
-            return trial_distances
+            raise DependencyException(
+                "label_method='kmedoids' is temporarily disabled because "
+                "scikit-learn-extra is not compatible with the current "
+                "Python 3.14 Freqtrade image. Use 'kmeans', 'kmeans2', "
+                "'knn', 'medoid', 'topsis', or 'compromise_programming'."
+            )
 
         else:
             raise ValueError(
