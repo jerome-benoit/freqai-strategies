@@ -37,6 +37,7 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
 from freqtrade.strategy import timeframe_to_minutes
+from freqaimodels.optuna_journal_recovery import create_recovered_journal_storage
 from gymnasium.spaces import Box
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
@@ -46,11 +47,9 @@ from optuna.pruners import BasePruner, HyperbandPruner
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.storages import (
     BaseStorage,
-    JournalStorage,
     RDBStorage,
     RetryFailedTrialCallback,
 )
-from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
@@ -1348,8 +1347,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         # "file"
         elif storage_backend == ReforceXY._STORAGE_BACKENDS[1]:
-            storage = JournalStorage(
-                JournalFileBackend(f"{storage_dir}/{storage_filename}.log")
+            storage = create_recovered_journal_storage(
+                storage_dir / f"{storage_filename}.log"
             )
         else:
             raise ValueError(
