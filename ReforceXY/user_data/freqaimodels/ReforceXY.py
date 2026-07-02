@@ -20,6 +20,7 @@ from typing import (
     Tuple,
     Type,
     Union,
+    assert_never,
     cast,
 )
 
@@ -1368,35 +1369,39 @@ class ReforceXY(BaseReinforcementLearningModel):
             return False
 
     def create_sampler(self) -> BaseSampler:
-        sampler: SamplerType = self.rl_config_optuna.get(
+        sampler_config = self.rl_config_optuna.get(
             "sampler", ReforceXY._SAMPLER_TYPES[0]
-        )  # "tpe"
-        seed = self.rl_config_optuna.get("seed", 42)
-        # "auto"
-        if sampler == ReforceXY._SAMPLER_TYPES[1]:
-            logger.info(
-                "Hyperopt [global]: using AutoSampler (seed=%d)",
-                seed,
-            )
-            return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
-        # "tpe"
-        elif sampler == ReforceXY._SAMPLER_TYPES[0]:
-            logger.info(
-                "Hyperopt [global]: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
-                self.optuna_n_startup_trials,
-                seed,
-            )
-            return TPESampler(
-                n_startup_trials=self.optuna_n_startup_trials,
-                multivariate=True,
-                group=True,
-                seed=seed,
-            )
-        else:
+        )
+        if sampler_config not in ReforceXY._SAMPLER_TYPES:
             raise ValueError(
-                f"Hyperopt [global]: unsupported sampler '{sampler}'. "
+                f"Hyperopt [global]: unsupported sampler '{sampler_config}'. "
                 f"Valid: {', '.join(ReforceXY._SAMPLER_TYPES)}"
             )
+        sampler = cast(SamplerType, sampler_config)
+        seed = self.rl_config_optuna.get("seed", 42)
+        match sampler:
+            case "tpe":
+                logger.info(
+                    "Hyperopt [global]: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
+                    self.optuna_n_startup_trials,
+                    seed,
+                )
+                return TPESampler(
+                    n_startup_trials=self.optuna_n_startup_trials,
+                    multivariate=True,
+                    group=True,
+                    seed=seed,
+                )
+            case "auto":
+                logger.info(
+                    "Hyperopt [global]: using AutoSampler (seed=%d)",
+                    seed,
+                )
+                return optunahub.load_module("samplers/auto_sampler").AutoSampler(
+                    seed=seed
+                )
+            case _:
+                assert_never(sampler)
 
     @staticmethod
     def create_pruner(
