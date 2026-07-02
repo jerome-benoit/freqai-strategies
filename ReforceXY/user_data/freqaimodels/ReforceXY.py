@@ -200,6 +200,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         "DQN",
         "QRDQN",
     )
+    _MODEL_TYPES_SET: Final[frozenset[ModelType]] = frozenset(_MODEL_TYPES)
     _SCHEDULE_TYPES_KNOWN: Final[Tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
     _SCHEDULE_TYPES: Final[Tuple[ScheduleType, ...]] = (
         *_SCHEDULE_TYPES_KNOWN,
@@ -212,6 +213,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         "spike_cancel",
         "retain_previous",
     )
+    _EXIT_POTENTIAL_MODES_SET: Final[frozenset[ExitPotentialMode]] = frozenset(
+        _EXIT_POTENTIAL_MODES
+    )
     _TRANSFORM_FUNCTIONS: Final[Tuple[TransformFunction, ...]] = (
         "tanh",
         "softsign",
@@ -219,6 +223,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         "sigmoid",
         "asinh",
         "clip",
+    )
+    _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(
+        _TRANSFORM_FUNCTIONS
     )
     _EXIT_ATTENUATION_MODES: Final[Tuple[ExitAttenuationMode, ...]] = (
         "legacy",
@@ -255,18 +262,6 @@ class ReforceXY(BaseReinforcementLearningModel):
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
 
     _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
-
-    @staticmethod
-    def _model_types_set() -> set[ModelType]:
-        return set(ReforceXY._MODEL_TYPES)
-
-    @staticmethod
-    def _exit_potential_modes_set() -> set[ExitPotentialMode]:
-        return set(ReforceXY._EXIT_POTENTIAL_MODES)
-
-    @staticmethod
-    def _transform_functions_set() -> set[TransformFunction]:
-        return set(ReforceXY._TRANSFORM_FUNCTIONS)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2011,7 +2006,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 "exit_potential_mode", ReforceXY._EXIT_POTENTIAL_MODES[0]
             )  # "canonical"
         )
-        if self._exit_potential_mode not in set(ReforceXY._EXIT_POTENTIAL_MODES):
+        if self._exit_potential_mode not in ReforceXY._EXIT_POTENTIAL_MODES_SET:
             logger.warning(
                 "PBRS [%s]: exit_potential_mode=%r invalid; defaulting to %r. Valid: %s",
                 self.id,
