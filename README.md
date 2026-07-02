@@ -181,6 +181,12 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
+When `rl_config_optuna` uses `storage=file`, ReforceXY may quarantine a
+corrupt Optuna journal as `<original-journal-filename>.corrupt-<UTC>` and retry
+once with a fresh journal. This only affects file-backed Optuna storage. The
+`sampler`, `model_reward_parameters`, `PBRS`, and `&-action` behavior is
+unchanged.
+
 ## Common workflows
 
 **List running compose services and the containers they created:**
