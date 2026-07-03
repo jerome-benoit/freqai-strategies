@@ -1371,13 +1371,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             return False
 
     def create_sampler(self) -> BaseSampler:
-        sampler_config = self.rl_config_optuna.get("sampler", ReforceXY._SAMPLERS.tpe)
-        if sampler_config not in ReforceXY._SAMPLERS:
+        sampler_value = self.rl_config_optuna.get("sampler", ReforceXY._SAMPLERS.tpe)
+        if sampler_value not in ReforceXY._SAMPLERS:
             raise ValueError(
-                f"Hyperopt [global]: unsupported sampler '{sampler_config}'. "
+                f"Hyperopt [global]: unsupported sampler '{sampler_value}'. "
                 f"Valid: {', '.join(ReforceXY._SAMPLERS)}"
             )
-        sampler = cast(SamplerType, sampler_config)
+        sampler = cast(SamplerType, sampler_value)
         seed = self.rl_config_optuna.get("seed", 42)
         match sampler:
             case ReforceXY._SAMPLERS.tpe:
