@@ -16,6 +16,7 @@ from typing import (
     Final,
     List,
     Literal,
+    NamedTuple,
     Optional,
     Tuple,
     Type,
@@ -91,6 +92,12 @@ OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
 StorageBackend = Literal["sqlite", "file"]
 SamplerType = Literal["tpe", "auto"]
+
+
+class _Samplers(NamedTuple):
+    tpe: Literal["tpe"] = "tpe"
+    auto: Literal["auto"] = "auto"
+
 
 matplotlib.use("Agg")
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -255,7 +262,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         "extra_large",
     )
     _STORAGE_BACKENDS: Final[Tuple[StorageBackend, ...]] = ("sqlite", "file")
-    _SAMPLER_TYPES: Final[Tuple[SamplerType, ...]] = ("tpe", "auto")
+    _SAMPLERS: Final[_Samplers] = _Samplers()
     _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -1364,18 +1371,16 @@ class ReforceXY(BaseReinforcementLearningModel):
             return False
 
     def create_sampler(self) -> BaseSampler:
-        sampler_config = self.rl_config_optuna.get(
-            "sampler", ReforceXY._SAMPLER_TYPES[0]
-        )
-        if sampler_config not in ReforceXY._SAMPLER_TYPES:
+        sampler_config = self.rl_config_optuna.get("sampler", ReforceXY._SAMPLERS.tpe)
+        if sampler_config not in ReforceXY._SAMPLERS:
             raise ValueError(
                 f"Hyperopt [global]: unsupported sampler '{sampler_config}'. "
-                f"Valid: {', '.join(ReforceXY._SAMPLER_TYPES)}"
+                f"Valid: {', '.join(ReforceXY._SAMPLERS)}"
             )
         sampler = cast(SamplerType, sampler_config)
         seed = self.rl_config_optuna.get("seed", 42)
         match sampler:
-            case "tpe":
+            case ReforceXY._SAMPLERS.tpe:
                 logger.info(
                     "Hyperopt [global]: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
                     self.optuna_n_startup_trials,
@@ -1387,7 +1392,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     group=True,
                     seed=seed,
                 )
-            case "auto":
+            case ReforceXY._SAMPLERS.auto:
                 logger.info(
                     "Hyperopt [global]: using AutoSampler (seed=%d)",
                     seed,
