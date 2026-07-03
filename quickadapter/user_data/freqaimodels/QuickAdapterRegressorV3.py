@@ -36,6 +36,8 @@ from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 from optuna.study.study import ObjectiveFuncType
 from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.preprocessing import (
@@ -207,7 +209,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.12.2"
+    version = "3.12.3"
 
     _TEST_SIZE: Final[float] = 0.1
     # Substituted whenever the Weibull DI cutoff (``weibull_min.ppf``) is
@@ -228,10 +230,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _OPTUNA_JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
     _OPTUNA_JOURNAL_RECOVERABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
         KeyError,
+        AssertionError,
+        TypeError,
         ValueError,
         json.JSONDecodeError,
     )
     _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
+    _OPTUNA_JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
+    _OPTUNA_JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
     _OPTUNA_JOURNAL_TAIL_PROBE_BYTES: Final[int] = 65536
     _OPTUNA_SAMPLERS: Final[_OptunaSamplers] = _OptunaSamplers()
     _OPTUNA_HPO_SAMPLERS: Final[_OptunaHpoSamplers] = _OptunaHpoSamplers()
@@ -4170,18 +4176,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         The tag is appended *after* ``.log`` so the live-journal glob
         ``optuna-*.log`` never matches quarantined artefacts. Collisions
         are bounded by ``_OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT``;
-        microsecond UTC stamping makes them practically impossible.
+        exhausted candidates raise instead of reusing a quarantine file.
         """
         stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
         tag = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TAG
-        candidate = journal_path.with_name(f"{journal_path.name}.{tag}-{stamp}")
-        for n in range(
-            1, QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1
-        ):
+        base_name = f"{journal_path.name}.{tag}-{stamp}"
+        limit = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT
+        for index in range(limit + 1):
+            suffix = "" if index == 0 else f"-{index}"
+            candidate = journal_path.with_name(f"{base_name}{suffix}")
             if not candidate.exists():
                 return candidate
-            candidate = journal_path.with_name(f"{journal_path.name}.{tag}-{stamp}-{n}")
-        return candidate
+        raise FileExistsError(journal_path)
 
     @staticmethod
     def _optuna_quarantine_journal(
@@ -4217,58 +4223,51 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _optuna_journal_has_corrupt_tail(journal_path: Path) -> bool:
-        """Detect a deferred-raise hazard at EOF of a journal log file.
-
-        ``JournalFileBackend.read_logs`` stores ``ValueError('Invalid
-        log format.')`` (missing trailing newline) and
-        ``json.JSONDecodeError`` (malformed or empty line) as
-        ``last_decode_error`` and re-raises only on the *next*
-        iteration. A bad trailing record with no successor therefore
-        does NOT raise during ``JournalStorage.__init__``; it surfaces
-        at the next ``_sync_with_backend``, outside the
-        ``optuna_create_storage`` try/except, where the broad handler
-        in ``optuna_create_study`` returns ``None`` (silent HPO skip).
-
-        Bounded tail probe (last ``_OPTUNA_JOURNAL_TAIL_PROBE_BYTES``).
-        Return True iff the file is non-empty AND its trailing record
-        is (a) missing the newline, (b) empty (bare ``\\n``), or
-        (c) not parseable by ``json.loads`` (malformed JSON or
-        invalid UTF-8). Fail-open when the probe window cuts a single
-        line larger than the window; defer to the post-construction
-        handler.
-        """
+        """Detect a deferred-raise hazard at EOF of an Optuna journal log file."""
         if not journal_path.exists():
             return False
         try:
             size = journal_path.stat().st_size
             if size == 0:
                 return False
-            with journal_path.open("rb") as f:
-                f.seek(
-                    max(
-                        0,
-                        size - QuickAdapterRegressorV3._OPTUNA_JOURNAL_TAIL_PROBE_BYTES,
-                    )
-                )
-                tail = f.read()
+            with journal_path.open("rb") as journal_file:
+                probe_bytes = QuickAdapterRegressorV3._OPTUNA_JOURNAL_TAIL_PROBE_BYTES
+                journal_file.seek(max(0, size - probe_bytes))
+                tail = journal_file.read()
+                if not tail.endswith(b"\n"):
+                    return True
+                last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
+                while last_newline == -1 and len(tail) < size:
+                    read_end = size - len(tail)
+                    read_start = max(0, read_end - probe_bytes)
+                    journal_file.seek(read_start)
+                    tail = journal_file.read(read_end - read_start) + tail
+                    last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
         except OSError:
             return False
-        if not tail.endswith(b"\n"):
-            return True
-        last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
         if last_newline == -1:
-            if size > QuickAdapterRegressorV3._OPTUNA_JOURNAL_TAIL_PROBE_BYTES:
-                return False
             last_line = tail[:-1]
+            fail_open_missing_op_code = (
+                size > QuickAdapterRegressorV3._OPTUNA_JOURNAL_TAIL_PROBE_BYTES
+            )
         else:
             last_line = tail[last_newline + 1 : -1]
+            fail_open_missing_op_code = False
         if not last_line:
             return True
         try:
-            json.loads(last_line)
+            record = json.loads(last_line)
         except ValueError:
             return True
-        return False
+        if not isinstance(record, dict):
+            return True
+        op_code = record.get(QuickAdapterRegressorV3._OPTUNA_JOURNAL_OP_CODE_KEY)
+        if op_code is None and fail_open_missing_op_code:
+            return False
+        return (
+            type(op_code) is not int
+            or op_code not in QuickAdapterRegressorV3._OPTUNA_JOURNAL_OPERATION_CODES
+        )
 
     def optuna_create_storage(self, pair: str) -> optuna.storages.BaseStorage:
         storage_dir = self.full_path
@@ -4289,10 +4288,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     ),
                 )
 
-            def _build_journal_storage() -> optuna.storages.JournalStorage:
-                return optuna.storages.JournalStorage(
-                    optuna.storages.journal.JournalFileBackend(str(journal_path))
-                )
+            def _build_journal_storage() -> JournalStorage:
+                return JournalStorage(JournalFileBackend(str(journal_path)))
 
             try:
                 storage = _build_journal_storage()

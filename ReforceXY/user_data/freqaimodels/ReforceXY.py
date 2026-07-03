@@ -16,10 +16,12 @@ from typing import (
     Final,
     List,
     Literal,
+    NamedTuple,
     Optional,
     Tuple,
     Type,
     Union,
+    assert_never,
     cast,
 )
 
@@ -37,6 +39,7 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
 from freqtrade.strategy import timeframe_to_minutes
+from optuna_journal_recovery import create_recovered_journal_storage
 from gymnasium.spaces import Box
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
@@ -46,11 +49,9 @@ from optuna.pruners import BasePruner, HyperbandPruner
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.storages import (
     BaseStorage,
-    JournalStorage,
     RDBStorage,
     RetryFailedTrialCallback,
 )
-from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
@@ -91,6 +92,12 @@ OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
 StorageBackend = Literal["sqlite", "file"]
 SamplerType = Literal["tpe", "auto"]
+
+
+class _Samplers(NamedTuple):
+    tpe: Literal["tpe"] = "tpe"
+    auto: Literal["auto"] = "auto"
+
 
 matplotlib.use("Agg")
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -200,6 +207,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         "DQN",
         "QRDQN",
     )
+    _MODEL_TYPES_SET: Final[frozenset[ModelType]] = frozenset(_MODEL_TYPES)
     _SCHEDULE_TYPES_KNOWN: Final[Tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
     _SCHEDULE_TYPES: Final[Tuple[ScheduleType, ...]] = (
         *_SCHEDULE_TYPES_KNOWN,
@@ -212,6 +220,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         "spike_cancel",
         "retain_previous",
     )
+    _EXIT_POTENTIAL_MODES_SET: Final[frozenset[ExitPotentialMode]] = frozenset(
+        _EXIT_POTENTIAL_MODES
+    )
     _TRANSFORM_FUNCTIONS: Final[Tuple[TransformFunction, ...]] = (
         "tanh",
         "softsign",
@@ -219,6 +230,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         "sigmoid",
         "asinh",
         "clip",
+    )
+    _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(
+        _TRANSFORM_FUNCTIONS
     )
     _EXIT_ATTENUATION_MODES: Final[Tuple[ExitAttenuationMode, ...]] = (
         "legacy",
@@ -248,25 +262,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         "extra_large",
     )
     _STORAGE_BACKENDS: Final[Tuple[StorageBackend, ...]] = ("sqlite", "file")
-    _SAMPLER_TYPES: Final[Tuple[SamplerType, ...]] = ("tpe", "auto")
+    _SAMPLERS: Final[_Samplers] = _Samplers()
     _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
 
     _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
-
-    @staticmethod
-    def _model_types_set() -> set[ModelType]:
-        return set(ReforceXY._MODEL_TYPES)
-
-    @staticmethod
-    def _exit_potential_modes_set() -> set[ExitPotentialMode]:
-        return set(ReforceXY._EXIT_POTENTIAL_MODES)
-
-    @staticmethod
-    def _transform_functions_set() -> set[TransformFunction]:
-        return set(ReforceXY._TRANSFORM_FUNCTIONS)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1348,8 +1350,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         # "file"
         elif storage_backend == ReforceXY._STORAGE_BACKENDS[1]:
-            storage = JournalStorage(
-                JournalFileBackend(f"{storage_dir}/{storage_filename}.log")
+            storage = create_recovered_journal_storage(
+                storage_dir / f"{storage_filename}.log"
             )
         else:
             raise ValueError(
@@ -1369,35 +1371,37 @@ class ReforceXY(BaseReinforcementLearningModel):
             return False
 
     def create_sampler(self) -> BaseSampler:
-        sampler: SamplerType = self.rl_config_optuna.get(
-            "sampler", ReforceXY._SAMPLER_TYPES[0]
-        )  # "tpe"
-        seed = self.rl_config_optuna.get("seed", 42)
-        # "auto"
-        if sampler == ReforceXY._SAMPLER_TYPES[1]:
-            logger.info(
-                "Hyperopt [global]: using AutoSampler (seed=%d)",
-                seed,
-            )
-            return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
-        # "tpe"
-        elif sampler == ReforceXY._SAMPLER_TYPES[0]:
-            logger.info(
-                "Hyperopt [global]: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
-                self.optuna_n_startup_trials,
-                seed,
-            )
-            return TPESampler(
-                n_startup_trials=self.optuna_n_startup_trials,
-                multivariate=True,
-                group=True,
-                seed=seed,
-            )
-        else:
+        sampler_value = self.rl_config_optuna.get("sampler", ReforceXY._SAMPLERS.tpe)
+        if sampler_value not in ReforceXY._SAMPLERS:
             raise ValueError(
-                f"Hyperopt [global]: unsupported sampler '{sampler}'. "
-                f"Valid: {', '.join(ReforceXY._SAMPLER_TYPES)}"
+                f"Hyperopt [global]: unsupported sampler '{sampler_value}'. "
+                f"Valid: {', '.join(ReforceXY._SAMPLERS)}"
             )
+        sampler = cast(SamplerType, sampler_value)
+        seed = self.rl_config_optuna.get("seed", 42)
+        match sampler:
+            case ReforceXY._SAMPLERS.tpe:
+                logger.info(
+                    "Hyperopt [global]: using TPESampler (n_startup_trials=%d, multivariate=True, group=True, seed=%d)",
+                    self.optuna_n_startup_trials,
+                    seed,
+                )
+                return TPESampler(
+                    n_startup_trials=self.optuna_n_startup_trials,
+                    multivariate=True,
+                    group=True,
+                    seed=seed,
+                )
+            case ReforceXY._SAMPLERS.auto:
+                logger.info(
+                    "Hyperopt [global]: using AutoSampler (seed=%d)",
+                    seed,
+                )
+                return optunahub.load_module("samplers/auto_sampler").AutoSampler(
+                    seed=seed
+                )
+            case _:
+                assert_never(sampler)
 
     @staticmethod
     def create_pruner(
@@ -2007,7 +2011,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 "exit_potential_mode", ReforceXY._EXIT_POTENTIAL_MODES[0]
             )  # "canonical"
         )
-        if self._exit_potential_mode not in set(ReforceXY._EXIT_POTENTIAL_MODES):
+        if self._exit_potential_mode not in ReforceXY._EXIT_POTENTIAL_MODES_SET:
             logger.warning(
                 "PBRS [%s]: exit_potential_mode=%r invalid; defaulting to %r. Valid: %s",
                 self.id,
