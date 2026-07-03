@@ -38,7 +38,7 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
 from freqtrade.strategy import timeframe_to_minutes
-from freqaimodels.optuna_journal_recovery import create_recovered_journal_storage
+from optuna_journal_recovery import create_recovered_journal_storage
 from gymnasium.spaces import Box
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
