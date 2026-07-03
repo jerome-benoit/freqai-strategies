@@ -230,6 +230,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _OPTUNA_JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
     _OPTUNA_JOURNAL_RECOVERABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
         KeyError,
+        TypeError,
         ValueError,
         json.JSONDecodeError,
     )
@@ -4172,18 +4173,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         The tag is appended *after* ``.log`` so the live-journal glob
         ``optuna-*.log`` never matches quarantined artefacts. Collisions
         are bounded by ``_OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT``;
-        microsecond UTC stamping makes them practically impossible.
+        exhausted candidates raise instead of reusing a quarantine file.
         """
         stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
         tag = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TAG
-        candidate = journal_path.with_name(f"{journal_path.name}.{tag}-{stamp}")
-        for n in range(
-            1, QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1
-        ):
+        base_name = f"{journal_path.name}.{tag}-{stamp}"
+        limit = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT
+        for index in range(limit + 1):
+            suffix = "" if index == 0 else f"-{index}"
+            candidate = journal_path.with_name(f"{base_name}{suffix}")
             if not candidate.exists():
                 return candidate
-            candidate = journal_path.with_name(f"{journal_path.name}.{tag}-{stamp}-{n}")
-        return candidate
+        raise FileExistsError(journal_path)
 
     @staticmethod
     def _optuna_quarantine_journal(

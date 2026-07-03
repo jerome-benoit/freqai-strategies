@@ -17,6 +17,7 @@ _JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
 _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
 _JOURNAL_RECOVERABLE_ERRORS: Final[type[Exception] | tuple[type[Exception], ...]] = (
     KeyError,
+    TypeError,
     ValueError,
     json.JSONDecodeError,
 )
@@ -95,13 +96,10 @@ def _quarantine_journal(journal_path: Path, cause: Exception) -> Path | None:
 
 def _quarantine_path(journal_path: Path, now: datetime) -> Path:
     stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
-    candidate = journal_path.with_name(
-        f"{journal_path.name}.{_JOURNAL_QUARANTINE_TAG}-{stamp}"
-    )
-    for index in range(1, _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1):
+    base_name = f"{journal_path.name}.{_JOURNAL_QUARANTINE_TAG}-{stamp}"
+    for index in range(_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1):
+        suffix = "" if index == 0 else f"-{index}"
+        candidate = journal_path.with_name(f"{base_name}{suffix}")
         if not candidate.exists():
             return candidate
-        candidate = journal_path.with_name(
-            f"{journal_path.name}.{_JOURNAL_QUARANTINE_TAG}-{stamp}-{index}"
-        )
-    return candidate
+    raise FileExistsError(journal_path)
