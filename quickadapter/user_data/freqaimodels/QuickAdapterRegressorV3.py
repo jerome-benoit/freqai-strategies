@@ -4233,11 +4233,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         Bounded tail probe (last ``_OPTUNA_JOURNAL_TAIL_PROBE_BYTES``).
         Return True iff the file is non-empty AND its trailing record
-        is (a) missing the newline, (b) empty (bare ``\\n``), or
+        is (a) missing the newline, (b) empty (bare ``\\n``),
         (c) not parseable by ``json.loads`` (malformed JSON or
-        invalid UTF-8). Fail-open when the probe window cuts a single
-        line larger than the window; defer to the post-construction
-        handler.
+        invalid UTF-8), or (d) not an Optuna operation record dict
+        containing ``op_code``. Fail-open when the probe window cuts a
+        single line larger than the window; defer to the
+        post-construction handler.
         """
         if not journal_path.exists():
             return False
@@ -4267,10 +4268,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not last_line:
             return True
         try:
-            json.loads(last_line)
+            record = json.loads(last_line)
         except ValueError:
             return True
-        return False
+        return not isinstance(record, dict) or "op_code" not in record
 
     def optuna_create_storage(self, pair: str) -> optuna.storages.BaseStorage:
         storage_dir = self.full_path

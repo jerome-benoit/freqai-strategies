@@ -48,10 +48,10 @@ def journal_has_corrupt_tail(journal_path: Path) -> bool:
     if not last_line:
         return True
     try:
-        json.loads(last_line)
+        record = json.loads(last_line)
     except ValueError:
         return True
-    return False
+    return not isinstance(record, dict) or "op_code" not in record
 
 
 def create_recovered_journal_storage(
