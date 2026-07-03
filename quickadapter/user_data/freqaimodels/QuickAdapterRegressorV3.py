@@ -36,6 +36,8 @@ from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 from optuna.study.study import ObjectiveFuncType
 from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.preprocessing import (
@@ -4289,10 +4291,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     ),
                 )
 
-            def _build_journal_storage() -> optuna.storages.JournalStorage:
-                return optuna.storages.JournalStorage(
-                    optuna.storages.journal.JournalFileBackend(str(journal_path))
-                )
+            def _build_journal_storage() -> JournalStorage:
+                return JournalStorage(JournalFileBackend(str(journal_path)))
 
             try:
                 storage = _build_journal_storage()
