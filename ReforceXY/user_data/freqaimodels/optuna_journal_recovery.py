@@ -15,8 +15,11 @@ logger = logging.getLogger(__name__)
 JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
 _JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
 _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
+_JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
+_JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
 _JOURNAL_RECOVERABLE_ERRORS: Final[type[Exception] | tuple[type[Exception], ...]] = (
     KeyError,
+    AssertionError,
     TypeError,
     ValueError,
     json.JSONDecodeError,
@@ -34,25 +37,36 @@ def journal_has_corrupt_tail(journal_path: Path) -> bool:
         with journal_path.open("rb") as journal_file:
             journal_file.seek(max(0, size - JOURNAL_TAIL_PROBE_BYTES))
             tail = journal_file.read()
+            if not tail.endswith(b"\n"):
+                return True
+            last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
+            while last_newline == -1 and len(tail) < size:
+                read_end = size - len(tail)
+                read_start = max(0, read_end - JOURNAL_TAIL_PROBE_BYTES)
+                journal_file.seek(read_start)
+                tail = journal_file.read(read_end - read_start) + tail
+                last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
     except OSError:
         return False
 
-    last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
-    if not tail.endswith(b"\n"):
-        return True
-    if last_newline == -1 and size > JOURNAL_TAIL_PROBE_BYTES:
-        return False
     if last_newline == -1:
         last_line = tail[:-1]
+        fail_open_missing_op_code = size > JOURNAL_TAIL_PROBE_BYTES
     else:
         last_line = tail[last_newline + 1 : -1]
+        fail_open_missing_op_code = False
     if not last_line:
         return True
     try:
         record = json.loads(last_line)
     except ValueError:
         return True
-    return not isinstance(record, dict) or "op_code" not in record
+    if not isinstance(record, dict):
+        return True
+    op_code = record.get(_JOURNAL_OP_CODE_KEY)
+    if op_code is None and fail_open_missing_op_code:
+        return False
+    return type(op_code) is not int or op_code not in _JOURNAL_OPERATION_CODES
 
 
 def create_recovered_journal_storage(
