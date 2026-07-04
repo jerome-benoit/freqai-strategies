@@ -7,6 +7,7 @@ import time
 import warnings
 from collections import defaultdict, deque
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
@@ -39,7 +40,6 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
 from freqtrade.strategy import timeframe_to_minutes
-from optuna_journal_recovery import create_recovered_journal_storage
 from gymnasium.spaces import Box
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
@@ -49,9 +49,11 @@ from optuna.pruners import BasePruner, HyperbandPruner
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.storages import (
     BaseStorage,
+    JournalStorage,
     RDBStorage,
     RetryFailedTrialCallback,
 )
+from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
@@ -92,6 +94,7 @@ OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
 StorageBackend = Literal["sqlite", "file"]
 SamplerType = Literal["tpe", "auto"]
+_StorageFactory = Callable[[Path], JournalStorage]
 
 
 class _Samplers(NamedTuple):
@@ -263,6 +266,20 @@ class ReforceXY(BaseReinforcementLearningModel):
     )
     _STORAGE_BACKENDS: Final[Tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLERS: Final[_Samplers] = _Samplers()
+    _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
+    _JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
+    _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
+    _JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
+    _JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
+    _JOURNAL_RECOVERABLE_ERRORS: Final[
+        type[Exception] | tuple[type[Exception], ...]
+    ] = (
+        KeyError,
+        AssertionError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    )
     _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -1332,6 +1349,103 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._save_optuna_retrain_counters(counters, pair)
         return pair_count
 
+    @staticmethod
+    def _journal_has_corrupt_tail(journal_path: Path) -> bool:
+        try:
+            if not journal_path.exists():
+                return False
+            size = journal_path.stat().st_size
+            if size == 0:
+                return False
+            with journal_path.open("rb") as journal_file:
+                journal_file.seek(max(0, size - ReforceXY._JOURNAL_TAIL_PROBE_BYTES))
+                tail = journal_file.read()
+                if not tail.endswith(b"\n"):
+                    return True
+                last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
+                while last_newline == -1 and len(tail) < size:
+                    read_end = size - len(tail)
+                    read_start = max(0, read_end - ReforceXY._JOURNAL_TAIL_PROBE_BYTES)
+                    journal_file.seek(read_start)
+                    tail = journal_file.read(read_end - read_start) + tail
+                    last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
+        except OSError:
+            return False
+
+        if last_newline == -1:
+            last_line = tail[:-1]
+            fail_open_missing_op_code = size > ReforceXY._JOURNAL_TAIL_PROBE_BYTES
+        else:
+            last_line = tail[last_newline + 1 : -1]
+            fail_open_missing_op_code = False
+        if not last_line:
+            return True
+        try:
+            record = json.loads(last_line)
+        except ValueError:
+            return True
+        if not isinstance(record, dict):
+            return True
+        op_code = record.get(ReforceXY._JOURNAL_OP_CODE_KEY)
+        if op_code is None and fail_open_missing_op_code:
+            return False
+        return (
+            type(op_code) is not int
+            or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
+        )
+
+    @staticmethod
+    def _create_recovered_journal_storage(
+        journal_path: Path,
+        storage_factory: _StorageFactory | None = None,
+    ) -> JournalStorage:
+        build_storage = storage_factory or ReforceXY._create_journal_storage
+        if ReforceXY._journal_has_corrupt_tail(journal_path):
+            ReforceXY._quarantine_journal(
+                journal_path,
+                ValueError("trailing journal record is truncated or malformed JSON"),
+            )
+            journal_path.touch()
+        try:
+            return build_storage(journal_path)
+        except ReforceXY._JOURNAL_RECOVERABLE_ERRORS as exc:
+            quarantined_path = ReforceXY._quarantine_journal(journal_path, exc)
+            if quarantined_path is None:
+                raise
+            journal_path.touch()
+            return build_storage(journal_path)
+
+    @staticmethod
+    def _create_journal_storage(journal_path: Path) -> JournalStorage:
+        return JournalStorage(JournalFileBackend(str(journal_path)))
+
+    @staticmethod
+    def _quarantine_journal(journal_path: Path, cause: Exception) -> Path | None:
+        if not journal_path.exists():
+            return None
+        quarantine_path = ReforceXY._quarantine_path(
+            journal_path, datetime.now(timezone.utc)
+        )
+        journal_path.rename(quarantine_path)
+        logger.warning(
+            "Optuna journal %s corrupt (%r); quarantined to %s; resuming with fresh journal",
+            journal_path.name,
+            cause,
+            quarantine_path.name,
+        )
+        return quarantine_path
+
+    @staticmethod
+    def _quarantine_path(journal_path: Path, now: datetime) -> Path:
+        stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
+        base_name = f"{journal_path.name}.{ReforceXY._JOURNAL_QUARANTINE_TAG}-{stamp}"
+        for index in range(ReforceXY._JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1):
+            suffix = "" if index == 0 else f"-{index}"
+            candidate = journal_path.with_name(f"{base_name}{suffix}")
+            if not candidate.exists():
+                return candidate
+        raise FileExistsError(journal_path)
+
     def create_storage(self, pair: str) -> BaseStorage:
         """
         Get the storage for Optuna
@@ -1350,7 +1464,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         # "file"
         elif storage_backend == ReforceXY._STORAGE_BACKENDS[1]:
-            storage = create_recovered_journal_storage(
+            storage = self._create_recovered_journal_storage(
                 storage_dir / f"{storage_filename}.log"
             )
         else:
