@@ -1365,9 +1365,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
                 while last_newline == -1 and len(tail) < size:
                     read_end = size - len(tail)
-                    read_start = max(
-                        0, read_end - ReforceXY._JOURNAL_TAIL_PROBE_BYTES
-                    )
+                    read_start = max(0, read_end - ReforceXY._JOURNAL_TAIL_PROBE_BYTES)
                     journal_file.seek(read_start)
                     tail = journal_file.read(read_end - read_start) + tail
                     last_newline = tail.rfind(b"\n", 0, len(tail) - 1)
@@ -1391,7 +1389,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         op_code = record.get(ReforceXY._JOURNAL_OP_CODE_KEY)
         if op_code is None and fail_open_missing_op_code:
             return False
-        return type(op_code) is not int or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
+        return (
+            type(op_code) is not int
+            or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
+        )
 
     @staticmethod
     def _create_recovered_journal_storage(
