@@ -1464,7 +1464,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         # "file"
         elif storage_backend == ReforceXY._STORAGE_BACKENDS[1]:
-            storage = self._create_recovered_journal_storage(
+            storage = ReforceXY._create_recovered_journal_storage(
                 storage_dir / f"{storage_filename}.log"
             )
         else:
@@ -2390,7 +2390,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         duration_multiplier = 1.0
         if risk_reward_ratio is not None:
-            duration_multiplier = self._loss_duration_multiplier(
+            duration_multiplier = MyRLEnv._loss_duration_multiplier(
                 pnl_ratio,
                 risk_reward_ratio,
             )

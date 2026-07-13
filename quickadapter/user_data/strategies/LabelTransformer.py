@@ -403,7 +403,7 @@ class LabelTransformer(BaseTransform):
         if method == STANDARDIZATION_TYPES[0]:  # none
             return values
         if method == STANDARDIZATION_TYPES[3]:  # mmad
-            return self._apply_mmad(
+            return LabelTransformer._apply_mmad(
                 values,
                 mask,
                 state.median,
@@ -421,7 +421,7 @@ class LabelTransformer(BaseTransform):
         scaler = getattr(state, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr} not fitted")
-        return self._apply_scaler(values, mask, scaler, inverse=inverse)
+        return LabelTransformer._apply_scaler(values, mask, scaler, inverse=inverse)
 
     def _normalize(
         self,
@@ -432,7 +432,7 @@ class LabelTransformer(BaseTransform):
     ) -> NDArray[np.floating]:
         method = state.config["normalization"]
         if method == NORMALIZATION_TYPES[2]:  # sigmoid
-            return self._apply_sigmoid(
+            return LabelTransformer._apply_sigmoid(
                 values, mask, state.config["sigmoid_scale"], inverse=inverse
             )
         if method == NORMALIZATION_TYPES[3]:  # none
@@ -447,7 +447,7 @@ class LabelTransformer(BaseTransform):
         scaler = getattr(state, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr} not fitted")
-        return self._apply_scaler(values, mask, scaler, inverse=inverse)
+        return LabelTransformer._apply_scaler(values, mask, scaler, inverse=inverse)
 
     def _fit_standardization(
         self, values: NDArray[np.floating], state: _ColumnState
@@ -538,7 +538,7 @@ class LabelTransformer(BaseTransform):
         mask = np.isfinite(values)
 
         if inverse:
-            degamma = self._apply_gamma(
+            degamma = LabelTransformer._apply_gamma(
                 values, mask, state.config["gamma"], inverse=True
             )
             denorm = self._normalize(degamma, mask, state, inverse=True)
@@ -546,7 +546,7 @@ class LabelTransformer(BaseTransform):
         else:
             standardized = self._standardize(values, mask, state, inverse=False)
             normalized = self._normalize(standardized, mask, state, inverse=False)
-            return self._apply_gamma(
+            return LabelTransformer._apply_gamma(
                 normalized, mask, state.config["gamma"], inverse=False
             )
 
