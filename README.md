@@ -146,6 +146,14 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.min_resource                            | 3                             | int >= 1                                                                                                                                                                                                     | Minimum resource per [HyperbandPruner](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.pruners.HyperbandPruner.html) rung.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | freqai.optuna_hyperopt.seed                                    | 1                             | int >= 0                                                                                                                                                                                                     | HPO RNG seed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
+### Partial exit execution
+
+QuickAdapter advances a take-profit stage only after the tagged exit quantity is
+fully filled. Open, rejected, expired, or unfilled cancelled orders do not commit
+the stage. When an order is partially filled and then cancelled, the next position
+adjustment retries only the unfilled quantity. Progress is reconstructed from the
+orders persisted by Freqtrade, including after a bot restart.
+
 ## ReforceXY
 
 ### Quick start

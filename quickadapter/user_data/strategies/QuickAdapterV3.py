@@ -30,6 +30,7 @@ from LabelTransformer import (
 )
 from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
+from TakeProfitStageManager import TakeProfitStageManager
 from technical.pivots_points import pivots_points
 
 from Utils import (
@@ -1259,16 +1260,19 @@ class QuickAdapterV3(IStrategy):
             )
         return trade_price_target_method_fn()
 
-    @staticmethod
-    def get_trade_exit_stage(trade: Trade) -> int:
-        n_open_orders = 0
-        if trade.has_open_orders:
-            n_open_orders = sum(
-                1
-                for open_order in trade.open_orders
-                if open_order.side == ("buy" if trade.is_short else "sell")
-            )
-        return trade.nr_of_successful_exits + n_open_orders
+    @classmethod
+    def get_partial_exit_stake_fractions(cls) -> dict[int, float]:
+        return {
+            stage: stage_config[1]
+            for stage, stage_config in cls.partial_exit_stages.items()
+        }
+
+    @classmethod
+    def get_trade_exit_stage(cls, trade: Trade) -> int:
+        return TakeProfitStageManager.get_exit_stage(
+            trade,
+            cls.get_partial_exit_stake_fractions(),
+        )
 
     @staticmethod
     @lru_cache(maxsize=128)
@@ -1299,7 +1303,8 @@ class QuickAdapterV3(IStrategy):
                 trade.pair, natr_multiplier_fraction
             )
             * QuickAdapterV3.get_stoploss_factor(
-                trade_duration_candles + int(round(trade.nr_of_successful_exits**1.5))
+                trade_duration_candles
+                + int(round(QuickAdapterV3.get_trade_exit_stage(trade) ** 1.5))
             )
         )
 
@@ -1565,7 +1570,19 @@ class QuickAdapterV3(IStrategy):
             trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][
                 1
             ]
-            trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
+            stage_progress = TakeProfitStageManager.get_stage_progress(
+                trade,
+                trade_exit_stage,
+                trade_stake_percent,
+            )
+            trade_partial_stake_amount = (
+                TakeProfitStageManager.get_remaining_stake_amount(
+                    trade,
+                    stage_progress,
+                )
+            )
+            if trade_partial_stake_amount <= 0.0:
+                return None
             remaining_stake_amount = trade.stake_amount - trade_partial_stake_amount
             if remaining_stake_amount < min_stake:
                 initial_trade_partial_stake_amount = trade_partial_stake_amount
@@ -1576,7 +1593,10 @@ class QuickAdapterV3(IStrategy):
                 )
             return (
                 -trade_partial_stake_amount,
-                f"take_profit_{trade.trade_direction}_{trade_exit_stage}",
+                TakeProfitStageManager.order_tag(
+                    trade.trade_direction,
+                    trade_exit_stage,
+                ),
             )
 
         return None
@@ -2187,7 +2207,10 @@ class QuickAdapterV3(IStrategy):
             )
 
         if trade_exit:
-            return f"take_profit_{trade.trade_direction}_{trade_exit_stage}"
+            return TakeProfitStageManager.order_tag(
+                trade.trade_direction,
+                trade_exit_stage,
+            )
 
         return None
 
