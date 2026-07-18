@@ -154,33 +154,50 @@ from terminal Freqtrade orders that can be linked to a specific take-profit
 attempt. The persisted plan includes every partial fraction and NATR trigger, so
 an open trade cannot silently switch execution plans after a deployment. Targets
 remain immutable: terminal partial fills credit only their observed net base
-amount, while a base amount that deterministically rounds to zero is carried FIFO
-to a later threshold. Exchange minimum hints never mutate the ledger; Freqtrade's
-final exit validation remains authoritative.
+amount. Quantity rounding and exchange minimum checks happen before submission;
+non-executable partial stages are carried FIFO to a later threshold and ultimately
+to the final exit. Live and dry-run checks conservatively account for the exit
+price, leverage, amount reserve, and stoploss reserve used by Freqtrade.
 Legacy emergency orders and recovered untagged orders are accepted only when
 their relationship to an attempt is unique.
+Schema v4 states migrate automatically to v5. Because the former callbacks could
+fail open, every surviving v4 `proposed` attempt becomes `ambiguous` and requires
+an exact tagged order or the operator recovery procedure below.
 
 `unfilledtimeout.exit_timeout_count` must be `0`; QuickAdapter is the sole owner of
-partial-exit retries, and `order_types.exit` must be `limit` because Freqtrade has
-no equivalent pre-submission callback for partial market exits. A strict zero-fill
-outcome is retried automatically only when its persisted status is `rejected` or
-`expired`, its remaining amount equals the order amount, it has no base fee, and
-it has no fill timestamp. `canceled` and `cancelled` always require operator
-verification:
+partial-exit retries. Partial attempts are persisted as `submitting` before the
+position-adjustment callback can reach the exchange. Final attempts remain local
+proposals until `confirm_trade_exit`; their confirmation returns `false` on every
+state persistence failure. Take-profit limit and market exits therefore use the
+same durable submission protocol. A strict zero-fill outcome is retried
+automatically only when its persisted status is `rejected` or `expired`, its
+remaining amount equals
+the order amount, it has no base fee, and it has no fill timestamp. `canceled` and
+`cancelled` always require operator verification:
 Freqtrade can synthesize a canceled response when cancellation and order retrieval
 both fail. A lost CEX response, foreign filled exit, or filled stoploss also fails
-closed instead of risking a duplicate reduction. Open stoploss orders without
-partial-fill evidence remain protective and do not affect the take-profit ledger. If
-`stoploss_on_exchange` is enabled, an uncertain canceled stoploss requires the same
-operator verification before take-profit resumes.
+closed instead of risking a duplicate reduction.
+
+`order_types.stoploss_on_exchange` must be `false`. Freqtrade 2026.6 and 2026.7-dev do
+not persist enough cancellation provenance for the strategy to distinguish a
+confirmed stoploss cancellation from a synthetic canceled response. Before
+deploying this version to an existing bot, stop the bot, cancel or reconcile every
+remaining CEX stoploss order, verify the position on the exchange, set the option
+to `false`, and only then restart.
 
 The ledger derives initial exposure from terminal entry fills, applies Freqtrade's
-amount precision, and requires current trade exposure to equal entries minus
-credited take-profit fills. The logical take-profit stage also drives stoploss
-tightening, so multiple fills or retries within one stage cannot tighten it more
-than once. Discretionary exits are denied while reconciliation is pending or a
-non-stoploss order remains open; stoploss, trailing stoploss, emergency exit, and
-force exit remain available.
+amount precision, and separates two concerns. Every validated terminal strategy
+exit reduces exposure, but only causally attributed take-profit fills advance the
+take-profit stages. A discretionary exit that is partially filled therefore leaves
+the stage unchanged and can be reevaluated normally instead of permanently
+blocking the trade. Freqtrade's full-exit wallet fallback is recorded as a bounded,
+audited exposure adjustment; a later canonical fill retires that adjustment when
+Freqtrade recalculates the amount from orders. The logical take-profit stage also
+drives stoploss tightening, so multiple fills or retries within one stage cannot
+tighten it more than once. Discretionary exits are denied while reconciliation is
+pending or an order remains open; stoploss, trailing stoploss, emergency exit, and
+force exit remain available. Their full-exit wallet fallback is audited when
+possible, but an audit failure never denies these safety exits.
 
 An ambiguous submission can be cleared only after checking the CEX order history
 for the complete attempt window. Stop the bot, inspect the state, then use the
@@ -201,11 +218,14 @@ docker compose -f quickadapter/docker-compose.yml start freqtrade
 ```
 
 The clear command is unavailable until the persisted recovery deadline. `inspect`
-reports current and expected exposure, their delta, immutable stage targets,
-credits, deferred stages, attributed orders, and operator proofs. For an
-`unknown_terminal_fill` block with a verified positive fill, first correct both
-the canonical Freqtrade order and trade accounting from exchange data. Then
-revalidate that exact order:
+does not modify take-profit data. It initializes Freqtrade persistence like other
+database clients and may create or migrate supported database schema objects.
+It reports current and expected exposure, their delta, take-profit and
+non-take-profit credits, active or retired wallet adjustments, immutable stage
+targets, deferred stages, attributed orders, and operator proofs. For an
+`unknown_terminal_fill` or `unattributed_exit_fill` block with a verified positive
+fill, first correct the canonical Freqtrade order, its exit tag, and trade
+accounting from exchange data. Then revalidate that exact order:
 
 ```shell
 docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \

@@ -18,6 +18,7 @@ from typing import (
 import numpy as np
 import pandas_ta as pta
 import talib.abstract as ta
+from freqtrade.constants import DEFAULT_AMOUNT_RESERVE_PERCENT
 from freqtrade.exchange import (
     amount_to_contract_precision,
     timeframe_to_minutes,
@@ -26,6 +27,7 @@ from freqtrade.exchange import (
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
+from freqtrade.util import FtPrecise
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
@@ -456,10 +458,10 @@ class QuickAdapterV3(IStrategy):
                 "QuickAdapter requires unfilledtimeout.exit_timeout_count = 0 "
                 "so one component owns partial-exit retries"
             )
-        if self.order_types.get("exit", "limit") != "limit":
+        if self.order_types.get("stoploss_on_exchange", False):
             raise ValueError(
-                "QuickAdapter requires limit exit orders so custom_exit_price can "
-                "persist the take-profit submission boundary"
+                "QuickAdapter does not support stoploss_on_exchange because "
+                "Freqtrade does not expose trustworthy stoploss cancellation provenance"
             )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
@@ -1337,10 +1339,19 @@ class QuickAdapterV3(IStrategy):
         trade: Trade,
         state: TakeProfitStageState,
     ) -> None:
-        trade.set_custom_data(cls._TAKE_PROFIT_STATE_KEY, state.to_mapping())
+        payload = state.to_mapping()
+        trade.set_custom_data(cls._TAKE_PROFIT_STATE_KEY, payload)
+        persisted_payload = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
+        if persisted_payload != payload:
+            raise RuntimeError("Take-profit state persistence verification failed")
 
     @classmethod
-    def _get_take_profit_state(cls, trade: Trade) -> Optional[TakeProfitStageState]:
+    def _load_take_profit_state(
+        cls,
+        trade: Trade,
+        *,
+        validate_trade_amount_on_initialize: bool = True,
+    ) -> Optional[tuple[TakeProfitStageState, int]]:
         amount_quantizer = partial(cls._quantize_trade_amount, trade)
         raw_state = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
         if raw_state is None:
@@ -1349,6 +1360,7 @@ class QuickAdapterV3(IStrategy):
                     trade,
                     cls.get_take_profit_plan_signature(),
                     amount_quantizer=amount_quantizer,
+                    validate_trade_amount=validate_trade_amount_on_initialize,
                 )
             except ValueError as error:
                 logger.error(
@@ -1358,13 +1370,17 @@ class QuickAdapterV3(IStrategy):
                 return None
             if state.blocked_reason == "open_entry_order":
                 return None
-            cls._save_take_profit_state(trade, state)
-            if state.blocked_reason is not None:
-                cls._log_take_profit_block(trade, state)
+            source_version = TakeProfitStageState.SCHEMA_VERSION
         else:
             try:
                 if not isinstance(raw_state, dict):
                     raise ValueError("Take-profit state must be a mapping")
+                source_version = raw_state.get("version")
+                if isinstance(source_version, bool) or not isinstance(
+                    source_version,
+                    int,
+                ):
+                    raise ValueError("Take-profit state version must be an integer")
                 state = TakeProfitStageState.from_mapping(raw_state)
             except ValueError as error:
                 logger.error(
@@ -1382,17 +1398,32 @@ class QuickAdapterV3(IStrategy):
             )
             return None
 
-        reconciled_state = TakeProfitStageManager.reconcile(
+        return state, source_version
+
+    @classmethod
+    def _get_take_profit_state(cls, trade: Trade) -> Optional[TakeProfitStageState]:
+        loaded_state = cls._load_take_profit_state(trade)
+        if loaded_state is None:
+            return None
+        state, source_version = loaded_state
+        amount_quantizer = partial(cls._quantize_trade_amount, trade)
+
+        reconciled_state = TakeProfitStageManager.reconcile_migrated_state(
             trade,
             state,
+            source_version,
             amount_quantizer=amount_quantizer,
         )
-        if reconciled_state != state:
+        was_unpersisted = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY) is None
+        if (
+            source_version != TakeProfitStageState.SCHEMA_VERSION
+            or reconciled_state != state
+            or was_unpersisted
+        ):
             cls._save_take_profit_state(trade, reconciled_state)
             if (
-                state.blocked_reason is None
-                and reconciled_state.blocked_reason is not None
-            ):
+                was_unpersisted or state.blocked_reason is None
+            ) and reconciled_state.blocked_reason is not None:
                 cls._log_take_profit_block(trade, reconciled_state)
         return reconciled_state
 
@@ -1722,6 +1753,64 @@ class QuickAdapterV3(IStrategy):
             f"Deferring non-executable take-profit remainder: {reason}"
         )
 
+    @staticmethod
+    def _position_adjustment_amount(
+        trade: Trade,
+        stake_amount: float,
+    ) -> float:
+        amount = abs(
+            float(
+                FtPrecise(stake_amount)
+                * FtPrecise(trade.amount)
+                / FtPrecise(trade.stake_amount)
+            )
+        )
+        return QuickAdapterV3._quantize_trade_amount(trade, amount)
+
+    def _uses_live_exit_minimums(self) -> bool:
+        runmode = self.config.get("runmode")
+        return getattr(runmode, "value", runmode) in {"live", "dry_run"}
+
+    def _effective_exit_min_stake(
+        self,
+        min_stake: Optional[float],
+        current_entry_rate: float,
+        current_exit_rate: float,
+    ) -> Optional[float]:
+        if min_stake is None or min_stake == 0.0:
+            return None
+        if (
+            not math.isfinite(min_stake)
+            or min_stake < 0.0
+            or not math.isfinite(current_entry_rate)
+            or current_entry_rate <= 0.0
+            or not math.isfinite(current_exit_rate)
+            or current_exit_rate <= 0.0
+        ):
+            raise ValueError("Invalid take-profit minimum-stake inputs")
+
+        if not self._uses_live_exit_minimums():
+            return min_stake
+
+        margin_reserve = 1.0 + float(
+            self.config.get(
+                "amount_reserve_percent",
+                DEFAULT_AMOUNT_RESERVE_PERCENT,
+            )
+        )
+        if not math.isfinite(margin_reserve) or margin_reserve <= 0.0:
+            raise ValueError("Invalid amount_reserve_percent")
+        stoploss = abs(float(self.stoploss))
+        if not math.isfinite(stoploss) or stoploss > 1.0:
+            raise ValueError("Invalid stoploss")
+        stoploss_reserve = margin_reserve / (1.0 - stoploss) if stoploss != 1.0 else 1.5
+        stoploss_reserve = max(1.0, min(stoploss_reserve, 1.5))
+        return min_stake * max(
+            1.0,
+            current_exit_rate / current_entry_rate,
+            stoploss_reserve / margin_reserve,
+        )
+
     def adjust_trade_position(
         self,
         trade: Trade,
@@ -1831,18 +1920,88 @@ class QuickAdapterV3(IStrategy):
             adjustment_stake_amount = (
                 requested_amount * trade.stake_amount / trade.amount
             )
+            executable_amount = QuickAdapterV3._position_adjustment_amount(
+                trade,
+                adjustment_stake_amount,
+            )
+            if executable_amount <= 0.0:
+                QuickAdapterV3._defer_take_profit_stage(
+                    trade,
+                    take_profit_state,
+                    take_profit_stage,
+                    "Freqtrade quantity rounds to zero",
+                )
+                return None
+            if executable_amount > trade.amount and not math.isclose(
+                executable_amount,
+                trade.amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            ):
+                QuickAdapterV3._defer_take_profit_stage(
+                    trade,
+                    take_profit_state,
+                    take_profit_stage,
+                    "Freqtrade quantity exceeds the remaining trade amount",
+                )
+                return None
+            try:
+                effective_min_stake = self._effective_exit_min_stake(
+                    min_stake,
+                    current_entry_rate,
+                    current_exit_rate,
+                )
+            except (TypeError, ValueError, OverflowError) as error:
+                logger.warning(
+                    f"[{pair}] Cannot validate take-profit stage {take_profit_stage} "
+                    f"against exchange minimums: {error}"
+                )
+                return None
+            leverage = float(trade.leverage)
+            if not math.isfinite(leverage) or leverage <= 0.0:
+                return None
+            minimum_leverage = leverage if self._uses_live_exit_minimums() else 1.0
+            outgoing_stake = executable_amount * current_exit_rate / minimum_leverage
+            remaining_stake = (trade.amount - executable_amount) * current_exit_rate
+            if effective_min_stake is not None and outgoing_stake < effective_min_stake:
+                QuickAdapterV3._defer_take_profit_stage(
+                    trade,
+                    take_profit_state,
+                    take_profit_stage,
+                    f"exit stake {outgoing_stake} is below {effective_min_stake}",
+                )
+                return None
+            if (
+                effective_min_stake is not None
+                and remaining_stake != 0.0
+                and remaining_stake < effective_min_stake
+            ):
+                QuickAdapterV3._defer_take_profit_stage(
+                    trade,
+                    take_profit_state,
+                    take_profit_stage,
+                    f"remaining stake {remaining_stake} is below {effective_min_stake}",
+                )
+                return None
             take_profit_state = TakeProfitStageManager.start_attempt(
                 trade,
                 take_profit_state,
                 stage=take_profit_stage,
-                amount=requested_amount,
+                amount=executable_amount,
                 stake_amount=adjustment_stake_amount,
                 attempt_id=uuid.uuid4().hex,
-                status="proposed",
+                status="submitting",
                 current_time=current_time,
                 recovery_deadline=self._get_take_profit_recovery_deadline(current_time),
             )
-            QuickAdapterV3._save_take_profit_state(trade, take_profit_state)
+            try:
+                QuickAdapterV3._save_take_profit_state(trade, take_profit_state)
+            except Exception:
+                logger.exception(
+                    f"[{pair}] Take-profit stage {take_profit_stage} was not "
+                    "submitted because its execution state could not be persisted"
+                )
+                return None
             active_attempt = take_profit_state.active_attempt
             if active_attempt is None:
                 return None
@@ -1863,22 +2022,6 @@ class QuickAdapterV3(IStrategy):
         exit_tag: Optional[str],
         **kwargs,
     ) -> float:
-        take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
-        if take_profit_state is None:
-            return proposed_rate
-        active_attempt = take_profit_state.active_attempt
-        if (
-            active_attempt is not None
-            and active_attempt.stage in QuickAdapterV3.partial_exit_stages
-            and exit_tag == active_attempt.tag
-        ):
-            submitting_state = TakeProfitStageManager.mark_submitting(
-                take_profit_state,
-                active_attempt.attempt_id,
-                current_time,
-            )
-            if submitting_state != take_profit_state:
-                QuickAdapterV3._save_take_profit_state(trade, submitting_state)
         return proposed_rate
 
     @staticmethod
@@ -2552,86 +2695,144 @@ class QuickAdapterV3(IStrategy):
         **kwargs,
     ) -> bool:
         parsed_tag = TakeProfitStageManager.parse_order_tag(exit_reason)
-        if parsed_tag is None:
-            if TakeProfitStageManager.has_order_tag_prefix(exit_reason):
+        malformed_take_profit_tag = (
+            parsed_tag is None
+            and TakeProfitStageManager.has_order_tag_prefix(exit_reason)
+        )
+        safety_exit = (
+            exit_reason in QuickAdapterV3._PROTECTIVE_EXIT_REASONS
+            or exit_reason in QuickAdapterV3._OPERATOR_EXIT_REASONS
+        )
+
+        try:
+            loaded_state = QuickAdapterV3._load_take_profit_state(
+                trade,
+                validate_trade_amount_on_initialize=False,
+            )
+            if loaded_state is None:
+                if safety_exit:
+                    logger.warning(
+                        f"[{pair}] Allowing safety exit {exit_reason!r} for trade "
+                        f"{trade.id} without a loadable take-profit audit state"
+                    )
+                    return True
+                return False
+            take_profit_state, source_version = loaded_state
+            take_profit_state = TakeProfitStageManager.prepare_migrated_state(
+                take_profit_state,
+                source_version,
+            )
+            active_attempt = take_profit_state.active_attempt
+            adjustment_id = (
+                active_attempt.attempt_id
+                if active_attempt is not None
+                and active_attempt.status == "proposed"
+                and active_attempt.tag == exit_reason
+                else uuid.uuid4().hex
+            )
+            trading_mode = getattr(self, "config", {}).get(
+                "trading_mode",
+                "spot",
+            )
+            trading_mode_value = getattr(trading_mode, "value", trading_mode)
+            take_profit_state = TakeProfitStageManager.reconcile_for_exit_confirmation(
+                trade,
+                take_profit_state,
+                confirmed_amount=amount,
+                exit_reason=exit_reason,
+                adjustment_id=adjustment_id,
+                current_time=current_time,
+                allow_wallet_adjustment=trading_mode_value != "futures",
+                amount_quantizer=partial(
+                    QuickAdapterV3._quantize_trade_amount,
+                    trade,
+                ),
+            )
+
+            allowed = False
+            if take_profit_state.blocked_reason is not None:
+                QuickAdapterV3._log_take_profit_block(trade, take_profit_state)
+                allowed = safety_exit
+            elif safety_exit:
+                allowed = True
+            elif malformed_take_profit_tag:
                 logger.error(
                     f"[{pair}] Denied malformed take-profit exit tag "
                     f"{exit_reason!r} for trade {trade.id}"
                 )
-                return False
-            if exit_reason in QuickAdapterV3._PROTECTIVE_EXIT_REASONS:
-                return True
-
-            take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
-            if exit_reason in QuickAdapterV3._OPERATOR_EXIT_REASONS:
-                if not QuickAdapterV3._allows_discretionary_exit(
+            elif parsed_tag is None:
+                allowed = QuickAdapterV3._allows_discretionary_exit(
                     trade,
                     take_profit_state,
-                ):
+                )
+                if not allowed:
                     logger.warning(
-                        f"[{pair}] Allowing operator safety exit {exit_reason!r} for "
+                        f"[{pair}] Denied discretionary exit {exit_reason!r} for "
                         f"trade {trade.id} while take-profit execution is not idle"
                     )
-                return True
-            if not QuickAdapterV3._allows_discretionary_exit(
-                trade,
-                take_profit_state,
-            ):
-                logger.warning(
-                    f"[{pair}] Denied discretionary exit {exit_reason!r} for trade "
-                    f"{trade.id} while take-profit execution is not idle"
+            elif trade.has_open_orders:
+                logger.error(
+                    f"[{pair}] Denied take-profit exit tag {exit_reason!r} for "
+                    f"trade {trade.id} while another order is open"
                 )
-                return False
-            return True
-        take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
-        if take_profit_state is None or take_profit_state.blocked_reason is not None:
-            return False
-        if trade.has_open_orders:
-            logger.error(
-                f"[{pair}] Denied take-profit exit tag {exit_reason!r} for trade "
-                f"{trade.id} while another order is open"
-            )
-            return False
-        active_attempt = take_profit_state.active_attempt
-        final_stage = take_profit_state.plan_signature.final_stage.stage
-        if active_attempt is None or (
-            active_attempt.stage != final_stage
-            or active_attempt.tag != exit_reason
-            or active_attempt.exit_side != trade.exit_side
-            or parsed_tag
-            != (
-                trade.trade_direction,
-                final_stage,
-                active_attempt.attempt_id,
-            )
-        ):
-            logger.error(
-                f"[{pair}] Denied untracked take-profit exit tag {exit_reason!r} "
-                f"for trade {trade.id}"
-            )
-            return False
+            else:
+                active_attempt = take_profit_state.active_attempt
+                final_stage = take_profit_state.plan_signature.final_stage.stage
+                if active_attempt is None or (
+                    active_attempt.status != "proposed"
+                    or active_attempt.stage != final_stage
+                    or active_attempt.tag != exit_reason
+                    or active_attempt.exit_side != trade.exit_side
+                    or parsed_tag
+                    != (
+                        trade.trade_direction,
+                        final_stage,
+                        active_attempt.attempt_id,
+                    )
+                ):
+                    logger.error(
+                        f"[{pair}] Denied untracked take-profit exit tag "
+                        f"{exit_reason!r} for trade {trade.id}"
+                    )
+                elif (
+                    not math.isfinite(amount)
+                    or amount <= 0.0
+                    or trade.amount <= 0.0
+                    or trade.stake_amount <= 0.0
+                ):
+                    logger.error(
+                        f"[{pair}] Denied take-profit exit tag {exit_reason!r} for "
+                        f"trade {trade.id} with invalid exposure"
+                    )
+                else:
+                    stake_amount = amount * trade.stake_amount / trade.amount
+                    take_profit_state = TakeProfitStageManager.update_attempt_amount(
+                        take_profit_state,
+                        active_attempt.attempt_id,
+                        amount,
+                        stake_amount,
+                    )
+                    take_profit_state = TakeProfitStageManager.mark_submitting(
+                        take_profit_state,
+                        active_attempt.attempt_id,
+                        current_time,
+                    )
+                    allowed = True
 
-        if (
-            not math.isfinite(amount)
-            or amount <= 0.0
-            or trade.amount <= 0.0
-            or trade.stake_amount <= 0.0
-        ):
+            QuickAdapterV3._save_take_profit_state(trade, take_profit_state)
+            return allowed
+        except Exception:
+            if safety_exit:
+                logger.exception(
+                    f"[{pair}] Allowing safety exit {exit_reason!r} for trade "
+                    f"{trade.id} although its wallet adjustment could not be audited"
+                )
+                return True
+            logger.exception(
+                f"[{pair}] Denied exit {exit_reason!r} for trade {trade.id} "
+                "because its execution state could not be persisted"
+            )
             return False
-        stake_amount = amount * trade.stake_amount / trade.amount
-        take_profit_state = TakeProfitStageManager.update_attempt_amount(
-            take_profit_state,
-            active_attempt.attempt_id,
-            amount,
-            stake_amount,
-        )
-        take_profit_state = TakeProfitStageManager.mark_submitting(
-            take_profit_state,
-            active_attempt.attempt_id,
-            current_time,
-        )
-        QuickAdapterV3._save_take_profit_state(trade, take_profit_state)
-        return True
 
     def confirm_trade_entry(
         self,

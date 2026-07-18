@@ -3,10 +3,11 @@ import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from typing import Literal, Protocol, Self
+from typing import Literal, Protocol, Self, final
 
 
 TakeProfitAttemptStatus = Literal["proposed", "submitting", "ambiguous"]
+TakeProfitRecoveryPolicy = Literal["tagged_or_unique_untagged", "tagged_only"]
 TakeProfitOperatorAction = Literal[
     "confirmed_no_remote_order",
     "confirmed_terminal_zero_fill",
@@ -24,6 +25,7 @@ _BLOCKED_ORDER_ID_REASONS = frozenset(
         "unknown_attempt_order",
         "unknown_external_exit_fill",
         "unknown_terminal_fill",
+        "unattributed_exit_fill",
     }
 )
 
@@ -105,6 +107,7 @@ class TakeProfitAttempt:
     submitted_at: str | None
     recovery_deadline: str
     known_order_ids: tuple[str, ...]
+    recovery_policy: TakeProfitRecoveryPolicy
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -119,6 +122,7 @@ class TakeProfitAttempt:
             "submitted_at": self.submitted_at,
             "recovery_deadline": self.recovery_deadline,
             "known_order_ids": list(self.known_order_ids),
+            "recovery_policy": self.recovery_policy,
         }
 
     @classmethod
@@ -136,6 +140,12 @@ class TakeProfitAttempt:
             raise ValueError("Invalid take-profit attempt known_order_ids")
         if len(known_order_ids) != len(set(known_order_ids)):
             raise ValueError("Duplicate take-profit attempt known order")
+        recovery_policy = value.get("recovery_policy")
+        if recovery_policy not in {
+            "tagged_or_unique_untagged",
+            "tagged_only",
+        }:
+            raise ValueError("Invalid take-profit recovery policy")
 
         attempt_id = _required_string(value, "attempt_id")
         stage = _required_non_negative_int(value, "stage")
@@ -173,6 +183,91 @@ class TakeProfitAttempt:
             submitted_at=submitted_at,
             recovery_deadline=recovery_deadline,
             known_order_ids=tuple(known_order_ids),
+            recovery_policy=recovery_policy,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TakeProfitExposureAdjustment:
+    """Audited correction for Freqtrade's full-exit wallet fallback."""
+
+    adjustment_id: str
+    previous_amount: float
+    adjusted_amount: float
+    amount: float
+    exit_credit_baseline: float
+    exit_reason: str
+    recorded_at: str
+    retired_at: str | None = None
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.adjustment_id)
+        previous_amount = _required_positive_value(
+            self.previous_amount,
+            "exposure adjustment previous amount",
+        )
+        adjusted_amount = _required_positive_value(
+            self.adjusted_amount,
+            "exposure adjustment adjusted amount",
+        )
+        amount = _required_positive_value(
+            self.amount,
+            "exposure adjustment amount",
+        )
+        _non_negative_float(self.exit_credit_baseline)
+        _non_empty_string(self.exit_reason)
+        recorded_at = _parse_iso_datetime(self.recorded_at)
+        if adjusted_amount >= previous_amount:
+            raise ValueError("Exposure adjustment must reduce the trade amount")
+        if not math.isclose(
+            previous_amount - adjusted_amount,
+            amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Exposure adjustment amount is inconsistent")
+        if adjusted_amount <= previous_amount * 0.98:
+            raise ValueError("Exposure adjustment exceeds Freqtrade's wallet fallback")
+        if self.retired_at is not None:
+            retired_at = _parse_iso_datetime(self.retired_at)
+            if retired_at < recorded_at:
+                raise ValueError(
+                    "Exposure adjustment was retired before it was recorded"
+                )
+
+    @property
+    def is_active(self) -> bool:
+        return self.retired_at is None
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "adjustment_id": self.adjustment_id,
+            "previous_amount": self.previous_amount,
+            "adjusted_amount": self.adjusted_amount,
+            "amount": self.amount,
+            "exit_credit_baseline": self.exit_credit_baseline,
+            "exit_reason": self.exit_reason,
+            "recorded_at": self.recorded_at,
+            "retired_at": self.retired_at,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> Self:
+        retired_at = value.get("retired_at")
+        if retired_at is not None and not isinstance(retired_at, str):
+            raise ValueError("Invalid exposure adjustment retirement timestamp")
+        return cls(
+            adjustment_id=_required_string(value, "adjustment_id"),
+            previous_amount=_required_positive_float(value, "previous_amount"),
+            adjusted_amount=_required_positive_float(value, "adjusted_amount"),
+            amount=_required_positive_float(value, "amount"),
+            exit_credit_baseline=_required_non_negative_float(
+                value,
+                "exit_credit_baseline",
+            ),
+            exit_reason=_required_string(value, "exit_reason"),
+            recorded_at=_required_string(value, "recorded_at"),
+            retired_at=retired_at,
         )
 
 
@@ -449,15 +544,18 @@ class TakeProfitStageState:
     deferred_stages: tuple[int, ...]
     attributed_order_ids: tuple[str, ...]
     credited_order_amounts: tuple[tuple[str, float], ...]
+    non_take_profit_exit_order_amounts: tuple[tuple[str, float], ...]
     entry_order_amounts: tuple[tuple[str, float], ...]
+    exposure_adjustments: tuple[TakeProfitExposureAdjustment, ...]
     confirmed_zero_fill_orders: tuple[TakeProfitZeroFillProof, ...]
     operator_resolutions: tuple[TakeProfitOperatorResolution, ...]
     active_attempt: TakeProfitAttempt | None = None
     blocked_reason: str | None = None
     blocked_order_id: str | None = None
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
     MAX_OPERATOR_RESOLUTIONS = 32
+    MAX_EXPOSURE_ADJUSTMENTS = 32
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -474,9 +572,16 @@ class TakeProfitStageState:
                 {"order_id": order_id, "amount": amount}
                 for order_id, amount in self.credited_order_amounts
             ],
+            "non_take_profit_exit_order_amounts": [
+                {"order_id": order_id, "amount": amount}
+                for order_id, amount in self.non_take_profit_exit_order_amounts
+            ],
             "entry_order_amounts": [
                 {"order_id": order_id, "amount": amount}
                 for order_id, amount in self.entry_order_amounts
+            ],
+            "exposure_adjustments": [
+                adjustment.to_mapping() for adjustment in self.exposure_adjustments
             ],
             "confirmed_zero_fill_orders": [
                 proof.to_mapping() for proof in self.confirmed_zero_fill_orders
@@ -496,10 +601,10 @@ class TakeProfitStageState:
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> Self:
         version = _required_non_negative_int(value, "version")
-        if version != cls.SCHEMA_VERSION:
+        if version not in {4, cls.SCHEMA_VERSION}:
             raise ValueError(
                 f"Unsupported take-profit state version {version!r}; "
-                f"expected {cls.SCHEMA_VERSION}"
+                f"expected 4 or {cls.SCHEMA_VERSION}"
             )
 
         plan_raw = value.get("plan_signature")
@@ -572,11 +677,75 @@ class TakeProfitStageState:
         ):
             raise ValueError("Credited take-profit amount exceeds the initial amount")
 
+        non_take_profit_exit_order_amounts = _parse_amount_records(
+            value.get("non_take_profit_exit_order_amounts", [])
+            if version == 4
+            else value.get("non_take_profit_exit_order_amounts"),
+            identifier_key="order_id",
+            identifier_parser=_non_empty_string,
+        )
+        take_profit_order_ids = set(attributed_order_ids)
+        non_take_profit_order_ids = {
+            order_id for order_id, _ in non_take_profit_exit_order_amounts
+        }
+        if take_profit_order_ids & non_take_profit_order_ids:
+            raise ValueError(
+                "Exit order cannot be both take-profit and non-take-profit"
+            )
+
         entry_order_amounts = _parse_amount_records(
             value.get("entry_order_amounts"),
             identifier_key="order_id",
             identifier_parser=_non_empty_string,
         )
+
+        adjustments_raw = [] if version == 4 else value.get("exposure_adjustments")
+        if not isinstance(adjustments_raw, list) or not all(
+            isinstance(adjustment, Mapping) for adjustment in adjustments_raw
+        ):
+            raise ValueError("Invalid take-profit exposure adjustments")
+        exposure_adjustments = tuple(
+            TakeProfitExposureAdjustment.from_mapping(adjustment)
+            for adjustment in adjustments_raw
+            if isinstance(adjustment, Mapping)
+        )
+        adjustment_ids = tuple(
+            adjustment.adjustment_id for adjustment in exposure_adjustments
+        )
+        if len(adjustment_ids) != len(set(adjustment_ids)):
+            raise ValueError("Duplicate take-profit exposure adjustment")
+        if len(exposure_adjustments) > cls.MAX_EXPOSURE_ADJUSTMENTS:
+            raise ValueError("Too many take-profit exposure adjustments")
+        total_exit_credited = total_credited + math.fsum(
+            amount for _, amount in non_take_profit_exit_order_amounts
+        )
+        if total_exit_credited > initial_amount and not math.isclose(
+            total_exit_credited,
+            initial_amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Credited exit amount exceeds the initial amount")
+        active_adjustment_total = math.fsum(
+            adjustment.amount
+            for adjustment in exposure_adjustments
+            if adjustment.is_active
+        )
+        if (
+            total_exit_credited + active_adjustment_total > initial_amount
+            and not math.isclose(
+                total_exit_credited + active_adjustment_total,
+                initial_amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+        ):
+            raise ValueError("Exposure credits exceed the initial amount")
+        if any(
+            adjustment.exit_credit_baseline > total_exit_credited
+            for adjustment in exposure_adjustments
+        ):
+            raise ValueError("Exposure adjustment has an invalid fill baseline")
 
         proofs_raw = value.get("confirmed_zero_fill_orders")
         if not isinstance(proofs_raw, list) or not all(
@@ -622,6 +791,16 @@ class TakeProfitStageState:
         active_raw = value.get("active_attempt")
         if active_raw is not None and not isinstance(active_raw, Mapping):
             raise ValueError("Invalid take-profit active_attempt")
+        if version == 4 and isinstance(active_raw, Mapping):
+            active_raw = dict(active_raw)
+            active_raw.setdefault(
+                "recovery_policy",
+                "tagged_or_unique_untagged",
+            )
+            if active_raw.get("status") == "proposed":
+                active_raw["status"] = "ambiguous"
+                active_raw["submitted_at"] = active_raw.get("created_at")
+                active_raw["recovery_policy"] = "tagged_only"
         active_attempt = (
             TakeProfitAttempt.from_mapping(active_raw)
             if isinstance(active_raw, Mapping)
@@ -630,6 +809,12 @@ class TakeProfitStageState:
         if active_attempt is not None and active_attempt.stage not in stages:
             if active_attempt.stage != plan_signature.final_stage.stage:
                 raise ValueError("Invalid take-profit attempt stage")
+        if (
+            active_attempt is not None
+            and active_attempt.status == "proposed"
+            and active_attempt.stage != plan_signature.final_stage.stage
+        ):
+            raise ValueError("Only a final take-profit attempt can be proposed")
         if (
             active_attempt is not None
             and active_attempt.attempt_id in resolved_attempt_ids
@@ -641,21 +826,30 @@ class TakeProfitStageState:
             raise ValueError("Invalid take-profit blocked_reason")
         blocked_order_id = value.get("blocked_order_id")
         if blocked_reason in _BLOCKED_ORDER_ID_REASONS:
-            blocked_order_id = _non_empty_string(blocked_order_id)
+            if not (
+                version == 4
+                and blocked_reason == "unattributed_exit_fill"
+                and blocked_order_id is None
+            ):
+                blocked_order_id = _non_empty_string(blocked_order_id)
         elif blocked_reason is None and blocked_order_id is not None:
             raise ValueError("Take-profit blocked_order_id requires a blocked state")
         elif blocked_order_id is not None:
             blocked_order_id = _non_empty_string(blocked_order_id)
 
         return cls(
-            version=version,
+            version=cls.SCHEMA_VERSION,
             plan_signature=plan_signature,
             initial_amount=initial_amount,
             stage_targets=tuple(sorted(stage_targets)),
             deferred_stages=tuple(sorted(deferred_stages)),
             attributed_order_ids=tuple(sorted(attributed_order_ids)),
             credited_order_amounts=tuple(sorted(credited_order_amounts)),
+            non_take_profit_exit_order_amounts=tuple(
+                sorted(non_take_profit_exit_order_amounts)
+            ),
             entry_order_amounts=tuple(sorted(entry_order_amounts)),
+            exposure_adjustments=exposure_adjustments,
             confirmed_zero_fill_orders=tuple(
                 sorted(
                     confirmed_zero_fill_orders,
@@ -680,6 +874,7 @@ class TakeProfitStageProgress:
     has_deferred_debt: bool
 
 
+@final
 class TakeProfitStageManager:
     """Reconcile take-profit stages with causally attributed Freqtrade orders."""
 
@@ -722,17 +917,20 @@ class TakeProfitStageManager:
     ) -> tuple[str, int, str | None] | None:
         if not isinstance(tag, str):
             return None
-        parts = tag.split("_")
-        if len(parts) not in {4, 5} or parts[:2] != ["take", "profit"]:
+        prefix = f"{cls._TAG_PREFIX}_"
+        if not tag.startswith(prefix):
+            return None
+        parts = tag.removeprefix(prefix).split("_")
+        if len(parts) not in {2, 3}:
             return None
         try:
-            stage = int(parts[3])
+            stage = int(parts[1])
         except ValueError:
             return None
-        if stage < 0 or not parts[2]:
+        if stage < 0 or not parts[0]:
             return None
-        attempt_id = parts[4] if len(parts) == 5 and parts[4] else None
-        return parts[2], stage, attempt_id
+        attempt_id = parts[2] if len(parts) == 3 and parts[2] else None
+        return parts[0], stage, attempt_id
 
     @classmethod
     def initialize(
@@ -741,124 +939,53 @@ class TakeProfitStageManager:
         plan_signature: TakeProfitPlanSignature,
         *,
         amount_quantizer: Callable[[float], float] | None = None,
+        validate_trade_amount: bool = True,
     ) -> TakeProfitStageState:
-        configured_stages = {
-            definition.stage for definition in plan_signature.partial_stages
-        }
-        strategy_exit_orders = [
-            order for order in trade.orders if order.ft_order_side == trade.exit_side
-        ]
-        blocked_reason = None
-        blocked_order_id = None
-        if any(
-            order.ft_order_side == trade.entry_side and order.ft_is_open
-            for order in trade.orders
-        ):
-            blocked_reason = "open_entry_order"
-        for order in trade.orders:
-            if order.ft_order_side in {trade.entry_side, trade.exit_side}:
-                continue
-            external_block = cls._external_exit_block(order)
-            if external_block is not None and blocked_reason is None:
-                blocked_reason = external_block
-                blocked_order_id = order.order_id
-
-        terminal_credits: dict[str, float] = {}
-        for order in strategy_exit_orders:
-            if order.ft_is_open:
-                continue
-            try:
-                terminal_credits[order.order_id] = cls._terminal_credited_amount(order)
-            except ValueError:
-                if blocked_reason is None:
-                    blocked_reason = "unknown_terminal_fill"
-                    blocked_order_id = order.order_id
-
-        attributed_order_ids: set[str] = set()
-        for order in strategy_exit_orders:
-            parsed_tag = cls.parse_order_tag(order.ft_order_tag)
-            if parsed_tag is None:
-                continue
-            direction, stage, attempt_id = parsed_tag
-            if attempt_id is not None:
-                if blocked_reason is None:
-                    blocked_reason = "unknown_attempt_order"
-                    blocked_order_id = order.order_id
-                continue
-            if (
-                direction != trade.trade_direction
-                or stage not in configured_stages
-                or order.ft_order_side != trade.exit_side
-            ):
-                if terminal_credits.get(order.order_id, 0.0) > 0.0:
-                    blocked_reason = blocked_reason or "unattributed_exit_fill"
-                continue
-            attributed_order_ids.add(order.order_id)
-
-        for index, order in enumerate(strategy_exit_orders):
-            if order.ft_order_tag != cls._EMERGENCY_EXIT_TAG:
-                continue
-            predecessor = strategy_exit_orders[index - 1] if index > 0 else None
-            if predecessor is not None and cls._is_legacy_emergency_successor(
-                trade,
-                predecessor,
-                order,
-                configured_stages,
-            ):
-                attributed_order_ids.add(order.order_id)
-            elif terminal_credits.get(order.order_id, 0.0) > 0.0:
-                blocked_reason = blocked_reason or "ambiguous_legacy_exit"
-
-        credited_order_amounts: dict[str, float] = {}
-        for order in strategy_exit_orders:
-            if order.order_id in attributed_order_ids and not order.ft_is_open:
-                credited_order_amounts[order.order_id] = terminal_credits.get(
-                    order.order_id,
-                    0.0,
-                )
-            elif (
-                order.order_id not in attributed_order_ids
-                and terminal_credits.get(order.order_id, 0.0) > 0.0
-            ):
-                blocked_reason = blocked_reason or "unattributed_exit_fill"
-
         entry_order_amounts = cls._entry_order_amounts(trade)
         if entry_order_amounts:
             initial_amount = cls._canonical_amount_sum(
                 entry_order_amounts.values(),
                 amount_quantizer,
             )
+            blocked_reason = None
         else:
-            blocked_reason = blocked_reason or "missing_entry_exposure"
+            blocked_reason = "missing_entry_exposure"
             initial_amount = cls._canonical_amount(
                 cls._safe_amount(trade.amount),
                 amount_quantizer,
             )
         if initial_amount <= 0.0:
             raise ValueError("Cannot initialize take-profit without positive exposure")
-        stage_targets = plan_signature.derive_stage_targets(initial_amount)
-
-        if not cls._trade_amount_is_consistent(
-            trade,
-            entry_order_amounts.values(),
-            credited_order_amounts.values(),
-            amount_quantizer,
+        if any(
+            order.ft_order_side == trade.entry_side and order.ft_is_open
+            for order in trade.orders
         ):
-            blocked_reason = blocked_reason or "trade_amount_mismatch"
+            blocked_reason = "open_entry_order"
 
-        return TakeProfitStageState(
+        state = TakeProfitStageState(
             version=TakeProfitStageState.SCHEMA_VERSION,
             plan_signature=plan_signature,
             initial_amount=initial_amount,
-            stage_targets=stage_targets,
+            stage_targets=plan_signature.derive_stage_targets(initial_amount),
             deferred_stages=(),
-            attributed_order_ids=tuple(sorted(attributed_order_ids)),
-            credited_order_amounts=tuple(sorted(credited_order_amounts.items())),
+            attributed_order_ids=(),
+            credited_order_amounts=(),
+            non_take_profit_exit_order_amounts=(),
             entry_order_amounts=tuple(sorted(entry_order_amounts.items())),
+            exposure_adjustments=(),
             confirmed_zero_fill_orders=(),
             operator_resolutions=(),
             blocked_reason=blocked_reason,
-            blocked_order_id=blocked_order_id,
+        )
+        return (
+            state
+            if state.blocked_reason is not None
+            else cls._reconcile(
+                trade,
+                state,
+                amount_quantizer=amount_quantizer,
+                validate_trade_amount=validate_trade_amount,
+            )
         )
 
     @classmethod
@@ -868,6 +995,22 @@ class TakeProfitStageManager:
         state: TakeProfitStageState,
         *,
         amount_quantizer: Callable[[float], float] | None = None,
+    ) -> TakeProfitStageState:
+        return cls._reconcile(
+            trade,
+            state,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=True,
+        )
+
+    @classmethod
+    def _reconcile(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        *,
+        amount_quantizer: Callable[[float], float] | None,
+        validate_trade_amount: bool,
     ) -> TakeProfitStageState:
         if state.blocked_reason is not None:
             return state
@@ -921,6 +1064,9 @@ class TakeProfitStageManager:
         configured_stages = {stage for stage, _ in state.stage_targets}
         attributed_order_ids = set(state.attributed_order_ids)
         credited_order_amounts = dict(state.credited_order_amounts)
+        non_take_profit_exit_order_amounts = dict(
+            state.non_take_profit_exit_order_amounts
+        )
         strategy_exit_orders = [
             order for order in trade.orders if order.ft_order_side == trade.exit_side
         ]
@@ -981,10 +1127,26 @@ class TakeProfitStageManager:
                 continue
             parsed_tag = cls.parse_order_tag(order.ft_order_tag)
             if parsed_tag is None:
-                continue
-            if order.order_id in confirmed_zero_fill_orders:
+                if cls.has_order_tag_prefix(order.ft_order_tag):
+                    if order.order_id in confirmed_zero_fill_orders:
+                        continue
+                    return cls._block(
+                        state,
+                        "unknown_attempt_order",
+                        order_id=order.order_id,
+                    )
                 continue
             if order in matching_attempt_orders:
+                continue
+            direction, stage, attempt_id = parsed_tag
+            if (
+                attempt_id is None
+                and direction == trade.trade_direction
+                and stage in configured_stages
+            ):
+                attributed_order_ids.add(order.order_id)
+                continue
+            if order.order_id in confirmed_zero_fill_orders:
                 continue
             return cls._block(
                 state,
@@ -1048,27 +1210,144 @@ class TakeProfitStageManager:
                 return cls._block(state, "attributed_fill_regressed")
             credited_order_amounts[order_id] = current_amount
 
-        total_credited = math.fsum(credited_order_amounts.values())
-        if total_credited > state.initial_amount and not cls._amounts_close(
-            total_credited,
+        for order_id, previous_amount in non_take_profit_exit_order_amounts.items():
+            order = orders_by_id.get(order_id)
+            if order is None:
+                return cls._block(state, "attributed_order_missing")
+            if order.ft_order_side != trade.exit_side:
+                return cls._block(state, "attributed_order_side_changed")
+            if order.ft_is_open:
+                return cls._block(state, "attributed_order_reopened")
+            current_amount = terminal_credits[order_id]
+            if current_amount < previous_amount and not cls._amounts_close(
+                current_amount,
+                previous_amount,
+            ):
+                return cls._block(state, "attributed_fill_regressed")
+            non_take_profit_exit_order_amounts[order_id] = current_amount
+
+        for order in strategy_exit_orders:
+            if order.ft_is_open or order.order_id in attributed_order_ids:
+                continue
+            if order.order_id in credited_order_amounts:
+                return cls._block(state, "exit_order_role_changed")
+            current_amount = terminal_credits[order.order_id]
+            if current_amount > 0.0 and not order.ft_order_tag:
+                return cls._block(
+                    state,
+                    "unattributed_exit_fill",
+                    order_id=order.order_id,
+                )
+            previous_amount = non_take_profit_exit_order_amounts.get(order.order_id)
+            if (
+                previous_amount is not None
+                and current_amount < previous_amount
+                and not cls._amounts_close(current_amount, previous_amount)
+            ):
+                return cls._block(state, "attributed_fill_regressed")
+            non_take_profit_exit_order_amounts[order.order_id] = current_amount
+
+        if set(credited_order_amounts) & set(non_take_profit_exit_order_amounts):
+            return cls._block(state, "exit_order_role_changed")
+
+        total_take_profit_credited = math.fsum(credited_order_amounts.values())
+        total_exit_credited = total_take_profit_credited + math.fsum(
+            non_take_profit_exit_order_amounts.values()
+        )
+        if total_exit_credited > state.initial_amount and not cls._amounts_close(
+            total_exit_credited,
             state.initial_amount,
         ):
             return cls._block(state, "credited_fill_exceeds_initial_amount")
 
-        for order in strategy_exit_orders:
+        exposure_adjustments = state.exposure_adjustments
+        has_open_exit_order = any(
+            order.ft_is_open
+            for order in trade.orders
+            if order.ft_order_side != trade.entry_side
+        )
+        if validate_trade_amount and not has_open_exit_order:
+            exit_credit_amounts = (
+                *credited_order_amounts.values(),
+                *non_take_profit_exit_order_amounts.values(),
+            )
+            active_adjustments = tuple(
+                adjustment
+                for adjustment in exposure_adjustments
+                if adjustment.is_active
+            )
+            active_adjustment_total = math.fsum(
+                adjustment.amount for adjustment in active_adjustments
+            )
             if (
-                order.order_id not in attributed_order_ids
-                and terminal_credits.get(order.order_id, 0.0) > 0.0
+                total_exit_credited + active_adjustment_total > state.initial_amount
+                and not cls._amounts_close(
+                    total_exit_credited + active_adjustment_total,
+                    state.initial_amount,
+                )
             ):
-                return cls._block(state, "unattributed_exit_fill")
-
-        if not cls._trade_amount_is_consistent(
-            trade,
-            persisted_entry_amounts.values(),
-            credited_order_amounts.values(),
-            amount_quantizer,
-        ):
-            return cls._block(state, "trade_amount_mismatch")
+                return cls._block(state, "credited_fill_exceeds_initial_amount")
+            expected_with_adjustments = cls._canonical_expected_trade_amount(
+                persisted_entry_amounts.values(),
+                exit_credit_amounts,
+                (adjustment.amount for adjustment in active_adjustments),
+                amount_quantizer,
+            )
+            try:
+                observed_amount = cls._canonical_amount(
+                    trade.amount,
+                    amount_quantizer,
+                )
+            except ValueError:
+                return cls._block(state, "trade_amount_mismatch")
+            retireable_adjustments = tuple(
+                adjustment
+                for adjustment in active_adjustments
+                if total_exit_credited > adjustment.exit_credit_baseline
+            )
+            adjustments_were_retired = False
+            if retireable_adjustments:
+                expected_after_retirement = cls._canonical_expected_trade_amount(
+                    persisted_entry_amounts.values(),
+                    exit_credit_amounts,
+                    (
+                        adjustment.amount
+                        for adjustment in active_adjustments
+                        if adjustment not in retireable_adjustments
+                    ),
+                    amount_quantizer,
+                )
+                adjustments_were_retired = cls._amounts_close(
+                    observed_amount,
+                    expected_after_retirement,
+                )
+            if adjustments_were_retired:
+                retirement_time = max(
+                    *(
+                        order.order_filled_utc
+                        for order in strategy_exit_orders
+                        if not order.ft_is_open
+                        and terminal_credits.get(order.order_id, 0.0) > 0.0
+                        and order.order_filled_utc is not None
+                    ),
+                    *(
+                        _parse_iso_datetime(adjustment.recorded_at)
+                        for adjustment in retireable_adjustments
+                    ),
+                ).isoformat()
+                retireable_ids = {
+                    adjustment.adjustment_id for adjustment in retireable_adjustments
+                }
+                exposure_adjustments = cls._retire_exposure_adjustments(
+                    exposure_adjustments,
+                    retireable_ids,
+                    retirement_time,
+                )
+            elif not cls._amounts_close(
+                observed_amount,
+                expected_with_adjustments,
+            ):
+                return cls._block(state, "trade_amount_mismatch")
 
         if matching_attempt_orders:
             active_attempt = None
@@ -1077,7 +1356,171 @@ class TakeProfitStageManager:
             state,
             attributed_order_ids=tuple(sorted(attributed_order_ids)),
             credited_order_amounts=tuple(sorted(credited_order_amounts.items())),
+            non_take_profit_exit_order_amounts=tuple(
+                sorted(non_take_profit_exit_order_amounts.items())
+            ),
+            exposure_adjustments=exposure_adjustments,
             active_attempt=active_attempt,
+        )
+
+    @classmethod
+    def reconcile_migrated_state(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        source_version: int,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> TakeProfitStageState:
+        """Re-evaluate only v4 blocks made obsolete by the split exit ledger."""
+        state = cls.prepare_migrated_state(state, source_version)
+        return cls.reconcile(
+            trade,
+            state,
+            amount_quantizer=amount_quantizer,
+        )
+
+    @staticmethod
+    def prepare_migrated_state(
+        state: TakeProfitStageState,
+        source_version: int,
+    ) -> TakeProfitStageState:
+        if source_version != 4:
+            return state
+        if state.blocked_reason in {
+            "unattributed_exit_fill",
+            "trade_amount_mismatch",
+        }:
+            return replace(
+                state,
+                blocked_reason=None,
+                blocked_order_id=None,
+            )
+        return state
+
+    @classmethod
+    def reconcile_for_exit_confirmation(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        *,
+        confirmed_amount: float,
+        exit_reason: str,
+        adjustment_id: str,
+        current_time: datetime.datetime,
+        allow_wallet_adjustment: bool,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> TakeProfitStageState:
+        """Reconcile the amount mutation made by Freqtrade before full confirmation."""
+        if current_time.tzinfo is None:
+            raise ValueError("Exit confirmation timestamp must be timezone-aware")
+        _non_empty_string(exit_reason)
+        _non_empty_string(adjustment_id)
+        confirmed_amount = _required_positive_value(
+            confirmed_amount,
+            "confirmed exit amount",
+        )
+        observed_amount = _required_positive_value(
+            trade.amount,
+            "observed trade amount",
+        )
+        if not cls._amounts_close(confirmed_amount, observed_amount):
+            return cls._block(state, "trade_amount_mismatch")
+
+        candidate = cls._reconcile(
+            trade,
+            state,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=False,
+        )
+        if candidate.blocked_reason is not None:
+            return candidate
+
+        total_exit_credited = math.fsum(
+            amount for _, amount in candidate.credited_order_amounts
+        ) + math.fsum(
+            amount for _, amount in candidate.non_take_profit_exit_order_amounts
+        )
+        retireable_adjustments = tuple(
+            adjustment
+            for adjustment in candidate.exposure_adjustments
+            if adjustment.is_active
+            and total_exit_credited > adjustment.exit_credit_baseline
+        )
+        if retireable_adjustments:
+            retirement_time = max(
+                current_time,
+                *(
+                    _parse_iso_datetime(adjustment.recorded_at)
+                    for adjustment in retireable_adjustments
+                ),
+            ).isoformat()
+            candidate = replace(
+                candidate,
+                exposure_adjustments=cls._retire_exposure_adjustments(
+                    candidate.exposure_adjustments,
+                    {adjustment.adjustment_id for adjustment in retireable_adjustments},
+                    retirement_time,
+                ),
+            )
+        active_adjustment_amounts = (
+            adjustment.amount
+            for adjustment in candidate.exposure_adjustments
+            if adjustment.is_active
+        )
+        expected_amount = cls._raw_expected_trade_amount(
+            (amount for _, amount in candidate.entry_order_amounts),
+            (
+                *(amount for _, amount in candidate.credited_order_amounts),
+                *(amount for _, amount in candidate.non_take_profit_exit_order_amounts),
+            ),
+            active_adjustment_amounts,
+            amount_quantizer,
+        )
+        if cls._amounts_close(observed_amount, expected_amount):
+            return cls.reconcile(
+                trade,
+                candidate,
+                amount_quantizer=amount_quantizer,
+            )
+
+        if (
+            not allow_wallet_adjustment
+            or observed_amount >= expected_amount
+            or observed_amount <= expected_amount * 0.98
+        ):
+            return cls._block(candidate, "trade_amount_mismatch")
+        if any(
+            adjustment.adjustment_id == adjustment_id
+            for adjustment in candidate.exposure_adjustments
+        ):
+            return cls._block(candidate, "duplicate_exposure_adjustment")
+        if (
+            len(candidate.exposure_adjustments)
+            >= TakeProfitStageState.MAX_EXPOSURE_ADJUSTMENTS
+        ):
+            return cls._block(candidate, "exposure_adjustment_limit")
+
+        adjustment = TakeProfitExposureAdjustment(
+            adjustment_id=adjustment_id,
+            previous_amount=expected_amount,
+            adjusted_amount=observed_amount,
+            amount=expected_amount - observed_amount,
+            exit_credit_baseline=total_exit_credited,
+            exit_reason=exit_reason,
+            recorded_at=current_time.isoformat(),
+        )
+        adjusted_state = replace(
+            candidate,
+            exposure_adjustments=(
+                *candidate.exposure_adjustments,
+                adjustment,
+            ),
+        )
+        return cls.reconcile(
+            trade,
+            adjusted_state,
+            amount_quantizer=amount_quantizer,
         )
 
     @classmethod
@@ -1154,9 +1597,17 @@ class TakeProfitStageManager:
         *,
         amount_quantizer: Callable[[float], float] | None = None,
     ) -> float:
-        return cls._canonical_signed_amount_sum(
+        return cls._canonical_expected_trade_amount(
             (amount for _, amount in state.entry_order_amounts),
-            (amount for _, amount in state.credited_order_amounts),
+            (
+                *(amount for _, amount in state.credited_order_amounts),
+                *(amount for _, amount in state.non_take_profit_exit_order_amounts),
+            ),
+            (
+                adjustment.amount
+                for adjustment in state.exposure_adjustments
+                if adjustment.is_active
+            ),
             amount_quantizer,
         )
 
@@ -1212,6 +1663,8 @@ class TakeProfitStageManager:
             raise ValueError(f"Unknown take-profit stage {stage!r}")
         if status not in {"proposed", "submitting"}:
             raise ValueError(f"Invalid initial take-profit attempt status {status!r}")
+        if status == "proposed" and stage != final_stage:
+            raise ValueError("Only a final take-profit attempt can be proposed")
         if current_time.tzinfo is None or recovery_deadline.tzinfo is None:
             raise ValueError("Take-profit attempt timestamps must be timezone-aware")
         if recovery_deadline < current_time:
@@ -1236,6 +1689,7 @@ class TakeProfitStageManager:
                 submitted_at=submitted_at,
                 recovery_deadline=recovery_deadline.isoformat(),
                 known_order_ids=tuple(sorted(order.order_id for order in trade.orders)),
+                recovery_policy="tagged_or_unique_untagged",
             ),
         )
 
@@ -1360,10 +1814,11 @@ class TakeProfitStageManager:
         """Reconcile one repaired canonical order and record the operator action."""
         order_id = _non_empty_string(order_id)
         if (
-            state.blocked_reason != "unknown_terminal_fill"
+            state.blocked_reason
+            not in {"unknown_terminal_fill", "unattributed_exit_fill"}
             or state.blocked_order_id != order_id
         ):
-            raise ValueError("No matching unknown terminal fill to revalidate")
+            raise ValueError("No matching terminal fill to revalidate")
         if resolved_at.tzinfo is None:
             raise ValueError("Take-profit resolution timestamp must be timezone-aware")
 
@@ -1394,14 +1849,18 @@ class TakeProfitStageManager:
             )
 
         attributed = order_id in reconciled.attributed_order_ids
-        persisted_credit = dict(reconciled.credited_order_amounts).get(order_id)
-        if credited_amount > 0.0 and not attributed:
-            raise ValueError("Positive terminal fill is not attributed to take-profit")
-        if attributed and (
-            persisted_credit is None
-            or not cls._amounts_close(persisted_credit, credited_amount)
+        persisted_credit = (
+            dict(reconciled.credited_order_amounts).get(order_id)
+            if attributed
+            else dict(reconciled.non_take_profit_exit_order_amounts).get(order_id)
+        )
+        if credited_amount > 0.0 and persisted_credit is None:
+            raise ValueError("Positive terminal fill is not present in the exit ledger")
+        if persisted_credit is not None and not cls._amounts_close(
+            persisted_credit,
+            credited_amount,
         ):
-            raise ValueError("Revalidated take-profit credit does not match the order")
+            raise ValueError("Revalidated exit credit does not match the order")
 
         resolution = TakeProfitOperatorResolution(
             action="revalidated_terminal_fill",
@@ -1713,9 +2172,8 @@ class TakeProfitStageManager:
             raise ValueError("Terminal zero-fill order has a fill timestamp")
         return amount, remaining, fee_base
 
-    @classmethod
+    @staticmethod
     def _canonical_amount(
-        cls,
         value: object,
         amount_quantizer: Callable[[float], float] | None,
     ) -> float:
@@ -1751,29 +2209,68 @@ class TakeProfitStageManager:
             return float(precise_amount)
         return cls._canonical_amount(float(precise_amount), amount_quantizer)
 
-    @classmethod
-    def _trade_amount_is_consistent(
-        cls,
-        trade: _Trade,
+    @staticmethod
+    def _raw_signed_amount_sum(
         entry_amounts: Iterable[float],
-        credited_amounts: Iterable[float],
+        exit_amounts: Iterable[float],
+    ) -> float:
+        precise_amount = Decimal(0)
+        for amount in entry_amounts:
+            precise_amount += Decimal(str(_non_negative_float(amount)))
+        for amount in exit_amounts:
+            precise_amount -= Decimal(str(_non_negative_float(amount)))
+        return float(precise_amount)
+
+    @classmethod
+    def _raw_expected_trade_amount(
+        cls,
+        entry_amounts: Iterable[float],
+        exit_order_amounts: Iterable[float],
+        exposure_adjustments: Iterable[float],
         amount_quantizer: Callable[[float], float] | None,
-    ) -> bool:
-        try:
-            expected_amount = cls._canonical_signed_amount_sum(
-                entry_amounts,
-                credited_amounts,
-                amount_quantizer,
-            )
-            observed_amount = cls._canonical_amount(
-                trade.amount,
-                amount_quantizer,
-            )
-        except ValueError:
-            return False
-        return expected_amount >= 0.0 and cls._amounts_close(
-            observed_amount,
-            expected_amount,
+    ) -> float:
+        """Mirror Freqtrade's order recalculation, then its raw wallet fallback."""
+        canonical_order_amount = cls._canonical_signed_amount_sum(
+            entry_amounts,
+            exit_order_amounts,
+            amount_quantizer,
+        )
+        if canonical_order_amount < 0.0:
+            return canonical_order_amount
+        return cls._raw_signed_amount_sum(
+            (canonical_order_amount,),
+            exposure_adjustments,
+        )
+
+    @classmethod
+    def _canonical_expected_trade_amount(
+        cls,
+        entry_amounts: Iterable[float],
+        exit_order_amounts: Iterable[float],
+        exposure_adjustments: Iterable[float],
+        amount_quantizer: Callable[[float], float] | None,
+    ) -> float:
+        expected_amount = cls._raw_expected_trade_amount(
+            entry_amounts,
+            exit_order_amounts,
+            exposure_adjustments,
+            amount_quantizer,
+        )
+        if expected_amount < 0.0:
+            return expected_amount
+        return cls._canonical_amount(expected_amount, amount_quantizer)
+
+    @staticmethod
+    def _retire_exposure_adjustments(
+        adjustments: tuple[TakeProfitExposureAdjustment, ...],
+        adjustment_ids: set[str],
+        retired_at: str,
+    ) -> tuple[TakeProfitExposureAdjustment, ...]:
+        return tuple(
+            replace(adjustment, retired_at=retired_at)
+            if adjustment.adjustment_id in adjustment_ids
+            else adjustment
+            for adjustment in adjustments
         )
 
     @classmethod
@@ -1809,7 +2306,8 @@ class TakeProfitStageManager:
         attempt: TakeProfitAttempt,
     ) -> bool:
         if (
-            order.order_id in attempt.known_order_ids
+            attempt.recovery_policy != "tagged_or_unique_untagged"
+            or order.order_id in attempt.known_order_ids
             or order.ft_order_tag is not None
             or order.ft_order_side != attempt.exit_side
             or not cls._amounts_close(

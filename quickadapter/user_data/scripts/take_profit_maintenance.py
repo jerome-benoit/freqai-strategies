@@ -15,6 +15,8 @@ from typing import NoReturn
 
 from freqtrade.exchange import amount_to_contract_precision
 from freqtrade.persistence import Trade, init_db
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "strategies"
@@ -37,7 +39,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-pair", required=True)
     parser.add_argument("--json", action="store_true", dest="as_json")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("inspect", help="Show the persisted state without writing")
+    commands.add_parser(
+        "inspect",
+        help="Show take-profit data without modifying it",
+    )
     clear_parser = commands.add_parser(
         "clear-ambiguous",
         help="Clear an ambiguous attempt after proving no remote order exists",
@@ -76,6 +81,16 @@ def _load_trade(args: argparse.Namespace) -> Trade:
         _fail("trade-id must be positive")
     if args.db_url in {"sqlite://", "sqlite:///", "sqlite:///:memory:"}:
         _fail("db-url must identify a persistent database")
+    try:
+        database_url = make_url(args.db_url)
+    except ArgumentError as error:
+        raise MaintenanceError("db-url is invalid") from error
+    if database_url.drivername.startswith("sqlite"):
+        database_path = Path(database_url.database or "")
+        if not database_path.is_absolute():
+            database_path = Path.cwd() / database_path
+        if not database_path.is_file():
+            _fail("SQLite database does not exist")
 
     init_db(args.db_url)
     trades = Trade.get_trades(Trade.id == args.trade_id).all()
@@ -96,7 +111,16 @@ def _load_state(trade: Trade) -> TakeProfitStageState:
     if not isinstance(raw_state, dict):
         _fail("trade has no valid take-profit state mapping")
     try:
-        return TakeProfitStageState.from_mapping(raw_state)
+        source_version = raw_state.get("version")
+        if isinstance(source_version, bool) or not isinstance(source_version, int):
+            raise ValueError("Take-profit state version must be an integer")
+        state = TakeProfitStageState.from_mapping(raw_state)
+        return TakeProfitStageManager.reconcile_migrated_state(
+            trade,
+            state,
+            source_version,
+            amount_quantizer=partial(_quantize_trade_amount, trade),
+        )
     except ValueError as error:
         raise MaintenanceError(f"invalid take-profit state: {error}") from error
 
@@ -184,7 +208,8 @@ def _summary(
             ),
             "required_revalidation_confirmation": (
                 f"RECONCILE:{trade.id}:{state.blocked_order_id}"
-                if state.blocked_reason == "unknown_terminal_fill"
+                if state.blocked_reason
+                in {"unknown_terminal_fill", "unattributed_exit_fill"}
                 and state.blocked_order_id is not None
                 else None
             ),
@@ -200,8 +225,16 @@ def _summary(
                 "initial_amount": state.initial_amount,
                 "expected_trade_amount": expected_trade_amount,
                 "trade_amount_delta": trade_amount_delta,
-                "total_credited_amount": sum(
+                "total_take_profit_credited_amount": sum(
                     amount for _, amount in state.credited_order_amounts
+                ),
+                "total_non_take_profit_exit_amount": sum(
+                    amount for _, amount in state.non_take_profit_exit_order_amounts
+                ),
+                "active_exposure_adjustment_amount": sum(
+                    adjustment.amount
+                    for adjustment in state.exposure_adjustments
+                    if adjustment.is_active
                 ),
                 "stage_targets": [
                     {"stage": stage, "amount": amount}
@@ -212,6 +245,13 @@ def _summary(
                 "credited_order_amounts": [
                     {"order_id": order_id, "amount": amount}
                     for order_id, amount in state.credited_order_amounts
+                ],
+                "non_take_profit_exit_order_amounts": [
+                    {"order_id": order_id, "amount": amount}
+                    for order_id, amount in state.non_take_profit_exit_order_amounts
+                ],
+                "exposure_adjustments": [
+                    adjustment.to_mapping() for adjustment in state.exposure_adjustments
                 ],
                 "entry_order_amounts": [
                     {"order_id": order_id, "amount": amount}
