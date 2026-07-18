@@ -5,6 +5,7 @@
 - [QuickAdapter](#quickadapter)
   - [Quick start](#quick-start)
   - [Configuration tunables](#configuration-tunables)
+  - [Partial exit execution](#partial-exit-execution)
 - [ReforceXY](#reforcexy)
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
@@ -148,11 +149,90 @@ docker compose up -d --build
 
 ### Partial exit execution
 
-QuickAdapter advances a take-profit stage only after the tagged exit quantity is
-fully filled. Open, rejected, expired, or unfilled cancelled orders do not commit
-the stage. When an order is partially filled and then cancelled, the next position
-adjustment retries only the unfilled quantity. Progress is reconstructed from the
-orders persisted by Freqtrade, including after a bot restart.
+QuickAdapter persists a versioned execution state and advances take-profit stages
+from terminal Freqtrade orders that can be linked to a specific take-profit
+attempt. The persisted plan includes every partial fraction and NATR trigger, so
+an open trade cannot silently switch execution plans after a deployment. Targets
+remain immutable: terminal partial fills credit only their observed net base
+amount, while a base amount that deterministically rounds to zero is carried FIFO
+to a later threshold. Exchange minimum hints never mutate the ledger; Freqtrade's
+final exit validation remains authoritative.
+Legacy emergency orders and recovered untagged orders are accepted only when
+their relationship to an attempt is unique.
+
+`unfilledtimeout.exit_timeout_count` must be `0`; QuickAdapter is the sole owner of
+partial-exit retries, and `order_types.exit` must be `limit` because Freqtrade has
+no equivalent pre-submission callback for partial market exits. A strict zero-fill
+outcome is retried automatically only when its persisted status is `rejected` or
+`expired`, its remaining amount equals the order amount, it has no base fee, and
+it has no fill timestamp. `canceled` and `cancelled` always require operator
+verification:
+Freqtrade can synthesize a canceled response when cancellation and order retrieval
+both fail. A lost CEX response, foreign filled exit, or filled stoploss also fails
+closed instead of risking a duplicate reduction. Open stoploss orders without
+partial-fill evidence remain protective and do not affect the take-profit ledger. If
+`stoploss_on_exchange` is enabled, an uncertain canceled stoploss requires the same
+operator verification before take-profit resumes.
+
+The ledger derives initial exposure from terminal entry fills, applies Freqtrade's
+amount precision, and requires current trade exposure to equal entries minus
+credited take-profit fills. The logical take-profit stage also drives stoploss
+tightening, so multiple fills or retries within one stage cannot tighten it more
+than once. Discretionary exits are denied while reconciliation is pending or a
+non-stoploss order remains open; stoploss, trailing stoploss, emergency exit, and
+force exit remain available.
+
+An ambiguous submission can be cleared only after checking the CEX order history
+for the complete attempt window. Stop the bot, inspect the state, then use the
+exact confirmation token printed by this procedure:
+
+```shell
+docker compose -f quickadapter/docker-compose.yml stop freqtrade
+docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
+  /freqtrade/user_data/scripts/take_profit_maintenance.py \
+  --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
+  --trade-id 42 --expected-pair ETH/USDT inspect
+docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
+  /freqtrade/user_data/scripts/take_profit_maintenance.py \
+  --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
+  --trade-id 42 --expected-pair ETH/USDT clear-ambiguous \
+  --attempt-id abc123 --apply --confirmation 'NO-ORDER:42:abc123'
+docker compose -f quickadapter/docker-compose.yml start freqtrade
+```
+
+The clear command is unavailable until the persisted recovery deadline. `inspect`
+reports current and expected exposure, their delta, immutable stage targets,
+credits, deferred stages, attributed orders, and operator proofs. For an
+`unknown_terminal_fill` block with a verified positive fill, first correct both
+the canonical Freqtrade order and trade accounting from exchange data. Then
+revalidate that exact order:
+
+```shell
+docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
+  /freqtrade/user_data/scripts/take_profit_maintenance.py \
+  --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
+  --trade-id 42 --expected-pair ETH/USDT revalidate-terminal \
+  --order-id 987654 --apply --confirmation 'RECONCILE:42:987654'
+```
+
+For a verified `canceled` or `cancelled` zero-fill strategy order or stoploss, use
+the status-bound confirmation token printed by `inspect`:
+
+```shell
+docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
+  /freqtrade/user_data/scripts/take_profit_maintenance.py \
+  --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
+  --trade-id 42 --expected-pair ETH/USDT confirm-terminal-zero \
+  --order-id 987654 --terminal-status canceled --apply \
+  --confirmation 'NO-FILL:42:987654:canceled'
+```
+
+Recovery commands recompute the ledger from canonical orders and record a bounded
+audit entry; they never edit orders or trade exposure. A confirmed zero-fill also
+persists an immutable order snapshot outside that bounded audit. Any later change
+to its side, status, amount, remainder, fee, fill, or fill timestamp blocks the
+ledger again. If canonical data still cannot prove the outcome, reconcile the
+position manually or close the trade.
 
 ## ReforceXY
 
