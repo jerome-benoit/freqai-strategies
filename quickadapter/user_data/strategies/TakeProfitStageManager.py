@@ -6,22 +6,60 @@ from decimal import Decimal
 from typing import Literal, Protocol, Self, final
 
 
-TakeProfitAttemptStatus = Literal["proposed", "submitting", "ambiguous"]
-TakeProfitRecoveryPolicy = Literal["tagged_or_unique_untagged", "tagged_only"]
+TakeProfitAttemptStatus = Literal["proposed", "submitting", "open", "ambiguous"]
 TakeProfitOperatorAction = Literal[
     "confirmed_no_remote_order",
+    "confirmed_terminal_canceled_fill",
     "confirmed_terminal_zero_fill",
     "revalidated_terminal_fill",
+    "restored_partial_wallet_mutation",
 ]
-TakeProfitOrderRole = Literal["strategy_exit", "external_exit"]
+TakeProfitRecoveryAction = Literal[
+    "confirm_terminal_canceled",
+    "confirm_terminal_zero",
+    "restore_partial_wallet_mutation",
+    "revalidate_terminal",
+]
+TakeProfitAttributionSource = Literal[
+    "attempt",
+    "operator",
+    "recovered_untagged",
+]
 
 
 _OPERATOR_ZERO_FILL_STATUSES = frozenset({"canceled", "cancelled"})
+_NATIVE_WALLET_RESTORATION_STATUSES = frozenset({"closed", "expired", "rejected"})
+_CONFIRMABLE_TERMINAL_BLOCK_REASONS = frozenset(
+    {
+        "confirmed_terminal_canceled_fill_changed",
+        "confirmed_terminal_zero_fill_changed",
+        "unknown_terminal_fill",
+    }
+)
+_REVALIDATABLE_TERMINAL_BLOCK_REASONS = frozenset(
+    {
+        "attributed_fill_regressed",
+        "attributed_order_amount_changed",
+        "attributed_order_tag_changed",
+        *_CONFIRMABLE_TERMINAL_BLOCK_REASONS,
+        "unattributed_exit_fill",
+    }
+)
 _BLOCKED_ORDER_ID_REASONS = frozenset(
     {
         "confirmed_terminal_zero_fill_changed",
         "confirmed_terminal_zero_fill_order_missing",
+        "confirmed_terminal_canceled_fill_changed",
+        "confirmed_terminal_canceled_fill_order_missing",
+        "attributed_fill_regressed",
+        "attributed_order_amount_changed",
+        "attributed_order_missing",
+        "attributed_order_provenance_changed",
+        "attributed_order_reopened",
+        "attributed_order_side_changed",
+        "attributed_order_tag_changed",
         "multiple_attempt_orders",
+        "partial_wallet_order_changed",
         "unknown_attempt_order",
         "unknown_external_exit_fill",
         "unknown_terminal_fill",
@@ -65,12 +103,6 @@ class _Order(Protocol):
     def safe_amount_after_fee(self) -> float: ...
 
     @property
-    def safe_filled(self) -> float: ...
-
-    @property
-    def safe_remaining(self) -> float: ...
-
-    @property
     def status(self) -> str | None: ...
 
 
@@ -88,10 +120,37 @@ class _Trade(Protocol):
     def orders(self) -> Sequence[_Order]: ...
 
     @property
-    def stake_amount(self) -> float: ...
-
-    @property
     def trade_direction(self) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TakeProfitRecoveryInstruction:
+    """Single supported operator recovery path for the current blocked state."""
+
+    action: TakeProfitRecoveryAction
+    order_id: str
+    terminal_status: str | None = None
+    attempt_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.order_id)
+        if self.action == "restore_partial_wallet_mutation":
+            _non_empty_string(self.attempt_id)
+            if self.terminal_status not in _NATIVE_WALLET_RESTORATION_STATUSES:
+                raise ValueError("Wallet restoration has an invalid terminal status")
+        elif self.action in {
+            "confirm_terminal_canceled",
+            "confirm_terminal_zero",
+        }:
+            if self.attempt_id is not None:
+                raise ValueError("Terminal proof instruction has an attempt ID")
+            if self.terminal_status not in _OPERATOR_ZERO_FILL_STATUSES:
+                raise ValueError("Terminal proof instruction has an invalid status")
+        elif self.action == "revalidate_terminal":
+            if self.attempt_id is not None or self.terminal_status is not None:
+                raise ValueError("Revalidation instruction has terminal fields")
+        else:
+            raise ValueError(f"Invalid take-profit recovery action {self.action!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +166,6 @@ class TakeProfitAttempt:
     submitted_at: str | None
     recovery_deadline: str
     known_order_ids: tuple[str, ...]
-    recovery_policy: TakeProfitRecoveryPolicy
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -122,13 +180,12 @@ class TakeProfitAttempt:
             "submitted_at": self.submitted_at,
             "recovery_deadline": self.recovery_deadline,
             "known_order_ids": list(self.known_order_ids),
-            "recovery_policy": self.recovery_policy,
         }
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> Self:
         status = value.get("status")
-        if status not in {"proposed", "submitting", "ambiguous"}:
+        if status not in {"proposed", "submitting", "open", "ambiguous"}:
             raise ValueError(f"Invalid take-profit attempt status {status!r}")
         submitted_at = value.get("submitted_at")
         if submitted_at is not None and not isinstance(submitted_at, str):
@@ -140,13 +197,6 @@ class TakeProfitAttempt:
             raise ValueError("Invalid take-profit attempt known_order_ids")
         if len(known_order_ids) != len(set(known_order_ids)):
             raise ValueError("Duplicate take-profit attempt known order")
-        recovery_policy = value.get("recovery_policy")
-        if recovery_policy not in {
-            "tagged_or_unique_untagged",
-            "tagged_only",
-        }:
-            raise ValueError("Invalid take-profit recovery policy")
-
         attempt_id = _required_string(value, "attempt_id")
         stage = _required_non_negative_int(value, "stage")
         amount = _required_non_negative_float(value, "amount")
@@ -161,14 +211,14 @@ class TakeProfitAttempt:
         )
         if amount == 0.0 or stake_amount == 0.0:
             raise ValueError("Take-profit attempt amounts must be positive")
-        if status in {"submitting", "ambiguous"} and submitted_time is None:
+        if status in {"submitting", "open", "ambiguous"} and submitted_time is None:
             raise ValueError("Submitted take-profit attempt has no timestamp")
         if submitted_time is not None and submitted_time < created_time:
             raise ValueError("Take-profit attempt was submitted before creation")
         if recovery_time < (submitted_time or created_time):
             raise ValueError("Take-profit recovery deadline precedes submission")
         parsed_tag = TakeProfitStageManager.parse_order_tag(tag)
-        if parsed_tag is None or parsed_tag[1] != stage or parsed_tag[2] != attempt_id:
+        if parsed_tag is None or parsed_tag[1] != stage:
             raise ValueError("Take-profit attempt tag does not match its identity")
 
         return cls(
@@ -183,7 +233,6 @@ class TakeProfitAttempt:
             submitted_at=submitted_at,
             recovery_deadline=recovery_deadline,
             known_order_ids=tuple(known_order_ids),
-            recovery_policy=recovery_policy,
         )
 
 
@@ -423,6 +472,18 @@ class TakeProfitOperatorResolution:
                 or self.terminal_status not in _OPERATOR_ZERO_FILL_STATUSES
             ):
                 raise ValueError("Terminal zero-fill resolution has invalid fields")
+        elif self.action == "confirmed_terminal_canceled_fill":
+            _non_empty_string(self.order_id)
+            if (
+                self.attempt_id is not None
+                or self.credited_amount is None
+                or self.terminal_status not in _OPERATOR_ZERO_FILL_STATUSES
+            ):
+                raise ValueError("Terminal canceled-fill resolution has invalid fields")
+            _required_positive_value(
+                self.credited_amount,
+                "terminal canceled-fill resolution credit",
+            )
         elif self.action == "revalidated_terminal_fill":
             _non_empty_string(self.order_id)
             if (
@@ -432,6 +493,17 @@ class TakeProfitOperatorResolution:
             ):
                 raise ValueError("Terminal-fill resolution has invalid fields")
             _non_negative_float(self.credited_amount)
+        elif self.action == "restored_partial_wallet_mutation":
+            _non_empty_string(self.attempt_id)
+            _non_empty_string(self.order_id)
+            if self.credited_amount is not None or self.terminal_status is None:
+                raise ValueError(
+                    "Partial-wallet restoration has invalid terminal fields"
+                )
+            if self.terminal_status not in _NATIVE_WALLET_RESTORATION_STATUSES:
+                raise ValueError(
+                    "Partial-wallet restoration has an invalid terminal status"
+                )
         else:
             raise ValueError(f"Invalid take-profit operator action {self.action!r}")
 
@@ -450,8 +522,10 @@ class TakeProfitOperatorResolution:
         action = value.get("action")
         if action not in {
             "confirmed_no_remote_order",
+            "confirmed_terminal_canceled_fill",
             "confirmed_terminal_zero_fill",
             "revalidated_terminal_fill",
+            "restored_partial_wallet_mutation",
         }:
             raise ValueError(f"Invalid take-profit operator action {action!r}")
         attempt_id = value.get("attempt_id")
@@ -483,8 +557,9 @@ class TakeProfitZeroFillProof:
     """Immutable canonical snapshot accepted by an explicit operator action."""
 
     order_id: str
-    order_role: TakeProfitOrderRole
+    order_date: str
     order_side: str
+    order_tag: str | None
     terminal_status: str
     amount: float
     remaining: float
@@ -493,9 +568,10 @@ class TakeProfitZeroFillProof:
 
     def __post_init__(self) -> None:
         _non_empty_string(self.order_id)
-        if self.order_role not in {"strategy_exit", "external_exit"}:
-            raise ValueError("Invalid terminal zero-fill order role")
+        order_date = _parse_iso_datetime(self.order_date)
         _non_empty_string(self.order_side)
+        if self.order_tag is not None:
+            _non_empty_string(self.order_tag)
         if self.terminal_status not in _OPERATOR_ZERO_FILL_STATUSES:
             raise ValueError("Invalid operator-confirmed zero-fill status")
         amount = _required_positive_value(self.amount, "zero-fill proof amount")
@@ -504,13 +580,16 @@ class TakeProfitZeroFillProof:
             raise ValueError("Terminal zero-fill proof has an inconsistent remainder")
         if _non_negative_float(self.fee_base) != 0.0:
             raise ValueError("Terminal zero-fill proof has a base fee")
-        _parse_iso_datetime(self.confirmed_at)
+        confirmed_at = _parse_iso_datetime(self.confirmed_at)
+        if confirmed_at < order_date:
+            raise ValueError("Terminal zero fill was confirmed before order creation")
 
     def to_mapping(self) -> dict[str, object]:
         return {
             "order_id": self.order_id,
-            "order_role": self.order_role,
+            "order_date": self.order_date,
             "order_side": self.order_side,
+            "order_tag": self.order_tag,
             "terminal_status": self.terminal_status,
             "amount": self.amount,
             "remaining": self.remaining,
@@ -520,18 +599,304 @@ class TakeProfitZeroFillProof:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> Self:
-        order_role = value.get("order_role")
-        if order_role not in {"strategy_exit", "external_exit"}:
-            raise ValueError("Invalid terminal zero-fill order role")
+        order_tag = value.get("order_tag")
+        if order_tag is not None and not isinstance(order_tag, str):
+            raise ValueError("Invalid terminal zero-fill order tag")
         return cls(
             order_id=_required_string(value, "order_id"),
-            order_role=order_role,
+            order_date=_required_string(value, "order_date"),
             order_side=_required_string(value, "order_side"),
+            order_tag=order_tag,
             terminal_status=_required_string(value, "terminal_status"),
             amount=_required_positive_float(value, "amount"),
             remaining=_required_non_negative_float(value, "remaining"),
             fee_base=_required_non_negative_float(value, "fee_base"),
             confirmed_at=_required_string(value, "confirmed_at"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TakeProfitCanceledFillProof:
+    """Exact canonical snapshot required for a canceled positive fill."""
+
+    order_id: str
+    order_date: str
+    order_side: str
+    order_tag: str | None
+    terminal_status: str
+    amount: float
+    filled: float
+    remaining: float
+    fee_base: float
+    filled_at: str
+    confirmed_at: str
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.order_id)
+        order_date = _parse_iso_datetime(self.order_date)
+        _non_empty_string(self.order_side)
+        if self.order_tag is not None:
+            _non_empty_string(self.order_tag)
+        if self.terminal_status not in _OPERATOR_ZERO_FILL_STATUSES:
+            raise ValueError("Invalid operator-confirmed canceled-fill status")
+        amount = _required_positive_value(self.amount, "canceled-fill proof amount")
+        filled = _required_positive_value(self.filled, "canceled-fill proof fill")
+        remaining = _non_negative_float(self.remaining)
+        fee_base = _non_negative_float(self.fee_base)
+        if filled > amount and not math.isclose(
+            filled,
+            amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Terminal canceled-fill proof exceeds its amount")
+        if not math.isclose(
+            min(filled, amount) + remaining,
+            amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                "Terminal canceled-fill proof has an inconsistent remainder"
+            )
+        if fee_base >= filled or math.isclose(
+            fee_base,
+            filled,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Terminal canceled-fill proof fee consumes its fill")
+        filled_at = _parse_iso_datetime(self.filled_at)
+        confirmed_at = _parse_iso_datetime(self.confirmed_at)
+        if filled_at < order_date or confirmed_at < filled_at:
+            raise ValueError("Terminal canceled fill has an invalid timeline")
+
+    @property
+    def credited_amount(self) -> float:
+        return min(self.filled, self.amount) - self.fee_base
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "order_id": self.order_id,
+            "order_date": self.order_date,
+            "order_side": self.order_side,
+            "order_tag": self.order_tag,
+            "terminal_status": self.terminal_status,
+            "amount": self.amount,
+            "filled": self.filled,
+            "remaining": self.remaining,
+            "fee_base": self.fee_base,
+            "filled_at": self.filled_at,
+            "confirmed_at": self.confirmed_at,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> Self:
+        order_tag = value.get("order_tag")
+        if order_tag is not None and not isinstance(order_tag, str):
+            raise ValueError("Invalid terminal canceled-fill order tag")
+        return cls(
+            order_id=_required_string(value, "order_id"),
+            order_date=_required_string(value, "order_date"),
+            order_side=_required_string(value, "order_side"),
+            order_tag=order_tag,
+            terminal_status=_required_string(value, "terminal_status"),
+            amount=_required_positive_float(value, "amount"),
+            filled=_required_positive_float(value, "filled"),
+            remaining=_required_non_negative_float(value, "remaining"),
+            fee_base=_required_non_negative_float(value, "fee_base"),
+            filled_at=_required_string(value, "filled_at"),
+            confirmed_at=_required_string(value, "confirmed_at"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TakeProfitOrderAttribution:
+    """Immutable evidence binding one canonical order to take-profit execution."""
+
+    order_id: str
+    tag: str | None
+    side: str
+    stage: int
+    attempt_id: str | None
+    order_date: str
+    maximum_amount: float
+    order_amount: float
+    source: TakeProfitAttributionSource
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.order_id)
+        if self.tag is not None:
+            _non_empty_string(self.tag)
+        _non_empty_string(self.side)
+        _non_negative_int(self.stage)
+        if self.attempt_id is not None:
+            _non_empty_string(self.attempt_id)
+        _parse_iso_datetime(self.order_date)
+        maximum_amount = _required_positive_value(
+            self.maximum_amount,
+            "attribution maximum amount",
+        )
+        order_amount = _required_positive_value(
+            self.order_amount,
+            "attribution order amount",
+        )
+        if order_amount > maximum_amount and not math.isclose(
+            order_amount,
+            maximum_amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Attributed order exceeds its maximum amount")
+        if self.source not in {
+            "attempt",
+            "operator",
+            "recovered_untagged",
+        }:
+            raise ValueError("Invalid take-profit attribution source")
+        if self.source == "attempt":
+            _non_empty_string(self.attempt_id)
+            parsed_tag = TakeProfitStageManager.parse_order_tag(self.tag)
+            if parsed_tag is None or parsed_tag[1] != self.stage:
+                raise ValueError("Attempt attribution has an invalid stable tag")
+        elif self.source == "recovered_untagged":
+            _non_empty_string(self.attempt_id)
+            if self.tag is not None:
+                raise ValueError("Recovered untagged attribution has invalid evidence")
+        else:
+            parsed_tag = TakeProfitStageManager.parse_order_tag(self.tag)
+            if parsed_tag is None or parsed_tag[1] != self.stage:
+                raise ValueError("Operator attribution has an invalid tag")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "order_id": self.order_id,
+            "tag": self.tag,
+            "side": self.side,
+            "stage": self.stage,
+            "attempt_id": self.attempt_id,
+            "order_date": self.order_date,
+            "maximum_amount": self.maximum_amount,
+            "order_amount": self.order_amount,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> Self:
+        source = value.get("source")
+        if source not in {
+            "attempt",
+            "operator",
+            "recovered_untagged",
+        }:
+            raise ValueError("Invalid take-profit attribution source")
+        attempt_id = value.get("attempt_id")
+        return cls(
+            order_id=_required_string(value, "order_id"),
+            tag=(
+                _non_empty_string(value.get("tag"))
+                if value.get("tag") is not None
+                else None
+            ),
+            side=_required_string(value, "side"),
+            stage=_required_non_negative_int(value, "stage"),
+            attempt_id=(
+                _non_empty_string(attempt_id) if attempt_id is not None else None
+            ),
+            order_date=_required_string(value, "order_date"),
+            maximum_amount=_required_positive_float(value, "maximum_amount"),
+            order_amount=_required_positive_float(value, "order_amount"),
+            source=source,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TakeProfitPartialWalletMutation:
+    """Fail-closed evidence of Freqtrade's partial-exit wallet mutation."""
+
+    attempt_id: str
+    order_id: str | None
+    expected_trade_amount: float
+    requested_exit_amount: float
+    observed_trade_amount: float
+    wallet_shortfall_amount: float
+    attempt_submitted_at: str
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.attempt_id)
+        if self.order_id is not None:
+            _non_empty_string(self.order_id)
+        expected = _required_positive_value(
+            self.expected_trade_amount,
+            "partial wallet mutation expected amount",
+        )
+        requested = _required_positive_value(
+            self.requested_exit_amount,
+            "partial wallet mutation requested amount",
+        )
+        observed = _required_positive_value(
+            self.observed_trade_amount,
+            "partial wallet mutation observed amount",
+        )
+        shortfall = _required_positive_value(
+            self.wallet_shortfall_amount,
+            "partial wallet mutation wallet shortfall",
+        )
+        if (
+            expected < requested
+            and not math.isclose(
+                expected,
+                requested,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+        ) or observed >= expected:
+            raise ValueError("Partial wallet mutation is not a partial-exit mutation")
+        if observed >= requested or observed < requested * 0.98:
+            raise ValueError("Partial wallet mutation is outside the fallback window")
+        if not math.isclose(
+            requested - observed,
+            shortfall,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Partial wallet mutation shortfall is inconsistent")
+        _parse_iso_datetime(self.attempt_submitted_at)
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "attempt_id": self.attempt_id,
+            "order_id": self.order_id,
+            "expected_trade_amount": self.expected_trade_amount,
+            "requested_exit_amount": self.requested_exit_amount,
+            "observed_trade_amount": self.observed_trade_amount,
+            "wallet_shortfall_amount": self.wallet_shortfall_amount,
+            "attempt_submitted_at": self.attempt_submitted_at,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> Self:
+        order_id = value.get("order_id")
+        return cls(
+            attempt_id=_required_string(value, "attempt_id"),
+            order_id=_non_empty_string(order_id) if order_id is not None else None,
+            expected_trade_amount=_required_positive_float(
+                value,
+                "expected_trade_amount",
+            ),
+            requested_exit_amount=_required_positive_float(
+                value,
+                "requested_exit_amount",
+            ),
+            observed_trade_amount=_required_positive_float(
+                value,
+                "observed_trade_amount",
+            ),
+            wallet_shortfall_amount=_required_positive_float(
+                value,
+                "wallet_shortfall_amount",
+            ),
+            attempt_submitted_at=_required_string(value, "attempt_submitted_at"),
         )
 
 
@@ -542,18 +907,22 @@ class TakeProfitStageState:
     initial_amount: float
     stage_targets: tuple[tuple[int, float], ...]
     deferred_stages: tuple[int, ...]
-    attributed_order_ids: tuple[str, ...]
+    order_attributions: tuple[TakeProfitOrderAttribution, ...]
     credited_order_amounts: tuple[tuple[str, float], ...]
     non_take_profit_exit_order_amounts: tuple[tuple[str, float], ...]
     entry_order_amounts: tuple[tuple[str, float], ...]
     exposure_adjustments: tuple[TakeProfitExposureAdjustment, ...]
+    compacted_exposure_adjustment_count: int
+    compacted_exposure_adjustment_amount: float
     confirmed_zero_fill_orders: tuple[TakeProfitZeroFillProof, ...]
+    confirmed_canceled_fill_orders: tuple[TakeProfitCanceledFillProof, ...]
     operator_resolutions: tuple[TakeProfitOperatorResolution, ...]
+    partial_wallet_mutation: TakeProfitPartialWalletMutation | None = None
     active_attempt: TakeProfitAttempt | None = None
     blocked_reason: str | None = None
     blocked_order_id: str | None = None
 
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 1
     MAX_OPERATOR_RESOLUTIONS = 32
     MAX_EXPOSURE_ADJUSTMENTS = 32
 
@@ -567,7 +936,9 @@ class TakeProfitStageState:
                 for stage, amount in self.stage_targets
             ],
             "deferred_stages": list(self.deferred_stages),
-            "attributed_order_ids": list(self.attributed_order_ids),
+            "order_attributions": [
+                attribution.to_mapping() for attribution in self.order_attributions
+            ],
             "credited_order_amounts": [
                 {"order_id": order_id, "amount": amount}
                 for order_id, amount in self.credited_order_amounts
@@ -583,12 +954,26 @@ class TakeProfitStageState:
             "exposure_adjustments": [
                 adjustment.to_mapping() for adjustment in self.exposure_adjustments
             ],
+            "compacted_exposure_adjustment_count": (
+                self.compacted_exposure_adjustment_count
+            ),
+            "compacted_exposure_adjustment_amount": (
+                self.compacted_exposure_adjustment_amount
+            ),
             "confirmed_zero_fill_orders": [
                 proof.to_mapping() for proof in self.confirmed_zero_fill_orders
+            ],
+            "confirmed_canceled_fill_orders": [
+                proof.to_mapping() for proof in self.confirmed_canceled_fill_orders
             ],
             "operator_resolutions": [
                 resolution.to_mapping() for resolution in self.operator_resolutions
             ],
+            "partial_wallet_mutation": (
+                self.partial_wallet_mutation.to_mapping()
+                if self.partial_wallet_mutation is not None
+                else None
+            ),
             "active_attempt": (
                 self.active_attempt.to_mapping()
                 if self.active_attempt is not None
@@ -601,10 +986,10 @@ class TakeProfitStageState:
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> Self:
         version = _required_non_negative_int(value, "version")
-        if version not in {4, cls.SCHEMA_VERSION}:
+        if version != cls.SCHEMA_VERSION:
             raise ValueError(
                 f"Unsupported take-profit state version {version!r}; "
-                f"expected 4 or {cls.SCHEMA_VERSION}"
+                f"expected {cls.SCHEMA_VERSION}"
             )
 
         plan_raw = value.get("plan_signature")
@@ -650,22 +1035,44 @@ class TakeProfitStageState:
         ).issubset(stages):
             raise ValueError("Invalid take-profit deferred stage")
 
-        attributed_raw = value.get("attributed_order_ids")
-        if not isinstance(attributed_raw, list) or not all(
-            isinstance(order_id, str) and order_id for order_id in attributed_raw
+        attributions_raw = value.get("order_attributions")
+        if not isinstance(attributions_raw, list) or not all(
+            isinstance(attribution, Mapping) for attribution in attributions_raw
         ):
-            raise ValueError("Invalid take-profit attributed_order_ids")
-        attributed_order_ids = tuple(attributed_raw)
-        if len(attributed_order_ids) != len(set(attributed_order_ids)):
+            raise ValueError("Invalid take-profit order attributions")
+        order_attributions = tuple(
+            TakeProfitOrderAttribution.from_mapping(attribution)
+            for attribution in attributions_raw
+            if isinstance(attribution, Mapping)
+        )
+        attribution_order_ids = tuple(
+            attribution.order_id for attribution in order_attributions
+        )
+        if len(attribution_order_ids) != len(set(attribution_order_ids)):
             raise ValueError("Duplicate attributed take-profit order")
+        attribution_attempt_ids = tuple(
+            attribution.attempt_id
+            for attribution in order_attributions
+            if attribution.attempt_id is not None
+        )
+        if len(attribution_attempt_ids) != len(set(attribution_attempt_ids)):
+            raise ValueError("Take-profit attempt is attributed to multiple orders")
+        all_stages = {
+            *planned_stages,
+            plan_signature.final_stage.stage,
+        }
+        if any(
+            attribution.stage not in all_stages for attribution in order_attributions
+        ):
+            raise ValueError("Attributed order has an invalid take-profit stage")
 
         credited_order_amounts = _parse_amount_records(
             value.get("credited_order_amounts"),
             identifier_key="order_id",
             identifier_parser=_non_empty_string,
         )
-        if not set(order_id for order_id, _ in credited_order_amounts).issubset(
-            attributed_order_ids
+        if not {order_id for order_id, _ in credited_order_amounts}.issubset(
+            attribution_order_ids
         ):
             raise ValueError("Credited take-profit order is not attributed")
         total_credited = math.fsum(amount for _, amount in credited_order_amounts)
@@ -678,13 +1085,11 @@ class TakeProfitStageState:
             raise ValueError("Credited take-profit amount exceeds the initial amount")
 
         non_take_profit_exit_order_amounts = _parse_amount_records(
-            value.get("non_take_profit_exit_order_amounts", [])
-            if version == 4
-            else value.get("non_take_profit_exit_order_amounts"),
+            value.get("non_take_profit_exit_order_amounts"),
             identifier_key="order_id",
             identifier_parser=_non_empty_string,
         )
-        take_profit_order_ids = set(attributed_order_ids)
+        take_profit_order_ids = set(attribution_order_ids)
         non_take_profit_order_ids = {
             order_id for order_id, _ in non_take_profit_exit_order_amounts
         }
@@ -699,7 +1104,7 @@ class TakeProfitStageState:
             identifier_parser=_non_empty_string,
         )
 
-        adjustments_raw = [] if version == 4 else value.get("exposure_adjustments")
+        adjustments_raw = value.get("exposure_adjustments")
         if not isinstance(adjustments_raw, list) or not all(
             isinstance(adjustment, Mapping) for adjustment in adjustments_raw
         ):
@@ -716,6 +1121,18 @@ class TakeProfitStageState:
             raise ValueError("Duplicate take-profit exposure adjustment")
         if len(exposure_adjustments) > cls.MAX_EXPOSURE_ADJUSTMENTS:
             raise ValueError("Too many take-profit exposure adjustments")
+        compacted_exposure_adjustment_count = _required_non_negative_int(
+            value,
+            "compacted_exposure_adjustment_count",
+        )
+        compacted_exposure_adjustment_amount = _required_non_negative_float(
+            value,
+            "compacted_exposure_adjustment_amount",
+        )
+        if (compacted_exposure_adjustment_count == 0) != (
+            compacted_exposure_adjustment_amount == 0.0
+        ):
+            raise ValueError("Invalid compacted exposure adjustment aggregate")
         total_exit_credited = total_credited + math.fsum(
             amount for _, amount in non_take_profit_exit_order_amounts
         )
@@ -761,6 +1178,24 @@ class TakeProfitStageState:
         if len(proof_order_ids) != len(set(proof_order_ids)):
             raise ValueError("Duplicate terminal zero-fill proof")
 
+        canceled_proofs_raw = value.get("confirmed_canceled_fill_orders")
+        if not isinstance(canceled_proofs_raw, list) or not all(
+            isinstance(proof, Mapping) for proof in canceled_proofs_raw
+        ):
+            raise ValueError("Invalid take-profit confirmed canceled-fill orders")
+        confirmed_canceled_fill_orders = tuple(
+            TakeProfitCanceledFillProof.from_mapping(proof)
+            for proof in canceled_proofs_raw
+            if isinstance(proof, Mapping)
+        )
+        canceled_proof_order_ids = tuple(
+            proof.order_id for proof in confirmed_canceled_fill_orders
+        )
+        if len(canceled_proof_order_ids) != len(set(canceled_proof_order_ids)):
+            raise ValueError("Duplicate terminal canceled-fill proof")
+        if set(canceled_proof_order_ids) & set(proof_order_ids):
+            raise ValueError("Terminal order has conflicting operator proofs")
+
         resolutions_raw = value.get("operator_resolutions")
         if not isinstance(resolutions_raw, list) or not all(
             isinstance(resolution, Mapping) for resolution in resolutions_raw
@@ -780,27 +1215,9 @@ class TakeProfitStageState:
         )
         if len(resolved_attempt_ids) != len(set(resolved_attempt_ids)):
             raise ValueError("Duplicate take-profit operator resolution")
-        revalidated_order_ids = tuple(
-            resolution.order_id
-            for resolution in operator_resolutions
-            if resolution.action == "revalidated_terminal_fill"
-        )
-        if len(revalidated_order_ids) != len(set(revalidated_order_ids)):
-            raise ValueError("Duplicate take-profit terminal-fill resolution")
-
         active_raw = value.get("active_attempt")
         if active_raw is not None and not isinstance(active_raw, Mapping):
             raise ValueError("Invalid take-profit active_attempt")
-        if version == 4 and isinstance(active_raw, Mapping):
-            active_raw = dict(active_raw)
-            active_raw.setdefault(
-                "recovery_policy",
-                "tagged_or_unique_untagged",
-            )
-            if active_raw.get("status") == "proposed":
-                active_raw["status"] = "ambiguous"
-                active_raw["submitted_at"] = active_raw.get("created_at")
-                active_raw["recovery_policy"] = "tagged_only"
         active_attempt = (
             TakeProfitAttempt.from_mapping(active_raw)
             if isinstance(active_raw, Mapping)
@@ -820,22 +1237,102 @@ class TakeProfitStageState:
             and active_attempt.attempt_id in resolved_attempt_ids
         ):
             raise ValueError("Resolved take-profit attempt cannot remain active")
-
         blocked_reason = value.get("blocked_reason")
         if blocked_reason is not None and not isinstance(blocked_reason, str):
             raise ValueError("Invalid take-profit blocked_reason")
         blocked_order_id = value.get("blocked_order_id")
         if blocked_reason in _BLOCKED_ORDER_ID_REASONS:
-            if not (
-                version == 4
-                and blocked_reason == "unattributed_exit_fill"
-                and blocked_order_id is None
-            ):
-                blocked_order_id = _non_empty_string(blocked_order_id)
+            blocked_order_id = _non_empty_string(blocked_order_id)
         elif blocked_reason is None and blocked_order_id is not None:
             raise ValueError("Take-profit blocked_order_id requires a blocked state")
         elif blocked_order_id is not None:
             blocked_order_id = _non_empty_string(blocked_order_id)
+
+        partial_wallet_raw = value.get("partial_wallet_mutation")
+        if partial_wallet_raw is not None and not isinstance(
+            partial_wallet_raw,
+            Mapping,
+        ):
+            raise ValueError("Invalid take-profit partial wallet mutation")
+        partial_wallet_mutation = (
+            TakeProfitPartialWalletMutation.from_mapping(partial_wallet_raw)
+            if isinstance(partial_wallet_raw, Mapping)
+            else None
+        )
+        if partial_wallet_mutation is not None:
+            if (
+                active_attempt is None
+                or active_attempt.attempt_id != partial_wallet_mutation.attempt_id
+                or active_attempt.status not in {"open", "ambiguous"}
+            ):
+                raise ValueError("Partial wallet mutation has no matching attempt")
+            if partial_wallet_mutation.order_id is None:
+                if active_attempt.status != "ambiguous":
+                    raise ValueError("Unbound partial wallet attempt is not ambiguous")
+                if blocked_reason != "partial_wallet_mutation":
+                    raise ValueError("Unbound partial wallet mutation must be blocked")
+            elif (
+                blocked_reason == "partial_wallet_order_changed"
+                and blocked_order_id != partial_wallet_mutation.order_id
+            ):
+                raise ValueError(
+                    "Bound partial wallet mutation has invalid order block"
+                )
+            if not math.isclose(
+                partial_wallet_mutation.requested_exit_amount,
+                active_attempt.amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            ) or partial_wallet_mutation.attempt_submitted_at != (
+                active_attempt.submitted_at or active_attempt.created_at
+            ):
+                raise ValueError("Partial wallet mutation does not match its attempt")
+        elif blocked_reason == "partial_wallet_mutation":
+            raise ValueError("Partial wallet block has no mutation evidence")
+
+        active_attributions = (
+            tuple(
+                attribution
+                for attribution in order_attributions
+                if active_attempt is not None
+                and attribution.attempt_id == active_attempt.attempt_id
+            )
+            if active_attempt is not None
+            else ()
+        )
+        if active_attributions:
+            if (
+                len(active_attributions) != 1
+                or partial_wallet_mutation is None
+                or partial_wallet_mutation.order_id != active_attributions[0].order_id
+            ):
+                raise ValueError("Active attempt has invalid attributed order evidence")
+            attribution = active_attributions[0]
+            tag_matches = (
+                attribution.tag is None
+                if attribution.source == "recovered_untagged"
+                else attribution.tag == active_attempt.tag
+            )
+            if (
+                attribution.source not in {"attempt", "recovered_untagged"}
+                or attribution.stage != active_attempt.stage
+                or attribution.side != active_attempt.exit_side
+                or not tag_matches
+                or not math.isclose(
+                    attribution.maximum_amount,
+                    active_attempt.amount,
+                    rel_tol=1e-9,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise ValueError("Active attempt attribution does not match its intent")
+        elif (
+            partial_wallet_mutation is not None
+            and partial_wallet_mutation.order_id is not None
+        ):
+            raise ValueError("Bound partial wallet mutation has no attribution")
+        elif active_attempt is not None and active_attempt.status == "open":
+            raise ValueError("Open take-profit attempt has no attributed order")
 
         return cls(
             version=cls.SCHEMA_VERSION,
@@ -843,20 +1340,34 @@ class TakeProfitStageState:
             initial_amount=initial_amount,
             stage_targets=tuple(sorted(stage_targets)),
             deferred_stages=tuple(sorted(deferred_stages)),
-            attributed_order_ids=tuple(sorted(attributed_order_ids)),
+            order_attributions=tuple(
+                sorted(
+                    order_attributions,
+                    key=lambda attribution: attribution.order_id,
+                )
+            ),
             credited_order_amounts=tuple(sorted(credited_order_amounts)),
             non_take_profit_exit_order_amounts=tuple(
                 sorted(non_take_profit_exit_order_amounts)
             ),
             entry_order_amounts=tuple(sorted(entry_order_amounts)),
             exposure_adjustments=exposure_adjustments,
+            compacted_exposure_adjustment_count=(compacted_exposure_adjustment_count),
+            compacted_exposure_adjustment_amount=(compacted_exposure_adjustment_amount),
             confirmed_zero_fill_orders=tuple(
                 sorted(
                     confirmed_zero_fill_orders,
                     key=lambda proof: proof.order_id,
                 )
             ),
+            confirmed_canceled_fill_orders=tuple(
+                sorted(
+                    confirmed_canceled_fill_orders,
+                    key=lambda proof: proof.order_id,
+                )
+            ),
             operator_resolutions=operator_resolutions,
+            partial_wallet_mutation=partial_wallet_mutation,
             active_attempt=active_attempt,
             blocked_reason=blocked_reason,
             blocked_order_id=blocked_order_id,
@@ -880,7 +1391,6 @@ class TakeProfitStageManager:
 
     STATE_KEY = "take_profit_state"
     _TAG_PREFIX = "take_profit"
-    _EMERGENCY_EXIT_TAG = "emergency_exit"
     _AMOUNT_REL_TOL = 1e-9
     _AMOUNT_ABS_TOL = 1e-12
     _TERMINAL_STATUSES = frozenset(
@@ -893,18 +1403,12 @@ class TakeProfitStageManager:
         cls,
         trade_direction: str,
         stage: int,
-        attempt_id: str | None = None,
     ) -> str:
         if stage < 0:
             raise ValueError(
                 f"Invalid take-profit stage {stage!r}: must be non-negative"
             )
-        tag = f"{cls._TAG_PREFIX}_{trade_direction}_{stage}"
-        if attempt_id is not None:
-            if not attempt_id or "_" in attempt_id:
-                raise ValueError(f"Invalid take-profit attempt ID {attempt_id!r}")
-            tag = f"{tag}_{attempt_id}"
-        return tag
+        return f"{cls._TAG_PREFIX}_{trade_direction}_{stage}"
 
     @classmethod
     def has_order_tag_prefix(cls, value: object) -> bool:
@@ -914,14 +1418,14 @@ class TakeProfitStageManager:
     def parse_order_tag(
         cls,
         tag: object,
-    ) -> tuple[str, int, str | None] | None:
+    ) -> tuple[str, int] | None:
         if not isinstance(tag, str):
             return None
         prefix = f"{cls._TAG_PREFIX}_"
         if not tag.startswith(prefix):
             return None
         parts = tag.removeprefix(prefix).split("_")
-        if len(parts) not in {2, 3}:
+        if len(parts) != 2:
             return None
         try:
             stage = int(parts[1])
@@ -929,8 +1433,7 @@ class TakeProfitStageManager:
             return None
         if stage < 0 or not parts[0]:
             return None
-        attempt_id = parts[2] if len(parts) == 3 and parts[2] else None
-        return parts[0], stage, attempt_id
+        return parts[0], stage
 
     @classmethod
     def initialize(
@@ -968,12 +1471,15 @@ class TakeProfitStageManager:
             initial_amount=initial_amount,
             stage_targets=plan_signature.derive_stage_targets(initial_amount),
             deferred_stages=(),
-            attributed_order_ids=(),
+            order_attributions=(),
             credited_order_amounts=(),
             non_take_profit_exit_order_amounts=(),
             entry_order_amounts=tuple(sorted(entry_order_amounts.items())),
             exposure_adjustments=(),
+            compacted_exposure_adjustment_count=0,
+            compacted_exposure_adjustment_amount=0.0,
             confirmed_zero_fill_orders=(),
+            confirmed_canceled_fill_orders=(),
             operator_resolutions=(),
             blocked_reason=blocked_reason,
         )
@@ -1038,6 +1544,23 @@ class TakeProfitStageManager:
                     "confirmed_terminal_zero_fill_changed",
                     order_id=proof.order_id,
                 )
+        confirmed_canceled_fill_orders = {
+            proof.order_id: proof for proof in state.confirmed_canceled_fill_orders
+        }
+        for proof in state.confirmed_canceled_fill_orders:
+            order = orders_by_id.get(proof.order_id)
+            if order is None:
+                return cls._block(
+                    state,
+                    "confirmed_terminal_canceled_fill_order_missing",
+                    order_id=proof.order_id,
+                )
+            if not cls._canceled_fill_proof_matches(trade, order, proof):
+                return cls._block(
+                    state,
+                    "confirmed_terminal_canceled_fill_changed",
+                    order_id=proof.order_id,
+                )
 
         if any(
             order.ft_order_side == trade.entry_side and order.ft_is_open
@@ -1061,8 +1584,14 @@ class TakeProfitStageManager:
         if not cls._amounts_close(canonical_initial_amount, state.initial_amount):
             return cls._block(state, "initial_exposure_mismatch")
 
-        configured_stages = {stage for stage, _ in state.stage_targets}
-        attributed_order_ids = set(state.attributed_order_ids)
+        configured_stages = {
+            *(stage for stage, _ in state.stage_targets),
+            state.plan_signature.final_stage.stage,
+        }
+        order_attributions = {
+            attribution.order_id: attribution
+            for attribution in state.order_attributions
+        }
         credited_order_amounts = dict(state.credited_order_amounts)
         non_take_profit_exit_order_amounts = dict(
             state.non_take_profit_exit_order_amounts
@@ -1075,7 +1604,6 @@ class TakeProfitStageManager:
                 continue
             external_block = cls._external_exit_block(
                 order,
-                confirmed_zero_fill_orders.get(order.order_id),
             )
             if external_block is not None:
                 return cls._block(
@@ -1092,6 +1620,7 @@ class TakeProfitStageManager:
                 terminal_credits[order.order_id] = cls._terminal_credited_amount(
                     order,
                     confirmed_zero_fill_orders.get(order.order_id),
+                    confirmed_canceled_fill_orders.get(order.order_id),
                 )
             except ValueError:
                 return cls._block(
@@ -1100,106 +1629,205 @@ class TakeProfitStageManager:
                     order_id=order.order_id,
                 )
 
-        active_attempt = state.active_attempt
-        matching_attempt_orders: list[_Order] = []
-        if active_attempt is not None:
-            same_attempt_orders = [
-                order
-                for order in strategy_exit_orders
-                if (parsed_tag := cls.parse_order_tag(order.ft_order_tag)) is not None
-                and parsed_tag[2] == active_attempt.attempt_id
-            ]
-            if len(same_attempt_orders) > 1:
-                return cls._block(
-                    state,
-                    "multiple_attempt_orders",
-                    order_id=same_attempt_orders[0].order_id,
-                )
-            matching_attempt_orders = [
-                order
-                for order in same_attempt_orders
-                if order.ft_order_tag == active_attempt.tag
-                and order.ft_order_side == active_attempt.exit_side
-            ]
-
-        for order in strategy_exit_orders:
-            if order.order_id in attributed_order_ids:
-                continue
-            parsed_tag = cls.parse_order_tag(order.ft_order_tag)
-            if parsed_tag is None:
-                if cls.has_order_tag_prefix(order.ft_order_tag):
-                    if order.order_id in confirmed_zero_fill_orders:
-                        continue
-                    return cls._block(
-                        state,
-                        "unknown_attempt_order",
-                        order_id=order.order_id,
-                    )
-                continue
-            if order in matching_attempt_orders:
-                continue
-            direction, stage, attempt_id = parsed_tag
-            if (
-                attempt_id is None
-                and direction == trade.trade_direction
-                and stage in configured_stages
-            ):
-                attributed_order_ids.add(order.order_id)
-                continue
-            if order.order_id in confirmed_zero_fill_orders:
-                continue
-            return cls._block(
-                state,
-                "unknown_attempt_order",
-                order_id=order.order_id,
-            )
-
-        for index, order in enumerate(strategy_exit_orders):
-            if order.order_id in attributed_order_ids:
-                continue
-            predecessor = strategy_exit_orders[index - 1] if index > 0 else None
-            if (
-                order.ft_order_tag == cls._EMERGENCY_EXIT_TAG
-                and predecessor is not None
-                and cls._is_legacy_emergency_successor(
-                    trade,
-                    predecessor,
-                    order,
-                    configured_stages,
-                )
-            ):
-                attributed_order_ids.add(order.order_id)
-
-        if active_attempt is not None:
-            attributed_order_ids.update(
-                order.order_id for order in matching_attempt_orders
-            )
-
-            if not matching_attempt_orders and active_attempt.status in {
-                "submitting",
-                "ambiguous",
-            }:
-                recovered_candidates = [
-                    order
-                    for order in strategy_exit_orders
-                    if cls._is_recovered_attempt_candidate(order, active_attempt)
-                ]
-                if len(recovered_candidates) == 1:
-                    matching_attempt_orders = recovered_candidates
-                    attributed_order_ids.add(recovered_candidates[0].order_id)
-                elif len(recovered_candidates) > 1:
-                    return cls._block(state, "ambiguous_recovered_exit")
-
-        for order_id in attributed_order_ids:
+        for attribution in order_attributions.values():
+            order_id = attribution.order_id
             order = orders_by_id.get(order_id)
             if order is None:
-                return cls._block(state, "attributed_order_missing")
-            if order.ft_order_side != trade.exit_side:
-                return cls._block(state, "attributed_order_side_changed")
+                return cls._block(
+                    state,
+                    "attributed_order_missing",
+                    order_id=order_id,
+                )
+            if (
+                attribution.side != trade.exit_side
+                or order.ft_order_side != attribution.side
+            ):
+                return cls._block(
+                    state,
+                    "attributed_order_side_changed",
+                    order_id=order_id,
+                )
+            if order.ft_order_tag != attribution.tag:
+                return cls._block(
+                    state,
+                    "attributed_order_tag_changed",
+                    order_id=order_id,
+                )
+            order_amount = cls._safe_amount(order.safe_amount)
+            if (
+                not cls._amounts_close(order_amount, attribution.order_amount)
+                or order_amount > attribution.maximum_amount
+                and not cls._amounts_close(
+                    order_amount,
+                    attribution.maximum_amount,
+                )
+            ):
+                return cls._block(
+                    state,
+                    "attributed_order_amount_changed",
+                    order_id=order_id,
+                )
+            if not cls._attribution_provenance_matches(
+                trade,
+                attribution,
+                order,
+                configured_stages,
+            ):
+                return cls._block(
+                    state,
+                    "attributed_order_provenance_changed",
+                    order_id=order_id,
+                )
+
+        active_attempt = state.active_attempt
+        partial_wallet_mutation = state.partial_wallet_mutation
+        matching_attempt_orders: list[_Order] = []
+        pending_partial_wallet_order_id: str | None = None
+        if active_attempt is not None and active_attempt.status in {
+            "submitting",
+            "open",
+            "ambiguous",
+        }:
+            bound_attributions = [
+                attribution
+                for attribution in order_attributions.values()
+                if attribution.attempt_id == active_attempt.attempt_id
+            ]
+            if bound_attributions:
+                if len(bound_attributions) != 1:
+                    return cls._block(state, "multiple_attempt_orders")
+                bound_order = orders_by_id.get(bound_attributions[0].order_id)
+                if bound_order is None:
+                    return cls._block(
+                        state,
+                        "attributed_order_missing",
+                        order_id=bound_attributions[0].order_id,
+                    )
+                matching_attempt_orders = [bound_order]
+                pending_partial_wallet_order_id = bound_order.order_id
+            else:
+                matching_attempt_orders = [
+                    order
+                    for order in strategy_exit_orders
+                    if order.order_id not in order_attributions
+                    and cls._is_recovered_attempt_candidate(order, active_attempt)
+                ]
+            if len(matching_attempt_orders) > 1:
+                block_reason = (
+                    "ambiguous_recovered_exit"
+                    if all(
+                        order.ft_order_tag is None for order in matching_attempt_orders
+                    )
+                    else "multiple_attempt_orders"
+                )
+                return cls._block(
+                    state,
+                    block_reason,
+                    order_id=matching_attempt_orders[0].order_id,
+                )
+            if matching_attempt_orders:
+                order = matching_attempt_orders[0]
+                if order.ft_is_open:
+                    try:
+                        expected_amount = cls.get_expected_trade_amount(
+                            state,
+                            amount_quantizer=amount_quantizer,
+                        )
+                        observed_amount = cls._canonical_amount(
+                            trade.amount,
+                            amount_quantizer,
+                        )
+                    except ValueError:
+                        return cls._block(state, "trade_amount_mismatch")
+                    if partial_wallet_mutation is not None or (
+                        cls._is_partial_wallet_mutation(
+                            active_attempt,
+                            expected_amount,
+                            observed_amount,
+                        )
+                    ):
+                        if partial_wallet_mutation is not None and (
+                            partial_wallet_mutation.order_id != order.order_id
+                        ):
+                            return cls._block(
+                                state,
+                                "partial_wallet_order_changed",
+                                order_id=order.order_id,
+                            )
+                        if partial_wallet_mutation is not None:
+                            if cls._amounts_close(
+                                observed_amount,
+                                expected_amount,
+                            ):
+                                partial_wallet_mutation = None
+                                pending_partial_wallet_order_id = None
+                            elif not cls._amounts_close(
+                                observed_amount,
+                                partial_wallet_mutation.observed_trade_amount,
+                            ):
+                                return cls._block(state, "trade_amount_mismatch")
+                        else:
+                            partial_wallet_mutation = TakeProfitPartialWalletMutation(
+                                attempt_id=active_attempt.attempt_id,
+                                order_id=order.order_id,
+                                expected_trade_amount=expected_amount,
+                                requested_exit_amount=active_attempt.amount,
+                                observed_trade_amount=observed_amount,
+                                wallet_shortfall_amount=(
+                                    active_attempt.amount - observed_amount
+                                ),
+                                attempt_submitted_at=(
+                                    active_attempt.submitted_at
+                                    or active_attempt.created_at
+                                ),
+                            )
+                        if partial_wallet_mutation is not None:
+                            active_attempt = replace(active_attempt, status="open")
+                            pending_partial_wallet_order_id = order.order_id
+                if order.order_id not in order_attributions:
+                    if order.ft_order_tag is None:
+                        source: TakeProfitAttributionSource = "recovered_untagged"
+                    else:
+                        source = "attempt"
+                    order_amount = cls._safe_amount(order.safe_amount)
+                    order_attributions[order.order_id] = TakeProfitOrderAttribution(
+                        order_id=order.order_id,
+                        tag=order.ft_order_tag,
+                        side=order.ft_order_side,
+                        stage=active_attempt.stage,
+                        attempt_id=active_attempt.attempt_id,
+                        order_date=order.order_date_utc.isoformat(),
+                        maximum_amount=active_attempt.amount,
+                        order_amount=order_amount,
+                        source=source,
+                    )
+
+        attributed_order_ids = set(order_attributions)
+        matching_attempt_order_ids = {
+            order.order_id for order in matching_attempt_orders
+        }
+        for order in strategy_exit_orders:
+            if order.order_id in attributed_order_ids or (
+                order.order_id in matching_attempt_order_ids
+            ):
+                continue
+            if cls.has_order_tag_prefix(order.ft_order_tag):
+                return cls._block(
+                    state,
+                    "unknown_attempt_order",
+                    order_id=order.order_id,
+                )
+
+        for order_id in attributed_order_ids:
+            order = orders_by_id[order_id]
             previous_amount = credited_order_amounts.get(order_id)
             if order.ft_is_open:
                 if previous_amount is not None:
-                    return cls._block(state, "attributed_order_reopened")
+                    return cls._block(
+                        state,
+                        "attributed_order_reopened",
+                        order_id=order_id,
+                    )
                 continue
             current_amount = terminal_credits[order_id]
             if (
@@ -1207,23 +1835,43 @@ class TakeProfitStageManager:
                 and current_amount < previous_amount
                 and not (cls._amounts_close(current_amount, previous_amount))
             ):
-                return cls._block(state, "attributed_fill_regressed")
+                return cls._block(
+                    state,
+                    "attributed_fill_regressed",
+                    order_id=order_id,
+                )
             credited_order_amounts[order_id] = current_amount
 
         for order_id, previous_amount in non_take_profit_exit_order_amounts.items():
             order = orders_by_id.get(order_id)
             if order is None:
-                return cls._block(state, "attributed_order_missing")
+                return cls._block(
+                    state,
+                    "attributed_order_missing",
+                    order_id=order_id,
+                )
             if order.ft_order_side != trade.exit_side:
-                return cls._block(state, "attributed_order_side_changed")
+                return cls._block(
+                    state,
+                    "attributed_order_side_changed",
+                    order_id=order_id,
+                )
             if order.ft_is_open:
-                return cls._block(state, "attributed_order_reopened")
+                return cls._block(
+                    state,
+                    "attributed_order_reopened",
+                    order_id=order_id,
+                )
             current_amount = terminal_credits[order_id]
             if current_amount < previous_amount and not cls._amounts_close(
                 current_amount,
                 previous_amount,
             ):
-                return cls._block(state, "attributed_fill_regressed")
+                return cls._block(
+                    state,
+                    "attributed_fill_regressed",
+                    order_id=order_id,
+                )
             non_take_profit_exit_order_amounts[order_id] = current_amount
 
         for order in strategy_exit_orders:
@@ -1244,7 +1892,11 @@ class TakeProfitStageManager:
                 and current_amount < previous_amount
                 and not cls._amounts_close(current_amount, previous_amount)
             ):
-                return cls._block(state, "attributed_fill_regressed")
+                return cls._block(
+                    state,
+                    "attributed_fill_regressed",
+                    order_id=order.order_id,
+                )
             non_take_profit_exit_order_amounts[order.order_id] = current_amount
 
         if set(credited_order_amounts) & set(non_take_profit_exit_order_amounts):
@@ -1347,56 +1999,86 @@ class TakeProfitStageManager:
                 observed_amount,
                 expected_with_adjustments,
             ):
+                if partial_wallet_mutation is not None or (
+                    cls._is_partial_wallet_mutation(
+                        active_attempt,
+                        expected_with_adjustments,
+                        observed_amount,
+                    )
+                ):
+                    if active_attempt is None:
+                        raise AssertionError("Validated mutation has no active attempt")
+                    partial_wallet_mutation = (
+                        partial_wallet_mutation
+                        or TakeProfitPartialWalletMutation(
+                            attempt_id=active_attempt.attempt_id,
+                            order_id=None,
+                            expected_trade_amount=expected_with_adjustments,
+                            requested_exit_amount=active_attempt.amount,
+                            observed_trade_amount=observed_amount,
+                            wallet_shortfall_amount=(
+                                active_attempt.amount - observed_amount
+                            ),
+                            attempt_submitted_at=(
+                                active_attempt.submitted_at or active_attempt.created_at
+                            ),
+                        )
+                    )
+                    return cls._block(
+                        replace(
+                            state,
+                            active_attempt=replace(
+                                active_attempt,
+                                status="ambiguous",
+                            ),
+                            partial_wallet_mutation=partial_wallet_mutation,
+                        ),
+                        "partial_wallet_mutation",
+                    )
                 return cls._block(state, "trade_amount_mismatch")
 
-        if matching_attempt_orders:
+        if (
+            partial_wallet_mutation is not None
+            and partial_wallet_mutation.order_id is not None
+            and matching_attempt_orders
+            and not has_open_exit_order
+            and validate_trade_amount
+        ):
+            partial_wallet_mutation = None
+
+        if matching_attempt_orders and (
+            pending_partial_wallet_order_id is None or partial_wallet_mutation is None
+        ):
             active_attempt = None
+
+        (
+            exposure_adjustments,
+            compacted_adjustment_count,
+            compacted_adjustment_amount,
+        ) = cls._compact_exposure_adjustments(
+            exposure_adjustments,
+            state.compacted_exposure_adjustment_count,
+            state.compacted_exposure_adjustment_amount,
+        )
 
         return replace(
             state,
-            attributed_order_ids=tuple(sorted(attributed_order_ids)),
+            order_attributions=tuple(
+                sorted(
+                    order_attributions.values(),
+                    key=lambda attribution: attribution.order_id,
+                )
+            ),
             credited_order_amounts=tuple(sorted(credited_order_amounts.items())),
             non_take_profit_exit_order_amounts=tuple(
                 sorted(non_take_profit_exit_order_amounts.items())
             ),
             exposure_adjustments=exposure_adjustments,
+            compacted_exposure_adjustment_count=compacted_adjustment_count,
+            compacted_exposure_adjustment_amount=compacted_adjustment_amount,
+            partial_wallet_mutation=partial_wallet_mutation,
             active_attempt=active_attempt,
         )
-
-    @classmethod
-    def reconcile_migrated_state(
-        cls,
-        trade: _Trade,
-        state: TakeProfitStageState,
-        source_version: int,
-        *,
-        amount_quantizer: Callable[[float], float] | None = None,
-    ) -> TakeProfitStageState:
-        """Re-evaluate only v4 blocks made obsolete by the split exit ledger."""
-        state = cls.prepare_migrated_state(state, source_version)
-        return cls.reconcile(
-            trade,
-            state,
-            amount_quantizer=amount_quantizer,
-        )
-
-    @staticmethod
-    def prepare_migrated_state(
-        state: TakeProfitStageState,
-        source_version: int,
-    ) -> TakeProfitStageState:
-        if source_version != 4:
-            return state
-        if state.blocked_reason in {
-            "unattributed_exit_fill",
-            "trade_amount_mismatch",
-        }:
-            return replace(
-                state,
-                blocked_reason=None,
-                blocked_order_id=None,
-            )
-        return state
 
     @classmethod
     def reconcile_for_exit_confirmation(
@@ -1495,6 +2177,22 @@ class TakeProfitStageManager:
             for adjustment in candidate.exposure_adjustments
         ):
             return cls._block(candidate, "duplicate_exposure_adjustment")
+        (
+            compacted_adjustments,
+            compacted_adjustment_count,
+            compacted_adjustment_amount,
+        ) = cls._compact_exposure_adjustments(
+            candidate.exposure_adjustments,
+            candidate.compacted_exposure_adjustment_count,
+            candidate.compacted_exposure_adjustment_amount,
+            required_slots=1,
+        )
+        candidate = replace(
+            candidate,
+            exposure_adjustments=compacted_adjustments,
+            compacted_exposure_adjustment_count=compacted_adjustment_count,
+            compacted_exposure_adjustment_amount=compacted_adjustment_amount,
+        )
         if (
             len(candidate.exposure_adjustments)
             >= TakeProfitStageState.MAX_EXPOSURE_ADJUSTMENTS
@@ -1526,7 +2224,6 @@ class TakeProfitStageManager:
     @classmethod
     def get_stage_progress(
         cls,
-        trade: _Trade,
         state: TakeProfitStageState,
         stage: int,
     ) -> TakeProfitStageProgress:
@@ -1569,16 +2266,33 @@ class TakeProfitStageManager:
         )
 
     @classmethod
-    def get_exit_stage(
+    def get_execution_stage(
         cls,
-        trade: _Trade,
         state: TakeProfitStageState,
+    ) -> int:
+        """Return the next scheduled stage, skipping explicitly deferred work."""
+        return cls._get_stage(state, skip_deferred=True)
+
+    @classmethod
+    def get_credited_stage(
+        cls,
+        state: TakeProfitStageState,
+    ) -> int:
+        """Return the stage reached exclusively through attributed CEX fills."""
+        return cls._get_stage(state, skip_deferred=False)
+
+    @classmethod
+    def _get_stage(
+        cls,
+        state: TakeProfitStageState,
+        *,
+        skip_deferred: bool,
     ) -> int:
         cumulative_filled = math.fsum(
             amount for _, amount in state.credited_order_amounts
         )
         cumulative_target = 0.0
-        deferred_stages = set(state.deferred_stages)
+        deferred_stages = set(state.deferred_stages) if skip_deferred else set()
         for stage, target in state.stage_targets:
             cumulative_target += target
             is_filled = cumulative_filled >= cumulative_target or cls._amounts_close(
@@ -1652,6 +2366,21 @@ class TakeProfitStageManager:
         current_time: datetime.datetime,
         recovery_deadline: datetime.datetime,
     ) -> TakeProfitStageState:
+        attempt_id = _non_empty_string(attempt_id)
+        historical_attempt_ids = {
+            *(
+                attribution.attempt_id
+                for attribution in state.order_attributions
+                if attribution.attempt_id is not None
+            ),
+            *(
+                resolution.attempt_id
+                for resolution in state.operator_resolutions
+                if resolution.attempt_id is not None
+            ),
+        }
+        if attempt_id in historical_attempt_ids:
+            raise ValueError("Take-profit attempt ID was already used")
         if state.blocked_reason is not None:
             raise ValueError(
                 "Cannot start a take-profit attempt while state is blocked"
@@ -1673,7 +2402,7 @@ class TakeProfitStageManager:
         stake_amount = cls._safe_amount(stake_amount)
         if amount == 0.0 or stake_amount == 0.0:
             raise ValueError("Take-profit attempt amounts must be positive")
-        tag = cls.order_tag(trade.trade_direction, stage, attempt_id)
+        tag = cls.order_tag(trade.trade_direction, stage)
         submitted_at = current_time.isoformat() if status == "submitting" else None
         return replace(
             state,
@@ -1689,7 +2418,6 @@ class TakeProfitStageManager:
                 submitted_at=submitted_at,
                 recovery_deadline=recovery_deadline.isoformat(),
                 known_order_ids=tuple(sorted(order.order_id for order in trade.orders)),
-                recovery_policy="tagged_or_unique_untagged",
             ),
         )
 
@@ -1731,6 +2459,8 @@ class TakeProfitStageManager:
         attempt = state.active_attempt
         if attempt is None or attempt.attempt_id != attempt_id:
             return state
+        if attempt.status != "proposed":
+            raise ValueError("Submitted take-profit attempt amounts cannot be changed")
         amount = cls._safe_amount(amount)
         stake_amount = cls._safe_amount(stake_amount)
         if amount == 0.0 or stake_amount == 0.0:
@@ -1813,11 +2543,11 @@ class TakeProfitStageManager:
     ) -> TakeProfitStageState:
         """Reconcile one repaired canonical order and record the operator action."""
         order_id = _non_empty_string(order_id)
-        if (
-            state.blocked_reason
-            not in {"unknown_terminal_fill", "unattributed_exit_fill"}
-            or state.blocked_order_id != order_id
-        ):
+        has_matching_block = (
+            state.blocked_reason in _REVALIDATABLE_TERMINAL_BLOCK_REASONS
+            and state.blocked_order_id == order_id
+        )
+        if not has_matching_block:
             raise ValueError("No matching terminal fill to revalidate")
         if resolved_at.tzinfo is None:
             raise ValueError("Take-profit resolution timestamp must be timezone-aware")
@@ -1830,10 +2560,141 @@ class TakeProfitStageManager:
         order = matching_orders[0]
         if order.ft_order_side != trade.exit_side or order.ft_is_open:
             raise ValueError("Revalidated order is not a terminal strategy exit")
-        credited_amount = cls._terminal_credited_amount(order)
+        cls._validate_resolution_timeline(order, resolved_at)
+        existing_attribution = next(
+            (
+                attribution
+                for attribution in state.order_attributions
+                if attribution.order_id == order_id
+            ),
+            None,
+        )
+        zero_fill_proof = next(
+            (
+                proof
+                for proof in state.confirmed_zero_fill_orders
+                if proof.order_id == order_id
+            ),
+            None,
+        )
+        matching_zero_fill_proof = (
+            zero_fill_proof
+            if zero_fill_proof is not None
+            and cls._zero_fill_proof_matches(trade, order, zero_fill_proof)
+            else None
+        )
+        status = (order.status or "").lower()
+        filled = _non_negative_float(order.filled) if order.filled is not None else None
+        if status in _OPERATOR_ZERO_FILL_STATUSES and filled is not None and filled > 0:
+            raise ValueError(
+                "Canceled positive fill requires confirm_terminal_canceled_fill"
+            )
+        credited_amount = cls._terminal_credited_amount(
+            order,
+            matching_zero_fill_proof,
+        )
 
+        configured_stages = {
+            *(stage for stage, _ in state.stage_targets),
+            state.plan_signature.final_stage.stage,
+        }
+        parsed_tag = cls.parse_order_tag(order.ft_order_tag)
+        order_amount = cls._safe_amount(order.safe_amount)
+        operator_attribution: TakeProfitOrderAttribution | None = None
+        causal_attempt: TakeProfitAttempt | None = None
+        if existing_attribution is not None:
+            if order.ft_order_tag != existing_attribution.tag:
+                raise ValueError(
+                    "Canonical order tag must be repaired before revalidation"
+                )
+            if (
+                order_amount > existing_attribution.maximum_amount
+                and not cls._amounts_close(
+                    order_amount,
+                    existing_attribution.maximum_amount,
+                )
+            ):
+                raise ValueError(
+                    "Canonical order amount exceeds the attributed maximum"
+                )
+            operator_attribution = replace(
+                existing_attribution,
+                order_amount=order_amount,
+            )
+        elif (
+            parsed_tag is not None
+            and parsed_tag[0] == trade.trade_direction
+            and parsed_tag[1] in configured_stages
+        ):
+            stage = parsed_tag[1]
+            active_attempt = state.active_attempt
+            if active_attempt is not None:
+                if (
+                    active_attempt.stage != stage
+                    or active_attempt.tag != order.ft_order_tag
+                    or not cls._is_recovered_attempt_candidate(
+                        order,
+                        active_attempt,
+                    )
+                ):
+                    raise ValueError(
+                        "Canonical order does not match the submitted attempt"
+                    )
+                causal_attempt = active_attempt
+            operator_attribution = TakeProfitOrderAttribution(
+                order_id=order_id,
+                tag=order.ft_order_tag,
+                side=order.ft_order_side,
+                stage=stage,
+                attempt_id=(
+                    causal_attempt.attempt_id if causal_attempt is not None else None
+                ),
+                order_date=order.order_date_utc.isoformat(),
+                maximum_amount=(
+                    causal_attempt.amount
+                    if causal_attempt is not None
+                    else order_amount
+                ),
+                order_amount=order_amount,
+                source="operator",
+            )
+        order_attributions = tuple(
+            attribution
+            for attribution in state.order_attributions
+            if attribution.order_id != order_id
+        )
+        if operator_attribution is not None:
+            order_attributions = tuple(
+                sorted(
+                    (*order_attributions, operator_attribution),
+                    key=lambda attribution: attribution.order_id,
+                )
+            )
+        active_attempt = None if causal_attempt is not None else state.active_attempt
         candidate = replace(
             state,
+            order_attributions=order_attributions,
+            confirmed_zero_fill_orders=tuple(
+                proof
+                for proof in state.confirmed_zero_fill_orders
+                if proof.order_id != order_id
+            ),
+            credited_order_amounts=tuple(
+                record
+                for record in state.credited_order_amounts
+                if record[0] != order_id
+            ),
+            non_take_profit_exit_order_amounts=tuple(
+                record
+                for record in state.non_take_profit_exit_order_amounts
+                if record[0] != order_id
+            ),
+            confirmed_canceled_fill_orders=tuple(
+                proof
+                for proof in state.confirmed_canceled_fill_orders
+                if proof.order_id != order_id
+            ),
+            active_attempt=active_attempt,
             blocked_reason=None,
             blocked_order_id=None,
         )
@@ -1848,7 +2709,10 @@ class TakeProfitStageManager:
                 f"{reconciled.blocked_reason}"
             )
 
-        attributed = order_id in reconciled.attributed_order_ids
+        attributed = any(
+            attribution.order_id == order_id
+            for attribution in reconciled.order_attributions
+        )
         persisted_credit = (
             dict(reconciled.credited_order_amounts).get(order_id)
             if attributed
@@ -1888,23 +2752,77 @@ class TakeProfitStageManager:
         amount_quantizer: Callable[[float], float] | None = None,
     ) -> TakeProfitStageState:
         """Persist an exact operator-verified canceled zero-fill snapshot."""
+        reconciled = cls._prepare_terminal_zero_fill_confirmation(
+            trade,
+            state,
+            order_id,
+            terminal_status,
+            resolved_at,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=True,
+        )
+        order_id = _non_empty_string(order_id)
+        terminal_status = _non_empty_string(terminal_status).lower()
+        resolution = TakeProfitOperatorResolution(
+            action="confirmed_terminal_zero_fill",
+            order_id=order_id,
+            credited_amount=0.0,
+            terminal_status=terminal_status,
+            resolved_at=resolved_at.isoformat(),
+        )
+        return replace(
+            reconciled,
+            operator_resolutions=cls._append_operator_resolution(
+                reconciled,
+                resolution,
+            ),
+        )
+
+    @classmethod
+    def validate_terminal_zero_fill_confirmation(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        terminal_status: str,
+        resolved_at: datetime.datetime,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> None:
+        """Validate a zero-fill proof without requiring wallet restoration."""
+        cls._prepare_terminal_zero_fill_confirmation(
+            trade,
+            state,
+            order_id,
+            terminal_status,
+            resolved_at,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=False,
+        )
+
+    @classmethod
+    def _prepare_terminal_zero_fill_confirmation(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        terminal_status: str,
+        resolved_at: datetime.datetime,
+        *,
+        amount_quantizer: Callable[[float], float] | None,
+        validate_trade_amount: bool,
+    ) -> TakeProfitStageState:
         order_id = _non_empty_string(order_id)
         terminal_status = _non_empty_string(terminal_status).lower()
         if terminal_status not in _OPERATOR_ZERO_FILL_STATUSES:
             raise ValueError("Terminal zero-fill status is not operator-recoverable")
         if (
-            state.blocked_reason
-            not in {"unknown_terminal_fill", "unknown_external_exit_fill"}
+            state.blocked_reason not in _CONFIRMABLE_TERMINAL_BLOCK_REASONS
             or state.blocked_order_id != order_id
         ):
             raise ValueError("No matching unknown terminal fill to confirm")
         if resolved_at.tzinfo is None:
             raise ValueError("Take-profit resolution timestamp must be timezone-aware")
-        if any(
-            proof.order_id == order_id for proof in state.confirmed_zero_fill_orders
-        ):
-            raise ValueError("Terminal zero-fill order is already confirmed")
-
         matching_orders = [
             order for order in trade.orders if order.order_id == order_id
         ]
@@ -1920,28 +2838,75 @@ class TakeProfitStageManager:
             state,
             confirmed_zero_fill_orders=tuple(
                 sorted(
-                    (*state.confirmed_zero_fill_orders, proof),
+                    (
+                        *(
+                            existing_proof
+                            for existing_proof in state.confirmed_zero_fill_orders
+                            if existing_proof.order_id != order_id
+                        ),
+                        proof,
+                    ),
                     key=lambda item: item.order_id,
                 )
+            ),
+            confirmed_canceled_fill_orders=tuple(
+                existing_proof
+                for existing_proof in state.confirmed_canceled_fill_orders
+                if existing_proof.order_id != order_id
+            ),
+            credited_order_amounts=tuple(
+                record
+                for record in state.credited_order_amounts
+                if record[0] != order_id
+            ),
+            non_take_profit_exit_order_amounts=tuple(
+                record
+                for record in state.non_take_profit_exit_order_amounts
+                if record[0] != order_id
             ),
             blocked_reason=None,
             blocked_order_id=None,
         )
-        reconciled = cls.reconcile(
+        reconciled = cls._reconcile(
             trade,
             candidate,
             amount_quantizer=amount_quantizer,
+            validate_trade_amount=validate_trade_amount,
         )
-        if reconciled.blocked_reason in {
-            "confirmed_terminal_zero_fill_changed",
-            "confirmed_terminal_zero_fill_order_missing",
-        }:
-            raise ValueError("Terminal zero-fill proof failed its postcondition")
+        if reconciled.blocked_reason is not None:
+            raise ValueError(
+                "Terminal zero-fill proof does not produce a valid state: "
+                f"{reconciled.blocked_reason}"
+            )
+        return reconciled
 
+    @classmethod
+    def confirm_terminal_canceled_fill(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        terminal_status: str,
+        resolved_at: datetime.datetime,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> TakeProfitStageState:
+        """Persist exact operator proof for a canceled positive-fill order."""
+        reconciled, proof = cls._prepare_terminal_canceled_fill_confirmation(
+            trade,
+            state,
+            order_id,
+            terminal_status,
+            resolved_at,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=True,
+        )
+        order_id = _non_empty_string(order_id)
+        terminal_status = _non_empty_string(terminal_status).lower()
         resolution = TakeProfitOperatorResolution(
-            action="confirmed_terminal_zero_fill",
+            action="confirmed_terminal_canceled_fill",
             order_id=order_id,
-            credited_amount=0.0,
+            credited_amount=proof.credited_amount,
             terminal_status=terminal_status,
             resolved_at=resolved_at.isoformat(),
         )
@@ -1952,6 +2917,345 @@ class TakeProfitStageManager:
                 resolution,
             ),
         )
+
+    @classmethod
+    def validate_terminal_canceled_fill_confirmation(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        terminal_status: str,
+        resolved_at: datetime.datetime,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> None:
+        """Validate a canceled-fill proof without requiring wallet restoration."""
+        cls._prepare_terminal_canceled_fill_confirmation(
+            trade,
+            state,
+            order_id,
+            terminal_status,
+            resolved_at,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=False,
+        )
+
+    @classmethod
+    def _prepare_terminal_canceled_fill_confirmation(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        terminal_status: str,
+        resolved_at: datetime.datetime,
+        *,
+        amount_quantizer: Callable[[float], float] | None,
+        validate_trade_amount: bool,
+    ) -> tuple[TakeProfitStageState, TakeProfitCanceledFillProof]:
+        order_id = _non_empty_string(order_id)
+        terminal_status = _non_empty_string(terminal_status).lower()
+        if terminal_status not in _OPERATOR_ZERO_FILL_STATUSES:
+            raise ValueError("Terminal canceled-fill status is not recoverable")
+        if (
+            state.blocked_reason not in _CONFIRMABLE_TERMINAL_BLOCK_REASONS
+            or state.blocked_order_id != order_id
+        ):
+            raise ValueError("No matching canceled terminal fill to confirm")
+        if resolved_at.tzinfo is None:
+            raise ValueError("Take-profit resolution timestamp must be timezone-aware")
+        matching_orders = [
+            order for order in trade.orders if order.order_id == order_id
+        ]
+        if len(matching_orders) != 1:
+            raise ValueError("Expected exactly one matching canonical order")
+        proof = cls._build_canceled_fill_proof(
+            trade,
+            matching_orders[0],
+            terminal_status,
+            resolved_at,
+        )
+        candidate = replace(
+            state,
+            confirmed_zero_fill_orders=tuple(
+                existing_proof
+                for existing_proof in state.confirmed_zero_fill_orders
+                if existing_proof.order_id != order_id
+            ),
+            confirmed_canceled_fill_orders=tuple(
+                sorted(
+                    (
+                        *(
+                            existing_proof
+                            for existing_proof in state.confirmed_canceled_fill_orders
+                            if existing_proof.order_id != order_id
+                        ),
+                        proof,
+                    ),
+                    key=lambda item: item.order_id,
+                )
+            ),
+            credited_order_amounts=tuple(
+                record
+                for record in state.credited_order_amounts
+                if record[0] != order_id
+            ),
+            non_take_profit_exit_order_amounts=tuple(
+                record
+                for record in state.non_take_profit_exit_order_amounts
+                if record[0] != order_id
+            ),
+            blocked_reason=None,
+            blocked_order_id=None,
+        )
+        reconciled = cls._reconcile(
+            trade,
+            candidate,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=validate_trade_amount,
+        )
+        if reconciled.blocked_reason is not None:
+            raise ValueError(
+                "Terminal canceled-fill proof does not produce a valid state: "
+                f"{reconciled.blocked_reason}"
+            )
+        return reconciled, proof
+
+    @classmethod
+    def validate_partial_wallet_mutation_restoration(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> None:
+        """Validate deterministic terminal evidence without mutating accounting."""
+        cls._prepare_partial_wallet_mutation_restoration(
+            trade,
+            state,
+            order_id,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=False,
+        )
+
+    @classmethod
+    def restore_partial_wallet_mutation(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        resolved_at: datetime.datetime,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> TakeProfitStageState:
+        """Accept native order accounting after an audited wallet restoration."""
+        if resolved_at.tzinfo is None:
+            raise ValueError("Take-profit resolution timestamp must be timezone-aware")
+        reconciled, mutation, terminal_status = (
+            cls._prepare_partial_wallet_mutation_restoration(
+                trade,
+                state,
+                order_id,
+                amount_quantizer=amount_quantizer,
+                validate_trade_amount=True,
+            )
+        )
+        order = next(order for order in trade.orders if order.order_id == order_id)
+        cls._validate_resolution_timeline(order, resolved_at)
+        resolution = TakeProfitOperatorResolution(
+            action="restored_partial_wallet_mutation",
+            attempt_id=mutation.attempt_id,
+            order_id=mutation.order_id,
+            terminal_status=terminal_status,
+            resolved_at=resolved_at.isoformat(),
+        )
+        return replace(
+            reconciled,
+            operator_resolutions=cls._append_operator_resolution(
+                reconciled,
+                resolution,
+            ),
+        )
+
+    @classmethod
+    def _prepare_partial_wallet_mutation_restoration(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        order_id: str,
+        *,
+        amount_quantizer: Callable[[float], float] | None,
+        validate_trade_amount: bool,
+    ) -> tuple[TakeProfitStageState, TakeProfitPartialWalletMutation, str]:
+        order_id = _non_empty_string(order_id)
+        mutation = state.partial_wallet_mutation
+        if (
+            state.blocked_reason != "partial_wallet_mutation"
+            or mutation is None
+            or mutation.order_id != order_id
+        ):
+            raise ValueError("No matching bound partial-wallet mutation to restore")
+        matching_orders = [
+            order for order in trade.orders if order.order_id == order_id
+        ]
+        if len(matching_orders) != 1:
+            raise ValueError("Expected exactly one matching canonical order")
+        order = matching_orders[0]
+        if order.ft_order_side != trade.exit_side or order.ft_is_open:
+            raise ValueError("Wallet restoration order is not a terminal strategy exit")
+        terminal_status = _non_empty_string(order.status).lower()
+        if terminal_status not in _NATIVE_WALLET_RESTORATION_STATUSES:
+            raise ValueError("Wallet restoration order has no native terminal outcome")
+        candidate = replace(
+            state,
+            blocked_reason=None,
+            blocked_order_id=None,
+        )
+        reconciled = cls._reconcile(
+            trade,
+            candidate,
+            amount_quantizer=amount_quantizer,
+            validate_trade_amount=validate_trade_amount,
+        )
+        if reconciled.blocked_reason is not None:
+            raise ValueError(
+                "Canonical order accounting does not restore the wallet mutation: "
+                f"{reconciled.blocked_reason}"
+            )
+        if validate_trade_amount:
+            if (
+                reconciled.partial_wallet_mutation is not None
+                or reconciled.active_attempt is not None
+            ):
+                raise ValueError("Partial-wallet mutation remains active after restore")
+        elif reconciled.partial_wallet_mutation != mutation:
+            raise ValueError(
+                "Partial-wallet mutation evidence changed during validation"
+            )
+        return reconciled, mutation, terminal_status
+
+    @classmethod
+    def get_recovery_instruction(
+        cls,
+        trade: _Trade,
+        state: TakeProfitStageState,
+        *,
+        amount_quantizer: Callable[[float], float] | None = None,
+    ) -> TakeProfitRecoveryInstruction | None:
+        """Return the single recovery action supported by canonical evidence."""
+        mutation = state.partial_wallet_mutation
+        if (
+            state.blocked_reason == "partial_wallet_mutation"
+            and mutation is not None
+            and mutation.order_id is not None
+        ):
+            try:
+                cls.validate_partial_wallet_mutation_restoration(
+                    trade,
+                    state,
+                    mutation.order_id,
+                    amount_quantizer=amount_quantizer,
+                )
+            except ValueError:
+                return None
+            order = next(
+                order for order in trade.orders if order.order_id == mutation.order_id
+            )
+            return TakeProfitRecoveryInstruction(
+                action="restore_partial_wallet_mutation",
+                attempt_id=mutation.attempt_id,
+                order_id=mutation.order_id,
+                terminal_status=_non_empty_string(order.status).lower(),
+            )
+
+        order_id = state.blocked_order_id
+        if order_id is None:
+            return None
+        matching_orders = [
+            order for order in trade.orders if order.order_id == order_id
+        ]
+        if len(matching_orders) != 1:
+            return None
+        order = matching_orders[0]
+        if order.ft_order_side != trade.exit_side or order.ft_is_open:
+            return None
+        terminal_status = (order.status or "").lower()
+        if (
+            state.blocked_reason in _CONFIRMABLE_TERMINAL_BLOCK_REASONS
+            and terminal_status in _OPERATOR_ZERO_FILL_STATUSES
+            and order.filled is not None
+        ):
+            try:
+                filled = _non_negative_float(order.filled)
+                resolved_at = datetime.datetime.now(datetime.timezone.utc)
+                has_bound_mutation = (
+                    mutation is not None and mutation.order_id == order_id
+                )
+                if filled == 0.0:
+                    if has_bound_mutation:
+                        cls.validate_terminal_zero_fill_confirmation(
+                            trade,
+                            state,
+                            order_id,
+                            terminal_status,
+                            resolved_at,
+                            amount_quantizer=amount_quantizer,
+                        )
+                    else:
+                        cls.confirm_terminal_zero_fill(
+                            trade,
+                            state,
+                            order_id,
+                            terminal_status,
+                            resolved_at,
+                            amount_quantizer=amount_quantizer,
+                        )
+                    action: TakeProfitRecoveryAction = "confirm_terminal_zero"
+                else:
+                    if has_bound_mutation:
+                        cls.validate_terminal_canceled_fill_confirmation(
+                            trade,
+                            state,
+                            order_id,
+                            terminal_status,
+                            resolved_at,
+                            amount_quantizer=amount_quantizer,
+                        )
+                    else:
+                        cls.confirm_terminal_canceled_fill(
+                            trade,
+                            state,
+                            order_id,
+                            terminal_status,
+                            resolved_at,
+                            amount_quantizer=amount_quantizer,
+                        )
+                    action = "confirm_terminal_canceled"
+            except ValueError:
+                return None
+            return TakeProfitRecoveryInstruction(
+                action=action,
+                order_id=order_id,
+                terminal_status=terminal_status,
+            )
+        if terminal_status in _OPERATOR_ZERO_FILL_STATUSES:
+            return None
+        if state.blocked_reason in _REVALIDATABLE_TERMINAL_BLOCK_REASONS:
+            try:
+                cls.revalidate_unknown_terminal_fill(
+                    trade,
+                    state,
+                    order_id,
+                    datetime.datetime.now(datetime.timezone.utc),
+                    amount_quantizer=amount_quantizer,
+                )
+            except ValueError:
+                return None
+            return TakeProfitRecoveryInstruction(
+                action="revalidate_terminal",
+                order_id=order_id,
+            )
+        return None
 
     @staticmethod
     def _append_operator_resolution(
@@ -1977,6 +3281,7 @@ class TakeProfitStageManager:
         cls,
         order: _Order,
         zero_fill_proof: TakeProfitZeroFillProof | None = None,
+        canceled_fill_proof: TakeProfitCanceledFillProof | None = None,
     ) -> float:
         if order.ft_is_open:
             return 0.0
@@ -2023,6 +3328,13 @@ class TakeProfitStageManager:
             cls._validate_terminal_zero_fill(order, allowed_statuses)
             return 0.0
 
+        if status in _OPERATOR_ZERO_FILL_STATUSES:
+            if canceled_fill_proof is None or not cls._canceled_fill_proof_fields_match(
+                order,
+                canceled_fill_proof,
+            ):
+                raise ValueError("Canceled positive fill requires exact operator proof")
+            return canceled_fill_proof.credited_amount
         if status == "rejected" or order.order_filled_utc is None:
             raise ValueError("Terminal positive fill is not explicitly observed")
         if filled < amount and remaining is None:
@@ -2036,7 +3348,6 @@ class TakeProfitStageManager:
     def _external_exit_block(
         cls,
         order: _Order,
-        zero_fill_proof: TakeProfitZeroFillProof | None = None,
     ) -> str | None:
         try:
             amount = _required_positive_value(
@@ -2054,6 +3365,10 @@ class TakeProfitStageManager:
         except ValueError:
             return "unknown_external_exit_fill"
         if filled is not None and filled > 0.0:
+            try:
+                cls._terminal_credited_amount(order)
+            except ValueError:
+                return "unknown_external_exit_fill"
             return "external_exit_fill"
         if order.ft_is_open:
             if fee_base != 0.0:
@@ -2067,7 +3382,7 @@ class TakeProfitStageManager:
                     return "unknown_external_exit_fill"
             return None
         try:
-            credited_amount = cls._terminal_credited_amount(order, zero_fill_proof)
+            credited_amount = cls._terminal_credited_amount(order)
         except ValueError:
             return "unknown_external_exit_fill"
         return "external_exit_fill" if credited_amount > 0.0 else None
@@ -2080,12 +3395,9 @@ class TakeProfitStageManager:
         terminal_status: str,
         confirmed_at: datetime.datetime,
     ) -> TakeProfitZeroFillProof:
-        if order.ft_order_side == trade.exit_side:
-            order_role: TakeProfitOrderRole = "strategy_exit"
-        elif order.ft_order_side != trade.entry_side:
-            order_role = "external_exit"
-        else:
-            raise ValueError("Entry orders cannot be confirmed as terminal exits")
+        if order.ft_order_side != trade.exit_side:
+            raise ValueError("Terminal zero-fill proof is not a strategy exit")
+        cls._validate_resolution_timeline(order, confirmed_at)
         if (order.status or "").lower() != terminal_status:
             raise ValueError("Canonical order status does not match terminal-status")
         amount, remaining, fee_base = cls._validate_terminal_zero_fill(
@@ -2094,8 +3406,9 @@ class TakeProfitStageManager:
         )
         return TakeProfitZeroFillProof(
             order_id=order.order_id,
-            order_role=order_role,
+            order_date=order.order_date_utc.isoformat(),
             order_side=order.ft_order_side,
+            order_tag=order.ft_order_tag,
             terminal_status=terminal_status,
             amount=amount,
             remaining=remaining,
@@ -2110,13 +3423,7 @@ class TakeProfitStageManager:
         order: _Order,
         proof: TakeProfitZeroFillProof,
     ) -> bool:
-        if proof.order_role == "strategy_exit":
-            expected_side = trade.exit_side
-        else:
-            if order.ft_order_side in {trade.entry_side, trade.exit_side}:
-                return False
-            expected_side = proof.order_side
-        if order.ft_order_side != expected_side:
+        if order.ft_order_side != trade.exit_side:
             return False
         return cls._zero_fill_proof_fields_match(order, proof)
 
@@ -2135,12 +3442,146 @@ class TakeProfitStageManager:
             return False
         return (
             order.order_id == proof.order_id
+            and order.order_date_utc == _parse_iso_datetime(proof.order_date)
             and order.ft_order_side == proof.order_side
+            and order.ft_order_tag == proof.order_tag
             and (order.status or "").lower() == proof.terminal_status
             and amount == proof.amount
             and remaining == proof.remaining
             and fee_base == proof.fee_base
         )
+
+    @classmethod
+    def _build_canceled_fill_proof(
+        cls,
+        trade: _Trade,
+        order: _Order,
+        terminal_status: str,
+        confirmed_at: datetime.datetime,
+    ) -> TakeProfitCanceledFillProof:
+        if order.ft_order_side != trade.exit_side:
+            raise ValueError("Terminal canceled-fill proof is not a strategy exit")
+        cls._validate_resolution_timeline(order, confirmed_at)
+        if (order.status or "").lower() != terminal_status:
+            raise ValueError("Canonical order status does not match terminal-status")
+        amount, filled, remaining, fee_base, filled_at = (
+            cls._validate_terminal_canceled_fill(
+                order,
+                _OPERATOR_ZERO_FILL_STATUSES,
+            )
+        )
+        return TakeProfitCanceledFillProof(
+            order_id=order.order_id,
+            order_date=order.order_date_utc.isoformat(),
+            order_side=order.ft_order_side,
+            order_tag=order.ft_order_tag,
+            terminal_status=terminal_status,
+            amount=amount,
+            filled=filled,
+            remaining=remaining,
+            fee_base=fee_base,
+            filled_at=filled_at.isoformat(),
+            confirmed_at=confirmed_at.isoformat(),
+        )
+
+    @classmethod
+    def _canceled_fill_proof_matches(
+        cls,
+        trade: _Trade,
+        order: _Order,
+        proof: TakeProfitCanceledFillProof,
+    ) -> bool:
+        return (
+            order.ft_order_side == trade.exit_side
+            and cls._canceled_fill_proof_fields_match(order, proof)
+        )
+
+    @classmethod
+    def _canceled_fill_proof_fields_match(
+        cls,
+        order: _Order,
+        proof: TakeProfitCanceledFillProof,
+    ) -> bool:
+        try:
+            amount, filled, remaining, fee_base, filled_at = (
+                cls._validate_terminal_canceled_fill(
+                    order,
+                    {proof.terminal_status},
+                )
+            )
+        except ValueError:
+            return False
+        return (
+            order.order_id == proof.order_id
+            and order.order_date_utc == _parse_iso_datetime(proof.order_date)
+            and order.ft_order_side == proof.order_side
+            and order.ft_order_tag == proof.order_tag
+            and (order.status or "").lower() == proof.terminal_status
+            and amount == proof.amount
+            and filled == proof.filled
+            and remaining == proof.remaining
+            and fee_base == proof.fee_base
+            and filled_at == _parse_iso_datetime(proof.filled_at)
+        )
+
+    @staticmethod
+    def _validate_resolution_timeline(
+        order: _Order,
+        resolved_at: datetime.datetime,
+    ) -> None:
+        if resolved_at.tzinfo is None:
+            raise ValueError("Take-profit resolution timestamp must be timezone-aware")
+        order_date = order.order_date_utc
+        if order_date.tzinfo is None:
+            raise ValueError(
+                "Canonical order creation timestamp must be timezone-aware"
+            )
+        if resolved_at < order_date:
+            raise ValueError("Take-profit resolution precedes order creation")
+        filled_at = order.order_filled_utc
+        if filled_at is None:
+            return
+        if filled_at.tzinfo is None:
+            raise ValueError("Canonical order fill timestamp must be timezone-aware")
+        if filled_at < order_date or resolved_at < filled_at:
+            raise ValueError("Canonical order has an invalid resolution timeline")
+
+    @classmethod
+    def _validate_terminal_canceled_fill(
+        cls,
+        order: _Order,
+        allowed_statuses: set[str] | frozenset[str],
+    ) -> tuple[float, float, float, float, datetime.datetime]:
+        if order.ft_is_open:
+            raise ValueError("Terminal canceled-fill order is open")
+        status = (order.status or "").lower()
+        if status not in allowed_statuses:
+            raise ValueError(
+                "Terminal canceled-fill status is not operator-recoverable"
+            )
+        amount = _required_positive_value(order.safe_amount, "terminal order amount")
+        if order.filled is None:
+            raise ValueError("Terminal canceled-fill order has no explicit fill")
+        filled = _required_positive_value(order.filled, "terminal order fill")
+        if filled > amount and not cls._amounts_close(filled, amount):
+            raise ValueError("Terminal canceled fill exceeds its amount")
+        filled = min(filled, amount)
+        if order.remaining is None:
+            raise ValueError("Terminal canceled-fill order has no explicit remainder")
+        remaining = _non_negative_float(order.remaining)
+        if not cls._amounts_close(filled + remaining, amount):
+            raise ValueError("Terminal canceled-fill remainder is inconsistent")
+        fee_base = (
+            _non_negative_float(order.ft_fee_base)
+            if order.ft_fee_base is not None
+            else 0.0
+        )
+        if fee_base >= filled or cls._amounts_close(fee_base, filled):
+            raise ValueError("Terminal canceled-fill base fee consumes its fill")
+        filled_at = order.order_filled_utc
+        if filled_at is None or filled_at.tzinfo is None:
+            raise ValueError("Terminal canceled-fill order has no fill timestamp")
+        return amount, filled, remaining, fee_base, filled_at
 
     @classmethod
     def _validate_terminal_zero_fill(
@@ -2273,30 +3714,87 @@ class TakeProfitStageManager:
             for adjustment in adjustments
         )
 
+    @staticmethod
+    def _compact_exposure_adjustments(
+        adjustments: tuple[TakeProfitExposureAdjustment, ...],
+        compacted_count: int,
+        compacted_amount: float,
+        *,
+        required_slots: int = 0,
+    ) -> tuple[tuple[TakeProfitExposureAdjustment, ...], int, float]:
+        """Compact oldest retired records only, preserving aggregate audit data."""
+        maximum_records = max(
+            0,
+            TakeProfitStageState.MAX_EXPOSURE_ADJUSTMENTS - required_slots,
+        )
+        remove_count = max(0, len(adjustments) - maximum_records)
+        if remove_count == 0:
+            return adjustments, compacted_count, compacted_amount
+        retired_indexes = [
+            index
+            for index, adjustment in enumerate(adjustments)
+            if not adjustment.is_active
+        ][:remove_count]
+        if len(retired_indexes) != remove_count:
+            return adjustments, compacted_count, compacted_amount
+        retired_index_set = set(retired_indexes)
+        compacted_adjustments = tuple(
+            adjustment
+            for index, adjustment in enumerate(adjustments)
+            if index not in retired_index_set
+        )
+        compacted_sum = math.fsum(
+            adjustments[index].amount for index in retired_indexes
+        )
+        return (
+            compacted_adjustments,
+            compacted_count + remove_count,
+            math.fsum((compacted_amount, compacted_sum)),
+        )
+
     @classmethod
-    def _is_legacy_emergency_successor(
+    def _attribution_provenance_matches(
         cls,
         trade: _Trade,
-        predecessor: _Order,
-        emergency_order: _Order,
+        attribution: TakeProfitOrderAttribution,
+        order: _Order,
         configured_stages: set[int],
     ) -> bool:
-        parsed_tag = cls.parse_order_tag(predecessor.ft_order_tag)
-        if parsed_tag is None:
+        if attribution.stage not in configured_stages:
             return False
-        direction, stage, _ = parsed_tag
-        remaining_amount = cls._safe_amount(predecessor.safe_remaining)
-        return (
-            direction == trade.trade_direction
-            and stage in configured_stages
-            and not predecessor.ft_is_open
-            and predecessor.ft_order_side == trade.exit_side
-            and emergency_order.ft_order_side == trade.exit_side
-            and remaining_amount > 0.0
-            and cls._amounts_close(
-                cls._safe_amount(emergency_order.safe_amount),
-                remaining_amount,
+        if attribution.source == "recovered_untagged":
+            has_valid_tag = attribution.tag is None
+        else:
+            parsed_tag = cls.parse_order_tag(attribution.tag)
+            has_valid_tag = (
+                parsed_tag is not None
+                and parsed_tag[0] == trade.trade_direction
+                and parsed_tag[1] == attribution.stage
             )
+        return (
+            has_valid_tag
+            and order.order_date_utc.tzinfo is not None
+            and order.order_date_utc == _parse_iso_datetime(attribution.order_date)
+        )
+
+    @staticmethod
+    def _is_partial_wallet_mutation(
+        attempt: TakeProfitAttempt | None,
+        expected_amount: float,
+        observed_amount: float,
+    ) -> bool:
+        return (
+            attempt is not None
+            and attempt.status in {"submitting", "open", "ambiguous"}
+            and (
+                expected_amount > attempt.amount
+                or TakeProfitStageManager._amounts_close(
+                    expected_amount,
+                    attempt.amount,
+                )
+            )
+            and observed_amount < attempt.amount
+            and observed_amount >= attempt.amount * 0.98
         )
 
     @classmethod
@@ -2305,21 +3803,27 @@ class TakeProfitStageManager:
         order: _Order,
         attempt: TakeProfitAttempt,
     ) -> bool:
+        order_amount = cls._safe_amount(order.safe_amount)
+        amount_matches = cls._amounts_close(order_amount, attempt.amount) or (
+            attempt.amount * 0.98 <= order_amount < attempt.amount
+        )
         if (
-            attempt.recovery_policy != "tagged_or_unique_untagged"
-            or order.order_id in attempt.known_order_ids
-            or order.ft_order_tag is not None
+            order.order_id in attempt.known_order_ids
             or order.ft_order_side != attempt.exit_side
-            or not cls._amounts_close(
-                cls._safe_amount(order.safe_amount),
-                attempt.amount,
-            )
+            or not amount_matches
             or attempt.submitted_at is None
         ):
             return False
-        submitted_at = datetime.datetime.fromisoformat(attempt.submitted_at)
-        recovery_deadline = datetime.datetime.fromisoformat(attempt.recovery_deadline)
-        return submitted_at <= order.order_date_utc <= recovery_deadline
+        has_exact_tag = order.ft_order_tag == attempt.tag
+        if not (has_exact_tag or order.ft_order_tag is None):
+            return False
+        submitted_at = _parse_iso_datetime(attempt.submitted_at)
+        recovery_deadline = _parse_iso_datetime(attempt.recovery_deadline)
+        order_date = order.order_date_utc
+        return (
+            order_date.tzinfo is not None
+            and submitted_at <= order_date <= recovery_deadline
+        )
 
     @staticmethod
     def _block(

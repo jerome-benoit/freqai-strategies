@@ -1340,6 +1340,9 @@ class QuickAdapterV3(IStrategy):
         state: TakeProfitStageState,
     ) -> None:
         payload = state.to_mapping()
+        validated_state = TakeProfitStageState.from_mapping(payload)
+        if validated_state != state:
+            raise RuntimeError("Take-profit state failed round-trip validation")
         trade.set_custom_data(cls._TAKE_PROFIT_STATE_KEY, payload)
         persisted_payload = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
         if persisted_payload != payload:
@@ -1351,7 +1354,7 @@ class QuickAdapterV3(IStrategy):
         trade: Trade,
         *,
         validate_trade_amount_on_initialize: bool = True,
-    ) -> Optional[tuple[TakeProfitStageState, int]]:
+    ) -> Optional[TakeProfitStageState]:
         amount_quantizer = partial(cls._quantize_trade_amount, trade)
         raw_state = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
         if raw_state is None:
@@ -1370,17 +1373,10 @@ class QuickAdapterV3(IStrategy):
                 return None
             if state.blocked_reason == "open_entry_order":
                 return None
-            source_version = TakeProfitStageState.SCHEMA_VERSION
         else:
             try:
                 if not isinstance(raw_state, dict):
                     raise ValueError("Take-profit state must be a mapping")
-                source_version = raw_state.get("version")
-                if isinstance(source_version, bool) or not isinstance(
-                    source_version,
-                    int,
-                ):
-                    raise ValueError("Take-profit state version must be an integer")
                 state = TakeProfitStageState.from_mapping(raw_state)
             except ValueError as error:
                 logger.error(
@@ -1398,34 +1394,53 @@ class QuickAdapterV3(IStrategy):
             )
             return None
 
-        return state, source_version
+        return state
 
     @classmethod
     def _get_take_profit_state(cls, trade: Trade) -> Optional[TakeProfitStageState]:
-        loaded_state = cls._load_take_profit_state(trade)
-        if loaded_state is None:
+        state = cls._load_take_profit_state(trade)
+        if state is None:
             return None
-        state, source_version = loaded_state
         amount_quantizer = partial(cls._quantize_trade_amount, trade)
 
-        reconciled_state = TakeProfitStageManager.reconcile_migrated_state(
+        reconciled_state = TakeProfitStageManager.reconcile(
             trade,
             state,
-            source_version,
             amount_quantizer=amount_quantizer,
         )
         was_unpersisted = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY) is None
-        if (
-            source_version != TakeProfitStageState.SCHEMA_VERSION
-            or reconciled_state != state
-            or was_unpersisted
-        ):
+        if reconciled_state != state or was_unpersisted:
             cls._save_take_profit_state(trade, reconciled_state)
             if (
                 was_unpersisted or state.blocked_reason is None
             ) and reconciled_state.blocked_reason is not None:
                 cls._log_take_profit_block(trade, reconciled_state)
         return reconciled_state
+
+    @classmethod
+    def _peek_take_profit_state(cls, trade: Trade) -> Optional[TakeProfitStageState]:
+        """Read an existing take-profit snapshot without reconciling or persisting it."""
+        raw_state = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
+        if raw_state is None:
+            return None
+        try:
+            if not isinstance(raw_state, dict):
+                raise ValueError("Take-profit state must be a mapping")
+            state = TakeProfitStageState.from_mapping(raw_state)
+        except ValueError as error:
+            logger.error(
+                f"[{trade.pair}] Invalid take-profit state for trade {trade.id}: "
+                f"{error}. Take-profit annotations are disabled for this trade"
+            )
+            return None
+
+        if state.plan_signature != cls.get_take_profit_plan_signature():
+            logger.error(
+                f"[{trade.pair}] Take-profit plan configuration changed for trade "
+                f"{trade.id}. Take-profit annotations are disabled for this trade"
+            )
+            return None
+        return state
 
     @staticmethod
     def _log_take_profit_block(trade: Trade, state: TakeProfitStageState) -> None:
@@ -1452,28 +1467,11 @@ class QuickAdapterV3(IStrategy):
         )
 
     @classmethod
-    def resolve_take_profit_ambiguity(
-        cls,
-        trade: Trade,
-        attempt_id: str,
-    ) -> None:
-        """Re-enable take-profit after an operator proves no remote order exists."""
-        state = cls._get_take_profit_state(trade)
-        if state is None:
-            raise ValueError("Take-profit state cannot be loaded")
-        resolved_state = TakeProfitStageManager.resolve_ambiguous_attempt(
-            state,
-            attempt_id,
-            datetime.datetime.now(datetime.timezone.utc),
-        )
-        cls._save_take_profit_state(trade, resolved_state)
-
-    @classmethod
     def get_trade_exit_stage(cls, trade: Trade) -> int:
-        state = cls._get_take_profit_state(trade)
+        state = cls._peek_take_profit_state(trade)
         if state is None:
             return min(cls.partial_exit_stages, default=0)
-        return TakeProfitStageManager.get_exit_stage(trade, state)
+        return TakeProfitStageManager.get_execution_stage(state)
 
     @staticmethod
     @lru_cache(maxsize=128)
@@ -1586,10 +1584,7 @@ class QuickAdapterV3(IStrategy):
         take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
         if take_profit_state is None or take_profit_state.blocked_reason is not None:
             return None
-        take_profit_stage = TakeProfitStageManager.get_exit_stage(
-            trade,
-            take_profit_state,
-        )
+        take_profit_stage = TakeProfitStageManager.get_credited_stage(take_profit_state)
         df, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
@@ -1771,6 +1766,87 @@ class QuickAdapterV3(IStrategy):
         runmode = self.config.get("runmode")
         return getattr(runmode, "value", runmode) in {"live", "dry_run"}
 
+    def _preflight_partial_exit_amount(
+        self,
+        trade: Trade,
+        requested_amount: float,
+    ) -> Optional[float]:
+        """Clamp a live spot-like partial exit before Freqtrade mutates the trade."""
+        if not self._uses_live_exit_minimums():
+            return requested_amount
+
+        trading_mode = self.config.get("trading_mode", "spot")
+        if getattr(trading_mode, "value", trading_mode) == "futures":
+            return requested_amount
+
+        wallets = getattr(self, "wallets", None)
+        if wallets is None:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: wallets are unavailable"
+            )
+            return None
+
+        try:
+            wallets.update()
+            base_currency = trade.safe_base_currency
+            if not base_currency:
+                market = self.dp.market(trade.pair)
+                base_currency = market.get("base") if market is not None else None
+            if not base_currency:
+                raise ValueError("base currency is unavailable")
+            wallet_amount = float(wallets.get_free(base_currency)) + float(
+                wallets.get_used(base_currency)
+            )
+        except Exception as error:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: {error}"
+            )
+            return None
+
+        if not math.isfinite(wallet_amount) or wallet_amount < 0.0:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: invalid wallet amount {wallet_amount!r}"
+            )
+            return None
+        if wallet_amount >= requested_amount:
+            return requested_amount
+        if wallet_amount <= requested_amount * 0.98:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: wallet amount {wallet_amount} is not within 2% of "
+                f"requested amount {requested_amount}"
+            )
+            return None
+
+        executable_amount = QuickAdapterV3._quantize_trade_amount(
+            trade,
+            wallet_amount,
+        )
+        rounds_above_wallet = executable_amount > wallet_amount and not math.isclose(
+            executable_amount,
+            wallet_amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+        if (
+            not math.isfinite(executable_amount)
+            or rounds_above_wallet
+            or executable_amount < requested_amount * 0.98
+        ):
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: wallet amount rounds below the 2% safety bound"
+            )
+            return None
+        logger.info(
+            f"[{trade.pair}] Clamping partial take-profit for trade {trade.id} "
+            f"from {requested_amount} to wallet amount {executable_amount}"
+        )
+        return executable_amount
+
     def _effective_exit_min_stake(
         self,
         min_stake: Optional[float],
@@ -1862,9 +1938,8 @@ class QuickAdapterV3(IStrategy):
         if trade.has_open_orders:
             return None
 
-        take_profit_stage = TakeProfitStageManager.get_exit_stage(
-            trade,
-            take_profit_state,
+        take_profit_stage = TakeProfitStageManager.get_execution_stage(
+            take_profit_state
         )
         if take_profit_stage not in QuickAdapterV3.partial_exit_stages:
             return None
@@ -1899,7 +1974,6 @@ class QuickAdapterV3(IStrategy):
             )
         if trade_partial_exit:
             stage_progress = TakeProfitStageManager.get_stage_progress(
-                trade,
                 take_profit_state,
                 take_profit_stage,
             )
@@ -1916,6 +1990,12 @@ class QuickAdapterV3(IStrategy):
                     take_profit_stage,
                     "amount rounds to zero",
                 )
+                return None
+            requested_amount = self._preflight_partial_exit_amount(
+                trade,
+                requested_amount,
+            )
+            if requested_amount is None:
                 return None
             adjustment_stake_amount = (
                 requested_amount * trade.stake_amount / trade.amount
@@ -1962,7 +2042,11 @@ class QuickAdapterV3(IStrategy):
                 return None
             minimum_leverage = leverage if self._uses_live_exit_minimums() else 1.0
             outgoing_stake = executable_amount * current_exit_rate / minimum_leverage
-            remaining_stake = (trade.amount - executable_amount) * current_exit_rate
+            remaining_stake = (
+                (trade.amount - executable_amount)
+                * current_exit_rate
+                / minimum_leverage
+            )
             if effective_min_stake is not None and outgoing_stake < effective_min_stake:
                 QuickAdapterV3._defer_take_profit_stage(
                     trade,
@@ -2551,10 +2635,7 @@ class QuickAdapterV3(IStrategy):
         ):
             return "maxima_detected_long"
 
-        trade_exit_stage = TakeProfitStageManager.get_exit_stage(
-            trade,
-            take_profit_state,
-        )
+        trade_exit_stage = TakeProfitStageManager.get_execution_stage(take_profit_state)
         if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
             return None
 
@@ -2717,11 +2798,7 @@ class QuickAdapterV3(IStrategy):
                     )
                     return True
                 return False
-            take_profit_state, source_version = loaded_state
-            take_profit_state = TakeProfitStageManager.prepare_migrated_state(
-                take_profit_state,
-                source_version,
-            )
+            take_profit_state = loaded_state
             active_attempt = take_profit_state.active_attempt
             adjustment_id = (
                 active_attempt.attempt_id
@@ -2783,11 +2860,11 @@ class QuickAdapterV3(IStrategy):
                     or active_attempt.stage != final_stage
                     or active_attempt.tag != exit_reason
                     or active_attempt.exit_side != trade.exit_side
+                    or parsed_tag is None
                     or parsed_tag
                     != (
                         trade.trade_direction,
                         final_stage,
-                        active_attempt.attempt_id,
                     )
                 ):
                     logger.error(
