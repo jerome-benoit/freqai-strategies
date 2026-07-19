@@ -1349,11 +1349,50 @@ class QuickAdapterV3(IStrategy):
             raise RuntimeError("Take-profit state persistence verification failed")
 
     @classmethod
+    def _restore_unpersisted_exit_adjustment(
+        cls,
+        trade: Trade,
+        previous_state: TakeProfitStageState,
+        candidate_state: TakeProfitStageState,
+        adjustment_id: str,
+        persisted_payload_before: object,
+    ) -> None:
+        """Restore a denied exit amount only when its adjustment was not persisted."""
+        previous_adjustment_ids = {
+            adjustment.adjustment_id
+            for adjustment in previous_state.exposure_adjustments
+        }
+        matching_adjustments = tuple(
+            adjustment
+            for adjustment in candidate_state.exposure_adjustments
+            if adjustment.is_active
+            and adjustment.adjustment_id == adjustment_id
+            and adjustment.adjustment_id not in previous_adjustment_ids
+        )
+        if len(matching_adjustments) != 1:
+            return
+        adjustment = matching_adjustments[0]
+        if not math.isclose(
+            trade.amount,
+            adjustment.adjusted_amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            return
+        try:
+            persisted_payload = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
+        except Exception:
+            return
+        if persisted_payload == persisted_payload_before:
+            trade.amount = adjustment.previous_amount
+
+    @classmethod
     def _load_take_profit_state(
         cls,
         trade: Trade,
         *,
         validate_trade_amount_on_initialize: bool = True,
+        current_time: Optional[datetime.datetime] = None,
     ) -> Optional[TakeProfitStageState]:
         amount_quantizer = partial(cls._quantize_trade_amount, trade)
         raw_state = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
@@ -1364,6 +1403,7 @@ class QuickAdapterV3(IStrategy):
                     cls.get_take_profit_plan_signature(),
                     amount_quantizer=amount_quantizer,
                     validate_trade_amount=validate_trade_amount_on_initialize,
+                    current_time=current_time,
                 )
             except ValueError as error:
                 logger.error(
@@ -1397,8 +1437,12 @@ class QuickAdapterV3(IStrategy):
         return state
 
     @classmethod
-    def _get_take_profit_state(cls, trade: Trade) -> Optional[TakeProfitStageState]:
-        state = cls._load_take_profit_state(trade)
+    def _get_take_profit_state(
+        cls,
+        trade: Trade,
+        current_time: Optional[datetime.datetime] = None,
+    ) -> Optional[TakeProfitStageState]:
+        state = cls._load_take_profit_state(trade, current_time=current_time)
         if state is None:
             return None
         amount_quantizer = partial(cls._quantize_trade_amount, trade)
@@ -1407,6 +1451,7 @@ class QuickAdapterV3(IStrategy):
             trade,
             state,
             amount_quantizer=amount_quantizer,
+            current_time=current_time,
         )
         was_unpersisted = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY) is None
         if reconciled_state != state or was_unpersisted:
@@ -1581,7 +1626,7 @@ class QuickAdapterV3(IStrategy):
         # Backtesting reports fills before recalculating trade exposure; reconcile next cycle.
         if after_fill:
             return None
-        take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
+        take_profit_state = QuickAdapterV3._get_take_profit_state(trade, current_time)
         if take_profit_state is None or take_profit_state.blocked_reason is not None:
             return None
         take_profit_stage = TakeProfitStageManager.get_credited_stage(take_profit_state)
@@ -1762,7 +1807,7 @@ class QuickAdapterV3(IStrategy):
         )
         return QuickAdapterV3._quantize_trade_amount(trade, amount)
 
-    def _uses_live_exit_minimums(self) -> bool:
+    def _uses_live_exit_constraints(self) -> bool:
         runmode = self.config.get("runmode")
         return getattr(runmode, "value", runmode) in {"live", "dry_run"}
 
@@ -1771,8 +1816,8 @@ class QuickAdapterV3(IStrategy):
         trade: Trade,
         requested_amount: float,
     ) -> Optional[float]:
-        """Clamp a live spot-like partial exit before Freqtrade mutates the trade."""
-        if not self._uses_live_exit_minimums():
+        """Require the live wallet to cover the complete spot-like exposure."""
+        if not self._uses_live_exit_constraints():
             return requested_amount
 
         trading_mode = self.config.get("trading_mode", "spot")
@@ -1811,41 +1856,21 @@ class QuickAdapterV3(IStrategy):
                 f"{trade.id}: invalid wallet amount {wallet_amount!r}"
             )
             return None
-        if wallet_amount >= requested_amount:
+        required_wallet_amount = max(requested_amount, float(trade.amount))
+        if not math.isfinite(required_wallet_amount) or required_wallet_amount <= 0.0:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: invalid canonical exposure {trade.amount!r}"
+            )
+            return None
+        if wallet_amount >= required_wallet_amount:
             return requested_amount
-        if wallet_amount <= requested_amount * 0.98:
-            logger.error(
-                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
-                f"{trade.id}: wallet amount {wallet_amount} is not within 2% of "
-                f"requested amount {requested_amount}"
-            )
-            return None
-
-        executable_amount = QuickAdapterV3._quantize_trade_amount(
-            trade,
-            wallet_amount,
+        logger.error(
+            f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+            f"{trade.id}: wallet amount {wallet_amount} is below canonical "
+            f"exposure {required_wallet_amount}"
         )
-        rounds_above_wallet = executable_amount > wallet_amount and not math.isclose(
-            executable_amount,
-            wallet_amount,
-            rel_tol=1e-9,
-            abs_tol=1e-12,
-        )
-        if (
-            not math.isfinite(executable_amount)
-            or rounds_above_wallet
-            or executable_amount < requested_amount * 0.98
-        ):
-            logger.error(
-                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
-                f"{trade.id}: wallet amount rounds below the 2% safety bound"
-            )
-            return None
-        logger.info(
-            f"[{trade.pair}] Clamping partial take-profit for trade {trade.id} "
-            f"from {requested_amount} to wallet amount {executable_amount}"
-        )
-        return executable_amount
+        return None
 
     def _effective_exit_min_stake(
         self,
@@ -1865,7 +1890,7 @@ class QuickAdapterV3(IStrategy):
         ):
             raise ValueError("Invalid take-profit minimum-stake inputs")
 
-        if not self._uses_live_exit_minimums():
+        if not self._uses_live_exit_constraints():
             return min_stake
 
         margin_reserve = 1.0 + float(
@@ -1903,7 +1928,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[float] | tuple[Optional[float], Optional[str]]:
         pair = trade.pair
 
-        take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
+        take_profit_state = QuickAdapterV3._get_take_profit_state(trade, current_time)
         if take_profit_state is None or take_profit_state.blocked_reason is not None:
             return None
 
@@ -1942,6 +1967,12 @@ class QuickAdapterV3(IStrategy):
             take_profit_state
         )
         if take_profit_stage not in QuickAdapterV3.partial_exit_stages:
+            return None
+        if not TakeProfitStageManager.is_attempt_due(
+            take_profit_state,
+            take_profit_stage,
+            current_time,
+        ):
             return None
 
         df, _ = self.dp.get_analyzed_dataframe(
@@ -2040,7 +2071,7 @@ class QuickAdapterV3(IStrategy):
             leverage = float(trade.leverage)
             if not math.isfinite(leverage) or leverage <= 0.0:
                 return None
-            minimum_leverage = leverage if self._uses_live_exit_minimums() else 1.0
+            minimum_leverage = leverage if self._uses_live_exit_constraints() else 1.0
             outgoing_stake = executable_amount * current_exit_rate / minimum_leverage
             remaining_stake = (
                 (trade.amount - executable_amount)
@@ -2546,7 +2577,7 @@ class QuickAdapterV3(IStrategy):
     ) -> Optional[str]:
         self.safe_append_trade_unrealized_pnl(trade, current_profit)
 
-        take_profit_state = QuickAdapterV3._get_take_profit_state(trade)
+        take_profit_state = QuickAdapterV3._get_take_profit_state(trade, current_time)
         if take_profit_state is None or take_profit_state.blocked_reason is not None:
             return None
         active_attempt = take_profit_state.active_attempt
@@ -2563,7 +2594,7 @@ class QuickAdapterV3(IStrategy):
                 )
                 QuickAdapterV3._save_take_profit_state(trade, take_profit_state)
                 logger.error(
-                    f"[{pair}] Final take-profit attempt {active_attempt.attempt_id} "
+                    f"[{pair}] Take-profit attempt {active_attempt.attempt_id} "
                     f"for trade {trade.id} has no persisted order; automatic "
                     "take-profit is fail-closed until exchange reconciliation"
                 )
@@ -2637,6 +2668,12 @@ class QuickAdapterV3(IStrategy):
 
         trade_exit_stage = TakeProfitStageManager.get_execution_stage(take_profit_state)
         if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
+            return None
+        if not TakeProfitStageManager.is_attempt_due(
+            take_profit_state,
+            trade_exit_stage,
+            current_time,
+        ):
             return None
 
         trade_take_profit_price = self.get_take_profit_price(
@@ -2740,18 +2777,31 @@ class QuickAdapterV3(IStrategy):
             )
 
         if trade_exit:
-            requested_amount = QuickAdapterV3._quantize_trade_amount(
-                trade,
-                trade.amount,
-            )
-            if requested_amount <= 0.0 or trade.stake_amount <= 0.0:
+            # Freqtrade confirms the raw trade amount before exchange quantization.
+            try:
+                requested_amount = float(trade.amount)
+                requested_stake_amount = float(trade.stake_amount)
+                executable_amount = QuickAdapterV3._quantize_trade_amount(
+                    trade,
+                    requested_amount,
+                )
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if (
+                not math.isfinite(requested_amount)
+                or requested_amount <= 0.0
+                or not math.isfinite(executable_amount)
+                or executable_amount <= 0.0
+                or not math.isfinite(requested_stake_amount)
+                or requested_stake_amount <= 0.0
+            ):
                 return None
             take_profit_state = TakeProfitStageManager.start_attempt(
                 trade,
                 take_profit_state,
                 stage=trade_exit_stage,
                 amount=requested_amount,
-                stake_amount=trade.stake_amount,
+                stake_amount=requested_stake_amount,
                 attempt_id=uuid.uuid4().hex,
                 status="proposed",
                 current_time=current_time,
@@ -2784,8 +2834,15 @@ class QuickAdapterV3(IStrategy):
             exit_reason in QuickAdapterV3._PROTECTIVE_EXIT_REASONS
             or exit_reason in QuickAdapterV3._OPERATOR_EXIT_REASONS
         )
+        loaded_state: TakeProfitStageState | None = None
+        take_profit_state: TakeProfitStageState | None = None
+        adjustment_id: str | None = None
+        persisted_payload_before: object = None
 
         try:
+            persisted_payload_before = trade.get_custom_data(
+                QuickAdapterV3._TAKE_PROFIT_STATE_KEY
+            )
             loaded_state = QuickAdapterV3._load_take_profit_state(
                 trade,
                 validate_trade_amount_on_initialize=False,
@@ -2905,6 +2962,18 @@ class QuickAdapterV3(IStrategy):
                     f"{trade.id} although its wallet adjustment could not be audited"
                 )
                 return True
+            if (
+                loaded_state is not None
+                and take_profit_state is not None
+                and adjustment_id is not None
+            ):
+                QuickAdapterV3._restore_unpersisted_exit_adjustment(
+                    trade,
+                    loaded_state,
+                    take_profit_state,
+                    adjustment_id,
+                    persisted_payload_before,
+                )
             logger.exception(
                 f"[{pair}] Denied exit {exit_reason!r} for trade {trade.id} "
                 "because its execution state could not be persisted"

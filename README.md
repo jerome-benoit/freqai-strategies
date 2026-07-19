@@ -5,7 +5,7 @@
 - [QuickAdapter](#quickadapter)
   - [Quick start](#quick-start)
   - [Configuration tunables](#configuration-tunables)
-  - [Partial exit execution](#partial-exit-execution)
+  - [Take-profit execution](#take-profit-execution)
 - [ReforceXY](#reforcexy)
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
@@ -147,37 +147,58 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.min_resource                            | 3                             | int >= 1                                                                                                                                                                                                     | Minimum resource per [HyperbandPruner](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.pruners.HyperbandPruner.html) rung.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | freqai.optuna_hyperopt.seed                                    | 1                             | int >= 0                                                                                                                                                                                                     | HPO RNG seed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
-### Partial exit execution
+### Take-profit execution
 
-QuickAdapter persists a versioned execution state and advances take-profit stages
-from terminal Freqtrade orders that can be linked to a specific take-profit
-attempt. The persisted plan includes every partial fraction and NATR trigger, so
-an open trade cannot silently switch execution plans after a deployment. Targets
-remain immutable: terminal partial fills credit only their observed net base
-amount. Quantity rounding and exchange minimum checks happen before submission;
-non-executable partial stages are carried FIFO to a later threshold and ultimately
-to the final exit. Live and dry-run checks conservatively account for the exit
-price, leverage, amount reserve, and stoploss reserve used by Freqtrade.
-Public order tags are stable per direction and stage; attempt UUIDs remain internal.
-After an uncertain submission, reconciliation accepts either the exact tagged order
-or one unique untagged order matching the attempt side, amount, and submission time
-window. Any other candidate set remains blocked for operator review.
+QuickAdapter persists a versioned execution state and advances a stage only from a
+terminal Freqtrade order with validated causal attribution. The persisted plan
+contains every partial fraction and NATR trigger, so an open trade cannot silently
+switch plans after deployment. Stage targets remain immutable; partial fills credit
+only their observed net base amount. Non-executable amounts are deferred FIFO to a
+later trigger and ultimately to the final exit. Public order tags are stable per
+direction and stage, while attempt IDs remain internal.
+
+Partial attempts are persisted as `submitting` before the position-adjustment
+callback can reach the exchange. Final attempts remain local proposals until
+`confirm_trade_exit`; any persistence failure makes that callback return `false`.
+The final proposal keeps the raw trade amount that Freqtrade passes back to the
+confirmation callback; exchange precision is applied after that confirmation.
+An attempt must target the current execution stage and cannot exceed either that
+stage's remaining debt or order-backed exposure; a final proposal may only shrink at
+confirmation.
+After submission, reconciliation accepts either the exact tagged order or one unique
+untagged order matching the attempt side, amount, and submission window. Attribution
+is persisted before the terminal outcome is classified, including when the first
+observed order snapshot is already terminal. Multiple candidates remain fail-closed.
+
+Terminal outcomes use the following policy:
+
+| Canonical Freqtrade status | Fill evidence | Result |
+| --- | --- | --- |
+| open | any consistent snapshot | Attribute the order, credit nothing, and wait. |
+| `expired` or `rejected` | strict zero fill | Credit zero and schedule a bounded retry. |
+| `closed`, `expired`, or `rejected` | strict positive fill | Credit the net base fill; a coherent remainder, fee, and canonical fill timestamp are required. |
+| `closed` | zero fill | Block as an unknown terminal outcome. |
+| `canceled` or `cancelled` | strict zero fill | Require an exact operator-confirmed zero-fill snapshot. |
+| `canceled` or `cancelled` | strict positive fill | Require an exact operator-confirmed canceled-fill snapshot. |
+| any terminal status | missing or inconsistent evidence | Block without advancing the stage. |
+
+A strict automatic zero fill has `filled == 0`, `remaining == amount`, no base fee,
+no funding fee, and no fill timestamp. A positive fill must not exceed the order
+amount; its remainder must be coherent; its base fee must be smaller than the fill;
+and its execution price, funding fee, and canonical fill timestamp must be valid.
+The timestamp is Freqtrade evidence, not proof that the CEX supplied it directly.
+Operators must still verify canceled outcomes against the CEX because Freqtrade can
+synthesize a canceled response when cancellation and order retrieval both fail.
 
 `unfilledtimeout.exit_timeout_count` must be `0`; QuickAdapter is the sole owner of
-partial-exit retries. Partial attempts are persisted as `submitting` before the
-position-adjustment callback can reach the exchange. Final attempts remain local
-proposals until `confirm_trade_exit`; their confirmation returns `false` on every
-state persistence failure. Take-profit limit and market exits therefore use the
-same durable submission protocol. A strict zero-fill outcome is retried
-automatically only when its persisted status is `rejected` or `expired`, its
-remaining amount equals
-the order amount, it has no base fee, and it has no fill timestamp. `canceled` and
-`cancelled` always require operator verification:
-Freqtrade can synthesize a canceled response when cancellation and order retrieval
-both fail. A canceled positive fill requires a separate immutable snapshot of its
-creation time, tag, side, status, amount, fill, remainder, base fee, and fill
-timestamp. A lost CEX response or any terminal external order with uncertain or
-positive execution remains fail-closed and requires manual position reconciliation.
+take-profit retries. Each causally attributed terminal zero fill persists its stage,
+consecutive count, last order ID, and next eligible retry time. The original attempt
+recovery window, derived from `unfilledtimeout.exit`, is applied with delays of 1x,
+2x, 4x, then 8x. The fifth consecutive zero-fill outcome blocks automatic
+take-profit with `zero_fill_retry_limit_reached`; there is no operator reset for this
+safety budget. A positive take-profit fill clears the retry sequence. The deadline,
+count, and limit survive process restarts, and both partial and final callbacks check
+the gate before proposing another order.
 
 `order_types.stoploss_on_exchange` must be `false`. Freqtrade 2026.6 and 2026.7-dev do
 not persist enough cancellation provenance for the strategy to distinguish a
@@ -186,32 +207,57 @@ deploying this version, stop the bot and ensure that no open trade retains an
 exchange-stoploss order record. Reconcile or close those trades, verify each CEX
 position, set the option to `false`, and only then restart.
 
-The ledger derives initial exposure from terminal entry fills, applies Freqtrade's
-amount precision, and separates two concerns. Every validated terminal strategy
-exit reduces exposure, but only an order whose immutable attribution still matches
-its canonical ID, tag, side, amount, stage, and provenance advances the take-profit
-stages. A discretionary exit that is partially filled therefore leaves the stage
-unchanged and can be reevaluated normally instead of permanently blocking the
-trade. Freqtrade's full-exit wallet fallback is recorded as a bounded, audited
-exposure adjustment; a later canonical fill retires that adjustment when Freqtrade
-recalculates the amount from orders. Retired adjustment details are compacted only
-when the bounded ledger needs room; active adjustments are never discarded, and
-the compacted count and amount remain visible. For live and dry-run partial exits,
-QuickAdapter refreshes the spot-like wallet and applies Freqtrade's 2% fallback
-bound before persisting the attempt. If Freqtrade still mutates the trade amount,
-the state records that partial-wallet mutation and its exact canonical order, when
-one exists. The active attempt pauses automatic execution until canonical trade
-accounting is restored. Futures are unchanged. Deferred stages affect scheduling
-only: stoploss tightening follows the separately computed credited stage, so an
-unexecuted or retried stage cannot tighten the stoploss. Discretionary exits are
-denied while reconciliation is pending or an order remains open; stoploss,
-trailing stoploss, emergency exit, and force exit remain available. Their distinct
-full-exit wallet fallback is audited when possible, but an audit failure never
-denies these safety exits.
+The ledger derives initial exposure from terminal entry fills and applies the live
+Freqtrade amount precision. Every validated terminal strategy exit reduces exposure,
+but only an order whose audited attribution still matches its ID, tag, side,
+amount, stage, and provenance advances take-profit progress. A discretionary
+partial fill therefore leaves the stage unchanged. Retired wallet-adjustment detail
+is compacted only when the bounded audit needs room; active evidence is never
+discarded.
 
-An ambiguous submission can be cleared only after checking the CEX order history
-for the complete attempt window. Stop the bot, inspect the state, then use the
-exact confirmation token printed by this procedure:
+When an exchange response initially omits the order amount, an automatic attribution
+may normalize once from Freqtrade's provisional raw amount to its exact
+exchange-quantized amount. Automatic reconciliation accepts no later amount change;
+further changes remain blocked until evidence-bound terminal recovery.
+
+Order creation timestamps are not normalized automatically because Freqtrade does
+not expose whether its initial value came from the exchange. A changed timestamp
+therefore remains fail-closed while the order is open and requires evidence-bound
+terminal recovery.
+
+Freqtrade can reduce `trade.amount` while applying its full-exit wallet fallback,
+before order creation succeeds. This is a durable correction to the available wallet
+exposure, not fill evidence. QuickAdapter records it as an active exposure adjustment
+without advancing a stage and preserves it even when order creation fails. A later
+positive fill retires the adjustment only when native order accounting proves the
+order-backed exposure.
+
+If a non-safety exit is denied because that adjustment cannot be persisted,
+QuickAdapter restores the previous amount only after confirming that the previous
+state is still stored. If the adjusted state was written before the error, the
+wallet-corrected amount remains authoritative.
+
+Before a live spot-like partial exit, the total wallet balance must cover the entire
+canonical trade exposure, not only the requested partial amount. Otherwise no attempt
+is submitted and the same stage remains pending. An amount mutation that is not
+explained by a persisted exposure adjustment is separate, fail-closed evidence of an
+interrupted wallet transition. An unbound mutation retains the ambiguous attempt so
+a late unique order can still be discovered; attribution can bind the evidence to
+that order but cannot prove the remaining wallet exposure. Orders alone may never be
+used to increase the observed amount. Perform a fresh wallet and CEX reconciliation
+before taking manual action. Automatic take-profit remains blocked; manage or close
+the position through the native Freqtrade lifecycle.
+
+Deferred or retried stages do not tighten the stoploss: stoploss progression follows
+the separately computed credited stage. Discretionary exits are denied while
+reconciliation is pending or an order remains open. Stoploss, trailing stoploss,
+emergency exit, and force exit remain available; an audit failure never denies these
+safety exits.
+
+Run take-profit maintenance only while the bot is stopped. An ambiguous submission
+can be cleared only after checking the CEX order history for the complete attempt
+window. Inspect the current evidence, then use the exact confirmation token that
+`inspect` prints:
 
 ```shell
 docker compose -f quickadapter/docker-compose.yml stop freqtrade
@@ -223,47 +269,50 @@ docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoin
   /freqtrade/user_data/scripts/take_profit_maintenance.py \
   --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
   --trade-id 42 --expected-pair ETH/USDT clear-ambiguous \
-  --attempt-id abc123 --apply --confirmation 'NO-ORDER:42:abc123'
+  --attempt-id abc123 --apply \
+  --confirmation 'NO-ORDER:42:abc123:v1:<sha256-from-inspect>'
 docker compose -f quickadapter/docker-compose.yml start freqtrade
 ```
 
-The clear command is unavailable until the persisted recovery deadline. `inspect`
+The clear command is unavailable until the persisted recovery deadline. A normal
+no-order clear removes only the ambiguous attempt; it preserves any audited wallet
+exposure adjustment and its corrected trade amount. `inspect`
 does not modify take-profit data. It initializes Freqtrade persistence like other
-database clients and may create or migrate supported database schema objects.
-It reports current and expected exposure, their delta, take-profit and
-non-take-profit credits, active or retired wallet adjustments and compacted totals,
-immutable stage targets, deferred stages, attribution evidence, partial wallet
-mutations, the single supported recovery path, and operator proofs. For an unbound
-partial-wallet mutation, `clear-ambiguous` recalculates the trade from canonical
-orders and requires the exact pre-submission exposure. It commits that canonical
-trade first and clears the blocked attempt second, so a crash between the writes
-remains fail-closed.
+database clients and may create or migrate supported database schema objects. It
+reports exposure, both exit ledgers, retry state, stage targets, deferred stages,
+attributions, wallet mutations, at most one recovery disposition, any reason
+that automatic recovery is withheld, and the exact confirmation token. A partial
+wallet mutation never receives an order-only recovery token, whether it is unbound
+or bound to a terminal order. `inspect` reports
+`fresh_wallet_and_cex_audit_required`, and the observed amount remains unchanged.
 
-When a bound order has a native terminal outcome such as `expired`, `rejected`, or
-`closed`, restore the amount with the exact evidence-bound token printed by
-`inspect`:
+For a revalidatable terminal-order block, first repair the canonical Freqtrade order
+and exit tag from verified exchange data. An existing attribution cannot increase
+beyond its submitted maximum or change its persisted tag. The tool can rebuild
+accounting for a partial terminal fill only when the trade is spot and remains open:
 
 ```shell
 docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
   /freqtrade/user_data/scripts/take_profit_maintenance.py \
   --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
-  --trade-id 42 --expected-pair ETH/USDT restore-partial-wallet-mutation \
+  --trade-id 42 --expected-pair ETH/USDT revalidate-terminal-order \
   --order-id 987654 --apply \
-  --confirmation 'RESTORE-PARTIAL-WALLET:42:abc123:987654:expired:v1:<sha256-from-inspect>'
+  --confirmation 'REVALIDATE-ORDER:42:987654:v1:<sha256-from-inspect>'
 ```
 
-For a revalidatable terminal or attribution block, first repair the canonical
-Freqtrade order, its exit tag, and trade accounting from exchange data. An existing
-take-profit attribution cannot increase beyond its submitted maximum or change to
-a non-take-profit tag. Then revalidate that exact order:
+If an eligible latch remains after its underlying data has been restored exactly,
+`inspect` emits a state-revalidation token only when clearing the latch and running a
+complete reconciliation already succeeds. An unknown open take-profit order can be
+reclassified only while the same canonical order remains open on the exit side and
+has an explicit, non-empty, non-take-profit exit tag. This action does not rewrite
+evidence:
 
 ```shell
 docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
   /freqtrade/user_data/scripts/take_profit_maintenance.py \
   --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
-  --trade-id 42 --expected-pair ETH/USDT revalidate-terminal \
-  --order-id 987654 --apply \
-  --confirmation 'RECONCILE:42:987654:v1:<sha256-from-inspect>'
+  --trade-id 42 --expected-pair ETH/USDT revalidate-state --apply \
+  --confirmation 'REVALIDATE-STATE:42:v1:<sha256-from-inspect>'
 ```
 
 For a verified `canceled` or `cancelled` positive fill, use the dedicated
@@ -273,7 +322,7 @@ evidence-bound confirmation token printed by `inspect`:
 docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
   /freqtrade/user_data/scripts/take_profit_maintenance.py \
   --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
-  --trade-id 42 --expected-pair ETH/USDT confirm-terminal-canceled \
+  --trade-id 42 --expected-pair ETH/USDT confirm-terminal-canceled-fill \
   --order-id 987654 --terminal-status canceled --apply \
   --confirmation 'CANCELED-FILL:42:987654:canceled:v1:<sha256-from-inspect>'
 ```
@@ -285,32 +334,59 @@ evidence-bound confirmation token printed by `inspect`:
 docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoint python freqtrade \
   /freqtrade/user_data/scripts/take_profit_maintenance.py \
   --db-url sqlite:////freqtrade/user_data/freqtrade-quickadapter-tradesv3.sqlite \
-  --trade-id 42 --expected-pair ETH/USDT confirm-terminal-zero \
+  --trade-id 42 --expected-pair ETH/USDT confirm-terminal-zero-fill \
   --order-id 987654 --terminal-status canceled --apply \
-  --confirmation 'NO-FILL:42:987654:canceled:v1:<sha256-from-inspect>'
+  --confirmation 'ZERO-FILL:42:987654:canceled:v1:<sha256-from-inspect>'
 ```
 
-Recovery commands never edit orders. The clear, restore, and bound confirmation
-paths use Freqtrade's native order recalculation and commit canonical trade
-accounting before take-profit state, making an interrupted run safely replayable.
-This automatic recalculation is limited to spot trades. Freqtrade bypasses the
-wallet fallback for futures, while margin interest depends on mutable exposure and
-wall-clock time, so replaying its native recalculation is not deterministic. For a
-margin partial-wallet mutation, `inspect` withholds the apply token and reports
-`margin_recalculation_not_replay_safe`. Automatic state recovery is unavailable;
-reconcile and close the position manually.
-Other paths require trade accounting to be repaired first. Every command recomputes
-the ledger and records a bounded audit entry. Confirmed zero and canceled positive
-fills persist immutable order snapshots outside that bounded audit. Any later
-change to a proved creation time, tag, side, status, amount, remainder, fee, fill,
-or fill timestamp blocks the ledger again. Every order-based confirmation token
-also contains a versioned digest of the recovery instruction, take-profit state,
-stable trade inputs, and the ordered canonical entry and exit orders. Any
-intervening evidence change invalidates the token and requires a new `inspect`.
-Derived trade accounting fields are excluded so the same token remains replayable
-after an interruption between the canonical accounting commit and the state commit.
-If canonical data still cannot prove the outcome, reconcile the position manually
-or close the trade.
+Recovery commands never rewrite canonical Freqtrade order evidence. For an
+attributed terminal order, the applicable token may rebind the attribution amount up
+to its submitted maximum. It may also rebind the canonical creation timestamp when
+the attribution retains its original submission window and the timestamp remains
+inside it. A terminal order without an attribution can receive an operator
+attribution only from a valid take-profit tag for the trade direction and configured
+stage; any active attempt must also match its side, amount, tag, and submission
+window. When every relevant accounting field is already correct, recovery persists
+only the audited state transition. Otherwise it may use
+`Trade.recalc_trade_from_orders()` to rebuild an open spot trade from all canonical
+orders, then reapply the exposure amount derived from the take-profit ledger. The
+tool never calls the native terminal-fill lifecycle and never changes an open trade
+into a closed trade. A positive fill that consumes the remaining exposure must be
+processed by the running Freqtrade lifecycle. The prospective ledger exposure,
+rather than the fill-to-residual ratio, determines that boundary. `inspect` reports
+the `native_freqtrade_lifecycle` disposition without an apply token. Every positive
+terminal-fill recovery in futures or margin mode is also withheld, even when ORM
+accounting appears aligned, because persisted fields cannot prove native fill side
+effects such as liquidation, wallet, callback, and stoploss updates. Closed trades
+are strictly inspect-only.
+
+Before emitting a token, the tool checks every accounting field rebuilt or updated by
+`Trade.recalc_trade_from_orders()` against an isolated native rebuild. Every filled
+source order must have a finite, positive price. Open and zero-fill orders must have
+zero funding fees. For an open trade, its persisted funding total must equal the sum
+stored on terminal positive-fill orders plus the current running accrual. An
+accounting rebuild is available only for spot trades. `inspect` reports one of
+`closed_trade_is_inspect_only`,
+`fresh_wallet_and_cex_audit_required`,
+`positive_fill_requires_native_freqtrade_lifecycle`,
+`non_spot_trade_accounting_not_replay_safe`, or
+`automatic_trade_accounting_precondition_failed` when recovery is recognized but
+cannot be applied safely.
+
+When an offline accounting rebuild is required, trade accounting is committed first
+and take-profit state second. A crash between those commits remains fail-closed.
+Because confirmation tokens bind the inspected trade fields, reconciled state,
+effective instruction, and every ordered entry and exit record, the first commit
+invalidates the previous token. Rerun `inspect` and use its new token to complete the
+remaining state transition. Tokens are never normalized across commit phases.
+
+Every successfully applied recovery command appends a bounded audit entry. Confirmed
+zero and canceled positive fills also persist immutable snapshots of every order
+field used for classification and native accounting, including funding and positive
+fill execution price. Any later change to proved order evidence blocks the ledger
+again. Any trade, state, instruction, or order change invalidates the v1 token and
+requires a new `inspect`. If canonical data cannot prove a safe outcome, reconcile
+the position through Freqtrade or close the trade.
 
 ## ReforceXY
 
