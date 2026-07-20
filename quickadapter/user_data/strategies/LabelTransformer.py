@@ -127,7 +127,7 @@ DEFAULTS_LABEL_WEIGHTING: Final[dict[str, Any]] = {
     "fill_method": FILL_METHODS[0],  # "zero"
     "fill_epsilon": 1e-6,
     "fill_epsilon_baseline": FILL_EPSILON_BASELINES[0],  # "mean"
-    "fill_sigma_candles": 10.0,
+    "fill_sigma_candles": 25.0,
     "fill_sigma_min_candles": 0.5,
     "fill_bandwidth": FILL_BANDWIDTHS[0],  # "fixed"
     "fill_bandwidth_neighbors": 1,
