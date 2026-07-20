@@ -1934,7 +1934,7 @@ class QuickAdapterV3(IStrategy):
         trade: Trade,
         requested_amount: float,
     ) -> Optional[float]:
-        """Require the live wallet to cover the complete spot-like exposure."""
+        """Require live base-wallet coverage and sell-side availability."""
         if not self._uses_live_exit_constraints():
             return requested_amount
 
@@ -1958,9 +1958,8 @@ class QuickAdapterV3(IStrategy):
                 base_currency = market.get("base") if market is not None else None
             if not base_currency:
                 raise ValueError("base currency is unavailable")
-            wallet_amount = float(wallets.get_free(base_currency)) + float(
-                wallets.get_used(base_currency)
-            )
+            free_wallet_amount = float(wallets.get_free(base_currency))
+            used_wallet_amount = float(wallets.get_used(base_currency))
         except Exception as error:
             logger.error(
                 f"[{trade.pair}] Cannot preflight partial take-profit for trade "
@@ -1968,10 +1967,21 @@ class QuickAdapterV3(IStrategy):
             )
             return None
 
-        if not math.isfinite(wallet_amount) or wallet_amount < 0.0:
+        if any(
+            not math.isfinite(amount) or amount < 0.0
+            for amount in (free_wallet_amount, used_wallet_amount)
+        ):
             logger.error(
                 f"[{trade.pair}] Cannot preflight partial take-profit for trade "
-                f"{trade.id}: invalid wallet amount {wallet_amount!r}"
+                f"{trade.id}: invalid wallet balances free={free_wallet_amount!r}, "
+                f"used={used_wallet_amount!r}"
+            )
+            return None
+        total_wallet_amount = free_wallet_amount + used_wallet_amount
+        if not math.isfinite(total_wallet_amount):
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: invalid total wallet amount {total_wallet_amount!r}"
             )
             return None
         required_wallet_amount = max(requested_amount, float(trade.amount))
@@ -1981,14 +1991,21 @@ class QuickAdapterV3(IStrategy):
                 f"{trade.id}: invalid canonical exposure {trade.amount!r}"
             )
             return None
-        if wallet_amount >= required_wallet_amount:
-            return requested_amount
-        logger.error(
-            f"[{trade.pair}] Cannot preflight partial take-profit for trade "
-            f"{trade.id}: wallet amount {wallet_amount} is below canonical "
-            f"exposure {required_wallet_amount}"
-        )
-        return None
+        if total_wallet_amount < required_wallet_amount:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: total wallet amount {total_wallet_amount} is below "
+                f"canonical exposure {required_wallet_amount}"
+            )
+            return None
+        if trade.exit_side == "sell" and free_wallet_amount < requested_amount:
+            logger.error(
+                f"[{trade.pair}] Cannot preflight partial take-profit for trade "
+                f"{trade.id}: free wallet amount {free_wallet_amount} is below "
+                f"requested exit amount {requested_amount}"
+            )
+            return None
+        return requested_amount
 
     def _get_exit_min_stake(
         self,

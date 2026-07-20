@@ -244,18 +244,19 @@ QuickAdapter restores the previous amount on the canonical ORM trade only after
 confirming that the previous state is still stored. If the adjusted state was
 written before the error, the wallet-corrected amount remains authoritative.
 
-Before a live spot-like partial exit, the total wallet balance must cover the entire
-canonical trade exposure, not only the requested partial amount. Otherwise no attempt
-is submitted and the same stage remains pending. Live exit minimums use Freqtrade's
-exchange calculation for the exit rate, stoploss reserve, leverage, and contract
-limits; backtests keep the callback-provided minimum. An amount mutation that is not
-explained by a persisted exposure adjustment is separate, fail-closed evidence of an
-interrupted wallet transition. An unbound mutation retains the ambiguous attempt so
-a late unique order can still be discovered; attribution can bind the evidence to
-that order but cannot prove the remaining wallet exposure. Orders alone may never be
-used to increase the observed amount. Perform a fresh wallet and CEX reconciliation
-before taking manual action. Automatic take-profit remains blocked; manage or close
-the position through the native Freqtrade lifecycle.
+Before a live spot-like partial exit, the total base-asset wallet balance must cover
+the entire canonical trade exposure, not only the requested partial amount. For a
+sell-side exit, the free base-asset balance must also cover the requested amount.
+Otherwise no attempt is submitted and the same stage remains pending. Live exit
+minimums use Freqtrade's exchange calculation for the exit rate, stoploss reserve,
+leverage, and contract limits; backtests keep the callback-provided minimum. An
+amount mutation that is not explained by a persisted exposure adjustment is separate,
+fail-closed evidence of an interrupted wallet transition. An unbound mutation retains
+the ambiguous attempt so a late unique order can still be discovered; attribution can
+bind the evidence to that order but cannot prove the remaining wallet exposure. Orders
+alone may never be used to increase the observed amount. Perform a fresh wallet and
+CEX reconciliation before taking manual action. Automatic take-profit remains
+blocked; manage or close the position through the native Freqtrade lifecycle.
 
 Deferred or retried stages do not tighten the stoploss: stoploss progression follows
 the separately computed credited stage. Discretionary exits are denied while
