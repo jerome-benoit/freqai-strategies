@@ -11,6 +11,7 @@ from typing import (
     ClassVar,
     Final,
     Literal,
+    NamedTuple,
     Optional,
     Sequence,
 )
@@ -18,13 +19,13 @@ from typing import (
 import numpy as np
 import pandas_ta as pta
 import talib.abstract as ta
-from freqtrade.constants import DEFAULT_AMOUNT_RESERVE_PERCENT
 from freqtrade.exchange import (
     amount_to_contract_precision,
     timeframe_to_minutes,
     timeframe_to_prev_date,
 )
 from freqtrade.persistence import Trade
+from freqtrade.persistence.custom_data import _CustomData as FreqtradeCustomData
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
 from freqtrade.util import FtPrecise
@@ -37,6 +38,7 @@ from LabelTransformer import (
 )
 from pandas import DataFrame, Series, isna
 from scipy.stats import pearsonr, t
+from sqlalchemy import inspect as sqlalchemy_inspect
 from TakeProfitStageManager import (
     TakeProfitFinalStageDefinition,
     TakeProfitPlanSignature,
@@ -101,6 +103,12 @@ CandleDeviationCacheKey = tuple[
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 
 logger = logging.getLogger(__name__)
+
+
+class _SafeExitAmountMutation(NamedTuple):
+    trade: Trade
+    previous_amount: float
+    adjusted_amount: float
 
 
 class QuickAdapterV3(IStrategy):
@@ -1348,43 +1356,151 @@ class QuickAdapterV3(IStrategy):
         if persisted_payload != payload:
             raise RuntimeError("Take-profit state persistence verification failed")
 
+    @staticmethod
+    def _capture_safe_exit_amount_mutation(
+        trade: Trade,
+        confirmed_amount: float,
+        *,
+        allow_wallet_adjustment: bool,
+    ) -> Optional[_SafeExitAmountMutation]:
+        """Capture Freqtrade's pre-callback wallet fallback on the ORM trade."""
+        if (
+            not allow_wallet_adjustment
+            or not isinstance(trade, Trade)
+            or trade.id is None
+        ):
+            return None
+
+        session = getattr(Trade, "session", None)
+        if session is None:
+            return None
+        canonical_trade = session.get(Trade, trade.id)
+        if canonical_trade is None:
+            return None
+        amount_history = sqlalchemy_inspect(canonical_trade).attrs.amount.history
+        if len(amount_history.added) != 1 or len(amount_history.deleted) != 1:
+            return None
+
+        previous_amount = float(amount_history.deleted[0])
+        adjusted_amount = float(amount_history.added[0])
+        if (
+            not math.isfinite(previous_amount)
+            or previous_amount <= 0.0
+            or not math.isfinite(adjusted_amount)
+            or adjusted_amount <= 0.0
+            or adjusted_amount >= previous_amount
+            or adjusted_amount <= previous_amount * 0.98
+            or not math.isclose(
+                float(canonical_trade.amount),
+                adjusted_amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+            or not math.isclose(
+                float(trade.amount),
+                adjusted_amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+            or not math.isclose(
+                float(confirmed_amount),
+                adjusted_amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+        ):
+            return None
+        return _SafeExitAmountMutation(
+            trade=canonical_trade,
+            previous_amount=previous_amount,
+            adjusted_amount=adjusted_amount,
+        )
+
+    @staticmethod
+    def _has_matching_exit_adjustment(
+        state: TakeProfitStageState,
+        mutation: _SafeExitAmountMutation,
+        *,
+        adjustment_id: Optional[str] = None,
+    ) -> bool:
+        return any(
+            adjustment.is_active
+            and (adjustment_id is None or adjustment.adjustment_id == adjustment_id)
+            and math.isclose(
+                adjustment.previous_amount,
+                mutation.previous_amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+            and math.isclose(
+                adjustment.adjusted_amount,
+                mutation.adjusted_amount,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+            for adjustment in state.exposure_adjustments
+        )
+
+    @staticmethod
+    def _restore_safe_exit_amount_mutation(
+        mutation: _SafeExitAmountMutation,
+    ) -> None:
+        if math.isclose(
+            float(mutation.trade.amount),
+            mutation.adjusted_amount,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            mutation.trade.amount = mutation.previous_amount
+
+    @classmethod
+    def _read_take_profit_payload(
+        cls,
+        trade: Trade,
+    ) -> tuple[bool, object]:
+        """Read persisted state, recovering Freqtrade's dedicated data session once."""
+        try:
+            return True, trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
+        except Exception:
+            try:
+                FreqtradeCustomData.session.rollback()
+                return True, trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
+            except Exception:
+                return False, None
+
     @classmethod
     def _restore_unpersisted_exit_adjustment(
         cls,
-        trade: Trade,
+        mutation: _SafeExitAmountMutation,
         previous_state: TakeProfitStageState,
         candidate_state: TakeProfitStageState,
         adjustment_id: str,
         persisted_payload_before: object,
     ) -> None:
         """Restore a denied exit amount only when its adjustment was not persisted."""
-        previous_adjustment_ids = {
-            adjustment.adjustment_id
-            for adjustment in previous_state.exposure_adjustments
-        }
-        matching_adjustments = tuple(
-            adjustment
-            for adjustment in candidate_state.exposure_adjustments
-            if adjustment.is_active
-            and adjustment.adjustment_id == adjustment_id
-            and adjustment.adjustment_id not in previous_adjustment_ids
-        )
-        if len(matching_adjustments) != 1:
-            return
-        adjustment = matching_adjustments[0]
-        if not math.isclose(
-            trade.amount,
-            adjustment.adjusted_amount,
-            rel_tol=1e-9,
-            abs_tol=1e-12,
+        if cls._has_matching_exit_adjustment(
+            previous_state,
+            mutation,
+            adjustment_id=adjustment_id,
         ):
             return
-        try:
-            persisted_payload = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
-        except Exception:
+        if not cls._has_matching_exit_adjustment(
+            candidate_state,
+            mutation,
+            adjustment_id=adjustment_id,
+        ):
+            cls._restore_safe_exit_amount_mutation(mutation)
             return
-        if persisted_payload == persisted_payload_before:
-            trade.amount = adjustment.previous_amount
+        payload_read, persisted_payload = cls._read_take_profit_payload(mutation.trade)
+        if payload_read and persisted_payload == persisted_payload_before:
+            cls._restore_safe_exit_amount_mutation(mutation)
+
+    @staticmethod
+    def _is_entry_exposure_finalized(trade: Trade) -> bool:
+        trading_mode = getattr(trade, "trading_mode", "spot")
+        if getattr(trading_mode, "value", trading_mode) == "futures":
+            return True
+        return trade.fee_updated(trade.entry_side)
 
     @classmethod
     def _load_take_profit_state(
@@ -1397,6 +1513,8 @@ class QuickAdapterV3(IStrategy):
         amount_quantizer = partial(cls._quantize_trade_amount, trade)
         raw_state = trade.get_custom_data(cls._TAKE_PROFIT_STATE_KEY)
         if raw_state is None:
+            if not cls._is_entry_exposure_finalized(trade):
+                return None
             try:
                 state = TakeProfitStageManager.initialize(
                     trade,
@@ -1872,45 +1990,33 @@ class QuickAdapterV3(IStrategy):
         )
         return None
 
-    def _effective_exit_min_stake(
+    def _get_exit_min_stake(
         self,
-        min_stake: Optional[float],
-        current_entry_rate: float,
+        trade: Trade,
+        callback_min_stake: Optional[float],
         current_exit_rate: float,
     ) -> Optional[float]:
-        if min_stake is None or min_stake == 0.0:
-            return None
-        if (
-            not math.isfinite(min_stake)
-            or min_stake < 0.0
-            or not math.isfinite(current_entry_rate)
-            or current_entry_rate <= 0.0
-            or not math.isfinite(current_exit_rate)
-            or current_exit_rate <= 0.0
-        ):
-            raise ValueError("Invalid take-profit minimum-stake inputs")
-
         if not self._uses_live_exit_constraints():
-            return min_stake
-
-        margin_reserve = 1.0 + float(
-            self.config.get(
-                "amount_reserve_percent",
-                DEFAULT_AMOUNT_RESERVE_PERCENT,
+            exit_min_stake = callback_min_stake
+        else:
+            if not math.isfinite(current_exit_rate) or current_exit_rate <= 0.0:
+                raise ValueError("Invalid current exit rate")
+            data_provider = getattr(self, "dp", None)
+            exchange = getattr(data_provider, "_exchange", None)
+            if exchange is None:
+                raise ValueError("Exchange is unavailable")
+            exit_min_stake = exchange.get_min_pair_stake_amount(
+                trade.pair,
+                current_exit_rate,
+                self.stoploss,
+                trade.leverage,
             )
-        )
-        if not math.isfinite(margin_reserve) or margin_reserve <= 0.0:
-            raise ValueError("Invalid amount_reserve_percent")
-        stoploss = abs(float(self.stoploss))
-        if not math.isfinite(stoploss) or stoploss > 1.0:
-            raise ValueError("Invalid stoploss")
-        stoploss_reserve = margin_reserve / (1.0 - stoploss) if stoploss != 1.0 else 1.5
-        stoploss_reserve = max(1.0, min(stoploss_reserve, 1.5))
-        return min_stake * max(
-            1.0,
-            current_exit_rate / current_entry_rate,
-            stoploss_reserve / margin_reserve,
-        )
+
+        if exit_min_stake is None or exit_min_stake == 0.0:
+            return None
+        if not math.isfinite(exit_min_stake) or exit_min_stake < 0.0:
+            raise ValueError("Invalid exit minimum stake")
+        return exit_min_stake
 
     def adjust_trade_position(
         self,
@@ -2057,9 +2163,9 @@ class QuickAdapterV3(IStrategy):
                 )
                 return None
             try:
-                effective_min_stake = self._effective_exit_min_stake(
+                effective_min_stake = self._get_exit_min_stake(
+                    trade,
                     min_stake,
-                    current_entry_rate,
                     current_exit_rate,
                 )
             except (TypeError, ValueError, OverflowError) as error:
@@ -2838,11 +2944,28 @@ class QuickAdapterV3(IStrategy):
         take_profit_state: TakeProfitStageState | None = None
         adjustment_id: str | None = None
         persisted_payload_before: object = None
+        safe_exit_amount_mutation: _SafeExitAmountMutation | None = None
 
         try:
-            persisted_payload_before = trade.get_custom_data(
-                QuickAdapterV3._TAKE_PROFIT_STATE_KEY
+            trading_mode = getattr(self, "config", {}).get(
+                "trading_mode",
+                "spot",
             )
+            allow_wallet_adjustment = (
+                getattr(trading_mode, "value", trading_mode) != "futures"
+            )
+            safe_exit_amount_mutation = (
+                QuickAdapterV3._capture_safe_exit_amount_mutation(
+                    trade,
+                    amount,
+                    allow_wallet_adjustment=allow_wallet_adjustment,
+                )
+            )
+            payload_read, persisted_payload_before = (
+                QuickAdapterV3._read_take_profit_payload(trade)
+            )
+            if not payload_read:
+                raise RuntimeError("Take-profit state persistence is unavailable")
             loaded_state = QuickAdapterV3._load_take_profit_state(
                 trade,
                 validate_trade_amount_on_initialize=False,
@@ -2854,7 +2977,31 @@ class QuickAdapterV3(IStrategy):
                         f"{trade.id} without a loadable take-profit audit state"
                     )
                     return True
+                if (
+                    persisted_payload_before is None
+                    and not QuickAdapterV3._is_entry_exposure_finalized(trade)
+                    and parsed_tag is None
+                    and not malformed_take_profit_tag
+                    and not trade.has_open_orders
+                ):
+                    logger.warning(
+                        f"[{pair}] Allowing non-take-profit exit {exit_reason!r} "
+                        f"for trade {trade.id} before its entry fee is finalized"
+                    )
+                    return True
+                if safe_exit_amount_mutation is not None:
+                    QuickAdapterV3._restore_safe_exit_amount_mutation(
+                        safe_exit_amount_mutation
+                    )
                 return False
+            if (
+                safe_exit_amount_mutation is not None
+                and QuickAdapterV3._has_matching_exit_adjustment(
+                    loaded_state,
+                    safe_exit_amount_mutation,
+                )
+            ):
+                safe_exit_amount_mutation = None
             take_profit_state = loaded_state
             active_attempt = take_profit_state.active_attempt
             adjustment_id = (
@@ -2864,11 +3011,6 @@ class QuickAdapterV3(IStrategy):
                 and active_attempt.tag == exit_reason
                 else uuid.uuid4().hex
             )
-            trading_mode = getattr(self, "config", {}).get(
-                "trading_mode",
-                "spot",
-            )
-            trading_mode_value = getattr(trading_mode, "value", trading_mode)
             take_profit_state = TakeProfitStageManager.reconcile_for_exit_confirmation(
                 trade,
                 take_profit_state,
@@ -2876,7 +3018,7 @@ class QuickAdapterV3(IStrategy):
                 exit_reason=exit_reason,
                 adjustment_id=adjustment_id,
                 current_time=current_time,
-                allow_wallet_adjustment=trading_mode_value != "futures",
+                allow_wallet_adjustment=allow_wallet_adjustment,
                 amount_quantizer=partial(
                     QuickAdapterV3._quantize_trade_amount,
                     trade,
@@ -2953,10 +3095,25 @@ class QuickAdapterV3(IStrategy):
                     )
                     allowed = True
 
+            if (
+                not allowed
+                and not safety_exit
+                and safe_exit_amount_mutation is not None
+                and not QuickAdapterV3._has_matching_exit_adjustment(
+                    take_profit_state,
+                    safe_exit_amount_mutation,
+                    adjustment_id=adjustment_id,
+                )
+            ):
+                QuickAdapterV3._restore_safe_exit_amount_mutation(
+                    safe_exit_amount_mutation
+                )
+
             QuickAdapterV3._save_take_profit_state(trade, take_profit_state)
             return allowed
         except Exception:
             if safety_exit:
+                QuickAdapterV3._read_take_profit_payload(trade)
                 logger.exception(
                     f"[{pair}] Allowing safety exit {exit_reason!r} for trade "
                     f"{trade.id} although its wallet adjustment could not be audited"
@@ -2966,13 +3123,18 @@ class QuickAdapterV3(IStrategy):
                 loaded_state is not None
                 and take_profit_state is not None
                 and adjustment_id is not None
+                and safe_exit_amount_mutation is not None
             ):
                 QuickAdapterV3._restore_unpersisted_exit_adjustment(
-                    trade,
+                    safe_exit_amount_mutation,
                     loaded_state,
                     take_profit_state,
                     adjustment_id,
                     persisted_payload_before,
+                )
+            elif safe_exit_amount_mutation is not None:
+                QuickAdapterV3._restore_safe_exit_amount_mutation(
+                    safe_exit_amount_mutation
                 )
             logger.exception(
                 f"[{pair}] Denied exit {exit_reason!r} for trade {trade.id} "

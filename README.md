@@ -208,9 +208,15 @@ exchange-stoploss order record. Reconcile or close those trades, verify each CEX
 position, set the option to `false`, and only then restart.
 
 The ledger derives initial exposure from terminal entry fills and applies the live
-Freqtrade amount precision. Every validated terminal strategy exit reduces exposure,
-but only an order whose audited attribution still matches its ID, tag, side,
-amount, stage, and provenance advances take-profit progress. A discretionary
+Freqtrade amount precision. For spot-like trades, initialization waits until
+Freqtrade has finalized the entry fee, so a late base-currency fee cannot invalidate
+the initial exposure. Futures trades do not wait because their fees do not reduce
+the position amount. If the fee remains unavailable, automatic take-profit stays
+inactive, but a non-take-profit strategy exit remains available while no take-profit
+ledger or open order exists. Any pre-callback wallet fallback applied by Freqtrade
+remains the canonical exposure. Every validated terminal strategy exit reduces
+exposure, but only an order whose audited attribution still matches its ID, tag,
+side, amount, stage, and provenance advances take-profit progress. A discretionary
 partial fill therefore leaves the stage unchanged. Retired wallet-adjustment detail
 is compacted only when the bounded audit needs room; active evidence is never
 discarded.
@@ -232,14 +238,17 @@ without advancing a stage and preserves it even when order creation fails. A lat
 positive fill retires the adjustment only when native order accounting proves the
 order-backed exposure.
 
+Freqtrade passes a defensive trade copy to the strategy exit-confirmation callback.
 If a non-safety exit is denied because that adjustment cannot be persisted,
-QuickAdapter restores the previous amount only after confirming that the previous
-state is still stored. If the adjusted state was written before the error, the
-wallet-corrected amount remains authoritative.
+QuickAdapter restores the previous amount on the canonical ORM trade only after
+confirming that the previous state is still stored. If the adjusted state was
+written before the error, the wallet-corrected amount remains authoritative.
 
 Before a live spot-like partial exit, the total wallet balance must cover the entire
 canonical trade exposure, not only the requested partial amount. Otherwise no attempt
-is submitted and the same stage remains pending. An amount mutation that is not
+is submitted and the same stage remains pending. Live exit minimums use Freqtrade's
+exchange calculation for the exit rate, stoploss reserve, leverage, and contract
+limits; backtests keep the callback-provided minimum. An amount mutation that is not
 explained by a persisted exposure adjustment is separate, fail-closed evidence of an
 interrupted wallet transition. An unbound mutation retains the ambiguous attempt so
 a late unique order can still be discovered; attribution can bind the evidence to
