@@ -2293,7 +2293,7 @@ class QuickAdapterV3(IStrategy):
                 self.get_trade_annotation_line_start_date(dataframe, trade)
             )
 
-            trade_exit_stage = self.get_trade_exit_stage(trade)
+            trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
 
             for take_profit_stage, (_, _, color) in self.partial_exit_stages.items():
                 if take_profit_stage < trade_exit_stage:

@@ -77,7 +77,7 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures with reproducible random seed."""
-        self.seed_all(SEEDS.BASE)
+        RewardSpaceTestBase.seed_all(SEEDS.BASE)
         self.temp_dir = tempfile.mkdtemp()
         self.output_path = Path(self.temp_dir)
 
@@ -203,7 +203,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         pnl, trade_duration, idle_duration, position. Guarantees: no NaN; reward_idle==0 where idle_duration==0.
         """
         if seed is not None:
-            self.seed_all(seed)
+            RewardSpaceTestBase.seed_all(seed)
         pnl_std_eff = PARAMS.PNL_STD if pnl_std is None else pnl_std
         reward = np.random.normal(reward_mean, reward_std, n)
         pnl = np.random.normal(pnl_mean, pnl_std_eff, n)
@@ -422,7 +422,7 @@ class RewardSpaceTestBase(unittest.TestCase):
 
     def _make_idle_variance_df(self, n: int = 100) -> pd.DataFrame:
         """Synthetic dataframe focusing on idle_duration ↔ reward_idle correlation."""
-        self.seed_all(SEEDS.BASE)
+        RewardSpaceTestBase.seed_all(SEEDS.BASE)
         idle_duration = np.random.exponential(10, n)
         reward_idle = -0.01 * idle_duration + np.random.normal(0, 0.001, n)
         return pd.DataFrame(
