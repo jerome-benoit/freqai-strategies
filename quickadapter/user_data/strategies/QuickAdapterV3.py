@@ -125,7 +125,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.12.3"
+        return "3.12.4"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -159,7 +159,18 @@ class QuickAdapterV3(IStrategy):
     }
 
     # (natr_multiplier_fraction, stake_percent, color)
-    _FINAL_EXIT_STAGE: Final[tuple[float, float, str]] = (1.0, 1.0, "deepskyblue")
+    _FINAL_EXIT_STAGE_PARAMS: Final[tuple[float, float, str]] = (
+        1.0,
+        1.0,
+        "deepskyblue",
+    )
+
+    # Stage index of the final full exit: one past the last partial stage.
+    _FINAL_EXIT_STAGE_INDEX: Final[int] = (
+        max(partial_exit_stages.keys(), default=-1) + 1
+    )
+
+    _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
 
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -609,9 +620,9 @@ class QuickAdapterV3(IStrategy):
                 f"  stage {stage}: natr_multiplier_fraction={format_number(natr_multiplier_fraction)}, stake_percent={format_number(stake_percent)}, color={color}"
             )
 
-        final_stage = max(QuickAdapterV3.partial_exit_stages.keys(), default=-1) + 1
+        final_stage = QuickAdapterV3._FINAL_EXIT_STAGE_INDEX
         logger.info(
-            f"Final Exit Stage: stage {final_stage}: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE[2]}"
+            f"Final Exit Stage: stage {final_stage}: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}"
         )
 
         logger.info("Protections:")
@@ -1261,14 +1272,14 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
-        n_open_orders = 0
-        if trade.has_open_orders:
-            n_open_orders = sum(
-                1
-                for open_order in trade.open_orders
-                if open_order.side == ("buy" if trade.is_short else "sell")
+        n_filled_take_profit_exits = sum(
+            1
+            for order in trade.select_filled_orders(trade.exit_side)
+            if (order.ft_order_tag or "").startswith(
+                QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX
             )
-        return trade.nr_of_successful_exits + n_open_orders
+        )
+        return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE_INDEX)
 
     @staticmethod
     @lru_cache(maxsize=128)
@@ -1407,7 +1418,7 @@ class QuickAdapterV3(IStrategy):
         natr_multiplier_fraction = (
             QuickAdapterV3.partial_exit_stages[exit_stage][0]
             if exit_stage in QuickAdapterV3.partial_exit_stages
-            else QuickAdapterV3._FINAL_EXIT_STAGE[0]
+            else QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0]
         )
         take_profit_distance = self.get_take_profit_distance(
             df, trade, natr_multiplier_fraction
@@ -1576,7 +1587,7 @@ class QuickAdapterV3(IStrategy):
                 )
             return (
                 -trade_partial_stake_amount,
-                f"take_profit_{trade.trade_direction}_{trade_exit_stage}",
+                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}",
             )
 
         return None
@@ -2082,6 +2093,9 @@ class QuickAdapterV3(IStrategy):
         ):
             return "maxima_detected_long"
 
+        if trade.has_open_orders:
+            return None
+
         trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
         if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
             return None
@@ -2187,7 +2201,7 @@ class QuickAdapterV3(IStrategy):
             )
 
         if trade_exit:
-            return f"take_profit_{trade.trade_direction}_{trade_exit_stage}"
+            return f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}"
 
         return None
 
@@ -2295,7 +2309,7 @@ class QuickAdapterV3(IStrategy):
 
             trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
 
-            for take_profit_stage, (_, _, color) in self.partial_exit_stages.items():
+            for take_profit_stage in QuickAdapterV3.partial_exit_stages:
                 if take_profit_stage < trade_exit_stage:
                     continue
 
@@ -2312,7 +2326,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": partial_take_profit_price,
                     "y_end": partial_take_profit_price,
-                    "color": color,
+                    "color": QuickAdapterV3.partial_exit_stages[take_profit_stage][2],
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Take Profit {take_profit_stage}",
@@ -2320,7 +2334,7 @@ class QuickAdapterV3(IStrategy):
                 }
                 annotations.append(take_profit_line_annotation)
 
-            final_stage = max(self.partial_exit_stages.keys(), default=-1) + 1
+            final_stage = QuickAdapterV3._FINAL_EXIT_STAGE_INDEX
             final_take_profit_price = self.get_take_profit_price(
                 dataframe, trade, final_stage
             )
@@ -2332,7 +2346,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": final_take_profit_price,
                     "y_end": final_take_profit_price,
-                    "color": QuickAdapterV3._FINAL_EXIT_STAGE[2],
+                    "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Take Profit {final_stage}",
