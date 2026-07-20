@@ -102,7 +102,7 @@
       "fill_method": "zero",
       "fill_epsilon": 0.000001,
       "fill_epsilon_baseline": "mean",
-      "fill_sigma_candles": 10.0,
+      "fill_sigma_candles": 25.0,
       "fill_sigma_min_candles": 0.5,
       "fill_bandwidth_alpha": 0.5,
       "support_policy": "fallback",
