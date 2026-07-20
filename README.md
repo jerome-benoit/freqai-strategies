@@ -284,16 +284,17 @@ docker compose -f quickadapter/docker-compose.yml run --rm --no-deps --entrypoin
 docker compose -f quickadapter/docker-compose.yml start freqtrade
 ```
 
-The clear command is unavailable until the persisted recovery deadline. A normal
-no-order clear removes only the ambiguous attempt; it preserves any audited wallet
-exposure adjustment and its corrected trade amount. `inspect`
-does not modify take-profit data. It initializes Freqtrade persistence like other
-database clients and may create or migrate supported database schema objects. It
-reports exposure, both exit ledgers, retry state, stage targets, deferred stages,
-attributions, wallet mutations, at most one recovery disposition, any reason
-that automatic recovery is withheld, and the exact confirmation token. A partial
-wallet mutation never receives an order-only recovery token, whether it is unbound
-or bound to a terminal order. `inspect` reports
+The clear command and its confirmation token are unavailable until the persisted
+recovery deadline. Run a fresh `inspect` after that deadline and verify the complete
+CEX attempt window before using the emitted token. A normal no-order clear removes
+only the ambiguous attempt; it preserves any audited wallet exposure adjustment and
+its corrected trade amount. `inspect` does not modify take-profit data. It initializes
+Freqtrade persistence like other database clients and may create or migrate supported
+database schema objects. It reports exposure, both exit ledgers, retry state, stage
+targets, deferred stages, attributions, wallet mutations, at most one recovery
+disposition, any reason that automatic recovery is withheld, and the exact
+confirmation token. A partial wallet mutation never receives an order-only recovery
+token, whether it is unbound or bound to a terminal order. `inspect` reports
 `fresh_wallet_and_cex_audit_required`, and the observed amount remains unchanged.
 
 For a revalidatable terminal-order block, first repair the canonical Freqtrade order

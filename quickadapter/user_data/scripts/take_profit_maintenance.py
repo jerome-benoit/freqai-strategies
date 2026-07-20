@@ -365,6 +365,13 @@ def _ambiguous_confirmation_token(
     )
 
 
+def _recovery_deadline_is_reached(
+    recovery_deadline: str,
+    current_time: datetime.datetime,
+) -> bool:
+    return current_time >= datetime.datetime.fromisoformat(recovery_deadline)
+
+
 def _require_recovery_instruction(
     trade: Trade,
     state: TakeProfitStageState,
@@ -865,6 +872,14 @@ def _summary(
                 if not trade.is_open
                 else "automatic_trade_accounting_precondition_failed"
             )
+    clear_confirmation_is_available = (
+        clearable_attempt is not None
+        and clear_blocked_reason is None
+        and _recovery_deadline_is_reached(
+            clearable_attempt.recovery_deadline,
+            datetime.datetime.now(datetime.timezone.utc),
+        )
+    )
     recovery_is_available = recovery is not None and recovery_blocked_reason is None
     return {
         "command": command,
@@ -894,7 +909,7 @@ def _summary(
                     state,
                     clearable_attempt.attempt_id,
                 )
-                if clearable_attempt is not None and clear_blocked_reason is None
+                if clear_confirmation_is_available and clearable_attempt is not None
                 else None
             ),
             "recovery_action": recovery.action if recovery is not None else None,
@@ -1054,8 +1069,10 @@ def _validate_ambiguous_attempt(
             "or investigate the reported block before clearing anything"
         )
 
-    recovery_deadline = datetime.datetime.fromisoformat(attempt.recovery_deadline)
-    if datetime.datetime.now(datetime.timezone.utc) < recovery_deadline:
+    if not _recovery_deadline_is_reached(
+        attempt.recovery_deadline,
+        datetime.datetime.now(datetime.timezone.utc),
+    ):
         _fail(f"ambiguous attempt cannot be cleared before {attempt.recovery_deadline}")
 
 
