@@ -161,6 +161,8 @@ class QuickAdapterV3(IStrategy):
     # (natr_multiplier_fraction, stake_percent, color)
     _FINAL_EXIT_STAGE: Final[tuple[float, float, str]] = (1.0, 1.0, "deepskyblue")
 
+    _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
+
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
     # FreqAI is crashing if minimal_roi is a property
@@ -1261,14 +1263,15 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
-        n_open_orders = 0
-        if trade.has_open_orders:
-            n_open_orders = sum(
-                1
-                for open_order in trade.open_orders
-                if open_order.side == ("buy" if trade.is_short else "sell")
+        n_filled_take_profit_exits = sum(
+            1
+            for order in trade.select_filled_orders(trade.exit_side)
+            if (order.ft_order_tag or "").startswith(
+                QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX
             )
-        return trade.nr_of_successful_exits + n_open_orders
+        )
+        final_stage = max(QuickAdapterV3.partial_exit_stages.keys(), default=-1) + 1
+        return min(n_filled_take_profit_exits, final_stage)
 
     @staticmethod
     @lru_cache(maxsize=128)
@@ -1576,7 +1579,7 @@ class QuickAdapterV3(IStrategy):
                 )
             return (
                 -trade_partial_stake_amount,
-                f"take_profit_{trade.trade_direction}_{trade_exit_stage}",
+                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}",
             )
 
         return None
@@ -2082,6 +2085,9 @@ class QuickAdapterV3(IStrategy):
         ):
             return "maxima_detected_long"
 
+        if trade.has_open_orders:
+            return None
+
         trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
         if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
             return None
@@ -2187,7 +2193,7 @@ class QuickAdapterV3(IStrategy):
             )
 
         if trade_exit:
-            return f"take_profit_{trade.trade_direction}_{trade_exit_stage}"
+            return f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}"
 
         return None
 
