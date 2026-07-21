@@ -857,20 +857,31 @@ class QuickAdapterV3(IStrategy):
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
         return dataframe
 
-    def get_label_period_candles(self, pair: str) -> int:
-        label_period_candles = self._label_params.get(pair, {}).get(
-            "label_period_candles"
-        )
-        if label_period_candles and isinstance(label_period_candles, int):
-            return label_period_candles
-        return self.freqai_info.get("feature_parameters", {}).get(
-            "label_period_candles",
-            self._label_defaults[0],
+    def get_label_period_candles(
+        self,
+        pair: str,
+        dataframe: Optional[DataFrame] = None,
+        candle_idx: int = -1,
+    ) -> int:
+        if dataframe is not None:
+            period_series = dataframe.get("label_period_candles")
+            if period_series is not None and not period_series.empty:
+                period = period_series.iloc[candle_idx]
+                if not isna(period):
+                    return int(period)
+        period = self._label_params.get(pair, {}).get("label_period_candles")
+        return int(
+            period
+            if period is not None
+            else self.freqai_info.get("feature_parameters", {}).get(
+                "label_period_candles",
+                self._label_defaults[0],
+            )
         )
 
-    def set_label_period_candles(self, pair: str, label_period_candles: int) -> None:
-        if isinstance(label_period_candles, int):
-            self._label_params[pair]["label_period_candles"] = label_period_candles
+    def set_label_period_candles(self, pair: str, label_period_candles: Any) -> None:
+        if not isna(label_period_candles):
+            self._label_params[pair]["label_period_candles"] = int(label_period_candles)
 
     def get_label_horizon_candles(self, pair: str) -> int:
         period = self.get_label_period_candles(pair)
@@ -881,31 +892,45 @@ class QuickAdapterV3(IStrategy):
             logger,
         )
 
-    def get_label_natr_multiplier(self, pair: str) -> float:
-        label_natr_multiplier = self._label_params.get(pair, {}).get(
-            "label_natr_multiplier"
-        )
-        if label_natr_multiplier and isinstance(label_natr_multiplier, float):
-            return label_natr_multiplier
-        feature_parameters = self.freqai_info.get("feature_parameters", {})
+    def get_label_natr_multiplier(
+        self,
+        pair: str,
+        dataframe: Optional[DataFrame] = None,
+        candle_idx: int = -1,
+    ) -> float:
+        if dataframe is not None:
+            multiplier_series = dataframe.get("label_natr_multiplier")
+            if multiplier_series is not None and not multiplier_series.empty:
+                multiplier = multiplier_series.iloc[candle_idx]
+                if not isna(multiplier):
+                    return float(multiplier)
+        multiplier = self._label_params.get(pair, {}).get("label_natr_multiplier")
         return float(
-            feature_parameters.get("label_natr_multiplier", self._label_defaults[1])
+            multiplier
+            if multiplier is not None
+            else self.freqai_info.get("feature_parameters", {}).get(
+                "label_natr_multiplier", self._label_defaults[1]
+            )
         )
 
-    def set_label_natr_multiplier(
-        self, pair: str, label_natr_multiplier: float
-    ) -> None:
-        if isinstance(label_natr_multiplier, float) and np.isfinite(
-            label_natr_multiplier
-        ):
-            self._label_params[pair]["label_natr_multiplier"] = label_natr_multiplier
+    def set_label_natr_multiplier(self, pair: str, label_natr_multiplier: Any) -> None:
+        if not isna(label_natr_multiplier):
+            self._label_params[pair]["label_natr_multiplier"] = float(
+                label_natr_multiplier
+            )
 
-    def get_label_natr_multiplier_fraction(self, pair: str, fraction: float) -> float:
+    def get_label_natr_multiplier_fraction(
+        self,
+        pair: str,
+        fraction: float,
+        dataframe: Optional[DataFrame] = None,
+        candle_idx: int = -1,
+    ) -> float:
         if not isinstance(fraction, float) or not (0.0 <= fraction <= 1.0):
             raise ValueError(
                 f"Invalid fraction value {fraction!r}: must be a float in range [0, 1]"
             )
-        return self.get_label_natr_multiplier(pair) * fraction
+        return self.get_label_natr_multiplier(pair, dataframe, candle_idx) * fraction
 
     def get_label_params(self, pair: str, label_col: str) -> dict[str, Any]:
         if label_col == EXTREMA_COLUMN:
@@ -1043,15 +1068,32 @@ class QuickAdapterV3(IStrategy):
         pair = str(metadata.get("pair"))
 
         label_period_candles_series = dataframe.get("label_period_candles")
-        if label_period_candles_series is not None:
-            self.set_label_period_candles(pair, label_period_candles_series.iloc[-1])
         label_natr_multiplier_series = dataframe.get("label_natr_multiplier")
-        if label_natr_multiplier_series is not None:
-            self.set_label_natr_multiplier(pair, label_natr_multiplier_series.iloc[-1])
+        if self.config.get("runmode") in TRADE_MODES:
+            if label_period_candles_series is not None:
+                self.set_label_period_candles(
+                    pair, label_period_candles_series.iloc[-1]
+                )
+            if label_natr_multiplier_series is not None:
+                self.set_label_natr_multiplier(
+                    pair, label_natr_multiplier_series.iloc[-1]
+                )
 
-        dataframe["natr_label_period_candles"] = ta.NATR(
-            dataframe, timeperiod=self.get_label_period_candles(pair)
-        )
+        if label_period_candles_series is None:
+            dataframe["natr_label_period_candles"] = ta.NATR(
+                dataframe, timeperiod=self.get_label_period_candles(pair)
+            )
+        else:
+            dataframe["natr_label_period_candles"] = np.nan
+            periods = label_period_candles_series.fillna(
+                self.get_label_period_candles(pair)
+            ).astype(int)
+            for period in periods.unique():
+                period_rows = periods == period
+                period_natr = ta.NATR(dataframe, timeperiod=int(period))
+                dataframe.loc[period_rows, "natr_label_period_candles"] = (
+                    period_natr.loc[period_rows]
+                )
 
         dataframe["minima_threshold"] = dataframe.get(
             f"{EXTREMA_COLUMN}_minima_threshold", np.nan
@@ -1313,7 +1355,7 @@ class QuickAdapterV3(IStrategy):
             current_rate
             * (trade_natr / 100.0)
             * self.get_label_natr_multiplier_fraction(
-                trade.pair, natr_multiplier_fraction
+                trade.pair, natr_multiplier_fraction, df
             )
             * QuickAdapterV3.get_stoploss_factor(
                 trade_duration_candles + int(round(trade.nr_of_successful_exits**1.5))
@@ -1342,7 +1384,7 @@ class QuickAdapterV3(IStrategy):
             trade.open_rate
             * (trade_natr / 100.0)
             * self.get_label_natr_multiplier_fraction(
-                trade.pair, natr_multiplier_fraction
+                trade.pair, natr_multiplier_fraction, df
             )
             * QuickAdapterV3.get_take_profit_factor(trade_duration_candles)
         )
@@ -1659,7 +1701,7 @@ class QuickAdapterV3(IStrategy):
         candle_label_natr_value = label_natr_values[-1]
         if isna(candle_label_natr_value) or candle_label_natr_value < 0:
             return np.nan
-        label_period_candles = self.get_label_period_candles(pair)
+        label_period_candles = self.get_label_period_candles(pair, df, candle_idx)
         candle_label_natr_value_quantile = calculate_quantile(
             label_natr_values[-label_period_candles:], candle_label_natr_value
         )
@@ -1689,7 +1731,9 @@ class QuickAdapterV3(IStrategy):
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
-        ) * self.get_label_natr_multiplier_fraction(pair, natr_multiplier_fraction)
+        ) * self.get_label_natr_multiplier_fraction(
+            pair, natr_multiplier_fraction, df, candle_idx
+        )
         self._candle_deviation_cache[cache_key] = candle_deviation
         return self._candle_deviation_cache[cache_key]
 
