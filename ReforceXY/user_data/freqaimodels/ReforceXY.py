@@ -58,6 +58,9 @@ from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from sb3_contrib.common.maskable.evaluation import (
+    evaluate_policy as evaluate_maskable_policy,
+)
 from sb3_contrib.common.maskable.utils import is_masking_supported
 from stable_baselines3.common.callbacks import (
     BaseCallback,
@@ -65,6 +68,7 @@ from stable_baselines3.common.callbacks import (
     StopTrainingOnNoModelImprovement,
 )
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.logger import Figure, HParam
 from stable_baselines3.common.type_aliases import TrainFreq
 from stable_baselines3.common.utils import ConstantSchedule, set_random_seed
@@ -102,6 +106,15 @@ class _Samplers(NamedTuple):
     auto: Literal["auto"] = "auto"
 
 
+class _TrainingSplit(NamedTuple):
+    train_df: DataFrame
+    validation_df: DataFrame
+    holdout_df: DataFrame
+    prices_train: DataFrame
+    prices_validation: DataFrame
+    prices_holdout: DataFrame
+
+
 matplotlib.use("Agg")
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -134,7 +147,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "lr_schedule": false,               // Enable learning rate linear schedule
                 "cr_schedule": false,               // Enable clip range linear schedule
                 "n_eval_steps": 10_000,             // Number of environment steps between evaluations
-                "n_eval_episodes": 5,               // Number of episodes per evaluation
+                "n_eval_episodes": 1,               // Single deterministic chronological path
+                "validation_holdout_fraction": 0.5, // Terminal fraction reserved for one-shot evaluation
                 "max_no_improvement_evals": 0,      // Maximum consecutive evaluations without a new best model
                 "min_evals": 0,                     // Number of evaluations before start to count evaluations without improvements
                 "check_envs": true,                 // Check that an environment follows Gym API
@@ -281,9 +295,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         json.JSONDecodeError,
     )
     _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
-    _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
+    _VALIDATION_SEED_OFFSET: Final[int] = 10_000
+    _HOLDOUT_SEED_OFFSET: Final[int] = 20_000
 
     _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
 
@@ -322,7 +337,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.frame_stacking: int = self.rl_config.get("frame_stacking", 0)
         self.n_eval_steps: int = self.rl_config.get("n_eval_steps", 10_000)
-        self.n_eval_episodes: int = self.rl_config.get("n_eval_episodes", 5)
+        self.n_eval_episodes: int = self.rl_config.get("n_eval_episodes", 1)
+        self.validation_holdout_fraction: float = self.rl_config.get(
+            "validation_holdout_fraction", 0.5
+        )
         self.max_no_improvement_evals: int = self.rl_config.get(
             "max_no_improvement_evals", 0
         )
@@ -335,10 +353,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.rl_config_optuna: Dict[str, Any] = self.freqai_info.get(
             "rl_config_optuna", {}
         )
+        test_size = self.data_split_parameters.get("test_size", 0.1)
         self.hyperopt: bool = (
             self.freqai_info.get("enabled", False)
             and self.rl_config_optuna.get("enabled", False)
-            and self.data_split_parameters.get("test_size", 0.1) > 0
+            and isinstance(test_size, (int, float))
+            and not isinstance(test_size, bool)
+            and test_size > 0
         )
         self.optuna_timeout_hours: float = self.rl_config_optuna.get("timeout_hours", 0)
         self.optuna_n_trials: int = self.rl_config_optuna.get("n_trials", 100)
@@ -350,6 +371,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.optuna_eval_callback: Optional[MaskableTrialEvalCallback] = None
         self._model_params_cache: Optional[Dict[str, Any]] = None
+        self._training_splits: Dict[str, _TrainingSplit] = {}
         self._lstm_states_cache: Dict[
             str,
             Tuple[
@@ -493,12 +515,57 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.n_eval_steps,
             )
             self.n_eval_steps = 10_000
-        if not isinstance(self.n_eval_episodes, int) or self.n_eval_episodes <= 0:
-            logger.warning(
-                "Config [global]: n_eval_episodes=%r invalid; defaulting to 5",
-                self.n_eval_episodes,
+        if self.n_eval_envs != 1 or self.n_eval_episodes != 1:
+            raise ValueError(
+                "Config [global]: n_eval_envs=1 and n_eval_episodes=1 are required "
+                "because chronological evaluation is a single deterministic path"
             )
-            self.n_eval_episodes = 5
+        if (
+            isinstance(self.validation_holdout_fraction, bool)
+            or not isinstance(self.validation_holdout_fraction, (int, float))
+            or not 0.0 < float(self.validation_holdout_fraction) < 1.0
+        ):
+            raise ValueError(
+                "Config [global]: validation_holdout_fraction must be a number "
+                "strictly between 0 and 1"
+            )
+        self.validation_holdout_fraction = float(self.validation_holdout_fraction)
+        test_size = self.data_split_parameters.get("test_size", 0.1)
+        if (
+            isinstance(test_size, bool)
+            or not isinstance(test_size, (int, float))
+            or test_size <= 0
+        ):
+            raise ValueError(
+                "Config [global]: data_split_parameters.test_size must be positive "
+                "to create chronological validation and holdout blocks"
+            )
+        if self.data_split_parameters.get("shuffle", False) is not False:
+            raise ValueError(
+                "Config [global]: data_split_parameters.shuffle=False is required "
+                "for chronological validation and holdout blocks"
+            )
+        feature_parameters = self.freqai_info.get("feature_parameters", {})
+        if feature_parameters.get("reverse_train_test_order", False) is not False:
+            raise ValueError(
+                "Config [global]: reverse_train_test_order=False is required for "
+                "causal model selection"
+            )
+        if feature_parameters.get("shuffle_after_split", False) is not False:
+            raise ValueError(
+                "Config [global]: shuffle_after_split=False is required for "
+                "chronological validation and holdout blocks"
+            )
+        if self.rl_config.get("randomize_starting_position", False) is not False:
+            raise ValueError(
+                "Config [global]: randomize_starting_position=False is required "
+                "for deterministic chronological evaluation"
+            )
+        if self.hyperopt and self.continual_learning:
+            raise ValueError(
+                "Config [global]: continual_learning is incompatible with Optuna "
+                "because selected parameters require a freshly initialized model"
+            )
         if (
             not isinstance(self.optuna_purge_period, int)
             or self.optuna_purge_period < 0
@@ -612,6 +679,128 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         return env_info
 
+    def split_validation_holdout(
+        self,
+        test_df: DataFrame,
+        prices_test: DataFrame,
+        pair: str,
+    ) -> Tuple[DataFrame, DataFrame, DataFrame, DataFrame]:
+        """Split FreqAI's chronological test block into selection and holdout blocks."""
+        if len(test_df) != len(prices_test):
+            raise ValueError(
+                f"Validation [{pair}]: feature/price length mismatch "
+                f"({len(test_df)} != {len(prices_test)})"
+            )
+
+        minimum_rows = self.CONV_WIDTH + 2
+        total_rows = len(test_df)
+        holdout_rows = max(
+            minimum_rows,
+            int(math.ceil(total_rows * self.validation_holdout_fraction)),
+        )
+        validation_rows = total_rows - holdout_rows
+        if validation_rows < minimum_rows:
+            raise ValueError(
+                f"Validation [{pair}]: FreqAI test block has {total_rows} rows, "
+                "but validation_holdout_fraction="
+                f"{self.validation_holdout_fraction:.3f} leaves only "
+                f"{validation_rows} validation rows; both blocks require at least "
+                f"{minimum_rows} rows"
+            )
+
+        validation_df = test_df.iloc[:validation_rows].copy()
+        holdout_df = test_df.iloc[validation_rows:].copy()
+        prices_validation = prices_test.iloc[:validation_rows].copy()
+        prices_holdout = prices_test.iloc[validation_rows:].copy()
+        logger.info(
+            "Validation [%s]: chronological split test=%d into selection=%d and untouched holdout=%d rows",
+            pair,
+            total_rows,
+            len(validation_df),
+            len(holdout_df),
+        )
+        return validation_df, holdout_df, prices_validation, prices_holdout
+
+    @staticmethod
+    def _training_split_key(dk: FreqaiDataKitchen) -> str:
+        return f"{dk.pair}|{Path(dk.data_path)}"
+
+    def _get_evaluation_environment(
+        self,
+        eval_df: DataFrame,
+        prices_eval: DataFrame,
+        seed: int,
+        env_info: Dict[str, Any],
+        env_prefix: str,
+    ) -> VecEnv:
+        eval_fns = [
+            make_env(
+                MyRLEnv,
+                f"{env_prefix}eval_env{i}",
+                i,
+                seed,
+                eval_df,
+                prices_eval,
+                env_info=env_info,
+            )
+            for i in range(self.n_eval_envs)
+        ]
+        if self.eval_multiprocessing and self.n_eval_envs > 1:
+            eval_env: VecEnv = SubprocVecEnv(eval_fns, start_method="spawn")
+        else:
+            eval_env = DummyVecEnv(eval_fns)
+        if bool(self.frame_stacking) and self.frame_stacking > 1:
+            eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
+        return VecMonitor(eval_env)
+
+    def evaluate_holdout_once(
+        self,
+        model: Any,
+        holdout_df: DataFrame,
+        prices_holdout: DataFrame,
+        dk: FreqaiDataKitchen,
+        model_params: Dict[str, Any],
+    ) -> None:
+        """Evaluate the selected checkpoint without feeding holdout results back."""
+        base_seed = int(model_params.get("seed", 42))
+        env_info = self.pack_env_dict(dk.pair, model_params)
+        holdout_env = self._get_evaluation_environment(
+            holdout_df,
+            prices_holdout,
+            base_seed + ReforceXY._HOLDOUT_SEED_OFFSET,
+            env_info,
+            "holdout_",
+        )
+        evaluator = evaluate_maskable_policy if self.action_masking else evaluate_policy
+        try:
+            episode_rewards, episode_lengths = evaluator(
+                model,
+                holdout_env,
+                n_eval_episodes=self.n_eval_episodes,
+                deterministic=True,
+                return_episode_rewards=True,
+                warn=True,
+            )
+            rewards = np.asarray(episode_rewards, dtype=np.float64)
+            lengths = np.asarray(episode_lengths, dtype=np.float64)
+            if rewards.size == 0 or not np.all(np.isfinite(rewards)):
+                raise ValueError(
+                    f"Holdout [{dk.pair}]: evaluation returned no finite rewards"
+                )
+            logger.info(
+                "Holdout [%s]: untouched one-shot evaluation episodes=%d seed=%d "
+                "mean_reward=%.8f std_reward=%.8f mean_length=%.2f; "
+                "result is diagnostic and must not select params, seed, or checkpoint",
+                dk.pair,
+                rewards.size,
+                base_seed + ReforceXY._HOLDOUT_SEED_OFFSET,
+                float(np.mean(rewards)),
+                float(np.std(rewards)),
+                float(np.mean(lengths)),
+            )
+        finally:
+            holdout_env.close()
+
     def set_train_and_eval_environments(
         self,
         data_dictionary: Dict[str, DataFrame],
@@ -628,6 +817,17 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         train_df = data_dictionary.get("train_features")
         test_df = data_dictionary.get("test_features")
+        validation_df, holdout_df, prices_validation, prices_holdout = (
+            self.split_validation_holdout(test_df, prices_test, dk.pair)
+        )
+        self._training_splits[ReforceXY._training_split_key(dk)] = _TrainingSplit(
+            train_df=train_df.copy(),
+            validation_df=validation_df,
+            holdout_df=holdout_df,
+            prices_train=prices_train.copy(),
+            prices_validation=prices_validation,
+            prices_holdout=prices_holdout,
+        )
         env_dict = self.pack_env_dict(dk.pair)
         seed = self.get_model_params().get("seed", 42)
 
@@ -645,10 +845,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             finally:
                 _train_env_check.close()
             _eval_env_check = MyRLEnv(
-                df=test_df,
-                prices=prices_test,
+                df=validation_df,
+                prices=prices_validation,
                 id="eval_env_check",
-                seed=seed + 10_000,
+                seed=seed + ReforceXY._VALIDATION_SEED_OFFSET,
                 **env_dict,
             )
             try:
@@ -665,9 +865,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.train_env, self.eval_env = self._get_train_and_eval_environments(
             dk,
             train_df=train_df,
-            test_df=test_df,
+            test_df=validation_df,
             prices_train=prices_train,
-            prices_test=prices_test,
+            prices_test=prices_validation,
             seed=seed,
             env_info=env_dict,
         )
@@ -850,7 +1050,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
             eval_freq: Optional[int] = None
-            if model_params:
+            if hyperopt:
+                eval_freq = max(1, min(ReforceXY._PPO_N_STEPS_MAX, max_n_calls))
+            elif model_params:
                 n_steps = model_params.get("n_steps")
                 if isinstance(n_steps, int) and n_steps > 0:
                     eval_freq = max(1, min(n_steps, max_n_calls))
@@ -866,7 +1068,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             eval_freq = max(1, (self.n_eval_steps + n_envs - 1) // n_envs)
 
-        if hyperopt and hyperopt_reduction_factor > 1.0:
+        if (
+            hyperopt
+            and ReforceXY._MODEL_TYPES[0] not in self.model_type
+            and hyperopt_reduction_factor > 1.0
+        ):
             eval_freq = max(1, int(round(eval_freq / hyperopt_reduction_factor)))
 
         return min(eval_freq, max_n_calls)
@@ -916,6 +1122,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 deterministic=True,
                 render=False,
                 best_model_save_path=data_path,
+                log_path=f"{data_path}/validation",
                 use_masking=use_masking,
                 callback_on_new_best=rollout_plot_callback,
                 callback_after_eval=no_improvement_callback,
@@ -932,6 +1139,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 deterministic=True,
                 render=False,
                 best_model_save_path=trial_data_path,
+                log_path=trial_data_path,
                 use_masking=use_masking,
                 verbose=verbose,
             )
@@ -948,20 +1156,38 @@ class ReforceXY(BaseReinforcementLearningModel):
         :return:
         model Any = trained model to be used for inference in dry/live/backtesting
         """
-        train_df = data_dictionary.get("train_features")
+        split_key = ReforceXY._training_split_key(dk)
+        split = self._training_splits.pop(split_key, None)
+        if split is None:
+            raise RuntimeError(
+                f"Training [{dk.pair}]: raw OHLC split is unavailable; FreqAI must "
+                "call set_train_and_eval_environments before fit"
+            )
+        train_df = split.train_df
         train_timesteps = len(train_df)
         if train_timesteps <= 0:
             raise ValueError(
                 f"Training [{dk.pair}]: train_features dataframe has zero length"
             )
-        test_df = data_dictionary.get("test_features")
-        eval_timesteps = len(test_df)
+        validation_df = split.validation_df
+        holdout_df = split.holdout_df
+        prices_train = split.prices_train
+        prices_validation = split.prices_validation
+        prices_holdout = split.prices_holdout
+        eval_timesteps = len(validation_df)
+        holdout_timesteps = len(holdout_df)
         train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
         total_timesteps = ReforceXY._ceil_to_multiple(
             train_timesteps * train_cycles, self.n_envs
         )
+        if self.hyperopt and ReforceXY._MODEL_TYPES[0] in self.model_type:
+            total_timesteps = ReforceXY._ceil_to_multiple(
+                total_timesteps,
+                ReforceXY._PPO_N_STEPS_MAX * self.n_envs,
+            )
         train_days = steps_to_days(train_timesteps, self.config.get("timeframe"))
         eval_days = steps_to_days(eval_timesteps, self.config.get("timeframe"))
+        holdout_days = steps_to_days(holdout_timesteps, self.config.get("timeframe"))
         total_days = steps_to_days(total_timesteps, self.config.get("timeframe"))
 
         logger.info("Model [%s]: type=%s", dk.pair, self.model_type)
@@ -976,12 +1202,18 @@ class ReforceXY(BaseReinforcementLearningModel):
             total_days,
         )
         logger.info(
-            "Training [%s]: eval %s steps (%s days), %s episodes, %s env(s)",
+            "Training [%s]: selection validation %s steps (%s days), %s episodes, %s env(s)",
             dk.pair,
             eval_timesteps,
             eval_days,
             self.n_eval_episodes,
             self.n_eval_envs,
+        )
+        logger.info(
+            "Training [%s]: untouched holdout %s steps (%s days), evaluated once after checkpoint selection",
+            dk.pair,
+            holdout_timesteps,
+            holdout_days,
         )
         logger.info(
             "Config [%s]: multiprocessing=%s, eval_multiprocessing=%s, "
@@ -997,13 +1229,19 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         start_time = time.time()
         if self.hyperopt:
-            best_params = self.optimize(dk, total_timesteps)
+            best_params = self.optimize(
+                dk,
+                total_timesteps,
+                train_df,
+                validation_df,
+                prices_train,
+                prices_validation,
+            )
             if best_params is None:
-                logger.error(
-                    "Hyperopt [%s]: optimization failed, using default model params",
-                    dk.pair,
+                raise RuntimeError(
+                    f"Hyperopt [{dk.pair}]: current training window produced no "
+                    "usable trial; disable Optuna explicitly to use default params"
                 )
-                best_params = self.get_model_params()
             model_params = best_params
         else:
             model_params = self.get_model_params()
@@ -1043,12 +1281,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        # Rebuild train and eval environments before training to sync model parameters
-        prices_train, prices_test = self.build_ohlc_price_dataframes(
-            dk.data_dictionary, dk.pair, dk
-        )
-        self.set_train_and_eval_environments(
-            dk.data_dictionary, prices_train, prices_test, dk
+        # Rebuild from FreqAI's cached raw OHLC to sync selected model parameters.
+        self.close_envs()
+        env_info = self.pack_env_dict(dk.pair, model_params)
+        self.train_env, self.eval_env = self._get_train_and_eval_environments(
+            dk,
+            train_df=train_df,
+            test_df=validation_df,
+            prices_train=prices_train,
+            prices_test=prices_validation,
+            seed=int(model_params.get("seed", 42)),
+            env_info=env_info,
+            model_params=model_params,
         )
 
         model = self.get_init_model(dk.pair)
@@ -1066,7 +1310,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 **model_params,
             )
 
-        eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
+        best_checkpoint_path = Path(dk.data_path / "best_model.zip")
+        best_checkpoint_path.unlink(missing_ok=True)
+        eval_freq = self.get_eval_freq(
+            total_timesteps,
+            hyperopt=self.hyperopt,
+            model_params=model_params,
+        )
         callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
         try:
             logger.debug(
@@ -1078,7 +1328,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
             logger.debug("Training [%s]: model.learn completed", dk.pair)
         except KeyboardInterrupt:
-            pass
+            raise
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
@@ -1088,30 +1338,35 @@ class ReforceXY(BaseReinforcementLearningModel):
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
 
-        model_filename = dk.model_filename if dk.model_filename else "best"
-        model_filepath = Path(dk.data_path / f"{model_filename}_model.zip")
+        selected_model = model
+        model_filepath = best_checkpoint_path
         if model_filepath.is_file():
-            logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
+            logger.info(
+                "Model [%s]: loading validation-selected checkpoint from %s",
+                dk.pair,
+                model_filepath,
+            )
             try:
-                best_model = self.MODELCLASS.load(
-                    dk.data_path / f"{model_filename}_model"
-                )
-                return best_model
+                selected_model = self.MODELCLASS.load(dk.data_path / "best_model")
             except Exception as e:
-                logger.error(
-                    "Model [%s]: failed to load best model: %r",
-                    dk.pair,
-                    e,
-                    exc_info=True,
-                )
+                raise RuntimeError(
+                    f"Model [{dk.pair}]: validation-selected checkpoint is unreadable"
+                ) from e
 
-        logger.warning(
-            "Model [%s]: best model not found at %s, using final model",
-            dk.pair,
-            model_filepath,
+        else:
+            raise RuntimeError(
+                f"Model [{dk.pair}]: validation-selected checkpoint was not created "
+                f"at {model_filepath}"
+            )
+
+        self.evaluate_holdout_once(
+            selected_model,
+            holdout_df,
+            prices_holdout,
+            dk,
+            model_params,
         )
-
-        return model
+        return selected_model
 
     def rl_model_predict(
         self, dataframe: DataFrame, dk: FreqaiDataKitchen, model: Any
@@ -1578,12 +1833,10 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _ppo_resources(
         total_timesteps: int, n_envs: int, reduction_factor: int
     ) -> Tuple[int, int]:
-        min_n_steps = ReforceXY._PPO_N_STEPS_MIN
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
         min_resource = max(
             2 * reduction_factor,
-            round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR)
-            * n_envs,
+            max_n_steps * n_envs,
         )
         rollout = max_n_steps * n_envs
         return (
@@ -1592,13 +1845,20 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
 
     def optimize(
-        self, dk: FreqaiDataKitchen, total_timesteps: int
+        self,
+        dk: FreqaiDataKitchen,
+        total_timesteps: int,
+        train_df: DataFrame,
+        validation_df: DataFrame,
+        prices_train: DataFrame,
+        prices_validation: DataFrame,
     ) -> Optional[Dict[str, Any]]:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
         """
         identifier = self.freqai_info.get("identifier", "no_id_provided")
-        study_name = f"{identifier}-{dk.pair}"
+        training_window = ReforceXY._sanitize_pair(Path(dk.data_path).name)
+        study_name = f"{identifier}-{dk.pair}-{training_window}"
         storage = self.create_storage(dk.pair)
         continuous = self.rl_config_optuna.get("continuous", False)
 
@@ -1627,6 +1887,20 @@ class ReforceXY(BaseReinforcementLearningModel):
         reduction_factor = 3
         n_envs = self.n_envs
         if ReforceXY._MODEL_TYPES[0] in self.model_type:  # "PPO"
+            common_rollout = ReforceXY._PPO_N_STEPS_MAX * n_envs
+            common_total_timesteps = ReforceXY._ceil_to_multiple(
+                total_timesteps, common_rollout
+            )
+            if common_total_timesteps != total_timesteps:
+                logger.info(
+                    "Hyperopt [%s]: aligning every trial to common budget %d "
+                    "(requested=%d, max_rollout=%d)",
+                    study_name,
+                    common_total_timesteps,
+                    total_timesteps,
+                    common_rollout,
+                )
+            total_timesteps = common_total_timesteps
             min_resource, max_resource = ReforceXY._ppo_resources(
                 total_timesteps, n_envs, reduction_factor
             )
@@ -1673,22 +1947,38 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Hyperopt [%s]: warm start found no previous best params",
                     study_name,
                 )
-        hyperopt_failed = False
         start_time = time.time()
+        remaining_trials = max(0, self.optuna_n_trials - len(study.trials))
+        logger.info(
+            "Hyperopt [%s]: total trial budget=%d, existing=%d, remaining=%d",
+            study_name,
+            self.optuna_n_trials,
+            len(study.trials),
+            remaining_trials,
+        )
         try:
-            study.optimize(
-                lambda trial: self.objective(trial, dk, total_timesteps),
-                n_trials=self.optuna_n_trials,
-                timeout=(
-                    hours_to_seconds(self.optuna_timeout_hours)
-                    if self.optuna_timeout_hours
-                    else None
-                ),
-                gc_after_trial=True,
-                show_progress_bar=self.rl_config.get("progress_bar", False),
-                # SB3 is not fully thread safe
-                n_jobs=1,
-            )
+            if remaining_trials > 0:
+                study.optimize(
+                    lambda trial: self.objective(
+                        trial,
+                        dk,
+                        total_timesteps,
+                        train_df,
+                        validation_df,
+                        prices_train,
+                        prices_validation,
+                    ),
+                    n_trials=remaining_trials,
+                    timeout=(
+                        hours_to_seconds(self.optuna_timeout_hours)
+                        if self.optuna_timeout_hours
+                        else None
+                    ),
+                    gc_after_trial=True,
+                    show_progress_bar=self.rl_config.get("progress_bar", False),
+                    # SB3 is not fully thread safe
+                    n_jobs=1,
+                )
         except KeyboardInterrupt:
             time_spent = time.time() - start_time
             logger.info(
@@ -1705,7 +1995,6 @@ class ReforceXY(BaseReinforcementLearningModel):
                 e,
                 exc_info=True,
             )
-            hyperopt_failed = True
         time_spent = time.time() - start_time
         n_completed = len([t for t in study.trials if t.state == TrialState.COMPLETE])
         n_pruned = len([t for t in study.trials if t.state == TrialState.PRUNED])
@@ -1724,18 +2013,15 @@ class ReforceXY(BaseReinforcementLearningModel):
                 study_name,
                 time_spent,
             )
-            hyperopt_failed = True
 
-        if hyperopt_failed:
-            best_trial_params = self.load_best_trial_params(dk.pair)
-            if best_trial_params is None:
-                logger.error(
-                    "Hyperopt [%s]: no previously saved best params found",
-                    study_name,
-                )
-                return None
-        else:
-            best_trial_params = study.best_trial.params
+        if not study_has_best_trial:
+            logger.error(
+                "Hyperopt [%s]: no usable trial from the current training window; "
+                "refusing to reuse a score from another window",
+                study_name,
+            )
+            return None
+        best_trial_params = study.best_trial.params
 
         logger.info(
             "Hyperopt [%s]: completed in %.2f secs",
@@ -1821,14 +2107,11 @@ class ReforceXY(BaseReinforcementLearningModel):
             or prices_train is None
             or prices_test is None
         ):
-            train_df = dk.data_dictionary["train_features"]
-            test_df = dk.data_dictionary["test_features"]
-            prices_train, prices_test = self.build_ohlc_price_dataframes(
-                dk.data_dictionary, dk.pair, dk
+            raise ValueError(
+                f"Env [{dk.pair}]: transformed features and raw OHLC must be "
+                "passed explicitly from FreqAI's environment hook"
             )
         seed: int = self.get_model_params().get("seed", 42) if seed is None else seed
-        if trial is not None:
-            seed += trial.number
         set_random_seed(seed)
         env_info: Dict[str, Any] = (
             self.pack_env_dict(dk.pair, model_params) if env_info is None else env_info
@@ -1847,34 +2130,22 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             for i in range(self.n_envs)
         ]
-        eval_fns = [
-            make_env(
-                MyRLEnv,
-                f"{env_prefix}eval_env{i}",
-                i,
-                seed + 10_000,
-                test_df,
-                prices_test,
-                env_info=env_info,
-            )
-            for i in range(self.n_eval_envs)
-        ]
-
         if self.multiprocessing and self.n_envs > 1:
             train_env = SubprocVecEnv(train_fns, start_method="spawn")
         else:
             train_env = DummyVecEnv(train_fns)
-        if self.eval_multiprocessing and self.n_eval_envs > 1:
-            eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
-        else:
-            eval_env = DummyVecEnv(eval_fns)
 
         if bool(self.frame_stacking) and self.frame_stacking > 1:
             train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
-            eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
 
         train_env = VecMonitor(train_env)
-        eval_env = VecMonitor(eval_env)
+        eval_env = self._get_evaluation_environment(
+            test_df,
+            prices_test,
+            seed + ReforceXY._VALIDATION_SEED_OFFSET,
+            env_info,
+            env_prefix,
+        )
 
         return train_env, eval_env
 
@@ -1897,7 +2168,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
 
     def objective(
-        self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int
+        self,
+        trial: Trial,
+        dk: FreqaiDataKitchen,
+        total_timesteps: int,
+        train_df: DataFrame,
+        validation_df: DataFrame,
+        prices_train: DataFrame,
+        prices_validation: DataFrame,
     ) -> float:
         """
         Objective function for Optuna trials hyperparameter optimization
@@ -1941,7 +2219,6 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
-        params["seed"] = params.get("seed", 42) + trial.number
         logger.info(
             "Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params
         )
@@ -1971,7 +2248,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             tensorboard_log_path = None
 
         train_env, eval_env = self._get_train_and_eval_environments(
-            dk, trial=trial, model_params=params
+            dk,
+            train_df=train_df,
+            test_df=validation_df,
+            prices_train=prices_train,
+            prices_test=prices_validation,
+            seed=int(params.get("seed", 42)),
+            trial=trial,
+            model_params=params,
         )
 
         model = self.MODELCLASS(
@@ -2177,11 +2461,9 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters: Mapping[str, Any] = self.rl_config.get(
             "model_reward_parameters", {}
         )
-        ignored_parameters = (
-            self._IGNORED_LEGACY_REWARD_PARAMETERS
-            .intersection(model_reward_parameters)
-            .difference(self._warned_legacy_reward_parameters)
-        )
+        ignored_parameters = self._IGNORED_LEGACY_REWARD_PARAMETERS.intersection(
+            model_reward_parameters
+        ).difference(self._warned_legacy_reward_parameters)
         if ignored_parameters:
             logger.warning(
                 "Env [%s]: legacy reward parameters have no effect under the "
@@ -3412,9 +3694,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 pnl, context="position liquidation"
             )
             next_liquidation_value = (
-                1.0
-                if next_position == Positions.Neutral
-                else reward_liquidation_value
+                1.0 if next_position == Positions.Neutral else reward_liquidation_value
             )
         else:
             reward_liquidation_value = 1.0
@@ -3431,8 +3711,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
 
         economic_reward = base_factor * (
-            math.log(reward_liquidation_value)
-            - math.log(previous_liquidation_value)
+            math.log(reward_liquidation_value) - math.log(previous_liquidation_value)
         )
         if not np.isfinite(economic_reward):
             raise RuntimeError(
@@ -3636,9 +3915,7 @@ class MyRLEnv(Base5ActionRLEnv):
             "total_unrealized_profit": round(self._total_unrealized_profit, 5),
             "reward_economic": round(self._last_economic_reward, 5),
             "previous_liquidation_value": round(previous_liquidation_value, 8),
-            "reward_liquidation_value": round(
-                self._reward_liquidation_value, 8
-            ),
+            "reward_liquidation_value": round(self._reward_liquidation_value, 8),
             "next_liquidation_value": round(self._next_liquidation_value, 8),
             "economic_ruin": self._economic_ruin,
             "drawdown_breached": drawdown_breached,
