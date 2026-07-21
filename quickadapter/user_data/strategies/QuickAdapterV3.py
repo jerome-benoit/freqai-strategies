@@ -175,6 +175,7 @@ class QuickAdapterV3(IStrategy):
     )
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
+    _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
 
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -485,11 +486,8 @@ class QuickAdapterV3(IStrategy):
             )
         self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
-        process_throttle_secs = self.config.get("internals", {}).get(
-            "process_throttle_secs", 5
-        )
-        self._max_history_size = int(12 * 60 * 60 / process_throttle_secs)
-        self._pnl_momentum_window_size = int(30 * 60 / process_throttle_secs)
+        self._max_history_size = max(1, int(12 * 60 / self.timeframe_minutes))
+        self._pnl_momentum_window_size = max(1, int(30 / self.timeframe_minutes))
         self._exit_thresholds_calibration: dict[str, float] = {
             **QuickAdapterV3.default_exit_thresholds_calibration,
             **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
@@ -1518,7 +1516,7 @@ class QuickAdapterV3(IStrategy):
         return take_profit_price
 
     @staticmethod
-    def _get_trade_history(trade: Trade) -> dict[str, list[float | tuple[int, float]]]:
+    def _get_trade_history(trade: Trade) -> dict[str, Any]:
         return trade.get_custom_data(
             "history", {"unrealized_pnl": [], "take_profit_price": []}
         )
@@ -1535,27 +1533,33 @@ class QuickAdapterV3(IStrategy):
         history = QuickAdapterV3._get_trade_history(trade)
         return history.get("take_profit_price", [])
 
-    def append_trade_unrealized_pnl(self, trade: Trade, pnl: float) -> list[float]:
+    def append_trade_unrealized_pnl(
+        self, trade: Trade, pnl: float, candle_date: datetime.datetime
+    ) -> list[float]:
         history = QuickAdapterV3._get_trade_history(trade)
         pnl_history = history.setdefault("unrealized_pnl", [])
         pnl_history.append(pnl)
         if len(pnl_history) > self._max_history_size:
             pnl_history = pnl_history[-self._max_history_size :]
             history["unrealized_pnl"] = pnl_history
+        history[QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY] = (
+            candle_date.isoformat()
+        )
         trade.set_custom_data("history", history)
         return pnl_history
 
-    def safe_append_trade_unrealized_pnl(self, trade: Trade, pnl: float) -> list[float]:
-        trade_unrealized_pnl_history = QuickAdapterV3.get_trade_unrealized_pnl_history(
-            trade
-        )
-        previous_unrealized_pnl = (
-            trade_unrealized_pnl_history[-1] if trade_unrealized_pnl_history else None
-        )
-        if previous_unrealized_pnl is None or not np.isclose(
-            previous_unrealized_pnl, pnl
+    def safe_append_trade_unrealized_pnl(
+        self, trade: Trade, pnl: float, candle_date: datetime.datetime
+    ) -> list[float]:
+        history = QuickAdapterV3._get_trade_history(trade)
+        trade_unrealized_pnl_history = history.get("unrealized_pnl", [])
+        if (
+            history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
+            != candle_date.isoformat()
         ):
-            trade_unrealized_pnl_history = self.append_trade_unrealized_pnl(trade, pnl)
+            trade_unrealized_pnl_history = self.append_trade_unrealized_pnl(
+                trade, pnl, candle_date
+            )
         return trade_unrealized_pnl_history
 
     def append_trade_take_profit_price(
@@ -2115,8 +2119,6 @@ class QuickAdapterV3(IStrategy):
         current_profit: float,
         **kwargs,
     ) -> Optional[str]:
-        self.safe_append_trade_unrealized_pnl(trade, current_profit)
-
         df, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
@@ -2124,10 +2126,11 @@ class QuickAdapterV3(IStrategy):
             return None
 
         last_candle = df.iloc[-1]
+        last_candle_date = last_candle.get("date")
+        self.safe_append_trade_unrealized_pnl(trade, current_profit, last_candle_date)
         if last_candle.get("do_predict") == 2:
             return "model_expired"
         if last_candle.get("DI_catch") == 0:
-            last_candle_date = last_candle.get("date")
             last_outlier_date_isoformat = trade.get_custom_data("last_outlier_date")
             last_outlier_date = (
                 datetime.datetime.fromisoformat(last_outlier_date_isoformat)
