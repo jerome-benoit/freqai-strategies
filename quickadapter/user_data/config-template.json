@@ -169,6 +169,7 @@
       "enabled": true,
       "n_jobs": 6,
       "n_trials": 100,
+      "vary_model_seed_by_trial": true,
       "timeout": 7200,
       "label_candles_step": 1,
       "storage": "file"
