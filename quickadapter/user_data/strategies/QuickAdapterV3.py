@@ -17,6 +17,7 @@ from typing import (
 import numpy as np
 import pandas_ta as pta
 import talib.abstract as ta
+from freqtrade.enums import RunMode
 from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
@@ -454,9 +455,15 @@ class QuickAdapterV3(IStrategy):
             self._label_defaults
         )
         self._label_params: dict[str, dict[str, Any]] = {}
+        load_persisted_label_params = self.config.get("runmode") in {
+            RunMode.LIVE,
+            RunMode.DRY_RUN,
+        }
         for pair in self.pairs:
-            label_best_params = self.optuna_load_best_params(
-                pair, _OPTUNA_NAMESPACES.label
+            label_best_params = (
+                self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.label)
+                if load_persisted_label_params
+                else None
             )
             self._label_params[pair] = (
                 label_best_params
