@@ -3882,6 +3882,7 @@ def fit_regressor(
     callbacks: list[RegressorCallback] | None = None,
     model_path: Path | None = None,
     trial: optuna.trial.Trial | None = None,
+    vary_model_seed_by_trial: bool = True,
 ) -> Any:
     fit_callbacks = list(callbacks) if callbacks else []
 
@@ -3902,7 +3903,7 @@ def fit_regressor(
             f"supported values are {', '.join(REGRESSORS)}"
         )
     model_training_parameters.setdefault(spec.seed_param, 1)
-    if trial is not None:
+    if trial is not None and vary_model_seed_by_trial:
         model_training_parameters[spec.seed_param] = (
             model_training_parameters[spec.seed_param] + trial.number
         )
@@ -4052,6 +4053,7 @@ def fit_regressor(
                 max_depth=model_training_parameters.pop("max_depth", None),
                 min_samples_split=model_training_parameters.pop("min_samples_split", 2),
                 min_samples_leaf=model_training_parameters.pop("min_samples_leaf", 1),
+                random_state=model_training_parameters["random_state"],
             ),
             **model_training_parameters,
         )
