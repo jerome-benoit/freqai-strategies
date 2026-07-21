@@ -5,6 +5,7 @@
 - [QuickAdapter](#quickadapter)
   - [Quick start](#quick-start)
   - [Configuration tunables](#configuration-tunables)
+  - [Evaluation protocol](#evaluation-protocol)
 - [ReforceXY](#reforcexy)
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
@@ -145,6 +146,77 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.space_fraction                          | 0.4                           | float [0,1]                                                                                                                                                                                                  | Fraction of the `hp` search space to use with `space_reduction`. Lower values create narrower search ranges around the best parameters.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | freqai.optuna_hyperopt.min_resource                            | 3                             | int >= 1                                                                                                                                                                                                     | Minimum resource per [HyperbandPruner](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.pruners.HyperbandPruner.html) rung.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | freqai.optuna_hyperopt.seed                                    | 1                             | int >= 0                                                                                                                                                                                                     | HPO RNG seed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+
+### Evaluation protocol
+
+QuickAdapter predicts smoothed Zigzag pivot morphology, not a directly tradable
+return. Its regression RMSE, including `holdout_rmse`, measures label prediction
+error and is not an economic objective. With `rank_extrema` and `rank_peaks`,
+`keep_fraction` applies to the detected extrema in each direction and keeps at
+least one when extrema exist; it is not a fraction of all candles. The
+`partition` method ignores it.
+
+Changes to training-window length, label objectives, weighting, or trading
+thresholds must be supported by a paired walk-forward comparison. Use this
+protocol before changing their defaults:
+
+1. Select common out-of-sample FreqAI prediction intervals. Every candidate must
+   predict the same timestamps from the same pair universe and input data. At
+   each prediction timestamp, training, dynamic label HPO, calibration, features,
+   and cached inputs may use only information available by that timestamp.
+2. Run one comparison with model and label hyperparameters fixed to isolate the
+   training-window effect. Run a separate nested comparison if HPO is evaluated.
+   For each training window, train every trial on the inner training set, select
+   it only by the inner validation set, and evaluate the selected model once on
+   the untouched internal holdout. Record that score before refitting the final
+   pipelines and model on all causally available rows in the training window.
+   The following FreqAI prediction interval evaluates that final refitted model;
+   `holdout_rmse` describes the selection model only.
+3. Give each candidate and independent run a distinct FreqAI identifier, and use
+   FreqAI's native per-interval model artifacts and caches. Never reuse persisted
+   state across candidates or independent runs. Within one candidate's
+   chronological path, use the deployed warm-start policy and seed it only from
+   earlier intervals.
+4. Use identical protections, position sizing, fee configuration, and execution
+   assumptions. Record whether protections and a detail timeframe are enabled,
+   including the exact backtest flags. Record separate spread, slippage, impact,
+   and funding scenarios when they are not represented by the backtest input.
+5. Record a manifest containing the Git commit, container image digest, Freqtrade
+   and dependency versions, configuration hash, data hash and timerange, pairs,
+   timeframes, random seeds, all attempted trials, candidate window, and outer
+   interval. Exact HPO replication requires sequential optimization; otherwise,
+   record parallelism as a source of nondeterministic trial ordering.
+
+Include a fixed-label, fixed-model baseline trained on the complete causal window.
+When evaluating dynamic label HPO, compare it with the same model using fixed
+label parameters. Any no-ML rule or regularized linear baseline must use the same
+outer intervals, features available at prediction time, costs, and trading rules.
+
+The comparison report must include raw and post-pipeline training, validation,
+holdout, and final-refit row counts; feature count and the row/feature ratio; the
+latest fitted-row timestamp; pivot counts and support prevalence per direction;
+label-confirmation lag distribution; global and pivot-conditional errors; extrema
+available and retained for each threshold; signals, trades, turnover, partial
+exits, and exit reasons; `holdout_rmse`; net return; and drawdown. Report effective
+sample size only for weighting schemes that are actually active.
+
+Pre-register one primary economic metric, such as net logarithmic growth per
+day, plus separate acceptance margins for return and drawdown. For each candidate
+and metric, form an ordered series of paired differences across the common
+prediction intervals and estimate the corresponding confidence interval with a
+block bootstrap. When testing multiple candidates or metrics, define the family
+of hypotheses in advance and report Holm-adjusted p-values; do not present the
+individual intervals as simultaneous confidence intervals. Express the block
+length in prediction intervals and estimate it from serial dependence in each
+paired series.
+
+A default may change only when every required margin test passes for its metric
+and candidate, under the pre-registered multiplicity rule, across the declared
+cost scenarios. Otherwise, retain the current default and report the result as
+inconclusive. Run Freqtrade lookahead analysis with its cache disabled and run
+recursive analysis on a sufficiently long startup window. Use a forward dry-run
+for behavior whose callback frequency or fill model cannot be reproduced by
+candle backtesting.
 
 ## ReforceXY
 
