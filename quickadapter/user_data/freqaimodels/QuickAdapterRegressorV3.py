@@ -2745,9 +2745,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``historic_predictions`` and the current prediction row through
         ``dk.full_df``; the current prediction time is the first ``dk.full_df``
         timestamp beyond the last recorded prediction. Live and dry-run modes
-        use the latest DataProvider candle. This explicit backtest bound is
-        required because DataProvider otherwise exposes the complete historical
-        timerange.
+        rely on the already point-in-time DataProvider frame. This explicit
+        backtest bound is required because DataProvider otherwise exposes the
+        complete historical timerange.
         """
         pair_dataframe = self.data_provider.get_pair_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
