@@ -72,15 +72,15 @@ class TestStatistics(RewardSpaceTestBase):
 
         df = self.make_stats_df(n=90, seed=SEEDS.BASE)
         # Force some columns constant
-        df.loc[:, "reward_hold"] = 0.0
+        df.loc[:, "reward_economic"] = 0.0
         df.loc[:, "idle_duration"] = 5.0
         stats_rel = _compute_relationship_stats(df)
         dropped = stats_rel["correlation_dropped"]
-        self.assertIn("reward_hold", dropped)
+        self.assertIn("reward_economic", dropped)
         self.assertIn("idle_duration", dropped)
         corr = stats_rel["correlation"]
         self.assertIsInstance(corr, pd.DataFrame)
-        self.assertNotIn("reward_hold", corr.columns)
+        self.assertNotIn("reward_economic", corr.columns)
         self.assertNotIn("idle_duration", corr.columns)
 
     def test_statistics_distribution_shift_metrics_degenerate_zero(self):
@@ -289,7 +289,7 @@ class TestStatistics(RewardSpaceTestBase):
                     f"Expected near-zero divergence after equal scaling (k={k}, v={v})",
                 )
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101)
     @pytest.mark.smoke
     def test_stats_mean_decomposition_consistency(self):
         """Batch mean additivity."""

@@ -107,8 +107,8 @@ class TestPBRS(RewardSpaceTestBase):
             reward_shaping, -prev_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
         )
 
-    def test_pbrs_spike_cancel_invariance(self):
-        """Verifies spike_cancel mode produces near-zero terminal shaping."""
+    def test_noncanonical_spike_cancel_falls_back_to_canonical(self):
+        """Unsupported spike-cancel semantics cannot bypass canonical termination."""
         params = self.DEFAULT_PARAMS.copy()
         params.update(
             {
@@ -131,14 +131,6 @@ class TestPBRS(RewardSpaceTestBase):
             PARAMS.BASE_FACTOR,
         )
 
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
-        expected_next_potential = (
-            prev_potential / gamma if gamma not in (0.0, None) else prev_potential
-        )
         (
             _total_reward,
             reward_shaping,
@@ -160,10 +152,10 @@ class TestPBRS(RewardSpaceTestBase):
             prev_potential=prev_potential,
             params=params,
         )
+        self.assertAlmostEqualFloat(next_potential, 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED)
         self.assertAlmostEqualFloat(
-            next_potential, expected_next_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
+            reward_shaping, -prev_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
         )
-        self.assertNearZero(reward_shaping, atol=TOLERANCE.IDENTITY_RELAXED)
 
     # ---------------- Invariance flags (simulate_samples) ---------------- #
 
@@ -199,8 +191,8 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertFinite(float(v), name="reward_shaping")
         self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
 
-    def test_non_canonical_flag_false_and_sum_nonzero(self):
-        """Non-canonical mode -> invariant flags False and Σ shaping non-zero."""
+    def test_noncanonical_simulation_is_canonicalized(self):
+        """The simulator exposes only the canonical PBRS contract."""
 
         params = self.base_params(
             exit_potential_mode="progressive_release",
@@ -222,7 +214,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
-        self.assertEqual(unique_flags, {False}, f"Unexpected invariant flags: {unique_flags}")
+        self.assertEqual(unique_flags, {True}, f"Unexpected invariant flags: {unique_flags}")
         abs_sum = float(df["reward_shaping"].abs().sum())
         self.assertGreater(
             abs_sum,
@@ -498,8 +490,8 @@ class TestPBRS(RewardSpaceTestBase):
         max_abs = max(abs(v) for v in shaping_values) if shaping_values else 0.0
         self.assertLessEqual(max_abs, PBRS.MAX_ABS_SHAPING)
 
-    def test_progressive_release_negative_decay_clamped(self):
-        """Verifies negative decay clamping: next potential equals last potential."""
+    def test_noncanonical_negative_decay_still_terminates_potential(self):
+        """Deprecated decay values cannot retain potential at an exit."""
         params = self.base_params(
             exit_potential_mode="progressive_release",
             exit_potential_decay=-0.75,
@@ -521,20 +513,8 @@ class TestPBRS(RewardSpaceTestBase):
                 params=params,
             )
         )
-        self.assertPlacesEqual(
-            next_potential, prev_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
-        )
-        raw_gamma = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
-        gamma_fallback = 0.95 if raw_gamma is None else raw_gamma
-        try:
-            gamma = float(gamma_fallback)
-        except Exception:
-            gamma = 0.95
-        # PBRS shaping Δ = γ·Φ(next) - Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.
-        self.assertLessEqual(
-            abs(shaping - ((gamma - 1.0) * prev_potential)),
-            TOLERANCE.GENERIC_EQ,
-        )
+        self.assertPlacesEqual(next_potential, 0.0, places=TOLERANCE.DECIMAL_PLACES_STRICT)
+        self.assertPlacesEqual(shaping, -prev_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT)
         self.assertPlacesEqual(total, shaping, places=TOLERANCE.DECIMAL_PLACES_STRICT)
 
     def test_potential_gamma_nan_fallback(self):
@@ -583,13 +563,12 @@ class TestPBRS(RewardSpaceTestBase):
     def test_calculate_reward_entry_next_pnl_fee_aware(self):
         """calculate_reward() entry PBRS uses fee-aware next_pnl estimate."""
         params = self.base_params(
-            exit_potential_mode="non_canonical",
+            exit_potential_mode="canonical",
             hold_potential_enabled=True,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
             potential_gamma=0.9,
-            entry_fee_rate=0.001,
-            exit_fee_rate=0.001,
+            fee_rate=0.001,
         )
 
         for action in (Actions.Long_enter, Actions.Short_enter):
@@ -605,36 +584,19 @@ class TestPBRS(RewardSpaceTestBase):
                 f"Expected negative next_potential on entry for action={action}",
             )
 
-    def test_fee_rates_are_clamped_to_parameter_bounds(self):
-        """Fee clamping uses _PARAMETER_BOUNDS (max 0.1)."""
-        cases = [
-            ("entry_fee_rate", self.base_params(entry_fee_rate=999.0, exit_fee_rate=0.0)),
-            ("exit_fee_rate", self.base_params(entry_fee_rate=0.0, exit_fee_rate=999.0)),
-        ]
+    def test_fee_rate_is_bounded_by_parameter_validation(self):
+        """Strict validation rejects excessive fees and relaxed validation clamps them."""
+        params = self.base_params(fee_rate=999.0)
+        with self.assertRaisesRegex(ValueError, "above max 0.1"):
+            validate_reward_parameters(params, strict=True)
+        sanitized, adjustments = validate_reward_parameters(params, strict=False)
+        self.assertEqual(sanitized["fee_rate"], 0.1)
+        self.assertIn("max=0.1", adjustments["fee_rate"]["reason"])
 
-        for key, params in cases:
-            pnl_clamped = _compute_unrealized_pnl_estimate(
-                Positions.Long,
-                entry_open=1.0,
-                current_open=1.0,
-                params=params,
-            )
-            pnl_expected = _compute_unrealized_pnl_estimate(
-                Positions.Long,
-                entry_open=1.0,
-                current_open=1.0,
-                params={**params, key: 0.1},
-            )
-            self.assertAlmostEqualFloat(
-                pnl_clamped,
-                pnl_expected,
-                tolerance=TOLERANCE.IDENTITY_STRICT,
-                msg=f"Expected {key} values above max to clamp to 0.1",
-            )
-
-    def test_unrealized_pnl_estimate_uses_division_for_exit_fee(self):
-        """Exit fee uses division `open/(1+fee)`."""
-        params = self.base_params(entry_fee_rate=0.0, exit_fee_rate=0.1)
+    # Owns invariant: pbrs-unified-fee-primitives-122
+    def test_unrealized_pnl_uses_unified_freqtrade_fee(self):
+        """Long and short marks reproduce Freqtrade's symmetric fee primitives."""
+        params = self.base_params(fee_rate=0.1)
 
         pnl_long = _compute_unrealized_pnl_estimate(
             Positions.Long,
@@ -642,7 +604,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_open=1.0,
             params=params,
         )
-        expected_pnl_long = (1.0 / 1.1 - 1.0) / 1.0
+        expected_pnl_long = 1.0 / (1.1**2) - 1.0
         self.assertAlmostEqualFloat(
             float(pnl_long),
             float(expected_pnl_long),
@@ -656,7 +618,7 @@ class TestPBRS(RewardSpaceTestBase):
             current_open=1.0,
             params=params,
         )
-        expected_pnl_short = (1.0 / 1.1 - 1.0) / (1.0 / 1.1)
+        expected_pnl_short = 2.0 - 1.1**2 - 1.0
         self.assertAlmostEqualFloat(
             float(pnl_short),
             float(expected_pnl_short),
@@ -664,15 +626,14 @@ class TestPBRS(RewardSpaceTestBase):
             msg="Short entry PnL mismatch for division-based exit fee",
         )
 
-    def test_simulate_samples_initializes_pnl_on_entry(self):
-        """simulate_samples() sets in-position pnl to fee-aware entry estimate."""
+    def test_simulate_samples_records_fee_aware_entry_mark(self):
+        """The entry row records the immediate fee-aware liquidation mark."""
         params = self.base_params(
-            exit_potential_mode="non_canonical",
+            exit_potential_mode="canonical",
             hold_potential_enabled=True,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
-            entry_fee_rate=0.001,
-            exit_fee_rate=0.001,
+            fee_rate=0.001,
         )
 
         df = simulate_samples(
@@ -700,26 +661,18 @@ class TestPBRS(RewardSpaceTestBase):
             "Expected Neutral position on Long_enter row",
         )
 
-        next_pos = first_enter_pos + 1
-        self.assertLess(next_pos, len(enter_pos), "Sample must include post-entry step")
-        self.assertEqual(
-            float(enter_pos.iloc[next_pos]["position"]),
-            float(Positions.Long.value),
-            "Expected Long position immediately after Long_enter",
-        )
-
         expected_pnl = _compute_unrealized_pnl_estimate(
             Positions.Long,
             entry_open=1.0,
             current_open=1.0,
             params=params,
         )
-        post_entry_pnl = float(enter_pos.iloc[next_pos]["pnl"])
+        entry_mark = float(enter_pos.iloc[first_enter_pos]["reward_liquidation_value"])
         self.assertAlmostEqualFloat(
-            post_entry_pnl,
-            expected_pnl,
+            entry_mark,
+            1.0 + expected_pnl,
             tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Expected pnl after entry to match entry fee estimate",
+            msg="Expected entry liquidation mark to include the unified fee",
         )
 
     def test_calculate_reward_hold_uses_current_duration_ratio(self):
@@ -814,8 +767,8 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Exit potential mode comparisons ---------------- #
 
-    def test_compute_exit_potential_mode_differences(self):
-        """Exit potential modes: canonical vs spike_cancel shaping magnitude differences."""
+    def test_unsupported_exit_potential_mode_matches_canonical(self):
+        """Every unsupported exit mode degrades to the canonical zero terminal potential."""
         gamma = 0.93
         base_common = {
             "hold_potential_enabled": True,
@@ -853,15 +806,16 @@ class TestPBRS(RewardSpaceTestBase):
         params_spike = self.base_params(exit_potential_mode="spike_cancel", **base_common)
         next_phi_spike = _compute_exit_potential(prev_phi, params_spike)
         shaping_spike = gamma * next_phi_spike - prev_phi
-        self.assertNearZero(
-            shaping_spike,
-            atol=TOLERANCE.IDENTITY_RELAXED,
-            msg="Spike cancel should nullify shaping delta",
+        self.assertAlmostEqualFloat(
+            next_phi_spike,
+            0.0,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            msg="Unsupported modes must use the canonical terminal potential",
         )
-        self.assertGreaterEqual(
-            abs(canonical_delta) + TOLERANCE.IDENTITY_STRICT,
-            abs(shaping_spike),
-            "Canonical shaping magnitude should exceed spike_cancel",
+        self.assertAlmostEqualFloat(
+            shaping_spike,
+            canonical_delta,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
         )
 
     def test_pbrs_retain_previous_cumulative_drift(self):
@@ -985,10 +939,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
         self.assertAlmostEqualFloat(
             breakdown.total,
-            breakdown.invalid_penalty
-            + breakdown.reward_shaping
-            + breakdown.entry_additive
-            + breakdown.exit_additive,
+            breakdown.economic_component + breakdown.invalid_penalty + breakdown.reward_shaping,
             tolerance=TOLERANCE.IDENTITY_RELAXED,
             msg="Total should decompose for invalid actions",
         )
@@ -1050,10 +1001,10 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Report classification / formatting ---------------- #
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101), robustness/test_robustness.py:127 (robustness-exit-pnl-only-117)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101), robustness/test_robustness.py:86 (robustness-episode-boundaries-117)
     @pytest.mark.smoke
-    def test_pbrs_non_canonical_report_generation(self):
-        """Synthetic invariance section: Non-canonical classification formatting."""
+    def test_pbrs_ineligible_report_formatting(self):
+        """Synthetic report formatting distinguishes ineligible configuration from PBRS proof."""
 
         df = pd.DataFrame(
             {
@@ -1064,23 +1015,26 @@ class TestPBRS(RewardSpaceTestBase):
         )
         total_shaping = df["reward_shaping"].sum()
         self.assertGreater(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        invariance_status = "❌ Non-canonical"
+        invariance_status = "❌ Ineligible configuration"
         section = []
         section.append("**PBRS Invariance Summary:**\n")
         section.append("| Field | Value |\n")
         section.append("|-------|-------|\n")
         section.append(f"| Invariance | {invariance_status} |\n")
         section.append(f"| Note | Total shaping = {total_shaping:.6f} (non-zero) |\n")
-        section.append(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
-        section.append(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
+        section.append(f"| Raw Σ Shaping Reward (descriptive only) | {total_shaping:.6f} |\n")
+        section.append(f"| Abs Raw Σ Shaping (not a classifier) | {abs(total_shaping):.6e} |\n")
         section.append(f"| Σ Entry Additive | {df['reward_entry_additive'].sum():.6f} |\n")
         section.append(f"| Σ Exit Additive | {df['reward_exit_additive'].sum():.6f} |\n")
         content = "".join(section)
         assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=False
+            self, content, "Ineligible configuration", expect_additives=False
         )
-        self.assertRegex(content, "Σ Shaping Reward \\| 0\\.008000 \\|")
-        m_abs = re.search("Abs Σ Shaping Reward \\| ([0-9.]+e[+-][0-9]{2}) \\|", content)
+        self.assertRegex(content, "Raw Σ Shaping Reward \\(descriptive only\\) \\| 0\\.008000 \\|")
+        m_abs = re.search(
+            "Abs Raw Σ Shaping \\(not a classifier\\) \\| ([0-9.]+e[+-][0-9]{2}) \\|",
+            content,
+        )
         self.assertIsNotNone(m_abs)
         if m_abs:
             val = float(m_abs.group(1))
@@ -1219,20 +1173,20 @@ class TestPBRS(RewardSpaceTestBase):
             f"Expected non-zero shaping (got {shaping_sum})",
         )
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
-    # Owns invariant: pbrs-canonical-near-zero-report-116
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101)
+    # Owns invariant: pbrs-canonical-correction-report-116
     @pytest.mark.smoke
-    def test_pbrs_canonical_near_zero_report(self):
-        """Invariant 116: canonical near-zero cumulative shaping classified in full report."""
+    def test_pbrs_canonical_verified_by_termwise_correction(self):
+        """Invariant 116: correction and discounted telescoping verify canonical PBRS."""
 
-        small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
+        small_vals = [0.19, -0.105, -0.1]
         total_shaping = float(sum(small_vals))
-        self.assertLess(
+        self.assertGreater(
             abs(total_shaping),
             PBRS_INVARIANCE_TOL,
-            f"Total shaping {total_shaping} exceeds invariance tolerance",
+            "Raw shaping sum must be non-zero to prove it is not the classifier",
         )
-        inv_corr_vals = [1.0e-7, -1.0e-7, 2.0e-7]
+        inv_corr_vals = [0.0, 0.0, 0.0]
         max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
         self.assertLess(max_abs_corr, PBRS_INVARIANCE_TOL)
 
@@ -1240,6 +1194,7 @@ class TestPBRS(RewardSpaceTestBase):
         df = pd.DataFrame(
             {
                 "reward": np.random.normal(0, 1, n),
+                "reward_economic": np.random.normal(0, 1, n),
                 "reward_idle": np.zeros(n),
                 "reward_hold": np.random.normal(-0.2, 0.05, n),
                 "reward_exit": np.random.normal(0.4, 0.15, n),
@@ -1253,12 +1208,18 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_exit_additive": [0.0] * n,
                 "reward_invariance_correction": inv_corr_vals,
                 "reward_invalid": np.zeros(n),
+                "prev_potential": [0.0, 0.2, 0.1],
+                "next_potential": [0.2, 0.1, 0.0],
+                "terminated": [False, False, True],
+                "truncated": [False, False, False],
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
             }
         )
         df.attrs["reward_params"] = {
             "exit_potential_mode": "canonical",
+            "potential_gamma": 0.95,
+            "hold_potential_enabled": True,
             "entry_additive_enabled": False,
             "exit_additive_enabled": False,
         }
@@ -1277,27 +1238,32 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical near-zero test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical", expect_additives=False
+            self, content, "Canonical verified", expect_additives=False
         )
-        self.assertRegex(content, r"\| Σ Shaping Reward \| 0\.000000 \|")
-        m_abs = re.search(r"\| Abs Σ Shaping Reward \| ([0-9.]+e[+-][0-9]{2}) \|", content)
+        self.assertRegex(content, r"\| Raw Σ Shaping Reward \(descriptive only\) \| -0\.015000 \|")
+        m_abs = re.search(
+            r"\| Abs Raw Σ Shaping \(not a classifier\) \| ([0-9.]+e[+-][0-9]{2}) \|",
+            content,
+        )
         self.assertIsNotNone(m_abs)
         if m_abs:
             val_abs = float(m_abs.group(1))
             self.assertAlmostEqual(
                 abs(total_shaping), val_abs, places=TOLERANCE.DECIMAL_PLACES_STRICT
             )
-        self.assertIn("max|correction|≈0", content)
+        residual_match = re.search(
+            r"\| Discounted Telescoping Residual \| ([0-9.]+e[+-][0-9]{2}) \|",
+            content,
+        )
+        self.assertIsNotNone(residual_match)
+        if residual_match:
+            self.assertLess(abs(float(residual_match.group(1))), PBRS_INVARIANCE_TOL)
+        self.assertIn("True termination: Phi(final)=0 is required.", content)
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101)
     @pytest.mark.smoke
-    def test_pbrs_canonical_suppresses_additives_in_report(self):
-        """Canonical exit mode suppresses additives for classification.
-
-        The reward engine suppresses additive terms when exit_potential_mode is "canonical".
-        The report should align: classification stays canonical and should not claim
-        non-canonical additives involvement.
-        """
+    def test_pbrs_requested_additives_are_reported_ineligible(self):
+        """Requested additives make imported report configuration ineligible."""
 
         small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
         total_shaping = float(sum(small_vals))
@@ -1310,6 +1276,7 @@ class TestPBRS(RewardSpaceTestBase):
         df = pd.DataFrame(
             {
                 "reward": np.random.normal(0, 1, n),
+                "reward_economic": np.random.normal(0, 1, n),
                 "reward_idle": np.zeros(n),
                 "reward_hold": np.random.normal(-0.2, 0.05, n),
                 "reward_exit": np.random.normal(0.4, 0.15, n),
@@ -1346,17 +1313,16 @@ class TestPBRS(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Report file missing for canonical additives test")
         content = report_path.read_text(encoding="utf-8")
-        assert_pbrs_invariance_report_classification(
-            self, content, "Canonical", expect_additives=False
-        )
-        self.assertIn("Additives are suppressed in canonical mode", content)
+        self.assertIn("Ineligible configuration", content)
+        self.assertIn("entry_additive_enabled=True", content)
+        self.assertIn("exit_additive_enabled=True", content)
         self.assertIn("| Entry Additive Enabled | True |", content)
         self.assertIn("| Exit Additive Enabled | True |", content)
         self.assertIn("| Entry Additive Effective | False |", content)
         self.assertIn("| Exit Additive Effective | False |", content)
 
-    def test_pbrs_canonical_warning_report(self):
-        """Canonical mode + no additives but max|invariance_correction| > tolerance -> warning."""
+    def test_pbrs_canonical_contract_violation_report(self):
+        """A non-zero termwise correction is a canonical contract violation."""
 
         shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # Σ not near 0
         total_shaping = float(sum(shaping_vals))
@@ -1370,6 +1336,7 @@ class TestPBRS(RewardSpaceTestBase):
         df = pd.DataFrame(
             {
                 "reward": np.random.normal(0, 1, n),
+                "reward_economic": np.random.normal(0, 1, n),
                 "reward_idle": np.zeros(n),
                 "reward_hold": np.random.normal(-0.2, 0.1, n),
                 "reward_exit": np.random.normal(0.5, 0.2, n),
@@ -1407,15 +1374,15 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical warning test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical (with warning)", expect_additives=False
+            self, content, "Canonical contract violation", expect_additives=False
         )
         expected_corr_fragment = f"{max_abs_corr:.6e}"
         self.assertIn(expected_corr_fragment, content)
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101)
     @pytest.mark.smoke
-    def test_pbrs_non_canonical_full_report_reason_aggregation(self):
-        """Full report: Non-canonical classification aggregates mode + additives reasons."""
+    def test_pbrs_invalid_noncanonical_report_reason_aggregation(self):
+        """The report identifies every reason an imported configuration is invalid."""
 
         shaping_vals = [0.02, -0.005, 0.007]
         entry_add_vals = [0.003, 0.0, 0.004]
@@ -1424,6 +1391,7 @@ class TestPBRS(RewardSpaceTestBase):
         df = pd.DataFrame(
             {
                 "reward": np.random.normal(0, 1, n),
+                "reward_economic": np.random.normal(0, 1, n),
                 "reward_idle": np.zeros(n),
                 "reward_hold": np.random.normal(-0.1, 0.05, n),
                 "reward_exit": np.random.normal(0.4, 0.15, n),
@@ -1461,15 +1429,15 @@ class TestPBRS(RewardSpaceTestBase):
             report_path.exists(), "Report file missing for non-canonical full report test"
         )
         content = report_path.read_text(encoding="utf-8")
-        assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=True
-        )
+        self.assertIn("Ineligible configuration", content)
         self.assertIn("exit_potential_mode='progressive_release'", content)
+        self.assertIn("entry_additive_enabled=True", content)
+        self.assertIn("exit_additive_enabled=True", content)
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101)
     @pytest.mark.smoke
-    def test_pbrs_non_canonical_mode_only_reason(self):
-        """Non-canonical exit mode with additives disabled -> reason excludes additive list."""
+    def test_pbrs_invalid_noncanonical_mode_only_reason(self):
+        """A lone unsupported mode is reported without inventing additive reasons."""
 
         shaping_vals = [0.002, -0.0005, 0.0012]
         total_shaping = sum(shaping_vals)
@@ -1478,6 +1446,7 @@ class TestPBRS(RewardSpaceTestBase):
         df = pd.DataFrame(
             {
                 "reward": np.random.normal(0, 1, n),
+                "reward_economic": np.random.normal(0, 1, n),
                 "reward_idle": np.zeros(n),
                 "reward_hold": np.random.normal(-0.15, 0.05, n),
                 "reward_exit": np.random.normal(0.3, 0.1, n),
@@ -1515,20 +1484,20 @@ class TestPBRS(RewardSpaceTestBase):
             report_path.exists(), "Report file missing for non-canonical mode-only reason test"
         )
         content = report_path.read_text(encoding="utf-8")
-        assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=False
-        )
+        self.assertIn("Ineligible configuration", content)
         self.assertIn("exit_potential_mode='retain_previous'", content)
+        self.assertNotIn("additives=['entry', 'exit']", content)
 
-    # Owns invariant: pbrs-absence-shift-placeholder-118
-    def test_pbrs_absence_and_distribution_shift_placeholder(self):
-        """Report generation without PBRS columns triggers absence + shift placeholder."""
+    # Owns invariant: pbrs-unverified-shift-placeholder-118
+    def test_pbrs_unverified_without_correction_and_shift_placeholder(self):
+        """Missing termwise correction is unverified while distribution shift stays explicit."""
 
         n = 90
         rng = np.random.default_rng(SEEDS.CANONICAL_SWEEP)
         df = pd.DataFrame(
             {
                 "reward": rng.normal(0.05, 0.02, n),
+                "reward_economic": rng.normal(0.05, 0.02, n),
                 "reward_idle": np.concatenate(
                     [
                         rng.normal(-0.01, 0.003, n // 2),
@@ -1543,10 +1512,19 @@ class TestPBRS(RewardSpaceTestBase):
                 "position": rng.choice([0.0, 0.5, 1.0], n),
                 "action": rng.integers(0, 3, n),
                 "reward_invalid": np.zeros(n),
+                "reward_shaping": np.zeros(n),
+                "reward_entry_additive": np.zeros(n),
+                "reward_exit_additive": np.zeros(n),
                 "duration_ratio": rng.uniform(0.2, 1.0, n),
                 "idle_ratio": rng.uniform(0.0, 0.8, n),
             }
         )
+        df.attrs["reward_params"] = {
+            "exit_potential_mode": "canonical",
+            "hold_potential_enabled": True,
+            "entry_additive_enabled": False,
+            "exit_additive_enabled": False,
+        }
         out_dir = self.output_path / "pbrs_absence_and_shift_placeholder"
         original_compute_summary_stats = reward_space_analysis._compute_summary_stats
 
@@ -1585,7 +1563,8 @@ class TestPBRS(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Report file missing for PBRS absence test")
         content = report_path.read_text(encoding="utf-8")
-        self.assertIn("_PBRS components not present in this analysis._", content)
+        self.assertIn("Unverified", content)
+        self.assertIn("raw shaping sum is not a classifier", content)
         self.assertIn("_Not performed (no real episodes provided)._", content)
 
     def test_get_max_idle_duration_candles_negative_or_zero_fallback(self):

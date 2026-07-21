@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report formatting focused tests moved from helpers/test_utilities.py.
 
-Owns invariant: report-abs-shaping-line-091 (integration category)
+Owns invariant: report-raw-shaping-diagnostic-091 (integration category)
 """
 
 import re
@@ -60,7 +60,9 @@ class TestReportFormatting(RewardSpaceTestBase):
         # Ensure required columns present (action required for summary stats)
         required_cols = [
             "action",
+            "reward_economic",
             "reward_invalid",
+            "reward_exit",
             "reward_shaping",
             "reward_entry_additive",
             "reward_exit_additive",
@@ -70,8 +72,12 @@ class TestReportFormatting(RewardSpaceTestBase):
         df = df.copy()
         for col in required_cols:
             if col not in df.columns:
-                if col == "action":
-                    df[col] = 0.0
+                if col == "reward_economic":
+                    df[col] = (
+                        df.get("reward", 0.0)
+                        - df.get("reward_invalid", 0.0)
+                        - df.get("reward_shaping", 0.0)
+                    )
                 else:
                     df[col] = 0.0
         write_complete_statistical_analysis(
@@ -90,8 +96,8 @@ class TestReportFormatting(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         return report_path.read_text(encoding="utf-8")
 
-    def test_abs_shaping_line_present_and_constant(self):
-        """Abs Σ Shaping Reward line present, formatted, uses constant not literal."""
+    def test_raw_shaping_line_is_explicitly_descriptive(self):
+        """The raw shaping sum is formatted as a diagnostic, never an invariance gate."""
         df = pd.DataFrame(
             {
                 "reward_shaping": [TOLERANCE.IDENTITY_STRICT, -TOLERANCE.IDENTITY_STRICT],
@@ -101,9 +107,12 @@ class TestReportFormatting(RewardSpaceTestBase):
         )
         total_shaping = df["reward_shaping"].sum()
         self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        lines = [f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |"]
+        lines = [f"| Abs Raw Σ Shaping (not a classifier) | {abs(total_shaping):.6e} |"]
         content = "\n".join(lines)
-        m = re.search("\\| Abs Σ Shaping Reward \\| ([0-9]+\\.[0-9]{6}e[+-][0-9]{2}) \\|", content)
+        m = re.search(
+            "\\| Abs Raw Σ Shaping \\(not a classifier\\) \\| ([0-9]+\\.[0-9]{6}e[+-][0-9]{2}) \\|",
+            content,
+        )
         self.assertIsNotNone(m, "Abs Σ Shaping Reward line missing or misformatted")
         val = float(m.group(1)) if m else None
         if val is not None:

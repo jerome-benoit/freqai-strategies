@@ -1192,16 +1192,16 @@ def assert_pbrs_invariance_report_classification(
     Args:
         test_case: Test case instance with assertion methods
         content: Report content string to validate
-        expected_status: Expected classification: "Canonical",
-                        "Canonical (with warning)", or "Non-canonical"
+        expected_status: Expected classification such as "Canonical verified",
+                        "Canonical contract violation", or "Ineligible configuration"
         expect_additives: Whether additive components should be mentioned
 
     Example:
         assert_pbrs_invariance_report_classification(
-            self, report_content, "Canonical", expect_additives=False
+            self, report_content, "Canonical verified", expect_additives=False
         )
         assert_pbrs_invariance_report_classification(
-            self, report_content, "Non-canonical", expect_additives=True
+            self, report_content, "Ineligible configuration", expect_additives=True
         )
     """
     test_case.assertIn(
