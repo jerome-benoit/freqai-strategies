@@ -22,17 +22,9 @@ from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
-from LabelTransformer import (
-    COMBINED_AGGREGATIONS,
-    FILL_METHODS,
-    SMOOTHING_METHODS,
-    WEIGHT_STRATEGIES,
-    get_label_column_config,
-)
 from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
-
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
@@ -61,6 +53,58 @@ from Utils import (
     get_label_weighting_config,
     get_zl_ma_fn,
     is_finite_number,
+    label_known_at_lookahead_column_name,
+    label_weight_column_name,
+    migrate_config,
+    nan_average,
+    non_zero_diff,
+    optuna_load_best_params,
+    get_smoothing_kernel_half_width,
+    price_retracement_percent,
+    safe_divide,
+    smooth,
+    top_log_return,
+    validate_range,
+    vwapb,
+    zlema,
+)
+from LabelTransformer import (
+    COMBINED_AGGREGATIONS,
+    FILL_METHODS,
+    SMOOTHING_METHODS,
+    SMOOTHING_MODES,
+    WEIGHT_STRATEGIES,
+    get_label_column_config,
+)
+from Utils import (
+    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
+    EXTREMA_COLUMN,
+    EXTREMA_DIRECTION_COLUMN,
+    EXTREMA_DIRECTION_SMOOTHED_COLUMN,
+    EXTREMA_WEIGHT_COLUMN,
+    EXTREMA_WEIGHT_SMOOTHED_COLUMN,
+    LABEL_COLUMNS,
+    TRADE_PRICE_TARGETS,
+    _OPTUNA_NAMESPACES,
+    OptunaNamespace,
+    alligator,
+    bottom_log_return,
+    calculate_quantile,
+    compose_label_lookahead,
+    compute_label_weights,
+    ensure_datetime_series,
+    ewo,
+    format_dict,
+    format_number,
+    generate_label_data,
+    get_callable_sha256,
+    get_causal_mode,
+    get_distance,
+    get_label_defaults,
+    get_label_horizon_candles,
+    get_label_smoothing_config,
+    get_label_weighting_config,
+    get_zl_ma_fn,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
     migrate_config,
@@ -1028,6 +1072,14 @@ class QuickAdapterV3(IStrategy):
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
+            if (
+                get_causal_mode(self.freqai_info.get("feature_parameters", {}), logger)
+                and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
+            ):
+                raise ValueError(
+                    "label_smoothing.mode='wrap' is incompatible with "
+                    "feature_parameters.causal_mode=true"
+                )
 
             dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
             if is_weighting_active:
@@ -1048,8 +1100,8 @@ class QuickAdapterV3(IStrategy):
                     col_smoothing_config, series_length=series_length
                 )
                 if kernel_half_width > 0:
-                    dataframe[known_at_lookahead_column] = (
-                        dataframe[known_at_lookahead_column] + kernel_half_width
+                    dataframe[known_at_lookahead_column] = compose_label_lookahead(
+                        dataframe[known_at_lookahead_column], kernel_half_width
                     )
 
             if label_col == EXTREMA_COLUMN:
