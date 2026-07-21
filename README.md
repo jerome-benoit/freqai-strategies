@@ -146,13 +146,6 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.min_resource                            | 3                             | int >= 1                                                                                                                                                                                                     | Minimum resource per [HyperbandPruner](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.pruners.HyperbandPruner.html) rung.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | freqai.optuna_hyperopt.seed                                    | 1                             | int >= 0                                                                                                                                                                                                     | HPO RNG seed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
-> Dynamic label HPO is causal: it uses OHLCV only through the current FreqAI
-> prediction time. In backtest and hyperopt the label study is reset on each
-> optimization and best label parameters are not persisted; the first
-> optimization starts from the configured label parameters (or their defaults)
-> and later ones warm-start from the run's previous best. Live and dry-run modes
-> persist and reuse them.
-
 ## ReforceXY
 
 ### Quick start
