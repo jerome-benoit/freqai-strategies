@@ -189,6 +189,21 @@ The contract currently requires dry/live mode, spot trading, unlimited stake,
 and `add_state_info=true`. It fails fast in FreqAI backtesting because that API
 does not expose the required state there.
 
+Model selection uses only the first chronological part of FreqAI's test block:
+Optuna pruning, hyperparameter choice, and best-checkpoint selection all share
+that validation partition. The remaining `validation_holdout_fraction` is evaluated once
+after the checkpoint is fixed and is never fed back into selection. Optuna
+studies are isolated by pair and retraining window, and every trial uses the
+same model seed. Robustness over multiple training seeds remains an external
+walk-forward acceptance gate; the holdout must not be reused to choose a seed.
+With the template values (`train_period_days=90`, `test_size=0.333`, and
+`validation_holdout_fraction=0.5`), approximately 60 days feed model updates,
+15 days feed selection, and 15 days form the one-shot holdout. Therefore a
+nominal 90-day window is not 90 days of independent training observations, and
+`train_cycles` only repeats the same update block. The template disables feature
+noise so the fixed model seed is meaningful. A study's `n_trials` is a total
+per-window budget, including trials already stored for that same window.
+
 ## Common workflows
 
 **List running compose services and the containers they created:**
