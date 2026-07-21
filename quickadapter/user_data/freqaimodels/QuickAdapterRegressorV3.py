@@ -2739,13 +2739,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         pair: str,
     ) -> pd.DataFrame:
-        """Return pair OHLCV bounded to the prediction time being simulated.
+        """Return pair OHLCV bounded to the current FreqAI prediction time.
 
         In backtests, FreqAI exposes the preceding prediction window through
-        ``historic_predictions`` and the exact current row through
-        ``dk.full_df``. Live modes use the latest DataProvider candle. This
-        explicit backtest bound is required because DataProvider otherwise
-        exposes the complete historical timerange.
+        ``historic_predictions`` and the current prediction row through
+        ``dk.full_df``; the current prediction time is the first ``dk.full_df``
+        timestamp beyond the last recorded prediction. Live and dry-run modes
+        use the latest DataProvider candle. This explicit backtest bound is
+        required because DataProvider otherwise exposes the complete historical
+        timerange.
         """
         pair_dataframe = self.data_provider.get_pair_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
@@ -2756,17 +2758,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         history_dates = ensure_datetime_series(
             self.dd.historic_predictions[pair]["date"]
         )
-        pair_dates = ensure_datetime_series(pair_dataframe["date"])
-        full_dates = ensure_datetime_series(dk.full_df["date"])
-        current_dates = full_dates.loc[full_dates > history_dates.iloc[-1]]
-        if current_dates.empty:
+        if history_dates.empty:
             logger.warning(
-                "[%s] Label HPO skipped: current backtest timestamp is unavailable",
+                "[%s] Label HPO skipped: no prior predictions to bound the current FreqAI prediction time",
                 pair,
             )
             return pair_dataframe.iloc[:0].copy()
 
-        return pair_dataframe.loc[pair_dates <= current_dates.iloc[0]].copy()
+        pair_dates = ensure_datetime_series(pair_dataframe["date"])
+        full_dates = ensure_datetime_series(dk.full_df["date"])
+        current_dates = full_dates.loc[full_dates > history_dates.max()]
+        if current_dates.empty:
+            logger.warning(
+                "[%s] Label HPO skipped: current FreqAI prediction time is unavailable",
+                pair,
+            )
+            return pair_dataframe.iloc[:0].copy()
+
+        return pair_dataframe.loc[pair_dates <= current_dates.min()].copy()
 
     def _optimize_labels_as_of_prediction_time(
         self,
@@ -4487,6 +4496,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return None
 
+        # Non-live label HPO is point-in-time: reset the study every callback
+        # (this supersedes an explicit ``continuous=false`` for the label
+        # namespace) and never persist best params. Warm start still seeds the
+        # fresh study from the previous callback's in-memory best via
+        # ``optuna_enqueue_previous_best_params`` (configured params on the first
+        # optimization), which stays causal since those derive from earlier data.
         continuous = self._optuna_config.get("continuous") or (
             namespace == _OPTUNA_NAMESPACES.label and not self.live
         )
