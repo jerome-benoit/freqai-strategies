@@ -2327,33 +2327,6 @@ def _(value: str, ctx: _FormatContext, depth: int) -> str:
     return escaped
 
 
-def _format_collection(
-    value: list | tuple | set,
-    ctx: _FormatContext,
-    depth: int,
-    brackets: tuple[str, str],
-    empty: str,
-    trailing_comma: bool = False,
-) -> str:
-    if not value:
-        return empty
-    obj_id = id(value)
-    if obj_id in ctx.seen:
-        return f"{brackets[0]}<circular>{brackets[1]}"
-    if depth >= _MAX_DEPTH:
-        return f"{brackets[0]}...{brackets[1]}"
-    ctx.seen.add(obj_id)
-    items_iter = sorted(value, key=str) if isinstance(value, set) else value
-    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
-    if len(value) > _MAX_ITEMS:
-        items.append(f"...+{len(value) - _MAX_ITEMS}")
-    content = ", ".join(items)
-    if trailing_comma and len(value) == 1 and len(items) == 1:
-        content += ","
-    ctx.seen.discard(obj_id)
-    return f"{brackets[0]}{content}{brackets[1]}"
-
-
 @_format_value.register(list)
 def _(value: list, ctx: _FormatContext, depth: int) -> str:
     return _format_collection(value, ctx, depth, ("[", "]"), "[]")
@@ -2393,6 +2366,33 @@ def _(value: dict, ctx: _FormatContext, depth: int) -> str:
 @_format_value.register(np.ndarray)
 def _(value: np.ndarray, ctx: _FormatContext, depth: int) -> str:
     return f"array{value.shape}"
+
+
+def _format_collection(
+    value: list | tuple | set,
+    ctx: _FormatContext,
+    depth: int,
+    brackets: tuple[str, str],
+    empty: str,
+    trailing_comma: bool = False,
+) -> str:
+    if not value:
+        return empty
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return f"{brackets[0]}<circular>{brackets[1]}"
+    if depth >= _MAX_DEPTH:
+        return f"{brackets[0]}...{brackets[1]}"
+    ctx.seen.add(obj_id)
+    items_iter = sorted(value, key=str) if isinstance(value, set) else value
+    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    content = ", ".join(items)
+    if trailing_comma and len(value) == 1 and len(items) == 1:
+        content += ","
+    ctx.seen.discard(obj_id)
+    return f"{brackets[0]}{content}{brackets[1]}"
 
 
 def format_dict(
@@ -3477,6 +3477,63 @@ def get_ngboost_dist(dist_name: str) -> type:
     return dist_map[dist_name]
 
 
+def get_refit_model_training_parameters(
+    regressor: Regressor,
+    model: Any,
+    model_training_parameters: dict[str, Any],
+    init_model: Any = None,
+) -> dict[str, Any]:
+    """Return parameters that preserve the selected model capacity for refit."""
+    refit_parameters = copy.deepcopy(model_training_parameters)
+
+    if regressor == REGRESSORS[0]:  # "xgboost"
+        fitted_iterations = int(model.get_booster().num_boosted_rounds())
+        initial_iterations = (
+            int(init_model.get_booster().num_boosted_rounds())
+            if init_model is not None
+            else 0
+        )
+        parameter_name = "n_estimators"
+    elif regressor == REGRESSORS[1]:  # "lightgbm"
+        best_iteration = getattr(model, "best_iteration_", 0) or 0
+        fitted_iterations = int(
+            best_iteration if best_iteration > 0 else model.n_estimators_
+        )
+        initial_iterations = (
+            int(init_model.booster_.current_iteration())
+            if init_model is not None
+            else 0
+        )
+        parameter_name = "n_estimators"
+    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+        fitted_iterations = int(model.n_iter_)
+        initial_iterations = 0
+        parameter_name = "max_iter"
+        refit_parameters["early_stopping"] = False
+    elif regressor == REGRESSORS[3]:  # "ngboost"
+        fitted_iterations = len(model.base_models)
+        initial_iterations = 0
+        parameter_name = "n_estimators"
+    elif regressor == REGRESSORS[4]:  # "catboost"
+        fitted_iterations = int(model.tree_count_)
+        initial_iterations = 0
+        parameter_name = "iterations"
+    else:
+        raise ValueError(
+            f"Invalid regressor value {regressor!r}: "
+            f"supported values are {', '.join(REGRESSORS)}"
+        )
+
+    refit_iterations = fitted_iterations - initial_iterations
+    if refit_iterations < 1:
+        raise RuntimeError(
+            f"Invalid {regressor} refit iteration count {refit_iterations!r} "
+            f"(fitted={fitted_iterations!r}, initial={initial_iterations!r})"
+        )
+    refit_parameters[parameter_name] = refit_iterations
+    return refit_parameters
+
+
 def fit_regressor(
     regressor: Regressor,
     X: pd.DataFrame,
@@ -3600,7 +3657,7 @@ def fit_regressor(
 
         model_training_parameters.setdefault("random_state", 1)
         model_training_parameters.setdefault("loss", "squared_error")
-        model_training_parameters.pop("early_stopping", None)
+        early_stopping = model_training_parameters.pop("early_stopping", True)
         model_training_parameters.pop("n_jobs", None)
         model_training_parameters.pop("l2_regularization_zero", None)
 
@@ -3635,7 +3692,7 @@ def fit_regressor(
             sample_weight_val = eval_weights[0]
 
         model = HistGradientBoostingRegressor(
-            early_stopping=True,
+            early_stopping=early_stopping,
             scoring="neg_root_mean_squared_error",
             **model_training_parameters,
         )

@@ -213,7 +213,7 @@ class QuickAdapterV3(IStrategy):
             "main_plot": {},
             "subplots": {
                 "accuracy": {
-                    "hp_rmse": {"color": "violet", "type": "line"},
+                    "holdout_rmse": {"color": "violet", "type": "line"},
                 },
                 "extrema": {
                     f"{EXTREMA_COLUMN}_maxima_threshold": {
