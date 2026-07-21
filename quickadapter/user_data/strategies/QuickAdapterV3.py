@@ -26,6 +26,7 @@ from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
     SMOOTHING_METHODS,
+    SMOOTHING_MODES,
     WEIGHT_STRATEGIES,
     get_label_column_config,
 )
@@ -47,6 +48,7 @@ from Utils import (
     alligator,
     bottom_log_return,
     calculate_quantile,
+    compose_label_lookahead,
     compute_label_weights,
     ensure_datetime_series,
     ewo,
@@ -54,6 +56,7 @@ from Utils import (
     format_number,
     generate_label_data,
     get_callable_sha256,
+    get_causal_mode,
     get_distance,
     get_label_defaults,
     get_label_horizon_candles,
@@ -1032,6 +1035,14 @@ class QuickAdapterV3(IStrategy):
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
+            if (
+                get_causal_mode(self.freqai_info.get("feature_parameters", {}), logger)
+                and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
+            ):
+                raise ValueError(
+                    "label_smoothing.mode='wrap' is incompatible with "
+                    "feature_parameters.causal_mode=true"
+                )
 
             dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
             if is_weighting_active:
@@ -1052,8 +1063,8 @@ class QuickAdapterV3(IStrategy):
                     col_smoothing_config, series_length=series_length
                 )
                 if kernel_half_width > 0:
-                    dataframe[known_at_lookahead_column] = (
-                        dataframe[known_at_lookahead_column] + kernel_half_width
+                    dataframe[known_at_lookahead_column] = compose_label_lookahead(
+                        dataframe[known_at_lookahead_column], kernel_half_width
                     )
 
             if label_col == EXTREMA_COLUMN:

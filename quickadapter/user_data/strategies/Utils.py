@@ -706,50 +706,34 @@ def _generate_extrema_label(
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
-    label_horizon_candles = get_label_horizon_candles(params, logger)
-
-    (
-        pivots_indices,
-        _,
-        pivots_directions,
-        pivots_amplitudes,
-        pivots_amplitude_threshold_ratios,
-        pivots_volume_rates,
-        pivots_speeds,
-        pivots_efficiency_ratios,
-        pivots_volume_weighted_efficiency_ratios,
-    ) = zigzag(
+    result = _zigzag_with_provenance(
         dataframe,
         natr_period=natr_period,
         natr_multiplier=natr_multiplier,
     )
 
     series = pd.Series(0.0, index=dataframe.index)
-    if pivots_indices:
-        series.loc[pivots_indices] = pivots_directions
+    if result.indices:
+        series.loc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
-        "amplitude": pivots_amplitudes,
-        "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
-        "volume_rate": pivots_volume_rates,
-        "speed": pivots_speeds,
-        "efficiency_ratio": pivots_efficiency_ratios,
-        "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
+        "amplitude": result.amplitudes,
+        "amplitude_threshold_ratio": result.amplitude_threshold_ratios,
+        "volume_rate": result.volume_rates,
+        "speed": result.speeds,
+        "efficiency_ratio": result.efficiency_ratios,
+        "volume_weighted_efficiency_ratio": result.volume_weighted_efficiency_ratios,
     }
 
-    # Per-row label lookahead (in candles), NOT an absolute position:
-    # freqtrade's ``dk.slice_dataframe`` runs AFTER ``set_freqai_targets``,
-    # so any pre-slice absolute position would no longer match the causal
-    # guard's local ``np.arange(len(unfiltered_df))`` coordinate system.
     known_at_lookahead = pd.Series(
-        int(label_horizon_candles),
+        result.known_at_positions - np.arange(len(dataframe), dtype=np.int64),
         index=dataframe.index,
         dtype=np.int64,
     )
 
     return LabelData(
         series=series,
-        indices=pivots_indices,
+        indices=result.indices,
         metrics=metrics,
         known_at_lookahead=known_at_lookahead,
     )
@@ -841,6 +825,30 @@ def get_smoothing_kernel_half_width(
     if method in SMOOTHING_KERNELS:
         return effective_window - 1
     return effective_window // 2
+
+
+def compose_label_lookahead(
+    known_at_lookahead: pd.Series,
+    kernel_half_width: int,
+) -> pd.Series:
+    """Compose row-wise label availability with a centered smoothing kernel."""
+    if kernel_half_width <= 0 or known_at_lookahead.empty:
+        return known_at_lookahead.copy()
+    positions = np.arange(len(known_at_lookahead), dtype=np.int64)
+    known_at_positions = pd.Series(
+        positions + known_at_lookahead.to_numpy(dtype=np.int64),
+        index=known_at_lookahead.index,
+    )
+    smoothed_known_at_positions = known_at_positions.rolling(
+        window=2 * kernel_half_width + 1,
+        center=True,
+        min_periods=1,
+    ).max()
+    return pd.Series(
+        smoothed_known_at_positions.to_numpy(dtype=np.int64) - positions,
+        index=known_at_lookahead.index,
+        dtype=np.int64,
+    )
 
 
 TradePriceTarget = Literal[
@@ -2789,14 +2797,7 @@ class TrendDirection(IntEnum):
     DOWN = -1
 
 
-def zigzag(
-    df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
-    normalize: bool = False,
-    *,
-    logger: Logger | None = None,
-) -> tuple[
+ZigzagTuple = tuple[
     list[int],
     list[float],
     list[TrendDirection],
@@ -2806,22 +2807,66 @@ def zigzag(
     list[float],
     list[float],
     list[float],
-]:
-    n = len(df)
-    if df.empty or n < natr_period:
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ZigzagResult:
+    indices: list[int]
+    values_log: list[float]
+    directions: list[TrendDirection]
+    amplitudes: list[float]
+    amplitude_threshold_ratios: list[float]
+    volume_rates: list[float]
+    speeds: list[float]
+    efficiency_ratios: list[float]
+    volume_weighted_efficiency_ratios: list[float]
+    known_at_positions: NDArray[np.integer]
+
+    def as_tuple(self) -> ZigzagTuple:
+        """Return the stable public tuple representation."""
         return (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
+            self.indices,
+            self.values_log,
+            self.directions,
+            self.amplitudes,
+            self.amplitude_threshold_ratios,
+            self.volume_rates,
+            self.speeds,
+            self.efficiency_ratios,
+            self.volume_weighted_efficiency_ratios,
         )
 
-    natr_values = (ta.NATR(df, timeperiod=natr_period).bfill() / 100.0).to_numpy()
+
+def _zigzag_with_provenance(
+    df: pd.DataFrame,
+    natr_period: int = 14,
+    natr_multiplier: float = 9.0,
+    normalize: bool = False,
+    *,
+    logger: Logger | None = None,
+) -> ZigzagResult:
+    n = len(df)
+    if df.empty or n < natr_period:
+        return ZigzagResult(
+            indices=[],
+            values_log=[],
+            directions=[],
+            amplitudes=[],
+            amplitude_threshold_ratios=[],
+            volume_rates=[],
+            speeds=[],
+            efficiency_ratios=[],
+            volume_weighted_efficiency_ratios=[],
+            known_at_positions=np.full(n, n, dtype=np.int64),
+        )
+
+    natr = ta.NATR(df, timeperiod=natr_period) / 100.0
+    finite_natr_positions = np.flatnonzero(np.isfinite(natr.to_numpy(dtype=float)))
+    natr_warmup_end_pos = (
+        int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
+    )
+    natr_values = natr.bfill().to_numpy()
 
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
@@ -2862,6 +2907,8 @@ def zigzag(
     pivots_speeds: list[float] = []
     pivots_efficiency_ratios: list[float] = []
     pivots_volume_weighted_efficiency_ratios: list[float] = []
+    known_at_positions: NDArray[np.integer] = np.full(n, n, dtype=np.int64)
+    resolved_through_pos = -1
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -3068,8 +3115,19 @@ def zigzag(
 
         return vw_net_move / vw_path_length
 
-    def add_pivot(pos: int, value_log: float, direction: TrendDirection):
-        nonlocal last_pivot_pos
+    def add_pivot(
+        pos: int,
+        value_log: float,
+        direction: TrendDirection,
+        confirmed_at_pos: int,
+        resolve_through_pos: int,
+    ) -> None:
+        nonlocal last_pivot_pos, resolved_through_pos
+        confirmed_at_pos = max(confirmed_at_pos, natr_warmup_end_pos)
+        known_at_positions[resolved_through_pos + 1 : resolve_through_pos + 1] = (
+            confirmed_at_pos
+        )
+        resolved_through_pos = max(resolved_through_pos, resolve_through_pos)
         if pivots_indices and indices[pos] == pivots_indices[-1]:
             return
 
@@ -3217,33 +3275,58 @@ def zigzag(
         )
         if is_initial_high_move_significant and is_initial_low_move_significant:
             if initial_move_from_high > initial_move_from_low:
-                add_pivot(initial_high_pos, initial_high_log, TrendDirection.UP)
+                add_pivot(
+                    initial_high_pos,
+                    initial_high_log,
+                    TrendDirection.UP,
+                    i,
+                    initial_high_pos,
+                )
                 state = TrendDirection.DOWN
                 break
             else:
-                add_pivot(initial_low_pos, initial_low_log, TrendDirection.DOWN)
+                add_pivot(
+                    initial_low_pos,
+                    initial_low_log,
+                    TrendDirection.DOWN,
+                    i,
+                    initial_low_pos,
+                )
                 state = TrendDirection.UP
                 break
         else:
             if is_initial_high_move_significant:
-                add_pivot(initial_high_pos, initial_high_log, TrendDirection.UP)
+                add_pivot(
+                    initial_high_pos,
+                    initial_high_log,
+                    TrendDirection.UP,
+                    i,
+                    initial_high_pos,
+                )
                 state = TrendDirection.DOWN
                 break
             elif is_initial_low_move_significant:
-                add_pivot(initial_low_pos, initial_low_log, TrendDirection.DOWN)
+                add_pivot(
+                    initial_low_pos,
+                    initial_low_log,
+                    TrendDirection.DOWN,
+                    i,
+                    initial_low_pos,
+                )
                 state = TrendDirection.UP
                 break
     else:
-        return (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
+        return ZigzagResult(
+            indices=[],
+            values_log=[],
+            directions=[],
+            amplitudes=[],
+            amplitude_threshold_ratios=[],
+            volume_rates=[],
+            speeds=[],
+            efficiency_ratios=[],
+            volume_weighted_efficiency_ratios=[],
+            known_at_positions=known_at_positions,
         )
 
     for i in range(last_pivot_pos + 1, n):
@@ -3261,6 +3344,8 @@ def zigzag(
                     candidate_pivot_pos,
                     highs_log[candidate_pivot_pos],
                     TrendDirection.UP,
+                    i,
+                    i,
                 )
                 state = TrendDirection.DOWN
 
@@ -3278,32 +3363,49 @@ def zigzag(
                     candidate_pivot_pos,
                     lows_log[candidate_pivot_pos],
                     TrendDirection.DOWN,
+                    i,
+                    i,
                 )
                 state = TrendDirection.UP
 
-    if normalize:
-        return (
-            pivots_indices,
-            pivots_values_log,
-            pivots_directions,
-            minmax_scale(pivots_amplitudes),
-            minmax_scale(pivots_amplitude_threshold_ratios),
-            minmax_scale(pivots_volume_rates),
-            minmax_scale(pivots_speeds),
-            pivots_efficiency_ratios,
-            pivots_volume_weighted_efficiency_ratios,
-        )
-    return (
-        pivots_indices,
-        pivots_values_log,
-        pivots_directions,
-        pivots_amplitudes,
-        pivots_amplitude_threshold_ratios,
-        pivots_volume_rates,
-        pivots_speeds,
-        pivots_efficiency_ratios,
-        pivots_volume_weighted_efficiency_ratios,
+    return ZigzagResult(
+        indices=pivots_indices,
+        values_log=pivots_values_log,
+        directions=pivots_directions,
+        amplitudes=(
+            minmax_scale(pivots_amplitudes) if normalize else pivots_amplitudes
+        ),
+        amplitude_threshold_ratios=(
+            minmax_scale(pivots_amplitude_threshold_ratios)
+            if normalize
+            else pivots_amplitude_threshold_ratios
+        ),
+        volume_rates=(
+            minmax_scale(pivots_volume_rates) if normalize else pivots_volume_rates
+        ),
+        speeds=minmax_scale(pivots_speeds) if normalize else pivots_speeds,
+        efficiency_ratios=pivots_efficiency_ratios,
+        volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
+        known_at_positions=known_at_positions,
     )
+
+
+def zigzag(
+    df: pd.DataFrame,
+    natr_period: int = 14,
+    natr_multiplier: float = 9.0,
+    normalize: bool = False,
+    *,
+    logger: Logger | None = None,
+) -> ZigzagTuple:
+    """Return Zigzag outputs while preserving the existing public API."""
+    return _zigzag_with_provenance(
+        df,
+        natr_period=natr_period,
+        natr_multiplier=natr_multiplier,
+        normalize=normalize,
+        logger=logger,
+    ).as_tuple()
 
 
 Regressor = Literal[
