@@ -32,6 +32,7 @@ import skimage
 import sklearn
 from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
+from freqtrade.enums import TRADE_MODES
 from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -1433,14 +1434,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
+        trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_label_values[pair] = [
                 -1
             ] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
             self._optuna_hp_params[pair] = (
-                self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.hp) or {}
-            )
+                self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.hp)
+                if trade_mode
+                else None
+            ) or {}
             configured_label_params = {
                 "label_period_candles": self.ft_params.get(
                     "label_period_candles",
@@ -1455,7 +1459,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             }
             self._optuna_label_params[pair] = (
                 self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.label)
-                if self.live
+                if trade_mode
                 else None
             ) or configured_label_params
             self.set_optuna_label_candle(pair)
@@ -4225,7 +4229,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.warning(
                 f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params found has invalid optimization target value(s)"
             )
-        if namespace != _OPTUNA_NAMESPACES.label or self.live:
+        if self.live:
             self.optuna_save_best_params(pair, namespace)
         return study
 
@@ -4496,15 +4500,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return None
 
-        # Non-live label HPO is point-in-time: reset the study every callback
-        # (this supersedes an explicit ``continuous=false`` for the label
-        # namespace) and never persist best params. Warm start still seeds the
-        # fresh study from the previous callback's in-memory best via
-        # ``optuna_enqueue_previous_best_params`` (configured params on the first
-        # optimization), which stays causal since those derive from earlier data.
-        continuous = self._optuna_config.get("continuous") or (
-            namespace == _OPTUNA_NAMESPACES.label and not self.live
-        )
+        # Non-live HPO is point-in-time: reset the study every optimization and
+        # never persist best params. Warm start still seeds the fresh study from
+        # the previous cutoff's in-memory best, which stays causal since it was
+        # produced from earlier data in the same run.
+        continuous = self._optuna_config.get("continuous") or not self.live
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
                 pair, namespace, study_name, storage
