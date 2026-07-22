@@ -3546,6 +3546,7 @@ def fit_regressor(
     callbacks: list[RegressorCallback] | None = None,
     model_path: Path | None = None,
     trial: optuna.trial.Trial | None = None,
+    vary_model_seed_by_trial: bool = True,
 ) -> Any:
     fit_callbacks = list(callbacks) if callbacks else []
 
@@ -3584,9 +3585,8 @@ def fit_regressor(
             )
 
         if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
+            if vary_model_seed_by_trial:
+                model_training_parameters["random_state"] += trial.number
             if has_eval_set:
                 fit_callbacks.append(
                     optuna.integration.XGBoostPruningCallback(
@@ -3631,9 +3631,8 @@ def fit_regressor(
             )
 
         if trial is not None:
-            model_training_parameters["seed"] = (
-                model_training_parameters["seed"] + trial.number
-            )
+            if vary_model_seed_by_trial:
+                model_training_parameters["seed"] += trial.number
             if has_eval_set:
                 fit_callbacks.append(
                     optuna.integration.LightGBMPruningCallback(
@@ -3676,10 +3675,8 @@ def fit_regressor(
         if "verbose" not in model_training_parameters and verbosity is not None:
             model_training_parameters["verbose"] = verbosity
 
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
+        if trial is not None and vary_model_seed_by_trial:
+            model_training_parameters["random_state"] += trial.number
 
         X_val = None
         y_val = None
@@ -3724,10 +3721,8 @@ def fit_regressor(
         else:
             model_training_parameters.pop("early_stopping_rounds", None)
 
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
+        if trial is not None and vary_model_seed_by_trial:
+            model_training_parameters["random_state"] += trial.number
 
         dist = model_training_parameters.pop("dist", "lognormal")
 
@@ -3747,6 +3742,7 @@ def fit_regressor(
                 max_depth=model_training_parameters.pop("max_depth", None),
                 min_samples_split=model_training_parameters.pop("min_samples_split", 2),
                 min_samples_leaf=model_training_parameters.pop("min_samples_leaf", 1),
+                random_state=model_training_parameters["random_state"],
             ),
             **model_training_parameters,
         )
@@ -3804,10 +3800,8 @@ def fit_regressor(
         if "verbose" not in model_training_parameters and verbosity is not None:
             model_training_parameters["verbose"] = verbosity
 
-        if trial is not None:
-            model_training_parameters["random_seed"] = (
-                model_training_parameters["random_seed"] + trial.number
-            )
+        if trial is not None and vary_model_seed_by_trial:
+            model_training_parameters["random_seed"] += trial.number
 
         pruning_callback = None
         if trial is not None and has_eval_set and task_type != "GPU":
