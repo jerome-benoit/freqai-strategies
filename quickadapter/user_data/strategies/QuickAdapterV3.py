@@ -1007,17 +1007,19 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
-            # Absent column routes downstream to base-weights-only fallback.
-            is_weighting_active = (
+            is_weighting_configured = (
                 col_weighting_config["strategy"] != WEIGHT_STRATEGIES[0]  # "none"
-                and len(label_data.indices) > 0
             )
-            if causal_mode and is_weighting_active:
+            if causal_mode and is_weighting_configured:
                 raise ValueError(
                     "Active label weighting is incompatible with "
                     "feature_parameters.causal_mode=true because weight "
                     "availability is not tracked"
                 )
+            # Absent column routes downstream to base-weights-only fallback.
+            is_weighting_active = (
+                is_weighting_configured and len(label_data.indices) > 0
+            )
 
             dataframe[label_col] = label_data.series
 
