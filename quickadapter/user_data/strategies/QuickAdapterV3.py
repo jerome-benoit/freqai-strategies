@@ -1642,7 +1642,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         trade_partial_exit = QuickAdapterV3.can_take_profit(
-            trade, current_rate, trade_take_profit_price
+            trade, current_exit_rate, trade_take_profit_price
         )
         if not trade_partial_exit:
             self.throttle_callback(
@@ -1650,7 +1650,7 @@ class QuickAdapterV3(IStrategy):
                 current_time=current_time,
                 callback=lambda: logger.info(
                     f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
-                    f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
+                    f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_exit_rate)}"
                 ),
             )
         if trade_partial_exit:
