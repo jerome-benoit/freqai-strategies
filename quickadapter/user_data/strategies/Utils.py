@@ -831,7 +831,11 @@ def compose_label_lookahead(
     known_at_lookahead: pd.Series,
     kernel_half_width: int,
 ) -> pd.Series:
-    """Compose row-wise label availability with a centered smoothing kernel."""
+    """Compose row-wise label availability with a centered smoothing kernel.
+
+    Values within the current frame's right kernel boundary stay unavailable
+    until enough future rows exist to provide the complete smoothing window.
+    """
     if kernel_half_width <= 0 or known_at_lookahead.empty:
         return known_at_lookahead.copy()
     positions = np.arange(len(known_at_lookahead), dtype=np.int64)
@@ -844,6 +848,8 @@ def compose_label_lookahead(
         center=True,
         min_periods=1,
     ).max()
+    right_edge_start = max(0, len(known_at_lookahead) - kernel_half_width)
+    smoothed_known_at_positions.iloc[right_edge_start:] = len(known_at_lookahead)
     return pd.Series(
         smoothed_known_at_positions.to_numpy(dtype=np.int64) - positions,
         index=known_at_lookahead.index,
