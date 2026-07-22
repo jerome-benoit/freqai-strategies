@@ -187,6 +187,13 @@ protocol before changing their defaults:
    interval. Exact HPO replication requires sequential optimization; otherwise,
    record parallelism as a source of nondeterministic trial ordering.
 
+FreqAI's native backtest trains and predicts all model windows before replaying
+`fit_live_predictions()`. It can therefore evaluate parameters propagated to the
+strategy, but dynamic label HPO from that replay cannot alter later training
+windows in the same backtest. Evaluating that complete adaptive feedback loop
+requires an external chronological walk-forward runner or a forward dry-run; do
+not interpret a native backtest as measuring it.
+
 Include a fixed-label, fixed-model baseline trained on the complete causal window.
 When evaluating dynamic label HPO, compare it with the same model using fixed
 label parameters. Any no-ML rule or regularized linear baseline must use the same
@@ -201,14 +208,22 @@ exits, and exit reasons; `holdout_rmse`; net return; and drawdown. Report effect
 sample size only for weighting schemes that are actually active.
 
 Pre-register one primary economic metric, such as net logarithmic growth per
-day, plus separate acceptance margins for return and drawdown. For each candidate
-and metric, form an ordered series of paired differences across the common
-prediction intervals and estimate the corresponding confidence interval with a
-block bootstrap. When testing multiple candidates or metrics, define the family
-of hypotheses in advance and report Holm-adjusted p-values; do not present the
-individual intervals as simultaneous confidence intervals. Express the block
-length in prediction intervals and estimate it from serial dependence in each
-paired series.
+day, plus separate acceptance margins for return and drawdown. Orient every
+paired interval difference so positive values favor the candidate: candidate
+minus baseline for return, and baseline minus candidate for drawdown. For each
+metric margin `m`, use the arithmetic mean difference and test
+`H0: mean <= m` against `H1: mean > m` at family-wise alpha `0.05`.
+
+Use a circular moving-block bootstrap with overlapping blocks, block length
+`max(1, ceil(n^(1/3)))` prediction intervals, `10,000` replications, and a fixed
+seed recorded in the manifest; concatenate sampled blocks and truncate each
+replicate to `n` intervals. Report the mean difference, its standardized
+effect when the paired standard deviation is non-zero, and the one-sided 95%
+percentile lower confidence bound. For the p-value, bootstrap the centered series
+`d_i - mean(d)`, let `T_observed = mean(d) - m`, and report
+`(1 + count(T_bootstrap >= T_observed)) / 10,001`. Define the tested family in
+advance and apply Holm's correction to these one-sided p-values; individual
+bootstrap bounds are not simultaneous confidence bounds.
 
 A default may change only when every required margin test passes for its metric
 and candidate, under the pre-registered multiplicity rule, across the declared
