@@ -1554,6 +1554,13 @@ class QuickAdapterV3(IStrategy):
         history = QuickAdapterV3._get_trade_history(trade)
         trade_unrealized_pnl_history = history.get("unrealized_pnl", [])
         if (
+            QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY not in history
+            and trade_unrealized_pnl_history
+        ):
+            trade_unrealized_pnl_history = []
+            history["unrealized_pnl"] = trade_unrealized_pnl_history
+            trade.set_custom_data("history", history)
+        if (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
             != candle_date.isoformat()
         ):
