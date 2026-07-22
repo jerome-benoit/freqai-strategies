@@ -1642,7 +1642,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         trade_partial_exit = QuickAdapterV3.can_take_profit(
-            trade, current_rate, trade_take_profit_price
+            trade, current_exit_rate, trade_take_profit_price
         )
         if not trade_partial_exit:
             self.throttle_callback(
@@ -1650,26 +1650,32 @@ class QuickAdapterV3(IStrategy):
                 current_time=current_time,
                 callback=lambda: logger.info(
                     f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
-                    f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
+                    f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_exit_rate)}"
                 ),
             )
         if trade_partial_exit:
-            if min_stake is None:
-                min_stake = 0.0
-            if min_stake > trade.stake_amount:
-                return None
             trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][
                 1
             ]
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
-            remaining_stake_amount = trade.stake_amount - trade_partial_stake_amount
-            if remaining_stake_amount < min_stake:
-                initial_trade_partial_stake_amount = trade_partial_stake_amount
-                trade_partial_stake_amount = trade.stake_amount - min_stake
-                logger.info(
-                    f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
-                    f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} to {format_number(trade_partial_stake_amount)} to respect min_stake {format_number(min_stake)}"
+            if min_stake is not None and min_stake > 0:
+                current_position_value = trade.amount * current_exit_rate
+                if current_position_value <= min_stake:
+                    return None
+                remaining_position_value = current_position_value * (
+                    1 - trade_stake_percent
                 )
+                if remaining_position_value < min_stake:
+                    initial_trade_partial_stake_amount = trade_partial_stake_amount
+                    trade_partial_stake_amount = trade.stake_amount * (
+                        1 - min_stake / current_position_value
+                    )
+                    logger.info(
+                        f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
+                        f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} "
+                        f"to {format_number(trade_partial_stake_amount)} to preserve min_stake "
+                        f"{format_number(min_stake)} at exit rate {format_number(current_exit_rate)}"
+                    )
             return (
                 -trade_partial_stake_amount,
                 f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}",
