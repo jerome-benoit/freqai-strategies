@@ -4334,6 +4334,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
     def optuna_create_storage(self, pair: str) -> optuna.storages.BaseStorage:
+        if not self.live:
+            return optuna.storages.InMemoryStorage()
+
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
         storage_backend = self._optuna_config.get("storage")
