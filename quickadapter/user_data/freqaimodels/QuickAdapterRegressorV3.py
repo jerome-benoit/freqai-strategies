@@ -2704,6 +2704,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs
     ) -> Any:
         self._holdout_rmse[dk.pair] = np.inf
+        dk.data["extra_returns_per_train"]["holdout_rmse"] = np.inf
         X = data_dictionary.get("train_features")
         y = data_dictionary.get("train_labels")
         train_weights = data_dictionary.get("train_weights")
@@ -2749,6 +2750,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
                     ),
                     dk.data_path,
+                    init_model,
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
             )
@@ -2779,13 +2781,25 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             model_path=dk.data_path,
         )
         if X_test is not None and not X_test.empty:
+            holdout_predictions = pd.DataFrame(
+                model.predict(X_test),
+                columns=y_test.columns,
+                index=y_test.index,
+            )
+            holdout_labels, _, _ = dk.label_pipeline.inverse_transform(y_test.copy())
+            holdout_predictions, _, _ = dk.label_pipeline.inverse_transform(
+                holdout_predictions
+            )
             self._holdout_rmse[dk.pair] = float(
                 sklearn.metrics.root_mean_squared_error(
-                    y_test,
-                    model.predict(X_test),
+                    holdout_labels,
+                    holdout_predictions,
                     sample_weight=test_weights,
                 )
             )
+            dk.data["extra_returns_per_train"]["holdout_rmse"] = self._holdout_rmse[
+                dk.pair
+            ]
         if validation_size != 0:
             refit_model_training_parameters = get_refit_model_training_parameters(
                 self.regressor,
@@ -3030,8 +3044,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ).get("label_natr_multiplier")
         )
 
+        current_holdout_rmse = self._holdout_rmse.get(pair)
+        if not self.live:
+            holdout_series = dk.full_df.get("holdout_rmse")
+            history_dates = ensure_datetime_series(
+                self.dd.historic_predictions[pair]["date"]
+            )
+            full_dates = ensure_datetime_series(dk.full_df["date"])
+            current_dates = full_dates.loc[full_dates > history_dates.max()]
+            if holdout_series is not None and not current_dates.empty:
+                current_holdout_rmse = holdout_series.loc[current_dates.index[0]]
         holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(
-            self._holdout_rmse.get(pair)
+            current_holdout_rmse
         )
         dk.data["extra_returns_per_train"]["holdout_rmse"] = (
             holdout_rmse if holdout_rmse is not None else np.inf
@@ -5009,6 +5033,7 @@ def hp_objective(
     space_reduction: bool,
     space_fraction: float,
     model_path: Optional[Path] = None,
+    init_model: Any = None,
 ) -> float:
     study_model_parameters = get_optuna_study_model_parameters(
         trial,
@@ -5032,6 +5057,7 @@ def hp_objective(
         eval_set=eval_set,
         eval_weights=eval_weights,
         model_training_parameters=model_training_parameters,
+        init_model=init_model,
         model_path=model_path,
         trial=trial,
     )
