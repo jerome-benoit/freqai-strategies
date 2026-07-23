@@ -29,7 +29,7 @@ from LabelTransformer import (
     WEIGHT_STRATEGIES,
     get_label_column_config,
 )
-from pandas import DataFrame, Series, isna
+from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 
@@ -203,8 +203,8 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def is_trade_runmode(self) -> bool:
-        # Mirror the regressor's ``self.live`` gate (runmode in TRADE_MODES):
-        # persisted label params are reused only in live and dry-run.
+        # True in live and dry-run (runmode in TRADE_MODES), mirroring the
+        # regressor's ``self.live`` gate.
         return self.config.get("runmode") in TRADE_MODES
 
     @property
@@ -875,10 +875,10 @@ class QuickAdapterV3(IStrategy):
                 if is_finite_number(period) and int(period) > 0:
                     return int(period)
         period = self._label_params.get(pair, {}).get("label_period_candles")
+        if is_finite_number(period) and int(period) > 0:
+            return int(period)
         return int(
-            period
-            if period is not None
-            else self.freqai_info.get("feature_parameters", {}).get(
+            self.freqai_info.get("feature_parameters", {}).get(
                 "label_period_candles",
                 self._label_defaults[0],
             )
@@ -910,10 +910,10 @@ class QuickAdapterV3(IStrategy):
                 if is_finite_number(multiplier) and float(multiplier) > 0.0:
                     return float(multiplier)
         multiplier = self._label_params.get(pair, {}).get("label_natr_multiplier")
+        if is_finite_number(multiplier) and float(multiplier) > 0.0:
+            return float(multiplier)
         return float(
-            multiplier
-            if multiplier is not None
-            else self.freqai_info.get("feature_parameters", {}).get(
+            self.freqai_info.get("feature_parameters", {}).get(
                 "label_natr_multiplier", self._label_defaults[1]
             )
         )
@@ -1094,12 +1094,9 @@ class QuickAdapterV3(IStrategy):
             # per-row periods within one column is intentional).
             dataframe["natr_label_period_candles"] = np.nan
             fallback_period = self.get_label_period_candles(pair)
-            valid_periods = np.isfinite(label_period_candles_series) & (
-                label_period_candles_series >= 1
-            )
-            periods = label_period_candles_series.where(
-                valid_periods, fallback_period
-            ).astype(int)
+            numeric_periods = to_numeric(label_period_candles_series, errors="coerce")
+            valid_periods = np.isfinite(numeric_periods) & (numeric_periods >= 1)
+            periods = numeric_periods.where(valid_periods, fallback_period).astype(int)
             for period in periods.unique():
                 period_rows = periods == period
                 period_natr = ta.NATR(dataframe, timeperiod=int(period))
