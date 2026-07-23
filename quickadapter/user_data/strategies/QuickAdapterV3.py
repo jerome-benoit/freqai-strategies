@@ -460,6 +460,20 @@ class QuickAdapterV3(IStrategy):
             / self.freqai_info.get("identifier")
         )
         feature_parameters = self.freqai_info.get("feature_parameters", {})
+        if get_causal_mode(feature_parameters, logger):
+            label_smoothing = self.label_smoothing
+            for label_col in LABEL_COLUMNS:
+                col_smoothing_config = get_label_column_config(
+                    label_col, label_smoothing["default"], label_smoothing["columns"]
+                )
+                if col_smoothing_config["method"] in (
+                    SMOOTHING_METHODS[7],  # "savgol"
+                    SMOOTHING_METHODS[8],  # "gaussian_filter1d"
+                ) and col_smoothing_config["mode"] == SMOOTHING_MODES[3]:  # "wrap"
+                    raise ValueError(
+                        "label_smoothing.mode='wrap' is incompatible with "
+                        "feature_parameters.causal_mode=true"
+                    )
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
@@ -981,9 +995,6 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
-        is_causal_mode = get_causal_mode(
-            self.freqai_info.get("feature_parameters", {}), logger
-        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1033,16 +1044,6 @@ class QuickAdapterV3(IStrategy):
             col_smoothing_config = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
-            if (
-                is_causal_mode
-                and col_smoothing_config["method"]
-                in (SMOOTHING_METHODS[7], SMOOTHING_METHODS[8])  # "savgol", "gaussian_filter1d"
-                and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
-            ):
-                raise ValueError(
-                    "label_smoothing.mode='wrap' is incompatible with "
-                    "feature_parameters.causal_mode=true"
-                )
 
             dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
             if is_weighting_active:
