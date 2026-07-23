@@ -2301,6 +2301,11 @@ def compute_label_weight_known_at_lookahead(
         base[idx] = np.maximum(base[idx], avail_pivot)
         if weight_fill_radius > 0:
             for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
+                # The trailing pivot never closes (weight 0 via _impute_weights),
+                # so its Gaussian bump is 0 and it contributes nothing to any row:
+                # do not spread its sentinel availability n onto neighbors.
+                if pivot_avail >= n:
+                    continue
                 lo = max(0, pivot_pos - weight_fill_radius)
                 hi = min(n, pivot_pos + weight_fill_radius + 1)
                 np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
