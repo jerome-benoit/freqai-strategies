@@ -200,6 +200,12 @@ class QuickAdapterV3(IStrategy):
     def timeframe_minutes(self) -> int:
         return timeframe_to_minutes(self.config.get("timeframe"))
 
+    @cached_property
+    def is_trade_runmode(self) -> bool:
+        # Mirror the regressor's ``self.live`` gate (runmode in TRADE_MODES):
+        # persisted label params are reused only in live and dry-run.
+        return self.config.get("runmode") in TRADE_MODES
+
     @property
     def can_short(self) -> bool:
         return self.is_short_allowed()
@@ -455,9 +461,7 @@ class QuickAdapterV3(IStrategy):
             self._label_defaults
         )
         self._label_params: dict[str, dict[str, Any]] = {}
-        # Mirror the regressor's ``self.live`` gate (runmode in TRADE_MODES):
-        # persisted label params are reused only in live and dry-run.
-        load_persisted_label_params = self.config.get("runmode") in TRADE_MODES
+        load_persisted_label_params = self.is_trade_runmode
         for pair in self.pairs:
             label_best_params = (
                 self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.label)
@@ -857,6 +861,16 @@ class QuickAdapterV3(IStrategy):
         dataframe["%-hour_of_day"] = (dates.dt.hour + 1) / 25
         return dataframe
 
+    @staticmethod
+    def _is_finite_number(value: Any) -> bool:
+        # Reject bool (int(True) == 1) and non-numeric (str/object) before
+        # np.isfinite, which raises on non-numeric input.
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float, np.integer, np.floating))
+            and bool(np.isfinite(value))
+        )
+
     def get_label_period_candles(
         self,
         pair: str,
@@ -867,7 +881,7 @@ class QuickAdapterV3(IStrategy):
             period_series = dataframe.get("label_period_candles")
             if period_series is not None and not period_series.empty:
                 period = period_series.iloc[candle_idx]
-                if not isna(period) and np.isfinite(period) and int(period) > 0:
+                if self._is_finite_number(period) and int(period) > 0:
                     return int(period)
         period = self._label_params.get(pair, {}).get("label_period_candles")
         return int(
@@ -880,11 +894,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     def set_label_period_candles(self, pair: str, label_period_candles: Any) -> None:
-        if (
-            not isna(label_period_candles)
-            and np.isfinite(label_period_candles)
-            and int(label_period_candles) > 0
-        ):
+        if self._is_finite_number(label_period_candles) and int(label_period_candles) > 0:
             self._label_params[pair]["label_period_candles"] = int(label_period_candles)
 
     def get_label_horizon_candles(self, pair: str) -> int:
@@ -906,11 +916,7 @@ class QuickAdapterV3(IStrategy):
             multiplier_series = dataframe.get("label_natr_multiplier")
             if multiplier_series is not None and not multiplier_series.empty:
                 multiplier = multiplier_series.iloc[candle_idx]
-                if (
-                    not isna(multiplier)
-                    and np.isfinite(multiplier)
-                    and float(multiplier) > 0.0
-                ):
+                if self._is_finite_number(multiplier) and float(multiplier) > 0.0:
                     return float(multiplier)
         multiplier = self._label_params.get(pair, {}).get("label_natr_multiplier")
         return float(
@@ -922,11 +928,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     def set_label_natr_multiplier(self, pair: str, label_natr_multiplier: Any) -> None:
-        if (
-            not isna(label_natr_multiplier)
-            and np.isfinite(label_natr_multiplier)
-            and float(label_natr_multiplier) > 0.0
-        ):
+        if self._is_finite_number(label_natr_multiplier) and float(label_natr_multiplier) > 0.0:
             self._label_params[pair]["label_natr_multiplier"] = float(
                 label_natr_multiplier
             )
@@ -1081,7 +1083,7 @@ class QuickAdapterV3(IStrategy):
 
         label_period_candles_series = dataframe.get("label_period_candles")
         label_natr_multiplier_series = dataframe.get("label_natr_multiplier")
-        if self.config.get("runmode") in TRADE_MODES:
+        if self.is_trade_runmode:
             if label_period_candles_series is not None:
                 self.set_label_period_candles(
                     pair, label_period_candles_series.iloc[-1]
@@ -1096,16 +1098,17 @@ class QuickAdapterV3(IStrategy):
                 dataframe, timeperiod=self.get_label_period_candles(pair)
             )
         else:
+            # Per-candle HPO label_period_candles: NATR is computed once per
+            # distinct period, then scattered back to its matching rows (mixing
+            # per-row periods within one column is intentional).
             dataframe["natr_label_period_candles"] = np.nan
             fallback_period = self.get_label_period_candles(pair)
             valid_periods = np.isfinite(label_period_candles_series) & (
                 label_period_candles_series >= 1
             )
-            periods = (
-                label_period_candles_series.where(valid_periods, fallback_period)
-                .fillna(fallback_period)
-                .astype(int)
-            )
+            periods = label_period_candles_series.where(
+                valid_periods, fallback_period
+            ).astype(int)
             for period in periods.unique():
                 period_rows = periods == period
                 period_natr = ta.NATR(dataframe, timeperiod=int(period))
