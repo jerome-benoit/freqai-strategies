@@ -306,6 +306,16 @@ def safe_log_ratio(
     return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
 
 
+def is_finite_number(value: Any) -> bool:
+    # Reject bool (int(True) == 1) and non-numeric (str/object) before
+    # np.isfinite, which raises on non-numeric input.
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float, np.integer, np.floating))
+        and bool(np.isfinite(value))
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _EnumValidator:
     valid_values: tuple[str, ...]
@@ -3858,12 +3868,7 @@ def _validate_optuna_label_best_params(
                 f"label_period_candles={label_period_candles!r} (must be int >= 1)"
             )
         return None
-    if (
-        isinstance(label_natr_multiplier, bool)
-        or not isinstance(label_natr_multiplier, (int, float, np.integer, np.floating))
-        or not np.isfinite(label_natr_multiplier)
-        or label_natr_multiplier <= 0
-    ):
+    if not is_finite_number(label_natr_multiplier) or label_natr_multiplier <= 0:
         if logger is not None:
             logger.warning(
                 f"[{pair}] Ignoring Optuna label best params: invalid "
