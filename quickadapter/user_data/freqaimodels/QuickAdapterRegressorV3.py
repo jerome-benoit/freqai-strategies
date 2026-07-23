@@ -1434,8 +1434,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
-        # self.live is only set later in IFreqaiModel.start(); at __init__ time
-        # trade-mode must be derived from the configured runmode instead.
+        # self.live is unset until IFreqaiModel.start(), so derive trade-mode
+        # from the configured runmode here.
         trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
@@ -4505,10 +4505,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return None
 
-        # Non-live HPO is point-in-time: reset the study every optimization and
-        # never persist best params. Warm start still seeds the fresh study from
-        # the previous cutoff's in-memory best, which stays causal since it was
-        # produced from earlier data in the same run.
+        # Non-live HPO is point-in-time: reset the study each optimization and
+        # never persist best params. Warm start still seeds it from the previous
+        # cutoff's in-memory best, which stays causal as it predates the current
+        # cutoff.
         continuous = self._optuna_config.get("continuous") or not self.live
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
@@ -4661,10 +4661,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
         except KeyError as e:
-            # Deleting a not-yet-created study is a benign no-op: non-live runs
-            # always start from a fresh InMemoryStorage, and the first live or
-            # dry-run optimization per pair has no persisted study yet. optuna
-            # raises KeyError in that case; real failures raise otherwise.
+            # A missing study is a benign no-op: non-live runs use a fresh
+            # InMemoryStorage and the first live/dry-run optimization per pair
+            # has none yet. optuna reports it as KeyError; other failures reach
+            # the warning branch below.
             logger.debug(
                 f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"
             )
