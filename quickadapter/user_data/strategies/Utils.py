@@ -2238,21 +2238,51 @@ def compute_label_weights(
     )
 
 
+# k for the weight-fill availability band: rows within k*fill_sigma_candles of a
+# pivot receive its Gaussian bump. Material radius (bump > 1% of pivot peak) is
+# sqrt(2*ln(100))=3.0349 sigma; k=4 -> tail exp(-8)=3.4e-4, ~30x below 1% with a
+# margin robust to sigma rounding (k=3 under-covers for larger sigma).
+_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
+
+
+def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
+    """Row radius over which a pivot's Gaussian-fill weight is causally shared.
+
+    Zero unless the off-pivot fill spreads a pivot's weight into neighbors
+    (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
+    per-pivot sigma (including ``knn``, which clips below it), so
+    ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
+    support. The additive epsilon floor is a global O(fill_epsilon) term, left
+    unconstrained (negligible).
+    """
+    if weighting_config.get("fill_method") not in (
+        FILL_METHODS[2],  # "gaussian"
+        FILL_METHODS[3],  # "epsilon_gaussian"
+    ):
+        return 0
+    return math.ceil(
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(weighting_config["fill_sigma_candles"])
+    )
+
+
 def compute_label_weight_known_at_lookahead(
     known_at_lookahead: pd.Series,
     indices: Sequence[int] | NDArray[np.integer],
+    weight_fill_radius: int = 0,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
     A pivot's swing metric (its weight source) is backfilled from the adjacent
     closing pivot, so it only becomes computable at the next pivot's
     confirmation ``i_{k+1} == known_at_positions[indices[k+1]]`` — one pivot
-    later than the pivot's own label availability ``i_k``. Only pivot rows are
-    bumped to that lag (the trailing pivot has no closing swing, weight 0 via
-    ``_impute_weights``, so it never resolves in-frame -> ``n``); off-pivot rows
-    keep their label availability. The off-pivot fill scheme (epsilon floor /
-    Gaussian bumps) is orthogonal to this pivot lag and is not constrained here.
-    Folded via ``max(label, weight)`` by the causal purge.
+    later than the pivot's own label availability ``i_k``. The trailing pivot has
+    no closing swing (weight 0 via ``_impute_weights``, so it never resolves
+    in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
+    their label availability, EXCEPT that a Gaussian fill spreads each pivot's
+    weight over a local band ``[idx-weight_fill_radius, idx+weight_fill_radius]``
+    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
+    never a global max (a global bound forces ``n`` on all rows -> total train
+    purge). Folded via ``max(label, weight)`` by the causal purge.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2269,6 +2299,11 @@ def compute_label_weight_known_at_lookahead(
         avail_pivot[:-1] = known_at_positions[idx[1:]]
         avail_pivot[-1] = n
         base[idx] = np.maximum(base[idx], avail_pivot)
+        if weight_fill_radius > 0:
+            for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
+                lo = max(0, pivot_pos - weight_fill_radius)
+                hi = min(n, pivot_pos + weight_fill_radius + 1)
+                np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
     base = np.clip(base, positions, n)
     return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
 
