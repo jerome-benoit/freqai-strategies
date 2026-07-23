@@ -3028,6 +3028,7 @@ def _zigzag(
     pivots_volume_weighted_efficiency_ratios: list[float] = []
     known_at_positions: NDArray[np.integer] = np.full(n, n, dtype=np.int64)
     last_resolved_pos = -1
+    latest_confirmation_pos = -1
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -3241,10 +3242,19 @@ def _zigzag(
         confirmed_at_pos: int,
         resolve_through_pos: int,
     ) -> None:
-        nonlocal last_pivot_pos, last_resolved_pos
+        nonlocal last_pivot_pos, last_resolved_pos, latest_confirmation_pos
+        # Monotonic confirmation watermark: a pivot replayed after the initial
+        # orientation (scan restarts at initial_pivot_pos+1, before the
+        # orientation confirmation candle i) must not claim availability earlier
+        # than i, since its label depends on that orientation. Fold the latest
+        # confirmation seen so far so known_at never understates it.
         confirmed_at_pos = max(
-            confirmed_at_pos, resolve_through_pos, natr_warmup_end_pos
+            confirmed_at_pos,
+            resolve_through_pos,
+            natr_warmup_end_pos,
+            latest_confirmation_pos,
         )
+        latest_confirmation_pos = confirmed_at_pos
         known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = (
             confirmed_at_pos
         )
