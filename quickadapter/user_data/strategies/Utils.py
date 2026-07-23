@@ -544,6 +544,7 @@ EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
 
 _LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
+_LABEL_WEIGHT_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_weight_known_at_lookahead"
 
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 
@@ -592,6 +593,11 @@ def label_weight_column_name(label_col: str) -> str:
 def label_known_at_lookahead_column_name(label_col: str) -> str:
     """Return the lookahead column name for ``label_col`` (see ``LabelData.known_at_lookahead``)."""
     return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX)
+
+
+def label_weight_known_at_lookahead_column_name(label_col: str) -> str:
+    """Return the weight-availability lookahead column name for ``label_col``."""
+    return _label_aux_column_name(label_col, _LABEL_WEIGHT_KNOWN_AT_LOOKAHEAD_SUFFIX)
 
 
 @dataclass
@@ -716,50 +722,34 @@ def _generate_extrema_label(
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
-    label_horizon_candles = get_label_horizon_candles(params, logger)
-
-    (
-        pivots_indices,
-        _,
-        pivots_directions,
-        pivots_amplitudes,
-        pivots_amplitude_threshold_ratios,
-        pivots_volume_rates,
-        pivots_speeds,
-        pivots_efficiency_ratios,
-        pivots_volume_weighted_efficiency_ratios,
-    ) = zigzag(
+    result = _zigzag(
         dataframe,
         natr_period=natr_period,
         natr_multiplier=natr_multiplier,
     )
 
     series = pd.Series(0.0, index=dataframe.index)
-    if pivots_indices:
-        series.loc[pivots_indices] = pivots_directions
+    if result.indices:
+        series.loc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
-        "amplitude": pivots_amplitudes,
-        "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
-        "volume_rate": pivots_volume_rates,
-        "speed": pivots_speeds,
-        "efficiency_ratio": pivots_efficiency_ratios,
-        "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
+        "amplitude": result.amplitudes,
+        "amplitude_threshold_ratio": result.amplitude_threshold_ratios,
+        "volume_rate": result.volume_rates,
+        "speed": result.speeds,
+        "efficiency_ratio": result.efficiency_ratios,
+        "volume_weighted_efficiency_ratio": result.volume_weighted_efficiency_ratios,
     }
 
-    # Per-row label lookahead (in candles), NOT an absolute position:
-    # freqtrade's ``dk.slice_dataframe`` runs AFTER ``set_freqai_targets``,
-    # so any pre-slice absolute position would no longer match the causal
-    # guard's local ``np.arange(len(unfiltered_df))`` coordinate system.
     known_at_lookahead = pd.Series(
-        int(label_horizon_candles),
+        result.known_at_positions - np.arange(len(dataframe), dtype=np.int64),
         index=dataframe.index,
         dtype=np.int64,
     )
 
     return LabelData(
         series=series,
-        indices=pivots_indices,
+        indices=result.indices,
         metrics=metrics,
         known_at_lookahead=known_at_lookahead,
     )
@@ -851,6 +841,63 @@ def get_smoothing_kernel_half_width(
     if method in SMOOTHING_KERNELS:
         return effective_window - 1
     return effective_window // 2
+
+
+def _sanitize_known_at_lookahead(
+    known_at_lookahead: pd.Series,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Row positions and non-finite-guarded int64 lookahead values.
+
+    Non-finite lookahead casts to garbage int64 (silent, with a RuntimeWarning)
+    and a spurious ``0`` reads as "available now", keeping a row whose
+    availability is actually unknown. Map non-finite so its known_at position is
+    ``n`` (maximally unavailable) and such rows are always purged near a boundary.
+    """
+    n = len(known_at_lookahead)
+    positions = np.arange(n, dtype=np.int64)
+    raw = known_at_lookahead.to_numpy(dtype=float)
+    if n and not np.isfinite(raw).all():
+        raw = np.where(np.isfinite(raw), raw, (n - positions).astype(float))
+    return positions, raw.astype(np.int64)
+
+
+def compose_label_lookahead(
+    known_at_lookahead: pd.Series,
+    kernel_half_width: int,
+) -> pd.Series:
+    """Compose row-wise label availability with a centered smoothing kernel.
+
+    Values within the current frame's right kernel boundary stay unavailable
+    until enough future rows exist to provide the complete smoothing window.
+    """
+    if known_at_lookahead.empty:
+        return known_at_lookahead.copy()
+    n = len(known_at_lookahead)
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if kernel_half_width <= 0:
+        return pd.Series(
+            known_at_lookahead_values,
+            index=known_at_lookahead.index,
+            dtype=np.int64,
+        )
+    known_at_positions = pd.Series(
+        positions + known_at_lookahead_values,
+        index=known_at_lookahead.index,
+    )
+    smoothed_known_at_positions = known_at_positions.rolling(
+        window=2 * kernel_half_width + 1,
+        center=True,
+        min_periods=1,
+    ).max()
+    right_edge_start = max(0, n - kernel_half_width)
+    smoothed_known_at_positions.iloc[right_edge_start:] = n
+    return pd.Series(
+        smoothed_known_at_positions.to_numpy(dtype=np.int64) - positions,
+        index=known_at_lookahead.index,
+        dtype=np.int64,
+    )
 
 
 TradePriceTarget = Literal[
@@ -2191,6 +2238,81 @@ def compute_label_weights(
     )
 
 
+# k for the weight-fill availability band: rows within k*fill_sigma_candles of a
+# pivot receive its Gaussian bump. Material radius (bump > 1% of pivot peak) is
+# sqrt(2*ln(100))=3.0349 sigma; k=4 -> tail exp(-8)=3.4e-4, ~30x below 1% with a
+# margin robust to sigma rounding (k=3 under-covers for larger sigma).
+_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
+
+
+def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
+    """Row radius over which a pivot's Gaussian-fill weight is causally shared.
+
+    Zero unless the off-pivot fill spreads a pivot's weight into neighbors
+    (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
+    per-pivot sigma (including ``knn``, which clips below it), so
+    ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
+    support. The additive epsilon floor is a global O(fill_epsilon) term, left
+    unconstrained (negligible).
+    """
+    if weighting_config.get("fill_method") not in (
+        FILL_METHODS[2],  # "gaussian"
+        FILL_METHODS[3],  # "epsilon_gaussian"
+    ):
+        return 0
+    return math.ceil(
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(weighting_config["fill_sigma_candles"])
+    )
+
+
+def compute_label_weight_known_at_lookahead(
+    known_at_lookahead: pd.Series,
+    indices: Sequence[int] | NDArray[np.integer],
+    weight_fill_radius: int = 0,
+) -> pd.Series:
+    """Per-row causal availability (in candles) of the label WEIGHT column.
+
+    A pivot's swing metric (its weight source) is backfilled from the adjacent
+    closing pivot, so it only becomes computable at the next pivot's
+    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]`` — one pivot
+    later than the pivot's own label availability ``i_k``. The trailing pivot has
+    no closing swing (weight 0 via ``_impute_weights``, so it never resolves
+    in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
+    their label availability, EXCEPT that a Gaussian fill spreads each pivot's
+    weight over a local band ``[idx-weight_fill_radius, idx+weight_fill_radius]``
+    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
+    never a global max (a global bound forces ``n`` on all rows -> total train
+    purge). Folded via ``max(label, weight)`` by the causal purge.
+    """
+    n = len(known_at_lookahead)
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if n == 0:
+        return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
+    known_at_positions = positions + known_at_lookahead_values
+    idx = np.asarray(indices, dtype=int)
+    idx = np.sort(idx[(idx >= 0) & (idx < n)])
+    base = known_at_positions.copy()
+    if idx.size:
+        avail_pivot = np.empty(idx.size, dtype=np.int64)
+        avail_pivot[:-1] = known_at_positions[idx[1:]]
+        avail_pivot[-1] = n
+        base[idx] = np.maximum(base[idx], avail_pivot)
+        if weight_fill_radius > 0:
+            for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
+                # The trailing pivot never closes (weight 0 via _impute_weights),
+                # so its Gaussian bump is 0 and it contributes nothing to any row:
+                # do not spread its sentinel availability n onto neighbors.
+                if pivot_avail >= n:
+                    continue
+                lo = max(0, pivot_pos - weight_fill_radius)
+                hi = min(n, pivot_pos + weight_fill_radius + 1)
+                np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
+    base = np.clip(base, positions, n)
+    return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
+
+
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
         raise ValueError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
@@ -2323,33 +2445,6 @@ def _(value: str, ctx: _FormatContext, depth: int) -> str:
     return escaped
 
 
-def _format_collection(
-    value: list | tuple | set,
-    ctx: _FormatContext,
-    depth: int,
-    brackets: tuple[str, str],
-    empty: str,
-    trailing_comma: bool = False,
-) -> str:
-    if not value:
-        return empty
-    obj_id = id(value)
-    if obj_id in ctx.seen:
-        return f"{brackets[0]}<circular>{brackets[1]}"
-    if depth >= _MAX_DEPTH:
-        return f"{brackets[0]}...{brackets[1]}"
-    ctx.seen.add(obj_id)
-    items_iter = sorted(value, key=str) if isinstance(value, set) else value
-    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
-    if len(value) > _MAX_ITEMS:
-        items.append(f"...+{len(value) - _MAX_ITEMS}")
-    content = ", ".join(items)
-    if trailing_comma and len(value) == 1 and len(items) == 1:
-        content += ","
-    ctx.seen.discard(obj_id)
-    return f"{brackets[0]}{content}{brackets[1]}"
-
-
 @_format_value.register(list)
 def _(value: list, ctx: _FormatContext, depth: int) -> str:
     return _format_collection(value, ctx, depth, ("[", "]"), "[]")
@@ -2389,6 +2484,33 @@ def _(value: dict, ctx: _FormatContext, depth: int) -> str:
 @_format_value.register(np.ndarray)
 def _(value: np.ndarray, ctx: _FormatContext, depth: int) -> str:
     return f"array{value.shape}"
+
+
+def _format_collection(
+    value: list | tuple | set,
+    ctx: _FormatContext,
+    depth: int,
+    brackets: tuple[str, str],
+    empty: str,
+    trailing_comma: bool = False,
+) -> str:
+    if not value:
+        return empty
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return f"{brackets[0]}<circular>{brackets[1]}"
+    if depth >= _MAX_DEPTH:
+        return f"{brackets[0]}...{brackets[1]}"
+    ctx.seen.add(obj_id)
+    items_iter = sorted(value, key=str) if isinstance(value, set) else value
+    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    content = ", ".join(items)
+    if trailing_comma and len(value) == 1 and len(items) == 1:
+        content += ","
+    ctx.seen.discard(obj_id)
+    return f"{brackets[0]}{content}{brackets[1]}"
 
 
 def format_dict(
@@ -2799,14 +2921,7 @@ class TrendDirection(IntEnum):
     DOWN = -1
 
 
-def zigzag(
-    df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
-    normalize: bool = False,
-    *,
-    logger: Logger | None = None,
-) -> tuple[
+ZigzagTuple = tuple[
     list[int],
     list[float],
     list[TrendDirection],
@@ -2816,22 +2931,66 @@ def zigzag(
     list[float],
     list[float],
     list[float],
-]:
-    n = len(df)
-    if df.empty or n < natr_period:
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ZigzagResult:
+    indices: list[int]
+    values_log: list[float]
+    directions: list[TrendDirection]
+    amplitudes: list[float]
+    amplitude_threshold_ratios: list[float]
+    volume_rates: list[float]
+    speeds: list[float]
+    efficiency_ratios: list[float]
+    volume_weighted_efficiency_ratios: list[float]
+    known_at_positions: NDArray[np.integer]
+
+    def as_tuple(self) -> ZigzagTuple:
+        """Return the stable public tuple representation."""
         return (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
+            self.indices,
+            self.values_log,
+            self.directions,
+            self.amplitudes,
+            self.amplitude_threshold_ratios,
+            self.volume_rates,
+            self.speeds,
+            self.efficiency_ratios,
+            self.volume_weighted_efficiency_ratios,
         )
 
-    natr_values = (ta.NATR(df, timeperiod=natr_period).bfill() / 100.0).to_numpy()
+
+def _zigzag(
+    df: pd.DataFrame,
+    natr_period: int = 14,
+    natr_multiplier: float = 9.0,
+    normalize: bool = False,
+    *,
+    logger: Logger | None = None,
+) -> ZigzagResult:
+    n = len(df)
+    if df.empty or n < natr_period:
+        return ZigzagResult(
+            indices=[],
+            values_log=[],
+            directions=[],
+            amplitudes=[],
+            amplitude_threshold_ratios=[],
+            volume_rates=[],
+            speeds=[],
+            efficiency_ratios=[],
+            volume_weighted_efficiency_ratios=[],
+            known_at_positions=np.full(n, n, dtype=np.int64),
+        )
+
+    natr = ta.NATR(df, timeperiod=natr_period) / 100.0
+    finite_natr_positions = np.flatnonzero(np.isfinite(natr.to_numpy(dtype=float)))
+    natr_warmup_end_pos = (
+        int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
+    )
+    natr_values = natr.bfill().to_numpy()
 
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
@@ -2872,6 +3031,9 @@ def zigzag(
     pivots_speeds: list[float] = []
     pivots_efficiency_ratios: list[float] = []
     pivots_volume_weighted_efficiency_ratios: list[float] = []
+    known_at_positions: NDArray[np.integer] = np.full(n, n, dtype=np.int64)
+    last_resolved_pos = -1
+    latest_confirmation_pos = -1
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -3078,11 +3240,38 @@ def zigzag(
 
         return vw_net_move / vw_path_length
 
-    def add_pivot(pos: int, value_log: float, direction: TrendDirection):
-        nonlocal last_pivot_pos
+    def add_pivot(
+        pos: int,
+        value_log: float,
+        direction: TrendDirection,
+        confirmed_at_pos: int,
+        resolve_through_pos: int,
+    ) -> None:
+        nonlocal last_pivot_pos, last_resolved_pos, latest_confirmation_pos
+        # Monotonic confirmation watermark: a pivot replayed after the initial
+        # orientation (scan restarts at initial_pivot_pos+1, before the
+        # orientation confirmation candle i) must not claim availability earlier
+        # than i, since its label depends on that orientation. Fold the latest
+        # confirmation seen so far so known_at never understates it.
+        confirmed_at_pos = max(
+            confirmed_at_pos,
+            resolve_through_pos,
+            natr_warmup_end_pos,
+            latest_confirmation_pos,
+        )
+        latest_confirmation_pos = confirmed_at_pos
+        known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = (
+            confirmed_at_pos
+        )
+        last_resolved_pos = max(last_resolved_pos, resolve_through_pos)
         if pivots_indices and indices[pos] == pivots_indices[-1]:
             return
 
+        # These swing metrics are backfilled onto the previous pivot from the
+        # adjacent closing pivot, confirmed at this pivot's known_at. The weight
+        # is therefore causally available one pivot later than its label;
+        # compute_label_weight_known_at_lookahead derives that lag so the causal
+        # purge masks weights on max(label, weight) availability.
         if (
             pivots_values_log
             and last_pivot_pos >= 0
@@ -3227,33 +3416,58 @@ def zigzag(
         )
         if is_initial_high_move_significant and is_initial_low_move_significant:
             if initial_move_from_high > initial_move_from_low:
-                add_pivot(initial_high_pos, initial_high_log, TrendDirection.UP)
+                add_pivot(
+                    initial_high_pos,
+                    initial_high_log,
+                    TrendDirection.UP,
+                    i,
+                    initial_high_pos,
+                )
                 state = TrendDirection.DOWN
                 break
             else:
-                add_pivot(initial_low_pos, initial_low_log, TrendDirection.DOWN)
+                add_pivot(
+                    initial_low_pos,
+                    initial_low_log,
+                    TrendDirection.DOWN,
+                    i,
+                    initial_low_pos,
+                )
                 state = TrendDirection.UP
                 break
         else:
             if is_initial_high_move_significant:
-                add_pivot(initial_high_pos, initial_high_log, TrendDirection.UP)
+                add_pivot(
+                    initial_high_pos,
+                    initial_high_log,
+                    TrendDirection.UP,
+                    i,
+                    initial_high_pos,
+                )
                 state = TrendDirection.DOWN
                 break
             elif is_initial_low_move_significant:
-                add_pivot(initial_low_pos, initial_low_log, TrendDirection.DOWN)
+                add_pivot(
+                    initial_low_pos,
+                    initial_low_log,
+                    TrendDirection.DOWN,
+                    i,
+                    initial_low_pos,
+                )
                 state = TrendDirection.UP
                 break
     else:
-        return (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
+        return ZigzagResult(
+            indices=[],
+            values_log=[],
+            directions=[],
+            amplitudes=[],
+            amplitude_threshold_ratios=[],
+            volume_rates=[],
+            speeds=[],
+            efficiency_ratios=[],
+            volume_weighted_efficiency_ratios=[],
+            known_at_positions=known_at_positions,
         )
 
     for i in range(last_pivot_pos + 1, n):
@@ -3271,6 +3485,8 @@ def zigzag(
                     candidate_pivot_pos,
                     highs_log[candidate_pivot_pos],
                     TrendDirection.UP,
+                    i,
+                    i,
                 )
                 state = TrendDirection.DOWN
 
@@ -3288,32 +3504,49 @@ def zigzag(
                     candidate_pivot_pos,
                     lows_log[candidate_pivot_pos],
                     TrendDirection.DOWN,
+                    i,
+                    i,
                 )
                 state = TrendDirection.UP
 
-    if normalize:
-        return (
-            pivots_indices,
-            pivots_values_log,
-            pivots_directions,
-            minmax_scale(pivots_amplitudes),
-            minmax_scale(pivots_amplitude_threshold_ratios),
-            minmax_scale(pivots_volume_rates),
-            minmax_scale(pivots_speeds),
-            pivots_efficiency_ratios,
-            pivots_volume_weighted_efficiency_ratios,
-        )
-    return (
-        pivots_indices,
-        pivots_values_log,
-        pivots_directions,
-        pivots_amplitudes,
-        pivots_amplitude_threshold_ratios,
-        pivots_volume_rates,
-        pivots_speeds,
-        pivots_efficiency_ratios,
-        pivots_volume_weighted_efficiency_ratios,
+    return ZigzagResult(
+        indices=pivots_indices,
+        values_log=pivots_values_log,
+        directions=pivots_directions,
+        amplitudes=(
+            minmax_scale(pivots_amplitudes) if normalize else pivots_amplitudes
+        ),
+        amplitude_threshold_ratios=(
+            minmax_scale(pivots_amplitude_threshold_ratios)
+            if normalize
+            else pivots_amplitude_threshold_ratios
+        ),
+        volume_rates=(
+            minmax_scale(pivots_volume_rates) if normalize else pivots_volume_rates
+        ),
+        speeds=minmax_scale(pivots_speeds) if normalize else pivots_speeds,
+        efficiency_ratios=pivots_efficiency_ratios,
+        volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
+        known_at_positions=known_at_positions,
     )
+
+
+def zigzag(
+    df: pd.DataFrame,
+    natr_period: int = 14,
+    natr_multiplier: float = 9.0,
+    normalize: bool = False,
+    *,
+    logger: Logger | None = None,
+) -> ZigzagTuple:
+    """Return Zigzag outputs while preserving the existing public API."""
+    return _zigzag(
+        df,
+        natr_period=natr_period,
+        natr_multiplier=natr_multiplier,
+        normalize=normalize,
+        logger=logger,
+    ).as_tuple()
 
 
 Regressor = Literal[
