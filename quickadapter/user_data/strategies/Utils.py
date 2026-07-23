@@ -716,7 +716,7 @@ def _generate_extrema_label(
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
-    result = _zigzag_with_provenance(
+    result = _zigzag(
         dataframe,
         natr_period=natr_period,
         natr_multiplier=natr_multiplier,
@@ -2854,7 +2854,7 @@ class ZigzagResult:
         )
 
 
-def _zigzag_with_provenance(
+def _zigzag(
     df: pd.DataFrame,
     natr_period: int = 14,
     natr_multiplier: float = 9.0,
@@ -3422,7 +3422,7 @@ def zigzag(
     logger: Logger | None = None,
 ) -> ZigzagTuple:
     """Return Zigzag outputs while preserving the existing public API."""
-    return _zigzag_with_provenance(
+    return _zigzag(
         df,
         natr_period=natr_period,
         natr_multiplier=natr_multiplier,
