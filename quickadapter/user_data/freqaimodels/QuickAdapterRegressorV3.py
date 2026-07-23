@@ -32,6 +32,7 @@ import skimage
 import sklearn
 from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
+from freqtrade.enums import TRADE_MODES
 from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -1433,17 +1434,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
+        # self.live is unset until IFreqaiModel.start(), so derive trade-mode
+        # from the configured runmode here.
+        trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
             self._optuna_label_values[pair] = [
                 -1
             ] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
             self._optuna_hp_params[pair] = (
-                self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.hp) or {}
-            )
-            self._optuna_label_params[pair] = self.optuna_load_best_params(
-                pair, _OPTUNA_NAMESPACES.label
-            ) or {
+                self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.hp)
+                if trade_mode
+                else None
+            ) or {}
+            configured_label_params = {
                 "label_period_candles": self.ft_params.get(
                     "label_period_candles",
                     default_label_period_candles,
@@ -1455,6 +1459,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     )
                 ),
             }
+            self._optuna_label_params[pair] = (
+                self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.label)
+                if trade_mode
+                else None
+            ) or configured_label_params
             self.set_optuna_label_candle(pair)
             self._optuna_label_candles[pair] = 0
 
@@ -2578,25 +2587,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self.optuna_throttle_callback(
                 pair=pair,
                 namespace=_OPTUNA_NAMESPACES.label,
-                callback=lambda: self.optuna_optimize(
-                    pair=pair,
-                    namespace=_OPTUNA_NAMESPACES.label,
-                    objective=lambda trial: label_objective(
-                        trial,
-                        self.data_provider.get_pair_dataframe(
-                            pair=pair, timeframe=self.config.get("timeframe")
-                        ),
-                        fit_live_predictions_candles,
-                        self._optuna_config.get(
-                            "label_candles_step",
-                            QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
-                        ),
-                        min_label_period_candles=self._min_label_period_candles,
-                        max_label_period_candles=self._max_label_period_candles,
-                        min_label_natr_multiplier=self._min_label_natr_multiplier,
-                        max_label_natr_multiplier=self._max_label_natr_multiplier,
-                    ),
-                    directions=list(QuickAdapterRegressorV3._OPTUNA_LABEL_DIRECTIONS),
+                callback=lambda: self._optimize_labels_as_of_prediction_time(
+                    dk,
+                    pair,
+                    fit_live_predictions_candles,
                 ),
             )
 
@@ -2744,6 +2738,77 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         dk.data["extra_returns_per_train"]["hp_rmse"] = (
             hp_rmse if hp_rmse is not None else np.inf
+        )
+
+    def _label_hpo_dataframe_as_of_prediction_time(
+        self,
+        dk: FreqaiDataKitchen,
+        pair: str,
+    ) -> pd.DataFrame:
+        """Return pair OHLCV bounded to the current FreqAI prediction time.
+
+        In backtests, ``historic_predictions`` holds the preceding prediction
+        window and ``dk.full_df`` is the full feature frame; the current
+        prediction time is the first ``dk.full_df`` timestamp strictly after the
+        last recorded prediction. Live and dry-run modes rely on the already
+        point-in-time DataProvider frame. This explicit backtest bound is
+        required because DataProvider otherwise exposes the complete historical
+        timerange.
+        """
+        pair_dataframe = self.data_provider.get_pair_dataframe(
+            pair=pair, timeframe=self.config.get("timeframe")
+        )
+        if self.live or pair_dataframe.empty:
+            return pair_dataframe
+
+        history_dates = ensure_datetime_series(
+            self.dd.historic_predictions[pair]["date"]
+        )
+        if history_dates.empty:
+            logger.debug(
+                "[%s] Label HPO skipped: no prior predictions to bound the current FreqAI prediction time",
+                pair,
+            )
+            return pair_dataframe.iloc[:0]
+
+        pair_dates = ensure_datetime_series(pair_dataframe["date"])
+        full_dates = ensure_datetime_series(dk.full_df["date"])
+        current_dates = full_dates.loc[full_dates > history_dates.max()]
+        if current_dates.empty:
+            logger.debug(
+                "[%s] Label HPO skipped: current FreqAI prediction time is unavailable",
+                pair,
+            )
+            return pair_dataframe.iloc[:0]
+
+        return pair_dataframe.loc[pair_dates <= current_dates.min()]
+
+    def _optimize_labels_as_of_prediction_time(
+        self,
+        dk: FreqaiDataKitchen,
+        pair: str,
+        fit_live_predictions_candles: int,
+    ) -> Optional[optuna.study.Study]:
+        label_dataframe = self._label_hpo_dataframe_as_of_prediction_time(dk, pair)
+        if label_dataframe.empty:
+            return None
+        return self.optuna_optimize(
+            pair=pair,
+            namespace=_OPTUNA_NAMESPACES.label,
+            objective=lambda trial: label_objective(
+                trial,
+                label_dataframe,
+                fit_live_predictions_candles,
+                self._optuna_config.get(
+                    "label_candles_step",
+                    QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
+                ),
+                min_label_period_candles=self._min_label_period_candles,
+                max_label_period_candles=self._max_label_period_candles,
+                min_label_natr_multiplier=self._min_label_natr_multiplier,
+                max_label_natr_multiplier=self._max_label_natr_multiplier,
+            ),
+            directions=list(QuickAdapterRegressorV3._OPTUNA_LABEL_DIRECTIONS),
         )
 
     @staticmethod
@@ -4166,7 +4231,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.warning(
                 f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params found has invalid optimization target value(s)"
             )
-        self.optuna_save_best_params(pair, namespace)
+        if self.live:
+            self.optuna_save_best_params(pair, namespace)
         return study
 
     @staticmethod
@@ -4270,6 +4336,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
     def optuna_create_storage(self, pair: str) -> optuna.storages.BaseStorage:
+        if not self.live:
+            return optuna.storages.InMemoryStorage()
+
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
         storage_backend = self._optuna_config.get("storage")
@@ -4436,7 +4505,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return None
 
-        continuous = self._optuna_config.get("continuous")
+        # Non-live HPO is point-in-time: reset the study each optimization and
+        # never persist best params. Warm start still seeds it from the previous
+        # cutoff's in-memory best, which stays causal as it predates the current
+        # cutoff.
+        continuous = self._optuna_config.get("continuous") or not self.live
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
                 pair, namespace, study_name, storage
@@ -4587,6 +4660,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> None:
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
+        except KeyError as e:
+            # A missing study is a benign no-op: non-live runs use a fresh
+            # InMemoryStorage and the first live/dry-run optimization per pair
+            # has none yet. optuna reports it as KeyError; other failures reach
+            # the warning branch below.
+            logger.debug(
+                f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"
+            )
         except Exception as e:
             logger.warning(
                 f"[{pair}] Optuna {namespace} study {study_name} deletion failed: {e!r}",
