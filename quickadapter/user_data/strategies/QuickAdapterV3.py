@@ -981,6 +981,9 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
+        is_causal_mode = get_causal_mode(
+            self.freqai_info.get("feature_parameters", {}), logger
+        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1031,7 +1034,9 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
             if (
-                get_causal_mode(self.freqai_info.get("feature_parameters", {}), logger)
+                is_causal_mode
+                and col_smoothing_config["method"]
+                in (SMOOTHING_METHODS[7], SMOOTHING_METHODS[8])  # "savgol", "gaussian_filter1d"
                 and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
             ):
                 raise ValueError(
@@ -1057,10 +1062,9 @@ class QuickAdapterV3(IStrategy):
                 kernel_half_width = get_smoothing_kernel_half_width(
                     col_smoothing_config, series_length=series_length
                 )
-                if kernel_half_width > 0:
-                    dataframe[known_at_lookahead_column] = compose_label_lookahead(
-                        dataframe[known_at_lookahead_column], kernel_half_width
-                    )
+                dataframe[known_at_lookahead_column] = compose_label_lookahead(
+                    dataframe[known_at_lookahead_column], kernel_half_width
+                )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]

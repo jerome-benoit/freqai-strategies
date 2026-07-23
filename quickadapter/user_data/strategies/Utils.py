@@ -2924,7 +2924,7 @@ def _zigzag_with_provenance(
     pivots_efficiency_ratios: list[float] = []
     pivots_volume_weighted_efficiency_ratios: list[float] = []
     known_at_positions: NDArray[np.integer] = np.full(n, n, dtype=np.int64)
-    resolved_through_pos = -1
+    last_resolved_pos = -1
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -3138,15 +3138,22 @@ def _zigzag_with_provenance(
         confirmed_at_pos: int,
         resolve_through_pos: int,
     ) -> None:
-        nonlocal last_pivot_pos, resolved_through_pos
-        confirmed_at_pos = max(confirmed_at_pos, natr_warmup_end_pos)
-        known_at_positions[resolved_through_pos + 1 : resolve_through_pos + 1] = (
+        nonlocal last_pivot_pos, last_resolved_pos
+        confirmed_at_pos = max(
+            confirmed_at_pos, resolve_through_pos, natr_warmup_end_pos
+        )
+        known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = (
             confirmed_at_pos
         )
-        resolved_through_pos = max(resolved_through_pos, resolve_through_pos)
+        last_resolved_pos = max(last_resolved_pos, resolve_through_pos)
         if pivots_indices and indices[pos] == pivots_indices[-1]:
             return
 
+        # NOTE (pre-existing, deferred): these swing metrics are backfilled onto the
+        # previous pivot from the adjacent closing pivot (confirmed after the label's
+        # known_at). Weights ride the label row and are purged on the label's
+        # availability, not the weight's own; dedicated weight provenance is a
+        # follow-up.
         if (
             pivots_values_log
             and last_pivot_pos >= 0
