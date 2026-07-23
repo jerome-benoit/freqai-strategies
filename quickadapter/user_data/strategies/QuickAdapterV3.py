@@ -919,7 +919,10 @@ class QuickAdapterV3(IStrategy):
         )
 
     def set_label_natr_multiplier(self, pair: str, label_natr_multiplier: Any) -> None:
-        if is_finite_number(label_natr_multiplier) and float(label_natr_multiplier) > 0.0:
+        if (
+            is_finite_number(label_natr_multiplier)
+            and float(label_natr_multiplier) > 0.0
+        ):
             self._label_params[pair]["label_natr_multiplier"] = float(
                 label_natr_multiplier
             )
