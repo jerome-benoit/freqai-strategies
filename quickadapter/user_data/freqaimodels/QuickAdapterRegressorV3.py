@@ -1434,6 +1434,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
+        # self.live is only set later in IFreqaiModel.start(); at __init__ time
+        # trade-mode must be derived from the configured runmode instead.
         trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
@@ -2745,41 +2747,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> pd.DataFrame:
         """Return pair OHLCV bounded to the current FreqAI prediction time.
 
-        In backtests, FreqAI exposes the preceding prediction window through
-        ``historic_predictions`` and the current prediction row through
-        ``dk.full_df``; the current prediction time is the first ``dk.full_df``
-        timestamp beyond the last recorded prediction. Live and dry-run modes
-        rely on the already point-in-time DataProvider frame. This explicit
-        backtest bound is required because DataProvider otherwise exposes the
-        complete historical timerange.
+        In backtests, ``historic_predictions`` holds the preceding prediction
+        window and ``dk.full_df`` is the full feature frame; the current
+        prediction time is the first ``dk.full_df`` timestamp strictly after the
+        last recorded prediction. Live and dry-run modes rely on the already
+        point-in-time DataProvider frame. This explicit backtest bound is
+        required because DataProvider otherwise exposes the complete historical
+        timerange.
         """
         pair_dataframe = self.data_provider.get_pair_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
         if self.live or pair_dataframe.empty:
-            return pair_dataframe.copy()
+            return pair_dataframe
 
         history_dates = ensure_datetime_series(
             self.dd.historic_predictions[pair]["date"]
         )
         if history_dates.empty:
-            logger.warning(
+            logger.debug(
                 "[%s] Label HPO skipped: no prior predictions to bound the current FreqAI prediction time",
                 pair,
             )
-            return pair_dataframe.iloc[:0].copy()
+            return pair_dataframe.iloc[:0]
 
         pair_dates = ensure_datetime_series(pair_dataframe["date"])
         full_dates = ensure_datetime_series(dk.full_df["date"])
         current_dates = full_dates.loc[full_dates > history_dates.max()]
         if current_dates.empty:
-            logger.warning(
+            logger.debug(
                 "[%s] Label HPO skipped: current FreqAI prediction time is unavailable",
                 pair,
             )
-            return pair_dataframe.iloc[:0].copy()
+            return pair_dataframe.iloc[:0]
 
-        return pair_dataframe.loc[pair_dates <= current_dates.min()].copy()
+        return pair_dataframe.loc[pair_dates <= current_dates.min()]
 
     def _optimize_labels_as_of_prediction_time(
         self,
@@ -4658,6 +4660,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> None:
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
+        except KeyError as e:
+            # Deleting a not-yet-created study is a benign no-op: non-live runs
+            # always start from a fresh InMemoryStorage, and the first live or
+            # dry-run optimization per pair has no persisted study yet. optuna
+            # raises KeyError in that case; real failures raise otherwise.
+            logger.debug(
+                f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"
+            )
         except Exception as e:
             logger.warning(
                 f"[{pair}] Optuna {namespace} study {study_name} deletion failed: {e!r}",
