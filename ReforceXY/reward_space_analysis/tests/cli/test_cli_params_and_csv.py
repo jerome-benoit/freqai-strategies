@@ -12,7 +12,7 @@ import pytest
 
 from reward_space_analysis import Actions
 
-from ..constants import SCENARIOS, SEEDS, TOLERANCE
+from ..constants import PARAMS, SCENARIOS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 # Pytest marker for taxonomy classification
@@ -100,8 +100,9 @@ class TestParamsPropagation(RewardSpaceTestBase):
         fi_path = out_dir / "feature_importance.csv"
         self.assertFalse(fi_path.exists(), "feature_importance.csv should be absent when skipped")
 
-    def test_manifest_params_hash_generation(self):
-        """Ensure params_hash appears when non-default simulation params differ (risk_reward_ratio altered)."""
+    # Owns invariant: cli-economic-manifest-124
+    def test_manifest_economic_contract_and_params_hash(self):
+        """The manifest separates the reward contract, costs and episode boundaries."""
         out_dir = self.output_path / "manifest_hash"
         result = _run_cli(
             out_dir=out_dir,
@@ -112,6 +113,8 @@ class TestParamsPropagation(RewardSpaceTestBase):
                 str(SEEDS.BASE),
                 "--risk_reward_ratio",
                 str(SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT),
+                "--profit_aim",
+                str(PARAMS.PROFIT_AIM),
             ],
         )
         _assert_cli_success(self, result)
@@ -120,7 +123,30 @@ class TestParamsPropagation(RewardSpaceTestBase):
         manifest = json.loads(manifest_path.read_text())
         self.assertIn("params_hash", manifest, "params_hash should be present when params differ")
         self.assertIn("simulation_params", manifest)
-        self.assertIn("risk_reward_ratio", manifest["simulation_params"])
+        self.assertEqual(
+            manifest["reward_contract"]["name"],
+            "pair_local_net_log_liquidation_return",
+        )
+        self.assertEqual(manifest["cost_accounting"]["fee_source"], "analytical_assumption")
+        self.assertEqual(manifest["episode_boundaries"]["termination"], "economic_ruin")
+        self.assertEqual(manifest["episode_boundaries"]["truncation"], "synthetic_sample_limit")
+        reward_params = manifest["reward_params"]
+        self.assertAlmostEqualFloat(
+            reward_params["risk_reward_ratio"],
+            SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+        )
+        self.assertAlmostEqualFloat(
+            reward_params["profit_aim"],
+            PARAMS.PROFIT_AIM,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+        )
+        expected_target = reward_params["profit_aim"] * reward_params["risk_reward_ratio"]
+        self.assertAlmostEqualFloat(
+            manifest["compatibility_only"]["pnl_target"],
+            expected_target,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+        )
 
     def test_pbrs_invariance_section_present(self):
         """When reward_shaping column exists, summary should include PBRS invariance section."""
@@ -218,9 +244,9 @@ class TestParamsPropagation(RewardSpaceTestBase):
             int(rp["max_trade_duration_candles"]), SCENARIOS.CLI_MAX_TRADE_DURATION_FLAG
         )
 
-    # Owns invariant: cli-pbrs-csv-columns-121
-    def test_csv_contains_pbrs_columns_when_shaping_present(self):
-        """Verify reward_samples.csv includes PBRS columns when shaping is enabled.
+    # Owns invariant: cli-economic-contract-columns-121
+    def test_csv_contains_economic_and_pbrs_contract_columns(self):
+        """Verify reward_samples.csv exposes the complete economic transition contract.
 
         Verifies:
         - reward_base, reward_pbrs_delta, reward_invariance_correction columns exist
@@ -247,8 +273,19 @@ class TestParamsPropagation(RewardSpaceTestBase):
 
         df = pd.read_csv(csv_path)
 
-        # Verify PBRS columns exist
-        required_cols = ["reward_base", "reward_pbrs_delta", "reward_invariance_correction"]
+        required_cols = [
+            "reward_economic",
+            "reward_base",
+            "reward_pbrs_delta",
+            "reward_invariance_correction",
+            "previous_liquidation_value",
+            "reward_liquidation_value",
+            "next_liquidation_value",
+            "economic_log_return",
+            "economic_ruin",
+            "terminated",
+            "truncated",
+        ]
         for col in required_cols:
             self.assertIn(col, df.columns, f"Missing column: {col}")
 
@@ -268,6 +305,19 @@ class TestParamsPropagation(RewardSpaceTestBase):
             TOLERANCE.GENERIC_EQ,
             "Expected reward_shaping == reward_pbrs_delta + reward_invariance_correction",
         )
+        total_residual = (
+            df["reward"] - (df["reward_economic"] + df["reward_invalid"] + df["reward_shaping"])
+        ).abs()
+        self.assertLessEqual(float(total_residual.max()), TOLERANCE.GENERIC_EQ)
+        for column in [
+            "previous_liquidation_value",
+            "reward_liquidation_value",
+            "next_liquidation_value",
+        ]:
+            self.assertTrue((df[column] > 0.0).all(), f"{column} must stay positive")
+        self.assertTrue((df["terminated"] == df["economic_ruin"]).all())
+        self.assertTrue(bool(df.iloc[-1]["terminated"] or df.iloc[-1]["truncated"]))
+        self.assertFalse(bool(df.iloc[-1]["terminated"] and df.iloc[-1]["truncated"]))
 
         # Total reward should decompose into base + shaping + additives
         reward_residual = (

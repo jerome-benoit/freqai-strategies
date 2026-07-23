@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from reward_space_analysis import BASE_ENVIRONMENT_FEE_FALLBACK
+
 from ..constants import SCENARIOS, SEEDS
 from ..test_base import RewardSpaceTestBase
 
@@ -99,6 +101,10 @@ class TestIntegration(RewardSpaceTestBase):
                 "params_hash",
                 "reward_params",
                 "simulation_params",
+                "reward_contract",
+                "cost_accounting",
+                "episode_boundaries",
+                "compatibility_only",
             }
             self.assertTrue(
                 required_keys.issubset(manifest.keys()),
@@ -111,6 +117,12 @@ class TestIntegration(RewardSpaceTestBase):
             self.assertNotIn("params", manifest)
             self.assertEqual(manifest["num_samples"], SCENARIOS.SAMPLE_SIZE_SMALL)
             self.assertEqual(manifest["seed"], SEEDS.BASE)
+            self.assertEqual(
+                manifest["reward_contract"]["name"],
+                "pair_local_net_log_liquidation_return",
+            )
+            self.assertEqual(manifest["cost_accounting"]["fee_rate"], BASE_ENVIRONMENT_FEE_FALLBACK)
+            self.assertEqual(manifest["episode_boundaries"]["termination"], "economic_ruin")
 
         with (self.output_path / "run1" / "manifest.json").open() as f:
             manifest1 = json.load(f)

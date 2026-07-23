@@ -141,12 +141,23 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             "sample_exit_prob",
             "sample_neutral_prob",
             "reward",
+            "reward_economic",
             "reward_invalid",
             "reward_idle",
             "reward_hold",
             "reward_exit",
+            "previous_liquidation_value",
+            "reward_liquidation_value",
+            "next_liquidation_value",
+            "economic_log_return",
+            "economic_ruin",
+            "terminated",
+            "truncated",
         ]:
             self.assertIn(col, df_margin.columns)
+        self.assertTrue((df_margin["terminated"] == df_margin["economic_ruin"]).all())
+        self.assertTrue(bool(df_margin.iloc[-1]["terminated"] or df_margin.iloc[-1]["truncated"]))
+        self.assertFalse(bool(df_margin.iloc[-1]["terminated"] and df_margin.iloc[-1]["truncated"]))
 
     def test_simulate_samples_sampling_probabilities_are_bounded(self):
         """simulate_samples() exposes bounded sampling probabilities."""
@@ -166,24 +177,28 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         prob_upper_bound = SCENARIOS.API_PROBABILITY_UPPER_BOUND
         self.assertTrue(((values >= 0.0) & (values <= prob_upper_bound)).all())
 
-    def test_simulate_samples_interprets_bool_string_params(self):
-        """Test simulate_samples correctly interprets string boolean params like action_masking."""
+    def test_simulate_samples_action_masking_controls_invalid_sampling(self):
+        """String booleans preserve masking, including the diagnostic invalid-action stream."""
         df1 = simulate_samples_with_defaults(
             self.base_params(
                 action_masking="true", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
             ),
-            num_samples=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL,
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             trading_mode="spot",
         )
         self.assertIsInstance(df1, pd.DataFrame)
+        self.assertEqual(float(df1["is_invalid"].sum()), 0.0)
         df2 = simulate_samples_with_defaults(
             self.base_params(
                 action_masking="false", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
             ),
-            num_samples=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL,
+            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
             trading_mode="spot",
         )
         self.assertIsInstance(df2, pd.DataFrame)
+        invalid_rate = float(df2["is_invalid"].mean())
+        self.assertGreater(invalid_rate, 0.0)
+        self.assertLess(invalid_rate, 0.15)
 
     def test_short_allowed_via_simulation(self):
         """Test _is_short_allowed via different trading modes."""
@@ -363,8 +378,8 @@ class TestPrivateFunctions(RewardSpaceTestBase):
                 )
                 self.assertFinite(breakdown.total, name="total")
 
-    def test_invalid_action_handling(self):
-        """Test invalid action penalty."""
+    def test_invalid_action_preserves_economic_decomposition(self):
+        """An invalid action adds its penalty without replacing the economic mark."""
         context = self.make_ctx(
             pnl=PARAMS.PNL_SMALL,
             trade_duration=PARAMS.TRADE_DURATION_SHORT,
@@ -380,13 +395,12 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         self.assertLess(breakdown.invalid_penalty, 0, "Invalid action should have negative penalty")
         self.assertAlmostEqualFloat(
             breakdown.total,
-            breakdown.invalid_penalty
-            + breakdown.reward_shaping
-            + breakdown.entry_additive
-            + breakdown.exit_additive,
+            breakdown.economic_component + breakdown.invalid_penalty + breakdown.reward_shaping,
             tolerance=TOLERANCE.IDENTITY_RELAXED,
-            msg="Total should equal invalid penalty plus shaping/additives",
+            msg="Total should equal economic reward plus invalid penalty and PBRS",
         )
+        self.assertEqual(breakdown.entry_additive, 0.0)
+        self.assertEqual(breakdown.exit_additive, 0.0)
 
     def test_new_invariant_and_warn_parameters(self):
         """Ensure new tunables (check_invariants, exit_factor_threshold) exist and behave.

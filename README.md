@@ -181,6 +181,14 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
+ReforceXY optimizes pair-local net log returns marked to liquidation. Freqtrade
+remains authoritative for wallet allocation, stakes, portfolio exposure, order
+execution, fills, and protections. Models trained before the `net-log-v1`
+reward contract are not compatible with the current template identifier.
+The contract currently requires dry/live mode, spot trading, unlimited stake,
+and `add_state_info=true`. It fails fast in FreqAI backtesting because that API
+does not expose the required state there.
+
 ## Common workflows
 
 **List running compose services and the containers they created:**

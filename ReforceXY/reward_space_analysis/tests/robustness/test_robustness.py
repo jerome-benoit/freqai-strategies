@@ -10,9 +10,9 @@ import pytest
 from reward_space_analysis import (
     ATTENUATION_MODES,
     ATTENUATION_MODES_WITH_LEGACY,
+    MIN_LIQUIDATION_VALUE,
     Actions,
     Positions,
-    RewardContext,
     _get_exit_factor,
     simulate_samples,
 )
@@ -26,9 +26,6 @@ from ..constants import (
 )
 from ..helpers import (
     assert_diagnostic_warning,
-    assert_exit_factor_attenuation_modes,
-    assert_exit_mode_mathematical_validation,
-    assert_single_active_component_with_additives,
     calculate_reward_with_defaults,
     capture_warnings,
 )
@@ -40,67 +37,30 @@ pytestmark = pytest.mark.robustness
 class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
     """Robustness invariants, attenuation maths, parameter edges, scaling, warnings."""
 
-    # Owns invariant: robustness-decomposition-integrity-101 (robustness category)
-    def test_decomposition_integrity(self):
-        """reward must equal the single active core component under mutually exclusive scenarios (idle/hold/exit/invalid)."""
+    # Owns invariant: robustness-economic-decomposition-101 (robustness category)
+    def test_economic_decomposition_integrity(self):
+        """Total is exactly economic reward plus invalid penalty and canonical PBRS."""
         scenarios = [
-            {
-                "ctx": self.make_ctx(
-                    pnl=0.0,
-                    trade_duration=0,
-                    idle_duration=25,
-                    max_unrealized_profit=0.0,
-                    min_unrealized_profit=0.0,
-                    position=Positions.Neutral,
-                    action=Actions.Neutral,
-                ),
-                "active": "idle_penalty",
-            },
-            {
-                "ctx": self.make_ctx(
-                    pnl=0.0,
-                    trade_duration=150,
-                    idle_duration=0,
-                    max_unrealized_profit=0.0,
-                    min_unrealized_profit=0.0,
-                    position=Positions.Long,
-                    action=Actions.Neutral,
-                ),
-                "active": "hold_penalty",
-            },
-            {
-                "ctx": self.make_ctx(
-                    pnl=PARAMS.PROFIT_AIM,
-                    trade_duration=60,
-                    idle_duration=0,
-                    max_unrealized_profit=0.05,
-                    min_unrealized_profit=0.01,
-                    position=Positions.Long,
-                    action=Actions.Long_exit,
-                ),
-                "active": "exit_component",
-            },
-            {
-                "ctx": self.make_ctx(
-                    pnl=0.01,
-                    trade_duration=10,
-                    idle_duration=0,
-                    max_unrealized_profit=0.02,
-                    min_unrealized_profit=0.0,
-                    position=Positions.Short,
-                    action=Actions.Long_exit,
-                ),
-                "active": "invalid_penalty",
-            },
+            self.make_ctx(idle_duration=25),
+            self.make_ctx(
+                pnl=0.01,
+                position=Positions.Long,
+                action=Actions.Neutral,
+                previous_liquidation_value=0.99,
+            ),
+            self.make_ctx(
+                pnl=PARAMS.PROFIT_AIM,
+                position=Positions.Long,
+                action=Actions.Long_exit,
+            ),
+            self.make_ctx(
+                pnl=0.01,
+                position=Positions.Short,
+                action=Actions.Long_exit,
+            ),
         ]
-        for sc in scenarios:
-            ctx_obj = sc["ctx"]
-            active_label = sc["active"]
-            assert isinstance(ctx_obj, RewardContext), (
-                f"Expected RewardContext, got {type(ctx_obj)}"
-            )
-            assert isinstance(active_label, str), f"Expected str, got {type(active_label)}"
-            with self.subTest(active=active_label):
+        for context in scenarios:
+            with self.subTest(position=context.position, action=context.action):
                 params = self.base_params(
                     entry_additive_enabled=False,
                     exit_additive_enabled=False,
@@ -108,23 +68,18 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                     potential_gamma=0.0,
                     check_invariants=False,
                 )
-                br = calculate_reward_with_defaults(ctx_obj, params)
-                # Relaxed tolerance: Accumulated floating-point errors across multiple
-                # reward component calculations (entry, hold, exit additives, and penalties)
-                assert_single_active_component_with_additives(
-                    self,
-                    br,
-                    active_label,
-                    TOLERANCE.IDENTITY_RELAXED,
-                    inactive_core=[
-                        "exit_component",
-                        "idle_penalty",
-                        "hold_penalty",
-                        "invalid_penalty",
-                    ],
+                br = calculate_reward_with_defaults(context, params, action_masking=False)
+                self.assertAlmostEqualFloat(
+                    br.total,
+                    br.economic_component + br.invalid_penalty + br.reward_shaping,
+                    tolerance=TOLERANCE.IDENTITY_STRICT,
                 )
+                self.assertEqual(br.entry_additive, 0.0)
+                self.assertEqual(br.exit_additive, 0.0)
+                self.assertEqual(br.idle_penalty, 0.0)
+                self.assertEqual(br.hold_penalty, 0.0)
 
-    # Owns invariant: robustness-exit-pnl-only-117 (robustness category)
+    # Owns invariant: robustness-episode-boundaries-117 (robustness category)
     def test_pnl_invariant_exit_only(self):
         """Invariant: PnL only non-zero while in position.
 
@@ -150,10 +105,20 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             np.finfo(float).eps,
             msg="PnL invariant violation: neutral states must have pnl == 0",
         )
+        self.assertTrue((df["terminated"] == df["economic_ruin"]).all())
+        self.assertTrue(bool(df.iloc[-1]["terminated"] or df.iloc[-1]["truncated"]))
+        self.assertFalse(bool(df.iloc[-1]["terminated"] and df.iloc[-1]["truncated"]))
+        self.assertTrue(
+            np.allclose(
+                df["next_liquidation_value"].to_numpy()[:-1],
+                df["previous_liquidation_value"].to_numpy()[1:],
+                rtol=0.0,
+                atol=TOLERANCE.IDENTITY_STRICT,
+            )
+        )
 
-    def test_exit_factor_comprehensive(self):
-        """Comprehensive exit factor test: mathematical correctness and monotonic attenuation."""
-        # Part 1: Mathematical formulas validation
+    def test_legacy_exit_attenuation_does_not_change_economic_reward(self):
+        """Deprecated exit kernels are excluded from the economic component."""
         context = self.make_ctx(
             pnl=0.05,
             trade_duration=50,
@@ -163,45 +128,18 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             position=Positions.Long,
             action=Actions.Long_exit,
         )
-        params = self.DEFAULT_PARAMS.copy()
-
-        # Relaxed tolerance: Exit factor calculations involve multiple steps
-        # (normalization, kernel application, potential transforms)
-        assert_exit_mode_mathematical_validation(
-            self,
-            context,
-            params,
-            PARAMS.BASE_FACTOR,
-            PARAMS.PROFIT_AIM,
-            PARAMS.RISK_REWARD_RATIO,
-            TOLERANCE.IDENTITY_RELAXED,
-        )
-
-        # Part 2: Monotonic attenuation validation
         modes = [*list(ATTENUATION_MODES), "plateau_linear"]
-        test_pnl = 0.05
-        test_context = self.make_ctx(
-            pnl=test_pnl,
-            trade_duration=50,
-            max_unrealized_profit=0.06,
-            min_unrealized_profit=0.0,
-        )
-        # Relaxed tolerance: Testing across multiple attenuation modes with different
-        # numerical characteristics (exponential, polynomial, rational functions)
-        assert_exit_factor_attenuation_modes(
-            self,
-            base_factor=PARAMS.BASE_FACTOR,
-            pnl=test_pnl,
-            pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-            context=test_context,
-            attenuation_modes=modes,
-            base_params_fn=self.base_params,
-            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-        )
+        rewards = [
+            calculate_reward_with_defaults(
+                context, self.base_params(exit_attenuation_mode=mode)
+            ).economic_component
+            for mode in modes
+        ]
+        for reward in rewards[1:]:
+            self.assertAlmostEqualFloat(reward, rewards[0], tolerance=TOLERANCE.IDENTITY_STRICT)
 
-    def test_exit_factor_threshold_warning_and_non_capping(self):
-        """Warning emission without capping when exit_factor_threshold exceeded."""
+    def test_legacy_exit_threshold_does_not_cap_economic_reward(self):
+        """The removed exit threshold neither warns nor caps scaled log return."""
         params = self.base_params(exit_factor_threshold=10.0)
         params.pop("base_factor", None)
         context = self.make_ctx(
@@ -228,15 +166,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         self.assertGreater(amplified.exit_component, baseline.exit_component)
         scale = amplified.exit_component / baseline.exit_component
         self.assertGreater(scale, 10.0)
-        runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
-        self.assertTrue(runtime_warnings)
-        self.assertTrue(
-            any(
-                (">" in str(w.message) and "threshold" in str(w.message))
-                or "|exit_factor|=" in str(w.message)
-                for w in runtime_warnings
-            )
-        )
+        self.assertEqual([w for w in caught if issubclass(w.category, RuntimeWarning)], [])
 
     def test_negative_slope_sanitization(self):
         """Negative exit_linear_slope is sanitized to 1.0; resulting exit factors must match slope=1.0 within tolerance."""
@@ -305,8 +235,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
                 f"Alpha attenuation mismatch tau={tau} alpha={alpha} obs_ratio={observed_ratio} exp_ratio={expected_ratio}",
             )
 
+    # Owns invariant: robustness-economic-ruin-123
     def test_reward_calculation_extreme_parameters_stability(self):
-        """Reward calculation remains numerically stable with extreme parameter values.
+        """Extreme returns stay finite and economic ruin releases PBRS potential.
 
         Tests numerical stability and finite output when using extreme parameter
         values (win_reward_factor=1000, base_factor=10000) that might cause
@@ -335,6 +266,31 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         )
         br = calculate_reward_with_defaults(context, extreme_params, base_factor=10000.0)
         self.assertFinite(br.total, name="breakdown.total")
+        ruin_params = self.base_params(
+            hold_potential_enabled=True,
+            potential_gamma=0.95,
+        )
+        previous_potential = 0.42
+        ruin = calculate_reward_with_defaults(
+            self.make_ctx(
+                pnl=-1.5,
+                position=Positions.Long,
+                action=Actions.Neutral,
+            ),
+            ruin_params,
+            prev_potential=previous_potential,
+        )
+        self.assertTrue(ruin.economic_ruin)
+        self.assertTrue(ruin.terminated)
+        self.assertFalse(ruin.truncated)
+        self.assertEqual(ruin.reward_liquidation_value, MIN_LIQUIDATION_VALUE)
+        self.assertEqual(ruin.next_liquidation_value, MIN_LIQUIDATION_VALUE)
+        self.assertEqual(ruin.next_potential, 0.0)
+        self.assertAlmostEqualFloat(
+            ruin.reward_shaping,
+            -previous_potential,
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+        )
 
     def test_exit_attenuation_modes_enumeration(self):
         """All exit attenuation modes produce finite rewards without errors.

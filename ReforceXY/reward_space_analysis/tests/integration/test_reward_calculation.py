@@ -36,32 +36,28 @@ class TestRewardCalculation(RewardSpaceTestBase):
     """High-level integration smoke tests for reward calculation."""
 
     @pytest.mark.smoke
-    def test_reward_component_activation_smoke(
+    def test_economic_transition_decomposition_smoke(
         self,
     ):
-        """Smoke: each primary component activates in a representative scenario.
-
-        # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
-        Detailed progressive / boundary / proportional invariants are NOT asserted here.
-        We only check sign / non-zero activation plus total decomposition identity.
-        """
+        """Smoke the neutral, hold, exit and invalid-action economic transitions."""
         scenarios = [
             (
-                "hold_penalty_active",
+                "marked_hold",
                 self.make_ctx(
-                    pnl=0.0,
+                    pnl=0.01,
                     trade_duration=HOLD_PENALTY_ACTIVE_TRADE_DURATION,  # > default threshold
                     idle_duration=0,
                     max_unrealized_profit=0.02,
                     min_unrealized_profit=-0.01,
                     position=Positions.Long,
                     action=Actions.Neutral,
+                    previous_liquidation_value=0.99,
                 ),
-                "hold_penalty",
+                1,
                 True,
             ),
             (
-                "idle_penalty_active",
+                "neutral_self_loop",
                 self.make_ctx(
                     pnl=0.0,
                     trade_duration=0,
@@ -71,7 +67,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     position=Positions.Neutral,
                     action=Actions.Neutral,
                 ),
-                "idle_penalty",
+                0,
                 True,
             ),
             (
@@ -85,7 +81,7 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     position=Positions.Long,
                     action=Actions.Long_exit,
                 ),
-                "exit_component",
+                1,
                 True,
             ),
             (
@@ -99,12 +95,12 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     position=Positions.Short,
                     action=Actions.Long_exit,  # invalid pairing
                 ),
-                "invalid_penalty",
+                None,
                 False,
             ),
         ]
 
-        for name, ctx, expected_component, action_masking in scenarios:
+        for name, ctx, expected_sign, action_masking in scenarios:
             with self.subTest(scenario=name):
                 breakdown = calculate_reward_with_defaults(
                     ctx,
@@ -112,22 +108,17 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     action_masking=action_masking,
                 )
 
-                value = getattr(breakdown, expected_component)
-                # Sign / activation expectations
-                if expected_component in {"hold_penalty", "idle_penalty", "invalid_penalty"}:
-                    self.assertLess(value, 0.0, f"{expected_component} should be negative: {name}")
-                elif expected_component == "exit_component":
-                    self.assertGreater(value, 0.0, f"exit_component should be positive: {name}")
+                if expected_sign == 1:
+                    self.assertGreater(breakdown.economic_component, 0.0, name)
+                elif expected_sign == 0:
+                    self.assertEqual(breakdown.economic_component, 0.0, name)
+                else:
+                    self.assertLess(breakdown.invalid_penalty, 0.0, name)
 
-                # Decomposition identity (relaxed tolerance)
                 comp_sum = (
-                    breakdown.exit_component
-                    + breakdown.idle_penalty
-                    + breakdown.hold_penalty
+                    breakdown.economic_component
                     + breakdown.invalid_penalty
                     + breakdown.reward_shaping
-                    + breakdown.entry_additive
-                    + breakdown.exit_additive
                 )
                 self.assertAlmostEqualFloat(
                     breakdown.total,
@@ -135,6 +126,10 @@ class TestRewardCalculation(RewardSpaceTestBase):
                     tolerance=TOLERANCE.IDENTITY_RELAXED,
                     msg=f"Total != sum components in {name}",
                 )
+                self.assertEqual(breakdown.idle_penalty, 0.0)
+                self.assertEqual(breakdown.hold_penalty, 0.0)
+                self.assertEqual(breakdown.entry_additive, 0.0)
+                self.assertEqual(breakdown.exit_additive, 0.0)
 
     def test_long_short_symmetry_smoke(self):
         """Smoke: exit component sign & approximate magnitude symmetry for long vs short.

@@ -5,14 +5,23 @@ policies, maintenance workflows, and full coverage mapping.
 
 ## Purpose
 
-The suite enforces:
+The suite enforces the analytical clone's current economic contract:
 
-- Reward component mathematics & transform correctness
-- PBRS shaping mechanics (canonical exit semantics, near-zero classification)
-- Robustness under extreme / invalid parameter settings
-- Statistical metrics integrity (bootstrap, constant distributions)
-- CLI parameter propagation & report formatting
-- Cross-component smoke scenarios
+- pair-local net log liquidation returns with a positive liquidation-value floor;
+- unified Freqtrade-compatible entry and exit fee primitives;
+- exact `economic + invalid + canonical PBRS` reward decomposition;
+- economic ruin as termination and finite sample exhaustion as truncation;
+- canonical PBRS termwise correction and discounted telescoping diagnostics;
+- CLI, CSV, report, and manifest propagation of the economic contract;
+- robustness and statistical diagnostics around that contract.
+
+The raw sum of shaping rewards is descriptive only. For discount
+`gamma < 1`, PBRS verification uses the termwise correction and the discounted
+identity `sum(gamma^t F_t) = -Phi(s_0) + gamma^T Phi(s_T)`.
+
+Legacy idle, hold, exit-attenuation, efficiency, and additive helpers remain
+covered only as compatibility surfaces. They are not active components of the
+economic reward.
 
 Single ownership per invariant is tracked in the Coverage Mapping section of
 this README.
@@ -21,12 +30,12 @@ this README.
 
 | Directory      | Marker      | Scope                                       |
 | -------------- | ----------- | ------------------------------------------- |
-| `components/`  | components  | Component math                              |
+| `components/`  | components  | Economic decomposition and compatibility math |
 | `transforms/`  | transforms  | Mathematical transform functions            |
-| `robustness/`  | robustness  | Edge cases, stability, progression          |
+| `robustness/`  | robustness  | Numerical stability, ruin, and boundaries   |
 | `api/`         | api         | Public API helpers & parsing                |
-| `cli/`         | cli         | CLI parameter propagation & artifacts       |
-| `pbrs/`        | pbrs        | Potential-based shaping invariance & modes  |
+| `cli/`         | cli         | Economic contract propagation and artifacts |
+| `pbrs/`        | pbrs        | Canonical shaping, fees, and telescoping     |
 | `statistics/`  | statistics  | Statistical metrics, tests, bootstrap       |
 | `integration/` | integration | Smoke scenarios & report formatting         |
 | `helpers/`     | (none)      | Helper utilities (data loading, assertions) |
@@ -183,15 +192,15 @@ Columns:
 
 | ID                                           | Category    | Description                                                                         | Owning File                               | Notes                                                                                                        |
 | -------------------------------------------- | ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| report-abs-shaping-line-091                  | integration | Abs Σ Shaping Reward line present & formatted                                       | integration/test_report_formatting.py:4   | Module docstring; primary test at line 95. PBRS report may render line; formatting owned here                |
-| report-additives-deterministic-092           | components  | Additives deterministic report section                                              | components/test_additives.py:4            | Integration/PBRS may reference outcome non-owning                                                            |
-| robustness-decomposition-integrity-101       | robustness  | Single active core component equals total reward under mutually exclusive scenarios | robustness/test_robustness.py:43          | Scenarios: idle, hold, exit, invalid; non-owning refs integration/test_reward_calculation.py                 |
+| report-raw-shaping-diagnostic-091            | integration | Raw shaping sum is explicitly descriptive and never an invariance classifier        | integration/test_report_formatting.py:4   | Canonical classification is owned by invariant 116                                                           |
+| components-canonical-additives-092           | components  | Strict canonical PBRS rejects additives; relaxed validation suppresses them          | components/test_additives.py:4            | Additive fields remain zero-valued compatibility outputs                                                     |
+| robustness-economic-decomposition-101       | robustness  | Total reward equals economic return plus invalid penalty and canonical PBRS          | robustness/test_robustness.py:44          | Covers neutral, hold, exit, and invalid transitions                                                          |
 | robustness-exit-mode-fallback-102            | robustness  | Unknown exit_attenuation_mode falls back to linear w/ warning                       | robustness/test_robustness.py:654         | Comment line (function at :655)                                                                              |
 | robustness-negative-grace-clamp-103          | robustness  | Negative exit_plateau_grace clamps to 0.0 w/ warning                                | robustness/test_robustness.py:696         |                                                                                                              |
 | robustness-invalid-power-tau-104             | robustness  | Invalid power tau falls back alpha=1.0 w/ warning                                   | robustness/test_robustness.py:747         |                                                                                                              |
 | robustness-near-zero-half-life-105           | robustness  | Near-zero half life yields no attenuation (factor≈base)                             | robustness/test_robustness.py:792         |                                                                                                              |
 | pbrs-canonical-exit-semantic-106             | pbrs        | Canonical exit uses shaping=-prev_potential and next_potential=0.0                  | pbrs/test_pbrs.py:374                     | Uses stored potential across steps; no drift correction applied                                              |
-| pbrs-canonical-near-zero-report-116          | pbrs        | Canonical near-zero cumulative shaping classification                               | pbrs/test_pbrs.py:1223                    | Full report classification                                                                                   |
+| pbrs-canonical-correction-report-116         | pbrs        | Termwise correction and discounted telescoping verify canonical PBRS                 | pbrs/test_pbrs.py:1183                    | A non-zero raw shaping sum is allowed and deliberately exercised                                            |
 | statistics-partial-deps-skip-107             | statistics  | skip_partial_dependence => empty PD structures                                      | statistics/test_statistics.py:42          | Docstring line                                                                                               |
 | helpers-duplicate-rows-drop-108              | helpers     | Duplicate rows dropped w/ warning counting removals                                 | helpers/test_utilities.py:27              | Docstring line                                                                                               |
 | helpers-missing-cols-fill-109                | helpers     | Missing required columns filled with NaN + single warning                           | helpers/test_utilities.py:51              | Docstring line                                                                                               |
@@ -201,11 +210,14 @@ Columns:
 | statistics-constant-dist-widened-ci-113a     | statistics  | Non-strict: widened CI with warning                                                 | statistics/test_statistics.py:551         | Test docstring labels "Invariant 113 (non-strict)"                                                           |
 | statistics-constant-dist-strict-omit-113b    | statistics  | Strict: omit metrics (no widened CI)                                                | statistics/test_statistics.py:583         | Test docstring labels "Invariant 113 (strict)"                                                               |
 | statistics-fallback-diagnostics-115          | statistics  | Fallback diagnostics constant distribution (qq_r2=1.0 etc.)                         | statistics/test_statistics.py:191         | Docstring line                                                                                               |
-| robustness-exit-pnl-only-117                 | robustness  | Only exit actions have non-zero PnL                                                 | robustness/test_robustness.py:127         | Comment line                                                                                                 |
-| pbrs-absence-shift-placeholder-118           | pbrs        | Placeholder shift line present (absence displayed)                                  | pbrs/test_pbrs.py:1523                    | Ensures placeholder appears when shaping shift absent                                                        |
-| components-pbrs-breakdown-fields-119         | components  | PBRS breakdown fields finite and mathematically aligned                             | components/test_reward_components.py:783  | Tests base_reward, pbrs_delta, invariance_correction fields and their alignment                              |
-| integration-pbrs-metrics-section-120         | integration | PBRS Metrics section present in report with tracing metrics                         | integration/test_report_formatting.py:155 | Verifies PBRS Metrics (Tracing) subsection rendering in statistical_analysis.md                              |
-| cli-pbrs-csv-columns-121                     | cli         | PBRS columns in reward_samples.csv when shaping enabled                             | cli/test_cli_params_and_csv.py:221        | Ensures reward_base, reward_pbrs_delta, reward_invariance_correction columns exist and contain finite values |
+| robustness-episode-boundaries-117            | robustness  | Neutral PnL, mark carry, ruin termination, and finite-horizon truncation are coherent | robustness/test_robustness.py:86          | Final sample is exactly one of terminated or truncated                                                       |
+| pbrs-unverified-shift-placeholder-118        | pbrs        | Missing termwise correction is Unverified and shift absence remains explicit        | pbrs/test_pbrs.py:1499                    | Prevents a raw shaping sum from being promoted to an invariance proof                                        |
+| components-economic-pbrs-breakdown-119       | components  | Economic base, PBRS delta, and correction fields are finite and aligned              | components/test_reward_components.py:625  | Canonical correction is zero within numerical tolerance                                                     |
+| integration-pbrs-metrics-section-120         | integration | PBRS tracing metrics are rendered in the statistical report                          | integration/test_report_formatting.py:163 | Includes base, PBRS delta, correction, and magnitude ratio diagnostics                                       |
+| cli-economic-contract-columns-121            | cli         | CSV exposes economic marks, decomposition, PBRS tracing, ruin, and boundary flags     | cli/test_cli_params_and_csv.py:248        | Values are finite, positive where required, and mathematically aligned                                       |
+| pbrs-unified-fee-primitives-122               | pbrs        | Long and short unrealized PnL use the unified Freqtrade entry/exit fee formulas       | pbrs/test_pbrs.py:598                     | Covers exact analytical formulas for both directions                                                        |
+| robustness-economic-ruin-123                  | robustness  | Economic ruin floors liquidation value, terminates, and releases PBRS potential       | robustness/test_robustness.py:244         | Extreme inputs remain finite                                                                                 |
+| cli-economic-manifest-124                     | cli         | Manifest declares reward formula, fee assumptions, boundaries, and compatibility data | cli/test_cli_params_and_csv.py:103        | CLI overrides remain visible in canonical reward parameters                                                 |
 
 ### Non-Owning Smoke / Reference Checks
 
@@ -220,15 +232,11 @@ Table tracks approximate line ranges and source ownership:
 
 | File                                   | Lines (approx) | References                                               | Ownership Source                                                    |
 | -------------------------------------- | -------------- | -------------------------------------------------------- | ------------------------------------------------------------------- |
-| integration/test_reward_calculation.py | 44             | Decomposition identity (sum components)                  | robustness/test_robustness.py:43                                    |
-| components/test_reward_components.py   | 551            | Exit factor finiteness & plateau behavior                | robustness/test_robustness.py:43+                                   |
-| pbrs/test_pbrs.py                      | 1053           | Canonical vs non-canonical classification formatting     | robustness/test_robustness.py:43, robustness/test_robustness.py:127 |
-| pbrs/test_pbrs.py                      | 1222,1292,1415 | Abs Σ Shaping Reward line formatting                     | integration/test_report_formatting.py:95                            |
-| pbrs/test_pbrs.py                      | 1222           | Canonical near-zero cumulative shaping classification    | robustness/test_robustness.py:43                                    |
-| pbrs/test_pbrs.py                      | 1292           | Canonical warning classification (Σ shaping > tolerance) | robustness/test_robustness.py:43                                    |
-| pbrs/test_pbrs.py                      | 1415           | Non-canonical full report reason aggregation             | robustness/test_robustness.py:43                                    |
-| pbrs/test_pbrs.py                      | 1469           | Non-canonical mode-only reason (additives disabled)      | robustness/test_robustness.py:43                                    |
-| statistics/test_statistics.py          | 292            | Mean decomposition consistency                           | robustness/test_robustness.py:43                                    |
+| integration/test_reward_calculation.py | 39             | Economic transition decomposition                       | robustness/test_robustness.py:44                  |
+| components/test_reward_components.py   | 492            | Legacy exit-factor helper finiteness                     | compatibility-only helper coverage                |
+| pbrs/test_pbrs.py                      | 1010-1490      | Eligible, violated, unverified, and ineligible reporting | pbrs/test_pbrs.py:1183 and :1499                   |
+| pbrs/test_pbrs.py                      | 1183           | Raw shaping diagnostic formatting                       | integration/test_report_formatting.py:4            |
+| statistics/test_statistics.py          | 292            | Mean economic decomposition consistency                 | robustness/test_robustness.py:44                   |
 
 ### Deprecated / Reserved IDs
 
