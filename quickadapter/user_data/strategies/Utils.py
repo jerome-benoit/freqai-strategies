@@ -597,9 +597,7 @@ def label_known_at_lookahead_column_name(label_col: str) -> str:
 
 def label_weight_known_at_lookahead_column_name(label_col: str) -> str:
     """Return the weight-availability lookahead column name for ``label_col``."""
-    return _label_aux_column_name(
-        label_col, _LABEL_WEIGHT_KNOWN_AT_LOOKAHEAD_SUFFIX
-    )
+    return _label_aux_column_name(label_col, _LABEL_WEIGHT_KNOWN_AT_LOOKAHEAD_SUFFIX)
 
 
 @dataclass
@@ -845,6 +843,24 @@ def get_smoothing_kernel_half_width(
     return effective_window // 2
 
 
+def _sanitize_known_at_lookahead(
+    known_at_lookahead: pd.Series,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Row positions and non-finite-guarded int64 lookahead values.
+
+    Non-finite lookahead casts to garbage int64 (silent, with a RuntimeWarning)
+    and a spurious ``0`` reads as "available now", keeping a row whose
+    availability is actually unknown. Map non-finite so its known_at position is
+    ``n`` (maximally unavailable) and such rows are always purged near a boundary.
+    """
+    n = len(known_at_lookahead)
+    positions = np.arange(n, dtype=np.int64)
+    raw = known_at_lookahead.to_numpy(dtype=float)
+    if n and not np.isfinite(raw).all():
+        raw = np.where(np.isfinite(raw), raw, (n - positions).astype(float))
+    return positions, raw.astype(np.int64)
+
+
 def compose_label_lookahead(
     known_at_lookahead: pd.Series,
     kernel_half_width: int,
@@ -857,16 +873,9 @@ def compose_label_lookahead(
     if known_at_lookahead.empty:
         return known_at_lookahead.copy()
     n = len(known_at_lookahead)
-    positions = np.arange(n, dtype=np.int64)
-    # Guard: non-finite lookahead would cast to garbage int64 (silent, with a
-    # RuntimeWarning) and a spurious ``0`` reads as "available now", keeping a
-    # row whose availability is actually unknown. Map non-finite so its
-    # known_at position is ``n`` (maximally unavailable) and such rows are
-    # always purged near a boundary.
-    raw = known_at_lookahead.to_numpy(dtype=float)
-    if not np.isfinite(raw).all():
-        raw = np.where(np.isfinite(raw), raw, (n - positions).astype(float))
-    known_at_lookahead_values = raw.astype(np.int64)
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
     if kernel_half_width <= 0:
         return pd.Series(
             known_at_lookahead_values,
@@ -2232,45 +2241,36 @@ def compute_label_weights(
 def compute_label_weight_known_at_lookahead(
     known_at_lookahead: pd.Series,
     indices: Sequence[int] | NDArray[np.integer],
-    weights_row: NDArray[np.floating],
-    fill_method: str,
 ) -> pd.Series:
-    """Per-row availability (in candles) of the label WEIGHT column.
+    """Per-row causal availability (in candles) of the label WEIGHT column.
 
-    A pivot's swing metric (its weight source) only becomes computable at the
-    next pivot's confirmation ``i_{k+1}``, one pivot later than the label's own
-    availability ``i_k`` (backfill in ``_zigzag``/``add_pivot``). Derived from
-    the label availability without extra plumbing: ``i_{k+1} ==
-    known_at_positions[indices[k+1]]``. The trailing pivot has no closing swing
-    (weight 0 via ``_impute_weights``) so it never resolves in-frame (``n``).
-
-    ``fill_method == "zero"``: only pivot rows carry weight, so only pivot rows
-    are bumped; off-pivot rows keep their label availability (max-neutral). Non-
-    zero fills mix every positive-weight pivot into every row (global epsilon
-    scalar / untruncated Gaussian max), so a conservative uniform bound applies
-    to all rows. Folded via ``max(label, weight)`` by the causal purge.
+    A pivot's swing metric (its weight source) is backfilled from the adjacent
+    closing pivot, so it only becomes computable at the next pivot's
+    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]`` — one pivot
+    later than the pivot's own label availability ``i_k``. Only pivot rows are
+    bumped to that lag (the trailing pivot has no closing swing, weight 0 via
+    ``_impute_weights``, so it never resolves in-frame -> ``n``); off-pivot rows
+    keep their label availability. The off-pivot fill scheme (epsilon floor /
+    Gaussian bumps) is orthogonal to this pivot lag and is not constrained here.
+    Folded via ``max(label, weight)`` by the causal purge.
     """
     n = len(known_at_lookahead)
-    positions = np.arange(n, dtype=np.int64)
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
     if n == 0:
         return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
-    known_at_positions = positions + known_at_lookahead.to_numpy(dtype=np.int64)
+    known_at_positions = positions + known_at_lookahead_values
     idx = np.asarray(indices, dtype=int)
-    idx = idx[(idx >= 0) & (idx < n)]
+    idx = np.sort(idx[(idx >= 0) & (idx < n)])
     base = known_at_positions.copy()
     if idx.size:
         avail_pivot = np.empty(idx.size, dtype=np.int64)
         avail_pivot[:-1] = known_at_positions[idx[1:]]
         avail_pivot[-1] = n
         base[idx] = np.maximum(base[idx], avail_pivot)
-        if fill_method != FILL_METHODS[0]:  # not "zero"
-            positive_avail = avail_pivot[weights_row[idx] > 0.0]
-            if positive_avail.size:
-                base = np.maximum(base, int(positive_avail.max()))
     base = np.clip(base, positions, n)
-    return pd.Series(
-        base - positions, index=known_at_lookahead.index, dtype=np.int64
-    )
+    return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
 
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:

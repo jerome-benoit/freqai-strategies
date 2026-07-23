@@ -1047,8 +1047,6 @@ class QuickAdapterV3(IStrategy):
                     ] = compute_label_weight_known_at_lookahead(
                         known_at_lookahead=label_data.known_at_lookahead,
                         indices=label_data.indices,
-                        weights_row=dataframe[label_weight_col].to_numpy(dtype=float),
-                        fill_method=col_weighting_config["fill_method"],
                     )
 
             if label_col == EXTREMA_COLUMN:
