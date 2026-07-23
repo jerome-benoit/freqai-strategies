@@ -94,6 +94,7 @@ from Utils import (
     get_optuna_study_model_parameters,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
+    label_weight_known_at_lookahead_column_name,
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
@@ -482,25 +483,27 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         row's LOCAL position in ``unfiltered_df`` to recover the local
         index at which the label becomes causally available.
 
-        Row-wise ``max`` of every present ``<label>_known_at_lookahead``
-        column; labels with a missing column or any NaN are skipped
-        silently (opt-in by emission). Returns ``None`` when no label is
-        usable; callers then fall back to the position-based purge.
+        Row-wise ``max`` of every present ``<label>_known_at_lookahead`` and
+        ``<label>_weight_known_at_lookahead`` column (weight availability lags
+        the label by one pivot); columns missing or with any NaN are skipped
+        silently (opt-in by emission). Returns ``None`` when none is usable;
+        callers then fall back to the position-based purge.
         """
         QuickAdapterRegressorV3._validate_index_alignment(
             filtered_dataframe, unfiltered_df
         )
         series_list: list[pd.Series] = []
         for label_col in LABEL_COLUMNS:
-            known_at_lookahead_col = label_known_at_lookahead_column_name(label_col)
-            if known_at_lookahead_col not in unfiltered_df.columns:
-                continue
-            lookahead = unfiltered_df.loc[
-                filtered_dataframe.index, known_at_lookahead_col
-            ]
-            if lookahead.isna().any():
-                continue
-            series_list.append(pd.to_numeric(lookahead, errors="raise"))
+            for lookahead_col in (
+                label_known_at_lookahead_column_name(label_col),
+                label_weight_known_at_lookahead_column_name(label_col),
+            ):
+                if lookahead_col not in unfiltered_df.columns:
+                    continue
+                lookahead = unfiltered_df.loc[filtered_dataframe.index, lookahead_col]
+                if lookahead.isna().any():
+                    continue
+                series_list.append(pd.to_numeric(lookahead, errors="raise"))
         if not series_list:
             return None
         if len(series_list) == 1:

@@ -41,6 +41,7 @@ from Utils import (
     calculate_quantile,
     compose_label_lookahead,
     compute_label_weights,
+    compute_label_weight_known_at_lookahead,
     ensure_datetime_series,
     ewo,
     format_dict,
@@ -57,6 +58,7 @@ from Utils import (
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
+    label_weight_known_at_lookahead_column_name,
     migrate_config,
     nan_average,
     non_zero_diff,
@@ -466,10 +468,14 @@ class QuickAdapterV3(IStrategy):
                 col_smoothing_config = get_label_column_config(
                     label_col, label_smoothing["default"], label_smoothing["columns"]
                 )
-                if col_smoothing_config["method"] in (
-                    SMOOTHING_METHODS[7],  # "savgol"
-                    SMOOTHING_METHODS[8],  # "gaussian_filter1d"
-                ) and col_smoothing_config["mode"] == SMOOTHING_MODES[3]:  # "wrap"
+                if (
+                    col_smoothing_config["method"]
+                    in (
+                        SMOOTHING_METHODS[7],  # "savgol"
+                        SMOOTHING_METHODS[8],  # "gaussian_filter1d"
+                    )
+                    and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
+                ):  # "wrap"
                     raise ValueError(
                         "label_smoothing.mode='wrap' is incompatible with "
                         "feature_parameters.causal_mode=true"
@@ -1035,6 +1041,15 @@ class QuickAdapterV3(IStrategy):
                     weighting_config=col_weighting_config,
                     logger=logger,
                 )
+                if label_data.known_at_lookahead is not None:
+                    dataframe[
+                        label_weight_known_at_lookahead_column_name(label_col)
+                    ] = compute_label_weight_known_at_lookahead(
+                        known_at_lookahead=label_data.known_at_lookahead,
+                        indices=label_data.indices,
+                        weights_row=dataframe[label_weight_col].to_numpy(dtype=float),
+                        fill_method=col_weighting_config["fill_method"],
+                    )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_COLUMN] = dataframe[label_col]
@@ -1056,16 +1071,19 @@ class QuickAdapterV3(IStrategy):
                 )
 
             # Zero-phase smoothing reads future candles within the kernel
-            # half-width; extend the per-row label lookahead so causal
-            # split guards account for the smoothing lookahead.
-            known_at_lookahead_column = label_known_at_lookahead_column_name(label_col)
-            if known_at_lookahead_column in dataframe.columns:
-                kernel_half_width = get_smoothing_kernel_half_width(
-                    col_smoothing_config, series_length=series_length
-                )
-                dataframe[known_at_lookahead_column] = compose_label_lookahead(
-                    dataframe[known_at_lookahead_column], kernel_half_width
-                )
+            # half-width; extend the per-row lookahead so causal split guards
+            # account for the smoothing lookahead.
+            kernel_half_width = get_smoothing_kernel_half_width(
+                col_smoothing_config, series_length=series_length
+            )
+            for lookahead_column in (
+                label_known_at_lookahead_column_name(label_col),
+                label_weight_known_at_lookahead_column_name(label_col),
+            ):
+                if lookahead_column in dataframe.columns:
+                    dataframe[lookahead_column] = compose_label_lookahead(
+                        dataframe[lookahead_column], kernel_half_width
+                    )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
