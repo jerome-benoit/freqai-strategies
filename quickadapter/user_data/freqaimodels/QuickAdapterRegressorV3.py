@@ -2393,6 +2393,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         validation_size = self.data_split_parameters.get(
             "test_size", QuickAdapterRegressorV3._TEST_SIZE
         )
+        if validation_size is None:
+            validation_size = QuickAdapterRegressorV3._TEST_SIZE
         if validation_size == 0:
             return data_dictionary
 
