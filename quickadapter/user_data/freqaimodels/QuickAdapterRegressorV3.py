@@ -2180,7 +2180,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"{end_date} --------------------"
         )
         dd = split_fn(features_filtered, labels_filtered, weights, unfiltered_df)
-        dd = self._add_validation_split(dd, unfiltered_df, pair)
+        dd = self._add_validation_split(
+            dd, features_filtered, weights, unfiltered_df, pair
+        )
         dd = self._add_refit_data(
             dd,
             features_filtered,
@@ -2235,6 +2237,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _add_validation_split(
         self,
         data_dictionary: dict[str, Any],
+        features: pd.DataFrame,
+        weights: SampleWeightInputs,
         unfiltered_df: pd.DataFrame,
         pair: str,
     ) -> dict[str, Any]:
@@ -2268,12 +2272,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             validation_features,
             train_labels,
             validation_labels,
-            train_weights,
-            validation_weights,
         ) = train_test_split(
             data_dictionary["train_features"],
             data_dictionary["train_labels"],
-            data_dictionary["train_weights"],
             test_size=validation_size,
             shuffle=False,
         )
@@ -2302,7 +2303,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 keep_mask = train_known_at_position < first_validation_position
             train_features = train_features.loc[keep_mask]
             train_labels = train_labels.loc[keep_mask]
-            train_weights = train_weights[keep_mask]
 
             holdout_features = data_dictionary["test_features"]
             if not holdout_features.empty:
@@ -2331,6 +2331,34 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raise DependencyException(
                 f"[{pair}] train or validation set is empty after chronological split"
             )
+
+        # Recompose weights on the ACTUAL inner-train/validation rows instead of
+        # slicing the outer-train composition: a slice bypasses support_policy and
+        # lets sanitize_and_renormalize silently uniformize a pivot-sparse inner
+        # split. Realign raw weight components to the split rows by index. The
+        # recompose renormalizes each subset to mean 1 (proportional to, not
+        # byte-identical with, the old slice), which is scale-invariant for the
+        # weighted-RMSE selection and consistent with the refit weight scale.
+        train_positions = features.index.get_indexer(train_features.index)
+        validation_positions = features.index.get_indexer(validation_features.index)
+        if (train_positions < 0).any() or (validation_positions < 0).any():
+            raise ValueError(
+                f"[{pair}] _add_validation_split: unable to align split rows to "
+                f"sample weight inputs (missing train="
+                f"{int((train_positions < 0).sum())}, validation="
+                f"{int((validation_positions < 0).sum())})"
+            )
+        train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
+            weights.base[train_positions],
+            None if weights.label is None else weights.label[train_positions],
+            weights.label_weighting_config,
+            context=f"[{pair}] validation_split:train",
+        )
+        validation_weights = QuickAdapterRegressorV3._compose_eval_weights(
+            weights.base[validation_positions],
+            None if weights.label is None else weights.label[validation_positions],
+            context=f"[{pair}] validation_split:validation",
+        )
 
         data_dictionary["train_features"] = train_features
         data_dictionary["train_labels"] = train_labels
