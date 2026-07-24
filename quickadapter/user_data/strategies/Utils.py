@@ -2270,7 +2270,7 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
 def compute_label_weight_known_at_lookahead(
     known_at_lookahead: pd.Series,
     indices: Sequence[int] | NDArray[np.integer],
-    weight_fill_radius: int = 0,
+    fill_radius: int = 0,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
@@ -2281,20 +2281,21 @@ def compute_label_weight_known_at_lookahead(
     no closing swing (weight 0 via ``_impute_weights``, so it never resolves
     in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
     their label availability, EXCEPT that a Gaussian fill spreads each pivot's
-    weight over a local band ``[idx-weight_fill_radius, idx+weight_fill_radius]``
+    weight over a local band ``[idx-fill_radius, idx+fill_radius]``
     (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
     never a global max (a global bound forces ``n`` on all rows -> total train
     purge). Folded via ``max(label, weight)`` by the causal purge.
 
     The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
-    ``knn`` with ``fill_bandwidth_neighbors=1`` (the pivot sigma then depends only
-    on already-confirmed adjacent pivots). Under ``knn`` with
-    ``fill_bandwidth_neighbors>=2`` a pivot's sigma also depends on its k-th
-    nearest neighbor (up to ``fill_bandwidth_neighbors`` pivots ahead), so
-    ``i_{k+1}`` is a conservative lower bound on the band's true availability; the
-    understatement is negligible in practice (the neighbor pivot's own band,
-    available at its later confirmation, dominates the ``max`` fold on any
-    materially-weighted row).
+    ``knn`` with ``fill_bandwidth_neighbors=1`` (a pivot sigma then depends only
+    on already-confirmed adjacent pivots), up to each pivot's material Gaussian
+    support (the tail beyond ``fill_radius`` is immaterial by design, see
+    ``weight_fill_radius``). Under ``knn`` with ``fill_bandwidth_neighbors>=2`` a
+    pivot sigma also depends on its k-th nearest neighbor (up to
+    ``fill_bandwidth_neighbors`` pivots ahead, confirmed after ``i_{k+1}``), so
+    ``i_{k+1}`` is only a lower bound and can understate the band true
+    availability by a few percent of the peak weight on the affected rows; prefer
+    ``fill_bandwidth='fixed'`` or ``fill_bandwidth_neighbors=1`` for exactness.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2311,15 +2312,15 @@ def compute_label_weight_known_at_lookahead(
         avail_pivot[:-1] = known_at_positions[idx[1:]]
         avail_pivot[-1] = n
         base[idx] = np.maximum(base[idx], avail_pivot)
-        if weight_fill_radius > 0:
+        if fill_radius > 0:
             for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
                 # Skip any pivot whose weight never resolves in-frame (sentinel
                 # availability == n): its Gaussian bump is 0, so it contributes
                 # to no row (on real _zigzag output only the trailing pivot).
                 if pivot_avail >= n:
                     continue
-                lo = max(0, pivot_pos - weight_fill_radius)
-                hi = min(n, pivot_pos + weight_fill_radius + 1)
+                lo = max(0, pivot_pos - fill_radius)
+                hi = min(n, pivot_pos + fill_radius + 1)
                 np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
     base = np.clip(base, positions, n)
     return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
