@@ -68,6 +68,7 @@ from LabelTransformer import (
 
 from Utils import (
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
+    DEFAULT_REGRESSOR,
     DEFAULTS_LABEL_PREDICTION,
     LABEL_COLUMNS,
     LabelWeightSupportError,
@@ -1478,9 +1479,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self.set_optuna_label_candle(pair)
             self._optuna_label_candles[pair] = 0
 
-        self.regressor: Regressor = self.freqai_info.get("regressor", REGRESSORS[0])
+        self.regressor: Regressor = self.freqai_info.get("regressor", DEFAULT_REGRESSOR)
         if self.regressor not in set(REGRESSORS):
-            self.regressor = REGRESSORS[0]
+            self.regressor = DEFAULT_REGRESSOR
             self.freqai_info["regressor"] = self.regressor
         self._log_model_configuration()
 
