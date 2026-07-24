@@ -3578,6 +3578,30 @@ REGRESSORS: Final[tuple[Regressor, ...]] = (
     "catboost",
 )
 
+# Iteration-count parameter synonyms accepted by each regressor. The refit must
+# set exactly one so libraries that reject duplicate synonyms (e.g. CatBoost) do
+# not abort when the user configured an alias other than the canonical name.
+_REFIT_ITERATION_ALIASES: Final[dict[Regressor, frozenset[str]]] = {
+    "xgboost": frozenset({"n_estimators", "num_boost_round"}),
+    "lightgbm": frozenset(
+        {
+            "n_estimators",
+            "num_iterations",
+            "num_iteration",
+            "num_boost_round",
+            "num_trees",
+            "num_rounds",
+            "nrounds",
+            "n_iter",
+        }
+    ),
+    "histgradientboostingregressor": frozenset({"max_iter"}),
+    "ngboost": frozenset({"n_estimators"}),
+    "catboost": frozenset(
+        {"iterations", "n_estimators", "num_boost_round", "num_trees"}
+    ),
+}
+
 RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
@@ -3682,6 +3706,8 @@ def get_refit_model_training_parameters(
     # non-improving continual-learning refit degrades gracefully instead of
     # raising and killing the whole training window.
     refit_iterations = max(fitted_iterations - initial_iterations, 1)
+    for alias in _REFIT_ITERATION_ALIASES[regressor]:
+        refit_parameters.pop(alias, None)
     refit_parameters[parameter_name] = refit_iterations
     return refit_parameters
 
