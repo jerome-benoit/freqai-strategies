@@ -2749,8 +2749,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def fit(
         self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs
     ) -> Any:
-        self._holdout_rmse[dk.pair] = np.inf
-        dk.data["extra_returns_per_train"]["holdout_rmse"] = np.inf
         X = data_dictionary.get("train_features")
         y = data_dictionary.get("train_labels")
         train_weights = data_dictionary.get("train_weights")
@@ -2843,9 +2841,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     sample_weight=test_weights,
                 )
             )
-            dk.data["extra_returns_per_train"]["holdout_rmse"] = self._holdout_rmse[
-                dk.pair
-            ]
+        else:
+            self._holdout_rmse[dk.pair] = np.inf
+        dk.data["extra_returns_per_train"]["holdout_rmse"] = self._holdout_rmse[dk.pair]
         if validation_size != 0:
             refit_model_training_parameters = get_refit_model_training_parameters(
                 self.regressor,
