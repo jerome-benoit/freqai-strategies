@@ -2276,7 +2276,7 @@ def compute_label_weight_known_at_lookahead(
 
     A pivot's swing metric (its weight source) is backfilled from the adjacent
     closing pivot, so it only becomes computable at the next pivot's
-    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]`` — one pivot
+    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]``, one pivot
     later than the pivot's own label availability ``i_k``. The trailing pivot has
     no closing swing (weight 0 via ``_impute_weights``, so it never resolves
     in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
@@ -2289,11 +2289,12 @@ def compute_label_weight_known_at_lookahead(
     The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
     ``knn`` with ``fill_bandwidth_neighbors=1`` (the pivot sigma then depends only
     on already-confirmed adjacent pivots). Under ``knn`` with
-    ``fill_bandwidth_neighbors>=2`` a pivot's sigma also depends on the k-th
-    nearest neighbor (up to k pivots ahead), so ``i_{k+1}`` is a conservative
-    lower bound on the band's true availability; the resulting understatement is
-    empirically immaterial (the neighbor pivot's own band, available at its later
-    confirmation, dominates the ``max`` fold on any materially-weighted row).
+    ``fill_bandwidth_neighbors>=2`` a pivot's sigma also depends on its k-th
+    nearest neighbor (up to ``fill_bandwidth_neighbors`` pivots ahead), so
+    ``i_{k+1}`` is a conservative lower bound on the band's true availability; the
+    understatement is negligible in practice (the neighbor pivot's own band,
+    available at its later confirmation, dominates the ``max`` fold on any
+    materially-weighted row).
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2313,10 +2314,8 @@ def compute_label_weight_known_at_lookahead(
         if weight_fill_radius > 0:
             for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
                 # Skip any pivot whose weight never resolves in-frame (sentinel
-                # avail == n): its swing does not close (weight 0 via
-                # _impute_weights), so its Gaussian bump is 0 and it contributes
-                # nothing to any row. On real _zigzag output only the trailing
-                # pivot reaches this state.
+                # availability == n): its Gaussian bump is 0, so it contributes
+                # to no row (on real _zigzag output only the trailing pivot).
                 if pivot_avail >= n:
                     continue
                 lo = max(0, pivot_pos - weight_fill_radius)

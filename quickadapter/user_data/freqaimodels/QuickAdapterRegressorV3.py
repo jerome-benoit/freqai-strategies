@@ -530,9 +530,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if not keep_mask.any():
             raise ValueError(
                 f"{context}: causal guard removed all train rows "
-                f"(pivot-sparse training window: every train row's label/weight "
-                f"resolves at or after the test boundary; widen "
-                f"fit_live_predictions_candles or lower label_natr_multiplier)"
+                f"(pivot-sparse training window; widen fit_live_predictions_candles "
+                f"or lower label_natr_multiplier)"
             )
         return (
             train_features.loc[keep_mask],
