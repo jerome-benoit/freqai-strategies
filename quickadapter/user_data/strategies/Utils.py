@@ -2291,11 +2291,16 @@ def compute_label_weight_known_at_lookahead(
     on already-confirmed adjacent pivots), up to each pivot's material Gaussian
     support (the tail beyond ``fill_radius`` is immaterial by design, see
     ``weight_fill_radius``). Under ``knn`` with ``fill_bandwidth_neighbors>=2`` a
-    pivot sigma also depends on its k-th nearest neighbor (up to
-    ``fill_bandwidth_neighbors`` pivots ahead, confirmed after ``i_{k+1}``), so
-    ``i_{k+1}`` is only a lower bound and can understate the band true
-    availability by a few percent of the peak weight on the affected rows; prefer
-    ``fill_bandwidth='fixed'`` or ``fill_bandwidth_neighbors=1`` for exactness.
+    pivot sigma can depend on a k-th nearest neighbor confirmed after ``i_{k+1}``,
+    making ``i_{k+1}`` a lower bound. This understates the band availability only
+    when that neighbor also lies outside ``fill_radius``, which requires
+    ``fill_bandwidth_alpha < 0.25`` (otherwise ``fill_radius = ceil(4 *
+    fill_sigma_candles)`` covers it and the neighbor's own later availability
+    dominates the ``max`` fold): the understatement is nil at the default
+    ``fill_bandwidth_alpha=0.5`` and can otherwise reach a large fraction of the
+    peak weight on the affected rows. Prefer ``fill_bandwidth='fixed'``,
+    ``fill_bandwidth_neighbors=1``, or ``fill_bandwidth_alpha>=0.25`` for
+    exactness.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
