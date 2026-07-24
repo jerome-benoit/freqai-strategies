@@ -3136,10 +3136,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if historic is not None and "holdout_rmse" in historic:
                 holdout_values = pd.to_numeric(
                     historic["holdout_rmse"], errors="coerce"
-                )
-                finite_holdout = holdout_values[np.isfinite(holdout_values)]
-                if not finite_holdout.empty:
-                    current_holdout_rmse = float(finite_holdout.iloc[-1])
+                ).dropna()
+                if not holdout_values.empty:
+                    current_holdout_rmse = float(holdout_values.iloc[-1])
         holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(
             current_holdout_rmse
         )
