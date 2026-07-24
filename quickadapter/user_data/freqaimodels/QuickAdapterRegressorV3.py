@@ -2267,6 +2267,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "shuffle_after_split=false, and reverse_train_test_order=false"
             )
 
+        n_train_rows = len(data_dictionary["train_features"])
+        if (
+            isinstance(validation_size, int)
+            and not isinstance(validation_size, bool)
+            and validation_size >= n_train_rows
+        ):
+            raise DependencyException(
+                f"[{pair}] inner validation count test_size={validation_size} is not "
+                f"smaller than the {n_train_rows} training rows remaining after the "
+                f"outer holdout; reduce test_size or provide more data"
+            )
+
         (
             train_features,
             validation_features,
@@ -2487,6 +2499,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["validation_labels"],
                 dd["validation_weights"],
             )
+            if dd["validation_features"].empty:
+                raise DependencyException(
+                    f"[{pair}] validation set is empty after feature pipeline "
+                    f"transform (outlier removal); relax SVM/DBSCAN outlier "
+                    f"thresholds or increase test_size"
+                )
             dd["validation_weights"] = sanitize_and_renormalize(
                 dd["validation_weights"],
                 logger=logger,
