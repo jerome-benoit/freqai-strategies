@@ -92,47 +92,10 @@ from Utils import (
     get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
-    label_known_at_lookahead_column_name,
-    label_weight_column_name,
-    label_weight_known_at_lookahead_column_name,
-    migrate_config,
-    optuna_load_best_params,
-    optuna_save_best_params,
-    sanitize_and_renormalize,
-    safe_distribution_fit,
-    summarize_label_weight_support,
-    soft_extremum,
-    zigzag,
-)
-from Utils import (
-    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
-    DEFAULTS_LABEL_PREDICTION,
-    LABEL_COLUMNS,
-    LabelWeightSupportError,
-    REGRESSORS,
-    Regressor,
-    WEIGHT_STRATEGIES,
-    _OPTUNA_NAMESPACES,
-    _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
-    OptunaNamespace,
-    compose_sample_weights,
-    ensure_datetime_series,
-    make_test_set_and_weights,
-    fit_regressor,
-    finite_sample,
-    format_dict,
-    format_number,
-    get_causal_mode,
-    get_label_defaults,
-    get_label_horizon_candles,
-    get_label_pipeline_config,
-    get_label_prediction_config,
-    get_label_weighting_config,
-    get_min_max_label_period_candles,
-    get_optuna_study_model_parameters,
     get_refit_model_training_parameters,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
+    label_weight_known_at_lookahead_column_name,
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
@@ -2356,6 +2319,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 data_dictionary["test_weights"] = data_dictionary["test_weights"][
                     holdout_mask
                 ]
+                if data_dictionary["test_features"].empty:
+                    logger.warning(
+                        f"[{pair}] causal purge emptied the holdout (label horizon "
+                        f">= holdout span); skipping holdout evaluation "
+                        f"(holdout_rmse=inf)"
+                    )
+                    data_dictionary["holdout_purged_empty"] = True
 
         if train_features.empty or validation_features.empty:
             raise DependencyException(
@@ -2505,6 +2475,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             != 0
         ):
             if dd["test_labels"].shape[0] == 0:
+                if dd.get("holdout_purged_empty"):
+                    return dd
                 method = self.data_split_parameters.get(
                     "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
                 )
@@ -3098,8 +3070,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             full_dates = ensure_datetime_series(dk.full_df["date"])
             current_dates = full_dates.loc[full_dates > history_dates.max()]
-            if holdout_series is not None and not current_dates.empty:
+            if holdout_series is None:
+                logger.warning(
+                    f"[{pair}] 'holdout_rmse' column missing from full_df during "
+                    f"replay; keeping the last in-memory value (may be stale)"
+                )
+            elif not current_dates.empty:
                 current_holdout_rmse = holdout_series.loc[current_dates.index[0]]
+                if pd.isna(current_holdout_rmse):
+                    logger.warning(
+                        f"[{pair}] replayed holdout_rmse is NaN at "
+                        f"{current_dates.index[0]}; defaulting to inf"
+                    )
         holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(
             current_holdout_rmse
         )

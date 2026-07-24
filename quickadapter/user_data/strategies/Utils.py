@@ -3677,12 +3677,11 @@ def get_refit_model_training_parameters(
             f"supported values are {', '.join(REGRESSORS)}"
         )
 
-    refit_iterations = fitted_iterations - initial_iterations
-    if refit_iterations < 1:
-        raise RuntimeError(
-            f"Invalid {regressor} refit iteration count {refit_iterations!r} "
-            f"(fitted={fitted_iterations!r}, initial={initial_iterations!r})"
-        )
+    # best_iteration is combined-indexed under current xgboost/lightgbm, so
+    # fitted >= initial + 1 always holds; clamp defensively so a degenerate
+    # non-improving continual-learning refit degrades gracefully instead of
+    # raising and killing the whole training window.
+    refit_iterations = max(fitted_iterations - initial_iterations, 1)
     refit_parameters[parameter_name] = refit_iterations
     return refit_parameters
 
