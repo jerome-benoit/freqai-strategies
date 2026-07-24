@@ -3589,9 +3589,12 @@ _REFIT_ITERATION_ALIASES: Final[dict[Regressor, frozenset[str]]] = {
             "num_iterations",
             "num_iteration",
             "num_boost_round",
-            "num_trees",
+            "num_round",
             "num_rounds",
             "nrounds",
+            "num_tree",
+            "num_trees",
+            "max_iter",
             "n_iter",
         }
     ),
@@ -3601,6 +3604,11 @@ _REFIT_ITERATION_ALIASES: Final[dict[Regressor, frozenset[str]]] = {
         {"iterations", "n_estimators", "num_boost_round", "num_trees"}
     ),
 }
+
+if set(_REFIT_ITERATION_ALIASES) != set(REGRESSORS):
+    raise RuntimeError(
+        "_REFIT_ITERATION_ALIASES must define an alias set for every REGRESSORS entry"
+    )
 
 RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
