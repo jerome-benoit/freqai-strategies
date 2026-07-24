@@ -2255,13 +2255,15 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     support. The additive epsilon floor is a global O(fill_epsilon) term, left
     unconstrained (negligible).
     """
-    if weighting_config.get("fill_method") not in (
+    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
+    if label_weighting["fill_method"] not in (
         FILL_METHODS[2],  # "gaussian"
         FILL_METHODS[3],  # "epsilon_gaussian"
     ):
         return 0
     return math.ceil(
-        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(weighting_config["fill_sigma_candles"])
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER
+        * float(label_weighting["fill_sigma_candles"])
     )
 
 
@@ -2445,6 +2447,33 @@ def _(value: str, ctx: _FormatContext, depth: int) -> str:
     return escaped
 
 
+def _format_collection(
+    value: list | tuple | set,
+    ctx: _FormatContext,
+    depth: int,
+    brackets: tuple[str, str],
+    empty: str,
+    trailing_comma: bool = False,
+) -> str:
+    if not value:
+        return empty
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return f"{brackets[0]}<circular>{brackets[1]}"
+    if depth >= _MAX_DEPTH:
+        return f"{brackets[0]}...{brackets[1]}"
+    ctx.seen.add(obj_id)
+    items_iter = sorted(value, key=str) if isinstance(value, set) else value
+    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    content = ", ".join(items)
+    if trailing_comma and len(value) == 1 and len(items) == 1:
+        content += ","
+    ctx.seen.discard(obj_id)
+    return f"{brackets[0]}{content}{brackets[1]}"
+
+
 @_format_value.register(list)
 def _(value: list, ctx: _FormatContext, depth: int) -> str:
     return _format_collection(value, ctx, depth, ("[", "]"), "[]")
@@ -2484,33 +2513,6 @@ def _(value: dict, ctx: _FormatContext, depth: int) -> str:
 @_format_value.register(np.ndarray)
 def _(value: np.ndarray, ctx: _FormatContext, depth: int) -> str:
     return f"array{value.shape}"
-
-
-def _format_collection(
-    value: list | tuple | set,
-    ctx: _FormatContext,
-    depth: int,
-    brackets: tuple[str, str],
-    empty: str,
-    trailing_comma: bool = False,
-) -> str:
-    if not value:
-        return empty
-    obj_id = id(value)
-    if obj_id in ctx.seen:
-        return f"{brackets[0]}<circular>{brackets[1]}"
-    if depth >= _MAX_DEPTH:
-        return f"{brackets[0]}...{brackets[1]}"
-    ctx.seen.add(obj_id)
-    items_iter = sorted(value, key=str) if isinstance(value, set) else value
-    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
-    if len(value) > _MAX_ITEMS:
-        items.append(f"...+{len(value) - _MAX_ITEMS}")
-    content = ", ".join(items)
-    if trailing_comma and len(value) == 1 and len(items) == 1:
-        content += ","
-    ctx.seen.discard(obj_id)
-    return f"{brackets[0]}{content}{brackets[1]}"
 
 
 def format_dict(
