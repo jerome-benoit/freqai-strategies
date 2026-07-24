@@ -26,14 +26,15 @@ from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
     SMOOTHING_METHODS,
+    SMOOTHING_MODES,
     WEIGHT_STRATEGIES,
     get_label_column_config,
 )
 from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
-
 from Utils import (
+    _OPTUNA_NAMESPACES,
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -42,11 +43,12 @@ from Utils import (
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
     TRADE_PRICE_TARGETS,
-    _OPTUNA_NAMESPACES,
     OptunaNamespace,
     alligator,
     bottom_log_return,
     calculate_quantile,
+    compose_label_lookahead,
+    compute_label_weight_known_at_lookahead,
     compute_label_weights,
     ensure_datetime_series,
     ewo,
@@ -54,26 +56,29 @@ from Utils import (
     format_number,
     generate_label_data,
     get_callable_sha256,
+    get_causal_mode,
     get_distance,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
+    get_smoothing_kernel_half_width,
     get_zl_ma_fn,
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
+    label_weight_known_at_lookahead_column_name,
     migrate_config,
     nan_average,
     non_zero_diff,
     optuna_load_best_params,
-    get_smoothing_kernel_half_width,
     price_retracement_percent,
     safe_divide,
     smooth,
     top_log_return,
     validate_range,
     vwapb,
+    weight_fill_radius,
     zlema,
 )
 
@@ -458,6 +463,24 @@ class QuickAdapterV3(IStrategy):
             / self.freqai_info.get("identifier")
         )
         feature_parameters = self.freqai_info.get("feature_parameters", {})
+        if get_causal_mode(feature_parameters, logger):
+            label_smoothing = self.label_smoothing
+            for label_col in LABEL_COLUMNS:
+                col_smoothing_config = get_label_column_config(
+                    label_col, label_smoothing["default"], label_smoothing["columns"]
+                )
+                if (
+                    col_smoothing_config["method"]
+                    in (
+                        SMOOTHING_METHODS[7],  # "savgol"
+                        SMOOTHING_METHODS[8],  # "gaussian_filter1d"
+                    )
+                    and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
+                ):  # "wrap"
+                    raise ValueError(
+                        "label_smoothing.mode='wrap' is incompatible with "
+                        "feature_parameters.causal_mode=true"
+                    )
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
@@ -1019,6 +1042,14 @@ class QuickAdapterV3(IStrategy):
                     weighting_config=col_weighting_config,
                     logger=logger,
                 )
+                if label_data.known_at_lookahead is not None:
+                    dataframe[
+                        label_weight_known_at_lookahead_column_name(label_col)
+                    ] = compute_label_weight_known_at_lookahead(
+                        known_at_lookahead=label_data.known_at_lookahead,
+                        indices=label_data.indices,
+                        fill_radius=weight_fill_radius(col_weighting_config),
+                    )
 
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_COLUMN] = dataframe[label_col]
@@ -1040,16 +1071,18 @@ class QuickAdapterV3(IStrategy):
                 )
 
             # Zero-phase smoothing reads future candles within the kernel
-            # half-width; extend the per-row label lookahead so causal
-            # split guards account for the smoothing lookahead.
-            known_at_lookahead_column = label_known_at_lookahead_column_name(label_col)
-            if known_at_lookahead_column in dataframe.columns:
-                kernel_half_width = get_smoothing_kernel_half_width(
-                    col_smoothing_config, series_length=series_length
-                )
-                if kernel_half_width > 0:
-                    dataframe[known_at_lookahead_column] = (
-                        dataframe[known_at_lookahead_column] + kernel_half_width
+            # half-width; extend the per-row lookahead so causal split guards
+            # account for the smoothing lookahead.
+            kernel_half_width = get_smoothing_kernel_half_width(
+                col_smoothing_config, series_length=series_length
+            )
+            for lookahead_column in (
+                label_known_at_lookahead_column_name(label_col),
+                label_weight_known_at_lookahead_column_name(label_col),
+            ):
+                if lookahead_column in dataframe.columns:
+                    dataframe[lookahead_column] = compose_label_lookahead(
+                        dataframe[lookahead_column], kernel_half_width
                     )
 
             if label_col == EXTREMA_COLUMN:
