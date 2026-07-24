@@ -1429,6 +1429,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         self._optuna_hp_value: dict[str, float] = {}
         self._holdout_rmse: dict[str, float] = {}
+        self._session_fitted_pairs: set[str] = set()
         self._optuna_label_values: dict[str, list[float | int]] = {}
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
@@ -2863,6 +2864,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             self._holdout_rmse[dk.pair] = np.inf
+        self._session_fitted_pairs.add(dk.pair)
         dk.data["extra_returns_per_train"]["holdout_rmse"] = self._holdout_rmse[dk.pair]
         if validation_size != 0:
             refit_model_training_parameters = get_refit_model_training_parameters(
@@ -3128,6 +3130,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"[{pair}] replayed holdout_rmse is NaN at "
                         f"{current_dates.index[0]}; defaulting to inf"
                     )
+        elif pair not in self._session_fitted_pairs:
+            historic = self.dd.historic_predictions.get(pair)
+            if historic is not None and "holdout_rmse" in historic:
+                finite_holdout = historic["holdout_rmse"][
+                    np.isfinite(historic["holdout_rmse"])
+                ]
+                if not finite_holdout.empty:
+                    current_holdout_rmse = float(finite_holdout.iloc[-1])
         holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(
             current_holdout_rmse
         )
