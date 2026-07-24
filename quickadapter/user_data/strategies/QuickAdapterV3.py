@@ -1002,6 +1002,9 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
+        causal_mode = get_causal_mode(
+            self.freqai_info.get("feature_parameters", {}), logger
+        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1020,10 +1023,18 @@ class QuickAdapterV3(IStrategy):
                 label_col, label_weighting["default"], label_weighting["columns"]
             )
 
+            is_weighting_configured = (
+                col_weighting_config["strategy"] != WEIGHT_STRATEGIES[0]  # "none"
+            )
+            if causal_mode and is_weighting_configured:
+                raise ValueError(
+                    "Active label weighting is incompatible with "
+                    "feature_parameters.causal_mode=true because weight "
+                    "availability is not tracked"
+                )
             # Absent column routes downstream to base-weights-only fallback.
             is_weighting_active = (
-                col_weighting_config["strategy"] != WEIGHT_STRATEGIES[0]  # "none"
-                and len(label_data.indices) > 0
+                is_weighting_configured and len(label_data.indices) > 0
             )
 
             dataframe[label_col] = label_data.series
