@@ -2285,6 +2285,15 @@ def compute_label_weight_known_at_lookahead(
     (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
     never a global max (a global bound forces ``n`` on all rows -> total train
     purge). Folded via ``max(label, weight)`` by the causal purge.
+
+    The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
+    ``knn`` with ``fill_bandwidth_neighbors=1`` (the pivot sigma then depends only
+    on already-confirmed adjacent pivots). Under ``knn`` with
+    ``fill_bandwidth_neighbors>=2`` a pivot's sigma also depends on the k-th
+    nearest neighbor (up to k pivots ahead), so ``i_{k+1}`` is a conservative
+    lower bound on the band's true availability; the resulting understatement is
+    empirically immaterial (the neighbor pivot's own band, available at its later
+    confirmation, dominates the ``max`` fold on any materially-weighted row).
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2303,9 +2312,11 @@ def compute_label_weight_known_at_lookahead(
         base[idx] = np.maximum(base[idx], avail_pivot)
         if weight_fill_radius > 0:
             for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
-                # The trailing pivot never closes (weight 0 via _impute_weights),
-                # so its Gaussian bump is 0 and it contributes nothing to any row:
-                # do not spread its sentinel availability n onto neighbors.
+                # Skip any pivot whose weight never resolves in-frame (sentinel
+                # avail == n): its swing does not close (weight 0 via
+                # _impute_weights), so its Gaussian bump is 0 and it contributes
+                # nothing to any row. On real _zigzag output only the trailing
+                # pivot reaches this state.
                 if pivot_avail >= n:
                     continue
                 lo = max(0, pivot_pos - weight_fill_radius)
