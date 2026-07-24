@@ -1183,6 +1183,84 @@ def get_label_prediction_config(
     return get_label_kind_config("label_prediction", config, logger)
 
 
+DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
+    "trade_price_target_method": TRADE_PRICE_TARGETS[0],  # "moving_average"
+}
+
+_EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "trade_price_target_method": _ParamSpec(
+        _EnumValidator(TRADE_PRICE_TARGETS), output_type=str
+    ),
+}
+
+
+def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, Any]:
+    return _validate_params(
+        config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
+    )
+
+
+DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
+    "lookback_period_candles": 0,
+    "decay_fraction": 0.5,
+    "min_natr_multiplier_fraction": 0.0095,
+    "max_natr_multiplier_fraction": 0.0125,
+}
+
+# Scalars only: the coupled (min, max) natr pair needs validate_range's cross-field ordering and per-component fallback, which _validate_params cannot express.
+_REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
+    "lookback_period_candles": _ParamSpec(
+        _NumericValidator(min_value=0, require_int=True), output_type=int
+    ),
+    "decay_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+
+def get_reversal_confirmation_config(
+    config: dict[str, Any], logger: Logger
+) -> dict[str, int | float]:
+    validated = _validate_params(
+        config,
+        logger,
+        "reversal_confirmation",
+        _REVERSAL_CONFIRMATION_SCALAR_SPECS,
+        {
+            "lookback_period_candles": DEFAULTS_REVERSAL_CONFIRMATION[
+                "lookback_period_candles"
+            ],
+            "decay_fraction": DEFAULTS_REVERSAL_CONFIRMATION["decay_fraction"],
+        },
+    )
+
+    min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
+        config.get(
+            "min_natr_multiplier_fraction",
+            DEFAULTS_REVERSAL_CONFIRMATION["min_natr_multiplier_fraction"],
+        ),
+        config.get(
+            "max_natr_multiplier_fraction",
+            DEFAULTS_REVERSAL_CONFIRMATION["max_natr_multiplier_fraction"],
+        ),
+        logger,
+        name="natr_multiplier_fraction",
+        default_min=DEFAULTS_REVERSAL_CONFIRMATION["min_natr_multiplier_fraction"],
+        default_max=DEFAULTS_REVERSAL_CONFIRMATION["max_natr_multiplier_fraction"],
+        allow_equal=False,
+        non_negative=True,
+        finite_only=True,
+    )
+
+    return {
+        "lookback_period_candles": int(validated["lookback_period_candles"]),
+        "decay_fraction": float(validated["decay_fraction"]),
+        "min_natr_multiplier_fraction": float(min_natr_multiplier_fraction),
+        "max_natr_multiplier_fraction": float(max_natr_multiplier_fraction),
+    }
+
+
 _CAUSAL_MODE_FALSE_WARNED: bool = False
 
 
