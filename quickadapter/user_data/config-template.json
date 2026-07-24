@@ -182,7 +182,7 @@
       "&s-extrema_maxima_threshold": 2,
       "label_period_candles": 18,
       "label_natr_multiplier": 10.5,
-      "hp_rmse": -1
+      "holdout_rmse": -1
     },
     "feature_parameters": {
       "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],

@@ -92,6 +92,7 @@ from Utils import (
     get_label_weighting_config,
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
+    get_refit_model_training_parameters,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
     label_weight_known_at_lookahead_column_name,
@@ -1424,9 +1425,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and self.data_split_parameters.get(
                 "test_size", QuickAdapterRegressorV3._TEST_SIZE
             )
-            > 0
+            != 0
         )
         self._optuna_hp_value: dict[str, float] = {}
+        self._holdout_rmse: dict[str, float] = {}
         self._optuna_label_values: dict[str, list[float | int]] = {}
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
@@ -1446,6 +1448,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
             self._optuna_hp_value[pair] = -1
+            self._holdout_rmse[pair] = np.inf
             self._optuna_label_values[pair] = [
                 -1
             ] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
@@ -2177,6 +2180,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             f"{end_date} --------------------"
         )
         dd = split_fn(features_filtered, labels_filtered, weights, unfiltered_df)
+        dd = self._add_validation_split(
+            dd, features_filtered, weights, unfiltered_df, pair
+        )
+        dd = self._add_refit_data(
+            dd,
+            features_filtered,
+            labels_filtered,
+            weights,
+            unfiltered_df,
+            pair,
+        )
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
         dd = self._apply_pipelines(dd, dk, pair)
@@ -2196,6 +2210,269 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         return model
 
+    def _known_before_position_mask(
+        self,
+        features: pd.DataFrame,
+        unfiltered_df: pd.DataFrame,
+        pair: str,
+        cutoff_position: int,
+    ) -> NDArray[np.bool_]:
+        """Return rows whose labels are known before ``cutoff_position``."""
+        row_positions = QuickAdapterRegressorV3._row_positions(features, unfiltered_df)
+        known_at_lookahead = QuickAdapterRegressorV3._known_at_lookahead(
+            features, unfiltered_df
+        )
+        if known_at_lookahead is None:
+            return (
+                row_positions.to_numpy(dtype=np.int64)
+                + self._label_horizon_candles(pair)
+                < cutoff_position
+            )
+        return (
+            row_positions.to_numpy(dtype=np.int64)
+            + known_at_lookahead.to_numpy(dtype=np.int64)
+            < cutoff_position
+        )
+
+    def _add_validation_split(
+        self,
+        data_dictionary: dict[str, Any],
+        features: pd.DataFrame,
+        weights: SampleWeightInputs,
+        unfiltered_df: pd.DataFrame,
+        pair: str,
+    ) -> dict[str, Any]:
+        """Reserve the chronological tail of the training set for selection."""
+        validation_size = self.data_split_parameters.get(
+            "test_size", QuickAdapterRegressorV3._TEST_SIZE
+        )
+        if validation_size is None:
+            validation_size = QuickAdapterRegressorV3._TEST_SIZE
+        if validation_size == 0:
+            data_dictionary["validation_features"] = data_dictionary[
+                "train_features"
+            ].iloc[:0]
+            data_dictionary["validation_labels"] = data_dictionary["train_labels"].iloc[
+                :0
+            ]
+            data_dictionary["validation_weights"] = data_dictionary["train_weights"][:0]
+            return data_dictionary
+        if (
+            self.data_split_parameters.get("shuffle", False)
+            or self.ft_params.get("shuffle_after_split", False)
+            or self.ft_params.get("reverse_train_test_order", False)
+        ):
+            raise ValueError(
+                "Independent holdout evaluation requires shuffle=false, "
+                "shuffle_after_split=false, and reverse_train_test_order=false"
+            )
+
+        n_train_rows = len(data_dictionary["train_features"])
+        if (
+            isinstance(validation_size, int)
+            and not isinstance(validation_size, bool)
+            and validation_size >= n_train_rows
+        ):
+            raise DependencyException(
+                f"[{pair}] inner validation count test_size={validation_size} is not "
+                f"smaller than the {n_train_rows} training rows remaining after the "
+                f"outer holdout; reduce test_size or provide more data"
+            )
+
+        (
+            train_features,
+            validation_features,
+            train_labels,
+            validation_labels,
+        ) = train_test_split(
+            data_dictionary["train_features"],
+            data_dictionary["train_labels"],
+            test_size=validation_size,
+            shuffle=False,
+        )
+
+        if self._causal_mode:
+            row_positions = QuickAdapterRegressorV3._row_positions(
+                data_dictionary["train_features"], unfiltered_df
+            )
+            first_validation_position = int(
+                row_positions.loc[validation_features.index].min()
+            )
+            train_positions = row_positions.loc[train_features.index]
+            known_at_lookahead = QuickAdapterRegressorV3._known_at_lookahead(
+                data_dictionary["train_features"], unfiltered_df
+            )
+            if known_at_lookahead is None:
+                keep_mask = train_positions.to_numpy(
+                    dtype=np.int64
+                ) < first_validation_position - self._label_horizon_candles(pair)
+            else:
+                train_known_at_position = train_positions.to_numpy(
+                    dtype=np.int64
+                ) + known_at_lookahead.loc[train_features.index].to_numpy(
+                    dtype=np.int64
+                )
+                keep_mask = train_known_at_position < first_validation_position
+            train_features = train_features.loc[keep_mask]
+            train_labels = train_labels.loc[keep_mask]
+
+            holdout_features = data_dictionary["test_features"]
+            if not holdout_features.empty:
+                holdout_mask = self._known_before_position_mask(
+                    holdout_features,
+                    unfiltered_df,
+                    pair,
+                    len(unfiltered_df),
+                )
+                data_dictionary["test_features"] = holdout_features.loc[holdout_mask]
+                data_dictionary["test_labels"] = data_dictionary["test_labels"].loc[
+                    holdout_mask
+                ]
+                data_dictionary["test_weights"] = data_dictionary["test_weights"][
+                    holdout_mask
+                ]
+                if data_dictionary["test_features"].empty:
+                    logger.warning(
+                        f"[{pair}] causal purge emptied the holdout (label horizon "
+                        f">= holdout span); skipping holdout evaluation "
+                        f"(holdout_rmse=inf)"
+                    )
+                    data_dictionary["holdout_purged_empty"] = True
+
+        if train_features.empty or validation_features.empty:
+            raise DependencyException(
+                f"[{pair}] train or validation set is empty after chronological split"
+            )
+
+        # Recompose weights on the ACTUAL inner-train/validation rows instead of
+        # slicing the outer-train composition: a slice bypasses support_policy and
+        # lets sanitize_and_renormalize silently uniformize a pivot-sparse inner
+        # split. Realign raw weight components to the split rows by index. The
+        # recompose renormalizes each subset to mean 1 (proportional to, not
+        # byte-identical with, the old slice), which is scale-invariant for the
+        # weighted-RMSE selection and consistent with the refit weight scale.
+        train_positions = features.index.get_indexer(train_features.index)
+        validation_positions = features.index.get_indexer(validation_features.index)
+        if (train_positions < 0).any() or (validation_positions < 0).any():
+            raise ValueError(
+                f"[{pair}] _add_validation_split: unable to align split rows to "
+                f"sample weight inputs (missing train="
+                f"{int((train_positions < 0).sum())}, validation="
+                f"{int((validation_positions < 0).sum())})"
+            )
+        train_weights = QuickAdapterRegressorV3._compose_train_weights_with_support(
+            weights.base[train_positions],
+            None if weights.label is None else weights.label[train_positions],
+            weights.label_weighting_config,
+            context=f"[{pair}] validation_split:train",
+        )
+        validation_weights = QuickAdapterRegressorV3._compose_eval_weights(
+            weights.base[validation_positions],
+            None if weights.label is None else weights.label[validation_positions],
+            context=f"[{pair}] validation_split:validation",
+        )
+
+        data_dictionary["train_features"] = train_features
+        data_dictionary["train_labels"] = train_labels
+        data_dictionary["train_weights"] = train_weights
+        data_dictionary["validation_features"] = validation_features
+        data_dictionary["validation_labels"] = validation_labels
+        data_dictionary["validation_weights"] = validation_weights
+        return data_dictionary
+
+    def _add_refit_data(
+        self,
+        data_dictionary: dict[str, Any],
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        weights: SampleWeightInputs,
+        unfiltered_df: pd.DataFrame,
+        pair: str,
+    ) -> dict[str, Any]:
+        """Keep all causally available rows for the final post-holdout refit."""
+        validation_size = self.data_split_parameters.get(
+            "test_size", QuickAdapterRegressorV3._TEST_SIZE
+        )
+        if validation_size is None:
+            validation_size = QuickAdapterRegressorV3._TEST_SIZE
+        if validation_size == 0:
+            return data_dictionary
+
+        keep_mask = np.ones(len(features), dtype=bool)
+        if self._causal_mode:
+            keep_mask = self._known_before_position_mask(
+                features,
+                unfiltered_df,
+                pair,
+                len(unfiltered_df),
+            )
+
+        refit_features = features.loc[keep_mask]
+        refit_labels = labels.loc[keep_mask]
+        refit_base_weights = weights.base[keep_mask]
+        refit_label_weights = (
+            None if weights.label is None else weights.label[keep_mask]
+        )
+        if (
+            self.data_split_parameters.get(
+                "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
+            )
+            == QuickAdapterRegressorV3._DATA_SPLIT_METHODS[1]
+        ):
+            max_train_size = QuickAdapterRegressorV3._coerce_optional_int(
+                self.data_split_parameters.get(
+                    "max_train_size",
+                    QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT,
+                ),
+                "max_train_size",
+                minimum=1,
+            )
+            if max_train_size is not None:
+                refit_features = refit_features.iloc[-max_train_size:]
+                refit_labels = refit_labels.iloc[-max_train_size:]
+                refit_base_weights = refit_base_weights[-max_train_size:]
+                if refit_label_weights is not None:
+                    refit_label_weights = refit_label_weights[-max_train_size:]
+        if refit_features.empty:
+            raise DependencyException(
+                f"[{pair}] final refit set is empty after causal availability filtering"
+            )
+
+        data_dictionary["refit_features"] = refit_features
+        data_dictionary["refit_labels"] = refit_labels
+        data_dictionary["refit_weights"] = (
+            QuickAdapterRegressorV3._compose_train_weights_with_support(
+                refit_base_weights,
+                refit_label_weights,
+                weights.label_weighting_config,
+                context=f"[{pair}] refit",
+            )
+        )
+        return data_dictionary
+
+    def _fit_training_pipelines(
+        self,
+        features: pd.DataFrame,
+        labels: pd.DataFrame,
+        weights: NDArray[np.floating],
+        dk: FreqaiDataKitchen,
+        pair: str,
+        context: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
+        """Fit FreqAI pipelines and return their transformed training data."""
+        dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
+        dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
+        features, labels, weights = dk.feature_pipeline.fit_transform(
+            features, labels, weights
+        )
+        weights = sanitize_and_renormalize(
+            weights,
+            logger=logger,
+            context=f"[{pair}] post_feature_pipeline:{context}",
+        )
+        labels, _, _ = dk.label_pipeline.fit_transform(labels)
+        return features, labels, weights
+
     def _apply_pipelines(
         self,
         dd: dict,
@@ -2203,20 +2480,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pair: str,
     ) -> dict:
         """Apply feature and label pipelines; renormalize weights post-transform."""
-        dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
-        dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
-
         (dd["train_features"], dd["train_labels"], dd["train_weights"]) = (
-            dk.feature_pipeline.fit_transform(
-                dd["train_features"], dd["train_labels"], dd["train_weights"]
+            self._fit_training_pipelines(
+                dd["train_features"],
+                dd["train_labels"],
+                dd["train_weights"],
+                dk,
+                pair,
+                "train",
             )
         )
-        dd["train_weights"] = sanitize_and_renormalize(
-            dd["train_weights"],
-            logger=logger,
-            context=f"[{pair}] post_feature_pipeline:train",
-        )
-        dd["train_labels"], _, _ = dk.label_pipeline.fit_transform(dd["train_labels"])
+
+        if not dd["validation_features"].empty:
+            (
+                dd["validation_features"],
+                dd["validation_labels"],
+                dd["validation_weights"],
+            ) = dk.feature_pipeline.transform(
+                dd["validation_features"],
+                dd["validation_labels"],
+                dd["validation_weights"],
+            )
+            if dd["validation_features"].empty:
+                raise DependencyException(
+                    f"[{pair}] validation set is empty after feature pipeline "
+                    f"transform (outlier removal); relax SVM/DBSCAN outlier "
+                    f"thresholds or increase test_size"
+                )
+            dd["validation_weights"] = sanitize_and_renormalize(
+                dd["validation_weights"],
+                logger=logger,
+                context=f"[{pair}] post_feature_pipeline:validation",
+            )
+            dd["validation_labels"], _, _ = dk.label_pipeline.transform(
+                dd["validation_labels"]
+            )
 
         if (
             self.data_split_parameters.get(
@@ -2225,6 +2523,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             != 0
         ):
             if dd["test_labels"].shape[0] == 0:
+                if dd.get("holdout_purged_empty"):
+                    return dd
                 method = self.data_split_parameters.get(
                     "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
                 )
@@ -2476,8 +2776,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         X_test = data_dictionary.get("test_features")
         y_test = data_dictionary.get("test_labels")
         test_weights = data_dictionary.get("test_weights")
+        X_validation = data_dictionary.get("validation_features")
+        y_validation = data_dictionary.get("validation_labels")
+        validation_weights = data_dictionary.get("validation_weights")
+        validation_size = self.data_split_parameters.get(
+            "test_size", QuickAdapterRegressorV3._TEST_SIZE
+        )
+        if validation_size is None:
+            validation_size = QuickAdapterRegressorV3._TEST_SIZE
 
         model_training_parameters = copy.deepcopy(self.model_training_parameters)
+        init_model = self.get_init_model(dk.pair)
 
         start_time = time.time()
         if self._optuna_hyperopt:
@@ -2490,12 +2799,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     X,
                     y,
                     train_weights,
-                    X_test,
-                    y_test,
-                    test_weights,
-                    self.data_split_parameters.get(
-                        "test_size", QuickAdapterRegressorV3._TEST_SIZE
-                    ),
+                    X_validation,
+                    y_validation,
+                    validation_weights,
+                    validation_size,
                     self.get_optuna_params(dk.pair, _OPTUNA_NAMESPACES.hp),
                     model_training_parameters,
                     self._optuna_config.get(
@@ -2507,6 +2814,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
                     ),
                     dk.data_path,
+                    init_model,
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
             )
@@ -2519,12 +2827,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 }
 
         eval_set, eval_weights = make_test_set_and_weights(
-            X_test,
-            y_test,
-            test_weights,
-            self.data_split_parameters.get(
-                "test_size", QuickAdapterRegressorV3._TEST_SIZE
-            ),
+            X_validation,
+            y_validation,
+            validation_weights,
+            validation_size,
         )
 
         model = fit_regressor(
@@ -2534,10 +2840,72 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             train_weights=train_weights,
             eval_set=eval_set,
             eval_weights=eval_weights,
-            model_training_parameters=model_training_parameters,
-            init_model=self.get_init_model(dk.pair),
+            model_training_parameters=copy.deepcopy(model_training_parameters),
+            init_model=init_model,
             model_path=dk.data_path,
         )
+        if X_test is not None and not X_test.empty:
+            holdout_predictions = pd.DataFrame(
+                model.predict(X_test),
+                columns=y_test.columns,
+                index=y_test.index,
+            )
+            holdout_labels, _, _ = dk.label_pipeline.inverse_transform(y_test.copy())
+            holdout_predictions, _, _ = dk.label_pipeline.inverse_transform(
+                holdout_predictions
+            )
+            self._holdout_rmse[dk.pair] = float(
+                sklearn.metrics.root_mean_squared_error(
+                    holdout_labels,
+                    holdout_predictions,
+                    sample_weight=test_weights,
+                )
+            )
+        else:
+            self._holdout_rmse[dk.pair] = np.inf
+        dk.data["extra_returns_per_train"]["holdout_rmse"] = self._holdout_rmse[dk.pair]
+        if validation_size != 0:
+            refit_model_training_parameters = get_refit_model_training_parameters(
+                self.regressor,
+                model,
+                model_training_parameters,
+                init_model,
+            )
+            data_dictionary["train_features"] = data_dictionary.pop("refit_features")
+            data_dictionary["train_labels"] = data_dictionary.pop("refit_labels")
+            data_dictionary["train_weights"] = data_dictionary.pop("refit_weights")
+            if (
+                not self.freqai_info.get("fit_live_predictions_candles", 0)
+                or not self.live
+            ):
+                dk.fit_labels()
+            (
+                data_dictionary["train_features"],
+                data_dictionary["train_labels"],
+                data_dictionary["train_weights"],
+            ) = self._fit_training_pipelines(
+                data_dictionary["train_features"],
+                data_dictionary["train_labels"],
+                data_dictionary["train_weights"],
+                dk,
+                dk.pair,
+                "refit",
+            )
+            logger.info(
+                f"[{dk.pair}] Refitting final model on "
+                f"{len(data_dictionary['train_features'])} causally available rows"
+            )
+            model = fit_regressor(
+                regressor=self.regressor,
+                X=data_dictionary["train_features"],
+                y=data_dictionary["train_labels"],
+                train_weights=data_dictionary["train_weights"],
+                eval_set=None,
+                eval_weights=None,
+                model_training_parameters=refit_model_training_parameters,
+                init_model=init_model,
+                model_path=dk.data_path,
+            )
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
 
@@ -2740,11 +3108,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ).get("label_natr_multiplier")
         )
 
-        hp_rmse = QuickAdapterRegressorV3.optuna_validate_value(
-            self.get_optuna_value(pair, _OPTUNA_NAMESPACES.hp)
+        current_holdout_rmse = self._holdout_rmse.get(pair)
+        if not self.live:
+            holdout_series = dk.full_df.get("holdout_rmse")
+            history_dates = ensure_datetime_series(
+                self.dd.historic_predictions[pair]["date"]
+            )
+            full_dates = ensure_datetime_series(dk.full_df["date"])
+            current_dates = full_dates.loc[full_dates > history_dates.max()]
+            if holdout_series is None:
+                logger.warning(
+                    f"[{pair}] 'holdout_rmse' column missing from full_df during "
+                    f"replay; keeping the last in-memory value (may be stale)"
+                )
+            elif not current_dates.empty:
+                current_holdout_rmse = holdout_series.loc[current_dates.index[0]]
+                if pd.isna(current_holdout_rmse):
+                    logger.warning(
+                        f"[{pair}] replayed holdout_rmse is NaN at "
+                        f"{current_dates.index[0]}; defaulting to inf"
+                    )
+        holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(
+            current_holdout_rmse
         )
-        dk.data["extra_returns_per_train"]["hp_rmse"] = (
-            hp_rmse if hp_rmse is not None else np.inf
+        dk.data["extra_returns_per_train"]["holdout_rmse"] = (
+            holdout_rmse if holdout_rmse is not None else np.inf
         )
 
     def _label_hpo_dataframe_as_of_prediction_time(
@@ -4718,15 +5106,16 @@ def hp_objective(
     X: pd.DataFrame,
     y: pd.DataFrame,
     train_weights: NDArray[np.floating],
-    X_test: pd.DataFrame,
-    y_test: pd.DataFrame,
-    test_weights: NDArray[np.floating],
-    test_size: float,
+    X_validation: pd.DataFrame,
+    y_validation: pd.DataFrame,
+    validation_weights: NDArray[np.floating],
+    validation_size: float,
     model_training_best_parameters: dict[str, Any],
     model_training_parameters: dict[str, Any],
     space_reduction: bool,
     space_fraction: float,
     model_path: Optional[Path] = None,
+    init_model: Any = None,
 ) -> float:
     study_model_parameters = get_optuna_study_model_parameters(
         trial,
@@ -4739,7 +5128,7 @@ def hp_objective(
     model_training_parameters = {**model_training_parameters, **study_model_parameters}
 
     eval_set, eval_weights = make_test_set_and_weights(
-        X_test, y_test, test_weights, test_size
+        X_validation, y_validation, validation_weights, validation_size
     )
 
     model = fit_regressor(
@@ -4750,13 +5139,14 @@ def hp_objective(
         eval_set=eval_set,
         eval_weights=eval_weights,
         model_training_parameters=model_training_parameters,
+        init_model=init_model,
         model_path=model_path,
         trial=trial,
     )
-    y_pred = model.predict(X_test)
+    y_pred = model.predict(X_validation)
 
     return sklearn.metrics.root_mean_squared_error(
-        y_test, y_pred, sample_weight=test_weights
+        y_validation, y_pred, sample_weight=validation_weights
     )
 
 
