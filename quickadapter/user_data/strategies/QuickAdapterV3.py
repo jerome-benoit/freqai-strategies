@@ -22,10 +22,19 @@ from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
+from LabelTransformer import (
+    COMBINED_AGGREGATIONS,
+    FILL_METHODS,
+    SMOOTHING_METHODS,
+    SMOOTHING_MODES,
+    WEIGHT_STRATEGIES,
+    get_label_column_config,
+)
 from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
+    _OPTUNA_NAMESPACES,
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -34,14 +43,13 @@ from Utils import (
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
     TRADE_PRICE_TARGETS,
-    _OPTUNA_NAMESPACES,
     OptunaNamespace,
     alligator,
     bottom_log_return,
     calculate_quantile,
     compose_label_lookahead,
-    compute_label_weights,
     compute_label_weight_known_at_lookahead,
+    compute_label_weights,
     ensure_datetime_series,
     ewo,
     format_dict,
@@ -54,6 +62,7 @@ from Utils import (
     get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
+    get_smoothing_kernel_half_width,
     get_zl_ma_fn,
     is_finite_number,
     label_known_at_lookahead_column_name,
@@ -63,7 +72,6 @@ from Utils import (
     nan_average,
     non_zero_diff,
     optuna_load_best_params,
-    get_smoothing_kernel_half_width,
     price_retracement_percent,
     safe_divide,
     smooth,
@@ -72,14 +80,6 @@ from Utils import (
     vwapb,
     weight_fill_radius,
     zlema,
-)
-from LabelTransformer import (
-    COMBINED_AGGREGATIONS,
-    FILL_METHODS,
-    SMOOTHING_METHODS,
-    SMOOTHING_MODES,
-    WEIGHT_STRATEGIES,
-    get_label_column_config,
 )
 
 TradeDirection = Literal["long", "short"]
