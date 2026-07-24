@@ -3133,9 +3133,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif pair not in self._session_fitted_pairs:
             historic = self.dd.historic_predictions.get(pair)
             if historic is not None and "holdout_rmse" in historic:
-                finite_holdout = historic["holdout_rmse"][
-                    np.isfinite(historic["holdout_rmse"])
-                ]
+                holdout_values = pd.to_numeric(
+                    historic["holdout_rmse"], errors="coerce"
+                )
+                finite_holdout = holdout_values[np.isfinite(holdout_values)]
                 if not finite_holdout.empty:
                     current_holdout_rmse = float(finite_holdout.iloc[-1])
         holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(
