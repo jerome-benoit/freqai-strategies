@@ -307,13 +307,22 @@ def safe_log_ratio(
     return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
 
 
+def _is_finite_value(value: Any) -> bool:
+    # np.isfinite raises (TypeError/OverflowError) on inputs it cannot coerce
+    # to float64 (e.g. Python ints >= 2**64); treat those as non-finite.
+    try:
+        return bool(np.isfinite(value))
+    except (TypeError, OverflowError):
+        return False
+
+
 def is_finite_number(value: Any) -> bool:
-    # Reject bool (int(True) == 1) and non-numeric (str/object) before
-    # np.isfinite, which raises on non-numeric input.
+    # Reject bool (int(True) == 1) and non-numeric (str/object) before the
+    # finiteness check.
     return (
         not isinstance(value, bool)
         and isinstance(value, (int, float, np.integer, np.floating))
-        and bool(np.isfinite(value))
+        and _is_finite_value(value)
     )
 
 
@@ -339,13 +348,7 @@ class _NumericValidator:
     def __call__(self, value: Any) -> bool:
         if self.require_int and not isinstance(value, int):
             return False
-        if not isinstance(value, (int, float)):
-            return False
-        try:
-            value_is_finite = np.isfinite(value)
-        except (TypeError, OverflowError):
-            return False
-        if not value_is_finite:
+        if not isinstance(value, (int, float)) or not _is_finite_value(value):
             return False
         if self.min_value is not None:
             if self.min_exclusive and value <= self.min_value:
@@ -382,7 +385,7 @@ class _RangeValidator:
     def __call__(self, value: Any) -> bool:
         if not isinstance(value, (list, tuple)) or len(value) != 2:
             return False
-        if not all(isinstance(x, (int, float)) and np.isfinite(x) for x in value):
+        if not all(isinstance(x, (int, float)) and _is_finite_value(x) for x in value):
             return False
         if value[0] >= value[1]:
             return False
@@ -1201,7 +1204,7 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, Any]:
+def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
     return _validate_params(
         config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
     )
@@ -1214,7 +1217,9 @@ DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
     "max_natr_multiplier_fraction": 0.0125,
 }
 
-# Scalars only: the coupled (min, max) natr pair needs validate_range's cross-field ordering and per-component fallback, which _validate_params cannot express.
+# Scalars only: the coupled (min, max) natr pair needs validate_range's
+# cross-field ordering and per-component fallback, which _validate_params
+# cannot express.
 _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
     "lookback_period_candles": _ParamSpec(
         _NumericValidator(min_value=0, require_int=True), output_type=int
@@ -1235,10 +1240,8 @@ def get_reversal_confirmation_config(
         "reversal_confirmation",
         _REVERSAL_CONFIRMATION_SCALAR_SPECS,
         {
-            "lookback_period_candles": DEFAULTS_REVERSAL_CONFIRMATION[
-                "lookback_period_candles"
-            ],
-            "decay_fraction": DEFAULTS_REVERSAL_CONFIRMATION["decay_fraction"],
+            key: DEFAULTS_REVERSAL_CONFIRMATION[key]
+            for key in _REVERSAL_CONFIRMATION_SCALAR_SPECS
         },
     )
 
@@ -5203,7 +5206,7 @@ def validate_range(
         if (
             not isinstance(value, (int, float))
             or isinstance(value, bool)
-            or (finite_only and not np.isfinite(value))
+            or (finite_only and not _is_finite_value(value))
             or (non_negative and value < 0)
         ):
             logger.warning(
