@@ -338,7 +338,13 @@ class _NumericValidator:
     def __call__(self, value: Any) -> bool:
         if self.require_int and not isinstance(value, int):
             return False
-        if not isinstance(value, (int, float)) or not np.isfinite(value):
+        if not isinstance(value, (int, float)):
+            return False
+        try:
+            value_is_finite = np.isfinite(value)
+        except (TypeError, OverflowError):
+            return False
+        if not value_is_finite:
             return False
         if self.min_value is not None:
             if self.min_exclusive and value <= self.min_value:
