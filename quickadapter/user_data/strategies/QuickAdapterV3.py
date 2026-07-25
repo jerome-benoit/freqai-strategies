@@ -10,8 +10,10 @@ from typing import (
     ClassVar,
     Final,
     Literal,
+    NotRequired,
     Optional,
     Sequence,
+    TypedDict,
     TypeVar,
 )
 
@@ -96,6 +98,16 @@ CandleDeviationCacheKey = tuple[
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 _PairCacheT = TypeVar("_PairCacheT", bound=dict)
+
+
+class _TradeHistory(TypedDict):
+    # unrealized_pnl_candle_date is written lazily on first append (NotRequired);
+    # its literal name must mirror _UNREALIZED_PNL_CANDLE_DATE_KEY since TypedDict
+    # fields cannot reference a constant.
+    unrealized_pnl: list[float]
+    take_profit_price: list[float | tuple[int, float]]
+    unrealized_pnl_candle_date: NotRequired[str]
+
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +204,12 @@ class QuickAdapterV3(IStrategy):
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
+
+    # get_pnl_momentum differences the window twice: velocity needs >=2 first
+    # diffs (window>=3), acceleration >=2 second diffs (window>=4). 4 is the
+    # binding floor keeping both t-statistics finite; below it the declining-PnL
+    # take-profit gate silently degrades to an unconditional exit.
+    _MIN_PNL_MOMENTUM_WINDOW_SIZE: Final[int] = 4
 
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -455,8 +473,25 @@ class QuickAdapterV3(IStrategy):
             )
         self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
-        self._max_history_size = max(1, int(12 * 60 / self.timeframe_minutes))
-        self._pnl_momentum_window_size = max(1, int(30 / self.timeframe_minutes))
+        nominal_pnl_momentum_window_size = int(30 / self.timeframe_minutes)
+        self._pnl_momentum_window_size = max(
+            QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE,
+            nominal_pnl_momentum_window_size,
+        )
+        self._max_history_size = max(
+            self._pnl_momentum_window_size,
+            int(12 * 60 / self.timeframe_minutes),
+        )
+        if (
+            nominal_pnl_momentum_window_size
+            < QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE
+        ):
+            logger.warning(
+                f"Timeframe {self.timeframe} cannot fit a 30-minute PnL momentum "
+                f"window; flooring to {self._pnl_momentum_window_size} candles "
+                f"(~{self._pnl_momentum_window_size * self.timeframe_minutes} min). "
+                "The declining-PnL take-profit confirmation runs on a coarser window."
+            )
         self._exit_thresholds_calibration: dict[str, float] = {
             **QuickAdapterV3.default_exit_thresholds_calibration,
             **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
@@ -1468,7 +1503,7 @@ class QuickAdapterV3(IStrategy):
         return take_profit_price
 
     @staticmethod
-    def _get_trade_history(trade: Trade) -> dict[str, Any]:
+    def _get_trade_history(trade: Trade) -> _TradeHistory:
         return trade.get_custom_data(
             "history", {"unrealized_pnl": [], "take_profit_price": []}
         )
@@ -1511,7 +1546,6 @@ class QuickAdapterV3(IStrategy):
         ):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
-            trade.set_custom_data("history", history)
         if (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
             != candle_date.isoformat()
@@ -2076,7 +2110,11 @@ class QuickAdapterV3(IStrategy):
 
         last_candle = df.iloc[-1]
         last_candle_date = last_candle.get("date")
-        self.safe_append_trade_unrealized_pnl(trade, current_profit, last_candle_date)
+        has_valid_candle_date = not isna(last_candle_date)
+        if has_valid_candle_date:
+            self.safe_append_trade_unrealized_pnl(
+                trade, current_profit, last_candle_date
+            )
         if last_candle.get("do_predict") == 2:
             return "model_expired"
         if last_candle.get("DI_catch") == 0:
@@ -2086,7 +2124,7 @@ class QuickAdapterV3(IStrategy):
                 if QuickAdapterV3.is_isoformat(last_outlier_date_isoformat)
                 else None
             )
-            if last_outlier_date != last_candle_date:
+            if has_valid_candle_date and last_outlier_date != last_candle_date:
                 n_outliers = trade.get_custom_data("n_outliers", 0)
                 n_outliers += 1
                 logger.warning(
