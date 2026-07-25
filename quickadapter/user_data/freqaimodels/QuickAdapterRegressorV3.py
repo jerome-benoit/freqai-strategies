@@ -790,9 +790,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _get_label_p_order_default(distance_metric: str) -> Optional[float]:
         if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:
             return 2.0
-        elif (
-            distance_metric == QuickAdapterRegressorV3._METRIC_POWER_MEAN
-        ):  # "power_mean"
+        elif distance_metric == QuickAdapterRegressorV3._METRIC_POWER_MEAN:
             return 1.0
         return None
 
@@ -808,9 +806,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _get_label_density_aggregation_param_default(
         aggregation: DensityAggregation,
     ) -> Optional[float]:
-        if (
-            aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN
-        ):  # "power_mean"
+        if aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN:
             return 1.0
         elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:
             return 0.5
@@ -1214,16 +1210,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
 
                 if aggregation_param is not None:
-                    if (
-                        aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE
-                    ):  # "quantile"
+                    if aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:
                         QuickAdapterRegressorV3._validate_quantile_q(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
                         )
-                    elif (
-                        aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN
-                    ):  # "power_mean"
+                    elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN:
                         QuickAdapterRegressorV3._validate_power_mean_p(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
@@ -3641,9 +3633,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             return np.abs(distances) if apply_abs else distances
 
-        if (
-            distance_metric == QuickAdapterRegressorV3._METRIC_WEIGHTED_SUM
-        ):  # "weighted_sum"
+        if distance_metric == QuickAdapterRegressorV3._METRIC_WEIGHTED_SUM:
             assert weights is not None
             distances = QuickAdapterRegressorV3._weighted_sum_distance(
                 normalized_matrix,
@@ -3854,16 +3844,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if (
             trial_selection_method
             == QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING
-        ):  # "compromise_programming"
+        ):
             scores = QuickAdapterRegressorV3._compromise_programming_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
                 weights=weights,
                 p=p,
             )
-        elif (
-            trial_selection_method == QuickAdapterRegressorV3._METHOD_TOPSIS
-        ):  # "topsis"
+        elif trial_selection_method == QuickAdapterRegressorV3._METHOD_TOPSIS:
             scores = QuickAdapterRegressorV3._topsis_scores(
                 normalized_matrix[best_cluster_indices],
                 distance_metric,
@@ -3930,7 +3918,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if (
                 selection_method
                 == QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING
-            ):  # "compromise_programming"
+            ):
                 cluster_center_scores = (
                     QuickAdapterRegressorV3._compromise_programming_scores(
                         cluster_centers,
@@ -4024,9 +4012,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if neighbor_distances.shape[1] < 1:
             return np.full(n_samples, np.inf)
 
-        if (
-            aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN
-        ):  # "power_mean"
+        if aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN:
             power = (
                 aggregation_param
                 if aggregation_param is not None
@@ -4325,9 +4311,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 mode="none",
             )
 
-            if (
-                method == QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING
-            ):  # "compromise_programming"
+            if method == QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING:
                 return QuickAdapterRegressorV3._compromise_programming_scores(
                     normalized_matrix,
                     distance_metric,

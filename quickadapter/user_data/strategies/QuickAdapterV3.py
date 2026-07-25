@@ -1708,9 +1708,7 @@ class QuickAdapterV3(IStrategy):
                 + (max_natr_multiplier_fraction - min_natr_multiplier_fraction)
                 * candle_label_natr_value_quantile**quantile_exponent
             )
-        elif (
-            interpolation_direction == QuickAdapterV3._INTERPOLATION_INVERSE
-        ):  # "inverse"
+        elif interpolation_direction == QuickAdapterV3._INTERPOLATION_INVERSE:
             natr_multiplier_fraction = (
                 max_natr_multiplier_fraction
                 - (max_natr_multiplier_fraction - min_natr_multiplier_fraction)
@@ -1868,9 +1866,7 @@ class QuickAdapterV3(IStrategy):
         )
         current_ok = np.isfinite(current_threshold) and (
             (side == QuickAdapterV3._TRADE_LONG and rate > current_threshold)
-            or (
-                side == QuickAdapterV3._TRADE_SHORT and rate < current_threshold
-            )  # "short"
+            or (side == QuickAdapterV3._TRADE_SHORT and rate < current_threshold)
         )
         if order == QuickAdapterV3._ORDER_EXIT:
             if side == QuickAdapterV3._TRADE_LONG:
@@ -1913,12 +1909,8 @@ class QuickAdapterV3(IStrategy):
             ):
                 return current_ok
 
-            if (
-                side == QuickAdapterV3._TRADE_LONG
-                and not (close_k > threshold_k)  # "long"
-            ) or (
-                side == QuickAdapterV3._TRADE_SHORT
-                and not (close_k < threshold_k)  # "short"
+            if (side == QuickAdapterV3._TRADE_LONG and not (close_k > threshold_k)) or (
+                side == QuickAdapterV3._TRADE_SHORT and not (close_k < threshold_k)
             ):
                 logger.debug(
                     f"[{pair}] Denied {trade_direction} {order}: "
