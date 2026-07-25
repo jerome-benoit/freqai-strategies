@@ -58,10 +58,12 @@ from Utils import (
     get_callable_sha256,
     get_causal_mode,
     get_distance,
+    get_exit_pricing_config,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
+    get_reversal_confirmation_config,
     get_smoothing_kernel_half_width,
     get_zl_ma_fn,
     is_finite_number,
@@ -76,7 +78,6 @@ from Utils import (
     safe_divide,
     smooth,
     top_log_return,
-    validate_range,
     vwapb,
     weight_fill_radius,
     zlema,
@@ -147,13 +148,6 @@ class QuickAdapterV3(IStrategy):
 
     default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
         "decline_quantile": 0.5,
-    }
-
-    default_reversal_confirmation: ClassVar[dict[str, int | float]] = {
-        "lookback_period_candles": 0,
-        "decay_fraction": 0.5,
-        "min_natr_multiplier_fraction": 0.0095,
-        "max_natr_multiplier_fraction": 0.0125,
     }
 
     position_adjustment_enable = True
@@ -346,100 +340,37 @@ class QuickAdapterV3(IStrategy):
         else:
             return max_open_trades
 
-    @property
+    @cached_property
     def label_weighting(self) -> dict[str, Any]:
         label_weighting_raw = self.freqai_info.get("label_weighting")
         if not isinstance(label_weighting_raw, dict):
             label_weighting_raw = {}
         return get_label_weighting_config(label_weighting_raw, logger)
 
-    @property
+    @cached_property
     def label_smoothing(self) -> dict[str, Any]:
         label_smoothing_raw = self.freqai_info.get("label_smoothing", {})
         if not isinstance(label_smoothing_raw, dict):
             label_smoothing_raw = {}
         return get_label_smoothing_config(label_smoothing_raw, logger)
 
-    @property
+    @cached_property
     def trade_price_target_method(self) -> str:
         exit_pricing = self.config.get("exit_pricing")
         if not isinstance(exit_pricing, dict):
             exit_pricing = {}
-        trade_price_target_method = exit_pricing.get(
-            "trade_price_target_method",
-            TRADE_PRICE_TARGETS[0],  # "moving_average"
-        )
-        if trade_price_target_method not in set(TRADE_PRICE_TARGETS):
-            logger.warning(
-                f"Invalid trade_price_target_method value {trade_price_target_method!r}: "
-                f"supported values are {', '.join(TRADE_PRICE_TARGETS)}, "
-                f"using default {TRADE_PRICE_TARGETS[0]!r}"
-            )
-            trade_price_target_method = TRADE_PRICE_TARGETS[0]
-        return str(trade_price_target_method)
+        return get_exit_pricing_config(exit_pricing, logger)[
+            "trade_price_target_method"
+        ]
 
-    @property
+    @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         reversal_confirmation = self.config.get("reversal_confirmation")
         if not isinstance(reversal_confirmation, dict):
             reversal_confirmation = {}
-        defaults = QuickAdapterV3.default_reversal_confirmation
+        return get_reversal_confirmation_config(reversal_confirmation, logger)
 
-        lookback_period_candles = reversal_confirmation.get(
-            "lookback_period_candles", defaults["lookback_period_candles"]
-        )
-        decay_fraction = reversal_confirmation.get(
-            "decay_fraction", defaults["decay_fraction"]
-        )
-        min_natr_multiplier_fraction = reversal_confirmation.get(
-            "min_natr_multiplier_fraction", defaults["min_natr_multiplier_fraction"]
-        )
-        max_natr_multiplier_fraction = reversal_confirmation.get(
-            "max_natr_multiplier_fraction", defaults["max_natr_multiplier_fraction"]
-        )
-
-        if not isinstance(lookback_period_candles, int) or lookback_period_candles < 0:
-            logger.warning(
-                f"Invalid reversal_confirmation lookback_period_candles value {lookback_period_candles!r}: must be >= 0, using default {QuickAdapterV3.default_reversal_confirmation['lookback_period_candles']!r}"
-            )
-            lookback_period_candles = QuickAdapterV3.default_reversal_confirmation[
-                "lookback_period_candles"
-            ]
-
-        if not isinstance(decay_fraction, (int, float)) or not (
-            0.0 < decay_fraction <= 1.0
-        ):
-            logger.warning(
-                f"Invalid reversal_confirmation decay_fraction value {decay_fraction!r}: must be in range (0, 1], using default {QuickAdapterV3.default_reversal_confirmation['decay_fraction']!r}"
-            )
-            decay_fraction = QuickAdapterV3.default_reversal_confirmation[
-                "decay_fraction"
-            ]
-
-        min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
-            min_natr_multiplier_fraction,
-            max_natr_multiplier_fraction,
-            logger,
-            name="natr_multiplier_fraction",
-            default_min=QuickAdapterV3.default_reversal_confirmation[
-                "min_natr_multiplier_fraction"
-            ],
-            default_max=QuickAdapterV3.default_reversal_confirmation[
-                "max_natr_multiplier_fraction"
-            ],
-            allow_equal=False,
-            non_negative=True,
-            finite_only=True,
-        )
-
-        return {
-            "lookback_period_candles": int(lookback_period_candles),
-            "decay_fraction": float(decay_fraction),
-            "min_natr_multiplier_fraction": float(min_natr_multiplier_fraction),
-            "max_natr_multiplier_fraction": float(max_natr_multiplier_fraction),
-        }
-
-    @property
+    @cached_property
     def _label_defaults(self) -> tuple[int, float]:
         feature_parameters = self.freqai_info.get("feature_parameters", {})
         return get_label_defaults(feature_parameters, logger)

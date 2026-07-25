@@ -7,7 +7,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import (
     AbstractSet,
@@ -1266,7 +1266,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ),
         }
 
-    @property
+    @cached_property
     def _optuna_config(self) -> dict[str, Any]:
         optuna_default_config = {
             "enabled": False,
@@ -1324,7 +1324,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
         )
 
-    @property
+    @cached_property
     def _label_frequency_candles(self) -> int:
         default_label_frequency_candles = max(2, 2 * len(self.pairs))
 
@@ -1356,32 +1356,32 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         return label_frequency_candles
 
-    @property
+    @cached_property
     def label_weighting(self) -> dict[str, Any]:
         label_weighting_raw = self.freqai_info.get("label_weighting")
         if not isinstance(label_weighting_raw, dict):
             label_weighting_raw = {}
         return get_label_weighting_config(label_weighting_raw, logger)
 
-    @property
+    @cached_property
     def label_pipeline(self) -> dict[str, Any]:
         label_pipeline_raw = self.freqai_info.get("label_pipeline")
         if not isinstance(label_pipeline_raw, dict):
             label_pipeline_raw = {}
         return get_label_pipeline_config(label_pipeline_raw, logger)
 
-    @property
+    @cached_property
     def label_prediction(self) -> dict[str, Any]:
         label_prediction_raw = self.freqai_info.get("label_prediction")
         if not isinstance(label_prediction_raw, dict):
             label_prediction_raw = {}
         return get_label_prediction_config(label_prediction_raw, logger)
 
-    @property
+    @cached_property
     def _label_defaults(self) -> tuple[int, float]:
         return get_label_defaults(self.ft_params, logger)
 
-    @property
+    @cached_property
     def _causal_mode(self) -> bool:
         return get_causal_mode(self.ft_params, logger)
 
