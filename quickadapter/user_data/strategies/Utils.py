@@ -21,6 +21,7 @@ from typing import (
     TypeVar,
     assert_never,
     cast,
+    get_args,
 )
 
 import numpy as np
@@ -3570,13 +3571,80 @@ def zigzag(
 Regressor = Literal[
     "xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"
 ]
-REGRESSORS: Final[tuple[Regressor, ...]] = (
-    "xgboost",
-    "lightgbm",
-    "histgradientboostingregressor",
-    "ngboost",
-    "catboost",
-)
+
+
+class RegressorSpec(NamedTuple):
+    name: Regressor
+    iteration_param: str
+    iteration_aliases: frozenset[str]
+    seed_param: str
+
+
+# Per-regressor metadata single source: the canonical boosting-iteration
+# parameter, all of its synonyms (the refit must set exactly one, else CatBoost
+# aborts on duplicate iteration aliases), and the RNG seed parameter name.
+class _RegressorSpecs(NamedTuple):
+    xgboost: RegressorSpec = RegressorSpec(
+        "xgboost",
+        "n_estimators",
+        frozenset({"n_estimators", "num_boost_round"}),
+        "random_state",
+    )
+    lightgbm: RegressorSpec = RegressorSpec(
+        "lightgbm",
+        "n_estimators",
+        frozenset(
+            {
+                "n_estimators",
+                "num_iterations",
+                "num_iteration",
+                "num_boost_round",
+                "num_round",
+                "num_rounds",
+                "nrounds",
+                "num_tree",
+                "num_trees",
+                "max_iter",
+                "n_iter",
+            }
+        ),
+        "seed",
+    )
+    histgradientboostingregressor: RegressorSpec = RegressorSpec(
+        "histgradientboostingregressor",
+        "max_iter",
+        frozenset({"max_iter"}),
+        "random_state",
+    )
+    ngboost: RegressorSpec = RegressorSpec(
+        "ngboost",
+        "n_estimators",
+        frozenset({"n_estimators"}),
+        "random_state",
+    )
+    catboost: RegressorSpec = RegressorSpec(
+        "catboost",
+        "iterations",
+        frozenset({"iterations", "n_estimators", "num_boost_round", "num_trees"}),
+        "random_seed",
+    )
+
+
+_REGRESSOR_SPECS: Final[_RegressorSpecs] = _RegressorSpecs()
+_REGRESSOR_SPEC_BY_NAME: Final[dict[Regressor, RegressorSpec]] = {
+    spec.name: spec for spec in _REGRESSOR_SPECS
+}
+REGRESSORS: Final[tuple[Regressor, ...]] = tuple(spec.name for spec in _REGRESSOR_SPECS)
+DEFAULT_REGRESSOR: Final[Regressor] = _REGRESSOR_SPECS.xgboost.name
+
+if set(_REGRESSOR_SPEC_BY_NAME) != set(get_args(Regressor)):
+    raise RuntimeError(
+        "_REGRESSOR_SPECS must define a spec for every Regressor literal member"
+    )
+if any(spec.iteration_param not in spec.iteration_aliases for spec in _REGRESSOR_SPECS):
+    raise RuntimeError(
+        "each RegressorSpec.iteration_param must be listed in its iteration_aliases"
+    )
 
 RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
@@ -3639,15 +3707,14 @@ def get_refit_model_training_parameters(
     """Return parameters that preserve the selected model capacity for refit."""
     refit_parameters = copy.deepcopy(model_training_parameters)
 
-    if regressor == REGRESSORS[0]:  # "xgboost"
+    if regressor == _REGRESSOR_SPECS.xgboost.name:
         fitted_iterations = int(model.get_booster().num_boosted_rounds())
         initial_iterations = (
             int(init_model.get_booster().num_boosted_rounds())
             if init_model is not None
             else 0
         )
-        parameter_name = "n_estimators"
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
+    elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         best_iteration = getattr(model, "best_iteration_", 0) or 0
         fitted_iterations = int(
             best_iteration if best_iteration > 0 else model.n_estimators_
@@ -3657,32 +3724,31 @@ def get_refit_model_training_parameters(
             if init_model is not None
             else 0
         )
-        parameter_name = "n_estimators"
-    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
         fitted_iterations = int(model.n_iter_)
         initial_iterations = 0
-        parameter_name = "max_iter"
         refit_parameters["early_stopping"] = False
-    elif regressor == REGRESSORS[3]:  # "ngboost"
+    elif regressor == _REGRESSOR_SPECS.ngboost.name:
         fitted_iterations = len(model.base_models)
         initial_iterations = 0
-        parameter_name = "n_estimators"
-    elif regressor == REGRESSORS[4]:  # "catboost"
+    elif regressor == _REGRESSOR_SPECS.catboost.name:
         fitted_iterations = int(model.tree_count_)
         initial_iterations = 0
-        parameter_name = "iterations"
     else:
         raise ValueError(
             f"Invalid regressor value {regressor!r}: "
             f"supported values are {', '.join(REGRESSORS)}"
         )
 
+    spec = _REGRESSOR_SPEC_BY_NAME[regressor]
     # best_iteration is combined-indexed under current xgboost/lightgbm, so
     # fitted >= initial + 1 always holds; clamp defensively so a degenerate
     # non-improving continual-learning refit degrades gracefully instead of
     # raising and killing the whole training window.
     refit_iterations = max(fitted_iterations - initial_iterations, 1)
-    refit_parameters[parameter_name] = refit_iterations
+    for alias in spec.iteration_aliases:
+        refit_parameters.pop(alias, None)
+    refit_parameters[spec.iteration_param] = refit_iterations
     return refit_parameters
 
 
@@ -3711,11 +3777,21 @@ def fit_regressor(
         eval_set = None
         eval_weights = None
 
-    if regressor == REGRESSORS[0]:  # "xgboost"
+    spec = _REGRESSOR_SPEC_BY_NAME.get(regressor)
+    if spec is None:
+        raise ValueError(
+            f"Invalid regressor value {regressor!r}: "
+            f"supported values are {', '.join(REGRESSORS)}"
+        )
+    model_training_parameters.setdefault(spec.seed_param, 1)
+    if trial is not None:
+        model_training_parameters[spec.seed_param] = (
+            model_training_parameters[spec.seed_param] + trial.number
+        )
+
+    if regressor == _REGRESSOR_SPECS.xgboost.name:
         from xgboost import XGBRegressor
         from xgboost.callback import EarlyStopping
-
-        model_training_parameters.setdefault("random_state", 1)
 
         early_stopping_rounds = None
         if has_eval_set:
@@ -3735,16 +3811,10 @@ def fit_regressor(
                 )
             )
 
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
+        if trial is not None and has_eval_set:
+            fit_callbacks.append(
+                optuna.integration.XGBoostPruningCallback(trial, "validation_0-rmse")
             )
-            if has_eval_set:
-                fit_callbacks.append(
-                    optuna.integration.XGBoostPruningCallback(
-                        trial, "validation_0-rmse"
-                    )
-                )
 
         model = XGBRegressor(
             objective="reg:squarederror",
@@ -3760,10 +3830,8 @@ def fit_regressor(
             sample_weight_eval_set=eval_weights,
             xgb_model=init_model,
         )
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
+    elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         from lightgbm import LGBMRegressor, early_stopping
-
-        model_training_parameters.setdefault("seed", 1)
 
         early_stopping_rounds = None
         if has_eval_set:
@@ -3782,16 +3850,12 @@ def fit_regressor(
                 )
             )
 
-        if trial is not None:
-            model_training_parameters["seed"] = (
-                model_training_parameters["seed"] + trial.number
-            )
-            if has_eval_set:
-                fit_callbacks.append(
-                    optuna.integration.LightGBMPruningCallback(
-                        trial, "rmse", valid_name="valid_0"
-                    )
+        if trial is not None and has_eval_set:
+            fit_callbacks.append(
+                optuna.integration.LightGBMPruningCallback(
+                    trial, "rmse", valid_name="valid_0"
                 )
+            )
 
         model = LGBMRegressor(objective="regression", **model_training_parameters)
         model.fit(
@@ -3804,10 +3868,9 @@ def fit_regressor(
             init_model=init_model,
             callbacks=fit_callbacks if fit_callbacks else None,
         )
-    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
         from sklearn.ensemble import HistGradientBoostingRegressor
 
-        model_training_parameters.setdefault("random_state", 1)
         model_training_parameters.setdefault("loss", "squared_error")
         early_stopping = model_training_parameters.pop("early_stopping", True)
         model_training_parameters.pop("n_jobs", None)
@@ -3827,11 +3890,6 @@ def fit_regressor(
         verbosity = model_training_parameters.pop("verbosity", None)
         if "verbose" not in model_training_parameters and verbosity is not None:
             model_training_parameters["verbose"] = verbosity
-
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
 
         X_val = None
         y_val = None
@@ -3856,11 +3914,9 @@ def fit_regressor(
             y_val=y_val,
             sample_weight_val=sample_weight_val,
         )
-    elif regressor == REGRESSORS[3]:  # "ngboost"
+    elif regressor == _REGRESSOR_SPECS.ngboost.name:
         from ngboost import NGBRegressor
         from sklearn.tree import DecisionTreeRegressor
-
-        model_training_parameters.setdefault("random_state", 1)
 
         verbosity = model_training_parameters.pop("verbosity", None)
         if "verbose" not in model_training_parameters and verbosity is not None:
@@ -3875,11 +3931,6 @@ def fit_regressor(
             )
         else:
             model_training_parameters.pop("early_stopping_rounds", None)
-
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
 
         dist = model_training_parameters.pop("dist", "lognormal")
 
@@ -3912,10 +3963,9 @@ def fit_regressor(
             val_sample_weight=val_sample_weight,
             early_stopping_rounds=early_stopping_rounds,
         )
-    elif regressor == REGRESSORS[4]:  # "catboost"
+    elif regressor == _REGRESSOR_SPECS.catboost.name:
         from catboost import CatBoostRegressor, Pool
 
-        model_training_parameters.setdefault("random_seed", 1)
         model_training_parameters.setdefault("loss_function", "RMSE")
 
         if model_path is not None and "train_dir" not in model_training_parameters:
@@ -3955,11 +4005,6 @@ def fit_regressor(
         verbosity = model_training_parameters.pop("verbosity", None)
         if "verbose" not in model_training_parameters and verbosity is not None:
             model_training_parameters["verbose"] = verbosity
-
-        if trial is not None:
-            model_training_parameters["random_seed"] = (
-                model_training_parameters["random_seed"] + trial.number
-            )
 
         pruning_callback = None
         if trial is not None and has_eval_set and task_type != "GPU":
@@ -4312,7 +4357,7 @@ def get_optuna_study_model_parameters(
                     ranges[param] = (param_min, param_max)
         return ranges
 
-    if regressor == REGRESSORS[0]:  # "xgboost"
+    if regressor == _REGRESSOR_SPECS.xgboost.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
         #                  sampling -> regularization -> binning
         default_ranges: dict[str, tuple[float, float]] = {
@@ -4436,7 +4481,7 @@ def get_optuna_study_model_parameters(
 
         return params
 
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
+    elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
         #                  sampling -> regularization -> binning
         default_ranges: dict[str, tuple[float, float]] = {
@@ -4543,7 +4588,7 @@ def get_optuna_study_model_parameters(
 
         return params
 
-    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
         #                  sampling -> regularization -> binning -> early stopping
         default_ranges: dict[str, tuple[float, float]] = {
@@ -4647,7 +4692,7 @@ def get_optuna_study_model_parameters(
             ),
         }
 
-    elif regressor == REGRESSORS[3]:  # "ngboost"
+    elif regressor == _REGRESSOR_SPECS.ngboost.name:
         # Parameter order: boosting -> tree structure -> sampling -> early stopping -> distribution
         default_ranges: dict[str, tuple[float, float]] = {
             # Boosting/Training
@@ -4714,7 +4759,7 @@ def get_optuna_study_model_parameters(
             "dist": trial.suggest_categorical("dist", ["normal", "lognormal"]),
         }
 
-    elif regressor == REGRESSORS[4]:  # "catboost"
+    elif regressor == _REGRESSOR_SPECS.catboost.name:
         # Parameter order: boosting -> tree structure -> regularization -> sampling
         task_type = model_training_parameters.get("task_type", "CPU")
         loss_function = model_training_parameters.get("loss_function", "RMSE")
