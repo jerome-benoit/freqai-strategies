@@ -126,8 +126,24 @@ class QuickAdapterV3(IStrategy):
         "inverse",
     )
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
+    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
+    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
+    _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]
+    _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]
     _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
+    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
+    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
+    _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]
+    _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]
+    _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
+    _SMOOTHING_SMM: Final[str] = SMOOTHING_METHODS[5]
+    _SMOOTHING_SAVGOL: Final[str] = SMOOTHING_METHODS[7]
+    _SMOOTHING_GAUSSIAN_FILTER1D: Final[str] = SMOOTHING_METHODS[8]
+    _FILL_EPSILON: Final[str] = FILL_METHODS[1]
+    _FILL_GAUSSIAN: Final[str] = FILL_METHODS[2]
+    _FILL_EPSILON_GAUSSIAN: Final[str] = FILL_METHODS[3]
+    _WEIGHT_NONE: Final[str] = WEIGHT_STRATEGIES[0]
 
     _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
 
@@ -398,8 +414,8 @@ class QuickAdapterV3(IStrategy):
                 if (
                     col_smoothing_config["method"]
                     in (
-                        SMOOTHING_METHODS[7],  # "savgol"
-                        SMOOTHING_METHODS[8],  # "gaussian_filter1d"
+                        QuickAdapterV3._SMOOTHING_SAVGOL,
+                        QuickAdapterV3._SMOOTHING_GAUSSIAN_FILTER1D,
                     )
                     and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
                 ):  # "wrap"
@@ -477,8 +493,8 @@ class QuickAdapterV3(IStrategy):
             fill_method = col_weighting["fill_method"]
             logger.info(f"    fill_method: {fill_method}")
             if fill_method in (
-                FILL_METHODS[1],  # "epsilon"
-                FILL_METHODS[3],  # "epsilon_gaussian"
+                QuickAdapterV3._FILL_EPSILON,
+                QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
             ):
                 logger.info(
                     f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}"
@@ -487,8 +503,8 @@ class QuickAdapterV3(IStrategy):
                     f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
                 )
             if fill_method in (
-                FILL_METHODS[2],  # "gaussian"
-                FILL_METHODS[3],  # "epsilon_gaussian"
+                QuickAdapterV3._FILL_GAUSSIAN,
+                QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
             ):
                 logger.info(
                     f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
@@ -526,10 +542,10 @@ class QuickAdapterV3(IStrategy):
             logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
 
             method = col_smoothing["method"]
-            if col_weighting["strategy"] != WEIGHT_STRATEGIES[0] and (  # "none"
-                method == SMOOTHING_METHODS[5]  # "smm"
+            if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE and (  # "none"
+                method == QuickAdapterV3._SMOOTHING_SMM
                 or (
-                    method == SMOOTHING_METHODS[7]  # "savgol"
+                    method == QuickAdapterV3._SMOOTHING_SAVGOL
                     and col_smoothing["polyorder"] >= 2
                 )
             ):
@@ -948,7 +964,7 @@ class QuickAdapterV3(IStrategy):
 
             # Absent column routes downstream to base-weights-only fallback.
             is_weighting_active = (
-                col_weighting_config["strategy"] != WEIGHT_STRATEGIES[0]  # "none"
+                col_weighting_config["strategy"] != QuickAdapterV3._WEIGHT_NONE
                 and len(label_data.indices) > 0
             )
 
@@ -1086,7 +1102,7 @@ class QuickAdapterV3(IStrategy):
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_long_conditions),
             ["enter_long", "enter_tag"],
-        ] = (1, QuickAdapterV3._TRADE_DIRECTIONS[0])  # "long"
+        ] = (1, QuickAdapterV3._TRADE_LONG)  # "long"
 
         enter_short_conditions = [
             dataframe.get("do_predict") == 1,
@@ -1096,7 +1112,7 @@ class QuickAdapterV3(IStrategy):
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_short_conditions),
             ["enter_short", "enter_tag"],
-        ] = (1, QuickAdapterV3._TRADE_DIRECTIONS[1])  # "short"
+        ] = (1, QuickAdapterV3._TRADE_SHORT)  # "short"
 
         return dataframe
 
@@ -1684,16 +1700,14 @@ class QuickAdapterV3(IStrategy):
         if isna(candle_label_natr_value_quantile):
             return np.nan
 
-        if (
-            interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECTIONS[0]
-        ):  # "direct"
+        if interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECT:  # "direct"
             natr_multiplier_fraction = (
                 min_natr_multiplier_fraction
                 + (max_natr_multiplier_fraction - min_natr_multiplier_fraction)
                 * candle_label_natr_value_quantile**quantile_exponent
             )
         elif (
-            interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECTIONS[1]
+            interpolation_direction == QuickAdapterV3._INTERPOLATION_INVERSE
         ):  # "inverse"
             natr_multiplier_fraction = (
                 max_natr_multiplier_fraction
@@ -1759,14 +1773,14 @@ class QuickAdapterV3(IStrategy):
         is_candle_bullish: bool = candle_close > candle_open
         is_candle_bearish: bool = candle_close < candle_open
 
-        if side == QuickAdapterV3._TRADE_DIRECTIONS[0]:  # "long"
+        if side == QuickAdapterV3._TRADE_LONG:  # "long"
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bearish
                 else candle_close
             )
             candle_threshold = base_price * (1 + current_deviation)
-        elif side == QuickAdapterV3._TRADE_DIRECTIONS[1]:  # "short"
+        elif side == QuickAdapterV3._TRADE_SHORT:  # "short"
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bullish
@@ -1851,18 +1865,16 @@ class QuickAdapterV3(IStrategy):
             candle_idx=-1,
         )
         current_ok = np.isfinite(current_threshold) and (
-            (
-                side == QuickAdapterV3._TRADE_DIRECTIONS[0] and rate > current_threshold
-            )  # "long"
+            (side == QuickAdapterV3._TRADE_LONG and rate > current_threshold)  # "long"
             or (
-                side == QuickAdapterV3._TRADE_DIRECTIONS[1] and rate < current_threshold
+                side == QuickAdapterV3._TRADE_SHORT and rate < current_threshold
             )  # "short"
         )
-        if order == QuickAdapterV3._ORDER_TYPES[1]:  # "exit"
-            if side == QuickAdapterV3._TRADE_DIRECTIONS[0]:  # "long"
-                trade_direction = QuickAdapterV3._TRADE_DIRECTIONS[1]  # "short"
-            if side == QuickAdapterV3._TRADE_DIRECTIONS[1]:  # "short"
-                trade_direction = QuickAdapterV3._TRADE_DIRECTIONS[0]  # "long"
+        if order == QuickAdapterV3._ORDER_EXIT:  # "exit"
+            if side == QuickAdapterV3._TRADE_LONG:  # "long"
+                trade_direction = QuickAdapterV3._TRADE_SHORT
+            if side == QuickAdapterV3._TRADE_SHORT:  # "short"
+                trade_direction = QuickAdapterV3._TRADE_LONG
         if not current_ok:
             logger.debug(
                 f"[{pair}] Denied {trade_direction} {order}: rate {format_number(rate)} did not break threshold {format_number(current_threshold)}"
@@ -1900,10 +1912,10 @@ class QuickAdapterV3(IStrategy):
                 return current_ok
 
             if (
-                side == QuickAdapterV3._TRADE_DIRECTIONS[0]
+                side == QuickAdapterV3._TRADE_LONG
                 and not (close_k > threshold_k)  # "long"
             ) or (
-                side == QuickAdapterV3._TRADE_DIRECTIONS[1]
+                side == QuickAdapterV3._TRADE_SHORT
                 and not (close_k < threshold_k)  # "short"
             ):
                 logger.debug(
@@ -2080,15 +2092,15 @@ class QuickAdapterV3(IStrategy):
                 trade.set_custom_data("last_outlier_date", last_candle_date.isoformat())
 
         if (
-            trade.trade_direction == QuickAdapterV3._TRADE_DIRECTIONS[1]  # "short"
+            trade.trade_direction == QuickAdapterV3._TRADE_SHORT
             and last_candle.get("do_predict") == 1
             and last_candle.get("DI_catch") == 1
             and last_candle.get(EXTREMA_COLUMN) < last_candle.get("minima_threshold")
             and self.reversal_confirmed(
                 df,
                 pair,
-                QuickAdapterV3._TRADE_DIRECTIONS[0],  # "long"
-                QuickAdapterV3._ORDER_TYPES[1],  # "exit"
+                QuickAdapterV3._TRADE_LONG,
+                QuickAdapterV3._ORDER_EXIT,
                 current_rate,
                 self.reversal_confirmation["lookback_period_candles"],
                 self.reversal_confirmation["decay_fraction"],
@@ -2098,15 +2110,15 @@ class QuickAdapterV3(IStrategy):
         ):
             return "minima_detected_short"
         if (
-            trade.trade_direction == QuickAdapterV3._TRADE_DIRECTIONS[0]  # "long"
+            trade.trade_direction == QuickAdapterV3._TRADE_LONG
             and last_candle.get("do_predict") == 1
             and last_candle.get("DI_catch") == 1
             and last_candle.get(EXTREMA_COLUMN) > last_candle.get("maxima_threshold")
             and self.reversal_confirmed(
                 df,
                 pair,
-                QuickAdapterV3._TRADE_DIRECTIONS[1],  # "short"
-                QuickAdapterV3._ORDER_TYPES[1],  # "exit"
+                QuickAdapterV3._TRADE_SHORT,
+                QuickAdapterV3._ORDER_EXIT,
                 current_rate,
                 self.reversal_confirmation["lookback_period_candles"],
                 self.reversal_confirmation["decay_fraction"],
@@ -2242,11 +2254,9 @@ class QuickAdapterV3(IStrategy):
     ) -> bool:
         if side not in QuickAdapterV3._TRADE_DIRECTIONS_SET:
             return False
-        if (
-            side == QuickAdapterV3._TRADE_DIRECTIONS[1] and not self.can_short
-        ):  # "short"
+        if side == QuickAdapterV3._TRADE_SHORT and not self.can_short:  # "short"
             logger.info(
-                f"[{pair}] Denied short {QuickAdapterV3._ORDER_TYPES[0]}: shorting not allowed"
+                f"[{pair}] Denied short {QuickAdapterV3._ORDER_ENTRY}: shorting not allowed"
             )
             return False
         if Trade.get_open_trade_count() >= self.config.get("max_open_trades", 0):
@@ -2265,14 +2275,14 @@ class QuickAdapterV3(IStrategy):
         )
         if df.empty:
             logger.info(
-                f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_TYPES[0]}: dataframe is empty"
+                f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_ENTRY}: dataframe is empty"
             )
             return False
         if self.reversal_confirmed(
             df,
             pair,
             side,
-            QuickAdapterV3._ORDER_TYPES[0],  # "entry"
+            QuickAdapterV3._ORDER_ENTRY,
             rate,
             self.reversal_confirmation["lookback_period_candles"],
             self.reversal_confirmation["decay_fraction"],
@@ -2285,11 +2295,11 @@ class QuickAdapterV3(IStrategy):
     def is_short_allowed(self) -> bool:
         trading_mode = self.config.get("trading_mode")
         if trading_mode in {
-            QuickAdapterV3._TRADING_MODES[1],
-            QuickAdapterV3._TRADING_MODES[2],
+            QuickAdapterV3._TRADING_MODE_MARGIN,
+            QuickAdapterV3._TRADING_MODE_FUTURES,
         }:  # margin, futures
             return True
-        elif trading_mode == QuickAdapterV3._TRADING_MODES[0]:  # "spot"
+        elif trading_mode == QuickAdapterV3._TRADING_MODE_SPOT:  # "spot"
             return False
         else:
             raise ValueError(
