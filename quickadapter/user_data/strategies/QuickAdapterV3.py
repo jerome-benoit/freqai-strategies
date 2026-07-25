@@ -473,7 +473,9 @@ class QuickAdapterV3(IStrategy):
             )
         self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
-        nominal_pnl_momentum_window_size = int(30 / self.timeframe_minutes)
+        # +1 endpoint: N samples yield N-1 velocity intervals, so covering a
+        # 30-minute velocity span needs floor(30/tf)+1 samples.
+        nominal_pnl_momentum_window_size = int(30 / self.timeframe_minutes) + 1
         self._pnl_momentum_window_size = max(
             QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE,
             nominal_pnl_momentum_window_size,
@@ -486,11 +488,14 @@ class QuickAdapterV3(IStrategy):
             nominal_pnl_momentum_window_size
             < QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE
         ):
+            velocity_span_minutes = (
+                self._pnl_momentum_window_size - 1
+            ) * self.timeframe_minutes
             logger.warning(
                 f"Timeframe {self.timeframe} cannot fit a 30-minute PnL momentum "
                 f"window; flooring to {self._pnl_momentum_window_size} candles "
-                f"(~{self._pnl_momentum_window_size * self.timeframe_minutes} min). "
-                "The declining-PnL take-profit confirmation runs on a coarser window."
+                f"(~{velocity_span_minutes} min velocity span). The declining-PnL "
+                "take-profit confirmation runs on a coarser window."
             )
         self._exit_thresholds_calibration: dict[str, float] = {
             **QuickAdapterV3.default_exit_thresholds_calibration,
@@ -2206,6 +2211,27 @@ class QuickAdapterV3(IStrategy):
         trade_unrealized_pnl_history = QuickAdapterV3.get_trade_unrealized_pnl_history(
             trade
         )
+        if len(trade_unrealized_pnl_history) < self._pnl_momentum_window_size:
+            # Warm-up: without a full momentum window a 30-minute decline is not
+            # measurable yet; fail open (never block a profitable take-profit
+            # exit) rather than gate on a partial, low-power series.
+            self.throttle_callback(
+                pair=pair,
+                current_time=current_time,
+                callback=lambda: logger.info(
+                    f"[{pair}] Trade {trade.trade_direction} stage "
+                    f"{trade_exit_stage} | PnL momentum gate warming up "
+                    f"({len(trade_unrealized_pnl_history)}/"
+                    f"{self._pnl_momentum_window_size} samples); "
+                    "take-profit exit not gated (fail-open)"
+                ),
+            )
+            if trade_take_profit_exit:
+                return (
+                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+                    f"{trade.trade_direction}_{trade_exit_stage}"
+                )
+            return None
         (
             trade_recent_velocity_values,
             trade_recent_velocity_mean,
