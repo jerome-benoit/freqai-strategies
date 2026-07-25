@@ -308,11 +308,12 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
-    # np.isfinite raises (TypeError/OverflowError) on inputs it cannot coerce
-    # to float64 (e.g. Python ints >= 2**64); treat those as non-finite.
+    # np.isfinite raises/returns non-scalar on inputs it cannot reduce to a
+    # single finite float64 (Python ints >= 2**64 -> TypeError/OverflowError;
+    # array-likes -> a ValueError on bool()); treat all of those as non-finite.
     try:
         return bool(np.isfinite(value))
-    except (TypeError, OverflowError):
+    except (TypeError, OverflowError, ValueError):
         return False
 
 
