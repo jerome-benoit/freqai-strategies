@@ -1266,7 +1266,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ),
         }
 
-    @property
+    @cached_property
     def _optuna_config(self) -> dict[str, Any]:
         optuna_default_config = {
             "enabled": False,
@@ -1324,7 +1324,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3.MAX_LABEL_NATR_MULTIPLIER_DEFAULT,
         )
 
-    @property
+    @cached_property
     def _label_frequency_candles(self) -> int:
         default_label_frequency_candles = max(2, 2 * len(self.pairs))
 
