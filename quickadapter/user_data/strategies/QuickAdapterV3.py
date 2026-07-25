@@ -544,7 +544,7 @@ class QuickAdapterV3(IStrategy):
             logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
 
             method = col_smoothing["method"]
-            if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE and (  # "none"
+            if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE and (
                 method == QuickAdapterV3._SMOOTHING_SMM
                 or (
                     method == QuickAdapterV3._SMOOTHING_SAVGOL
@@ -1652,7 +1652,7 @@ class QuickAdapterV3(IStrategy):
         self, cache: _PairCacheT, pair: str, df_signature: DfSignature
     ) -> _PairCacheT:
         if self._cached_df_signature.get(pair) != df_signature:
-            cache = {k: v for k, v in cache.items() if k[0] != pair}
+            cache = type(cache)({k: v for k, v in cache.items() if k[0] != pair})
             self._cached_df_signature[pair] = df_signature
         return cache
 
@@ -1702,7 +1702,7 @@ class QuickAdapterV3(IStrategy):
         if isna(candle_label_natr_value_quantile):
             return np.nan
 
-        if interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECT:  # "direct"
+        if interpolation_direction == QuickAdapterV3._INTERPOLATION_DIRECT:
             natr_multiplier_fraction = (
                 min_natr_multiplier_fraction
                 + (max_natr_multiplier_fraction - min_natr_multiplier_fraction)
@@ -1775,14 +1775,14 @@ class QuickAdapterV3(IStrategy):
         is_candle_bullish: bool = candle_close > candle_open
         is_candle_bearish: bool = candle_close < candle_open
 
-        if side == QuickAdapterV3._TRADE_LONG:  # "long"
+        if side == QuickAdapterV3._TRADE_LONG:
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bearish
                 else candle_close
             )
             candle_threshold = base_price * (1 + current_deviation)
-        elif side == QuickAdapterV3._TRADE_SHORT:  # "short"
+        elif side == QuickAdapterV3._TRADE_SHORT:
             base_price = (
                 QuickAdapterV3.weighted_close(candle)
                 if is_candle_bullish
@@ -1867,15 +1867,15 @@ class QuickAdapterV3(IStrategy):
             candle_idx=-1,
         )
         current_ok = np.isfinite(current_threshold) and (
-            (side == QuickAdapterV3._TRADE_LONG and rate > current_threshold)  # "long"
+            (side == QuickAdapterV3._TRADE_LONG and rate > current_threshold)
             or (
                 side == QuickAdapterV3._TRADE_SHORT and rate < current_threshold
             )  # "short"
         )
-        if order == QuickAdapterV3._ORDER_EXIT:  # "exit"
-            if side == QuickAdapterV3._TRADE_LONG:  # "long"
+        if order == QuickAdapterV3._ORDER_EXIT:
+            if side == QuickAdapterV3._TRADE_LONG:
                 trade_direction = QuickAdapterV3._TRADE_SHORT
-            if side == QuickAdapterV3._TRADE_SHORT:  # "short"
+            if side == QuickAdapterV3._TRADE_SHORT:
                 trade_direction = QuickAdapterV3._TRADE_LONG
         if not current_ok:
             logger.debug(
@@ -2256,7 +2256,7 @@ class QuickAdapterV3(IStrategy):
     ) -> bool:
         if side not in QuickAdapterV3._TRADE_DIRECTIONS_SET:
             return False
-        if side == QuickAdapterV3._TRADE_SHORT and not self.can_short:  # "short"
+        if side == QuickAdapterV3._TRADE_SHORT and not self.can_short:
             logger.info(
                 f"[{pair}] Denied short {QuickAdapterV3._ORDER_ENTRY}: shorting not allowed"
             )
@@ -2301,7 +2301,7 @@ class QuickAdapterV3(IStrategy):
             QuickAdapterV3._TRADING_MODE_FUTURES,
         }:  # margin, futures
             return True
-        elif trading_mode == QuickAdapterV3._TRADING_MODE_SPOT:  # "spot"
+        elif trading_mode == QuickAdapterV3._TRADING_MODE_SPOT:
             return False
         else:
             raise ValueError(

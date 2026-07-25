@@ -788,7 +788,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _get_label_p_order_default(distance_metric: str) -> Optional[float]:
-        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:  # "minkowski"
+        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:
             return 2.0
         elif (
             distance_metric == QuickAdapterRegressorV3._METRIC_POWER_MEAN
@@ -798,9 +798,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _get_label_density_metric_default(method: DensityMethod) -> Optional[str]:
-        if method == QuickAdapterRegressorV3._DENSITY_MEDOID:  # "medoid"
+        if method == QuickAdapterRegressorV3._DENSITY_MEDOID:
             return QuickAdapterRegressorV3._METRIC_EUCLIDEAN
-        elif method == QuickAdapterRegressorV3._DENSITY_KNN:  # "knn"
+        elif method == QuickAdapterRegressorV3._DENSITY_KNN:
             return QuickAdapterRegressorV3._METRIC_MINKOWSKI
         return None
 
@@ -812,7 +812,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN
         ):  # "power_mean"
             return 1.0
-        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:  # "quantile"
+        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:
             return 0.5
         return None
 
@@ -876,7 +876,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if validated_metric is not None:
                 kwargs["w"] = weights
 
-        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:  # "minkowski"
+        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:
             validated_p = QuickAdapterRegressorV3._validate_minkowski_p(
                 p, ctx=p_ctx, mode=mode
             )
@@ -1091,7 +1091,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if label_p_order is not None
             else QuickAdapterRegressorV3._get_label_p_order_default(distance_metric)
         )
-        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:  # "minkowski"
+        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:
             p = QuickAdapterRegressorV3._validate_minkowski_p(p, ctx=ctx, mode=mode)
         return p
 
@@ -1180,7 +1180,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             config["distance_metric"] = distance_metric
 
-            if density_method == QuickAdapterRegressorV3._DENSITY_KNN:  # "knn"
+            if density_method == QuickAdapterRegressorV3._DENSITY_KNN:
                 aggregation = cast(
                     DensityAggregation,
                     self.ft_params.get(
@@ -1825,11 +1825,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         pipeline = super().define_data_pipeline(threads)
 
-        if scaler == QuickAdapterRegressorV3._SCALER_MAXABS:  # "maxabs"
+        if scaler == QuickAdapterRegressorV3._SCALER_MAXABS:
             scaler_obj = SKLearnWrapper(MaxAbsScaler())
-        elif scaler == QuickAdapterRegressorV3._SCALER_STANDARD:  # "standard"
+        elif scaler == QuickAdapterRegressorV3._SCALER_STANDARD:
             scaler_obj = SKLearnWrapper(StandardScaler())
-        elif scaler == QuickAdapterRegressorV3._SCALER_ROBUST:  # "robust"
+        elif scaler == QuickAdapterRegressorV3._SCALER_ROBUST:
             scaler_obj = SKLearnWrapper(RobustScaler())
         else:  # "minmax"
             scaler_obj = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
@@ -3628,7 +3628,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if distance_metric in (
             QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
-            | {QuickAdapterRegressorV3._METRIC_POWER_MEAN}  # "power_mean"
+            | {QuickAdapterRegressorV3._METRIC_POWER_MEAN}
         ):
             distances = QuickAdapterRegressorV3._power_mean_distance(
                 normalized_matrix,
@@ -3916,7 +3916,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._CLUSTER_KMEANS,
             QuickAdapterRegressorV3._CLUSTER_KMEANS2,
         }:
-            if cluster_method == QuickAdapterRegressorV3._CLUSTER_KMEANS:  # "kmeans"
+            if cluster_method == QuickAdapterRegressorV3._CLUSTER_KMEANS:
                 kmeans = sklearn.cluster.KMeans(
                     n_clusters=n_clusters, random_state=42, n_init=10
                 )
@@ -3938,7 +3938,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         p=p,
                     )
                 )
-            elif selection_method == QuickAdapterRegressorV3._METHOD_TOPSIS:  # "topsis"
+            elif selection_method == QuickAdapterRegressorV3._METHOD_TOPSIS:
                 cluster_center_scores = QuickAdapterRegressorV3._topsis_scores(
                     cluster_centers,
                     distance_metric,
@@ -3974,7 +3974,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 trial_distances[best_trial_index] = best_trial_distance
             return trial_distances
 
-        elif cluster_method == QuickAdapterRegressorV3._CLUSTER_KMEDOIDS:  # "kmedoids"
+        elif cluster_method == QuickAdapterRegressorV3._CLUSTER_KMEDOIDS:
             raise DependencyException(
                 "label_method='kmedoids' is temporarily disabled because "
                 "scikit-learn-extra is not compatible with the current "
@@ -4042,7 +4042,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             assert power is not None
             return np.asarray(sp.stats.pmean(neighbor_distances, p=power, axis=1))
-        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:  # "quantile"
+        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:
             quantile = (
                 aggregation_param
                 if aggregation_param is not None
@@ -4058,9 +4058,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             assert quantile is not None
             return np.asarray(np.nanquantile(neighbor_distances, quantile, axis=1))
-        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_MIN:  # "min"
+        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_MIN:
             return np.nanmin(neighbor_distances, axis=1)
-        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_MAX:  # "max"
+        elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_MAX:
             return np.nanmax(neighbor_distances, axis=1)
         else:
             raise ValueError(
@@ -4334,7 +4334,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     weights=weights,
                     p=p,
                 )
-            if method == QuickAdapterRegressorV3._METHOD_TOPSIS:  # "topsis"
+            if method == QuickAdapterRegressorV3._METHOD_TOPSIS:
                 return QuickAdapterRegressorV3._topsis_scores(
                     normalized_matrix,
                     distance_metric,
@@ -4373,7 +4373,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 mode="none",
             )
 
-            if density_method == QuickAdapterRegressorV3._DENSITY_KNN:  # "knn"
+            if density_method == QuickAdapterRegressorV3._DENSITY_KNN:
                 knn_n_neighbors = int(label_config["n_neighbors"])
                 knn_aggregation = cast(DensityAggregation, label_config["aggregation"])
                 if (
@@ -4395,7 +4395,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     aggregation_param=knn_aggregation_param,
                 )
 
-            if density_method == QuickAdapterRegressorV3._DENSITY_MEDOID:  # "medoid"
+            if density_method == QuickAdapterRegressorV3._DENSITY_MEDOID:
                 return QuickAdapterRegressorV3._pairwise_distance_sums(
                     normalized_matrix,
                     density_metric,
@@ -4689,7 +4689,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         storage_dir = self.full_path
         storage_filename = f"optuna-{pair.split('/')[0]}"
         storage_backend = self._optuna_config.get("storage")
-        if storage_backend == QuickAdapterRegressorV3._STORAGE_FILE:  # "file"
+        if storage_backend == QuickAdapterRegressorV3._STORAGE_FILE:
             journal_path = storage_dir / f"{storage_filename}.log"
 
             # Pre-validate EOF: close the read_logs deferred-raise gap (see helper).
@@ -4716,7 +4716,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 if quarantined is None:
                     raise
                 storage = _build_journal_storage()
-        elif storage_backend == QuickAdapterRegressorV3._STORAGE_SQLITE:  # "sqlite"
+        elif storage_backend == QuickAdapterRegressorV3._STORAGE_SQLITE:
             storage = optuna.storages.RDBStorage(
                 url=f"sqlite:///{storage_dir}/{storage_filename}.sqlite",
                 heartbeat_interval=60,
