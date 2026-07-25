@@ -67,7 +67,13 @@ from LabelTransformer import (
 )
 
 from Utils import (
+    as_dict,
+    enum_error_message,
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
+    DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
+    DEFAULT_MAX_LABEL_PERIOD_CANDLES,
+    DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
+    DEFAULT_MIN_LABEL_PERIOD_CANDLES,
     DEFAULT_REGRESSOR,
     DEFAULTS_LABEL_PREDICTION,
     LABEL_COLUMNS,
@@ -374,10 +380,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
         DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
     )
-    MIN_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 12
-    MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = 24
-    MIN_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = 9.0
-    MAX_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = 12.0
+    MIN_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = DEFAULT_MIN_LABEL_PERIOD_CANDLES
+    MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = DEFAULT_MAX_LABEL_PERIOD_CANDLES
+    MIN_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = DEFAULT_MIN_LABEL_NATR_MULTIPLIER
+    MAX_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = DEFAULT_MAX_LABEL_NATR_MULTIPLIER
 
     LABEL_METHOD_DEFAULT: Final[str] = _SELECTION_METHODS[0]  # "compromise_programming"
 
@@ -786,32 +792,42 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return None
 
     @staticmethod
-    def _validate_minkowski_p(
-        p: Optional[float],
+    def _validate_scalar(
+        value: Optional[float],
         *,
         ctx: str,
-        mode: ValidationMode = "raise",
+        mode: ValidationMode,
+        predicate: Callable[[float], bool],
+        constraint: str,
     ) -> Optional[float]:
-        if p is None:
+        if value is None:
             return None
         if mode == "none":
-            return float(p) if (np.isfinite(p) and p > 0) else None
+            return float(value) if (np.isfinite(value) and predicate(value)) else None
 
-        if not np.isfinite(p):
-            msg = f"Invalid {ctx} value {p!r}: must be finite"
+        if not np.isfinite(value):
+            msg = f"Invalid {ctx} value {value!r}: must be finite"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
             return None
 
-        if p <= 0:
-            msg = f"Invalid {ctx} value {p!r}: must be > 0"
+        if not predicate(value):
+            msg = f"Invalid {ctx} value {value!r}: {constraint}"
             if mode == "raise":
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
             return None
 
-        return float(p)
+        return float(value)
+
+    @staticmethod
+    def _validate_minkowski_p(
+        p: Optional[float], *, ctx: str, mode: ValidationMode = "raise"
+    ) -> Optional[float]:
+        return QuickAdapterRegressorV3._validate_scalar(
+            p, ctx=ctx, mode=mode, predicate=lambda v: v > 0, constraint="must be > 0"
+        )
 
     @staticmethod
     def _prepare_distance_kwargs(
@@ -846,44 +862,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _validate_quantile_q(
         q: Optional[float], *, ctx: str, mode: ValidationMode = "raise"
     ) -> Optional[float]:
-        if q is None:
-            return None
-        if mode == "none":
-            return float(q) if (np.isfinite(q) and 0.0 <= q <= 1.0) else None
-
-        if not np.isfinite(q):
-            msg = f"Invalid {ctx} value {q!r}: must be finite"
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
-            return None
-
-        if q < 0.0 or q > 1.0:
-            msg = f"Invalid {ctx} value {q!r}: must be in [0, 1]"
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
-            return None
-
-        return float(q)
+        return QuickAdapterRegressorV3._validate_scalar(
+            q,
+            ctx=ctx,
+            mode=mode,
+            predicate=lambda v: 0.0 <= v <= 1.0,
+            constraint="must be in [0, 1]",
+        )
 
     @staticmethod
     def _validate_power_mean_p(
         p: Optional[float], *, ctx: str, mode: ValidationMode = "raise"
     ) -> Optional[float]:
-        if p is None:
-            return None
-        if mode == "none":
-            return float(p) if np.isfinite(p) else None
-
-        if not np.isfinite(p):
-            msg = f"Invalid {ctx} value {p!r}: must be finite"
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
-            return None
-
-        return float(p)
+        return QuickAdapterRegressorV3._validate_scalar(
+            p, ctx=ctx, mode=mode, predicate=lambda v: True, constraint="must be finite"
+        )
 
     @staticmethod
     def _validate_metric_weights_support(
@@ -1085,6 +1078,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._SELECTION_METHODS_SET,
             QuickAdapterRegressorV3._SELECTION_METHODS,
             ctx="label_method",
+            mode="raise",
         )
 
         category = QuickAdapterRegressorV3._get_selection_category(label_method)
@@ -1358,24 +1352,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
-        label_weighting_raw = self.freqai_info.get("label_weighting")
-        if not isinstance(label_weighting_raw, dict):
-            label_weighting_raw = {}
-        return get_label_weighting_config(label_weighting_raw, logger)
+        return get_label_weighting_config(
+            as_dict(self.freqai_info.get("label_weighting")), logger
+        )
 
     @cached_property
     def label_pipeline(self) -> dict[str, Any]:
-        label_pipeline_raw = self.freqai_info.get("label_pipeline")
-        if not isinstance(label_pipeline_raw, dict):
-            label_pipeline_raw = {}
-        return get_label_pipeline_config(label_pipeline_raw, logger)
+        return get_label_pipeline_config(
+            as_dict(self.freqai_info.get("label_pipeline")), logger
+        )
 
     @cached_property
     def label_prediction(self) -> dict[str, Any]:
-        label_prediction_raw = self.freqai_info.get("label_prediction")
-        if not isinstance(label_prediction_raw, dict):
-            label_prediction_raw = {}
-        return get_label_prediction_config(label_prediction_raw, logger)
+        return get_label_prediction_config(
+            as_dict(self.freqai_info.get("label_prediction")), logger
+        )
 
     @cached_property
     def _label_defaults(self) -> tuple[int, float]:
@@ -1435,9 +1426,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_candle_pool_full_cache: dict[int, list[int]] = {}
-        self._optuna_label_shuffle_rng = random.Random(
-            self._optuna_config.get("seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT)
-        )
+        self._optuna_label_shuffle_rng = random.Random(self._optuna_config["seed"])
         self.init_optuna_label_candle_pool()
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
@@ -1661,78 +1650,68 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.info("=" * 60)
 
+    def _resolve_optuna_store(
+        self, namespace: OptunaNamespace, stores: dict[OptunaNamespace, Any]
+    ) -> Any:
+        if namespace not in stores:
+            raise ValueError(enum_error_message("namespace", namespace, tuple(stores)))
+        return stores[namespace]
+
     def get_optuna_params(
         self, pair: str, namespace: OptunaNamespace
     ) -> dict[str, Any]:
-        if namespace == _OPTUNA_NAMESPACES.hp:
-            params = self._optuna_hp_params.get(pair, {})
-        elif namespace == _OPTUNA_NAMESPACES.label:
-            params = self._optuna_label_params.get(pair, {})
-        else:
-            raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {', '.join(_OPTUNA_NAMESPACES)}"
-            )
-        return params
+        store = self._resolve_optuna_store(
+            namespace,
+            {
+                _OPTUNA_NAMESPACES.hp: self._optuna_hp_params,
+                _OPTUNA_NAMESPACES.label: self._optuna_label_params,
+            },
+        )
+        return store.get(pair, {})
 
     def set_optuna_params(
         self, pair: str, namespace: OptunaNamespace, params: dict[str, Any]
     ) -> None:
-        if namespace == _OPTUNA_NAMESPACES.hp:
-            self._optuna_hp_params[pair] = params
-        elif namespace == _OPTUNA_NAMESPACES.label:
-            self._optuna_label_params[pair] = params
-        else:
-            raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {', '.join(_OPTUNA_NAMESPACES)}"
-            )
+        store = self._resolve_optuna_store(
+            namespace,
+            {
+                _OPTUNA_NAMESPACES.hp: self._optuna_hp_params,
+                _OPTUNA_NAMESPACES.label: self._optuna_label_params,
+            },
+        )
+        store[pair] = params
 
     def get_optuna_value(self, pair: str, namespace: OptunaNamespace) -> float:
-        if namespace == _OPTUNA_NAMESPACES.hp:
-            value = self._optuna_hp_value.get(pair, np.nan)
-        else:
-            raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {_OPTUNA_NAMESPACES.hp!r}"
-            )
-        return value
+        store = self._resolve_optuna_store(
+            namespace, {_OPTUNA_NAMESPACES.hp: self._optuna_hp_value}
+        )
+        return store.get(pair, np.nan)
 
     def set_optuna_value(
         self, pair: str, namespace: OptunaNamespace, value: float
     ) -> None:
-        if namespace == _OPTUNA_NAMESPACES.hp:
-            self._optuna_hp_value[pair] = value
-        else:
-            raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {_OPTUNA_NAMESPACES.hp!r}"
-            )
+        store = self._resolve_optuna_store(
+            namespace, {_OPTUNA_NAMESPACES.hp: self._optuna_hp_value}
+        )
+        store[pair] = value
 
     def get_optuna_values(
         self, pair: str, namespace: OptunaNamespace
     ) -> list[float | int]:
-        if namespace == _OPTUNA_NAMESPACES.label:
-            values = self._optuna_label_values.get(
-                pair, [np.nan] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
-            )
-        else:
-            raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {_OPTUNA_NAMESPACES.label}"
-            )
-        return values
+        store = self._resolve_optuna_store(
+            namespace, {_OPTUNA_NAMESPACES.label: self._optuna_label_values}
+        )
+        return store.get(
+            pair, [np.nan] * QuickAdapterRegressorV3._OPTUNA_LABEL_N_OBJECTIVES
+        )
 
     def set_optuna_values(
         self, pair: str, namespace: OptunaNamespace, values: list[float | int]
     ) -> None:
-        if namespace == _OPTUNA_NAMESPACES.label:
-            self._optuna_label_values[pair] = values
-        else:
-            raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {_OPTUNA_NAMESPACES.label}"
-            )
+        store = self._resolve_optuna_store(
+            namespace, {_OPTUNA_NAMESPACES.label: self._optuna_label_values}
+        )
+        store[pair] = values
 
     def init_optuna_label_candle_pool(self) -> None:
         optuna_label_candle_pool_full = self._optuna_label_candle_pool_full
@@ -1798,6 +1777,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._SCALER_TYPES_SET,
             QuickAdapterRegressorV3._SCALER_TYPES,
             ctx="scaler",
+            mode="raise",
         )
 
         feature_range = self.ft_params.get(
@@ -2236,6 +2216,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             < cutoff_position
         )
 
+    def _get_validation_size(self) -> float | int:
+        validation_size = self.data_split_parameters.get(
+            "test_size", QuickAdapterRegressorV3._TEST_SIZE
+        )
+        if validation_size is None:
+            return QuickAdapterRegressorV3._TEST_SIZE
+        return validation_size
+
     def _add_validation_split(
         self,
         data_dictionary: dict[str, Any],
@@ -2245,11 +2233,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pair: str,
     ) -> dict[str, Any]:
         """Reserve the chronological tail of the training set for selection."""
-        validation_size = self.data_split_parameters.get(
-            "test_size", QuickAdapterRegressorV3._TEST_SIZE
-        )
-        if validation_size is None:
-            validation_size = QuickAdapterRegressorV3._TEST_SIZE
+        validation_size = self._get_validation_size()
         if validation_size == 0:
             data_dictionary["validation_features"] = data_dictionary[
                 "train_features"
@@ -2392,11 +2376,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         pair: str,
     ) -> dict[str, Any]:
         """Keep all causally available rows for the final post-holdout refit."""
-        validation_size = self.data_split_parameters.get(
-            "test_size", QuickAdapterRegressorV3._TEST_SIZE
-        )
-        if validation_size is None:
-            validation_size = QuickAdapterRegressorV3._TEST_SIZE
+        validation_size = self._get_validation_size()
         if validation_size == 0:
             return data_dictionary
 
@@ -2781,11 +2761,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         X_validation = data_dictionary.get("validation_features")
         y_validation = data_dictionary.get("validation_labels")
         validation_weights = data_dictionary.get("validation_weights")
-        validation_size = self.data_split_parameters.get(
-            "test_size", QuickAdapterRegressorV3._TEST_SIZE
-        )
-        if validation_size is None:
-            validation_size = QuickAdapterRegressorV3._TEST_SIZE
+        validation_size = self._get_validation_size()
 
         model_training_parameters = copy.deepcopy(self.model_training_parameters)
         init_model = self.get_init_model(dk.pair)
@@ -2807,14 +2783,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     validation_size,
                     self.get_optuna_params(dk.pair, _OPTUNA_NAMESPACES.hp),
                     model_training_parameters,
-                    self._optuna_config.get(
-                        "space_reduction",
-                        QuickAdapterRegressorV3.OPTUNA_SPACE_REDUCTION_DEFAULT,
-                    ),
-                    self._optuna_config.get(
-                        "space_fraction",
-                        QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
-                    ),
+                    self._optuna_config["space_reduction"],
+                    self._optuna_config["space_fraction"],
                     dk.data_path,
                     init_model,
                 ),
@@ -3205,10 +3175,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 trial,
                 label_dataframe,
                 fit_live_predictions_candles,
-                self._optuna_config.get(
-                    "label_candles_step",
-                    QuickAdapterRegressorV3.OPTUNA_LABEL_CANDLES_STEP_DEFAULT,
-                ),
+                self._optuna_config["label_candles_step"],
                 min_label_period_candles=self._min_label_period_candles,
                 max_label_period_candles=self._max_label_period_candles,
                 min_label_natr_multiplier=self._min_label_natr_multiplier,
@@ -3595,6 +3562,77 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return (reference_point - matrix) @ weights
 
     @staticmethod
+    def _distance_to_reference(
+        normalized_matrix: NDArray[np.floating],
+        reference_point: NDArray[np.floating],
+        distance_metric: str,
+        *,
+        weights: NDArray[np.floating],
+        p: Optional[float],
+        method: str,
+        apply_abs: bool,
+    ) -> NDArray[np.floating]:
+        if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
+            return sp.spatial.distance.cdist(
+                normalized_matrix,
+                reference_point.reshape(1, -1),
+                metric=distance_metric,
+                **QuickAdapterRegressorV3._prepare_distance_kwargs(
+                    distance_metric,
+                    weights=weights,
+                    p=p,
+                    mode="warn",
+                    metric_ctx="label_distance_metric",
+                    p_ctx="label_distance_p",
+                ),
+            ).flatten()
+
+        if distance_metric in {
+            QuickAdapterRegressorV3._DISTANCE_METRICS[8],  # "hellinger"
+            QuickAdapterRegressorV3._DISTANCE_METRICS[9],  # "shellinger"
+        }:
+            return QuickAdapterRegressorV3._hellinger_distance(
+                normalized_matrix,
+                reference_point,
+                weights=weights,
+                standardized=(
+                    distance_metric
+                    == QuickAdapterRegressorV3._DISTANCE_METRICS[9]  # "shellinger"
+                ),
+            )
+
+        if distance_metric in (
+            QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
+            | {QuickAdapterRegressorV3._DISTANCE_METRICS[15]}  # "power_mean"
+        ):
+            distances = QuickAdapterRegressorV3._power_mean_distance(
+                normalized_matrix,
+                reference_point,
+                distance_metric,
+                weights=weights,
+                p=p,
+                mode="warn",
+                p_ctx="label_distance_p",
+            )
+            return np.abs(distances) if apply_abs else distances
+
+        if (
+            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
+        ):  # "weighted_sum"
+            assert weights is not None
+            distances = QuickAdapterRegressorV3._weighted_sum_distance(
+                normalized_matrix,
+                reference_point,
+                weights=weights,
+            )
+            return np.abs(distances) if apply_abs else distances
+
+        raise ValueError(
+            f"Invalid distance_metric value {distance_metric!r} for {method}: "
+            f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+        )
+
+    @staticmethod
     def _compromise_programming_scores(
         normalized_matrix: NDArray[np.floating],
         distance_metric: str,
@@ -3614,62 +3652,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         ideal_point = np.ones(n_objectives)
 
-        if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
-            return sp.spatial.distance.cdist(
-                normalized_matrix,
-                ideal_point.reshape(1, -1),
-                metric=distance_metric,
-                **QuickAdapterRegressorV3._prepare_distance_kwargs(
-                    distance_metric,
-                    weights=weights,
-                    p=p,
-                    mode="warn",
-                    metric_ctx="label_distance_metric",
-                    p_ctx="label_distance_p",
-                ),
-            ).flatten()
-
-        if distance_metric in {
-            QuickAdapterRegressorV3._DISTANCE_METRICS[8],  # "hellinger"
-            QuickAdapterRegressorV3._DISTANCE_METRICS[9],  # "shellinger"
-        }:
-            return QuickAdapterRegressorV3._hellinger_distance(
-                normalized_matrix,
-                ideal_point,
-                weights=weights,
-                standardized=(
-                    distance_metric
-                    == QuickAdapterRegressorV3._DISTANCE_METRICS[9]  # "shellinger"
-                ),
-            )
-
-        if distance_metric in (
-            QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
-            | {QuickAdapterRegressorV3._DISTANCE_METRICS[15]}  # "power_mean"
-        ):
-            return QuickAdapterRegressorV3._power_mean_distance(
-                normalized_matrix,
-                ideal_point,
-                distance_metric,
-                weights=weights,
-                p=p,
-                mode="warn",
-                p_ctx="label_distance_p",
-            )
-
-        if (
-            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
-        ):  # "weighted_sum"
-            assert weights is not None
-            return QuickAdapterRegressorV3._weighted_sum_distance(
-                normalized_matrix,
-                ideal_point,
-                weights=weights,
-            )
-
-        raise ValueError(
-            f"Invalid distance_metric value {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[0]}: "
-            f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
+        return QuickAdapterRegressorV3._distance_to_reference(
+            normalized_matrix,
+            ideal_point,
+            distance_metric,
+            weights=weights,
+            p=p,
+            method=QuickAdapterRegressorV3._DISTANCE_METHODS[0],
+            apply_abs=False,
         )
 
     @staticmethod
@@ -3743,99 +3733,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point = np.ones(n_objectives)
         anti_ideal_point = np.zeros(n_objectives)
 
-        if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
-            cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-                distance_metric=distance_metric,
-                weights=weights,
-                p=p,
-                mode="warn",
-                metric_ctx="label_distance_metric",
-                p_ctx="label_distance_p",
-            )
-
-            dist_to_ideal = sp.spatial.distance.cdist(
-                normalized_matrix,
-                ideal_point.reshape(1, -1),
-                metric=distance_metric,
-                **cdist_kwargs,
-            ).flatten()
-            dist_to_anti_ideal = sp.spatial.distance.cdist(
-                normalized_matrix,
-                anti_ideal_point.reshape(1, -1),
-                metric=distance_metric,
-                **cdist_kwargs,
-            ).flatten()
-        elif distance_metric in {
-            QuickAdapterRegressorV3._DISTANCE_METRICS[8],  # "hellinger"
-            QuickAdapterRegressorV3._DISTANCE_METRICS[9],  # "shellinger"
-        }:
-            dist_to_ideal = QuickAdapterRegressorV3._hellinger_distance(
-                normalized_matrix,
-                ideal_point,
-                weights=weights,
-                standardized=(
-                    distance_metric
-                    == QuickAdapterRegressorV3._DISTANCE_METRICS[9]  # "shellinger"
-                ),
-            )
-            dist_to_anti_ideal = QuickAdapterRegressorV3._hellinger_distance(
-                normalized_matrix,
-                anti_ideal_point,
-                weights=weights,
-                standardized=(
-                    distance_metric
-                    == QuickAdapterRegressorV3._DISTANCE_METRICS[9]  # "shellinger"
-                ),
-            )
-        elif distance_metric in (
-            QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
-            | {QuickAdapterRegressorV3._DISTANCE_METRICS[15]}  # "power_mean"
-        ):
-            dist_to_ideal = np.abs(
-                QuickAdapterRegressorV3._power_mean_distance(
-                    normalized_matrix,
-                    ideal_point,
-                    distance_metric,
-                    weights=weights,
-                    p=p,
-                    mode="warn",
-                    p_ctx="label_distance_p",
-                )
-            )
-            dist_to_anti_ideal = np.abs(
-                QuickAdapterRegressorV3._power_mean_distance(
-                    normalized_matrix,
-                    anti_ideal_point,
-                    distance_metric,
-                    weights=weights,
-                    p=p,
-                    mode="warn",
-                    p_ctx="label_distance_p",
-                )
-            )
-        elif (
-            distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[16]
-        ):  # "weighted_sum"
-            assert weights is not None
-            dist_to_ideal = np.abs(
-                QuickAdapterRegressorV3._weighted_sum_distance(
-                    normalized_matrix,
-                    ideal_point,
-                    weights=weights,
-                )
-            )
-            dist_to_anti_ideal = np.abs(
-                QuickAdapterRegressorV3._weighted_sum_distance(
-                    normalized_matrix,
-                    anti_ideal_point,
-                    weights=weights,
-                )
-            )
-        else:
-            raise ValueError(
-                f"Invalid distance_metric value {distance_metric!r} for {QuickAdapterRegressorV3._DISTANCE_METHODS[1]}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METRICS)}"
-            )
+        dist_to_ideal = QuickAdapterRegressorV3._distance_to_reference(
+            normalized_matrix,
+            ideal_point,
+            distance_metric,
+            weights=weights,
+            p=p,
+            method=QuickAdapterRegressorV3._DISTANCE_METHODS[1],
+            apply_abs=True,
+        )
+        dist_to_anti_ideal = QuickAdapterRegressorV3._distance_to_reference(
+            normalized_matrix,
+            anti_ideal_point,
+            distance_metric,
+            weights=weights,
+            p=p,
+            method=QuickAdapterRegressorV3._DISTANCE_METHODS[1],
+            apply_abs=True,
+        )
 
         denominator = dist_to_ideal + dist_to_anti_ideal
         zero_mask = np.isclose(denominator, 0.0)
@@ -4564,15 +4479,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         try:
             study.optimize(
                 objective,
-                n_trials=self._optuna_config.get(
-                    "n_trials", QuickAdapterRegressorV3.OPTUNA_N_TRIALS_DEFAULT
-                ),
-                n_jobs=self._optuna_config.get(
-                    "n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT
-                ),
-                timeout=self._optuna_config.get(
-                    "timeout", QuickAdapterRegressorV3.OPTUNA_TIMEOUT_DEFAULT
-                ),
+                n_trials=self._optuna_config["n_trials"],
+                n_jobs=self._optuna_config["n_jobs"],
+                timeout=self._optuna_config["timeout"],
                 gc_after_trial=True,
             )
         except Exception as e:
@@ -4799,9 +4708,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> optuna.pruners.BasePruner:
         if is_single_objective:
             return optuna.pruners.HyperbandPruner(
-                min_resource=self._optuna_config.get(
-                    "min_resource", QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT
-                )
+                min_resource=self._optuna_config["min_resource"]
             )
         else:
             return optuna.pruners.NopPruner()
@@ -4821,37 +4728,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             case QuickAdapterRegressorV3._OPTUNA_SAMPLERS.tpe:
                 return optuna.samplers.TPESampler(
-                    n_startup_trials=self._optuna_config.get(
-                        "n_startup_trials",
-                        QuickAdapterRegressorV3.OPTUNA_N_STARTUP_TRIALS_DEFAULT,
-                    ),
+                    n_startup_trials=self._optuna_config["n_startup_trials"],
                     multivariate=True,
                     group=True,
-                    constant_liar=self._optuna_config.get(
-                        "n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT
-                    )
-                    > 1,
-                    seed=self._optuna_config.get(
-                        "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
-                    ),
+                    constant_liar=self._optuna_config["n_jobs"] > 1,
+                    seed=self._optuna_config["seed"],
                 )
             case QuickAdapterRegressorV3._OPTUNA_SAMPLERS.auto:
                 return optunahub.load_module("samplers/auto_sampler").AutoSampler(
-                    seed=self._optuna_config.get(
-                        "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
-                    )
+                    seed=self._optuna_config["seed"]
                 )
             case QuickAdapterRegressorV3._OPTUNA_SAMPLERS.nsgaii:
                 return optuna.samplers.NSGAIISampler(
-                    seed=self._optuna_config.get(
-                        "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
-                    ),
+                    seed=self._optuna_config["seed"],
                 )
             case QuickAdapterRegressorV3._OPTUNA_SAMPLERS.nsgaiii:
                 return optuna.samplers.NSGAIIISampler(
-                    seed=self._optuna_config.get(
-                        "seed", QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT
-                    ),
+                    seed=self._optuna_config["seed"],
                 )
             case _:
                 assert_never(sampler)
@@ -4863,16 +4756,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if namespace == _OPTUNA_NAMESPACES.hp:
             return (
                 QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS_SET,
-                self._optuna_config.get(
-                    "sampler", QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS.tpe
-                ),
+                self._optuna_config["sampler"],
             )
         elif namespace == _OPTUNA_NAMESPACES.label:
             return (
                 QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS_SET,
-                self._optuna_config.get(
-                    "label_sampler", QuickAdapterRegressorV3._OPTUNA_LABEL_SAMPLERS.auto
-                ),
+                self._optuna_config["label_sampler"],
             )
         else:
             raise ValueError(

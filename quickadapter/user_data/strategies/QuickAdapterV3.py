@@ -34,6 +34,7 @@ from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
+    as_dict,
     _OPTUNA_NAMESPACES,
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
@@ -342,33 +343,27 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
-        label_weighting_raw = self.freqai_info.get("label_weighting")
-        if not isinstance(label_weighting_raw, dict):
-            label_weighting_raw = {}
-        return get_label_weighting_config(label_weighting_raw, logger)
+        return get_label_weighting_config(
+            as_dict(self.freqai_info.get("label_weighting")), logger
+        )
 
     @cached_property
     def label_smoothing(self) -> dict[str, Any]:
-        label_smoothing_raw = self.freqai_info.get("label_smoothing", {})
-        if not isinstance(label_smoothing_raw, dict):
-            label_smoothing_raw = {}
-        return get_label_smoothing_config(label_smoothing_raw, logger)
+        return get_label_smoothing_config(
+            as_dict(self.freqai_info.get("label_smoothing")), logger
+        )
 
     @cached_property
     def trade_price_target_method(self) -> str:
-        exit_pricing = self.config.get("exit_pricing")
-        if not isinstance(exit_pricing, dict):
-            exit_pricing = {}
-        return get_exit_pricing_config(exit_pricing, logger)[
-            "trade_price_target_method"
-        ]
+        return get_exit_pricing_config(
+            as_dict(self.config.get("exit_pricing")), logger
+        )["trade_price_target_method"]
 
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
-        reversal_confirmation = self.config.get("reversal_confirmation")
-        if not isinstance(reversal_confirmation, dict):
-            reversal_confirmation = {}
-        return get_reversal_confirmation_config(reversal_confirmation, logger)
+        return get_reversal_confirmation_config(
+            as_dict(self.config.get("reversal_confirmation")), logger
+        )
 
     @cached_property
     def _label_defaults(self) -> tuple[int, float]:
@@ -1153,9 +1148,9 @@ class QuickAdapterV3(IStrategy):
             isna(trade_duration) or trade_duration <= 0
         )
 
-    def get_trade_weighted_average_natr(
+    def _trade_natr_window(
         self, df: DataFrame, trade: Trade
-    ) -> Optional[float]:
+    ) -> Optional[tuple[Any, float, Optional[float]]]:
         label_natr = df.get("natr_label_period_candles")
         if label_natr is None or label_natr.empty:
             return None
@@ -1170,10 +1165,22 @@ class QuickAdapterV3(IStrategy):
         if isna(entry_natr) or entry_natr < 0:
             return None
         if len(trade_label_natr) == 1:
-            return entry_natr
-        current_natr = trade_label_natr.iloc[-1]
-        if isna(current_natr) or current_natr < 0:
+            current_natr = None
+        else:
+            current_natr = trade_label_natr.iloc[-1]
+            if isna(current_natr) or current_natr < 0:
+                return None
+        return trade_label_natr, entry_natr, current_natr
+
+    def get_trade_weighted_average_natr(
+        self, df: DataFrame, trade: Trade
+    ) -> Optional[float]:
+        window = self._trade_natr_window(df, trade)
+        if window is None:
             return None
+        trade_label_natr, entry_natr, current_natr = window
+        if current_natr is None:
+            return entry_natr
         median_natr = trade_label_natr.median()
 
         trade_label_natr_values = trade_label_natr.to_numpy()
@@ -1212,24 +1219,12 @@ class QuickAdapterV3(IStrategy):
     def get_trade_quantile_interpolation_natr(
         self, df: DataFrame, trade: Trade
     ) -> Optional[float]:
-        label_natr = df.get("natr_label_period_candles")
-        if label_natr is None or label_natr.empty:
+        window = self._trade_natr_window(df, trade)
+        if window is None:
             return None
-        dates = df.get("date")
-        if dates is None or dates.empty:
-            return None
-        entry_date = self.get_trade_entry_date(trade)
-        trade_label_natr = label_natr[dates >= entry_date]
-        if trade_label_natr.empty:
-            return None
-        entry_natr = trade_label_natr.iloc[0]
-        if isna(entry_natr) or entry_natr < 0:
-            return None
-        if len(trade_label_natr) == 1:
+        trade_label_natr, entry_natr, current_natr = window
+        if current_natr is None:
             return entry_natr
-        current_natr = trade_label_natr.iloc[-1]
-        if isna(current_natr) or current_natr < 0:
-            return None
         trade_volatility_quantile = calculate_quantile(
             trade_label_natr.to_numpy(), entry_natr
         )
@@ -1635,6 +1630,14 @@ class QuickAdapterV3(IStrategy):
             idx = length + idx
         return min(max(0, idx), length - 1)
 
+    def _invalidate_pair_cache(
+        self, cache: dict, pair: str, df_signature: DfSignature
+    ) -> dict:
+        if self._cached_df_signature.get(pair) != df_signature:
+            cache = {k: v for k, v in cache.items() if k[0] != pair}
+            self._cached_df_signature[pair] = df_signature
+        return cache
+
     def _calculate_candle_deviation(
         self,
         df: DataFrame,
@@ -1646,12 +1649,9 @@ class QuickAdapterV3(IStrategy):
         quantile_exponent: float = 1.5,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
-        prev_df_signature = self._cached_df_signature.get(pair)
-        if prev_df_signature != df_signature:
-            self._candle_deviation_cache = {
-                k: v for k, v in self._candle_deviation_cache.items() if k[0] != pair
-            }
-            self._cached_df_signature[pair] = df_signature
+        self._candle_deviation_cache = self._invalidate_pair_cache(
+            self._candle_deviation_cache, pair, df_signature
+        )
         cache_key: CandleDeviationCacheKey = (
             pair,
             df_signature,
@@ -1723,12 +1723,9 @@ class QuickAdapterV3(IStrategy):
         candle_idx: int = -1,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
-        prev_df_signature = self._cached_df_signature.get(pair)
-        if prev_df_signature != df_signature:
-            self._candle_threshold_cache = {
-                k: v for k, v in self._candle_threshold_cache.items() if k[0] != pair
-            }
-            self._cached_df_signature[pair] = df_signature
+        self._candle_threshold_cache = self._invalidate_pair_cache(
+            self._candle_threshold_cache, pair, df_signature
+        )
         cache_key: CandleThresholdCacheKey = (
             pair,
             df_signature,
