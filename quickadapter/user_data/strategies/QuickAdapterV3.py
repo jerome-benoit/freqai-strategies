@@ -340,21 +340,21 @@ class QuickAdapterV3(IStrategy):
         else:
             return max_open_trades
 
-    @property
+    @cached_property
     def label_weighting(self) -> dict[str, Any]:
         label_weighting_raw = self.freqai_info.get("label_weighting")
         if not isinstance(label_weighting_raw, dict):
             label_weighting_raw = {}
         return get_label_weighting_config(label_weighting_raw, logger)
 
-    @property
+    @cached_property
     def label_smoothing(self) -> dict[str, Any]:
         label_smoothing_raw = self.freqai_info.get("label_smoothing", {})
         if not isinstance(label_smoothing_raw, dict):
             label_smoothing_raw = {}
         return get_label_smoothing_config(label_smoothing_raw, logger)
 
-    @property
+    @cached_property
     def trade_price_target_method(self) -> str:
         exit_pricing = self.config.get("exit_pricing")
         if not isinstance(exit_pricing, dict):
@@ -363,14 +363,14 @@ class QuickAdapterV3(IStrategy):
             "trade_price_target_method"
         ]
 
-    @property
+    @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         reversal_confirmation = self.config.get("reversal_confirmation")
         if not isinstance(reversal_confirmation, dict):
             reversal_confirmation = {}
         return get_reversal_confirmation_config(reversal_confirmation, logger)
 
-    @property
+    @cached_property
     def _label_defaults(self) -> tuple[int, float]:
         feature_parameters = self.freqai_info.get("feature_parameters", {})
         return get_label_defaults(feature_parameters, logger)
