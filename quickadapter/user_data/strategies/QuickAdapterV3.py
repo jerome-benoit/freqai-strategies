@@ -36,7 +36,6 @@ from technical.pivots_points import pivots_points
 from Utils import (
     _OPTUNA_NAMESPACES,
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
-    DEFAULTS_REVERSAL_CONFIRMATION,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
     EXTREMA_DIRECTION_SMOOTHED_COLUMN,
@@ -150,10 +149,6 @@ class QuickAdapterV3(IStrategy):
     default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
         "decline_quantile": 0.5,
     }
-
-    default_reversal_confirmation: ClassVar[dict[str, int | float]] = (
-        DEFAULTS_REVERSAL_CONFIRMATION
-    )
 
     position_adjustment_enable = True
 
