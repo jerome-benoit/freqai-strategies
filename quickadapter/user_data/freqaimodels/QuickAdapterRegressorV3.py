@@ -822,13 +822,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *,
         ctx: str,
         mode: ValidationMode,
-        predicate: Callable[[float], bool],
-        constraint: str,
+        predicate: Optional[Callable[[float], bool]] = None,
+        constraint: str = "",
     ) -> Optional[float]:
         if value is None:
             return None
         if mode == "none":
-            return float(value) if (np.isfinite(value) and predicate(value)) else None
+            return (
+                float(value)
+                if (np.isfinite(value) and (predicate is None or predicate(value)))
+                else None
+            )
 
         if not np.isfinite(value):
             msg = f"Invalid {ctx} value {value!r}: must be finite"
@@ -837,7 +841,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.warning(f"{msg}, using default")
             return None
 
-        if not predicate(value):
+        if predicate is not None and not predicate(value):
             msg = f"Invalid {ctx} value {value!r}: {constraint}"
             if mode == "raise":
                 raise ValueError(msg)
@@ -897,9 +901,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _validate_power_mean_p(
         p: Optional[float], *, ctx: str, mode: ValidationMode = "raise"
     ) -> Optional[float]:
-        return QuickAdapterRegressorV3._validate_scalar(
-            p, ctx=ctx, mode=mode, predicate=lambda v: True, constraint="must be finite"
-        )
+        return QuickAdapterRegressorV3._validate_scalar(p, ctx=ctx, mode=mode)
 
     @staticmethod
     def _validate_metric_weights_support(
@@ -3592,20 +3594,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         p: Optional[float],
         method: str,
         apply_abs: bool,
+        cdist_kwargs: Optional[dict[str, Any]] = None,
     ) -> NDArray[np.floating]:
         if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
-            return sp.spatial.distance.cdist(
-                normalized_matrix,
-                reference_point.reshape(1, -1),
-                metric=distance_metric,
-                **QuickAdapterRegressorV3._prepare_distance_kwargs(
+            if cdist_kwargs is None:
+                cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
                     distance_metric,
                     weights=weights,
                     p=p,
                     mode="warn",
                     metric_ctx="label_distance_metric",
                     p_ctx="label_distance_p",
-                ),
+                )
+            return sp.spatial.distance.cdist(
+                normalized_matrix,
+                reference_point.reshape(1, -1),
+                metric=distance_metric,
+                **cdist_kwargs,
             ).flatten()
 
         if distance_metric in {
@@ -3753,6 +3758,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point = np.ones(n_objectives)
         anti_ideal_point = np.zeros(n_objectives)
 
+        cdist_kwargs = (
+            QuickAdapterRegressorV3._prepare_distance_kwargs(
+                distance_metric,
+                weights=weights,
+                p=p,
+                mode="warn",
+                metric_ctx="label_distance_metric",
+                p_ctx="label_distance_p",
+            )
+            if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET
+            else None
+        )
+
         dist_to_ideal = QuickAdapterRegressorV3._distance_to_reference(
             normalized_matrix,
             ideal_point,
@@ -3761,6 +3779,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             p=p,
             method=QuickAdapterRegressorV3._METHOD_TOPSIS,
             apply_abs=True,
+            cdist_kwargs=cdist_kwargs,
         )
         dist_to_anti_ideal = QuickAdapterRegressorV3._distance_to_reference(
             normalized_matrix,
@@ -3770,6 +3789,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             p=p,
             method=QuickAdapterRegressorV3._METHOD_TOPSIS,
             apply_abs=True,
+            cdist_kwargs=cdist_kwargs,
         )
 
         denominator = dist_to_ideal + dist_to_anti_ideal
@@ -4290,7 +4310,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if method in {
                 QuickAdapterRegressorV3._SELECTION_MEDOID,
                 QuickAdapterRegressorV3._SELECTION_KMEANS,
-                QuickAdapterRegressorV3._SELECTION_KMEANS2,  # "kmeans2"
+                QuickAdapterRegressorV3._SELECTION_KMEANS2,
                 QuickAdapterRegressorV3._SELECTION_KMEDOIDS,
                 QuickAdapterRegressorV3._SELECTION_KNN,
             }:

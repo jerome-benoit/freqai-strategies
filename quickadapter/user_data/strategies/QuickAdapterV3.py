@@ -12,6 +12,7 @@ from typing import (
     Literal,
     Optional,
     Sequence,
+    TypeVar,
 )
 
 import numpy as np
@@ -94,6 +95,7 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
+_PairCacheT = TypeVar("_PairCacheT", bound=dict)
 
 logger = logging.getLogger(__name__)
 
@@ -1102,7 +1104,7 @@ class QuickAdapterV3(IStrategy):
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_long_conditions),
             ["enter_long", "enter_tag"],
-        ] = (1, QuickAdapterV3._TRADE_LONG)  # "long"
+        ] = (1, QuickAdapterV3._TRADE_LONG)
 
         enter_short_conditions = [
             dataframe.get("do_predict") == 1,
@@ -1112,7 +1114,7 @@ class QuickAdapterV3(IStrategy):
         dataframe.loc[
             reduce(lambda x, y: x & y, enter_short_conditions),
             ["enter_short", "enter_tag"],
-        ] = (1, QuickAdapterV3._TRADE_SHORT)  # "short"
+        ] = (1, QuickAdapterV3._TRADE_SHORT)
 
         return dataframe
 
@@ -1647,8 +1649,8 @@ class QuickAdapterV3(IStrategy):
         return min(max(0, idx), length - 1)
 
     def _invalidate_pair_cache(
-        self, cache: dict, pair: str, df_signature: DfSignature
-    ) -> dict:
+        self, cache: _PairCacheT, pair: str, df_signature: DfSignature
+    ) -> _PairCacheT:
         if self._cached_df_signature.get(pair) != df_signature:
             cache = {k: v for k, v in cache.items() if k[0] != pair}
             self._cached_df_signature[pair] = df_signature
