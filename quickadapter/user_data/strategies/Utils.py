@@ -925,6 +925,19 @@ SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
+DEFAULT_MIN_LABEL_PERIOD_CANDLES: Final[int] = 12
+DEFAULT_MAX_LABEL_PERIOD_CANDLES: Final[int] = 24
+DEFAULT_MIN_LABEL_NATR_MULTIPLIER: Final[float] = 9.0
+DEFAULT_MAX_LABEL_NATR_MULTIPLIER: Final[float] = 12.0
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
+    return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
+
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
 
@@ -2122,7 +2135,7 @@ def _aggregate_metrics(
         return np.sum(stacked_metrics * combined_weights, axis=0)
     else:
         raise ValueError(
-            f"Invalid aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}"
+            enum_error_message("aggregation", aggregation, COMBINED_AGGREGATIONS)
         )
 
 
@@ -3840,6 +3853,23 @@ def get_refit_model_training_parameters(
     return refit_parameters
 
 
+def _pop_early_stopping_rounds(
+    model_training_parameters: dict[str, Any], has_eval_set: bool
+) -> int | None:
+    if has_eval_set:
+        return model_training_parameters.pop(
+            "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+        )
+    model_training_parameters.pop("early_stopping_rounds", None)
+    return None
+
+
+def _apply_verbosity_alias(model_training_parameters: dict[str, Any]) -> None:
+    verbosity = model_training_parameters.pop("verbosity", None)
+    if "verbose" not in model_training_parameters and verbosity is not None:
+        model_training_parameters["verbose"] = verbosity
+
+
 def fit_regressor(
     regressor: Regressor,
     X: pd.DataFrame,
@@ -3881,13 +3911,9 @@ def fit_regressor(
         from xgboost import XGBRegressor
         from xgboost.callback import EarlyStopping
 
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
         if early_stopping_rounds is not None:
             fit_callbacks.append(
@@ -3921,13 +3947,9 @@ def fit_regressor(
     elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         from lightgbm import LGBMRegressor, early_stopping
 
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
         if early_stopping_rounds is not None:
             fit_callbacks.append(
@@ -3975,9 +3997,7 @@ def fit_regressor(
                     _EARLY_STOPPING_ROUNDS_DEFAULT
                 )
 
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
+        _apply_verbosity_alias(model_training_parameters)
 
         X_val = None
         y_val = None
@@ -4006,19 +4026,13 @@ def fit_regressor(
         from ngboost import NGBRegressor
         from sklearn.tree import DecisionTreeRegressor
 
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
+        _apply_verbosity_alias(model_training_parameters)
 
         model_training_parameters.pop("n_jobs", None)
 
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
         dist = model_training_parameters.pop("dist", "lognormal")
 
@@ -4082,17 +4096,11 @@ def fit_regressor(
                 model_training_parameters.setdefault("thread_count", n_jobs)
             model_training_parameters.setdefault("max_ctr_complexity", 2)
 
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
+        _apply_verbosity_alias(model_training_parameters)
 
         pruning_callback = None
         if trial is not None and has_eval_set and task_type != "GPU":
@@ -4124,9 +4132,7 @@ def fit_regressor(
         if pruning_callback is not None:
             pruning_callback.check_pruned()
     else:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
     return model
 
 
@@ -4396,9 +4402,7 @@ def get_optuna_study_model_parameters(
     space_fraction: float,
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
     if not isinstance(space_fraction, (int, float)) or not (
         0.0 <= space_fraction <= 1.0
     ):
@@ -5007,9 +5011,7 @@ def get_optuna_study_model_parameters(
 
         return params
     else:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
 
 @lru_cache(maxsize=128)
@@ -5114,6 +5116,13 @@ def get_min_max_label_period_candles(
     return low, high, candles_step
 
 
+def _validate_step_args(value: float | int, step: int) -> None:
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
+    if not isinstance(step, int) or step <= 0:
+        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+
+
 @lru_cache(maxsize=128)
 def round_to_step(value: float | int, step: int) -> int:
     """
@@ -5123,10 +5132,7 @@ def round_to_step(value: float | int, step: int) -> int:
     :return: The rounded value.
     :raises ValueError: If step is not a positive integer or value is not finite.
     """
-    if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+    _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
         q, r = divmod(value, step)
         twice_r = r * 2
@@ -5142,10 +5148,7 @@ def round_to_step(value: float | int, step: int) -> int:
 
 @lru_cache(maxsize=128)
 def ceil_to_step(value: float | int, step: int) -> int:
-    if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+    _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
         return int(-(-int(value) // step) * step)
     if not np.isfinite(value):
@@ -5155,10 +5158,7 @@ def ceil_to_step(value: float | int, step: int) -> int:
 
 @lru_cache(maxsize=128)
 def floor_to_step(value: float | int, step: int) -> int:
-    if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+    _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
         return int((int(value) // step) * step)
     if not np.isfinite(value):
@@ -5244,10 +5244,10 @@ def get_label_defaults(
     feature_parameters: dict[str, Any],
     logger: Logger,
     *,
-    default_min_label_period_candles: int = 12,
-    default_max_label_period_candles: int = 24,
-    default_min_label_natr_multiplier: float = 9.0,
-    default_max_label_natr_multiplier: float = 12.0,
+    default_min_label_period_candles: int = DEFAULT_MIN_LABEL_PERIOD_CANDLES,
+    default_max_label_period_candles: int = DEFAULT_MAX_LABEL_PERIOD_CANDLES,
+    default_min_label_natr_multiplier: float = DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
+    default_max_label_natr_multiplier: float = DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
 ) -> tuple[int, float]:
     min_label_natr_multiplier = feature_parameters.get(
         "min_label_natr_multiplier", default_min_label_natr_multiplier
