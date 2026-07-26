@@ -992,6 +992,9 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
+        finite_gaussian_support = get_causal_mode(
+            self.freqai_info.get("feature_parameters", {}), logger
+        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1030,6 +1033,7 @@ class QuickAdapterV3(IStrategy):
                     indices=label_data.indices,
                     metrics=label_data.metrics,
                     weighting_config=col_weighting_config,
+                    finite_gaussian_support=finite_gaussian_support,
                     logger=logger,
                 )
                 if label_data.known_at_lookahead is not None:
@@ -1039,6 +1043,7 @@ class QuickAdapterV3(IStrategy):
                         known_at_lookahead=label_data.known_at_lookahead,
                         indices=label_data.indices,
                         fill_radius=weight_fill_radius(col_weighting_config),
+                        weighting_config=col_weighting_config,
                     )
 
             if label_col == EXTREMA_COLUMN:
