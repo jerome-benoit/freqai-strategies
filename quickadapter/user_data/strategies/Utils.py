@@ -797,6 +797,14 @@ assert SMOOTHING_KERNELS == (
 )
 
 
+def _filtfilt_default_padlen(
+    numerator_length: int,
+    denominator_length: int,
+) -> int:
+    """Return SciPy's default ``filtfilt`` pad length."""
+    return 3 * max(numerator_length, denominator_length)
+
+
 def get_smoothing_kernel_half_width(
     config: dict[str, Any],
     *,
@@ -819,8 +827,7 @@ def get_smoothing_kernel_half_width(
     ``int(4.0 * sigma + 0.5)`` (scipy's ``round`` form). Returns 0 for
     ``method == "none"``, for ``series_length < max(window_candles, 3)``
     (``smooth()`` top-level no-op), and for the filtfilt/savgol routes
-    when ``series_length < effective_window`` (downstream short-series
-    no-op in ``zero_phase_filter`` / ``savgol_filter``).
+    when their downstream short-series guards make smoothing a no-op.
     """
     method = config.get("method", SMOOTHING_METHODS[0])
     if method == SMOOTHING_METHODS[0]:  # "none"
@@ -844,13 +851,12 @@ def get_smoothing_kernel_half_width(
         effective_window = get_even_window(raw_window)
     else:
         effective_window = get_odd_window(raw_window)
-    # ``zero_phase_filter`` / ``savgol_filter`` short-series gate
-    if (
-        method in SMOOTHING_KERNELS or method == SMOOTHING_METHODS[7]
-    ) and series_length < effective_window:
-        return 0
     if method in SMOOTHING_KERNELS:
+        if series_length <= _filtfilt_default_padlen(effective_window, 1):
+            return 0
         return effective_window - 1
+    if method == SMOOTHING_METHODS[7] and series_length < effective_window:
+        return 0
     return effective_window // 2
 
 
@@ -1747,14 +1753,14 @@ def zero_phase_filter(
     if len(series) < window:
         return series
 
-    values = series.to_numpy(dtype=float)
-    if values.size <= 1:
-        return series
-
     b = _calculate_coeffs(window=window, win_type=win_type, std=std, beta=beta)
     a = np.array([1.0], dtype=float)
+    padlen = _filtfilt_default_padlen(len(b), len(a))
+    if len(series) <= padlen:
+        return series
 
-    filtered_values = sp.signal.filtfilt(b, a, values)
+    values = series.to_numpy(dtype=float)
+    filtered_values = sp.signal.filtfilt(b, a, values, padlen=padlen)
     return pd.Series(filtered_values, index=series.index)
 
 
