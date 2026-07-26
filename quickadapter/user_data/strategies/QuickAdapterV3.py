@@ -10,8 +10,10 @@ from typing import (
     ClassVar,
     Final,
     Literal,
+    NotRequired,
     Optional,
     Sequence,
+    TypedDict,
     TypeVar,
 )
 
@@ -96,6 +98,17 @@ CandleDeviationCacheKey = tuple[
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 _PairCacheT = TypeVar("_PairCacheT", bound=dict)
+
+
+class _TradeHistory(TypedDict):
+    # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
+    # _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY constants (a TypedDict field
+    # cannot reference a constant).
+    unrealized_pnl: list[float]
+    take_profit_price: list[float | tuple[int, float]]
+    unrealized_pnl_candle_date: NotRequired[str]
+    unrealized_pnl_timeframe_minutes: NotRequired[int]
+
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +204,16 @@ class QuickAdapterV3(IStrategy):
     )
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
+    _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
+    _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
+        "unrealized_pnl_timeframe_minutes"
+    )
+
+    # get_pnl_momentum differences the window twice: velocity needs >=2 first
+    # diffs (window>=3), acceleration >=2 second diffs (window>=4). 4 is the
+    # binding floor so both t-statistics are computable (n>=2); with fewer
+    # samples the acceleration t-statistic is structurally NaN.
+    _MIN_PNL_MOMENTUM_WINDOW_SIZE: Final[int] = 4
 
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
@@ -454,11 +477,33 @@ class QuickAdapterV3(IStrategy):
             )
         self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
-        process_throttle_secs = self.config.get("internals", {}).get(
-            "process_throttle_secs", 5
+        # +1 endpoint: N samples yield N-1 velocity intervals, so covering a
+        # 30-minute velocity span needs ceil(30/tf)+1 samples (ceil so a
+        # timeframe not dividing 30 still spans >=30 min).
+        nominal_pnl_momentum_window_size = math.ceil(30 / self.timeframe_minutes) + 1
+        self._pnl_momentum_window_size = max(
+            QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE,
+            nominal_pnl_momentum_window_size,
         )
-        self._max_history_size = int(12 * 60 * 60 / process_throttle_secs)
-        self._pnl_momentum_window_size = int(30 * 60 / process_throttle_secs)
+        self._max_history_size = max(
+            self._pnl_momentum_window_size,
+            int(12 * 60 / self.timeframe_minutes),
+        )
+        if (
+            nominal_pnl_momentum_window_size
+            < QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE
+        ):
+            velocity_span_minutes = (
+                self._pnl_momentum_window_size - 1
+            ) * self.timeframe_minutes
+            logger.warning(
+                f"Timeframe {self.timeframe}: the nominal 30-minute PnL momentum "
+                f"window resolves to only {nominal_pnl_momentum_window_size} samples "
+                f"(< {QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE} needed "
+                f"to compute an acceleration t-statistic); flooring to "
+                f"{self._pnl_momentum_window_size} candles "
+                f"(~{velocity_span_minutes} min velocity span)."
+            )
         self._exit_thresholds_calibration: dict[str, float] = {
             **QuickAdapterV3.default_exit_thresholds_calibration,
             **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
@@ -1319,6 +1364,13 @@ class QuickAdapterV3(IStrategy):
         return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE_INDEX)
 
     @staticmethod
+    def _take_profit_order_tag(trade_direction: str, exit_stage: int) -> str:
+        return (
+            f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+            f"{trade_direction}_{exit_stage}"
+        )
+
+    @staticmethod
     @lru_cache(maxsize=128)
     def get_stoploss_factor(trade_duration_candles: int) -> float:
         return 2.75 / (1.2675 + math.atan(0.25 * trade_duration_candles))
@@ -1470,7 +1522,7 @@ class QuickAdapterV3(IStrategy):
         return take_profit_price
 
     @staticmethod
-    def _get_trade_history(trade: Trade) -> dict[str, list[float | tuple[int, float]]]:
+    def _get_trade_history(trade: Trade) -> _TradeHistory:
         return trade.get_custom_data(
             "history", {"unrealized_pnl": [], "take_profit_price": []}
         )
@@ -1487,27 +1539,70 @@ class QuickAdapterV3(IStrategy):
         history = QuickAdapterV3._get_trade_history(trade)
         return history.get("take_profit_price", [])
 
-    def append_trade_unrealized_pnl(self, trade: Trade, pnl: float) -> list[float]:
+    def append_trade_unrealized_pnl(
+        self, trade: Trade, pnl: float, candle_date: datetime.datetime
+    ) -> list[float]:
         history = QuickAdapterV3._get_trade_history(trade)
         pnl_history = history.setdefault("unrealized_pnl", [])
         pnl_history.append(pnl)
         if len(pnl_history) > self._max_history_size:
             pnl_history = pnl_history[-self._max_history_size :]
             history["unrealized_pnl"] = pnl_history
+        history[QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY] = (
+            candle_date.isoformat()
+        )
+        history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY] = (
+            self.timeframe_minutes
+        )
         trade.set_custom_data("history", history)
         return pnl_history
 
-    def safe_append_trade_unrealized_pnl(self, trade: Trade, pnl: float) -> list[float]:
-        trade_unrealized_pnl_history = QuickAdapterV3.get_trade_unrealized_pnl_history(
-            trade
+    @staticmethod
+    def _is_pnl_history_discontinuous(
+        stored_candle_date_isoformat: Optional[str],
+        candle_date: datetime.datetime,
+        timeframe_minutes: int,
+    ) -> bool:
+        if not QuickAdapterV3.is_isoformat(stored_candle_date_isoformat):
+            return False
+        stored_candle_date = datetime.datetime.fromisoformat(
+            stored_candle_date_isoformat
         )
-        previous_unrealized_pnl = (
-            trade_unrealized_pnl_history[-1] if trade_unrealized_pnl_history else None
-        )
-        if previous_unrealized_pnl is None or not np.isclose(
-            previous_unrealized_pnl, pnl
+        elapsed_minutes = (candle_date - stored_candle_date).total_seconds() / 60.0
+        # get_pnl_momentum() differences the series assuming one timeframe
+        # between consecutive samples; any non-adjacent step (forward gap or
+        # backward/non-monotonic date) breaks that spacing and forces a reset.
+        # elapsed == 0 is a same-candle re-evaluation, not a discontinuity.
+        return not math.isclose(
+            elapsed_minutes, timeframe_minutes, rel_tol=1e-9, abs_tol=1e-9
+        ) and not math.isclose(elapsed_minutes, 0.0, abs_tol=1e-9)
+
+    def safe_append_trade_unrealized_pnl(
+        self, trade: Trade, pnl: float, candle_date: datetime.datetime
+    ) -> list[float]:
+        history = QuickAdapterV3._get_trade_history(trade)
+        trade_unrealized_pnl_history = history.get("unrealized_pnl", [])
+        if trade_unrealized_pnl_history and (
+            QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY not in history
+            or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY)
+            != self.timeframe_minutes
+            or QuickAdapterV3._is_pnl_history_discontinuous(
+                history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY),
+                candle_date,
+                self.timeframe_minutes,
+            )
         ):
-            trade_unrealized_pnl_history = self.append_trade_unrealized_pnl(trade, pnl)
+            trade_unrealized_pnl_history = []
+            history["unrealized_pnl"] = trade_unrealized_pnl_history
+            history.pop(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY, None)
+            trade.set_custom_data("history", history)
+        if (
+            history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
+            != candle_date.isoformat()
+        ):
+            trade_unrealized_pnl_history = self.append_trade_unrealized_pnl(
+                trade, pnl, candle_date
+            )
         return trade_unrealized_pnl_history
 
     def append_trade_take_profit_price(
@@ -1624,7 +1719,9 @@ class QuickAdapterV3(IStrategy):
                 )
             return (
                 -trade_partial_stake_amount,
-                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}",
+                QuickAdapterV3._take_profit_order_tag(
+                    trade.trade_direction, trade_exit_stage
+                ),
             )
 
         return None
@@ -2057,8 +2154,6 @@ class QuickAdapterV3(IStrategy):
         current_profit: float,
         **kwargs,
     ) -> Optional[str]:
-        self.safe_append_trade_unrealized_pnl(trade, current_profit)
-
         df, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
@@ -2066,17 +2161,25 @@ class QuickAdapterV3(IStrategy):
             return None
 
         last_candle = df.iloc[-1]
+        last_candle_date = last_candle.get("date")
+        has_valid_candle_date = not isna(last_candle_date)
+        trade_unrealized_pnl_history: Optional[list[float]] = (
+            self.safe_append_trade_unrealized_pnl(
+                trade, current_profit, last_candle_date
+            )
+            if has_valid_candle_date
+            else None
+        )
         if last_candle.get("do_predict") == 2:
             return "model_expired"
         if last_candle.get("DI_catch") == 0:
-            last_candle_date = last_candle.get("date")
             last_outlier_date_isoformat = trade.get_custom_data("last_outlier_date")
             last_outlier_date = (
                 datetime.datetime.fromisoformat(last_outlier_date_isoformat)
                 if QuickAdapterV3.is_isoformat(last_outlier_date_isoformat)
                 else None
             )
-            if last_outlier_date != last_candle_date:
+            if has_valid_candle_date and last_outlier_date != last_candle_date:
                 n_outliers = trade.get_custom_data("n_outliers", 0)
                 n_outliers += 1
                 logger.warning(
@@ -2154,9 +2257,32 @@ class QuickAdapterV3(IStrategy):
             )
             return None
 
-        trade_unrealized_pnl_history = QuickAdapterV3.get_trade_unrealized_pnl_history(
-            trade
-        )
+        if trade_unrealized_pnl_history is None:
+            # Last candle lacks a valid date, so the current-candle PnL sample
+            # could not be recorded and the momentum series is unmeasurable for
+            # this call; fail open (never block a profitable take-profit exit)
+            # rather than gate on a stale series, as during warm-up.
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
+            )
+        if len(trade_unrealized_pnl_history) < self._pnl_momentum_window_size:
+            # Warm-up: without a full momentum window a 30-minute decline is not
+            # measurable yet; fail open (never block a profitable take-profit
+            # exit) rather than gate on a partial, low-power series.
+            self.throttle_callback(
+                pair=pair,
+                current_time=current_time,
+                callback=lambda: logger.info(
+                    f"[{pair}] Trade {trade.trade_direction} stage "
+                    f"{trade_exit_stage} | PnL momentum gate warming up "
+                    f"({len(trade_unrealized_pnl_history)}/"
+                    f"{self._pnl_momentum_window_size} samples); "
+                    "take-profit exit not gated (fail-open)"
+                ),
+            )
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
+            )
         (
             trade_recent_velocity_values,
             trade_recent_velocity_mean,
@@ -2230,7 +2356,9 @@ class QuickAdapterV3(IStrategy):
             )
 
         if trade_exit:
-            return f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}"
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
+            )
 
         return None
 
