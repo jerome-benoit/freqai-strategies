@@ -747,7 +747,27 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reasons=[str(exc)],
             )
 
-        summary = summarize_label_weight_support(label_weights, composed)
+        return QuickAdapterRegressorV3._enforce_train_weight_support(
+            base_weights,
+            label_weights,
+            composed,
+            label_weighting_config,
+            policy=policy,
+            context=context,
+        )
+
+    @staticmethod
+    def _enforce_train_weight_support(
+        base_weights: NDArray[np.floating],
+        label_weights: NDArray[np.floating],
+        sample_weights: NDArray[np.floating],
+        label_weighting_config: dict[str, Any],
+        *,
+        policy: LabelWeightSupportPolicy,
+        context: str,
+    ) -> NDArray[np.floating]:
+        """Enforce label-weight support on already-composed training weights."""
+        summary = summarize_label_weight_support(label_weights, sample_weights)
         reasons: list[str] = []
         min_pivot_equivalent_count = label_weighting_config[
             "min_pivot_equivalent_count"
@@ -774,7 +794,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         if reasons:
             return QuickAdapterRegressorV3._apply_support_policy(
-                base_weights, context=context, policy=policy, reasons=reasons
+                base_weights,
+                context=context,
+                policy=policy,
+                reasons=reasons,
             )
         logger.debug(
             "%s: label weighting support passed "
@@ -785,7 +808,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             summary.positive_label_weight_fraction,
             summary.effective_sample_size,
         )
-        return composed
+        return sample_weights
 
     @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
@@ -1882,8 +1905,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         before splitting. After split + causal-guard filtering, train weights
         compose through ``_compose_train_weights_with_support`` (gated by
         ``support_policy``) and eval weights through ``_compose_eval_weights``
-        (bypasses ``support_policy``). ``_train_common`` then feeds them to
-        ``model.fit(sample_weight=...)``.
+        (bypasses ``support_policy``). Training support is rechecked after the
+        feature pipeline removes rows, before ``_train_common`` feeds the final
+        weights to ``model.fit(sample_weight=...)``.
         """
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
@@ -2213,15 +2237,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             unfiltered_df,
             pair,
         )
+        train_positions = features_filtered.index.get_indexer(
+            dd["train_features"].index
+        )
+        if (train_positions < 0).any():
+            raise ValueError(
+                f"[{pair}] _train_common: unable to align training rows to "
+                f"sample weight inputs (missing={int((train_positions < 0).sum())})"
+            )
+        train_weight_inputs = SampleWeightInputs(
+            base=weights.base[train_positions],
+            label=None if weights.label is None else weights.label[train_positions],
+            label_weighting_config=weights.label_weighting_config,
+        )
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
-        dd = self._apply_pipelines(dd, dk, pair)
-        if len(dd["train_features"]) != len(dd["train_weights"]):
-            raise RuntimeError(
-                f"Pipeline broke shape invariant: "
-                f"len(train_features)={len(dd['train_features'])} != "
-                f"len(train_weights)={len(dd['train_weights'])}"
-            )
+        dd = self._apply_pipelines(dd, train_weight_inputs, dk, pair)
         logger.info(f"Training model on {len(dd['train_features'].columns)} features")
         logger.info(f"Training model on {len(dd['train_features'])} data points")
         model = self.fit(dd, dk, **kwargs)
@@ -2470,34 +2501,92 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 context=f"[{pair}] refit",
             )
         )
+        data_dictionary["refit_weight_inputs"] = SampleWeightInputs(
+            base=refit_base_weights,
+            label=refit_label_weights,
+            label_weighting_config=weights.label_weighting_config,
+        )
         return data_dictionary
+
+    @staticmethod
+    def _sanitize_pipeline_weights(
+        features: pd.DataFrame,
+        weights: Any,
+        *,
+        pair: str,
+        context: str,
+    ) -> NDArray[np.floating]:
+        """Validate and normalize weights returned by the feature pipeline."""
+        expected_shape = (len(features),)
+        actual_shape = np.shape(weights)
+        if actual_shape != expected_shape:
+            raise RuntimeError(
+                f"[{pair}] post_feature_pipeline:{context}: feature pipeline broke "
+                f"sample-weight shape invariant (expected {expected_shape}, "
+                f"got {actual_shape})"
+            )
+        return sanitize_and_renormalize(
+            weights,
+            logger=logger,
+            context=f"[{pair}] post_feature_pipeline:{context}",
+        )
 
     def _fit_training_pipelines(
         self,
         features: pd.DataFrame,
         labels: pd.DataFrame,
         weights: NDArray[np.floating],
+        weight_inputs: SampleWeightInputs,
         dk: FreqaiDataKitchen,
         pair: str,
         context: str,
     ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
-        """Fit FreqAI pipelines and return their transformed training data."""
+        """Fit FreqAI pipelines and enforce support on the surviving train rows."""
         dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
-        features, labels, weights = dk.feature_pipeline.fit_transform(
-            features, labels, weights
+        pipeline_labels = labels
+        if weight_inputs.label is not None:
+            base_weight_column = object()
+            label_weight_column = object()
+            pipeline_labels = labels.copy()
+            pipeline_labels[base_weight_column] = weight_inputs.base
+            pipeline_labels[label_weight_column] = weight_inputs.label
+        features, pipeline_labels, weights = dk.feature_pipeline.fit_transform(
+            features, pipeline_labels, weights
         )
-        weights = sanitize_and_renormalize(
+        weights = QuickAdapterRegressorV3._sanitize_pipeline_weights(
+            features,
             weights,
-            logger=logger,
-            context=f"[{pair}] post_feature_pipeline:{context}",
+            pair=pair,
+            context=context,
         )
+        if weight_inputs.label is not None:
+            post_pipeline_base_weights = pipeline_labels.pop(
+                base_weight_column
+            ).to_numpy(dtype=float)
+            post_pipeline_label_weights = pipeline_labels.pop(
+                label_weight_column
+            ).to_numpy(dtype=float)
+            dk.feature_pipeline.label_list = pipeline_labels.columns
+            weights = QuickAdapterRegressorV3._enforce_train_weight_support(
+                post_pipeline_base_weights,
+                post_pipeline_label_weights,
+                weights,
+                weight_inputs.label_weighting_config,
+                policy=cast(
+                    LabelWeightSupportPolicy,
+                    weight_inputs.label_weighting_config["support_policy"],
+                ),
+                context=f"[{pair}] post_feature_pipeline:{context}",
+            )
+        labels = pipeline_labels
         labels, _, _ = dk.label_pipeline.fit_transform(labels)
         return features, labels, weights
 
     def _apply_pipelines(
         self,
         dd: dict,
+        train_weight_inputs: SampleWeightInputs,
         dk: FreqaiDataKitchen,
         pair: str,
     ) -> dict:
@@ -2507,6 +2596,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["train_features"],
                 dd["train_labels"],
                 dd["train_weights"],
+                train_weight_inputs,
                 dk,
                 pair,
                 "train",
@@ -2529,10 +2619,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"transform (outlier removal); relax SVM/DBSCAN outlier "
                     f"thresholds or increase test_size"
                 )
-            dd["validation_weights"] = sanitize_and_renormalize(
-                dd["validation_weights"],
-                logger=logger,
-                context=f"[{pair}] post_feature_pipeline:validation",
+            dd["validation_weights"] = (
+                QuickAdapterRegressorV3._sanitize_pipeline_weights(
+                    dd["validation_features"],
+                    dd["validation_weights"],
+                    pair=pair,
+                    context="validation",
+                )
             )
             dd["validation_labels"], _, _ = dk.label_pipeline.transform(
                 dd["validation_labels"]
@@ -2586,10 +2679,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dd["test_features"], dd["test_labels"], dd["test_weights"]
                     )
                 )
-                dd["test_weights"] = sanitize_and_renormalize(
+                dd["test_weights"] = QuickAdapterRegressorV3._sanitize_pipeline_weights(
+                    dd["test_features"],
                     dd["test_weights"],
-                    logger=logger,
-                    context=f"[{pair}] post_feature_pipeline:test",
+                    pair=pair,
+                    context="test",
                 )
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
 
@@ -2890,6 +2984,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             data_dictionary["train_features"] = data_dictionary.pop("refit_features")
             data_dictionary["train_labels"] = data_dictionary.pop("refit_labels")
             data_dictionary["train_weights"] = data_dictionary.pop("refit_weights")
+            refit_weight_inputs = data_dictionary.pop("refit_weight_inputs")
             if (
                 not self.freqai_info.get("fit_live_predictions_candles", 0)
                 or not self.live
@@ -2903,6 +2998,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 data_dictionary["train_features"],
                 data_dictionary["train_labels"],
                 data_dictionary["train_weights"],
+                refit_weight_inputs,
                 dk,
                 dk.pair,
                 "refit",
