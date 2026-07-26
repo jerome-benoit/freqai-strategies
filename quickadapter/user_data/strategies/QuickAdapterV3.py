@@ -812,9 +812,9 @@ class QuickAdapterV3(IStrategy):
         dataframe["zlema_50"] = zlema(closes, period=50)
         dataframe["zlema_12"] = zlema(closes, period=12)
         dataframe["zlema_26"] = zlema(closes, period=26)
-        dataframe["%-distzlema50"] = get_distance(closes, dataframe["zlema_50"])
-        dataframe["%-distzlema12"] = get_distance(closes, dataframe["zlema_12"])
-        dataframe["%-distzlema26"] = get_distance(closes, dataframe["zlema_26"])
+        dataframe["%-dist_to_zlema_50"] = get_distance(closes, dataframe["zlema_50"])
+        dataframe["%-dist_to_zlema_12"] = get_distance(closes, dataframe["zlema_12"])
+        dataframe["%-dist_to_zlema_26"] = get_distance(closes, dataframe["zlema_26"])
         macd = ta.MACD(dataframe)
         dataframe["%-macd"] = macd["macd"]
         dataframe["%-macdsignal"] = macd["macdsignal"]
