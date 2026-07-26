@@ -1571,12 +1571,14 @@ class QuickAdapterV3(IStrategy):
         )
         elapsed_minutes = (candle_date - stored_candle_date).total_seconds() / 60.0
         # get_pnl_momentum() differences the PnL series assuming a single
-        # timeframe between consecutive samples; a wider gap (missed candles
-        # after downtime/outage) collapses into one interval, so the series
-        # must reset rather than span the discontinuity.
-        return elapsed_minutes > timeframe_minutes and not math.isclose(
+        # timeframe between consecutive samples; any non-adjacent step -- a
+        # forward gap (missed candles after downtime/outage) or a
+        # non-monotonic/backward candle date -- breaks that uniform spacing, so
+        # the series must reset rather than span the discontinuity. elapsed == 0
+        # is the same-candle re-evaluation, not a discontinuity.
+        return not math.isclose(
             elapsed_minutes, timeframe_minutes, rel_tol=1e-9, abs_tol=1e-9
-        )
+        ) and not math.isclose(elapsed_minutes, 0.0, abs_tol=1e-9)
 
     def safe_append_trade_unrealized_pnl(
         self, trade: Trade, pnl: float, candle_date: datetime.datetime
@@ -2259,8 +2261,12 @@ class QuickAdapterV3(IStrategy):
             return None
 
         if trade_unrealized_pnl_history is None:
-            trade_unrealized_pnl_history = (
-                QuickAdapterV3.get_trade_unrealized_pnl_history(trade)
+            # Last candle lacks a valid date, so the current-candle PnL sample
+            # could not be recorded and the momentum series is unmeasurable for
+            # this call; fail open (never block a profitable take-profit exit)
+            # rather than gate on a stale series, as during warm-up.
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
             )
         if len(trade_unrealized_pnl_history) < self._pnl_momentum_window_size:
             # Warm-up: without a full momentum window a 30-minute decline is not
