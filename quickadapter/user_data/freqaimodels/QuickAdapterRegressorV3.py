@@ -441,6 +441,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
     OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
     OPTUNA_SEED_DEFAULT: Final[int] = 1
+    OPTUNA_RESET_LABEL_STUDY_ON_SCHEMA_MISMATCH_DEFAULT: Final[bool] = True
     OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT: Final[bool] = True
 
     _OPTUNA_BOOL_OPTIONS: Final[tuple[str, ...]] = (
@@ -448,6 +449,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "continuous",
         "warm_start",
         "space_reduction",
+        "reset_label_study_on_schema_mismatch",
         "vary_model_seed_by_trial",
     )
 
@@ -1309,6 +1311,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "space_fraction": QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
             "min_resource": QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT,
             "seed": QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT,
+            "reset_label_study_on_schema_mismatch": (
+                QuickAdapterRegressorV3.OPTUNA_RESET_LABEL_STUDY_ON_SCHEMA_MISMATCH_DEFAULT
+            ),
             "vary_model_seed_by_trial": (
                 QuickAdapterRegressorV3.OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT
             ),
@@ -1536,6 +1541,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"  min_resource: {optuna_config.get('min_resource')}")
             logger.info(f"  seed: {optuna_config.get('seed')}")
+            logger.info(
+                "  reset_label_study_on_schema_mismatch: "
+                f"{optuna_config.get('reset_label_study_on_schema_mismatch')}"
+            )
             logger.info(
                 "  vary_model_seed_by_trial: "
                 f"{optuna_config.get('vary_model_seed_by_trial')}"
@@ -4591,7 +4600,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params found has invalid optimization target value(s)"
             )
         if self.live:
-            self.optuna_save_best_params(pair, namespace)
+            if (
+                namespace == _OPTUNA_NAMESPACES.label
+                and study.user_attrs.get("selection_metadata")
+                != self._optuna_label_selection_metadata()
+            ):
+                logger.warning(
+                    f"[{pair}] Optuna {namespace} best params not persisted: "
+                    "the preserved study selection schema is incompatible"
+                )
+            else:
+                self.optuna_save_best_params(pair, namespace)
         return study
 
     @staticmethod
@@ -4845,18 +4864,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         # cutoff's in-memory best, which stays causal as it predates the current
         # cutoff.
         continuous = self._optuna_config.get("continuous") or not self.live
+        label_schema_mismatch_preserved = False
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
                 pair, namespace, study_name, storage
             )
         elif namespace == _OPTUNA_NAMESPACES.label:
-            existing_study = QuickAdapterRegressorV3.optuna_load_study(
-                study_name, storage
-            )
-            if existing_study is not None:
-                existing_selection_metadata = existing_study.user_attrs.get(
-                    "selection_metadata"
+            try:
+                existing_study = QuickAdapterRegressorV3.optuna_load_study(
+                    study_name, storage
                 )
+                existing_selection_metadata = (
+                    existing_study.user_attrs.get("selection_metadata")
+                    if existing_study is not None
+                    else None
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{pair}] Optuna {namespace} study {study_name} inspection failed: {e!r}",
+                    exc_info=True,
+                )
+                return None
+            if existing_study is not None:
                 existing_schema_version = (
                     existing_selection_metadata.get("schema_version")
                     if isinstance(existing_selection_metadata, dict)
@@ -4873,14 +4902,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         if existing_schema_version is None
                         else f"v{existing_schema_version!r}"
                     )
+                    reset_study = self._optuna_config[
+                        "reset_label_study_on_schema_mismatch"
+                    ]
                     logger.warning(
                         f"[{pair}] Optuna {namespace} study {study_name}: "
                         f"selection schema {version_repr} incompatible "
-                        f"with v{target_version}; resetting study"
+                        f"with v{target_version}; "
+                        f"{'resetting' if reset_study else 'preserving'} study"
                     )
-                    QuickAdapterRegressorV3.optuna_delete_study(
-                        pair, namespace, study_name, storage
-                    )
+                    if reset_study:
+                        if not QuickAdapterRegressorV3.optuna_delete_study(
+                            pair, namespace, study_name, storage
+                        ):
+                            return None
+                    else:
+                        label_schema_mismatch_preserved = True
 
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
         if sampler not in samplers:
@@ -4899,7 +4936,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 storage=storage,
                 load_if_exists=not continuous,
             )
-            if namespace == _OPTUNA_NAMESPACES.label:
+            if (
+                namespace == _OPTUNA_NAMESPACES.label
+                and not label_schema_mismatch_preserved
+            ):
                 new_selection_metadata = self._optuna_label_selection_metadata()
                 existing_selection_metadata = study.user_attrs.get("selection_metadata")
                 if existing_selection_metadata != new_selection_metadata:
@@ -4992,9 +5032,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         namespace: OptunaNamespace,
         study_name: str,
         storage: optuna.storages.BaseStorage,
-    ) -> None:
+    ) -> bool:
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
+            return True
         except KeyError as e:
             # A missing study is a benign no-op: non-live runs use a fresh
             # InMemoryStorage and the first live/dry-run optimization per pair
@@ -5003,11 +5044,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.debug(
                 f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"
             )
+            return True
         except Exception as e:
             logger.warning(
                 f"[{pair}] Optuna {namespace} study {study_name} deletion failed: {e!r}",
                 exc_info=True,
             )
+            return False
 
     @staticmethod
     def optuna_load_study(
@@ -5015,7 +5058,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> Optional[optuna.study.Study]:
         try:
             study = optuna.load_study(study_name=study_name, storage=storage)
-        except Exception:
+        except KeyError:
             study = None
         return study
 
