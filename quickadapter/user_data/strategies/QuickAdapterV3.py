@@ -698,12 +698,10 @@ class QuickAdapterV3(IStrategy):
             volumes,
             length=period,
         )
-        # TODO [BREAKING]: Rename %-tcp-period -> %-top_log_return-period
-        dataframe["%-tcp-period"] = top_log_return(
+        dataframe["%-top_log_return-period"] = top_log_return(
             dataframe, period=period, logger=logger
         )
-        # TODO [BREAKING]: Rename %-bcp-period -> %-bottom_log_return-period
-        dataframe["%-bcp-period"] = bottom_log_return(
+        dataframe["%-bottom_log_return-period"] = bottom_log_return(
             dataframe, period=period, logger=logger
         )
         dataframe["%-prp-period"] = price_retracement_percent(
@@ -732,7 +730,6 @@ class QuickAdapterV3(IStrategy):
         closes = dataframe.get("close")
         volumes = dataframe.get("volume")
 
-        # TODO [BREAKING]: Rename %-close_pct_change -> %-close_log_return
         close_values = closes.to_numpy(dtype=float)
         invalid_close_count = int(
             np.count_nonzero(~np.isfinite(close_values) | (close_values <= 0.0))
@@ -743,7 +740,7 @@ class QuickAdapterV3(IStrategy):
                 invalid_close_count,
             )
         with np.errstate(divide="ignore", invalid="ignore"):
-            dataframe["%-close_pct_change"] = Series(
+            dataframe["%-close_log_return"] = Series(
                 np.where(
                     np.isfinite(close_values) & (close_values > 0.0),
                     np.log(close_values),
