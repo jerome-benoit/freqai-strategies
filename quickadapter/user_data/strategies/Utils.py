@@ -1275,6 +1275,7 @@ def get_reversal_confirmation_config(
         allow_equal=False,
         non_negative=True,
         finite_only=True,
+        max_value=1,
     )
 
     return {
@@ -5179,6 +5180,7 @@ def validate_range(
     allow_equal: bool = False,
     non_negative: bool = True,
     finite_only: bool = True,
+    max_value: float | int | None = None,
 ) -> tuple[float | int, float | int]:
     min_name = f"min_{name}"
     max_name = f"max_{name}"
@@ -5214,6 +5216,12 @@ def validate_range(
         ):
             logger.warning(
                 f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
+            )
+            return default_value
+        if max_value is not None and value > max_value:
+            lower_bound = 0 if non_negative else "-inf"
+            logger.warning(
+                f"Invalid {name} {value!r}: must be in range [{lower_bound}, {max_value}], using default {default_value!r}"
             )
             return default_value
         return value
