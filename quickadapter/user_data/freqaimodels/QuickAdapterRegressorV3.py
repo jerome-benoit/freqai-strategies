@@ -429,6 +429,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SEED_DEFAULT: Final[int] = 1
     OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT: Final[bool] = True
 
+    _OPTUNA_BOOL_OPTIONS: Final[tuple[str, ...]] = (
+        "enabled",
+        "continuous",
+        "warm_start",
+        "space_reduction",
+        "vary_model_seed_by_trial",
+    )
+
     _DATA_SPLIT_METHODS: Final[tuple[str, ...]] = (
         "train_test_split",
         "timeseries_split",
@@ -1304,10 +1312,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ),
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        return {
+        optuna_config = {
             **optuna_default_config,
             **optuna_hyperopt,
         }
+        for option in QuickAdapterRegressorV3._OPTUNA_BOOL_OPTIONS:
+            if not isinstance(optuna_config[option], bool):
+                raise ValueError(
+                    f"freqai.optuna_hyperopt.{option} must be a boolean "
+                    f"(got {type(optuna_config[option]).__name__})"
+                )
+        return optuna_config
 
     @property
     def _min_label_period_candles(self) -> int:
