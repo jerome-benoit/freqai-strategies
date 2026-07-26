@@ -1219,6 +1219,12 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
+    if "thresholds_calibration" in config:
+        logger.warning(
+            "exit_pricing.thresholds_calibration is obsolete and ignored: "
+            "the PnL momentum gate now uses the direction of mean per-candle "
+            "PnL velocity"
+        )
     return _validate_params(
         config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
     )
