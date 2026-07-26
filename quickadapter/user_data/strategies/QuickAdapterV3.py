@@ -2226,12 +2226,10 @@ class QuickAdapterV3(IStrategy):
                     "take-profit exit not gated (fail-open)"
                 ),
             )
-            if trade_take_profit_exit:
-                return (
-                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
-                    f"{trade.trade_direction}_{trade_exit_stage}"
-                )
-            return None
+            return (
+                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+                f"{trade.trade_direction}_{trade_exit_stage}"
+            )
         (
             trade_recent_velocity_values,
             trade_recent_velocity_mean,
