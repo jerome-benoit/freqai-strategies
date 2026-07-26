@@ -498,10 +498,12 @@ class QuickAdapterV3(IStrategy):
                 self._pnl_momentum_window_size - 1
             ) * self.timeframe_minutes
             logger.warning(
-                f"Timeframe {self.timeframe} cannot fit a 30-minute PnL momentum "
-                f"window; flooring to {self._pnl_momentum_window_size} candles "
-                f"(~{velocity_span_minutes} min velocity span). The declining-PnL "
-                "take-profit confirmation runs on a coarser window."
+                f"Timeframe {self.timeframe}: a 30-minute PnL momentum window has "
+                f"only {nominal_pnl_momentum_window_size} samples "
+                f"(< {QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE} needed "
+                f"for a finite acceleration t-statistic); flooring to "
+                f"{self._pnl_momentum_window_size} candles "
+                f"(~{velocity_span_minutes} min velocity span)."
             )
         self._exit_thresholds_calibration: dict[str, float] = {
             **QuickAdapterV3.default_exit_thresholds_calibration,
