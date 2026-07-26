@@ -19,9 +19,14 @@ from typing import (
 
 import numpy as np
 import pandas_ta as pta
+from pandas.tseries.frequencies import to_offset
 import talib.abstract as ta
 from freqtrade.enums import TRADE_MODES
-from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
+from freqtrade.exchange import (
+    timeframe_to_minutes,
+    timeframe_to_prev_date,
+    timeframe_to_resample_freq,
+)
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
@@ -102,11 +107,12 @@ _PairCacheT = TypeVar("_PairCacheT", bound=dict)
 
 class _TradeHistory(TypedDict):
     # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
-    # _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY constants (a TypedDict field
+    # _UNREALIZED_PNL_TIMEFRAME_KEY constants (a TypedDict field
     # cannot reference a constant).
     unrealized_pnl: list[float]
     take_profit_price: list[float | tuple[int, float]]
     unrealized_pnl_candle_date: NotRequired[str]
+    unrealized_pnl_timeframe: NotRequired[str]
     unrealized_pnl_timeframe_minutes: NotRequired[int]
 
 
@@ -205,7 +211,8 @@ class QuickAdapterV3(IStrategy):
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
-    _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
+    _UNREALIZED_PNL_TIMEFRAME_KEY: Final[str] = "unrealized_pnl_timeframe"
+    _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
         "unrealized_pnl_timeframe_minutes"
     )
 
@@ -1552,9 +1559,8 @@ class QuickAdapterV3(IStrategy):
         history[QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY] = (
             candle_date.isoformat()
         )
-        history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY] = (
-            self.timeframe_minutes
-        )
+        history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY] = self.timeframe
+        history.pop(QuickAdapterV3._LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY, None)
         trade.set_custom_data("history", history)
         return pnl_history
 
@@ -1562,21 +1568,30 @@ class QuickAdapterV3(IStrategy):
     def _is_pnl_history_discontinuous(
         stored_candle_date_isoformat: Optional[str],
         candle_date: datetime.datetime,
-        timeframe_minutes: int,
+        timeframe: str,
     ) -> bool:
         if not QuickAdapterV3.is_isoformat(stored_candle_date_isoformat):
-            return False
+            return True
         stored_candle_date = datetime.datetime.fromisoformat(
             stored_candle_date_isoformat
         )
-        elapsed_minutes = (candle_date - stored_candle_date).total_seconds() / 60.0
-        # get_pnl_momentum() differences the series assuming one timeframe
-        # between consecutive samples; any non-adjacent step (forward gap or
-        # backward/non-monotonic date) breaks that spacing and forces a reset.
-        # elapsed == 0 is a same-candle re-evaluation, not a discontinuity.
-        return not math.isclose(
-            elapsed_minutes, timeframe_minutes, rel_tol=1e-9, abs_tol=1e-9
-        ) and not math.isclose(elapsed_minutes, 0.0, abs_tol=1e-9)
+        resample_frequency = timeframe_to_resample_freq(timeframe)
+        if resample_frequency.endswith(("MS", "YS")):
+            calendar_offset = to_offset(resample_frequency)
+            if not calendar_offset.is_on_offset(stored_candle_date) or (
+                resample_frequency.endswith("MS")
+                and (stored_candle_date.month - 1) % calendar_offset.n != 0
+            ):
+                return True
+            expected_candle_date = stored_candle_date + calendar_offset
+        else:
+            expected_candle_date = stored_candle_date + datetime.timedelta(
+                minutes=timeframe_to_minutes(timeframe)
+            )
+        # The PnL momentum horizon assumes one timeframe between consecutive
+        # samples; any non-adjacent step (forward gap or backward/non-monotonic
+        # date) breaks that spacing and forces a reset.
+        return candle_date not in (stored_candle_date, expected_candle_date)
 
     def safe_append_trade_unrealized_pnl(
         self, trade: Trade, pnl: float, candle_date: datetime.datetime
@@ -1585,19 +1600,19 @@ class QuickAdapterV3(IStrategy):
         trade_unrealized_pnl_history = history.get("unrealized_pnl", [])
         if trade_unrealized_pnl_history and (
             QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY not in history
-            or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY)
-            != self.timeframe_minutes
+            or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY)
+            != self.timeframe
             or QuickAdapterV3._is_pnl_history_discontinuous(
                 history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY),
                 candle_date,
-                self.timeframe_minutes,
+                self.timeframe,
             )
         ):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
             history.pop(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY, None)
             trade.set_custom_data("history", history)
-        if (
+        if not trade_unrealized_pnl_history or (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
             != candle_date.isoformat()
         ):
