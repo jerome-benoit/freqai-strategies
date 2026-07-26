@@ -52,6 +52,7 @@ from Utils import (
     bottom_log_return,
     calculate_quantile,
     compose_label_lookahead,
+    compute_label_weight_imputation_mask,
     compute_label_weight_known_at_lookahead,
     compute_label_weights,
     ensure_datetime_series,
@@ -992,6 +993,9 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
+        causal_mode = get_causal_mode(
+            as_dict(self.freqai_info.get("feature_parameters")), logger
+        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1033,12 +1037,22 @@ class QuickAdapterV3(IStrategy):
                     logger=logger,
                 )
                 if label_data.known_at_lookahead is not None:
+                    imputation_dependency_mask = (
+                        compute_label_weight_imputation_mask(
+                            len(label_data.indices),
+                            label_data.metrics,
+                            col_weighting_config,
+                        )
+                        if causal_mode
+                        else None
+                    )
                     dataframe[
                         label_weight_known_at_lookahead_column_name(label_col)
                     ] = compute_label_weight_known_at_lookahead(
                         known_at_lookahead=label_data.known_at_lookahead,
                         indices=label_data.indices,
                         fill_radius=weight_fill_radius(col_weighting_config),
+                        imputation_dependency_mask=imputation_dependency_mask,
                     )
 
             if label_col == EXTREMA_COLUMN:
