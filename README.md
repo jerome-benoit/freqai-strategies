@@ -147,6 +147,15 @@ docker compose up -d --build
 | freqai.optuna_hyperopt.seed                                    | 1                             | int >= 0                                                                                                                                                                                                     | HPO RNG seed used by the Optuna samplers and label-candle shuffling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | freqai.optuna_hyperopt.vary_model_seed_by_trial                | true                          | bool                                                                                                                                                                                                         | Add `trial.number` to each regressor's configured model seed (or its default seed of `1`) during HPO. `true` samples model randomness across trials and preserves the historical behavior; `false` evaluates every trial and the final fit with the same model seed. This does not change `freqai.optuna_hyperopt.seed`.                                                                                                                                                                                                                                                                                 |
 
+### Compatibility migrations
+
+QuickAdapter 3.x accepts the deprecated `hp_rmse` key in
+`freqai.extra_returns_per_train` and in saved live prediction histories. It is
+migrated once to `holdout_rmse`; when both keys exist, `holdout_rmse` takes
+precedence. New histories contain only `holdout_rmse`. Remove `hp_rmse` from
+custom consumers before QuickAdapter 4.0, when this compatibility alias may be
+removed.
+
 ## ReforceXY
 
 ### Quick start

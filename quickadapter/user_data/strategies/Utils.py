@@ -1055,6 +1055,10 @@ CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
     ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
     ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
     ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+    (
+        "freqai.extra_returns_per_train.hp_rmse",
+        "freqai.extra_returns_per_train.holdout_rmse",
+    ),
 )
 
 

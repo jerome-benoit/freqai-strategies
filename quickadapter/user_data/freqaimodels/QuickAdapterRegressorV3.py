@@ -1433,6 +1433,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         migrate_config(self.config, logger)
+        self._migrate_holdout_rmse_history()
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1507,6 +1508,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self.regressor = DEFAULT_REGRESSOR
             self.freqai_info["regressor"] = self.regressor
         self._log_model_configuration()
+
+    def _migrate_holdout_rmse_history(self) -> None:
+        for pair, historic in self.dd.historic_predictions.items():
+            if "hp_rmse" not in historic:
+                continue
+            if "holdout_rmse" in historic:
+                historic.drop(columns="hp_rmse", inplace=True)
+                logger.warning(
+                    f"[{pair}] Historic predictions contain both 'holdout_rmse' "
+                    f"and deprecated 'hp_rmse'; using 'holdout_rmse'"
+                )
+            else:
+                historic.rename(columns={"hp_rmse": "holdout_rmse"}, inplace=True)
+                logger.warning(
+                    f"[{pair}] Historic prediction column 'hp_rmse' is deprecated; "
+                    f"migrated it to 'holdout_rmse'"
+                )
 
     def _log_model_configuration(self) -> None:
         logger.info("=" * 60)
