@@ -498,8 +498,8 @@ class QuickAdapterV3(IStrategy):
                 self._pnl_momentum_window_size - 1
             ) * self.timeframe_minutes
             logger.warning(
-                f"Timeframe {self.timeframe}: a 30-minute PnL momentum window has "
-                f"only {nominal_pnl_momentum_window_size} samples "
+                f"Timeframe {self.timeframe}: the nominal 30-minute PnL momentum "
+                f"window resolves to only {nominal_pnl_momentum_window_size} samples "
                 f"(< {QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE} needed "
                 f"to compute an acceleration t-statistic); flooring to "
                 f"{self._pnl_momentum_window_size} candles "
@@ -1365,6 +1365,13 @@ class QuickAdapterV3(IStrategy):
         return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE_INDEX)
 
     @staticmethod
+    def _take_profit_order_tag(trade_direction: str, exit_stage: int) -> str:
+        return (
+            f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+            f"{trade_direction}_{exit_stage}"
+        )
+
+    @staticmethod
     @lru_cache(maxsize=128)
     def get_stoploss_factor(trade_duration_candles: int) -> float:
         return 2.75 / (1.2675 + math.atan(0.25 * trade_duration_candles))
@@ -1688,7 +1695,9 @@ class QuickAdapterV3(IStrategy):
                 )
             return (
                 -trade_partial_stake_amount,
-                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}",
+                QuickAdapterV3._take_profit_order_tag(
+                    trade.trade_direction, trade_exit_stage
+                ),
             )
 
         return None
@@ -2130,10 +2139,13 @@ class QuickAdapterV3(IStrategy):
         last_candle = df.iloc[-1]
         last_candle_date = last_candle.get("date")
         has_valid_candle_date = not isna(last_candle_date)
-        if has_valid_candle_date:
+        trade_unrealized_pnl_history: Optional[list[float]] = (
             self.safe_append_trade_unrealized_pnl(
                 trade, current_profit, last_candle_date
             )
+            if has_valid_candle_date
+            else None
+        )
         if last_candle.get("do_predict") == 2:
             return "model_expired"
         if last_candle.get("DI_catch") == 0:
@@ -2221,9 +2233,10 @@ class QuickAdapterV3(IStrategy):
             )
             return None
 
-        trade_unrealized_pnl_history = QuickAdapterV3.get_trade_unrealized_pnl_history(
-            trade
-        )
+        if trade_unrealized_pnl_history is None:
+            trade_unrealized_pnl_history = (
+                QuickAdapterV3.get_trade_unrealized_pnl_history(trade)
+            )
         if len(trade_unrealized_pnl_history) < self._pnl_momentum_window_size:
             # Warm-up: without a full momentum window a 30-minute decline is not
             # measurable yet; fail open (never block a profitable take-profit
@@ -2239,9 +2252,8 @@ class QuickAdapterV3(IStrategy):
                     "take-profit exit not gated (fail-open)"
                 ),
             )
-            return (
-                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
-                f"{trade.trade_direction}_{trade_exit_stage}"
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
             )
         (
             trade_recent_velocity_values,
@@ -2316,7 +2328,9 @@ class QuickAdapterV3(IStrategy):
             )
 
         if trade_exit:
-            return f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_{trade_exit_stage}"
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
+            )
 
         return None
 
