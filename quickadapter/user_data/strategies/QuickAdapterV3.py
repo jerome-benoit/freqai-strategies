@@ -101,10 +101,9 @@ _PairCacheT = TypeVar("_PairCacheT", bound=dict)
 
 
 class _TradeHistory(TypedDict):
-    # unrealized_pnl_candle_date and unrealized_pnl_timeframe_minutes are written
-    # lazily on first append (NotRequired); their literal names must mirror
-    # _UNREALIZED_PNL_CANDLE_DATE_KEY / _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY since
-    # TypedDict fields cannot reference a constant.
+    # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
+    # _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY constants (a TypedDict field
+    # cannot reference a constant).
     unrealized_pnl: list[float]
     take_profit_price: list[float | tuple[int, float]]
     unrealized_pnl_candle_date: NotRequired[str]
@@ -1570,12 +1569,10 @@ class QuickAdapterV3(IStrategy):
             stored_candle_date_isoformat
         )
         elapsed_minutes = (candle_date - stored_candle_date).total_seconds() / 60.0
-        # get_pnl_momentum() differences the PnL series assuming a single
-        # timeframe between consecutive samples; any non-adjacent step -- a
-        # forward gap (missed candles after downtime/outage) or a
-        # non-monotonic/backward candle date -- breaks that uniform spacing, so
-        # the series must reset rather than span the discontinuity. elapsed == 0
-        # is the same-candle re-evaluation, not a discontinuity.
+        # get_pnl_momentum() differences the series assuming one timeframe
+        # between consecutive samples; any non-adjacent step (forward gap or
+        # backward/non-monotonic date) breaks that spacing and forces a reset.
+        # elapsed == 0 is a same-candle re-evaluation, not a discontinuity.
         return not math.isclose(
             elapsed_minutes, timeframe_minutes, rel_tol=1e-9, abs_tol=1e-9
         ) and not math.isclose(elapsed_minutes, 0.0, abs_tol=1e-9)
