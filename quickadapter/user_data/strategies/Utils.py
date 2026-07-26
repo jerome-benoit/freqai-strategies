@@ -4346,6 +4346,7 @@ def optuna_load_best_params(
     logger: Logger | None = None,
     *,
     expected_selection_metadata: dict[str, Any] | None = None,
+    expected_objective_identity: str | None = None,
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -4360,6 +4361,20 @@ def optuna_load_best_params(
                 logger,
                 expected_selection_metadata=expected_selection_metadata,
             )
+        if expected_objective_identity is not None:
+            if (
+                not isinstance(best_params, dict)
+                or best_params.get("objective_identity") != expected_objective_identity
+                or not isinstance(best_params.get("params"), dict)
+            ):
+                if logger is not None:
+                    logger.warning(
+                        f"[{pair}] Ignoring Optuna {namespace} best params: "
+                        f"objective identity does not match "
+                        f"{expected_objective_identity!r}"
+                    )
+                return None
+            return best_params["params"]
         return best_params
     return None
 
@@ -4371,6 +4386,7 @@ def optuna_save_best_params(
     params: dict[str, Any],
     logger: Logger,
     selection_metadata: dict[str, Any] | None = None,
+    objective_identity: str | None = None,
 ) -> None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -4383,6 +4399,11 @@ def optuna_save_best_params(
             }
             if selection_metadata is not None:
                 best_params["selection_metadata"] = selection_metadata
+        elif objective_identity is not None:
+            best_params = {
+                "objective_identity": objective_identity,
+                "params": params,
+            }
         else:
             best_params = params
         with best_params_path.open("w", encoding="utf-8") as write_file:

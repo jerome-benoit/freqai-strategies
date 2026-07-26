@@ -233,6 +233,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
+    _OPTUNA_HP_OBJECTIVE_IDENTITY: Final[str] = "candidate-cold-start-v1"
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
@@ -2802,7 +2803,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         validation_size = self._get_validation_size()
 
         model_training_parameters = copy.deepcopy(self.model_training_parameters)
-        init_model = self.get_init_model(dk.pair)
+        deployment_init_model = self.get_init_model(dk.pair)
+        selection_init_model = None if validation_size != 0 else deployment_init_model
 
         start_time = time.time()
         if self._optuna_hyperopt:
@@ -2824,7 +2826,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     self._optuna_config["space_reduction"],
                     self._optuna_config["space_fraction"],
                     model_path=dk.data_path,
-                    init_model=init_model,
+                    init_model=selection_init_model,
                     vary_model_seed_by_trial=self._optuna_config[
                         "vary_model_seed_by_trial"
                     ],
@@ -2854,7 +2856,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             eval_set=eval_set,
             eval_weights=eval_weights,
             model_training_parameters=copy.deepcopy(model_training_parameters),
-            init_model=init_model,
+            init_model=selection_init_model,
             model_path=dk.data_path,
         )
         if X_test is not None and not X_test.empty:
@@ -2883,7 +2885,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 self.regressor,
                 model,
                 model_training_parameters,
-                init_model,
+                selection_init_model,
             )
             data_dictionary["train_features"] = data_dictionary.pop("refit_features")
             data_dictionary["train_labels"] = data_dictionary.pop("refit_labels")
@@ -2917,7 +2919,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 eval_set=None,
                 eval_weights=None,
                 model_training_parameters=refit_model_training_parameters,
-                init_model=init_model,
+                init_model=deployment_init_model,
                 model_path=dk.data_path,
             )
         time_spent = time.time() - start_time
@@ -4828,6 +4830,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         identifier = self.freqai_info.get("identifier")
         study_name = f"{identifier}-{pair}-{namespace}"
+        if namespace == _OPTUNA_NAMESPACES.hp:
+            study_name = (
+                f"{study_name}-{QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY}"
+            )
 
         try:
             storage = self.optuna_create_storage(pair)
@@ -4966,6 +4972,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             selection_metadata=self._optuna_label_selection_metadata()
             if namespace == _OPTUNA_NAMESPACES.label
             else None,
+            objective_identity=QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            if namespace == _OPTUNA_NAMESPACES.hp
+            else None,
         )
 
     def optuna_load_best_params(
@@ -4982,6 +4991,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             namespace,
             logger,
             expected_selection_metadata=expected,
+            expected_objective_identity=QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            if namespace == _OPTUNA_NAMESPACES.hp
+            else None,
         )
 
     @staticmethod
