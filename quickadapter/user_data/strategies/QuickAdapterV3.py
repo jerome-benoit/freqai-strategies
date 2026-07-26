@@ -1715,7 +1715,7 @@ class QuickAdapterV3(IStrategy):
                 # the larger min_exit_stake. For both the cost- and amount-driven
                 # minimum, min_exit_stake <= min_stake * max(exit/entry, 1/(1-|sl|)),
                 # so this upper bound keeps the shrunk remainder above the guard.
-                min_exit_stake = (
+                min_exit_stake_bound = (
                     min_stake
                     * max(
                         current_exit_rate / current_entry_rate,
@@ -1723,22 +1723,22 @@ class QuickAdapterV3(IStrategy):
                     )
                     * (1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN)
                 )
-                if current_position_value <= min_exit_stake:
+                if current_position_value <= min_exit_stake_bound:
                     return None
                 remaining_position_value = current_position_value * (
                     1 - trade_stake_percent
                 )
-                if remaining_position_value < min_exit_stake:
+                if remaining_position_value < min_exit_stake_bound:
                     initial_trade_partial_stake_amount = trade_partial_stake_amount
                     trade_partial_stake_amount = trade.stake_amount * (
-                        1 - min_exit_stake / current_position_value
+                        1 - min_exit_stake_bound / current_position_value
                     )
                     logger.info(
                         f"[{pair}] Trade {trade.trade_direction} stage "
                         f"{trade_exit_stage} | partial stake "
                         f"{format_number(initial_trade_partial_stake_amount)} -> "
                         f"{format_number(trade_partial_stake_amount)} to preserve "
-                        f"min_exit_stake {format_number(min_exit_stake)}"
+                        f"min_exit_stake_bound {format_number(min_exit_stake_bound)}"
                     )
             return (
                 -trade_partial_stake_amount,
