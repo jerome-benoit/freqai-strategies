@@ -1299,7 +1299,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "space_fraction": QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
             "min_resource": QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT,
             "seed": QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT,
-            "vary_model_seed_by_trial": QuickAdapterRegressorV3.OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT,
+            "vary_model_seed_by_trial": (
+                QuickAdapterRegressorV3.OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT
+            ),
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
         return {
