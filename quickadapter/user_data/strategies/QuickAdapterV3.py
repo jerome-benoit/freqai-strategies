@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import json
 import logging
 import math
 from functools import cached_property, lru_cache, reduce
@@ -96,6 +97,7 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
+_TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 
 class _TradeHistory(TypedDict):
@@ -103,7 +105,7 @@ class _TradeHistory(TypedDict):
     # _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY constants (a TypedDict field
     # cannot reference a constant).
     unrealized_pnl: list[float]
-    take_profit_price: list[float | tuple[int, float]]
+    take_profit_price: list[_TakeProfitHistoryEntry]
     unrealized_pnl_candle_date: NotRequired[str]
     unrealized_pnl_timeframe_minutes: NotRequired[int]
 
@@ -202,6 +204,8 @@ class QuickAdapterV3(IStrategy):
     )
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
+    _TRADE_HISTORY_KEY: Final[str] = "history_v2"
+    _LEGACY_TRADE_HISTORY_KEY: Final[str] = "history"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
     _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
         "unrealized_pnl_timeframe_minutes"
@@ -1534,9 +1538,34 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def _get_trade_history(trade: Trade) -> _TradeHistory:
-        return trade.get_custom_data(
-            "history", {"unrealized_pnl": [], "take_profit_price": []}
-        )
+        missing = object()
+        history = trade.get_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, missing)
+        migrate_legacy = False
+        if history is missing:
+            try:
+                history = trade.get_custom_data(
+                    QuickAdapterV3._LEGACY_TRADE_HISTORY_KEY, missing
+                )
+            except ValueError:
+                history = {}
+                migrate_legacy = True
+            else:
+                migrate_legacy = history is not missing
+                if migrate_legacy and isinstance(history, str):
+                    # Freqtrade preserves a row's scalar cd_type on updates, so a
+                    # prior dictionary write can be returned as raw JSON here.
+                    try:
+                        history = json.loads(history)
+                    except json.JSONDecodeError:
+                        pass
+        if history is missing or not isinstance(history, dict):
+            history = {}
+        for key in ("unrealized_pnl", "take_profit_price"):
+            if not isinstance(history.get(key), list):
+                history[key] = []
+        if migrate_legacy:
+            trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
+        return history
 
     @staticmethod
     def get_trade_unrealized_pnl_history(trade: Trade) -> list[float]:
@@ -1546,7 +1575,7 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     def get_trade_take_profit_price_history(
         trade: Trade,
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         return history.get("take_profit_price", [])
 
@@ -1565,7 +1594,7 @@ class QuickAdapterV3(IStrategy):
         history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY] = (
             self.timeframe_minutes
         )
-        trade.set_custom_data("history", history)
+        trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
         return pnl_history
 
     @staticmethod
@@ -1606,7 +1635,7 @@ class QuickAdapterV3(IStrategy):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
             history.pop(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY, None)
-            trade.set_custom_data("history", history)
+            trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
         if (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
             != candle_date.isoformat()
@@ -1618,19 +1647,19 @@ class QuickAdapterV3(IStrategy):
 
     def append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         price_history = history.setdefault("take_profit_price", [])
         price_history.append((exit_stage, take_profit_price))
         if len(price_history) > self._max_history_size:
             price_history = price_history[-self._max_history_size :]
             history["take_profit_price"] = price_history
-        trade.set_custom_data("history", history)
+        trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
         return price_history
 
     def safe_append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         trade_take_profit_price_history = (
             QuickAdapterV3.get_trade_take_profit_price_history(trade)
         )
@@ -1641,13 +1670,21 @@ class QuickAdapterV3(IStrategy):
         )
         previous_exit_stage = None
         previous_take_profit_price = None
-        if isinstance(previous_take_profit_entry, tuple):
-            previous_exit_stage = (
-                previous_take_profit_entry[0] if previous_take_profit_entry else None
+        if (
+            isinstance(previous_take_profit_entry, (tuple, list))
+            and len(previous_take_profit_entry) == 2
+        ):
+            candidate_exit_stage, candidate_take_profit_price = (
+                previous_take_profit_entry
             )
-            previous_take_profit_price = (
-                previous_take_profit_entry[1] if previous_take_profit_entry else None
-            )
+            if (
+                isinstance(candidate_exit_stage, int)
+                and not isinstance(candidate_exit_stage, bool)
+                and isinstance(candidate_take_profit_price, (int, float))
+                and not isinstance(candidate_take_profit_price, bool)
+            ):
+                previous_exit_stage = candidate_exit_stage
+                previous_take_profit_price = candidate_take_profit_price
         elif isinstance(previous_take_profit_entry, float):
             previous_exit_stage = -1
             previous_take_profit_price = previous_take_profit_entry
