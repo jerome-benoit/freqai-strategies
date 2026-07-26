@@ -43,6 +43,7 @@ from LabelTransformer import (
     LABEL_WEIGHT_SUPPORT_POLICIES,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_METHODS,
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
@@ -53,6 +54,7 @@ from LabelTransformer import (
     FillEpsilonBaseline,
     SmoothingMethod,
     SmoothingMode,
+    get_label_column_config,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -1197,7 +1199,30 @@ def get_label_smoothing_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    return get_label_kind_config("label_smoothing", config, logger)
+    validated = get_label_kind_config("label_smoothing", config, logger)
+
+    for label_col in LABEL_COLUMNS:
+        _validate_smoothing_method_mode(
+            get_label_column_config(
+                label_col, validated["default"], validated["columns"]
+            ),
+            f"label_smoothing for label {label_col!r}",
+        )
+
+    return validated
+
+
+def _validate_smoothing_method_mode(
+    config: dict[str, Any],
+    config_name: str,
+) -> None:
+    method = config["method"]
+    valid_modes = SMOOTHING_METHOD_MODES.get(method)
+    if valid_modes is not None and config["mode"] not in valid_modes:
+        raise ValueError(
+            f"Invalid {config_name} mode value {config['mode']!r} for "
+            f"method {method!r}: supported values are {', '.join(valid_modes)}"
+        )
 
 
 def get_label_prediction_config(
