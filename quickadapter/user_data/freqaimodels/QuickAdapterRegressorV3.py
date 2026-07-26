@@ -427,6 +427,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
     OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
     OPTUNA_SEED_DEFAULT: Final[int] = 1
+    OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT: Final[bool] = True
+
+    _OPTUNA_BOOL_OPTIONS: Final[tuple[str, ...]] = (
+        "enabled",
+        "continuous",
+        "warm_start",
+        "space_reduction",
+        "vary_model_seed_by_trial",
+    )
 
     _DATA_SPLIT_METHODS: Final[tuple[str, ...]] = (
         "train_test_split",
@@ -1298,12 +1307,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "space_fraction": QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
             "min_resource": QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT,
             "seed": QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT,
+            "vary_model_seed_by_trial": (
+                QuickAdapterRegressorV3.OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT
+            ),
         }
         optuna_hyperopt = self.config.get("freqai", {}).get("optuna_hyperopt", {})
-        return {
+        optuna_config = {
             **optuna_default_config,
             **optuna_hyperopt,
         }
+        for option in QuickAdapterRegressorV3._OPTUNA_BOOL_OPTIONS:
+            if not isinstance(optuna_config[option], bool):
+                raise ValueError(
+                    f"freqai.optuna_hyperopt.{option} must be a boolean "
+                    f"(got {type(optuna_config[option]).__name__})"
+                )
+        return optuna_config
 
     @property
     def _min_label_period_candles(self) -> int:
@@ -1515,6 +1534,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"  min_resource: {optuna_config.get('min_resource')}")
             logger.info(f"  seed: {optuna_config.get('seed')}")
+            logger.info(
+                "  vary_model_seed_by_trial: "
+                f"{optuna_config.get('vary_model_seed_by_trial')}"
+            )
 
             logger.info(f"  label_sampler: {optuna_config.get('label_sampler')}")
             logger.info(
@@ -2800,8 +2823,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     model_training_parameters,
                     self._optuna_config["space_reduction"],
                     self._optuna_config["space_fraction"],
-                    dk.data_path,
-                    init_model,
+                    model_path=dk.data_path,
+                    init_model=init_model,
+                    vary_model_seed_by_trial=self._optuna_config[
+                        "vary_model_seed_by_trial"
+                    ],
                 ),
                 direction=optuna.study.StudyDirection.MINIMIZE,
             )
@@ -5028,6 +5054,7 @@ def hp_objective(
     space_fraction: float,
     model_path: Optional[Path] = None,
     init_model: Any = None,
+    vary_model_seed_by_trial: bool = True,
 ) -> float:
     study_model_parameters = get_optuna_study_model_parameters(
         trial,
@@ -5054,6 +5081,7 @@ def hp_objective(
         init_model=init_model,
         model_path=model_path,
         trial=trial,
+        vary_model_seed_by_trial=vary_model_seed_by_trial,
     )
     y_pred = model.predict(X_validation)
 
