@@ -212,8 +212,8 @@ class QuickAdapterV3(IStrategy):
 
     # get_pnl_momentum differences the window twice: velocity needs >=2 first
     # diffs (window>=3), acceleration >=2 second diffs (window>=4). 4 is the
-    # binding floor keeping both t-statistics finite; below it the declining-PnL
-    # take-profit gate silently degrades to an unconditional exit.
+    # binding floor so both t-statistics are computable (n>=2); with fewer
+    # samples the acceleration t-statistic is structurally NaN.
     _MIN_PNL_MOMENTUM_WINDOW_SIZE: Final[int] = 4
 
     minimal_roi = {str(timeframe_minutes * 864): -1}
@@ -501,7 +501,7 @@ class QuickAdapterV3(IStrategy):
                 f"Timeframe {self.timeframe}: a 30-minute PnL momentum window has "
                 f"only {nominal_pnl_momentum_window_size} samples "
                 f"(< {QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE} needed "
-                f"for a finite acceleration t-statistic); flooring to "
+                f"to compute an acceleration t-statistic); flooring to "
                 f"{self._pnl_momentum_window_size} candles "
                 f"(~{velocity_span_minutes} min velocity span)."
             )
