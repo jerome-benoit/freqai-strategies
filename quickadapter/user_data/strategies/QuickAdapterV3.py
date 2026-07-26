@@ -1708,17 +1708,18 @@ class QuickAdapterV3(IStrategy):
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             if min_stake is not None and min_stake > 0:
                 current_position_value = trade.amount * current_exit_rate
-                # min_stake is freqtrade's min_entry_stake, but its exit guard uses
-                # the larger min_exit_stake. For both the cost- and amount-driven
-                # minimum, min_exit_stake <= min_stake * max(exit/entry, 1/(1-|sl|)),
-                # so this upper bound keeps the shrunk remainder above the guard.
-                min_exit_stake_bound = (
-                    min_stake
-                    * max(
+                # Live/dry-run passes min_entry_stake, while freqtrade's
+                # backtesting path already passes the adjusted minimum it guards.
+                min_exit_stake_bound = min_stake
+                if self.is_trade_runmode:
+                    # For both the cost- and amount-driven minimum, min_exit_stake
+                    # <= min_stake * max(exit/entry, 1/(1-|sl|)).
+                    min_exit_stake_bound *= max(
                         current_exit_rate / current_entry_rate,
                         1.0 / (1.0 - abs(self.stoploss)),
                     )
-                    * (1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN)
+                min_exit_stake_bound *= (
+                    1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
                 )
                 if current_position_value <= min_exit_stake_bound:
                     return None
