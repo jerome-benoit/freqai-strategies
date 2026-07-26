@@ -1558,6 +1558,26 @@ class QuickAdapterV3(IStrategy):
         trade.set_custom_data("history", history)
         return pnl_history
 
+    @staticmethod
+    def _is_pnl_history_discontinuous(
+        stored_candle_date_isoformat: Optional[str],
+        candle_date: datetime.datetime,
+        timeframe_minutes: int,
+    ) -> bool:
+        if not QuickAdapterV3.is_isoformat(stored_candle_date_isoformat):
+            return False
+        stored_candle_date = datetime.datetime.fromisoformat(
+            stored_candle_date_isoformat
+        )
+        elapsed_minutes = (candle_date - stored_candle_date).total_seconds() / 60.0
+        # get_pnl_momentum() differences the PnL series assuming a single
+        # timeframe between consecutive samples; a wider gap (missed candles
+        # after downtime/outage) collapses into one interval, so the series
+        # must reset rather than span the discontinuity.
+        return elapsed_minutes > timeframe_minutes and not math.isclose(
+            elapsed_minutes, timeframe_minutes, rel_tol=1e-9, abs_tol=1e-9
+        )
+
     def safe_append_trade_unrealized_pnl(
         self, trade: Trade, pnl: float, candle_date: datetime.datetime
     ) -> list[float]:
@@ -1567,6 +1587,11 @@ class QuickAdapterV3(IStrategy):
             QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY not in history
             or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY)
             != self.timeframe_minutes
+            or QuickAdapterV3._is_pnl_history_discontinuous(
+                history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY),
+                candle_date,
+                self.timeframe_minutes,
+            )
         ):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
