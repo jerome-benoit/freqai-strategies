@@ -215,6 +215,10 @@ class QuickAdapterV3(IStrategy):
     # samples the acceleration t-statistic is structurally NaN.
     _MIN_PNL_MOMENTUM_WINDOW_SIZE: Final[int] = 4
 
+    # Rounding margin so the sized partial-exit remainder clears freqtrade's
+    # strict `remaining < min_exit_stake` guard.
+    _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
+
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
     # FreqAI is crashing if minimal_roi is a property
@@ -1707,21 +1711,34 @@ class QuickAdapterV3(IStrategy):
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             if min_stake is not None and min_stake > 0:
                 current_position_value = trade.amount * current_exit_rate
-                if current_position_value <= min_stake:
+                # min_stake is freqtrade's min_entry_stake, but its exit guard uses
+                # the larger min_exit_stake. For both the cost- and amount-driven
+                # minimum, min_exit_stake <= min_stake * max(exit/entry, 1/(1-|sl|)),
+                # so this upper bound keeps the shrunk remainder above the guard.
+                min_exit_stake = (
+                    min_stake
+                    * max(
+                        current_exit_rate / current_entry_rate,
+                        1.0 / (1.0 - abs(self.stoploss)),
+                    )
+                    * (1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN)
+                )
+                if current_position_value <= min_exit_stake:
                     return None
                 remaining_position_value = current_position_value * (
                     1 - trade_stake_percent
                 )
-                if remaining_position_value < min_stake:
+                if remaining_position_value < min_exit_stake:
                     initial_trade_partial_stake_amount = trade_partial_stake_amount
                     trade_partial_stake_amount = trade.stake_amount * (
-                        1 - min_stake / current_position_value
+                        1 - min_exit_stake / current_position_value
                     )
                     logger.info(
-                        f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
-                        f"Partial stake amount adjusted from {format_number(initial_trade_partial_stake_amount)} "
-                        f"to {format_number(trade_partial_stake_amount)} to preserve min_stake "
-                        f"{format_number(min_stake)} at exit rate {format_number(current_exit_rate)}"
+                        f"[{pair}] Trade {trade.trade_direction} stage "
+                        f"{trade_exit_stage} | partial stake "
+                        f"{format_number(initial_trade_partial_stake_amount)} -> "
+                        f"{format_number(trade_partial_stake_amount)} to preserve "
+                        f"min_exit_stake {format_number(min_exit_stake)}"
                     )
             return (
                 -trade_partial_stake_amount,
