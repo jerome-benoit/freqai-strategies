@@ -101,12 +101,14 @@ _PairCacheT = TypeVar("_PairCacheT", bound=dict)
 
 
 class _TradeHistory(TypedDict):
-    # unrealized_pnl_candle_date is written lazily on first append (NotRequired);
-    # its literal name must mirror _UNREALIZED_PNL_CANDLE_DATE_KEY since TypedDict
-    # fields cannot reference a constant.
+    # unrealized_pnl_candle_date and unrealized_pnl_timeframe_minutes are written
+    # lazily on first append (NotRequired); their literal names must mirror
+    # _UNREALIZED_PNL_CANDLE_DATE_KEY / _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY since
+    # TypedDict fields cannot reference a constant.
     unrealized_pnl: list[float]
     take_profit_price: list[float | tuple[int, float]]
     unrealized_pnl_candle_date: NotRequired[str]
+    unrealized_pnl_timeframe_minutes: NotRequired[int]
 
 
 logger = logging.getLogger(__name__)
@@ -204,6 +206,9 @@ class QuickAdapterV3(IStrategy):
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
+    _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
+        "unrealized_pnl_timeframe_minutes"
+    )
 
     # get_pnl_momentum differences the window twice: velocity needs >=2 first
     # diffs (window>=3), acceleration >=2 second diffs (window>=4). 4 is the
@@ -474,8 +479,9 @@ class QuickAdapterV3(IStrategy):
         self._candle_duration_secs = int(self.timeframe_minutes * 60)
         self.last_candle_start_secs: dict[str, Optional[int]] = {}
         # +1 endpoint: N samples yield N-1 velocity intervals, so covering a
-        # 30-minute velocity span needs floor(30/tf)+1 samples.
-        nominal_pnl_momentum_window_size = int(30 / self.timeframe_minutes) + 1
+        # 30-minute velocity span needs ceil(30/tf)+1 samples (ceil so a
+        # timeframe not dividing 30 still spans >=30 min).
+        nominal_pnl_momentum_window_size = math.ceil(30 / self.timeframe_minutes) + 1
         self._pnl_momentum_window_size = max(
             QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE,
             nominal_pnl_momentum_window_size,
@@ -1537,6 +1543,9 @@ class QuickAdapterV3(IStrategy):
         history[QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY] = (
             candle_date.isoformat()
         )
+        history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY] = (
+            self.timeframe_minutes
+        )
         trade.set_custom_data("history", history)
         return pnl_history
 
@@ -1545,12 +1554,14 @@ class QuickAdapterV3(IStrategy):
     ) -> list[float]:
         history = QuickAdapterV3._get_trade_history(trade)
         trade_unrealized_pnl_history = history.get("unrealized_pnl", [])
-        if (
+        if trade_unrealized_pnl_history and (
             QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY not in history
-            and trade_unrealized_pnl_history
+            or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY)
+            != self.timeframe_minutes
         ):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
+            history.pop(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY, None)
             trade.set_custom_data("history", history)
         if (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
