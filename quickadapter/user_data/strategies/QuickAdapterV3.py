@@ -2443,6 +2443,19 @@ class QuickAdapterV3(IStrategy):
                 f"supported values are {', '.join(QuickAdapterV3._TRADING_MODES)}"
             )
 
+    @cached_property
+    def _configured_leverage(self) -> Optional[float]:
+        leverage = self.config.get("leverage")
+        if leverage is None:
+            return None
+        if not isinstance(leverage, (int, float)) or isinstance(leverage, bool):
+            logger.warning(
+                f"Invalid leverage value {leverage!r}: must be a number, "
+                "using proposed_leverage"
+            )
+            return None
+        return float(leverage)
+
     def leverage(
         self,
         pair: str,
@@ -2454,10 +2467,8 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs: Any,
     ) -> float:
-        configured_leverage = self.config.get("leverage", proposed_leverage)
-        if not isinstance(configured_leverage, (int, float)) or isinstance(
-            configured_leverage, bool
-        ):
+        configured_leverage = self._configured_leverage
+        if configured_leverage is None:
             configured_leverage = proposed_leverage
         return float(max(1.0, min(configured_leverage, max_leverage)))
 
