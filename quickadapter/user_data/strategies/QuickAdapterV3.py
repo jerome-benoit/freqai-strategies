@@ -220,20 +220,6 @@ class QuickAdapterV3(IStrategy):
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
     # FreqAI is crashing if minimal_roi is a property
-    # @property
-    # def minimal_roi(self) -> dict[str, Any]:
-    #     timeframe_minutes = self.timeframe_minutes
-    #     fit_live_predictions_candles = int(
-    #         self.config.get("freqai", {}).get(
-    #             "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-    #         )
-    #     )
-    #     return {str(timeframe_minutes * fit_live_predictions_candles): -1}
-
-    # @minimal_roi.setter
-    # def minimal_roi(self, value: dict[str, Any]) -> None:
-    #     pass
-
     process_only_new_candles = True
 
     def __init__(self, config: dict[str, Any], *args, **kwargs) -> None:
@@ -500,12 +486,7 @@ class QuickAdapterV3(IStrategy):
             )
         self._exit_thresholds_calibration: dict[str, float] = (
             get_exit_thresholds_calibration_config(
-                as_dict(
-                    as_dict(self.config.get("exit_pricing")).get(
-                        "thresholds_calibration"
-                    )
-                ),
-                logger,
+                as_dict(self.config.get("exit_pricing")), logger
             )
         )
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}

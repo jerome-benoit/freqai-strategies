@@ -349,6 +349,8 @@ class _NumericValidator:
     require_int: bool = False
 
     def __call__(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
         if self.require_int and not isinstance(value, int):
             return False
         if not isinstance(value, (int, float)) or not _is_finite_value(value):
@@ -1173,7 +1175,7 @@ def _validate_smoothing_method_mode(
         )
 
 
-# Third tuple element: a coupled-field validator run on each fully resolved
+# Third tuple element: a cross-field validator run on each fully resolved
 # per-column config for checks the field-level specs cannot express.
 _LABEL_KIND_REGISTRY: Final[
     dict[
@@ -1293,7 +1295,7 @@ def get_exit_thresholds_calibration_config(
     config: dict[str, Any], logger: Logger
 ) -> dict[str, float]:
     return _validate_params(
-        config,
+        as_dict(config.get("thresholds_calibration")),
         logger,
         "exit_pricing.thresholds_calibration",
         _EXIT_THRESHOLDS_CALIBRATION_SPECS,
