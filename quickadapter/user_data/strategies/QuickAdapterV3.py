@@ -29,6 +29,7 @@ from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
     SMOOTHING_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_MODES,
     WEIGHT_STRATEGIES,
     get_label_column_config,
@@ -154,7 +155,6 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
     _SMOOTHING_SMM: Final[str] = SMOOTHING_METHODS[5]
     _SMOOTHING_SAVGOL: Final[str] = SMOOTHING_METHODS[7]
-    _SMOOTHING_GAUSSIAN_FILTER1D: Final[str] = SMOOTHING_METHODS[8]
     _FILL_EPSILON: Final[str] = FILL_METHODS[1]
     _FILL_GAUSSIAN: Final[str] = FILL_METHODS[2]
     _FILL_EPSILON_GAUSSIAN: Final[str] = FILL_METHODS[3]
@@ -441,11 +441,7 @@ class QuickAdapterV3(IStrategy):
                     label_col, label_smoothing["default"], label_smoothing["columns"]
                 )
                 if (
-                    col_smoothing_config["method"]
-                    in (
-                        QuickAdapterV3._SMOOTHING_SAVGOL,
-                        QuickAdapterV3._SMOOTHING_GAUSSIAN_FILTER1D,
-                    )
+                    col_smoothing_config["method"] in SMOOTHING_METHOD_MODES
                     and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
                 ):  # "wrap"
                     raise ValueError(

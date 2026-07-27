@@ -942,6 +942,7 @@ def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
+CrossFieldValidatorFn = Callable[[dict[str, Any], str], None]
 
 
 _MISSING: Final = object()
@@ -1144,16 +1145,40 @@ def _get_label_config(
         return {"default": validated_default, "columns": {}}
 
 
-_LABEL_KIND_REGISTRY: Final[dict[str, tuple[dict[str, _ParamSpec], dict[str, Any]]]] = {
-    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING),
-    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE),
-    "label_smoothing": (_SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING),
-    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION),
+def _validate_smoothing_method_mode(
+    config: dict[str, Any],
+    config_name: str,
+) -> None:
+    method = config["method"]
+    valid_modes = SMOOTHING_METHOD_MODES.get(method)
+    if valid_modes is not None and config["mode"] not in valid_modes:
+        raise ValueError(
+            f"Invalid {config_name} mode value {config['mode']!r} for "
+            f"method {method!r}: supported values are {', '.join(valid_modes)}"
+        )
+
+
+# Third tuple element: a coupled-field validator run on each fully resolved
+# per-column config for checks the field-level specs cannot express.
+_LABEL_KIND_REGISTRY: Final[
+    dict[
+        str,
+        tuple[dict[str, _ParamSpec], dict[str, Any], CrossFieldValidatorFn | None],
+    ]
+] = {
+    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING, None),
+    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE, None),
+    "label_smoothing": (
+        _SMOOTHING_SPECS,
+        DEFAULTS_LABEL_SMOOTHING,
+        _validate_smoothing_method_mode,
+    ),
+    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION, None),
 }
 
 
 def _label_kind_validator(kind: str) -> ValidateParamsFn:
-    specs, defaults = _LABEL_KIND_REGISTRY[kind]
+    specs, defaults, _ = _LABEL_KIND_REGISTRY[kind]
 
     def validate(
         config: dict[str, Any],
@@ -1175,10 +1200,19 @@ def get_label_kind_config(
             f"Unknown label kind {kind!r}: supported values are "
             f"{', '.join(_LABEL_KIND_REGISTRY)}"
         )
-    _, defaults = _LABEL_KIND_REGISTRY[kind]
-    return _get_label_config(
+    _, defaults, cross_field_validator = _LABEL_KIND_REGISTRY[kind]
+    validated = _get_label_config(
         config, logger, kind, _label_kind_validator(kind), defaults
     )
+    if cross_field_validator is not None:
+        for label_col in LABEL_COLUMNS:
+            cross_field_validator(
+                get_label_column_config(
+                    label_col, validated["default"], validated["columns"]
+                ),
+                f"{kind} for label {label_col!r}",
+            )
+    return validated
 
 
 def get_label_weighting_config(
@@ -1199,30 +1233,7 @@ def get_label_smoothing_config(
     config: dict[str, Any],
     logger: Logger,
 ) -> dict[str, Any]:
-    validated = get_label_kind_config("label_smoothing", config, logger)
-
-    for label_col in LABEL_COLUMNS:
-        _validate_smoothing_method_mode(
-            get_label_column_config(
-                label_col, validated["default"], validated["columns"]
-            ),
-            f"label_smoothing for label {label_col!r}",
-        )
-
-    return validated
-
-
-def _validate_smoothing_method_mode(
-    config: dict[str, Any],
-    config_name: str,
-) -> None:
-    method = config["method"]
-    valid_modes = SMOOTHING_METHOD_MODES.get(method)
-    if valid_modes is not None and config["mode"] not in valid_modes:
-        raise ValueError(
-            f"Invalid {config_name} mode value {config['mode']!r} for "
-            f"method {method!r}: supported values are {', '.join(valid_modes)}"
-        )
+    return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
