@@ -954,6 +954,14 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
+    if value is not None and not isinstance(value, dict):
+        logger.warning(
+            f"Invalid {name} value {value!r}: must be a mapping, using defaults"
+        )
+    return as_dict(value)
+
+
 def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
     return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
 
@@ -1295,7 +1303,11 @@ def get_exit_thresholds_calibration_config(
     config: dict[str, Any], logger: Logger
 ) -> dict[str, float]:
     return _validate_params(
-        as_dict(config.get("thresholds_calibration")),
+        as_config_section(
+            config.get("thresholds_calibration"),
+            "exit_pricing.thresholds_calibration",
+            logger,
+        ),
         logger,
         "exit_pricing.thresholds_calibration",
         _EXIT_THRESHOLDS_CALIBRATION_SPECS,
@@ -1354,9 +1366,8 @@ _STOPLOSS_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_custom_protections_config(
-    config: dict[str, Any], logger: Logger
-) -> dict[str, Any]:
+def get_custom_protections_config(config: Any, logger: Logger) -> dict[str, Any]:
+    config = as_config_section(config, "custom_protections", logger)
     validated = _validate_params(
         config,
         logger,
@@ -1365,21 +1376,27 @@ def get_custom_protections_config(
         DEFAULTS_CUSTOM_PROTECTIONS,
     )
     validated["cooldown"] = _validate_params(
-        as_dict(config.get("cooldown")),
+        as_config_section(
+            config.get("cooldown"), "custom_protections.cooldown", logger
+        ),
         logger,
         "custom_protections.cooldown",
         _COOLDOWN_PROTECTION_SPECS,
         DEFAULTS_COOLDOWN_PROTECTION,
     )
     validated["drawdown"] = _validate_params(
-        as_dict(config.get("drawdown")),
+        as_config_section(
+            config.get("drawdown"), "custom_protections.drawdown", logger
+        ),
         logger,
         "custom_protections.drawdown",
         _DRAWDOWN_PROTECTION_SPECS,
         DEFAULTS_DRAWDOWN_PROTECTION,
     )
     validated["stoploss"] = _validate_params(
-        as_dict(config.get("stoploss")),
+        as_config_section(
+            config.get("stoploss"), "custom_protections.stoploss", logger
+        ),
         logger,
         "custom_protections.stoploss",
         _STOPLOSS_PROTECTION_SPECS,

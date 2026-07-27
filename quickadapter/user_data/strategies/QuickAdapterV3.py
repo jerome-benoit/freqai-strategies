@@ -39,6 +39,7 @@ from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
     as_dict,
+    DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -180,6 +181,10 @@ class QuickAdapterV3(IStrategy):
         "t_decl_a": 0.675,
     }
 
+    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = (
+        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION
+    )
+
     position_adjustment_enable = True
 
     # {stage: (natr_multiplier_fraction, stake_percent, color)}
@@ -217,9 +222,9 @@ class QuickAdapterV3(IStrategy):
     # strict `remaining < min_exit_stake` guard.
     _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
 
+    # FreqAI is crashing if minimal_roi is a property
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
-    # FreqAI is crashing if minimal_roi is a property
     process_only_new_candles = True
 
     def __init__(self, config: dict[str, Any], *args, **kwargs) -> None:
@@ -282,7 +287,7 @@ class QuickAdapterV3(IStrategy):
             as_dict(self.config.get("freqai")), logger
         )
         protections = get_custom_protections_config(
-            as_dict(self.config.get("custom_protections")), logger
+            self.config.get("custom_protections"), logger
         )
         trade_duration_candles = protections["trade_duration_candles"]
         lookback_period_fraction = protections["lookback_period_fraction"]
