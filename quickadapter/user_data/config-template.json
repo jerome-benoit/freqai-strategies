@@ -88,7 +88,7 @@
     "conv_width": 1,
     "purge_old_models": 2,
     "expiration_hours": 24,
-    "train_period_days": 60,
+    "train_period_days": 21,
     // "live_retrain_hours": 1,
     "backtest_period_days": 2,
     "write_metrics_to_disk": false,
@@ -171,7 +171,8 @@
       "n_trials": 100,
       "timeout": 7200,
       "label_candles_step": 1,
-      "storage": "file"
+      "storage": "file",
+      "vary_model_seed_by_trial": true
     },
     "extra_returns_per_train": {
       "DI_value_param1": 0,
@@ -182,7 +183,7 @@
       "&s-extrema_maxima_threshold": 2,
       "label_period_candles": 18,
       "label_natr_multiplier": 10.5,
-      "hp_rmse": -1
+      "holdout_rmse": -1
     },
     "feature_parameters": {
       "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],

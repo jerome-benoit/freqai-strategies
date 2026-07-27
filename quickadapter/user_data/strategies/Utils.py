@@ -21,6 +21,7 @@ from typing import (
     TypeVar,
     assert_never,
     cast,
+    get_args,
 )
 
 import numpy as np
@@ -306,6 +307,26 @@ def safe_log_ratio(
     return _safe_numeric_result(np.asarray(result, dtype=float), numerator, denominator)
 
 
+def _is_finite_value(value: Any) -> bool:
+    # np.isfinite raises/returns non-scalar on inputs it cannot reduce to a
+    # single finite float64 (Python ints >= 2**64 -> TypeError/OverflowError;
+    # array-likes -> a ValueError on bool()); treat all of those as non-finite.
+    try:
+        return bool(np.isfinite(value))
+    except (TypeError, OverflowError, ValueError):
+        return False
+
+
+def is_finite_number(value: Any) -> bool:
+    # Reject bool (int(True) == 1) and non-numeric (str/object) before the
+    # finiteness check.
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float, np.integer, np.floating))
+        and _is_finite_value(value)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _EnumValidator:
     valid_values: tuple[str, ...]
@@ -328,7 +349,7 @@ class _NumericValidator:
     def __call__(self, value: Any) -> bool:
         if self.require_int and not isinstance(value, int):
             return False
-        if not isinstance(value, (int, float)) or not np.isfinite(value):
+        if not isinstance(value, (int, float)) or not _is_finite_value(value):
             return False
         if self.min_value is not None:
             if self.min_exclusive and value <= self.min_value:
@@ -365,7 +386,7 @@ class _RangeValidator:
     def __call__(self, value: Any) -> bool:
         if not isinstance(value, (list, tuple)) or len(value) != 2:
             return False
-        if not all(isinstance(x, (int, float)) and np.isfinite(x) for x in value):
+        if not all(isinstance(x, (int, float)) and _is_finite_value(x) for x in value):
             return False
         if value[0] >= value[1]:
             return False
@@ -534,6 +555,7 @@ EXTREMA_WEIGHT_SMOOTHED_COLUMN: Final[str] = "extrema_weight_smoothed"
 
 _LABEL_WEIGHT_SUFFIX: Final[str] = "_weight"
 _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_known_at_lookahead"
+_LABEL_WEIGHT_KNOWN_AT_LOOKAHEAD_SUFFIX: Final[str] = "_weight_known_at_lookahead"
 
 LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 
@@ -582,6 +604,11 @@ def label_weight_column_name(label_col: str) -> str:
 def label_known_at_lookahead_column_name(label_col: str) -> str:
     """Return the lookahead column name for ``label_col`` (see ``LabelData.known_at_lookahead``)."""
     return _label_aux_column_name(label_col, _LABEL_KNOWN_AT_LOOKAHEAD_SUFFIX)
+
+
+def label_weight_known_at_lookahead_column_name(label_col: str) -> str:
+    """Return the weight-availability lookahead column name for ``label_col``."""
+    return _label_aux_column_name(label_col, _LABEL_WEIGHT_KNOWN_AT_LOOKAHEAD_SUFFIX)
 
 
 @dataclass
@@ -706,50 +733,34 @@ def _generate_extrema_label(
 ) -> LabelData:
     natr_period = params.get("natr_period", 14)
     natr_multiplier = params.get("natr_multiplier", 9.0)
-    label_horizon_candles = get_label_horizon_candles(params, logger)
-
-    (
-        pivots_indices,
-        _,
-        pivots_directions,
-        pivots_amplitudes,
-        pivots_amplitude_threshold_ratios,
-        pivots_volume_rates,
-        pivots_speeds,
-        pivots_efficiency_ratios,
-        pivots_volume_weighted_efficiency_ratios,
-    ) = zigzag(
+    result = _zigzag(
         dataframe,
         natr_period=natr_period,
         natr_multiplier=natr_multiplier,
     )
 
     series = pd.Series(0.0, index=dataframe.index)
-    if pivots_indices:
-        series.loc[pivots_indices] = pivots_directions
+    if result.indices:
+        series.loc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
-        "amplitude": pivots_amplitudes,
-        "amplitude_threshold_ratio": pivots_amplitude_threshold_ratios,
-        "volume_rate": pivots_volume_rates,
-        "speed": pivots_speeds,
-        "efficiency_ratio": pivots_efficiency_ratios,
-        "volume_weighted_efficiency_ratio": pivots_volume_weighted_efficiency_ratios,
+        "amplitude": result.amplitudes,
+        "amplitude_threshold_ratio": result.amplitude_threshold_ratios,
+        "volume_rate": result.volume_rates,
+        "speed": result.speeds,
+        "efficiency_ratio": result.efficiency_ratios,
+        "volume_weighted_efficiency_ratio": result.volume_weighted_efficiency_ratios,
     }
 
-    # Per-row label lookahead (in candles), NOT an absolute position:
-    # freqtrade's ``dk.slice_dataframe`` runs AFTER ``set_freqai_targets``,
-    # so any pre-slice absolute position would no longer match the causal
-    # guard's local ``np.arange(len(unfiltered_df))`` coordinate system.
     known_at_lookahead = pd.Series(
-        int(label_horizon_candles),
+        result.known_at_positions - np.arange(len(dataframe), dtype=np.int64),
         index=dataframe.index,
         dtype=np.int64,
     )
 
     return LabelData(
         series=series,
-        indices=pivots_indices,
+        indices=result.indices,
         metrics=metrics,
         known_at_lookahead=known_at_lookahead,
     )
@@ -786,6 +797,14 @@ assert SMOOTHING_KERNELS == (
 )
 
 
+def _filtfilt_default_padlen(
+    numerator_length: int,
+    denominator_length: int,
+) -> int:
+    """Return SciPy's default ``filtfilt`` pad length."""
+    return 3 * max(numerator_length, denominator_length)
+
+
 def get_smoothing_kernel_half_width(
     config: dict[str, Any],
     *,
@@ -808,8 +827,7 @@ def get_smoothing_kernel_half_width(
     ``int(4.0 * sigma + 0.5)`` (scipy's ``round`` form). Returns 0 for
     ``method == "none"``, for ``series_length < max(window_candles, 3)``
     (``smooth()`` top-level no-op), and for the filtfilt/savgol routes
-    when ``series_length < effective_window`` (downstream short-series
-    no-op in ``zero_phase_filter`` / ``savgol_filter``).
+    when their downstream short-series guards make smoothing a no-op.
     """
     method = config.get("method", SMOOTHING_METHODS[0])
     if method == SMOOTHING_METHODS[0]:  # "none"
@@ -833,14 +851,70 @@ def get_smoothing_kernel_half_width(
         effective_window = get_even_window(raw_window)
     else:
         effective_window = get_odd_window(raw_window)
-    # ``zero_phase_filter`` / ``savgol_filter`` short-series gate
-    if (
-        method in SMOOTHING_KERNELS or method == SMOOTHING_METHODS[7]
-    ) and series_length < effective_window:
-        return 0
     if method in SMOOTHING_KERNELS:
+        if series_length <= _filtfilt_default_padlen(effective_window, 1):
+            return 0
         return effective_window - 1
+    if method == SMOOTHING_METHODS[7] and series_length < effective_window:
+        return 0
     return effective_window // 2
+
+
+def _sanitize_known_at_lookahead(
+    known_at_lookahead: pd.Series,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Row positions and non-finite-guarded int64 lookahead values.
+
+    Non-finite lookahead casts to garbage int64 (silent, with a RuntimeWarning)
+    and a spurious ``0`` reads as "available now", keeping a row whose
+    availability is actually unknown. Map non-finite so its known_at position is
+    ``n`` (maximally unavailable) and such rows are always purged near a boundary.
+    """
+    n = len(known_at_lookahead)
+    positions = np.arange(n, dtype=np.int64)
+    raw = known_at_lookahead.to_numpy(dtype=float)
+    if n and not np.isfinite(raw).all():
+        raw = np.where(np.isfinite(raw), raw, (n - positions).astype(float))
+    return positions, raw.astype(np.int64)
+
+
+def compose_label_lookahead(
+    known_at_lookahead: pd.Series,
+    kernel_half_width: int,
+) -> pd.Series:
+    """Compose row-wise label availability with a centered smoothing kernel.
+
+    Values within the current frame's right kernel boundary stay unavailable
+    until enough future rows exist to provide the complete smoothing window.
+    """
+    if known_at_lookahead.empty:
+        return known_at_lookahead.copy()
+    n = len(known_at_lookahead)
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if kernel_half_width <= 0:
+        return pd.Series(
+            known_at_lookahead_values,
+            index=known_at_lookahead.index,
+            dtype=np.int64,
+        )
+    known_at_positions = pd.Series(
+        positions + known_at_lookahead_values,
+        index=known_at_lookahead.index,
+    )
+    smoothed_known_at_positions = known_at_positions.rolling(
+        window=2 * kernel_half_width + 1,
+        center=True,
+        min_periods=1,
+    ).max()
+    right_edge_start = max(0, n - kernel_half_width)
+    smoothed_known_at_positions.iloc[right_edge_start:] = n
+    return pd.Series(
+        smoothed_known_at_positions.to_numpy(dtype=np.int64) - positions,
+        index=known_at_lookahead.index,
+        dtype=np.int64,
+    )
 
 
 TradePriceTarget = Literal[
@@ -856,6 +930,19 @@ TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
+
+DEFAULT_MIN_LABEL_PERIOD_CANDLES: Final[int] = 12
+DEFAULT_MAX_LABEL_PERIOD_CANDLES: Final[int] = 24
+DEFAULT_MIN_LABEL_NATR_MULTIPLIER: Final[float] = 9.0
+DEFAULT_MAX_LABEL_NATR_MULTIPLIER: Final[float] = 12.0
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
+    return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
@@ -1124,6 +1211,84 @@ def get_label_prediction_config(
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_prediction", config, logger)
+
+
+DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
+    "trade_price_target_method": TRADE_PRICE_TARGETS[0],  # "moving_average"
+}
+
+_EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
+    "trade_price_target_method": _ParamSpec(
+        _EnumValidator(TRADE_PRICE_TARGETS), output_type=str
+    ),
+}
+
+
+def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
+    return _validate_params(
+        config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
+    )
+
+
+DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
+    "lookback_period_candles": 0,
+    "decay_fraction": 0.5,
+    "min_natr_multiplier_fraction": 0.0095,
+    "max_natr_multiplier_fraction": 0.0125,
+}
+
+# Scalars only: the coupled (min, max) natr pair needs validate_range's
+# cross-field ordering and per-component fallback, which _validate_params
+# cannot express.
+_REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
+    "lookback_period_candles": _ParamSpec(
+        _NumericValidator(min_value=0, require_int=True), output_type=int
+    ),
+    "decay_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+
+def get_reversal_confirmation_config(
+    config: dict[str, Any], logger: Logger
+) -> dict[str, int | float]:
+    validated = _validate_params(
+        config,
+        logger,
+        "reversal_confirmation",
+        _REVERSAL_CONFIRMATION_SCALAR_SPECS,
+        {
+            key: DEFAULTS_REVERSAL_CONFIRMATION[key]
+            for key in _REVERSAL_CONFIRMATION_SCALAR_SPECS
+        },
+    )
+
+    min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
+        config.get(
+            "min_natr_multiplier_fraction",
+            DEFAULTS_REVERSAL_CONFIRMATION["min_natr_multiplier_fraction"],
+        ),
+        config.get(
+            "max_natr_multiplier_fraction",
+            DEFAULTS_REVERSAL_CONFIRMATION["max_natr_multiplier_fraction"],
+        ),
+        logger,
+        name="natr_multiplier_fraction",
+        default_min=DEFAULTS_REVERSAL_CONFIRMATION["min_natr_multiplier_fraction"],
+        default_max=DEFAULTS_REVERSAL_CONFIRMATION["max_natr_multiplier_fraction"],
+        allow_equal=False,
+        non_negative=True,
+        finite_only=True,
+    )
+
+    return {
+        "lookback_period_candles": int(validated["lookback_period_candles"]),
+        "decay_fraction": float(validated["decay_fraction"]),
+        "min_natr_multiplier_fraction": float(min_natr_multiplier_fraction),
+        "max_natr_multiplier_fraction": float(max_natr_multiplier_fraction),
+    }
 
 
 _CAUSAL_MODE_FALSE_WARNED: bool = False
@@ -1588,14 +1753,14 @@ def zero_phase_filter(
     if len(series) < window:
         return series
 
-    values = series.to_numpy(dtype=float)
-    if values.size <= 1:
-        return series
-
     b = _calculate_coeffs(window=window, win_type=win_type, std=std, beta=beta)
     a = np.array([1.0], dtype=float)
+    padlen = _filtfilt_default_padlen(len(b), len(a))
+    if len(series) <= padlen:
+        return series
 
-    filtered_values = sp.signal.filtfilt(b, a, values)
+    values = series.to_numpy(dtype=float)
+    filtered_values = sp.signal.filtfilt(b, a, values, padlen=padlen)
     return pd.Series(filtered_values, index=series.index)
 
 
@@ -1976,7 +2141,7 @@ def _aggregate_metrics(
         return np.sum(stacked_metrics * combined_weights, axis=0)
     else:
         raise ValueError(
-            f"Invalid aggregation value {aggregation!r}: supported values are {', '.join(COMBINED_AGGREGATIONS)}"
+            enum_error_message("aggregation", aggregation, COMBINED_AGGREGATIONS)
         )
 
 
@@ -2181,6 +2346,99 @@ def compute_label_weights(
     )
 
 
+# k for the weight-fill availability band: rows within k*fill_sigma_candles of a
+# pivot receive its Gaussian bump. Material radius (bump > 1% of pivot peak) is
+# sqrt(2*ln(100))=3.0349 sigma; k=4 -> tail exp(-8)=3.4e-4, ~30x below 1% with a
+# margin robust to sigma rounding (k=3 under-covers for larger sigma).
+_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
+
+
+def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
+    """Row radius over which a pivot's Gaussian-fill weight is causally shared.
+
+    Zero unless the off-pivot fill spreads a pivot's weight into neighbors
+    (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
+    per-pivot sigma (including ``knn``, which clips below it), so
+    ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
+    support. The additive epsilon floor is a global O(fill_epsilon) term, left
+    unconstrained (negligible).
+    """
+    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
+    if label_weighting["fill_method"] not in (
+        FILL_METHODS[2],  # "gaussian"
+        FILL_METHODS[3],  # "epsilon_gaussian"
+    ):
+        return 0
+    return math.ceil(
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER
+        * float(label_weighting["fill_sigma_candles"])
+    )
+
+
+def compute_label_weight_known_at_lookahead(
+    known_at_lookahead: pd.Series,
+    indices: Sequence[int] | NDArray[np.integer],
+    fill_radius: int = 0,
+) -> pd.Series:
+    """Per-row causal availability (in candles) of the label WEIGHT column.
+
+    A pivot's swing metric (its weight source) is backfilled from the adjacent
+    closing pivot, so it only becomes computable at the next pivot's
+    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]``, one pivot
+    later than the pivot's own label availability ``i_k``. The trailing pivot has
+    no closing swing (weight 0 via ``_impute_weights``, so it never resolves
+    in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
+    their label availability, EXCEPT that a Gaussian fill spreads each pivot's
+    weight over a local band ``[idx-fill_radius, idx+fill_radius]``
+    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
+    never a global max (a global bound forces ``n`` on all rows -> total train
+    purge). Folded via ``max(label, weight)`` by the causal purge.
+
+    The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
+    ``knn`` with ``fill_bandwidth_neighbors=1`` (a pivot sigma then depends only
+    on already-confirmed adjacent pivots), up to each pivot's material Gaussian
+    support (the tail beyond ``fill_radius`` is immaterial by design, see
+    ``weight_fill_radius``). Under ``knn`` with ``fill_bandwidth_neighbors>=2`` a
+    pivot sigma can depend on a k-th nearest neighbor confirmed after ``i_{k+1}``,
+    making ``i_{k+1}`` a lower bound. This understates the band availability only
+    when that neighbor also lies outside ``fill_radius``, which requires
+    ``fill_bandwidth_alpha < 0.25`` (otherwise ``fill_radius = ceil(4 *
+    fill_sigma_candles)`` covers it and the neighbor's own later availability
+    dominates the ``max`` fold): the understatement is nil at the default
+    ``fill_bandwidth_alpha=0.5`` and can otherwise reach a large fraction of the
+    peak weight on the affected rows. Prefer ``fill_bandwidth='fixed'``,
+    ``fill_bandwidth_neighbors=1``, or ``fill_bandwidth_alpha>=0.25`` for
+    exactness.
+    """
+    n = len(known_at_lookahead)
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if n == 0:
+        return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
+    known_at_positions = positions + known_at_lookahead_values
+    idx = np.asarray(indices, dtype=int)
+    idx = np.sort(idx[(idx >= 0) & (idx < n)])
+    base = known_at_positions.copy()
+    if idx.size:
+        avail_pivot = np.empty(idx.size, dtype=np.int64)
+        avail_pivot[:-1] = known_at_positions[idx[1:]]
+        avail_pivot[-1] = n
+        base[idx] = np.maximum(base[idx], avail_pivot)
+        if fill_radius > 0:
+            for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
+                # Skip any pivot whose weight never resolves in-frame (sentinel
+                # availability == n): its Gaussian bump is 0, so it contributes
+                # to no row (on real _zigzag output only the trailing pivot).
+                if pivot_avail >= n:
+                    continue
+                lo = max(0, pivot_pos - fill_radius)
+                hi = min(n, pivot_pos + fill_radius + 1)
+                np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
+    base = np.clip(base, positions, n)
+    return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
+
+
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
         raise ValueError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
@@ -2313,33 +2571,6 @@ def _(value: str, ctx: _FormatContext, depth: int) -> str:
     return escaped
 
 
-def _format_collection(
-    value: list | tuple | set,
-    ctx: _FormatContext,
-    depth: int,
-    brackets: tuple[str, str],
-    empty: str,
-    trailing_comma: bool = False,
-) -> str:
-    if not value:
-        return empty
-    obj_id = id(value)
-    if obj_id in ctx.seen:
-        return f"{brackets[0]}<circular>{brackets[1]}"
-    if depth >= _MAX_DEPTH:
-        return f"{brackets[0]}...{brackets[1]}"
-    ctx.seen.add(obj_id)
-    items_iter = sorted(value, key=str) if isinstance(value, set) else value
-    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
-    if len(value) > _MAX_ITEMS:
-        items.append(f"...+{len(value) - _MAX_ITEMS}")
-    content = ", ".join(items)
-    if trailing_comma and len(value) == 1 and len(items) == 1:
-        content += ","
-    ctx.seen.discard(obj_id)
-    return f"{brackets[0]}{content}{brackets[1]}"
-
-
 @_format_value.register(list)
 def _(value: list, ctx: _FormatContext, depth: int) -> str:
     return _format_collection(value, ctx, depth, ("[", "]"), "[]")
@@ -2379,6 +2610,33 @@ def _(value: dict, ctx: _FormatContext, depth: int) -> str:
 @_format_value.register(np.ndarray)
 def _(value: np.ndarray, ctx: _FormatContext, depth: int) -> str:
     return f"array{value.shape}"
+
+
+def _format_collection(
+    value: list | tuple | set,
+    ctx: _FormatContext,
+    depth: int,
+    brackets: tuple[str, str],
+    empty: str,
+    trailing_comma: bool = False,
+) -> str:
+    if not value:
+        return empty
+    obj_id = id(value)
+    if obj_id in ctx.seen:
+        return f"{brackets[0]}<circular>{brackets[1]}"
+    if depth >= _MAX_DEPTH:
+        return f"{brackets[0]}...{brackets[1]}"
+    ctx.seen.add(obj_id)
+    items_iter = sorted(value, key=str) if isinstance(value, set) else value
+    items = [_format_value(v, ctx, depth + 1) for v in list(items_iter)[:_MAX_ITEMS]]
+    if len(value) > _MAX_ITEMS:
+        items.append(f"...+{len(value) - _MAX_ITEMS}")
+    content = ", ".join(items)
+    if trailing_comma and len(value) == 1 and len(items) == 1:
+        content += ","
+    ctx.seen.discard(obj_id)
+    return f"{brackets[0]}{content}{brackets[1]}"
 
 
 def format_dict(
@@ -2789,14 +3047,7 @@ class TrendDirection(IntEnum):
     DOWN = -1
 
 
-def zigzag(
-    df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
-    normalize: bool = False,
-    *,
-    logger: Logger | None = None,
-) -> tuple[
+ZigzagTuple = tuple[
     list[int],
     list[float],
     list[TrendDirection],
@@ -2806,22 +3057,66 @@ def zigzag(
     list[float],
     list[float],
     list[float],
-]:
-    n = len(df)
-    if df.empty or n < natr_period:
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ZigzagResult:
+    indices: list[int]
+    values_log: list[float]
+    directions: list[TrendDirection]
+    amplitudes: list[float]
+    amplitude_threshold_ratios: list[float]
+    volume_rates: list[float]
+    speeds: list[float]
+    efficiency_ratios: list[float]
+    volume_weighted_efficiency_ratios: list[float]
+    known_at_positions: NDArray[np.integer]
+
+    def as_tuple(self) -> ZigzagTuple:
+        """Return the stable public tuple representation."""
         return (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
+            self.indices,
+            self.values_log,
+            self.directions,
+            self.amplitudes,
+            self.amplitude_threshold_ratios,
+            self.volume_rates,
+            self.speeds,
+            self.efficiency_ratios,
+            self.volume_weighted_efficiency_ratios,
         )
 
-    natr_values = (ta.NATR(df, timeperiod=natr_period).bfill() / 100.0).to_numpy()
+
+def _zigzag(
+    df: pd.DataFrame,
+    natr_period: int = 14,
+    natr_multiplier: float = 9.0,
+    normalize: bool = False,
+    *,
+    logger: Logger | None = None,
+) -> ZigzagResult:
+    n = len(df)
+    if df.empty or n < natr_period:
+        return ZigzagResult(
+            indices=[],
+            values_log=[],
+            directions=[],
+            amplitudes=[],
+            amplitude_threshold_ratios=[],
+            volume_rates=[],
+            speeds=[],
+            efficiency_ratios=[],
+            volume_weighted_efficiency_ratios=[],
+            known_at_positions=np.full(n, n, dtype=np.int64),
+        )
+
+    natr = ta.NATR(df, timeperiod=natr_period) / 100.0
+    finite_natr_positions = np.flatnonzero(np.isfinite(natr.to_numpy(dtype=float)))
+    natr_warmup_end_pos = (
+        int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
+    )
+    natr_values = natr.bfill().to_numpy()
 
     indices: list[int] = df.index.tolist()
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
@@ -2862,6 +3157,9 @@ def zigzag(
     pivots_speeds: list[float] = []
     pivots_efficiency_ratios: list[float] = []
     pivots_volume_weighted_efficiency_ratios: list[float] = []
+    known_at_positions: NDArray[np.integer] = np.full(n, n, dtype=np.int64)
+    last_resolved_pos = -1
+    latest_confirmation_pos = -1
     last_pivot_pos: int = -1
 
     candidate_pivot_pos: int = -1
@@ -3068,11 +3366,38 @@ def zigzag(
 
         return vw_net_move / vw_path_length
 
-    def add_pivot(pos: int, value_log: float, direction: TrendDirection):
-        nonlocal last_pivot_pos
+    def add_pivot(
+        pos: int,
+        value_log: float,
+        direction: TrendDirection,
+        confirmed_at_pos: int,
+        resolve_through_pos: int,
+    ) -> None:
+        nonlocal last_pivot_pos, last_resolved_pos, latest_confirmation_pos
+        # Monotonic confirmation watermark: a pivot replayed after the initial
+        # orientation (scan restarts at initial_pivot_pos+1, before the
+        # orientation confirmation candle i) must not claim availability earlier
+        # than i, since its label depends on that orientation. Fold the latest
+        # confirmation seen so far so known_at never understates it.
+        confirmed_at_pos = max(
+            confirmed_at_pos,
+            resolve_through_pos,
+            natr_warmup_end_pos,
+            latest_confirmation_pos,
+        )
+        latest_confirmation_pos = confirmed_at_pos
+        known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = (
+            confirmed_at_pos
+        )
+        last_resolved_pos = max(last_resolved_pos, resolve_through_pos)
         if pivots_indices and indices[pos] == pivots_indices[-1]:
             return
 
+        # These swing metrics are backfilled onto the previous pivot from the
+        # adjacent closing pivot, confirmed at this pivot's known_at. The weight
+        # is therefore causally available one pivot later than its label;
+        # compute_label_weight_known_at_lookahead derives that lag so the causal
+        # purge masks weights on max(label, weight) availability.
         if (
             pivots_values_log
             and last_pivot_pos >= 0
@@ -3217,33 +3542,58 @@ def zigzag(
         )
         if is_initial_high_move_significant and is_initial_low_move_significant:
             if initial_move_from_high > initial_move_from_low:
-                add_pivot(initial_high_pos, initial_high_log, TrendDirection.UP)
+                add_pivot(
+                    initial_high_pos,
+                    initial_high_log,
+                    TrendDirection.UP,
+                    i,
+                    initial_high_pos,
+                )
                 state = TrendDirection.DOWN
                 break
             else:
-                add_pivot(initial_low_pos, initial_low_log, TrendDirection.DOWN)
+                add_pivot(
+                    initial_low_pos,
+                    initial_low_log,
+                    TrendDirection.DOWN,
+                    i,
+                    initial_low_pos,
+                )
                 state = TrendDirection.UP
                 break
         else:
             if is_initial_high_move_significant:
-                add_pivot(initial_high_pos, initial_high_log, TrendDirection.UP)
+                add_pivot(
+                    initial_high_pos,
+                    initial_high_log,
+                    TrendDirection.UP,
+                    i,
+                    initial_high_pos,
+                )
                 state = TrendDirection.DOWN
                 break
             elif is_initial_low_move_significant:
-                add_pivot(initial_low_pos, initial_low_log, TrendDirection.DOWN)
+                add_pivot(
+                    initial_low_pos,
+                    initial_low_log,
+                    TrendDirection.DOWN,
+                    i,
+                    initial_low_pos,
+                )
                 state = TrendDirection.UP
                 break
     else:
-        return (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
+        return ZigzagResult(
+            indices=[],
+            values_log=[],
+            directions=[],
+            amplitudes=[],
+            amplitude_threshold_ratios=[],
+            volume_rates=[],
+            speeds=[],
+            efficiency_ratios=[],
+            volume_weighted_efficiency_ratios=[],
+            known_at_positions=known_at_positions,
         )
 
     for i in range(last_pivot_pos + 1, n):
@@ -3261,6 +3611,8 @@ def zigzag(
                     candidate_pivot_pos,
                     highs_log[candidate_pivot_pos],
                     TrendDirection.UP,
+                    i,
+                    i,
                 )
                 state = TrendDirection.DOWN
 
@@ -3278,44 +3630,128 @@ def zigzag(
                     candidate_pivot_pos,
                     lows_log[candidate_pivot_pos],
                     TrendDirection.DOWN,
+                    i,
+                    i,
                 )
                 state = TrendDirection.UP
 
-    if normalize:
-        return (
-            pivots_indices,
-            pivots_values_log,
-            pivots_directions,
-            minmax_scale(pivots_amplitudes),
-            minmax_scale(pivots_amplitude_threshold_ratios),
-            minmax_scale(pivots_volume_rates),
-            minmax_scale(pivots_speeds),
-            pivots_efficiency_ratios,
-            pivots_volume_weighted_efficiency_ratios,
-        )
-    return (
-        pivots_indices,
-        pivots_values_log,
-        pivots_directions,
-        pivots_amplitudes,
-        pivots_amplitude_threshold_ratios,
-        pivots_volume_rates,
-        pivots_speeds,
-        pivots_efficiency_ratios,
-        pivots_volume_weighted_efficiency_ratios,
+    return ZigzagResult(
+        indices=pivots_indices,
+        values_log=pivots_values_log,
+        directions=pivots_directions,
+        amplitudes=(
+            minmax_scale(pivots_amplitudes) if normalize else pivots_amplitudes
+        ),
+        amplitude_threshold_ratios=(
+            minmax_scale(pivots_amplitude_threshold_ratios)
+            if normalize
+            else pivots_amplitude_threshold_ratios
+        ),
+        volume_rates=(
+            minmax_scale(pivots_volume_rates) if normalize else pivots_volume_rates
+        ),
+        speeds=minmax_scale(pivots_speeds) if normalize else pivots_speeds,
+        efficiency_ratios=pivots_efficiency_ratios,
+        volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
+        known_at_positions=known_at_positions,
     )
+
+
+def zigzag(
+    df: pd.DataFrame,
+    natr_period: int = 14,
+    natr_multiplier: float = 9.0,
+    normalize: bool = False,
+    *,
+    logger: Logger | None = None,
+) -> ZigzagTuple:
+    """Return Zigzag outputs while preserving the existing public API."""
+    return _zigzag(
+        df,
+        natr_period=natr_period,
+        natr_multiplier=natr_multiplier,
+        normalize=normalize,
+        logger=logger,
+    ).as_tuple()
 
 
 Regressor = Literal[
     "xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"
 ]
-REGRESSORS: Final[tuple[Regressor, ...]] = (
-    "xgboost",
-    "lightgbm",
-    "histgradientboostingregressor",
-    "ngboost",
-    "catboost",
-)
+
+
+class RegressorSpec(NamedTuple):
+    name: Regressor
+    iteration_param: str
+    iteration_aliases: frozenset[str]
+    seed_param: str
+
+
+# Per-regressor metadata single source: the canonical boosting-iteration
+# parameter, all of its synonyms (the refit must set exactly one, else CatBoost
+# aborts on duplicate iteration aliases), and the RNG seed parameter name.
+class _RegressorSpecs(NamedTuple):
+    xgboost: RegressorSpec = RegressorSpec(
+        "xgboost",
+        "n_estimators",
+        frozenset({"n_estimators", "num_boost_round"}),
+        "random_state",
+    )
+    lightgbm: RegressorSpec = RegressorSpec(
+        "lightgbm",
+        "n_estimators",
+        frozenset(
+            {
+                "n_estimators",
+                "num_iterations",
+                "num_iteration",
+                "num_boost_round",
+                "num_round",
+                "num_rounds",
+                "nrounds",
+                "num_tree",
+                "num_trees",
+                "max_iter",
+                "n_iter",
+            }
+        ),
+        "seed",
+    )
+    histgradientboostingregressor: RegressorSpec = RegressorSpec(
+        "histgradientboostingregressor",
+        "max_iter",
+        frozenset({"max_iter"}),
+        "random_state",
+    )
+    ngboost: RegressorSpec = RegressorSpec(
+        "ngboost",
+        "n_estimators",
+        frozenset({"n_estimators"}),
+        "random_state",
+    )
+    catboost: RegressorSpec = RegressorSpec(
+        "catboost",
+        "iterations",
+        frozenset({"iterations", "n_estimators", "num_boost_round", "num_trees"}),
+        "random_seed",
+    )
+
+
+_REGRESSOR_SPECS: Final[_RegressorSpecs] = _RegressorSpecs()
+_REGRESSOR_SPEC_BY_NAME: Final[dict[Regressor, RegressorSpec]] = {
+    spec.name: spec for spec in _REGRESSOR_SPECS
+}
+REGRESSORS: Final[tuple[Regressor, ...]] = tuple(spec.name for spec in _REGRESSOR_SPECS)
+DEFAULT_REGRESSOR: Final[Regressor] = _REGRESSOR_SPECS.xgboost.name
+
+if set(_REGRESSOR_SPEC_BY_NAME) != set(get_args(Regressor)):
+    raise RuntimeError(
+        "_REGRESSOR_SPECS must define a spec for every Regressor literal member"
+    )
+if any(spec.iteration_param not in spec.iteration_aliases for spec in _REGRESSOR_SPECS):
+    raise RuntimeError(
+        "each RegressorSpec.iteration_param must be listed in its iteration_aliases"
+    )
 
 RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
@@ -3369,6 +3805,77 @@ def get_ngboost_dist(dist_name: str) -> type:
     return dist_map[dist_name]
 
 
+def get_refit_model_training_parameters(
+    regressor: Regressor,
+    model: Any,
+    model_training_parameters: dict[str, Any],
+    init_model: Any = None,
+) -> dict[str, Any]:
+    """Return parameters that preserve the selected model capacity for refit."""
+    refit_parameters = copy.deepcopy(model_training_parameters)
+
+    if regressor == _REGRESSOR_SPECS.xgboost.name:
+        fitted_iterations = int(model.get_booster().num_boosted_rounds())
+        initial_iterations = (
+            int(init_model.get_booster().num_boosted_rounds())
+            if init_model is not None
+            else 0
+        )
+    elif regressor == _REGRESSOR_SPECS.lightgbm.name:
+        best_iteration = getattr(model, "best_iteration_", 0) or 0
+        fitted_iterations = int(
+            best_iteration if best_iteration > 0 else model.n_estimators_
+        )
+        initial_iterations = (
+            int(init_model.booster_.current_iteration())
+            if init_model is not None
+            else 0
+        )
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
+        fitted_iterations = int(model.n_iter_)
+        initial_iterations = 0
+        refit_parameters["early_stopping"] = False
+    elif regressor == _REGRESSOR_SPECS.ngboost.name:
+        fitted_iterations = len(model.base_models)
+        initial_iterations = 0
+    elif regressor == _REGRESSOR_SPECS.catboost.name:
+        fitted_iterations = int(model.tree_count_)
+        initial_iterations = 0
+    else:
+        raise ValueError(
+            f"Invalid regressor value {regressor!r}: "
+            f"supported values are {', '.join(REGRESSORS)}"
+        )
+
+    spec = _REGRESSOR_SPEC_BY_NAME[regressor]
+    # best_iteration is combined-indexed under current xgboost/lightgbm, so
+    # fitted >= initial + 1 always holds; clamp defensively so a degenerate
+    # non-improving continual-learning refit degrades gracefully instead of
+    # raising and killing the whole training window.
+    refit_iterations = max(fitted_iterations - initial_iterations, 1)
+    for alias in spec.iteration_aliases:
+        refit_parameters.pop(alias, None)
+    refit_parameters[spec.iteration_param] = refit_iterations
+    return refit_parameters
+
+
+def _pop_early_stopping_rounds(
+    model_training_parameters: dict[str, Any], has_eval_set: bool
+) -> int | None:
+    if has_eval_set:
+        return model_training_parameters.pop(
+            "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
+        )
+    model_training_parameters.pop("early_stopping_rounds", None)
+    return None
+
+
+def _apply_verbosity_alias(model_training_parameters: dict[str, Any]) -> None:
+    verbosity = model_training_parameters.pop("verbosity", None)
+    if "verbose" not in model_training_parameters and verbosity is not None:
+        model_training_parameters["verbose"] = verbosity
+
+
 def fit_regressor(
     regressor: Regressor,
     X: pd.DataFrame,
@@ -3381,6 +3888,7 @@ def fit_regressor(
     callbacks: list[RegressorCallback] | None = None,
     model_path: Path | None = None,
     trial: optuna.trial.Trial | None = None,
+    vary_model_seed_by_trial: bool = True,
 ) -> Any:
     fit_callbacks = list(callbacks) if callbacks else []
 
@@ -3394,19 +3902,25 @@ def fit_regressor(
         eval_set = None
         eval_weights = None
 
-    if regressor == REGRESSORS[0]:  # "xgboost"
+    spec = _REGRESSOR_SPEC_BY_NAME.get(regressor)
+    if spec is None:
+        raise ValueError(
+            f"Invalid regressor value {regressor!r}: "
+            f"supported values are {', '.join(REGRESSORS)}"
+        )
+    model_training_parameters.setdefault(spec.seed_param, 1)
+    if trial is not None and vary_model_seed_by_trial:
+        model_training_parameters[spec.seed_param] = (
+            model_training_parameters[spec.seed_param] + trial.number
+        )
+
+    if regressor == _REGRESSOR_SPECS.xgboost.name:
         from xgboost import XGBRegressor
         from xgboost.callback import EarlyStopping
 
-        model_training_parameters.setdefault("random_state", 1)
-
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
         if early_stopping_rounds is not None:
             fit_callbacks.append(
@@ -3418,16 +3932,10 @@ def fit_regressor(
                 )
             )
 
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
+        if trial is not None and has_eval_set:
+            fit_callbacks.append(
+                optuna.integration.XGBoostPruningCallback(trial, "validation_0-rmse")
             )
-            if has_eval_set:
-                fit_callbacks.append(
-                    optuna.integration.XGBoostPruningCallback(
-                        trial, "validation_0-rmse"
-                    )
-                )
 
         model = XGBRegressor(
             objective="reg:squarederror",
@@ -3443,18 +3951,12 @@ def fit_regressor(
             sample_weight_eval_set=eval_weights,
             xgb_model=init_model,
         )
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
+    elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         from lightgbm import LGBMRegressor, early_stopping
 
-        model_training_parameters.setdefault("seed", 1)
-
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
         if early_stopping_rounds is not None:
             fit_callbacks.append(
@@ -3465,16 +3967,12 @@ def fit_regressor(
                 )
             )
 
-        if trial is not None:
-            model_training_parameters["seed"] = (
-                model_training_parameters["seed"] + trial.number
-            )
-            if has_eval_set:
-                fit_callbacks.append(
-                    optuna.integration.LightGBMPruningCallback(
-                        trial, "rmse", valid_name="valid_0"
-                    )
+        if trial is not None and has_eval_set:
+            fit_callbacks.append(
+                optuna.integration.LightGBMPruningCallback(
+                    trial, "rmse", valid_name="valid_0"
                 )
+            )
 
         model = LGBMRegressor(objective="regression", **model_training_parameters)
         model.fit(
@@ -3487,12 +3985,11 @@ def fit_regressor(
             init_model=init_model,
             callbacks=fit_callbacks if fit_callbacks else None,
         )
-    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
         from sklearn.ensemble import HistGradientBoostingRegressor
 
-        model_training_parameters.setdefault("random_state", 1)
         model_training_parameters.setdefault("loss", "squared_error")
-        model_training_parameters.pop("early_stopping", None)
+        early_stopping = model_training_parameters.pop("early_stopping", True)
         model_training_parameters.pop("n_jobs", None)
         model_training_parameters.pop("l2_regularization_zero", None)
 
@@ -3507,14 +4004,7 @@ def fit_regressor(
                     _EARLY_STOPPING_ROUNDS_DEFAULT
                 )
 
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
-
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
+        _apply_verbosity_alias(model_training_parameters)
 
         X_val = None
         y_val = None
@@ -3527,7 +4017,7 @@ def fit_regressor(
             sample_weight_val = eval_weights[0]
 
         model = HistGradientBoostingRegressor(
-            early_stopping=True,
+            early_stopping=early_stopping,
             scoring="neg_root_mean_squared_error",
             **model_training_parameters,
         )
@@ -3539,30 +4029,17 @@ def fit_regressor(
             y_val=y_val,
             sample_weight_val=sample_weight_val,
         )
-    elif regressor == REGRESSORS[3]:  # "ngboost"
+    elif regressor == _REGRESSOR_SPECS.ngboost.name:
         from ngboost import NGBRegressor
         from sklearn.tree import DecisionTreeRegressor
 
-        model_training_parameters.setdefault("random_state", 1)
-
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
+        _apply_verbosity_alias(model_training_parameters)
 
         model_training_parameters.pop("n_jobs", None)
 
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
-
-        if trial is not None:
-            model_training_parameters["random_state"] = (
-                model_training_parameters["random_state"] + trial.number
-            )
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
         dist = model_training_parameters.pop("dist", "lognormal")
 
@@ -3582,6 +4059,7 @@ def fit_regressor(
                 max_depth=model_training_parameters.pop("max_depth", None),
                 min_samples_split=model_training_parameters.pop("min_samples_split", 2),
                 min_samples_leaf=model_training_parameters.pop("min_samples_leaf", 1),
+                random_state=model_training_parameters["random_state"],
             ),
             **model_training_parameters,
         )
@@ -3595,10 +4073,9 @@ def fit_regressor(
             val_sample_weight=val_sample_weight,
             early_stopping_rounds=early_stopping_rounds,
         )
-    elif regressor == REGRESSORS[4]:  # "catboost"
+    elif regressor == _REGRESSOR_SPECS.catboost.name:
         from catboost import CatBoostRegressor, Pool
 
-        model_training_parameters.setdefault("random_seed", 1)
         model_training_parameters.setdefault("loss_function", "RMSE")
 
         if model_path is not None and "train_dir" not in model_training_parameters:
@@ -3627,22 +4104,11 @@ def fit_regressor(
                 model_training_parameters.setdefault("thread_count", n_jobs)
             model_training_parameters.setdefault("max_ctr_complexity", 2)
 
-        early_stopping_rounds = None
-        if has_eval_set:
-            early_stopping_rounds = model_training_parameters.pop(
-                "early_stopping_rounds", _EARLY_STOPPING_ROUNDS_DEFAULT
-            )
-        else:
-            model_training_parameters.pop("early_stopping_rounds", None)
+        early_stopping_rounds = _pop_early_stopping_rounds(
+            model_training_parameters, has_eval_set
+        )
 
-        verbosity = model_training_parameters.pop("verbosity", None)
-        if "verbose" not in model_training_parameters and verbosity is not None:
-            model_training_parameters["verbose"] = verbosity
-
-        if trial is not None:
-            model_training_parameters["random_seed"] = (
-                model_training_parameters["random_seed"] + trial.number
-            )
+        _apply_verbosity_alias(model_training_parameters)
 
         pruning_callback = None
         if trial is not None and has_eval_set and task_type != "GPU":
@@ -3674,9 +4140,7 @@ def fit_regressor(
         if pruning_callback is not None:
             pruning_callback.check_pruned()
     else:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
     return model
 
 
@@ -3858,12 +4322,7 @@ def _validate_optuna_label_best_params(
                 f"label_period_candles={label_period_candles!r} (must be int >= 1)"
             )
         return None
-    if (
-        isinstance(label_natr_multiplier, bool)
-        or not isinstance(label_natr_multiplier, (int, float, np.integer, np.floating))
-        or not np.isfinite(label_natr_multiplier)
-        or label_natr_multiplier <= 0
-    ):
+    if not is_finite_number(label_natr_multiplier) or label_natr_multiplier <= 0:
         if logger is not None:
             logger.warning(
                 f"[{pair}] Ignoring Optuna label best params: invalid "
@@ -3951,9 +4410,7 @@ def get_optuna_study_model_parameters(
     space_fraction: float,
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
     if not isinstance(space_fraction, (int, float)) or not (
         0.0 <= space_fraction <= 1.0
     ):
@@ -4000,7 +4457,7 @@ def get_optuna_study_model_parameters(
                     ranges[param] = (param_min, param_max)
         return ranges
 
-    if regressor == REGRESSORS[0]:  # "xgboost"
+    if regressor == _REGRESSOR_SPECS.xgboost.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
         #                  sampling -> regularization -> binning
         default_ranges: dict[str, tuple[float, float]] = {
@@ -4124,7 +4581,7 @@ def get_optuna_study_model_parameters(
 
         return params
 
-    elif regressor == REGRESSORS[1]:  # "lightgbm"
+    elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
         #                  sampling -> regularization -> binning
         default_ranges: dict[str, tuple[float, float]] = {
@@ -4231,7 +4688,7 @@ def get_optuna_study_model_parameters(
 
         return params
 
-    elif regressor == REGRESSORS[2]:  # "histgradientboostingregressor"
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
         #                  sampling -> regularization -> binning -> early stopping
         default_ranges: dict[str, tuple[float, float]] = {
@@ -4335,7 +4792,7 @@ def get_optuna_study_model_parameters(
             ),
         }
 
-    elif regressor == REGRESSORS[3]:  # "ngboost"
+    elif regressor == _REGRESSOR_SPECS.ngboost.name:
         # Parameter order: boosting -> tree structure -> sampling -> early stopping -> distribution
         default_ranges: dict[str, tuple[float, float]] = {
             # Boosting/Training
@@ -4402,7 +4859,7 @@ def get_optuna_study_model_parameters(
             "dist": trial.suggest_categorical("dist", ["normal", "lognormal"]),
         }
 
-    elif regressor == REGRESSORS[4]:  # "catboost"
+    elif regressor == _REGRESSOR_SPECS.catboost.name:
         # Parameter order: boosting -> tree structure -> regularization -> sampling
         task_type = model_training_parameters.get("task_type", "CPU")
         loss_function = model_training_parameters.get("loss_function", "RMSE")
@@ -4562,9 +5019,7 @@ def get_optuna_study_model_parameters(
 
         return params
     else:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
 
 @lru_cache(maxsize=128)
@@ -4669,6 +5124,13 @@ def get_min_max_label_period_candles(
     return low, high, candles_step
 
 
+def _validate_step_args(value: float | int, step: int) -> None:
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
+    if not isinstance(step, int) or step <= 0:
+        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+
+
 @lru_cache(maxsize=128)
 def round_to_step(value: float | int, step: int) -> int:
     """
@@ -4678,10 +5140,7 @@ def round_to_step(value: float | int, step: int) -> int:
     :return: The rounded value.
     :raises ValueError: If step is not a positive integer or value is not finite.
     """
-    if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+    _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
         q, r = divmod(value, step)
         twice_r = r * 2
@@ -4697,10 +5156,7 @@ def round_to_step(value: float | int, step: int) -> int:
 
 @lru_cache(maxsize=128)
 def ceil_to_step(value: float | int, step: int) -> int:
-    if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+    _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
         return int(-(-int(value) // step) * step)
     if not np.isfinite(value):
@@ -4710,10 +5166,7 @@ def ceil_to_step(value: float | int, step: int) -> int:
 
 @lru_cache(maxsize=128)
 def floor_to_step(value: float | int, step: int) -> int:
-    if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
-        raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
+    _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
         return int((int(value) // step) * step)
     if not np.isfinite(value):
@@ -4762,7 +5215,7 @@ def validate_range(
         if (
             not isinstance(value, (int, float))
             or isinstance(value, bool)
-            or (finite_only and not np.isfinite(value))
+            or (finite_only and not _is_finite_value(value))
             or (non_negative and value < 0)
         ):
             logger.warning(
@@ -4799,10 +5252,10 @@ def get_label_defaults(
     feature_parameters: dict[str, Any],
     logger: Logger,
     *,
-    default_min_label_period_candles: int = 12,
-    default_max_label_period_candles: int = 24,
-    default_min_label_natr_multiplier: float = 9.0,
-    default_max_label_natr_multiplier: float = 12.0,
+    default_min_label_period_candles: int = DEFAULT_MIN_LABEL_PERIOD_CANDLES,
+    default_max_label_period_candles: int = DEFAULT_MAX_LABEL_PERIOD_CANDLES,
+    default_min_label_natr_multiplier: float = DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
+    default_max_label_natr_multiplier: float = DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
 ) -> tuple[int, float]:
     min_label_natr_multiplier = feature_parameters.get(
         "min_label_natr_multiplier", default_min_label_natr_multiplier

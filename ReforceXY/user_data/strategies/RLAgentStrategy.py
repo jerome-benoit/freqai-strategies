@@ -73,8 +73,7 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_expand_basic(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        # TODO [BREAKING]: Rename %-close_pct_change -> %-close_log_return
-        dataframe["%-close_pct_change"] = np.log(dataframe.get("close")).diff()
+        dataframe["%-close_log_return"] = np.log(dataframe.get("close")).diff()
         dataframe["%-raw_volume"] = dataframe.get("volume")
 
         return dataframe
