@@ -131,6 +131,8 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
+    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
     _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(
         _TRADE_DIRECTIONS
     )
@@ -138,15 +140,13 @@ class QuickAdapterV3(IStrategy):
         "direct",
         "inverse",
     )
+    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
+    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
-    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
-    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
     _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]
     _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]
     _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
-    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
-    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
     _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]
     _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]
     _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
