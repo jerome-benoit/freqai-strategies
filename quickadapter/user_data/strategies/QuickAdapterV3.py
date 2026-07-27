@@ -38,7 +38,6 @@ from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
-    as_dict,
     DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
@@ -284,7 +283,7 @@ class QuickAdapterV3(IStrategy):
     @property
     def protections(self) -> list[dict[str, Any]]:
         fit_live_predictions_candles = get_fit_live_predictions_candles(
-            as_dict(self.config.get("freqai")), logger
+            self.config.get("freqai"), logger
         )
         protections = get_custom_protections_config(
             self.config.get("custom_protections"), logger
@@ -355,9 +354,7 @@ class QuickAdapterV3(IStrategy):
     @property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
-        return get_fit_live_predictions_candles(
-            as_dict(self.config.get("freqai")), logger
-        )
+        return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
 
     @property
     def max_open_trades_per_side(self) -> int:
@@ -374,25 +371,25 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
         return get_label_weighting_config(
-            as_dict(self.freqai_info.get("label_weighting")), logger
+            self.freqai_info.get("label_weighting"), logger
         )
 
     @cached_property
     def label_smoothing(self) -> dict[str, Any]:
         return get_label_smoothing_config(
-            as_dict(self.freqai_info.get("label_smoothing")), logger
+            self.freqai_info.get("label_smoothing"), logger
         )
 
     @cached_property
     def trade_price_target_method(self) -> str:
-        return get_exit_pricing_config(
-            as_dict(self.config.get("exit_pricing")), logger
-        )["trade_price_target_method"]
+        return get_exit_pricing_config(self.config.get("exit_pricing"), logger)[
+            "trade_price_target_method"
+        ]
 
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         return get_reversal_confirmation_config(
-            as_dict(self.config.get("reversal_confirmation")), logger
+            self.config.get("reversal_confirmation"), logger
         )
 
     @cached_property
@@ -491,7 +488,9 @@ class QuickAdapterV3(IStrategy):
             )
         self._exit_thresholds_calibration: dict[str, float] = (
             get_exit_thresholds_calibration_config(
-                as_dict(self.config.get("exit_pricing")), logger
+                self.config.get("exit_pricing"),
+                logger,
+                self.default_exit_thresholds_calibration,
             )
         )
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}

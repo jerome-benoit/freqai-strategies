@@ -67,7 +67,6 @@ from LabelTransformer import (
 )
 
 from Utils import (
-    as_dict,
     enum_error_message,
     DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
@@ -92,6 +91,7 @@ from Utils import (
     format_dict,
     format_number,
     get_causal_mode,
+    get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_pipeline_config,
@@ -1387,19 +1387,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
         return get_label_weighting_config(
-            as_dict(self.freqai_info.get("label_weighting")), logger
+            self.freqai_info.get("label_weighting"), logger
         )
 
     @cached_property
     def label_pipeline(self) -> dict[str, Any]:
-        return get_label_pipeline_config(
-            as_dict(self.freqai_info.get("label_pipeline")), logger
-        )
+        return get_label_pipeline_config(self.freqai_info.get("label_pipeline"), logger)
 
     @cached_property
     def label_prediction(self) -> dict[str, Any]:
         return get_label_prediction_config(
-            as_dict(self.freqai_info.get("label_prediction")), logger
+            self.freqai_info.get("label_prediction"), logger
         )
 
     @cached_property
@@ -1433,6 +1431,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         migrate_config(self.config, logger)
+        self._fit_live_predictions_candles: int = get_fit_live_predictions_candles(
+            self.freqai_info, logger
+        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1639,7 +1640,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         logger.info("Label Hyperparameters:")
         logger.info(
-            f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
+            f"  fit_live_predictions_candles: {self._fit_live_predictions_candles}"
         )
         if self._optuna_hyperopt:
             logger.info(
@@ -2967,10 +2968,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         warmed_up = True
 
-        fit_live_predictions_candles = self.freqai_info.get(
-            "fit_live_predictions_candles",
-            QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT,
-        )
+        fit_live_predictions_candles = self._fit_live_predictions_candles
 
         if self._optuna_hyperopt:
             self.optuna_throttle_callback(

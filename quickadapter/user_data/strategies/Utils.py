@@ -1217,7 +1217,7 @@ def _label_kind_validator(kind: str) -> ValidateParamsFn:
 
 def get_label_kind_config(
     kind: str,
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     if kind not in _LABEL_KIND_REGISTRY:
@@ -1225,6 +1225,7 @@ def get_label_kind_config(
             f"Unknown label kind {kind!r}: supported values are "
             f"{', '.join(_LABEL_KIND_REGISTRY)}"
         )
+    config = as_config_section(config, kind, logger)
     _, defaults, cross_field_validator = _LABEL_KIND_REGISTRY[kind]
     validated = _get_label_config(
         config, logger, kind, _label_kind_validator(kind), defaults
@@ -1279,9 +1280,13 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
+def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
     return _validate_params(
-        config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
+        as_config_section(config, "exit_pricing", logger),
+        logger,
+        "exit_pricing",
+        _EXIT_PRICING_SPECS,
+        DEFAULTS_EXIT_PRICING,
     )
 
 
@@ -1300,8 +1305,16 @@ _EXIT_THRESHOLDS_CALIBRATION_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_exit_thresholds_calibration_config(
-    config: dict[str, Any], logger: Logger
+    config: Any,
+    logger: Logger,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, float]:
+    # exit_pricing parent coerced silently: the mapping warning is owned by
+    # get_exit_pricing_config, so warning here too would double-warn.
+    config = as_dict(config)
+    # overrides layer over canonical defaults (user config still wins in
+    # _validate_params); merging over DEFAULTS keeps every spec key present.
+    defaults = {**DEFAULTS_EXIT_THRESHOLDS_CALIBRATION, **(overrides or {})}
     return _validate_params(
         as_config_section(
             config.get("thresholds_calibration"),
@@ -1311,7 +1324,7 @@ def get_exit_thresholds_calibration_config(
         logger,
         "exit_pricing.thresholds_calibration",
         _EXIT_THRESHOLDS_CALIBRATION_SPECS,
-        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
+        defaults,
     )
 
 
@@ -1412,9 +1425,9 @@ _FIT_LIVE_PREDICTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_fit_live_predictions_candles(config: dict[str, Any], logger: Logger) -> int:
+def get_fit_live_predictions_candles(config: Any, logger: Logger) -> int:
     return _validate_params(
-        config,
+        as_config_section(config, "freqai", logger),
         logger,
         "freqai",
         _FIT_LIVE_PREDICTIONS_SPECS,
@@ -1444,8 +1457,9 @@ _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_reversal_confirmation_config(
-    config: dict[str, Any], logger: Logger
+    config: Any, logger: Logger
 ) -> dict[str, int | float]:
+    config = as_config_section(config, "reversal_confirmation", logger)
     validated = _validate_params(
         config,
         logger,
