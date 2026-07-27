@@ -64,6 +64,7 @@ from Utils import (
     get_causal_mode,
     get_distance,
     get_exit_pricing_config,
+    get_exit_thresholds_calibration_config,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_smoothing_config,
@@ -176,10 +177,6 @@ class QuickAdapterV3(IStrategy):
     default_exit_thresholds: ClassVar[dict[str, float]] = {
         "t_decl_v": 0.675,
         "t_decl_a": 0.675,
-    }
-
-    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
-        "decline_quantile": 0.5,
     }
 
     position_adjustment_enable = True
@@ -504,10 +501,16 @@ class QuickAdapterV3(IStrategy):
                 f"{self._pnl_momentum_window_size} candles "
                 f"(~{velocity_span_minutes} min velocity span)."
             )
-        self._exit_thresholds_calibration: dict[str, float] = {
-            **QuickAdapterV3.default_exit_thresholds_calibration,
-            **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
-        }
+        self._exit_thresholds_calibration: dict[str, float] = (
+            get_exit_thresholds_calibration_config(
+                as_dict(
+                    as_dict(self.config.get("exit_pricing")).get(
+                        "thresholds_calibration"
+                    )
+                ),
+                logger,
+            )
+        )
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
         self._cached_df_signature: dict[str, DfSignature] = {}
@@ -2456,7 +2459,12 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs: Any,
     ) -> float:
-        return min(self.config.get("leverage", proposed_leverage), max_leverage)
+        configured_leverage = self.config.get("leverage", proposed_leverage)
+        if not isinstance(configured_leverage, (int, float)) or isinstance(
+            configured_leverage, bool
+        ):
+            configured_leverage = proposed_leverage
+        return float(max(1.0, min(configured_leverage, max_leverage)))
 
     def plot_annotations(
         self,

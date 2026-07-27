@@ -1260,6 +1260,32 @@ def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str,
     )
 
 
+DEFAULTS_EXIT_THRESHOLDS_CALIBRATION: Final[dict[str, Any]] = {
+    "decline_quantile": 0.5,
+}
+
+_EXIT_THRESHOLDS_CALIBRATION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "decline_quantile": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+}
+
+
+def get_exit_thresholds_calibration_config(
+    config: dict[str, Any], logger: Logger
+) -> dict[str, float]:
+    return _validate_params(
+        config,
+        logger,
+        "exit_pricing.thresholds_calibration",
+        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
+        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
+    )
+
+
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
     "lookback_period_candles": 0,
     "decay_fraction": 0.5,
