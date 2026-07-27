@@ -816,6 +816,14 @@ assert SMOOTHING_KERNELS == (
 )
 
 
+def _filtfilt_default_padlen(
+    numerator_length: int,
+    denominator_length: int,
+) -> int:
+    """Return SciPy's default ``filtfilt`` pad length."""
+    return 3 * max(numerator_length, denominator_length)
+
+
 def get_smoothing_kernel_half_width(
     config: dict[str, Any],
     *,
@@ -838,8 +846,7 @@ def get_smoothing_kernel_half_width(
     ``int(4.0 * sigma + 0.5)`` (scipy's ``round`` form). Returns 0 for
     ``method == "none"``, for ``series_length < max(window_candles, 3)``
     (``smooth()`` top-level no-op), and for the filtfilt/savgol routes
-    when ``series_length < effective_window`` (downstream short-series
-    no-op in ``zero_phase_filter`` / ``savgol_filter``).
+    when their downstream short-series guards make smoothing a no-op.
     """
     method = config.get("method", SMOOTHING_METHODS[0])
     if method == SMOOTHING_METHODS[0]:  # "none"
@@ -863,13 +870,12 @@ def get_smoothing_kernel_half_width(
         effective_window = get_even_window(raw_window)
     else:
         effective_window = get_odd_window(raw_window)
-    # ``zero_phase_filter`` / ``savgol_filter`` short-series gate
-    if (
-        method in SMOOTHING_KERNELS or method == SMOOTHING_METHODS[7]
-    ) and series_length < effective_window:
-        return 0
     if method in SMOOTHING_KERNELS:
+        if series_length <= _filtfilt_default_padlen(effective_window, 1):
+            return 0
         return effective_window - 1
+    if method == SMOOTHING_METHODS[7] and series_length < effective_window:
+        return 0
     return effective_window // 2
 
 
@@ -1487,6 +1493,7 @@ def get_reversal_confirmation_config(
         allow_equal=False,
         non_negative=True,
         finite_only=True,
+        max_value=1,
     )
 
     return {
@@ -1959,14 +1966,14 @@ def zero_phase_filter(
     if len(series) < window:
         return series
 
-    values = series.to_numpy(dtype=float)
-    if values.size <= 1:
-        return series
-
     b = _calculate_coeffs(window=window, win_type=win_type, std=std, beta=beta)
     a = np.array([1.0], dtype=float)
+    padlen = _filtfilt_default_padlen(len(b), len(a))
+    if len(series) <= padlen:
+        return series
 
-    filtered_values = sp.signal.filtfilt(b, a, values)
+    values = series.to_numpy(dtype=float)
+    filtered_values = sp.signal.filtfilt(b, a, values, padlen=padlen)
     return pd.Series(filtered_values, index=series.index)
 
 
@@ -5391,6 +5398,7 @@ def validate_range(
     allow_equal: bool = False,
     non_negative: bool = True,
     finite_only: bool = True,
+    max_value: float | int | None = None,
 ) -> tuple[float | int, float | int]:
     min_name = f"min_{name}"
     max_name = f"max_{name}"
@@ -5407,6 +5415,11 @@ def validate_range(
             f"Invalid {name}: defaults ordering must have min < max, "
             f"got min={default_min!r}, max={default_max!r}"
         )
+    if max_value is not None and (default_min > max_value or default_max > max_value):
+        raise ValueError(
+            f"Invalid {name}: defaults must be <= {max_value!r}, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
 
     def _validate_component(
         value: float | int | None, name: str, default_value: float | int
@@ -5417,12 +5430,15 @@ def validate_range(
         if non_negative:
             constraints.append("non-negative")
         constraints.append("numeric")
+        if max_value is not None:
+            constraints.append(f"<= {max_value}")
         constraint_str = " ".join(constraints)
         if (
             not isinstance(value, (int, float))
             or isinstance(value, bool)
             or (finite_only and not _is_finite_value(value))
             or (non_negative and value < 0)
+            or (max_value is not None and value > max_value)
         ):
             logger.warning(
                 f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"

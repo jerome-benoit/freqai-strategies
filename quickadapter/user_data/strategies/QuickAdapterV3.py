@@ -14,7 +14,6 @@ from typing import (
     Optional,
     Sequence,
     TypedDict,
-    TypeVar,
 )
 
 import numpy as np
@@ -100,7 +99,6 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
-_PairCacheT = TypeVar("_PairCacheT", bound=dict)
 
 
 class _TradeHistory(TypedDict):
@@ -136,6 +134,8 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
+    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
     _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(
         _TRADE_DIRECTIONS
     )
@@ -143,15 +143,13 @@ class QuickAdapterV3(IStrategy):
         "direct",
         "inverse",
     )
+    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
+    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
-    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
-    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
     _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]
     _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]
     _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
-    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
-    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
     _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]
     _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]
     _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
@@ -880,7 +878,13 @@ class QuickAdapterV3(IStrategy):
 
     def set_label_period_candles(self, pair: str, label_period_candles: Any) -> None:
         if is_finite_number(label_period_candles) and int(label_period_candles) > 0:
-            self._label_params[pair]["label_period_candles"] = int(label_period_candles)
+            label_period_candles = int(label_period_candles)
+            if (
+                self._label_params[pair].get("label_period_candles")
+                != label_period_candles
+            ):
+                self._label_params[pair]["label_period_candles"] = label_period_candles
+                self._invalidate_pair_caches(pair)
 
     def get_label_horizon_candles(self, pair: str) -> int:
         period = self.get_label_period_candles(pair)
@@ -917,9 +921,15 @@ class QuickAdapterV3(IStrategy):
             is_finite_number(label_natr_multiplier)
             and float(label_natr_multiplier) > 0.0
         ):
-            self._label_params[pair]["label_natr_multiplier"] = float(
-                label_natr_multiplier
-            )
+            label_natr_multiplier = float(label_natr_multiplier)
+            if (
+                self._label_params[pair].get("label_natr_multiplier")
+                != label_natr_multiplier
+            ):
+                self._label_params[pair]["label_natr_multiplier"] = (
+                    label_natr_multiplier
+                )
+                self._invalidate_pair_caches(pair)
 
     def get_label_natr_multiplier_fraction(
         self,
@@ -1746,13 +1756,20 @@ class QuickAdapterV3(IStrategy):
             idx = length + idx
         return min(max(0, idx), length - 1)
 
-    def _invalidate_pair_cache(
-        self, cache: _PairCacheT, pair: str, df_signature: DfSignature
-    ) -> _PairCacheT:
-        if self._cached_df_signature.get(pair) != df_signature:
-            cache = type(cache)({k: v for k, v in cache.items() if k[0] != pair})
-            self._cached_df_signature[pair] = df_signature
-        return cache
+    def _invalidate_pair_caches(
+        self, pair: str, df_signature: Optional[DfSignature] = None
+    ) -> None:
+        if df_signature is None or self._cached_df_signature.get(pair) != df_signature:
+            self._candle_deviation_cache = {
+                k: v for k, v in self._candle_deviation_cache.items() if k[0] != pair
+            }
+            self._candle_threshold_cache = {
+                k: v for k, v in self._candle_threshold_cache.items() if k[0] != pair
+            }
+            if df_signature is None:
+                self._cached_df_signature.pop(pair, None)
+            else:
+                self._cached_df_signature[pair] = df_signature
 
     def _calculate_candle_deviation(
         self,
@@ -1765,9 +1782,7 @@ class QuickAdapterV3(IStrategy):
         quantile_exponent: float = 1.5,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
-        self._candle_deviation_cache = self._invalidate_pair_cache(
-            self._candle_deviation_cache, pair, df_signature
-        )
+        self._invalidate_pair_caches(pair, df_signature)
         cache_key: CandleDeviationCacheKey = (
             pair,
             df_signature,
@@ -1835,9 +1850,7 @@ class QuickAdapterV3(IStrategy):
         candle_idx: int = -1,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
-        self._candle_threshold_cache = self._invalidate_pair_cache(
-            self._candle_threshold_cache, pair, df_signature
-        )
+        self._invalidate_pair_caches(pair, df_signature)
         cache_key: CandleThresholdCacheKey = (
             pair,
             df_signature,
