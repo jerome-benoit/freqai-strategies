@@ -63,6 +63,7 @@ from Utils import (
     get_callable_sha256,
     get_causal_mode,
     get_distance,
+    get_custom_protections_config,
     get_exit_pricing_config,
     get_exit_thresholds_calibration_config,
     get_label_defaults,
@@ -296,18 +297,18 @@ class QuickAdapterV3(IStrategy):
                 "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
             )
         )
-        protections = self.config.get("custom_protections", {})
-        trade_duration_candles = int(protections.get("trade_duration_candles", 72))
-        lookback_period_fraction = float(
-            protections.get("lookback_period_fraction", 0.5)
+        protections = get_custom_protections_config(
+            as_dict(self.config.get("custom_protections")), logger
         )
+        trade_duration_candles = protections["trade_duration_candles"]
+        lookback_period_fraction = protections["lookback_period_fraction"]
 
         lookback_period_candles = max(
             1, int(round(fit_live_predictions_candles * lookback_period_fraction))
         )
 
-        cooldown = protections.get("cooldown", {})
-        cooldown_stop_duration_candles = int(cooldown.get("stop_duration_candles", 4))
+        cooldown = protections["cooldown"]
+        cooldown_stop_duration_candles = cooldown["stop_duration_candles"]
         stoploss_stop_duration_candles = max(
             cooldown_stop_duration_candles, trade_duration_candles
         )
@@ -326,7 +327,7 @@ class QuickAdapterV3(IStrategy):
 
         protections_list = []
 
-        if cooldown.get("enabled", True):
+        if cooldown["enabled"]:
             protections_list.append(
                 {
                     "method": "CooldownPeriod",
@@ -334,22 +335,20 @@ class QuickAdapterV3(IStrategy):
                 }
             )
 
-        drawdown = protections.get("drawdown", {})
-        if drawdown.get("enabled", True):
+        drawdown = protections["drawdown"]
+        if drawdown["enabled"]:
             protections_list.append(
                 {
                     "method": "MaxDrawdown",
                     "lookback_period_candles": lookback_period_candles,
                     "trade_limit": 2 * max_open_trades,
                     "stop_duration_candles": drawdown_stop_duration_candles,
-                    "max_allowed_drawdown": float(
-                        drawdown.get("max_allowed_drawdown", 0.2)
-                    ),
+                    "max_allowed_drawdown": drawdown["max_allowed_drawdown"],
                 }
             )
 
-        stoploss = protections.get("stoploss", {})
-        if stoploss.get("enabled", True):
+        stoploss = protections["stoploss"]
+        if stoploss["enabled"]:
             protections_list.append(
                 {
                     "method": "StoplossGuard",

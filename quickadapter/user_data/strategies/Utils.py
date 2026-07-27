@@ -415,7 +415,22 @@ class _DictValidator:
         return "must be a mapping"
 
 
-_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator
+@dataclass(frozen=True, slots=True)
+class _BoolValidator:
+    def __call__(self, value: Any) -> bool:
+        return isinstance(value, bool)
+
+    def message(self, param: str) -> str:
+        return "must be a boolean"
+
+
+_Validator = (
+    _EnumValidator
+    | _NumericValidator
+    | _RangeValidator
+    | _DictValidator
+    | _BoolValidator
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1284,6 +1299,91 @@ def get_exit_thresholds_calibration_config(
         _EXIT_THRESHOLDS_CALIBRATION_SPECS,
         DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
     )
+
+
+DEFAULTS_CUSTOM_PROTECTIONS: Final[dict[str, Any]] = {
+    "trade_duration_candles": 72,
+    "lookback_period_fraction": 0.5,
+}
+
+DEFAULTS_COOLDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "stop_duration_candles": 4,
+}
+
+DEFAULTS_DRAWDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "max_allowed_drawdown": 0.2,
+}
+
+DEFAULTS_STOPLOSS_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+}
+
+_CUSTOM_PROTECTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "trade_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "lookback_period_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+_COOLDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "stop_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+_DRAWDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "max_allowed_drawdown": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+}
+
+_STOPLOSS_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+}
+
+
+def get_custom_protections_config(
+    config: dict[str, Any], logger: Logger
+) -> dict[str, Any]:
+    validated = _validate_params(
+        config,
+        logger,
+        "custom_protections",
+        _CUSTOM_PROTECTIONS_SPECS,
+        DEFAULTS_CUSTOM_PROTECTIONS,
+    )
+    validated["cooldown"] = _validate_params(
+        as_dict(config.get("cooldown")),
+        logger,
+        "custom_protections.cooldown",
+        _COOLDOWN_PROTECTION_SPECS,
+        DEFAULTS_COOLDOWN_PROTECTION,
+    )
+    validated["drawdown"] = _validate_params(
+        as_dict(config.get("drawdown")),
+        logger,
+        "custom_protections.drawdown",
+        _DRAWDOWN_PROTECTION_SPECS,
+        DEFAULTS_DRAWDOWN_PROTECTION,
+    )
+    validated["stoploss"] = _validate_params(
+        as_dict(config.get("stoploss")),
+        logger,
+        "custom_protections.stoploss",
+        _STOPLOSS_PROTECTION_SPECS,
+        DEFAULTS_STOPLOSS_PROTECTION,
+    )
+    return validated
 
 
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
