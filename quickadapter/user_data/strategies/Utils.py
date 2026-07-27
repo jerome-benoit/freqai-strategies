@@ -1281,6 +1281,7 @@ def get_reversal_confirmation_config(
         allow_equal=False,
         non_negative=True,
         finite_only=True,
+        max_value=1,
     )
 
     return {
@@ -5185,6 +5186,7 @@ def validate_range(
     allow_equal: bool = False,
     non_negative: bool = True,
     finite_only: bool = True,
+    max_value: float | int | None = None,
 ) -> tuple[float | int, float | int]:
     min_name = f"min_{name}"
     max_name = f"max_{name}"
@@ -5201,6 +5203,11 @@ def validate_range(
             f"Invalid {name}: defaults ordering must have min < max, "
             f"got min={default_min!r}, max={default_max!r}"
         )
+    if max_value is not None and (default_min > max_value or default_max > max_value):
+        raise ValueError(
+            f"Invalid {name}: defaults must be <= {max_value!r}, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
 
     def _validate_component(
         value: float | int | None, name: str, default_value: float | int
@@ -5211,12 +5218,15 @@ def validate_range(
         if non_negative:
             constraints.append("non-negative")
         constraints.append("numeric")
+        if max_value is not None:
+            constraints.append(f"<= {max_value}")
         constraint_str = " ".join(constraints)
         if (
             not isinstance(value, (int, float))
             or isinstance(value, bool)
             or (finite_only and not _is_finite_value(value))
             or (non_negative and value < 0)
+            or (max_value is not None and value > max_value)
         ):
             logger.warning(
                 f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
