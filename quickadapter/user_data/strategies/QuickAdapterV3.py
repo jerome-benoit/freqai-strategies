@@ -40,7 +40,6 @@ from technical.pivots_points import pivots_points
 from Utils import (
     as_dict,
     _OPTUNA_NAMESPACES,
-    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
     EXTREMA_DIRECTION_SMOOTHED_COLUMN,
@@ -66,6 +65,7 @@ from Utils import (
     get_custom_protections_config,
     get_exit_pricing_config,
     get_exit_thresholds_calibration_config,
+    get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_smoothing_config,
@@ -292,10 +292,8 @@ class QuickAdapterV3(IStrategy):
 
     @property
     def protections(self) -> list[dict[str, Any]]:
-        fit_live_predictions_candles = int(
-            self.config.get("freqai", {}).get(
-                "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-            )
+        fit_live_predictions_candles = get_fit_live_predictions_candles(
+            as_dict(self.config.get("freqai")), logger
         )
         protections = get_custom_protections_config(
             as_dict(self.config.get("custom_protections")), logger
@@ -366,8 +364,8 @@ class QuickAdapterV3(IStrategy):
     @property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
-        return self.config.get("freqai", {}).get(
-            "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
+        return get_fit_live_predictions_candles(
+            as_dict(self.config.get("freqai")), logger
         )
 
     @property

@@ -1386,6 +1386,23 @@ def get_custom_protections_config(
     return validated
 
 
+_FIT_LIVE_PREDICTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "fit_live_predictions_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+
+def get_fit_live_predictions_candles(config: dict[str, Any], logger: Logger) -> int:
+    return _validate_params(
+        config,
+        logger,
+        "freqai",
+        _FIT_LIVE_PREDICTIONS_SPECS,
+        {"fit_live_predictions_candles": DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES},
+    )["fit_live_predictions_candles"]
+
+
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
     "lookback_period_candles": 0,
     "decay_fraction": 0.5,
