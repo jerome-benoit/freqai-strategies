@@ -279,10 +279,12 @@ class QuickAdapterV3(IStrategy):
         }
 
     @cached_property
+    def _fit_live_predictions_candles(self) -> int:
+        return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
+
+    @cached_property
     def protections(self) -> list[dict[str, Any]]:
-        fit_live_predictions_candles = get_fit_live_predictions_candles(
-            self.config.get("freqai"), logger
-        )
+        fit_live_predictions_candles = self._fit_live_predictions_candles
         protections = get_custom_protections_config(
             self.config.get("custom_protections"), logger
         )
@@ -352,7 +354,7 @@ class QuickAdapterV3(IStrategy):
     @property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
-        return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
+        return self._fit_live_predictions_candles
 
     @property
     def max_open_trades_per_side(self) -> int:
@@ -2448,9 +2450,9 @@ class QuickAdapterV3(IStrategy):
         leverage = self.config.get("leverage")
         if leverage is None:
             return None
-        if not isinstance(leverage, (int, float)) or isinstance(leverage, bool):
+        if not is_finite_number(leverage):
             logger.warning(
-                f"Invalid leverage value {leverage!r}: must be a number, "
+                f"Invalid leverage value {leverage!r}: must be a finite number, "
                 "using proposed_leverage"
             )
             return None
