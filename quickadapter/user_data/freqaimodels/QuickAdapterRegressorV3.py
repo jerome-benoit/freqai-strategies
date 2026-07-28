@@ -752,6 +752,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         # removal is not monotone on support (pivot_equivalent_count/ESS use a
         # max-relative threshold), so dropping this gate would change the
         # raise/fallback outcome on some splits, not merely dedupe a warning.
+        # That same non-monotonicity makes this pre-gate a non-conservative
+        # bound: under 'raise' it can abort a split whose post-outlier surviving
+        # rows would have passed the authoritative post-pipeline gate.
         return QuickAdapterRegressorV3._enforce_train_weight_support(
             base_weights,
             label_weights,
@@ -771,11 +774,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> NDArray[np.floating]:
         """Enforce label-weight support on already-composed training weights.
 
-        Kish's ``effective_sample_size`` is measured on ``sample_weights`` (the
-        weights actually fed to ``model.fit`` -- the pre-pipeline fallback base
-        weights when an earlier stage fell back), whereas
-        ``pivot_equivalent_count`` and ``positive_label_weight_fraction`` derive
-        from raw ``label_weights``; gating ESS on the fed weights is intended.
+        Kish's ``effective_sample_size`` is measured on the ``sample_weights``
+        passed in -- the full-split composed weights at the pre-pipeline gate,
+        the post-outlier surviving weights bound for ``model.fit`` at the
+        post-pipeline gate -- whereas ``pivot_equivalent_count`` and
+        ``positive_label_weight_fraction`` derive from ``label_weights``; gating
+        ESS on the composed weights is intended.
         """
         policy = cast(
             LabelWeightSupportPolicy, label_weighting_config["support_policy"]
