@@ -1571,9 +1571,8 @@ class QuickAdapterV3(IStrategy):
         resample_frequency = timeframe_to_resample_freq(timeframe)
         if resample_frequency.endswith(("MS", "YS")):
             calendar_offset = to_offset(resample_frequency)
-            # is_on_offset rejects a non-boundary stored date; stored + offset is the
-            # next candle for any anchor phase (pandas anchors the resample grid on the
-            # data origin, not a fixed epoch, so no month/year % n phase check applies).
+            # No multiplier phase check: pandas anchors the resample grid on the data
+            # origin, not a fixed epoch, so stored + offset is the next candle for any phase.
             if not calendar_offset.is_on_offset(stored_candle_date):
                 return True
             expected_candle_date = stored_candle_date + calendar_offset
