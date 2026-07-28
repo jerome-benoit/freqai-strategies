@@ -43,6 +43,7 @@ from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
     DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
+    _CACHE_MAXSIZE_LARGE,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -657,6 +658,9 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def _df_signature(df: DataFrame) -> DfSignature:
+        """Candle-cache key ``(row_count, last_date)``; assumes existing rows
+        stay immutable (holds under ``process_only_new_candles = True``).
+        """
         n = len(df)
         if n == 0:
             return (0, None)
@@ -963,7 +967,7 @@ class QuickAdapterV3(IStrategy):
         return {}
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def _td_format(
         delta: datetime.timedelta, pattern: str = "{sign}{d}:{h:02d}:{m:02d}:{s:02d}"
     ) -> str:
@@ -1206,7 +1210,7 @@ class QuickAdapterV3(IStrategy):
         return trade.open_date_utc - offset_timedelta
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def is_trade_duration_valid(trade_duration: Optional[int | float]) -> bool:
         return isinstance(trade_duration, (int, float)) and not (
             isna(trade_duration) or trade_duration <= 0
@@ -1372,7 +1376,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_stoploss_factor(trade_duration_candles: int) -> float:
         return 2.75 / (1.2675 + math.atan(0.25 * trade_duration_candles))
 
@@ -1405,7 +1409,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_take_profit_factor(trade_duration_candles: int) -> float:
         return math.log10(9.75 + 0.25 * trade_duration_candles)
 
@@ -2092,7 +2096,6 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
     def _t_statistic(mean: float, std: float, n: int) -> float:
         """Compute t-statistic for H0: mu = 0 as ``mean * sqrt(n) / std``.
 
@@ -2108,7 +2111,7 @@ class QuickAdapterV3(IStrategy):
         return mean * math.sqrt(n) / std
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def is_isoformat(string: str) -> bool:
         if not isinstance(string, str):
             return False
@@ -2119,7 +2122,6 @@ class QuickAdapterV3(IStrategy):
         return True
 
     @staticmethod
-    @lru_cache(maxsize=128)
     def _effective_df(x: tuple[float, ...]) -> float:
         """Effective degrees of freedom with Bartlett's autocorrelation correction.
 
@@ -2156,7 +2158,6 @@ class QuickAdapterV3(IStrategy):
         return df_eff
 
     @staticmethod
-    @lru_cache(maxsize=128)
     def _t_critical(q: float, df: float, default_t: float) -> float:
         """Critical t-value from Student's t-distribution at quantile ``q``.
 
