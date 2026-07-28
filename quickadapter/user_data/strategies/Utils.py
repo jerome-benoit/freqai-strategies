@@ -1313,10 +1313,9 @@ def get_exit_thresholds_calibration_config(
     logger: Logger,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, float]:
-    # parent coerced silently; the exit_pricing mapping warning is owned by get_exit_pricing_config
+    # exit_pricing mapping warning owned by get_exit_pricing_config (avoid double-warn)
     config = as_dict(config)
-    # validate the override first so an invalid subclass default falls back to the
-    # canonical default (never trusted blindly); user config still wins below
+    # validate the override so an invalid subclass default falls back to the canonical default
     defaults = _validate_params(
         overrides or {},
         logger,
