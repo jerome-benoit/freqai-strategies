@@ -2586,6 +2586,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pair=pair,
             context=context,
         )
+        # Label-only re-gate: base-only weights carry no pivot/fraction/ESS
+        # support to recheck (settled pre-pipeline), so they skip this stage.
         if weight_inputs.label is not None:
             post_pipeline_base_weights = pipeline_labels.pop(
                 base_weight_column
