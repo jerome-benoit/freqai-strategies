@@ -278,7 +278,7 @@ class QuickAdapterV3(IStrategy):
             },
         }
 
-    @property
+    @cached_property
     def protections(self) -> list[dict[str, Any]]:
         fit_live_predictions_candles = get_fit_live_predictions_candles(
             self.config.get("freqai"), logger
@@ -2454,7 +2454,12 @@ class QuickAdapterV3(IStrategy):
                 "using proposed_leverage"
             )
             return None
-        return float(leverage)
+        leverage = float(leverage)
+        if leverage < 1.0:
+            logger.warning(
+                f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0"
+            )
+        return leverage
 
     def leverage(
         self,
