@@ -1315,11 +1315,7 @@ def get_exit_thresholds_calibration_config(
     logger: Logger,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, float]:
-    # exit_pricing parent coerced silently: the mapping warning is owned by
-    # get_exit_pricing_config, so warning here too would double-warn.
     config = as_dict(config)
-    # overrides layer over canonical defaults (user config still wins in
-    # _validate_params); merging over DEFAULTS keeps every spec key present.
     defaults = {**DEFAULTS_EXIT_THRESHOLDS_CALIBRATION, **(overrides or {})}
     return _validate_params(
         as_config_section(
