@@ -18,9 +18,14 @@ from typing import (
 
 import numpy as np
 import pandas_ta as pta
+from pandas.tseries.frequencies import to_offset
 import talib.abstract as ta
 from freqtrade.enums import TRADE_MODES
-from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
+from freqtrade.exchange import (
+    timeframe_to_minutes,
+    timeframe_to_prev_date,
+    timeframe_to_resample_freq,
+)
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
@@ -28,6 +33,7 @@ from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
     SMOOTHING_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_MODES,
     WEIGHT_STRATEGIES,
     get_label_column_config,
@@ -36,9 +42,9 @@ from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
-    as_dict,
+    DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
+    _CACHE_MAXSIZE_LARGE,
     _OPTUNA_NAMESPACES,
-    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
     EXTREMA_DIRECTION_SMOOTHED_COLUMN,
@@ -61,7 +67,10 @@ from Utils import (
     get_callable_sha256,
     get_causal_mode,
     get_distance,
+    get_custom_protections_config,
     get_exit_pricing_config,
+    get_exit_thresholds_calibration_config,
+    get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_smoothing_config,
@@ -96,15 +105,17 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
+_TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 
 class _TradeHistory(TypedDict):
     # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
-    # _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY constants (a TypedDict field
-    # cannot reference a constant).
+    # _UNREALIZED_PNL_TIMEFRAME_KEY / _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY
+    # constants (a TypedDict field cannot reference a constant).
     unrealized_pnl: list[float]
-    take_profit_price: list[float | tuple[int, float]]
+    take_profit_price: list[_TakeProfitHistoryEntry]
     unrealized_pnl_candle_date: NotRequired[str]
+    unrealized_pnl_timeframe: NotRequired[str]
     unrealized_pnl_timeframe_minutes: NotRequired[int]
 
 
@@ -152,7 +163,6 @@ class QuickAdapterV3(IStrategy):
     _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
     _SMOOTHING_SMM: Final[str] = SMOOTHING_METHODS[5]
     _SMOOTHING_SAVGOL: Final[str] = SMOOTHING_METHODS[7]
-    _SMOOTHING_GAUSSIAN_FILTER1D: Final[str] = SMOOTHING_METHODS[8]
     _FILL_EPSILON: Final[str] = FILL_METHODS[1]
     _FILL_GAUSSIAN: Final[str] = FILL_METHODS[2]
     _FILL_EPSILON_GAUSSIAN: Final[str] = FILL_METHODS[3]
@@ -176,9 +186,9 @@ class QuickAdapterV3(IStrategy):
         "t_decl_a": 0.675,
     }
 
-    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
-        "decline_quantile": 0.5,
-    }
+    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = (
+        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION.copy()
+    )
 
     position_adjustment_enable = True
 
@@ -203,7 +213,8 @@ class QuickAdapterV3(IStrategy):
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
-    _UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
+    _UNREALIZED_PNL_TIMEFRAME_KEY: Final[str] = "unrealized_pnl_timeframe"
+    _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
         "unrealized_pnl_timeframe_minutes"
     )
 
@@ -217,22 +228,8 @@ class QuickAdapterV3(IStrategy):
     # strict `remaining < min_exit_stake` guard.
     _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
 
-    minimal_roi = {str(timeframe_minutes * 864): -1}
-
     # FreqAI is crashing if minimal_roi is a property
-    # @property
-    # def minimal_roi(self) -> dict[str, Any]:
-    #     timeframe_minutes = self.timeframe_minutes
-    #     fit_live_predictions_candles = int(
-    #         self.config.get("freqai", {}).get(
-    #             "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-    #         )
-    #     )
-    #     return {str(timeframe_minutes * fit_live_predictions_candles): -1}
-
-    # @minimal_roi.setter
-    # def minimal_roi(self, value: dict[str, Any]) -> None:
-    #     pass
+    minimal_roi = {str(timeframe_minutes * 864): -1}
 
     process_only_new_candles = True
 
@@ -290,25 +287,25 @@ class QuickAdapterV3(IStrategy):
             },
         }
 
-    @property
+    @cached_property
+    def _fit_live_predictions_candles(self) -> int:
+        return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
+
+    @cached_property
     def protections(self) -> list[dict[str, Any]]:
-        fit_live_predictions_candles = int(
-            self.config.get("freqai", {}).get(
-                "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-            )
+        fit_live_predictions_candles = self._fit_live_predictions_candles
+        protections = get_custom_protections_config(
+            self.config.get("custom_protections"), logger
         )
-        protections = self.config.get("custom_protections", {})
-        trade_duration_candles = int(protections.get("trade_duration_candles", 72))
-        lookback_period_fraction = float(
-            protections.get("lookback_period_fraction", 0.5)
-        )
+        trade_duration_candles = protections["trade_duration_candles"]
+        lookback_period_fraction = protections["lookback_period_fraction"]
 
         lookback_period_candles = max(
             1, int(round(fit_live_predictions_candles * lookback_period_fraction))
         )
 
-        cooldown = protections.get("cooldown", {})
-        cooldown_stop_duration_candles = int(cooldown.get("stop_duration_candles", 4))
+        cooldown = protections["cooldown"]
+        cooldown_stop_duration_candles = cooldown["stop_duration_candles"]
         stoploss_stop_duration_candles = max(
             cooldown_stop_duration_candles, trade_duration_candles
         )
@@ -327,7 +324,7 @@ class QuickAdapterV3(IStrategy):
 
         protections_list = []
 
-        if cooldown.get("enabled", True):
+        if cooldown["enabled"]:
             protections_list.append(
                 {
                     "method": "CooldownPeriod",
@@ -335,22 +332,20 @@ class QuickAdapterV3(IStrategy):
                 }
             )
 
-        drawdown = protections.get("drawdown", {})
-        if drawdown.get("enabled", True):
+        drawdown = protections["drawdown"]
+        if drawdown["enabled"]:
             protections_list.append(
                 {
                     "method": "MaxDrawdown",
                     "lookback_period_candles": lookback_period_candles,
                     "trade_limit": 2 * max_open_trades,
                     "stop_duration_candles": drawdown_stop_duration_candles,
-                    "max_allowed_drawdown": float(
-                        drawdown.get("max_allowed_drawdown", 0.2)
-                    ),
+                    "max_allowed_drawdown": drawdown["max_allowed_drawdown"],
                 }
             )
 
-        stoploss = protections.get("stoploss", {})
-        if stoploss.get("enabled", True):
+        stoploss = protections["stoploss"]
+        if stoploss["enabled"]:
             protections_list.append(
                 {
                     "method": "StoplossGuard",
@@ -368,9 +363,7 @@ class QuickAdapterV3(IStrategy):
     @property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
-        return self.config.get("freqai", {}).get(
-            "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-        )
+        return self._fit_live_predictions_candles
 
     @property
     def max_open_trades_per_side(self) -> int:
@@ -387,25 +380,25 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
         return get_label_weighting_config(
-            as_dict(self.freqai_info.get("label_weighting")), logger
+            self.freqai_info.get("label_weighting"), logger
         )
 
     @cached_property
     def label_smoothing(self) -> dict[str, Any]:
         return get_label_smoothing_config(
-            as_dict(self.freqai_info.get("label_smoothing")), logger
+            self.freqai_info.get("label_smoothing"), logger
         )
 
     @cached_property
     def trade_price_target_method(self) -> str:
-        return get_exit_pricing_config(
-            as_dict(self.config.get("exit_pricing")), logger
-        )["trade_price_target_method"]
+        return get_exit_pricing_config(self.config.get("exit_pricing"), logger)[
+            "trade_price_target_method"
+        ]
 
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         return get_reversal_confirmation_config(
-            as_dict(self.config.get("reversal_confirmation")), logger
+            self.config.get("reversal_confirmation"), logger
         )
 
     @cached_property
@@ -439,11 +432,7 @@ class QuickAdapterV3(IStrategy):
                     label_col, label_smoothing["default"], label_smoothing["columns"]
                 )
                 if (
-                    col_smoothing_config["method"]
-                    in (
-                        QuickAdapterV3._SMOOTHING_SAVGOL,
-                        QuickAdapterV3._SMOOTHING_GAUSSIAN_FILTER1D,
-                    )
+                    col_smoothing_config["method"] in SMOOTHING_METHOD_MODES
                     and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
                 ):  # "wrap"
                     raise ValueError(
@@ -506,10 +495,13 @@ class QuickAdapterV3(IStrategy):
                 f"{self._pnl_momentum_window_size} candles "
                 f"(~{velocity_span_minutes} min velocity span)."
             )
-        self._exit_thresholds_calibration: dict[str, float] = {
-            **QuickAdapterV3.default_exit_thresholds_calibration,
-            **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
-        }
+        self._exit_thresholds_calibration: dict[str, float] = (
+            get_exit_thresholds_calibration_config(
+                self.config.get("exit_pricing"),
+                logger,
+                self.default_exit_thresholds_calibration,
+            )
+        )
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
         self._cached_df_signature: dict[str, DfSignature] = {}
@@ -667,6 +659,9 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def _df_signature(df: DataFrame) -> DfSignature:
+        """Candle-cache key ``(row_count, last_date)``; assumes existing rows
+        stay immutable (holds under ``process_only_new_candles = True``).
+        """
         n = len(df)
         if n == 0:
             return (0, None)
@@ -973,7 +968,7 @@ class QuickAdapterV3(IStrategy):
         return {}
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def _td_format(
         delta: datetime.timedelta, pattern: str = "{sign}{d}:{h:02d}:{m:02d}:{s:02d}"
     ) -> str:
@@ -1216,7 +1211,7 @@ class QuickAdapterV3(IStrategy):
         return trade.open_date_utc - offset_timedelta
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def is_trade_duration_valid(trade_duration: Optional[int | float]) -> bool:
         return isinstance(trade_duration, (int, float)) and not (
             isna(trade_duration) or trade_duration <= 0
@@ -1382,7 +1377,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_stoploss_factor(trade_duration_candles: int) -> float:
         return 2.75 / (1.2675 + math.atan(0.25 * trade_duration_candles))
 
@@ -1415,7 +1410,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_take_profit_factor(trade_duration_candles: int) -> float:
         return math.log10(9.75 + 0.25 * trade_duration_candles)
 
@@ -1546,7 +1541,7 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     def get_trade_take_profit_price_history(
         trade: Trade,
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         return history.get("take_profit_price", [])
 
@@ -1562,9 +1557,8 @@ class QuickAdapterV3(IStrategy):
         history[QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY] = (
             candle_date.isoformat()
         )
-        history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY] = (
-            self.timeframe_minutes
-        )
+        history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY] = self.timeframe
+        history.pop(QuickAdapterV3._LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY, None)
         trade.set_custom_data("history", history)
         return pnl_history
 
@@ -1572,21 +1566,29 @@ class QuickAdapterV3(IStrategy):
     def _is_pnl_history_discontinuous(
         stored_candle_date_isoformat: Optional[str],
         candle_date: datetime.datetime,
-        timeframe_minutes: int,
+        timeframe: str,
     ) -> bool:
         if not QuickAdapterV3.is_isoformat(stored_candle_date_isoformat):
-            return False
+            return True
         stored_candle_date = datetime.datetime.fromisoformat(
             stored_candle_date_isoformat
         )
-        elapsed_minutes = (candle_date - stored_candle_date).total_seconds() / 60.0
-        # get_pnl_momentum() differences the series assuming one timeframe
-        # between consecutive samples; any non-adjacent step (forward gap or
-        # backward/non-monotonic date) breaks that spacing and forces a reset.
-        # elapsed == 0 is a same-candle re-evaluation, not a discontinuity.
-        return not math.isclose(
-            elapsed_minutes, timeframe_minutes, rel_tol=1e-9, abs_tol=1e-9
-        ) and not math.isclose(elapsed_minutes, 0.0, abs_tol=1e-9)
+        resample_frequency = timeframe_to_resample_freq(timeframe)
+        if resample_frequency.endswith(("MS", "YS")):
+            calendar_offset = to_offset(resample_frequency)
+            # No multiplier phase check: pandas anchors the resample grid on the data
+            # origin, not a fixed epoch, so stored + offset is the next candle for any phase.
+            if not calendar_offset.is_on_offset(stored_candle_date):
+                return True
+            expected_candle_date = stored_candle_date + calendar_offset
+        else:
+            expected_candle_date = stored_candle_date + datetime.timedelta(
+                minutes=timeframe_to_minutes(timeframe)
+            )
+        # The PnL momentum horizon assumes one timeframe between consecutive
+        # samples; any non-adjacent step (forward gap or backward/non-monotonic
+        # date) breaks that spacing and forces a reset.
+        return candle_date not in (stored_candle_date, expected_candle_date)
 
     def safe_append_trade_unrealized_pnl(
         self, trade: Trade, pnl: float, candle_date: datetime.datetime
@@ -1595,19 +1597,19 @@ class QuickAdapterV3(IStrategy):
         trade_unrealized_pnl_history = history.get("unrealized_pnl", [])
         if trade_unrealized_pnl_history and (
             QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY not in history
-            or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY)
-            != self.timeframe_minutes
+            or history.get(QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY)
+            != self.timeframe
             or QuickAdapterV3._is_pnl_history_discontinuous(
                 history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY),
                 candle_date,
-                self.timeframe_minutes,
+                self.timeframe,
             )
         ):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
             history.pop(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY, None)
             trade.set_custom_data("history", history)
-        if (
+        if not trade_unrealized_pnl_history or (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
             != candle_date.isoformat()
         ):
@@ -1618,7 +1620,7 @@ class QuickAdapterV3(IStrategy):
 
     def append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         price_history = history.setdefault("take_profit_price", [])
         price_history.append((exit_stage, take_profit_price))
@@ -1630,7 +1632,7 @@ class QuickAdapterV3(IStrategy):
 
     def safe_append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         trade_take_profit_price_history = (
             QuickAdapterV3.get_trade_take_profit_price_history(trade)
         )
@@ -1641,13 +1643,21 @@ class QuickAdapterV3(IStrategy):
         )
         previous_exit_stage = None
         previous_take_profit_price = None
-        if isinstance(previous_take_profit_entry, tuple):
-            previous_exit_stage = (
-                previous_take_profit_entry[0] if previous_take_profit_entry else None
+        if (
+            isinstance(previous_take_profit_entry, (tuple, list))
+            and len(previous_take_profit_entry) == 2
+        ):
+            candidate_exit_stage, candidate_take_profit_price = (
+                previous_take_profit_entry
             )
-            previous_take_profit_price = (
-                previous_take_profit_entry[1] if previous_take_profit_entry else None
-            )
+            if (
+                isinstance(candidate_exit_stage, int)
+                and not isinstance(candidate_exit_stage, bool)
+                and isinstance(candidate_take_profit_price, (int, float))
+                and not isinstance(candidate_take_profit_price, bool)
+            ):
+                previous_exit_stage = candidate_exit_stage
+                previous_take_profit_price = candidate_take_profit_price
         elif isinstance(previous_take_profit_entry, float):
             previous_exit_stage = -1
             previous_take_profit_price = previous_take_profit_entry
@@ -2095,7 +2105,6 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
     def _t_statistic(mean: float, std: float, n: int) -> float:
         """Compute t-statistic for H0: mu = 0 as ``mean * sqrt(n) / std``.
 
@@ -2111,7 +2120,7 @@ class QuickAdapterV3(IStrategy):
         return mean * math.sqrt(n) / std
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def is_isoformat(string: str) -> bool:
         if not isinstance(string, str):
             return False
@@ -2122,7 +2131,6 @@ class QuickAdapterV3(IStrategy):
         return True
 
     @staticmethod
-    @lru_cache(maxsize=128)
     def _effective_df(x: tuple[float, ...]) -> float:
         """Effective degrees of freedom with Bartlett's autocorrelation correction.
 
@@ -2159,7 +2167,6 @@ class QuickAdapterV3(IStrategy):
         return df_eff
 
     @staticmethod
-    @lru_cache(maxsize=128)
     def _t_critical(q: float, df: float, default_t: float) -> float:
         """Critical t-value from Student's t-distribution at quantile ``q``.
 
@@ -2462,6 +2469,24 @@ class QuickAdapterV3(IStrategy):
                 f"supported values are {', '.join(QuickAdapterV3._TRADING_MODES)}"
             )
 
+    @cached_property
+    def _configured_leverage(self) -> Optional[float]:
+        leverage = self.config.get("leverage")
+        if leverage is None:
+            return None
+        if not is_finite_number(leverage):
+            logger.warning(
+                f"Invalid leverage value {leverage!r}: must be a finite number, "
+                "using proposed_leverage"
+            )
+            return None
+        leverage = float(leverage)
+        if leverage < 1.0:
+            logger.warning(
+                f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0"
+            )
+        return leverage
+
     def leverage(
         self,
         pair: str,
@@ -2473,7 +2498,10 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs: Any,
     ) -> float:
-        return min(self.config.get("leverage", proposed_leverage), max_leverage)
+        configured_leverage = self._configured_leverage
+        if configured_leverage is None:
+            configured_leverage = proposed_leverage
+        return float(max(1.0, min(configured_leverage, max_leverage)))
 
     def plot_annotations(
         self,
