@@ -68,6 +68,11 @@ else:
 
 T = TypeVar("T", pd.Series, float)
 
+# lru_cache sizes: SMALL for bounded key spaces (windows, mode strings),
+# LARGE for open numeric/string keys (formatting, rounding, statistics).
+_CACHE_MAXSIZE_SMALL: Final[int] = 8
+_CACHE_MAXSIZE_LARGE: Final[int] = 128
+
 
 @dataclass(frozen=True, slots=True)
 class FiniteSample:
@@ -664,7 +669,7 @@ LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 _FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def _label_aux_column_name(label_col: str, suffix: str) -> str:
     """Derive a freqtrade-safe auxiliary column name from a label column.
 
@@ -1983,26 +1988,26 @@ def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
     return diff.where(diff != 0, np.finfo(float).eps)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_odd_window(window: int) -> int:
     if window < 1:
         raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 1 else window + 1
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_even_window(window: int) -> int:
     if window < 1:
         raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 0 else window + 1
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_gaussian_std(window: int) -> float:
     return (window - 1) / 6.0 if window > 1 else 0.5
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_savgol_params(
     window: int, polyorder: int, mode: SmoothingMode
 ) -> tuple[int, int, str]:
@@ -2012,7 +2017,7 @@ def get_savgol_params(
     return window, polyorder, mode
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def _calculate_coeffs(
     window: int,
     win_type: SmoothingKernel,
@@ -2036,7 +2041,9 @@ def _calculate_coeffs(
             f"Invalid window type value {win_type!r}: "
             f"supported values are {', '.join(SMOOTHING_KERNELS)}"
         )
-    return coeffs / np.sum(coeffs)
+    normalized_coeffs = coeffs / np.sum(coeffs)
+    normalized_coeffs.setflags(write=False)
+    return normalized_coeffs
 
 
 def zero_phase_filter(
@@ -2761,7 +2768,7 @@ _SCIENTIFIC_THRESHOLD_HIGH = 1e12
 _SCIENTIFIC_THRESHOLD_LOW = 1e-6
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def format_number(value: int | float, significant_digits: int = 5) -> str:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
@@ -2953,7 +2960,7 @@ def format_dict(
     return f"{{{joined}}}" if style == "dict" else joined
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def calculate_min_extrema(
     length: int, fit_live_predictions_candles: int, min_extrema: int = 2
 ) -> int:
@@ -3078,7 +3085,7 @@ def calculate_zero_lag(series: pd.Series, period: int) -> pd.Series:
     return 2 * series - series.shift(int(lag))
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_ma_fn(
     mamode: str,
 ) -> Callable[
@@ -3102,7 +3109,7 @@ def get_ma_fn(
     return mamodes.get(mamode, mamodes["sma"])
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_zl_ma_fn(
     mamode: str,
 ) -> Callable[
@@ -3219,7 +3226,7 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     return smma
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_price_fn(pricemode: str) -> Callable[[pd.DataFrame], pd.Series]:
     pricemodes = {
         "average": ta.AVGPRICE,
@@ -5320,7 +5327,7 @@ def get_optuna_study_model_parameters(
         raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def largest_divisor_to_step(integer: int, step: int) -> int | None:
     if not isinstance(integer, int) or integer <= 0:
         raise ValueError(
@@ -5366,7 +5373,7 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
     return nan_average(values, weights=shifted_exponentials)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_min_max_label_period_candles(
     fit_live_predictions_candles: int,
     candles_step: int,
@@ -5429,7 +5436,7 @@ def _validate_step_args(value: float | int, step: int) -> None:
         raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def round_to_step(value: float | int, step: int) -> int:
     """
     Round a value to the nearest multiple of a given step.
@@ -5452,7 +5459,7 @@ def round_to_step(value: float | int, step: int) -> int:
     return int(round(float(value) / step) * step)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def ceil_to_step(value: float | int, step: int) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
@@ -5462,7 +5469,7 @@ def ceil_to_step(value: float | int, step: int) -> int:
     return int(math.ceil(float(value) / step) * step)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def floor_to_step(value: float | int, step: int) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):

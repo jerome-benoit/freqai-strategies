@@ -7,7 +7,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
 from typing import (
     AbstractSet,
@@ -4783,7 +4783,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             case _:
                 assert_never(sampler)
 
-    @lru_cache(maxsize=8)
     def optuna_samplers_by_namespace(
         self, namespace: OptunaNamespace
     ) -> tuple[frozenset[OptunaSampler], OptunaSampler]:
