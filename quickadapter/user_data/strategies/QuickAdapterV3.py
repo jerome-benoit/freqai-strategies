@@ -179,7 +179,7 @@ class QuickAdapterV3(IStrategy):
     }
 
     default_exit_thresholds_calibration: ClassVar[dict[str, float]] = (
-        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION
+        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION.copy()
     )
 
     position_adjustment_enable = True
