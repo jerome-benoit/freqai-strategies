@@ -1373,54 +1373,18 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
+    if isinstance(config, dict) and "thresholds_calibration" in config:
+        logger.warning(
+            "exit_pricing.thresholds_calibration is obsolete and ignored: "
+            "the PnL momentum gate now uses the direction of mean per-candle "
+            "PnL velocity"
+        )
     return _validate_params(
         as_config_section(config, "exit_pricing", logger),
         logger,
         "exit_pricing",
         _EXIT_PRICING_SPECS,
         DEFAULTS_EXIT_PRICING,
-    )
-
-
-DEFAULTS_EXIT_THRESHOLDS_CALIBRATION: Final[dict[str, Any]] = {
-    "decline_quantile": 0.5,
-}
-
-_EXIT_THRESHOLDS_CALIBRATION_SPECS: Final[dict[str, _ParamSpec]] = {
-    "decline_quantile": _ParamSpec(
-        _NumericValidator(
-            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
-        ),
-        output_type=float,
-    ),
-}
-
-
-def get_exit_thresholds_calibration_config(
-    config: Any,
-    logger: Logger,
-    overrides: dict[str, Any] | None = None,
-) -> dict[str, float]:
-    # exit_pricing mapping warning owned by get_exit_pricing_config (avoid double-warn)
-    config = as_dict(config)
-    # validate the override so an invalid subclass default falls back to the canonical default
-    defaults = _validate_params(
-        overrides or {},
-        logger,
-        "exit_pricing.thresholds_calibration",
-        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
-        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
-    )
-    return _validate_params(
-        as_config_section(
-            config.get("thresholds_calibration"),
-            "exit_pricing.thresholds_calibration",
-            logger,
-        ),
-        logger,
-        "exit_pricing.thresholds_calibration",
-        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
-        defaults,
     )
 
 
