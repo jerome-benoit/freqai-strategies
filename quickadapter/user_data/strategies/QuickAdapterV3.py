@@ -2023,49 +2023,6 @@ class QuickAdapterV3(IStrategy):
         return True
 
     @staticmethod
-    def get_pnl_momentum(
-        unrealized_pnl_history: Sequence[float], window_size: int
-    ) -> tuple[
-        tuple[float, ...],
-        float,
-        float,
-        tuple[float, ...],
-        float,
-        float,
-    ]:
-        """Compute the legacy PnL velocity and acceleration statistics.
-
-        This public compatibility helper is not used by the directional exit
-        gate. ``window_size > 0`` truncates to the most recent window before
-        differencing. Returns
-        ``(velocity_values, velocity_mean, velocity_std, acceleration_values,
-        acceleration_mean, acceleration_std)``.
-        """
-        unrealized_pnl_history_array = np.asarray(unrealized_pnl_history, dtype=float)
-
-        if window_size > 0 and unrealized_pnl_history_array.size > window_size:
-            unrealized_pnl_history_array = unrealized_pnl_history_array[-window_size:]
-
-        velocity = np.diff(unrealized_pnl_history_array)
-        velocity_mean = np.nanmean(velocity) if velocity.size > 0 else 0.0
-        velocity_std = np.nanstd(velocity, ddof=1) if velocity.size > 1 else 0.0
-
-        acceleration = np.diff(velocity)
-        acceleration_mean = np.nanmean(acceleration) if acceleration.size > 0 else 0.0
-        acceleration_std = (
-            np.nanstd(acceleration, ddof=1) if acceleration.size > 1 else 0.0
-        )
-
-        return (
-            tuple(velocity.tolist()),
-            velocity_mean,
-            velocity_std,
-            tuple(acceleration.tolist()),
-            acceleration_mean,
-            acceleration_std,
-        )
-
-    @staticmethod
     def is_pnl_declining(
         unrealized_pnl_history: Sequence[float], window_size: int
     ) -> Optional[bool]:
