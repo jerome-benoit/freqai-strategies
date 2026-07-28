@@ -998,7 +998,7 @@ class QuickAdapterV3(IStrategy):
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
         causal_mode = get_causal_mode(
-            as_dict(self.freqai_info.get("feature_parameters")), logger
+            self.freqai_info.get("feature_parameters", {}), logger
         )
 
         for label_col in LABEL_COLUMNS:
