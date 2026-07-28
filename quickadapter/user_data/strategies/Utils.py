@@ -11,6 +11,7 @@ from enum import IntEnum
 from functools import lru_cache, singledispatch
 from logging import Logger
 from pathlib import Path
+from threading import Lock
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1100,90 +1101,165 @@ def _delete_path(config: dict[str, Any], path: str) -> bool:
     return False
 
 
+ConfigDeprecation = tuple[
+    str,
+    str | None,
+    Callable[[Any], bool] | None,
+    str | None,
+]
+
+
+def _renamed_config_key(old_path: str, new_path: str) -> ConfigDeprecation:
+    return old_path, new_path, None, None
+
+
 # Order matters: section renames before key moves (e.g. extrema_weighting.gamma -> label_weighting.gamma -> label_pipeline.gamma)
-CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
-    ("freqai.extrema_weighting", "freqai.label_weighting"),
-    ("freqai.extrema_smoothing", "freqai.label_smoothing"),
-    ("freqai.predictions_extrema", "freqai.label_prediction"),
-    ("freqai.label_smoothing.window", "freqai.label_smoothing.window_candles"),
-    (
+CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
+    _renamed_config_key("freqai.extrema_weighting", "freqai.label_weighting"),
+    _renamed_config_key("freqai.extrema_smoothing", "freqai.label_smoothing"),
+    _renamed_config_key("freqai.predictions_extrema", "freqai.label_prediction"),
+    _renamed_config_key(
+        "freqai.label_smoothing.window",
+        "freqai.label_smoothing.window_candles",
+    ),
+    _renamed_config_key(
         "freqai.label_prediction.thresholds_smoothing",
         "freqai.label_prediction.threshold_smoothing_method",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.threshold_smoothing_method",
         "freqai.label_prediction.threshold_method",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.threshold_outlier",
         "freqai.label_prediction.outlier_threshold_quantile",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.outlier_threshold_quantile",
         "freqai.label_prediction.outlier_quantile",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.extrema_fraction",
         "freqai.label_prediction.keep_extrema_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.keep_extrema_fraction",
         "freqai.label_prediction.keep_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.thresholds_alpha",
         "freqai.label_prediction.soft_extremum_alpha",
     ),
-    ("exit_pricing.trade_price_target", "exit_pricing.trade_price_target_method"),
-    (
+    _renamed_config_key(
+        "exit_pricing.trade_price_target",
+        "exit_pricing.trade_price_target_method",
+    ),
+    _renamed_config_key(
         "reversal_confirmation.lookback_period",
         "reversal_confirmation.lookback_period_candles",
     ),
-    ("reversal_confirmation.decay_ratio", "reversal_confirmation.decay_fraction"),
-    (
+    _renamed_config_key(
+        "reversal_confirmation.decay_ratio",
+        "reversal_confirmation.decay_fraction",
+    ),
+    _renamed_config_key(
         "reversal_confirmation.min_natr_ratio_percent",
         "reversal_confirmation.min_natr_multiplier_fraction",
     ),
-    (
+    _renamed_config_key(
         "reversal_confirmation.max_natr_ratio_percent",
         "reversal_confirmation.max_natr_multiplier_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.min_label_natr_ratio",
         "freqai.feature_parameters.min_label_natr_multiplier",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.max_label_natr_ratio",
         "freqai.feature_parameters.max_label_natr_multiplier",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.label_natr_ratio",
         "freqai.feature_parameters.label_natr_multiplier",
     ),
-    ("freqai.optuna_hyperopt.expansion_ratio", "freqai.optuna_hyperopt.space_fraction"),
-    (
+    _renamed_config_key(
+        "freqai.optuna_hyperopt.expansion_ratio",
+        "freqai.optuna_hyperopt.space_fraction",
+    ),
+    _renamed_config_key(
         "freqai.label_weighting.standardization",
         "freqai.label_pipeline.standardization",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_weighting.robust_quantiles",
         "freqai.label_pipeline.robust_quantiles",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_weighting.mmad_scaling_factor",
         "freqai.label_pipeline.mmad_scaling_factor",
     ),
-    ("freqai.label_weighting.normalization", "freqai.label_pipeline.normalization"),
-    ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
-    ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
-    ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+    _renamed_config_key(
+        "freqai.label_weighting.normalization",
+        "freqai.label_pipeline.normalization",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.minmax_range",
+        "freqai.label_pipeline.minmax_range",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.sigmoid_scale",
+        "freqai.label_pipeline.sigmoid_scale",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.gamma",
+        "freqai.label_pipeline.gamma",
+    ),
+    (
+        "exit_pricing.thresholds_calibration",
+        None,
+        None,
+        "the PnL momentum gate now uses the direction of mean per-candle PnL velocity",
+    ),
+    (
+        "freqai.feature_parameters.causal_mode",
+        None,
+        lambda value: value is False,
+        "feature_parameters.causal_mode=false is deprecated: "
+        "causal split guards disabled; label lookahead leakage possible. "
+        "Default causal_mode=true; causal_mode=false for acausal baselines only.",
+    ),
 )
+
+_WARNED_CONFIG_DEPRECATIONS: set[str] = set()
+_CONFIG_DEPRECATION_WARNING_LOCK = Lock()
+
+
+def _warn_config_deprecation_once(path: str, message: str, logger: Logger) -> None:
+    with _CONFIG_DEPRECATION_WARNING_LOCK:
+        if path in _WARNED_CONFIG_DEPRECATIONS:
+            return
+        _WARNED_CONFIG_DEPRECATIONS.add(path)
+    logger.warning(message)
 
 
 def migrate_config(config: dict[str, Any], logger: Logger) -> None:
-    for old_path, new_path in CONFIG_MIGRATIONS:
+    for old_path, new_path, predicate, guidance in CONFIG_DEPRECATIONS:
         old_value = _get_path(config, old_path)
         if old_value is _MISSING:
+            continue
+
+        if predicate is not None:
+            if predicate(old_value):
+                message = guidance or f"{old_path}={old_value!r} is deprecated"
+                _warn_config_deprecation_once(old_path, message, logger)
+            continue
+
+        if new_path is None:
+            _delete_path(config, old_path)
+            message = f"{old_path} is obsolete and ignored"
+            if guidance is not None:
+                message = f"{message}: {guidance}"
+            _warn_config_deprecation_once(old_path, message, logger)
             continue
 
         old_section = old_path.rsplit(".", 1)[0] if "." in old_path else ""
@@ -1195,19 +1271,16 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             _set_path(config, new_path, old_value)
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
+                message = f"{old_path!r} is deprecated, use {new_key!r} instead"
             else:
-                logger.warning(f"{old_path!r} is deprecated, use {new_path!r} instead")
+                message = f"{old_path!r} is deprecated, use {new_path!r} instead"
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(
-                    f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
-                )
+                message = f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
             else:
-                logger.warning(
-                    f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
-                )
+                message = f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
+        _warn_config_deprecation_once(old_path, message, logger)
 
 
 def _get_label_config(
@@ -1382,48 +1455,6 @@ def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
     )
 
 
-DEFAULTS_EXIT_THRESHOLDS_CALIBRATION: Final[dict[str, Any]] = {
-    "decline_quantile": 0.5,
-}
-
-_EXIT_THRESHOLDS_CALIBRATION_SPECS: Final[dict[str, _ParamSpec]] = {
-    "decline_quantile": _ParamSpec(
-        _NumericValidator(
-            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
-        ),
-        output_type=float,
-    ),
-}
-
-
-def get_exit_thresholds_calibration_config(
-    config: Any,
-    logger: Logger,
-    overrides: dict[str, Any] | None = None,
-) -> dict[str, float]:
-    # exit_pricing mapping warning owned by get_exit_pricing_config (avoid double-warn)
-    config = as_dict(config)
-    # validate the override so an invalid subclass default falls back to the canonical default
-    defaults = _validate_params(
-        overrides or {},
-        logger,
-        "exit_pricing.thresholds_calibration",
-        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
-        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
-    )
-    return _validate_params(
-        as_config_section(
-            config.get("thresholds_calibration"),
-            "exit_pricing.thresholds_calibration",
-            logger,
-        ),
-        logger,
-        "exit_pricing.thresholds_calibration",
-        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
-        defaults,
-    )
-
-
 DEFAULTS_CUSTOM_PROTECTIONS: Final[dict[str, Any]] = {
     "trade_duration_candles": 72,
     "lookback_period_fraction": 0.5,
@@ -1594,9 +1625,6 @@ def get_reversal_confirmation_config(
     }
 
 
-_CAUSAL_MODE_FALSE_WARNED: bool = False
-
-
 def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
     causal_mode = config.get("causal_mode", True)
     if not isinstance(causal_mode, bool):
@@ -1604,14 +1632,6 @@ def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
             f"Invalid causal_mode value {causal_mode!r}: must be bool, using True"
         )
         return True
-    global _CAUSAL_MODE_FALSE_WARNED
-    if causal_mode is False and not _CAUSAL_MODE_FALSE_WARNED:
-        logger.warning(
-            "feature_parameters.causal_mode=false is deprecated: "
-            "causal split guards disabled; label lookahead leakage possible. "
-            "Default causal_mode=true; causal_mode=false for acausal baselines only."
-        )
-        _CAUSAL_MODE_FALSE_WARNED = True
     return causal_mode
 
 
