@@ -2200,6 +2200,34 @@ def _impute_weights(
     return weights
 
 
+def _causal_impute_weights(
+    weights: NDArray[np.floating],
+    *,
+    availability: NDArray[np.integer],
+    default_weight: float = 1.0,
+) -> NDArray[np.floating]:
+    """Impute each non-finite value from signals available at the same event."""
+    values = weights.astype(float, copy=True)
+    if values.size == 0:
+        return values
+    finite_mask = np.isfinite(values)
+    running_median = (
+        pd.Series(values)
+        .where(finite_mask)
+        .expanding()
+        .median()
+        .fillna(default_weight)
+        .to_numpy(dtype=float)
+    )
+    event_ends = np.flatnonzero(np.r_[availability[1:] != availability[:-1], True])
+    event_medians = np.repeat(
+        running_median[event_ends],
+        np.diff(np.r_[-1, event_ends]),
+    )
+    values[~finite_mask] = event_medians[~finite_mask]
+    return values
+
+
 _GAUSSIAN_FILL_CHUNK_BUDGET: Final[int] = 50_000_000
 _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 
@@ -2455,6 +2483,8 @@ def _compute_combined_label_weights(
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
     softmax_temperature: float,
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
 ) -> NDArray[np.floating]:
     if len(metrics) == 0:
         return np.asarray([], dtype=float)
@@ -2473,7 +2503,7 @@ def _compute_combined_label_weights(
         values_array = np.asarray(metric_values, dtype=float)
         if values_array.size == 0:
             continue
-        imputed_metrics.append(_impute_weights(values_array))
+        imputed_metrics.append(impute(values_array))
         coefficients_list.append(float(coefficient))
 
     if len(imputed_metrics) == 0:
@@ -2516,6 +2546,152 @@ def _compute_epsilon_floor(
     return float(eps) * b
 
 
+def _compute_label_weight_values(
+    n_indices: int,
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
+) -> NDArray[np.floating]:
+    strategy = label_weighting["strategy"]
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        weights = np.ones(n_indices, dtype=float)
+    elif strategy in metrics:
+        weights = np.asarray(metrics[strategy], dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
+        weights = _compute_combined_label_weights(
+            metrics=metrics,
+            metric_coefficients=label_weighting["metric_coefficients"],
+            aggregation=label_weighting["aggregation"],
+            softmax_temperature=label_weighting["softmax_temperature"],
+            impute=impute,
+        )
+    else:
+        raise ValueError(
+            f"Invalid weighting strategy value {strategy!r}: "
+            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
+        )
+    return impute(weights)
+
+
+def _compute_causal_epsilon_fill(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    known_at_lookahead: pd.Series,
+) -> NDArray[np.floating]:
+    """Per-row epsilon floor from pivot weights fixed at their availability."""
+    if len(known_at_lookahead) != n_values:
+        raise ValueError(
+            "Invalid known_at_lookahead length "
+            f"{len(known_at_lookahead)}: must be {n_values}"
+        )
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if not valid_mask.any():
+        return np.zeros(n_values, dtype=float)
+
+    source_indices = np.flatnonzero(valid_mask)
+    pivot_order = np.argsort(indices_array[valid_mask], kind="stable")
+    source_indices = source_indices[pivot_order]
+    pivot_indices = indices_array[source_indices]
+
+    known_at_positions = positions + known_at_lookahead_values
+    if label_weighting["strategy"] == WEIGHT_STRATEGIES[1]:  # "uniform"
+        pivot_available_at = known_at_positions[pivot_indices]
+    else:
+        pivot_available_at = np.empty(pivot_indices.size, dtype=np.int64)
+        pivot_available_at[:-1] = known_at_positions[pivot_indices[1:]]
+        pivot_available_at[-1] = n_values
+
+    resolved_mask = pivot_available_at < n_values
+    if not resolved_mask.any():
+        return np.zeros(n_values, dtype=float)
+
+    source_indices = source_indices[resolved_mask]
+    pivot_available_at = pivot_available_at[resolved_mask]
+    availability_order = np.argsort(pivot_available_at, kind="stable")
+    source_indices = source_indices[availability_order]
+    pivot_available_at = pivot_available_at[availability_order]
+    ordered_metrics = {
+        metric_name: np.asarray(metric_values)[source_indices].tolist()
+        for metric_name, metric_values in metrics.items()
+    }
+    pivot_values = _compute_label_weight_values(
+        source_indices.size,
+        ordered_metrics,
+        label_weighting,
+        impute=functools.partial(
+            _causal_impute_weights,
+            availability=pivot_available_at,
+        ),
+    )
+
+    baseline = label_weighting["fill_epsilon_baseline"]
+    if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
+        running_baseline = (
+            pd.Series(pivot_values).expanding().mean().to_numpy(dtype=float)
+        )
+    elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
+        running_baseline = (
+            pd.Series(pivot_values).expanding().median().to_numpy(dtype=float)
+        )
+    else:
+        raise ValueError(
+            f"Invalid fill_epsilon_baseline value {baseline!r}: "
+            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+        )
+
+    event_ends = np.flatnonzero(
+        np.r_[pivot_available_at[1:] != pivot_available_at[:-1], True]
+    )
+    availability_events = pivot_available_at[event_ends]
+    event_floors = float(label_weighting["fill_epsilon"]) * running_baseline[event_ends]
+
+    available_count = np.searchsorted(
+        availability_events, known_at_positions, side="right"
+    )
+    fill_weights = np.zeros(n_values, dtype=float)
+    has_available_pivot = available_count > 0
+    fill_weights[has_available_pivot] = event_floors[
+        available_count[has_available_pivot] - 1
+    ]
+    return fill_weights
+
+
+def _compute_epsilon_fill(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    weights: NDArray[np.floating],
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    known_at_lookahead: pd.Series | None,
+) -> NDArray[np.floating]:
+    if known_at_lookahead is not None:
+        return _compute_causal_epsilon_fill(
+            n_values,
+            indices_array,
+            valid_mask,
+            metrics,
+            label_weighting,
+            known_at_lookahead,
+        )
+    return np.full(
+        n_values,
+        _compute_epsilon_floor(
+            weights,
+            valid_mask,
+            label_weighting["fill_epsilon"],
+            label_weighting["fill_epsilon_baseline"],
+        ),
+        dtype=float,
+    )
+
+
 def _compute_gaussian_bumps(
     n_values: int,
     indices_array: NDArray[np.integer],
@@ -2550,13 +2726,15 @@ def compute_label_weights(
     weighting_config: dict[str, Any],
     *,
     logger: Logger,
+    known_at_lookahead: pd.Series | None = None,
 ) -> NDArray[np.floating]:
     """Compute per-row label importance weights.
 
     Returns an array with positive values at pivot ``indices`` (scaled by
-    strategy) and off-pivot values controlled by ``fill_method``. Callers
-    must skip invocation when strategy is ``'none'``; this raises
-    ValueError otherwise.
+    strategy) and off-pivot values controlled by ``fill_method``.
+    ``known_at_lookahead`` enables a per-row causal epsilon baseline; ``None``
+    preserves the global non-causal baseline. Callers must skip invocation when
+    strategy is ``'none'``; this raises ValueError otherwise.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
@@ -2579,44 +2757,29 @@ def compute_label_weights(
             n_values,
         )
 
-    weights: NDArray[np.floating]
-
-    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
-        weights = np.ones(n_indices, dtype=float)
-    elif strategy in metrics:
-        weights = np.asarray(metrics[strategy], dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
-        weights = _compute_combined_label_weights(
-            metrics=metrics,
-            metric_coefficients=label_weighting["metric_coefficients"],
-            aggregation=label_weighting["aggregation"],
-            softmax_temperature=label_weighting["softmax_temperature"],
-        )
-    else:
-        raise ValueError(
-            f"Invalid weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
-        )
-
-    weights = _impute_weights(weights)
+    weights = _compute_label_weight_values(n_indices, metrics, label_weighting)
 
     if weights.size == 0:
         return np.zeros(n_values, dtype=float)
+    if weights.size != n_indices:
+        raise ValueError(
+            f"Invalid indices_array/weights values: length mismatch, "
+            f"got {n_indices} indices but {weights.size} weights"
+        )
 
     fill_method = label_weighting["fill_method"]
 
     if fill_method == FILL_METHODS[0]:  # "zero"
         fill_weights = np.zeros(n_values, dtype=float)
     elif fill_method == FILL_METHODS[1]:  # "epsilon"
-        fill_weights = np.full(
+        fill_weights = _compute_epsilon_fill(
             n_values,
-            _compute_epsilon_floor(
-                weights,
-                valid_mask,
-                label_weighting["fill_epsilon"],
-                label_weighting["fill_epsilon_baseline"],
-            ),
-            dtype=float,
+            indices_array,
+            valid_mask,
+            weights,
+            metrics,
+            label_weighting,
+            known_at_lookahead,
         )
     elif fill_method == FILL_METHODS[2]:  # "gaussian"
         fill_weights = _compute_gaussian_bumps(
@@ -2628,11 +2791,14 @@ def compute_label_weights(
         )
         np.add(
             fill_weights,
-            _compute_epsilon_floor(
-                weights,
+            _compute_epsilon_fill(
+                n_values,
+                indices_array,
                 valid_mask,
-                label_weighting["fill_epsilon"],
-                label_weighting["fill_epsilon_baseline"],
+                weights,
+                metrics,
+                label_weighting,
+                known_at_lookahead,
             ),
             out=fill_weights,
         )
@@ -2665,8 +2831,8 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
     per-pivot sigma (including ``knn``, which clips below it), so
     ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
-    support. The additive epsilon floor is a global O(fill_epsilon) term, left
-    unconstrained (negligible).
+    support. The additive epsilon floor uses its separate per-row causal
+    baseline, so it needs no local fill radius.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     if label_weighting["fill_method"] not in (

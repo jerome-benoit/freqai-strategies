@@ -997,6 +997,9 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
+        causal_mode = get_causal_mode(
+            self.freqai_info.get("feature_parameters", {}), logger
+        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1036,6 +1039,9 @@ class QuickAdapterV3(IStrategy):
                     metrics=label_data.metrics,
                     weighting_config=col_weighting_config,
                     logger=logger,
+                    known_at_lookahead=(
+                        label_data.known_at_lookahead if causal_mode else None
+                    ),
                 )
                 if label_data.known_at_lookahead is not None:
                     dataframe[
