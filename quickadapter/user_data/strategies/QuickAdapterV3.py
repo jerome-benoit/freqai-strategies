@@ -42,6 +42,7 @@ from pandas import DataFrame, Series, isna, to_numeric
 from technical.pivots_points import pivots_points
 from Utils import (
     DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
+    _CACHE_MAXSIZE_LARGE,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -102,6 +103,7 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
+_TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 
 class _TradeHistory(TypedDict):
@@ -109,7 +111,7 @@ class _TradeHistory(TypedDict):
     # _UNREALIZED_PNL_TIMEFRAME_KEY / _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY
     # constants (a TypedDict field cannot reference a constant).
     unrealized_pnl: list[float]
-    take_profit_price: list[float | tuple[int, float]]
+    take_profit_price: list[_TakeProfitHistoryEntry]
     unrealized_pnl_candle_date: NotRequired[str]
     unrealized_pnl_timeframe: NotRequired[str]
     unrealized_pnl_timeframe_minutes: NotRequired[int]
@@ -623,6 +625,9 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def _df_signature(df: DataFrame) -> DfSignature:
+        """Candle-cache key ``(row_count, last_date)``; assumes existing rows
+        stay immutable (holds under ``process_only_new_candles = True``).
+        """
         n = len(df)
         if n == 0:
             return (0, None)
@@ -929,7 +934,7 @@ class QuickAdapterV3(IStrategy):
         return {}
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def _td_format(
         delta: datetime.timedelta, pattern: str = "{sign}{d}:{h:02d}:{m:02d}:{s:02d}"
     ) -> str:
@@ -958,6 +963,9 @@ class QuickAdapterV3(IStrategy):
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
+        causal_mode = get_causal_mode(
+            self.freqai_info.get("feature_parameters", {}), logger
+        )
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -997,6 +1005,9 @@ class QuickAdapterV3(IStrategy):
                     metrics=label_data.metrics,
                     weighting_config=col_weighting_config,
                     logger=logger,
+                    known_at_lookahead=(
+                        label_data.known_at_lookahead if causal_mode else None
+                    ),
                 )
                 if label_data.known_at_lookahead is not None:
                     dataframe[
@@ -1172,7 +1183,7 @@ class QuickAdapterV3(IStrategy):
         return trade.open_date_utc - offset_timedelta
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def is_trade_duration_valid(trade_duration: Optional[int | float]) -> bool:
         return isinstance(trade_duration, (int, float)) and not (
             isna(trade_duration) or trade_duration <= 0
@@ -1338,7 +1349,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_stoploss_factor(trade_duration_candles: int) -> float:
         return 2.75 / (1.2675 + math.atan(0.25 * trade_duration_candles))
 
@@ -1371,7 +1382,7 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_take_profit_factor(trade_duration_candles: int) -> float:
         return math.log10(9.75 + 0.25 * trade_duration_candles)
 
@@ -1502,7 +1513,7 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     def get_trade_take_profit_price_history(
         trade: Trade,
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         return history.get("take_profit_price", [])
 
@@ -1581,7 +1592,7 @@ class QuickAdapterV3(IStrategy):
 
     def append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         price_history = history.setdefault("take_profit_price", [])
         price_history.append((exit_stage, take_profit_price))
@@ -1593,7 +1604,7 @@ class QuickAdapterV3(IStrategy):
 
     def safe_append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         trade_take_profit_price_history = (
             QuickAdapterV3.get_trade_take_profit_price_history(trade)
         )
@@ -1604,13 +1615,21 @@ class QuickAdapterV3(IStrategy):
         )
         previous_exit_stage = None
         previous_take_profit_price = None
-        if isinstance(previous_take_profit_entry, tuple):
-            previous_exit_stage = (
-                previous_take_profit_entry[0] if previous_take_profit_entry else None
+        if (
+            isinstance(previous_take_profit_entry, (tuple, list))
+            and len(previous_take_profit_entry) == 2
+        ):
+            candidate_exit_stage, candidate_take_profit_price = (
+                previous_take_profit_entry
             )
-            previous_take_profit_price = (
-                previous_take_profit_entry[1] if previous_take_profit_entry else None
-            )
+            if (
+                isinstance(candidate_exit_stage, int)
+                and not isinstance(candidate_exit_stage, bool)
+                and isinstance(candidate_take_profit_price, (int, float))
+                and not isinstance(candidate_take_profit_price, bool)
+            ):
+                previous_exit_stage = candidate_exit_stage
+                previous_take_profit_price = candidate_take_profit_price
         elif isinstance(previous_take_profit_entry, float):
             previous_exit_stage = -1
             previous_take_profit_price = previous_take_profit_entry
@@ -2087,7 +2106,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def is_isoformat(string: str) -> bool:
         if not isinstance(string, str):
             return False
