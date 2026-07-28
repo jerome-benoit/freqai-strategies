@@ -41,7 +41,6 @@ from LabelTransformer import (
 from pandas import DataFrame, Series, isna, to_numeric
 from technical.pivots_points import pivots_points
 from Utils import (
-    DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
     _CACHE_MAXSIZE_LARGE,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
@@ -178,17 +177,6 @@ class QuickAdapterV3(IStrategy):
 
     stoploss = -0.025
     use_custom_stoploss = True
-
-    # Legacy public compatibility attributes. The directional PnL momentum
-    # gate does not read these thresholds or calibration values.
-    default_exit_thresholds: ClassVar[dict[str, float]] = {
-        "t_decl_v": 0.675,
-        "t_decl_a": 0.675,
-    }
-
-    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = (
-        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION.copy()
-    )
 
     position_adjustment_enable = True
 
