@@ -1189,8 +1189,6 @@ def _validate_smoothing_method_mode(
         )
 
 
-# Third tuple element: a cross-field validator run on each fully resolved
-# per-column config for checks the field-level specs cannot express.
 _LABEL_KIND_REGISTRY: Final[
     dict[
         str,
