@@ -476,6 +476,89 @@ def _validate_params(
     return result
 
 
+def validate_range(
+    min_val: float | int,
+    max_val: float | int,
+    logger: Logger,
+    *,
+    name: str,
+    default_min: float | int,
+    default_max: float | int,
+    allow_equal: bool = False,
+    non_negative: bool = True,
+    finite_only: bool = True,
+    max_value: float | int | None = None,
+) -> tuple[float | int, float | int]:
+    min_name = f"min_{name}"
+    max_name = f"max_{name}"
+
+    if not isinstance(default_min, (int, float)) or not isinstance(
+        default_max, (int, float)
+    ):
+        raise ValueError(
+            f"Invalid {name}: defaults must be numeric, "
+            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
+        )
+    if default_min > default_max or (not allow_equal and default_min == default_max):
+        raise ValueError(
+            f"Invalid {name}: defaults ordering must have min < max, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+    if max_value is not None and (default_min > max_value or default_max > max_value):
+        raise ValueError(
+            f"Invalid {name}: defaults must be <= {max_value!r}, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+
+    def _validate_component(
+        value: float | int | None, name: str, default_value: float | int
+    ) -> float | int:
+        constraints = []
+        if finite_only:
+            constraints.append("finite")
+        if non_negative:
+            constraints.append("non-negative")
+        constraints.append("numeric")
+        if max_value is not None:
+            constraints.append(f"<= {max_value}")
+        constraint_str = " ".join(constraints)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or (finite_only and not _is_finite_value(value))
+            or (non_negative and value < 0)
+            or (max_value is not None and value > max_value)
+        ):
+            logger.warning(
+                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
+            )
+            return default_value
+        return value
+
+    sanitized_min = _validate_component(min_val, min_name, default_min)
+    sanitized_max = _validate_component(max_val, max_name, default_max)
+
+    ordering_ok = (
+        (sanitized_min < sanitized_max)
+        if not allow_equal
+        else (sanitized_min <= sanitized_max)
+    )
+    if not ordering_ok:
+        logger.warning(
+            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
+            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
+            f"using defaults {default_min!r}, {default_max!r}"
+        )
+        sanitized_min, sanitized_max = default_min, default_max
+
+    if sanitized_min != min_val or sanitized_max != max_val:
+        logger.warning(
+            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
+        )
+
+    return sanitized_min, sanitized_max
+
+
 _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     "strategy": _ParamSpec(_EnumValidator(WEIGHT_STRATEGIES)),
     "metric_coefficients": _ParamSpec(_DictValidator(COMBINED_METRICS)),
@@ -1246,28 +1329,28 @@ def get_label_kind_config(
 
 
 def get_label_weighting_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_weighting", config, logger)
 
 
 def get_label_pipeline_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_pipeline", config, logger)
 
 
 def get_label_smoothing_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_prediction", config, logger)
@@ -5387,89 +5470,6 @@ def floor_to_step(value: float | int, step: int) -> int:
     if not np.isfinite(value):
         raise ValueError(f"Invalid value {value!r}: must be finite")
     return int(math.floor(float(value) / step) * step)
-
-
-def validate_range(
-    min_val: float | int,
-    max_val: float | int,
-    logger: Logger,
-    *,
-    name: str,
-    default_min: float | int,
-    default_max: float | int,
-    allow_equal: bool = False,
-    non_negative: bool = True,
-    finite_only: bool = True,
-    max_value: float | int | None = None,
-) -> tuple[float | int, float | int]:
-    min_name = f"min_{name}"
-    max_name = f"max_{name}"
-
-    if not isinstance(default_min, (int, float)) or not isinstance(
-        default_max, (int, float)
-    ):
-        raise ValueError(
-            f"Invalid {name}: defaults must be numeric, "
-            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
-        )
-    if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(
-            f"Invalid {name}: defaults ordering must have min < max, "
-            f"got min={default_min!r}, max={default_max!r}"
-        )
-    if max_value is not None and (default_min > max_value or default_max > max_value):
-        raise ValueError(
-            f"Invalid {name}: defaults must be <= {max_value!r}, "
-            f"got min={default_min!r}, max={default_max!r}"
-        )
-
-    def _validate_component(
-        value: float | int | None, name: str, default_value: float | int
-    ) -> float | int:
-        constraints = []
-        if finite_only:
-            constraints.append("finite")
-        if non_negative:
-            constraints.append("non-negative")
-        constraints.append("numeric")
-        if max_value is not None:
-            constraints.append(f"<= {max_value}")
-        constraint_str = " ".join(constraints)
-        if (
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or (finite_only and not _is_finite_value(value))
-            or (non_negative and value < 0)
-            or (max_value is not None and value > max_value)
-        ):
-            logger.warning(
-                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
-            )
-            return default_value
-        return value
-
-    sanitized_min = _validate_component(min_val, min_name, default_min)
-    sanitized_max = _validate_component(max_val, max_name, default_max)
-
-    ordering_ok = (
-        (sanitized_min < sanitized_max)
-        if not allow_equal
-        else (sanitized_min <= sanitized_max)
-    )
-    if not ordering_ok:
-        logger.warning(
-            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
-            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
-            f"using defaults {default_min!r}, {default_max!r}"
-        )
-        sanitized_min, sanitized_max = default_min, default_max
-
-    if sanitized_min != min_val or sanitized_max != max_val:
-        logger.warning(
-            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
-        )
-
-    return sanitized_min, sanitized_max
 
 
 def get_label_defaults(
