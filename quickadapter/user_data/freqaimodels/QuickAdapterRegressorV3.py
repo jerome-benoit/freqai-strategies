@@ -745,12 +745,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reasons=[str(exc)],
             )
 
+        # Pre-pipeline support gate: fail-fast on the full train split (notably
+        # under support_policy='raise'). The authoritative gate runs again
+        # post-pipeline in _fit_training_pipelines, on the rows actually fed to
+        # model.fit. Both stages are intentional: feature-pipeline outlier
+        # removal is not monotone on support (pivot_equivalent_count/ESS use a
+        # max-relative threshold), so dropping this gate would change the
+        # raise/fallback outcome on some splits, not merely dedupe a warning.
         return QuickAdapterRegressorV3._enforce_train_weight_support(
             base_weights,
             label_weights,
             composed,
             label_weighting_config,
-            policy=policy,
             context=context,
         )
 
@@ -761,10 +767,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         sample_weights: NDArray[np.floating],
         label_weighting_config: dict[str, Any],
         *,
-        policy: LabelWeightSupportPolicy,
         context: str,
     ) -> NDArray[np.floating]:
-        """Enforce label-weight support on already-composed training weights."""
+        """Enforce label-weight support on already-composed training weights.
+
+        Kish's ``effective_sample_size`` is measured on ``sample_weights`` (the
+        weights actually fed to ``model.fit`` -- the pre-pipeline fallback base
+        weights when an earlier stage fell back), whereas
+        ``pivot_equivalent_count`` and ``positive_label_weight_fraction`` derive
+        from raw ``label_weights``; gating ESS on the fed weights is intended.
+        """
+        policy = cast(
+            LabelWeightSupportPolicy, label_weighting_config["support_policy"]
+        )
         summary = summarize_label_weight_support(label_weights, sample_weights)
         reasons: list[str] = []
         min_pivot_equivalent_count = label_weighting_config[
@@ -2552,6 +2567,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
         pipeline_labels = labels
         if weight_inputs.label is not None:
+            # Smuggle the base/label weight vectors as extra label columns so
+            # datasieve row filtering (outlier removal) drops them in lockstep
+            # with the features. Relies on datasieve semantics: feature-pipeline
+            # steps transform X and row-filter y but never alter y VALUES, and
+            # _convert_back_to_df rebuilds y from the label_list captured at
+            # fit. _sanitize_pipeline_weights guards the row-count invariant but
+            # NOT a silent y-value transform; a future y-transforming step would
+            # corrupt these vectors undetected.
             base_weight_column = object()
             label_weight_column = object()
             pipeline_labels = labels.copy()
@@ -2573,16 +2596,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             post_pipeline_label_weights = pipeline_labels.pop(
                 label_weight_column
             ).to_numpy(dtype=float)
+            # Load-bearing: fit_transform captured label_list WITH the smuggled
+            # columns; restore it to the real labels or the next validation/test
+            # transform rebuilds y with the wrong column count (ValueError).
             dk.feature_pipeline.label_list = pipeline_labels.columns
             weights = QuickAdapterRegressorV3._enforce_train_weight_support(
                 post_pipeline_base_weights,
                 post_pipeline_label_weights,
                 weights,
                 weight_inputs.label_weighting_config,
-                policy=cast(
-                    LabelWeightSupportPolicy,
-                    weight_inputs.label_weighting_config["support_policy"],
-                ),
                 context=f"[{pair}] post_feature_pipeline:{context}",
             )
         labels = pipeline_labels
