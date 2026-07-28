@@ -108,8 +108,8 @@ CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 
 class _TradeHistory(TypedDict):
     # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
-    # _UNREALIZED_PNL_TIMEFRAME_KEY constants (a TypedDict field
-    # cannot reference a constant).
+    # _UNREALIZED_PNL_TIMEFRAME_KEY / _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY
+    # constants (a TypedDict field cannot reference a constant).
     unrealized_pnl: list[float]
     take_profit_price: list[float | tuple[int, float]]
     unrealized_pnl_candle_date: NotRequired[str]
@@ -1571,10 +1571,10 @@ class QuickAdapterV3(IStrategy):
         resample_frequency = timeframe_to_resample_freq(timeframe)
         if resample_frequency.endswith(("MS", "YS")):
             calendar_offset = to_offset(resample_frequency)
-            if not calendar_offset.is_on_offset(stored_candle_date) or (
-                resample_frequency.endswith("MS")
-                and (stored_candle_date.month - 1) % calendar_offset.n != 0
-            ):
+            # is_on_offset rejects a non-boundary stored date; stored + offset is the
+            # next candle for any anchor phase (pandas anchors the resample grid on the
+            # data origin, not a fixed epoch, so no month/year % n phase check applies).
+            if not calendar_offset.is_on_offset(stored_candle_date):
                 return True
             expected_candle_date = stored_candle_date + calendar_offset
         else:
