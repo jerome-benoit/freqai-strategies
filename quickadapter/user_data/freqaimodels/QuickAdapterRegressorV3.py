@@ -745,16 +745,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reasons=[str(exc)],
             )
 
-        # Pre-pipeline support gate: fail-fast on the full train split (notably
-        # under support_policy='raise'). The authoritative gate runs again
-        # post-pipeline in _fit_training_pipelines, on the rows actually fed to
-        # model.fit. Both stages are intentional: feature-pipeline outlier
-        # removal is not monotone on support (pivot_equivalent_count/ESS use a
-        # max-relative threshold), so dropping this gate would change the
-        # raise/fallback outcome on some splits, not merely dedupe a warning.
-        # That same non-monotonicity makes this pre-gate a non-conservative
-        # bound: under 'raise' it can abort a split whose post-outlier surviving
-        # rows would have passed the authoritative post-pipeline gate.
+        # Support is gated twice on purpose: here on the full split (fail-fast,
+        # esp. under support_policy='raise') and again post-pipeline in
+        # _fit_training_pipelines on the rows fed to model.fit. Outlier removal
+        # is non-monotone on support (pivot_equivalent_count/ESS use a
+        # max-relative threshold), so this pre-gate is not a conservative bound:
+        # keeping it changes some raise/fallback outcomes, and under 'raise' it
+        # can abort a split the post-pipeline gate would have passed.
         return QuickAdapterRegressorV3._enforce_train_weight_support(
             base_weights,
             label_weights,
@@ -774,12 +771,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> NDArray[np.floating]:
         """Enforce label-weight support on already-composed training weights.
 
-        Kish's ``effective_sample_size`` is measured on the ``sample_weights``
-        passed in -- the full-split composed weights at the pre-pipeline gate,
-        the post-outlier surviving weights bound for ``model.fit`` at the
-        post-pipeline gate -- whereas ``pivot_equivalent_count`` and
-        ``positive_label_weight_fraction`` derive from ``label_weights``; gating
-        ESS on the composed weights is intended.
+        Kish ``effective_sample_size`` is measured on the ``sample_weights``
+        passed in (full-split composed weights pre-pipeline, post-outlier
+        surviving weights post-pipeline); ``pivot_equivalent_count`` and
+        ``positive_label_weight_fraction`` derive from ``label_weights``.
         """
         policy = cast(
             LabelWeightSupportPolicy, label_weighting_config["support_policy"]
@@ -2571,13 +2566,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
         pipeline_labels = labels
         if weight_inputs.label is not None:
-            # Smuggle the base/label weight vectors as extra label columns so
-            # datasieve row filtering (outlier removal) drops them in lockstep
-            # with the features. Relies on datasieve semantics: feature-pipeline
-            # steps transform X and row-filter y but never alter y VALUES, and
-            # _convert_back_to_df rebuilds y from the label_list captured at
-            # fit. _sanitize_pipeline_weights guards the row-count invariant but
-            # NOT a silent y-value transform; a future y-transforming step would
+            # Smuggle base/label weights as extra label columns so datasieve
+            # row-filters them in lockstep with the features. Relies on datasieve
+            # not altering y VALUES (X-only transforms + row drops) and restoring
+            # them via label_list. _sanitize_pipeline_weights guards row count,
+            # not a silent y-value transform: a future y-transforming step would
             # corrupt these vectors undetected.
             base_weight_column = object()
             label_weight_column = object()
