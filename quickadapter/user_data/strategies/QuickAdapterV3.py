@@ -1,6 +1,5 @@
 import datetime
 import hashlib
-import json
 import logging
 import math
 from functools import cached_property, lru_cache, reduce
@@ -212,8 +211,6 @@ class QuickAdapterV3(IStrategy):
     )
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
-    _TRADE_HISTORY_KEY: Final[str] = "history_v2"
-    _LEGACY_TRADE_HISTORY_KEY: Final[str] = "history"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
     _UNREALIZED_PNL_TIMEFRAME_KEY: Final[str] = "unrealized_pnl_timeframe"
     _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
@@ -1528,34 +1525,9 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def _get_trade_history(trade: Trade) -> _TradeHistory:
-        missing = object()
-        history = trade.get_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, missing)
-        migrate_legacy = False
-        if history is missing:
-            try:
-                history = trade.get_custom_data(
-                    QuickAdapterV3._LEGACY_TRADE_HISTORY_KEY, missing
-                )
-            except ValueError:
-                history = {}
-                migrate_legacy = True
-            else:
-                migrate_legacy = history is not missing
-                if migrate_legacy and isinstance(history, str):
-                    # Freqtrade preserves a row's scalar cd_type on updates, so a
-                    # prior dictionary write can be returned as raw JSON here.
-                    try:
-                        history = json.loads(history)
-                    except json.JSONDecodeError:
-                        pass
-        if history is missing or not isinstance(history, dict):
-            history = {}
-        for key in ("unrealized_pnl", "take_profit_price"):
-            if not isinstance(history.get(key), list):
-                history[key] = []
-        if migrate_legacy:
-            trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
-        return history
+        return trade.get_custom_data(
+            "history", {"unrealized_pnl": [], "take_profit_price": []}
+        )
 
     @staticmethod
     def get_trade_unrealized_pnl_history(trade: Trade) -> list[float]:
@@ -1583,7 +1555,7 @@ class QuickAdapterV3(IStrategy):
         )
         history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY] = self.timeframe
         history.pop(QuickAdapterV3._LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY, None)
-        trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
+        trade.set_custom_data("history", history)
         return pnl_history
 
     @staticmethod
@@ -1632,7 +1604,7 @@ class QuickAdapterV3(IStrategy):
             trade_unrealized_pnl_history = []
             history["unrealized_pnl"] = trade_unrealized_pnl_history
             history.pop(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY, None)
-            trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
+            trade.set_custom_data("history", history)
         if not trade_unrealized_pnl_history or (
             history.get(QuickAdapterV3._UNREALIZED_PNL_CANDLE_DATE_KEY)
             != candle_date.isoformat()
@@ -1651,7 +1623,7 @@ class QuickAdapterV3(IStrategy):
         if len(price_history) > self._max_history_size:
             price_history = price_history[-self._max_history_size :]
             history["take_profit_price"] = price_history
-        trade.set_custom_data(QuickAdapterV3._TRADE_HISTORY_KEY, history)
+        trade.set_custom_data("history", history)
         return price_history
 
     def safe_append_trade_take_profit_price(
