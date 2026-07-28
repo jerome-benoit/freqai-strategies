@@ -107,13 +107,12 @@ _TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 class _TradeHistory(TypedDict):
     # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
-    # _UNREALIZED_PNL_TIMEFRAME_KEY / _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY
-    # constants (a TypedDict field cannot reference a constant).
+    # _UNREALIZED_PNL_TIMEFRAME_KEY constants (a TypedDict field cannot
+    # reference a constant).
     unrealized_pnl: list[float]
     take_profit_price: list[_TakeProfitHistoryEntry]
     unrealized_pnl_candle_date: NotRequired[str]
     unrealized_pnl_timeframe: NotRequired[str]
-    unrealized_pnl_timeframe_minutes: NotRequired[int]
 
 
 logger = logging.getLogger(__name__)
@@ -202,9 +201,6 @@ class QuickAdapterV3(IStrategy):
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
     _UNREALIZED_PNL_TIMEFRAME_KEY: Final[str] = "unrealized_pnl_timeframe"
-    _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
-        "unrealized_pnl_timeframe_minutes"
-    )
 
     # Rounding margin so the sized partial-exit remainder clears freqtrade's
     # strict `remaining < min_exit_stake` guard.
@@ -1494,11 +1490,6 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    def get_trade_unrealized_pnl_history(trade: Trade) -> list[float]:
-        history = QuickAdapterV3._get_trade_history(trade)
-        return history.get("unrealized_pnl", [])
-
-    @staticmethod
     def get_trade_take_profit_price_history(
         trade: Trade,
     ) -> list[_TakeProfitHistoryEntry]:
@@ -1518,7 +1509,6 @@ class QuickAdapterV3(IStrategy):
             candle_date.isoformat()
         )
         history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY] = self.timeframe
-        history.pop(QuickAdapterV3._LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY, None)
         trade.set_custom_data("history", history)
         return pnl_history
 
