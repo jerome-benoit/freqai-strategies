@@ -105,6 +105,7 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
+_TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 
 class _TradeHistory(TypedDict):
@@ -112,7 +113,7 @@ class _TradeHistory(TypedDict):
     # _UNREALIZED_PNL_TIMEFRAME_KEY / _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY
     # constants (a TypedDict field cannot reference a constant).
     unrealized_pnl: list[float]
-    take_profit_price: list[float | tuple[int, float]]
+    take_profit_price: list[_TakeProfitHistoryEntry]
     unrealized_pnl_candle_date: NotRequired[str]
     unrealized_pnl_timeframe: NotRequired[str]
     unrealized_pnl_timeframe_minutes: NotRequired[int]
@@ -1540,7 +1541,7 @@ class QuickAdapterV3(IStrategy):
     @staticmethod
     def get_trade_take_profit_price_history(
         trade: Trade,
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         return history.get("take_profit_price", [])
 
@@ -1619,7 +1620,7 @@ class QuickAdapterV3(IStrategy):
 
     def append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         history = QuickAdapterV3._get_trade_history(trade)
         price_history = history.setdefault("take_profit_price", [])
         price_history.append((exit_stage, take_profit_price))
@@ -1631,7 +1632,7 @@ class QuickAdapterV3(IStrategy):
 
     def safe_append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[float | tuple[int, float]]:
+    ) -> list[_TakeProfitHistoryEntry]:
         trade_take_profit_price_history = (
             QuickAdapterV3.get_trade_take_profit_price_history(trade)
         )
@@ -1642,13 +1643,21 @@ class QuickAdapterV3(IStrategy):
         )
         previous_exit_stage = None
         previous_take_profit_price = None
-        if isinstance(previous_take_profit_entry, tuple):
-            previous_exit_stage = (
-                previous_take_profit_entry[0] if previous_take_profit_entry else None
+        if (
+            isinstance(previous_take_profit_entry, (tuple, list))
+            and len(previous_take_profit_entry) == 2
+        ):
+            candidate_exit_stage, candidate_take_profit_price = (
+                previous_take_profit_entry
             )
-            previous_take_profit_price = (
-                previous_take_profit_entry[1] if previous_take_profit_entry else None
-            )
+            if (
+                isinstance(candidate_exit_stage, int)
+                and not isinstance(candidate_exit_stage, bool)
+                and isinstance(candidate_take_profit_price, (int, float))
+                and not isinstance(candidate_take_profit_price, bool)
+            ):
+                previous_exit_stage = candidate_exit_stage
+                previous_take_profit_price = candidate_take_profit_price
         elif isinstance(previous_take_profit_entry, float):
             previous_exit_stage = -1
             previous_take_profit_price = previous_take_profit_entry
