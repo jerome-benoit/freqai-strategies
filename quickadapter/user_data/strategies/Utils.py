@@ -1230,12 +1230,6 @@ CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
     ),
 )
 
-CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = tuple(
-    (path, replacement)
-    for path, replacement, predicate, _ in CONFIG_DEPRECATIONS
-    if replacement is not None and predicate is None
-)
-
 _WARNED_CONFIG_DEPRECATIONS: set[str] = set()
 _CONFIG_DEPRECATION_WARNING_LOCK = Lock()
 
