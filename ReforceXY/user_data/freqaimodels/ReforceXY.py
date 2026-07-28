@@ -32,6 +32,7 @@ import optunahub
 import pandas as pd
 import torch as th
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
+from freqtrade.enums import RunMode
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
 from freqtrade.freqai.RL.BaseEnvironment import BaseEnvironment
@@ -291,6 +292,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON: Final[float] = 1e-6
     DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION: Final[float] = 0.01
+    DEFAULT_INFERENCE_MASKING: Final[bool] = True
 
     _MODEL_TYPES: Final[tuple[ModelType, ...]] = (
         "PPO",
@@ -376,6 +378,30 @@ class ReforceXY(BaseReinforcementLearningModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        runmode = self.config.get("runmode")
+        if self.model_type == ReforceXY._MODEL_TYPES[1] and runmode in (
+            RunMode.DRY_RUN,
+            RunMode.LIVE,
+        ):
+            raise ValueError(
+                "Config [global]: RecurrentPPO is disabled in dry-run and live "
+                "because ReforceXY does not maintain complete causal observation "
+                "history or durable episode state across process restarts."
+            )
+
+        inference_masking = self.rl_config.get(
+            "inference_masking", ReforceXY.DEFAULT_INFERENCE_MASKING
+        )
+        if (
+            self.model_type == ReforceXY._MODEL_TYPES[2]
+            and inference_masking is not True
+        ):
+            raise ValueError(
+                "Config [global]: MaskablePPO requires inference_masking=true "
+                "so inference uses the same ReforceXY action-mask mechanism as "
+                "training and evaluation."
+            )
+
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -384,8 +410,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         self.action_masking: bool = self.model_type == ReforceXY._MODEL_TYPES[2]  # "MaskablePPO"
         self.rl_config.setdefault("action_masking", self.action_masking)
-        self.inference_masking: bool = self.rl_config.get("inference_masking", True)
-        self.recurrent: bool = self.model_type == ReforceXY._MODEL_TYPES[1]  # "RecurrentPPO"
+        self.inference_masking: bool = inference_masking
+        self.recurrent: bool = (
+            self.model_type == ReforceXY._MODEL_TYPES[1]
+        )  # "RecurrentPPO"
         self.lr_schedule: bool = self.rl_config.get("lr_schedule", False)
         self.cr_schedule: bool = self.rl_config.get("cr_schedule", False)
         self.n_envs: int = self.rl_config.get("n_envs", 1)
