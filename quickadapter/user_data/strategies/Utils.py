@@ -43,6 +43,7 @@ from LabelTransformer import (
     LABEL_WEIGHT_SUPPORT_POLICIES,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_METHODS,
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
@@ -53,6 +54,7 @@ from LabelTransformer import (
     FillEpsilonBaseline,
     SmoothingMethod,
     SmoothingMode,
+    get_label_column_config,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -347,6 +349,8 @@ class _NumericValidator:
     require_int: bool = False
 
     def __call__(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
         if self.require_int and not isinstance(value, int):
             return False
         if not isinstance(value, (int, float)) or not _is_finite_value(value):
@@ -413,7 +417,22 @@ class _DictValidator:
         return "must be a mapping"
 
 
-_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator
+@dataclass(frozen=True, slots=True)
+class _BoolValidator:
+    def __call__(self, value: Any) -> bool:
+        return isinstance(value, bool)
+
+    def message(self, param: str) -> str:
+        return "must be a boolean"
+
+
+_Validator = (
+    _EnumValidator
+    | _NumericValidator
+    | _RangeValidator
+    | _DictValidator
+    | _BoolValidator
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +474,89 @@ def _validate_params(
                 value = spec.output_type(value)
         result[param] = value
     return result
+
+
+def validate_range(
+    min_val: float | int,
+    max_val: float | int,
+    logger: Logger,
+    *,
+    name: str,
+    default_min: float | int,
+    default_max: float | int,
+    allow_equal: bool = False,
+    non_negative: bool = True,
+    finite_only: bool = True,
+    max_value: float | int | None = None,
+) -> tuple[float | int, float | int]:
+    min_name = f"min_{name}"
+    max_name = f"max_{name}"
+
+    if not isinstance(default_min, (int, float)) or not isinstance(
+        default_max, (int, float)
+    ):
+        raise ValueError(
+            f"Invalid {name}: defaults must be numeric, "
+            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
+        )
+    if default_min > default_max or (not allow_equal and default_min == default_max):
+        raise ValueError(
+            f"Invalid {name}: defaults ordering must have min < max, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+    if max_value is not None and (default_min > max_value or default_max > max_value):
+        raise ValueError(
+            f"Invalid {name}: defaults must be <= {max_value!r}, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+
+    def _validate_component(
+        value: float | int | None, name: str, default_value: float | int
+    ) -> float | int:
+        constraints = []
+        if finite_only:
+            constraints.append("finite")
+        if non_negative:
+            constraints.append("non-negative")
+        constraints.append("numeric")
+        if max_value is not None:
+            constraints.append(f"<= {max_value}")
+        constraint_str = " ".join(constraints)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or (finite_only and not _is_finite_value(value))
+            or (non_negative and value < 0)
+            or (max_value is not None and value > max_value)
+        ):
+            logger.warning(
+                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
+            )
+            return default_value
+        return value
+
+    sanitized_min = _validate_component(min_val, min_name, default_min)
+    sanitized_max = _validate_component(max_val, max_name, default_max)
+
+    ordering_ok = (
+        (sanitized_min < sanitized_max)
+        if not allow_equal
+        else (sanitized_min <= sanitized_max)
+    )
+    if not ordering_ok:
+        logger.warning(
+            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
+            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
+            f"using defaults {default_min!r}, {default_max!r}"
+        )
+        sanitized_min, sanitized_max = default_min, default_max
+
+    if sanitized_min != min_val or sanitized_max != max_val:
+        logger.warning(
+            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
+        )
+
+    return sanitized_min, sanitized_max
 
 
 _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -941,11 +1043,20 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
+    if value is not None and not isinstance(value, dict):
+        logger.warning(
+            f"Invalid {name} value {value!r}: must be a mapping, using defaults"
+        )
+    return as_dict(value)
+
+
 def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
     return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
+CrossFieldValidatorFn = Callable[[dict[str, Any], str], None]
 
 
 _MISSING: Final = object()
@@ -1148,16 +1259,38 @@ def _get_label_config(
         return {"default": validated_default, "columns": {}}
 
 
-_LABEL_KIND_REGISTRY: Final[dict[str, tuple[dict[str, _ParamSpec], dict[str, Any]]]] = {
-    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING),
-    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE),
-    "label_smoothing": (_SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING),
-    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION),
+def _validate_smoothing_method_mode(
+    config: dict[str, Any],
+    config_name: str,
+) -> None:
+    method = config["method"]
+    valid_modes = SMOOTHING_METHOD_MODES.get(method)
+    if valid_modes is not None and config["mode"] not in valid_modes:
+        raise ValueError(
+            f"Invalid {config_name} mode value {config['mode']!r} for "
+            f"method {method!r}: supported values are {', '.join(valid_modes)}"
+        )
+
+
+_LABEL_KIND_REGISTRY: Final[
+    dict[
+        str,
+        tuple[dict[str, _ParamSpec], dict[str, Any], CrossFieldValidatorFn | None],
+    ]
+] = {
+    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING, None),
+    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE, None),
+    "label_smoothing": (
+        _SMOOTHING_SPECS,
+        DEFAULTS_LABEL_SMOOTHING,
+        _validate_smoothing_method_mode,
+    ),
+    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION, None),
 }
 
 
 def _label_kind_validator(kind: str) -> ValidateParamsFn:
-    specs, defaults = _LABEL_KIND_REGISTRY[kind]
+    specs, defaults, _ = _LABEL_KIND_REGISTRY[kind]
 
     def validate(
         config: dict[str, Any],
@@ -1171,7 +1304,7 @@ def _label_kind_validator(kind: str) -> ValidateParamsFn:
 
 def get_label_kind_config(
     kind: str,
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     if kind not in _LABEL_KIND_REGISTRY:
@@ -1179,35 +1312,45 @@ def get_label_kind_config(
             f"Unknown label kind {kind!r}: supported values are "
             f"{', '.join(_LABEL_KIND_REGISTRY)}"
         )
-    _, defaults = _LABEL_KIND_REGISTRY[kind]
-    return _get_label_config(
+    config = as_config_section(config, kind, logger)
+    _, defaults, cross_field_validator = _LABEL_KIND_REGISTRY[kind]
+    validated = _get_label_config(
         config, logger, kind, _label_kind_validator(kind), defaults
     )
+    if cross_field_validator is not None:
+        for label_col in LABEL_COLUMNS:
+            cross_field_validator(
+                get_label_column_config(
+                    label_col, validated["default"], validated["columns"]
+                ),
+                f"{kind} for label {label_col!r}",
+            )
+    return validated
 
 
 def get_label_weighting_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_weighting", config, logger)
 
 
 def get_label_pipeline_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_pipeline", config, logger)
 
 
 def get_label_smoothing_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_prediction", config, logger)
@@ -1224,10 +1367,163 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
+def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
     return _validate_params(
-        config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
+        as_config_section(config, "exit_pricing", logger),
+        logger,
+        "exit_pricing",
+        _EXIT_PRICING_SPECS,
+        DEFAULTS_EXIT_PRICING,
     )
+
+
+DEFAULTS_EXIT_THRESHOLDS_CALIBRATION: Final[dict[str, Any]] = {
+    "decline_quantile": 0.5,
+}
+
+_EXIT_THRESHOLDS_CALIBRATION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "decline_quantile": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+}
+
+
+def get_exit_thresholds_calibration_config(
+    config: Any,
+    logger: Logger,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    # exit_pricing mapping warning owned by get_exit_pricing_config (avoid double-warn)
+    config = as_dict(config)
+    # validate the override so an invalid subclass default falls back to the canonical default
+    defaults = _validate_params(
+        overrides or {},
+        logger,
+        "exit_pricing.thresholds_calibration",
+        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
+        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
+    )
+    return _validate_params(
+        as_config_section(
+            config.get("thresholds_calibration"),
+            "exit_pricing.thresholds_calibration",
+            logger,
+        ),
+        logger,
+        "exit_pricing.thresholds_calibration",
+        _EXIT_THRESHOLDS_CALIBRATION_SPECS,
+        defaults,
+    )
+
+
+DEFAULTS_CUSTOM_PROTECTIONS: Final[dict[str, Any]] = {
+    "trade_duration_candles": 72,
+    "lookback_period_fraction": 0.5,
+}
+
+DEFAULTS_COOLDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "stop_duration_candles": 4,
+}
+
+DEFAULTS_DRAWDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "max_allowed_drawdown": 0.2,
+}
+
+DEFAULTS_STOPLOSS_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+}
+
+_CUSTOM_PROTECTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "trade_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "lookback_period_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+_COOLDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "stop_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+_DRAWDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "max_allowed_drawdown": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+}
+
+_STOPLOSS_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+}
+
+
+def get_custom_protections_config(config: Any, logger: Logger) -> dict[str, Any]:
+    config = as_config_section(config, "custom_protections", logger)
+    validated = _validate_params(
+        config,
+        logger,
+        "custom_protections",
+        _CUSTOM_PROTECTIONS_SPECS,
+        DEFAULTS_CUSTOM_PROTECTIONS,
+    )
+    validated["cooldown"] = _validate_params(
+        as_config_section(
+            config.get("cooldown"), "custom_protections.cooldown", logger
+        ),
+        logger,
+        "custom_protections.cooldown",
+        _COOLDOWN_PROTECTION_SPECS,
+        DEFAULTS_COOLDOWN_PROTECTION,
+    )
+    validated["drawdown"] = _validate_params(
+        as_config_section(
+            config.get("drawdown"), "custom_protections.drawdown", logger
+        ),
+        logger,
+        "custom_protections.drawdown",
+        _DRAWDOWN_PROTECTION_SPECS,
+        DEFAULTS_DRAWDOWN_PROTECTION,
+    )
+    validated["stoploss"] = _validate_params(
+        as_config_section(
+            config.get("stoploss"), "custom_protections.stoploss", logger
+        ),
+        logger,
+        "custom_protections.stoploss",
+        _STOPLOSS_PROTECTION_SPECS,
+        DEFAULTS_STOPLOSS_PROTECTION,
+    )
+    return validated
+
+
+_FIT_LIVE_PREDICTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "fit_live_predictions_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+
+def get_fit_live_predictions_candles(config: Any, logger: Logger) -> int:
+    return _validate_params(
+        as_config_section(config, "freqai", logger),
+        logger,
+        "freqai",
+        _FIT_LIVE_PREDICTIONS_SPECS,
+        {"fit_live_predictions_candles": DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES},
+    )["fit_live_predictions_candles"]
 
 
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
@@ -1252,8 +1548,9 @@ _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_reversal_confirmation_config(
-    config: dict[str, Any], logger: Logger
+    config: Any, logger: Logger
 ) -> dict[str, int | float]:
+    config = as_config_section(config, "reversal_confirmation", logger)
     validated = _validate_params(
         config,
         logger,
@@ -1281,6 +1578,7 @@ def get_reversal_confirmation_config(
         allow_equal=False,
         non_negative=True,
         finite_only=True,
+        max_value=1,
     )
 
     return {
@@ -5172,80 +5470,6 @@ def floor_to_step(value: float | int, step: int) -> int:
     if not np.isfinite(value):
         raise ValueError(f"Invalid value {value!r}: must be finite")
     return int(math.floor(float(value) / step) * step)
-
-
-def validate_range(
-    min_val: float | int,
-    max_val: float | int,
-    logger: Logger,
-    *,
-    name: str,
-    default_min: float | int,
-    default_max: float | int,
-    allow_equal: bool = False,
-    non_negative: bool = True,
-    finite_only: bool = True,
-) -> tuple[float | int, float | int]:
-    min_name = f"min_{name}"
-    max_name = f"max_{name}"
-
-    if not isinstance(default_min, (int, float)) or not isinstance(
-        default_max, (int, float)
-    ):
-        raise ValueError(
-            f"Invalid {name}: defaults must be numeric, "
-            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
-        )
-    if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(
-            f"Invalid {name}: defaults ordering must have min < max, "
-            f"got min={default_min!r}, max={default_max!r}"
-        )
-
-    def _validate_component(
-        value: float | int | None, name: str, default_value: float | int
-    ) -> float | int:
-        constraints = []
-        if finite_only:
-            constraints.append("finite")
-        if non_negative:
-            constraints.append("non-negative")
-        constraints.append("numeric")
-        constraint_str = " ".join(constraints)
-        if (
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or (finite_only and not _is_finite_value(value))
-            or (non_negative and value < 0)
-        ):
-            logger.warning(
-                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
-            )
-            return default_value
-        return value
-
-    sanitized_min = _validate_component(min_val, min_name, default_min)
-    sanitized_max = _validate_component(max_val, max_name, default_max)
-
-    ordering_ok = (
-        (sanitized_min < sanitized_max)
-        if not allow_equal
-        else (sanitized_min <= sanitized_max)
-    )
-    if not ordering_ok:
-        logger.warning(
-            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
-            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
-            f"using defaults {default_min!r}, {default_max!r}"
-        )
-        sanitized_min, sanitized_max = default_min, default_max
-
-    if sanitized_min != min_val or sanitized_max != max_val:
-        logger.warning(
-            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
-        )
-
-    return sanitized_min, sanitized_max
 
 
 def get_label_defaults(

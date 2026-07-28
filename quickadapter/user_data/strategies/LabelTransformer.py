@@ -180,6 +180,10 @@ SMOOTHING_MODES: Final[tuple[SmoothingMode, ...]] = (
     "wrap",
     "interp",
 )
+SMOOTHING_METHOD_MODES: Final[dict[SmoothingMethod, tuple[SmoothingMode, ...]]] = {
+    SMOOTHING_METHODS[7]: SMOOTHING_MODES,  # "savgol"
+    SMOOTHING_METHODS[8]: SMOOTHING_MODES[:-1],  # "gaussian_filter1d"
+}
 
 DEFAULTS_LABEL_SMOOTHING: Final[dict[str, Any]] = {
     "method": SMOOTHING_METHODS[1],  # "gaussian"
