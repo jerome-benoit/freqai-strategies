@@ -172,6 +172,7 @@
       "timeout": 7200,
       "label_candles_step": 1,
       "storage": "file",
+      "reset_label_study_on_schema_mismatch": true,
       "vary_model_seed_by_trial": true
     },
     "extra_returns_per_train": {
