@@ -67,9 +67,7 @@ from LabelTransformer import (
 )
 
 from Utils import (
-    as_dict,
     enum_error_message,
-    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
     DEFAULT_MAX_LABEL_PERIOD_CANDLES,
     DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
@@ -92,6 +90,7 @@ from Utils import (
     format_dict,
     format_number,
     get_causal_mode,
+    get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_pipeline_config,
@@ -222,13 +221,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     version = "3.12.4"
 
     _TEST_SIZE: Final[float] = 0.1
+    _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
+        {"test_size", "train_size", "random_state", "shuffle", "stratify"}
+    )
+
     # Substituted whenever the Weibull DI cutoff (``weibull_min.ppf``) is
     # non-finite (cold start or degenerate fit). Preserves the prior
     # pre-warm-up heuristic for the outlier-quantile cutoff scale.
     _DI_CUTOFF_DEFAULT: Final[float] = 2.0
-    _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
-        {"test_size", "train_size", "random_state", "shuffle", "stratify"}
-    )
 
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
@@ -237,6 +237,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
+    _STORAGE_FILE: Final[str] = _OPTUNA_STORAGE_BACKENDS[0]
+    _STORAGE_SQLITE: Final[str] = _OPTUNA_STORAGE_BACKENDS[1]
+
     _OPTUNA_JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
     _OPTUNA_JOURNAL_RECOVERABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
         KeyError,
@@ -265,15 +268,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "standard",
         "robust",
     )
+    SCALER_DEFAULT: Final[ScalerType] = _SCALER_TYPES[0]  # "minmax"
+    _SCALER_MAXABS: Final[str] = _SCALER_TYPES[1]
+    _SCALER_STANDARD: Final[str] = _SCALER_TYPES[2]
+    _SCALER_ROBUST: Final[str] = _SCALER_TYPES[3]
     _SCALER_TYPES_SET: Final[frozenset[ScalerType]] = frozenset(_SCALER_TYPES)
 
-    SCALER_DEFAULT: Final[ScalerType] = _SCALER_TYPES[0]  # "minmax"
     RANGE_DEFAULT: Final[tuple[float, float]] = (-1.0, 1.0)
 
     _DISTANCE_METHODS: Final[tuple[DistanceMethod, ...]] = (
         "compromise_programming",
         "topsis",
     )
+    _METHOD_COMPROMISE_PROGRAMMING: Final[str] = _DISTANCE_METHODS[0]
+    _METHOD_TOPSIS: Final[str] = _DISTANCE_METHODS[1]
     _DISTANCE_METHODS_SET: Final[frozenset[DistanceMethod]] = frozenset(
         _DISTANCE_METHODS
     )
@@ -282,7 +290,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "kmeans2",
         "kmedoids",
     )
+    _CLUSTER_KMEANS: Final[str] = _CLUSTER_METHODS[0]
+    _CLUSTER_KMEANS2: Final[str] = _CLUSTER_METHODS[1]
+    _CLUSTER_KMEDOIDS: Final[str] = _CLUSTER_METHODS[2]
+
     _DENSITY_METHODS: Final[tuple[DensityMethod, ...]] = ("knn", "medoid")
+    _DENSITY_KNN: Final[str] = _DENSITY_METHODS[0]
+    _DENSITY_MEDOID: Final[str] = _DENSITY_METHODS[1]
 
     _SELECTION_CATEGORIES: Final[dict[str, tuple[SelectionMethod, ...]]] = {
         "distance": _DISTANCE_METHODS,
@@ -295,6 +309,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *_CLUSTER_METHODS,
         *_DENSITY_METHODS,
     )
+    _SELECTION_KMEANS: Final[str] = _SELECTION_METHODS[2]
+    _SELECTION_KMEANS2: Final[str] = _SELECTION_METHODS[3]
+    _SELECTION_KMEDOIDS: Final[str] = _SELECTION_METHODS[4]
+    _SELECTION_KNN: Final[str] = _SELECTION_METHODS[5]
+    _SELECTION_MEDOID: Final[str] = _SELECTION_METHODS[6]
     _SELECTION_METHODS_SET: Final[frozenset[SelectionMethod]] = frozenset(
         _SELECTION_METHODS
     )
@@ -318,6 +337,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "power_mean",
         "weighted_sum",
     )
+    _METRIC_EUCLIDEAN: Final[str] = _DISTANCE_METRICS[0]
+    _METRIC_MINKOWSKI: Final[str] = _DISTANCE_METRICS[1]
+    _METRIC_HELLINGER: Final[str] = _DISTANCE_METRICS[8]
+    _METRIC_SHELLINGER: Final[str] = _DISTANCE_METRICS[9]
+    _METRIC_POWER_MEAN: Final[str] = _DISTANCE_METRICS[15]
+    _METRIC_WEIGHTED_SUM: Final[str] = _DISTANCE_METRICS[16]
     _DISTANCE_METRICS_SET: Final[frozenset[str]] = frozenset(_DISTANCE_METRICS)
     # SciPy-compatible distance metrics: the first 8 entries of
     # ``_DISTANCE_METRICS`` route to ``scipy.spatial.distance.cdist``.
@@ -331,22 +356,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _UNSUPPORTED_WEIGHTS_METRICS_SET: Final[frozenset[str]] = frozenset(
         _UNSUPPORTED_WEIGHTS_METRICS
     )
-
-    _METHOD_COMPROMISE_PROGRAMMING: Final[str] = _DISTANCE_METHODS[0]
-    _METHOD_TOPSIS: Final[str] = _DISTANCE_METHODS[1]
-    _METRIC_EUCLIDEAN: Final[str] = _DISTANCE_METRICS[0]
-    _METRIC_MINKOWSKI: Final[str] = _DISTANCE_METRICS[1]
-    _METRIC_HELLINGER: Final[str] = _DISTANCE_METRICS[8]
-    _METRIC_SHELLINGER: Final[str] = _DISTANCE_METRICS[9]
-    _METRIC_POWER_MEAN: Final[str] = _DISTANCE_METRICS[15]
-    _METRIC_WEIGHTED_SUM: Final[str] = _DISTANCE_METRICS[16]
-    _CLUSTER_KMEANS: Final[str] = _CLUSTER_METHODS[0]
-    _CLUSTER_KMEANS2: Final[str] = _CLUSTER_METHODS[1]
-    _SELECTION_KMEANS: Final[str] = _SELECTION_METHODS[2]
-    _SELECTION_KMEANS2: Final[str] = _SELECTION_METHODS[3]
-    _SELECTION_KMEDOIDS: Final[str] = _SELECTION_METHODS[4]
-    _SELECTION_KNN: Final[str] = _SELECTION_METHODS[5]
-    _SELECTION_MEDOID: Final[str] = _SELECTION_METHODS[6]
 
     _PROBABILITY_DISTANCE_METRICS: Final[tuple[str, ...]] = (
         "jensenshannon",
@@ -380,6 +389,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "min",
         "max",
     )
+    _DENSITY_AGG_POWER_MEAN: Final[str] = _DENSITY_AGGREGATIONS[0]
+    _DENSITY_AGG_QUANTILE: Final[str] = _DENSITY_AGGREGATIONS[1]
+    _DENSITY_AGG_MIN: Final[str] = _DENSITY_AGGREGATIONS[2]
+    _DENSITY_AGG_MAX: Final[str] = _DENSITY_AGGREGATIONS[3]
     _DENSITY_AGGREGATIONS_SET: Final[frozenset[DensityAggregation]] = frozenset(
         _DENSITY_AGGREGATIONS
     )
@@ -393,9 +406,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     }
     _POWER_MEAN_METRICS_SET: Final[frozenset[str]] = frozenset(_POWER_MEAN_MAP)
 
-    FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
-        DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-    )
     MIN_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = DEFAULT_MIN_LABEL_PERIOD_CANDLES
     MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = DEFAULT_MAX_LABEL_PERIOD_CANDLES
     MIN_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = DEFAULT_MIN_LABEL_NATR_MULTIPLIER
@@ -443,18 +453,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     )
     DATA_SPLIT_METHOD_DEFAULT: Final[str] = _DATA_SPLIT_METHODS[0]
     _DATA_SPLIT_TIMESERIES: Final[str] = _DATA_SPLIT_METHODS[1]
-    _CLUSTER_KMEDOIDS: Final[str] = _CLUSTER_METHODS[2]
-    _DENSITY_KNN: Final[str] = _DENSITY_METHODS[0]
-    _DENSITY_MEDOID: Final[str] = _DENSITY_METHODS[1]
-    _DENSITY_AGG_POWER_MEAN: Final[str] = _DENSITY_AGGREGATIONS[0]
-    _DENSITY_AGG_QUANTILE: Final[str] = _DENSITY_AGGREGATIONS[1]
-    _DENSITY_AGG_MIN: Final[str] = _DENSITY_AGGREGATIONS[2]
-    _DENSITY_AGG_MAX: Final[str] = _DENSITY_AGGREGATIONS[3]
-    _SCALER_MAXABS: Final[str] = _SCALER_TYPES[1]
-    _SCALER_STANDARD: Final[str] = _SCALER_TYPES[2]
-    _SCALER_ROBUST: Final[str] = _SCALER_TYPES[3]
-    _STORAGE_FILE: Final[str] = _OPTUNA_STORAGE_BACKENDS[0]
-    _STORAGE_SQLITE: Final[str] = _OPTUNA_STORAGE_BACKENDS[1]
     TIMESERIES_N_SPLITS_DEFAULT: Final[int] = 5
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
@@ -1387,19 +1385,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
         return get_label_weighting_config(
-            as_dict(self.freqai_info.get("label_weighting")), logger
+            self.freqai_info.get("label_weighting"), logger
         )
 
     @cached_property
     def label_pipeline(self) -> dict[str, Any]:
-        return get_label_pipeline_config(
-            as_dict(self.freqai_info.get("label_pipeline")), logger
-        )
+        return get_label_pipeline_config(self.freqai_info.get("label_pipeline"), logger)
 
     @cached_property
     def label_prediction(self) -> dict[str, Any]:
         return get_label_prediction_config(
-            as_dict(self.freqai_info.get("label_prediction")), logger
+            self.freqai_info.get("label_prediction"), logger
         )
 
     @cached_property
@@ -1433,6 +1429,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         migrate_config(self.config, logger)
+        self._fit_live_predictions_candles: int = get_fit_live_predictions_candles(
+            self.freqai_info, logger
+        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1639,7 +1638,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         logger.info("Label Hyperparameters:")
         logger.info(
-            f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
+            f"  fit_live_predictions_candles: {self._fit_live_predictions_candles}"
         )
         if self._optuna_hyperopt:
             logger.info(
@@ -2967,10 +2966,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         warmed_up = True
 
-        fit_live_predictions_candles = self.freqai_info.get(
-            "fit_live_predictions_candles",
-            QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT,
-        )
+        fit_live_predictions_candles = self._fit_live_predictions_candles
 
         if self._optuna_hyperopt:
             self.optuna_throttle_callback(

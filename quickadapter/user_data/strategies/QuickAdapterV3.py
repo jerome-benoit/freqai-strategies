@@ -14,7 +14,6 @@ from typing import (
     Optional,
     Sequence,
     TypedDict,
-    TypeVar,
 )
 
 import numpy as np
@@ -34,6 +33,7 @@ from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
     SMOOTHING_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_MODES,
     WEIGHT_STRATEGIES,
     get_label_column_config,
@@ -42,9 +42,8 @@ from pandas import DataFrame, Series, isna, to_numeric
 from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
-    as_dict,
+    DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
     _OPTUNA_NAMESPACES,
-    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
     EXTREMA_DIRECTION_SMOOTHED_COLUMN,
@@ -67,7 +66,10 @@ from Utils import (
     get_callable_sha256,
     get_causal_mode,
     get_distance,
+    get_custom_protections_config,
     get_exit_pricing_config,
+    get_exit_thresholds_calibration_config,
+    get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_smoothing_config,
@@ -102,7 +104,6 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
-_PairCacheT = TypeVar("_PairCacheT", bound=dict)
 
 
 class _TradeHistory(TypedDict):
@@ -139,6 +140,8 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
+    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
+    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
     _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(
         _TRADE_DIRECTIONS
     )
@@ -146,21 +149,18 @@ class QuickAdapterV3(IStrategy):
         "direct",
         "inverse",
     )
+    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
+    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
-    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
-    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
     _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]
     _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]
     _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
-    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
-    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
     _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]
     _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]
     _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
     _SMOOTHING_SMM: Final[str] = SMOOTHING_METHODS[5]
     _SMOOTHING_SAVGOL: Final[str] = SMOOTHING_METHODS[7]
-    _SMOOTHING_GAUSSIAN_FILTER1D: Final[str] = SMOOTHING_METHODS[8]
     _FILL_EPSILON: Final[str] = FILL_METHODS[1]
     _FILL_GAUSSIAN: Final[str] = FILL_METHODS[2]
     _FILL_EPSILON_GAUSSIAN: Final[str] = FILL_METHODS[3]
@@ -184,9 +184,9 @@ class QuickAdapterV3(IStrategy):
         "t_decl_a": 0.675,
     }
 
-    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = {
-        "decline_quantile": 0.5,
-    }
+    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = (
+        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION
+    )
 
     position_adjustment_enable = True
 
@@ -226,22 +226,8 @@ class QuickAdapterV3(IStrategy):
     # strict `remaining < min_exit_stake` guard.
     _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
 
-    minimal_roi = {str(timeframe_minutes * 864): -1}
-
     # FreqAI is crashing if minimal_roi is a property
-    # @property
-    # def minimal_roi(self) -> dict[str, Any]:
-    #     timeframe_minutes = self.timeframe_minutes
-    #     fit_live_predictions_candles = int(
-    #         self.config.get("freqai", {}).get(
-    #             "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-    #         )
-    #     )
-    #     return {str(timeframe_minutes * fit_live_predictions_candles): -1}
-
-    # @minimal_roi.setter
-    # def minimal_roi(self, value: dict[str, Any]) -> None:
-    #     pass
+    minimal_roi = {str(timeframe_minutes * 864): -1}
 
     process_only_new_candles = True
 
@@ -299,25 +285,25 @@ class QuickAdapterV3(IStrategy):
             },
         }
 
-    @property
+    @cached_property
+    def _fit_live_predictions_candles(self) -> int:
+        return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
+
+    @cached_property
     def protections(self) -> list[dict[str, Any]]:
-        fit_live_predictions_candles = int(
-            self.config.get("freqai", {}).get(
-                "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-            )
+        fit_live_predictions_candles = self._fit_live_predictions_candles
+        protections = get_custom_protections_config(
+            self.config.get("custom_protections"), logger
         )
-        protections = self.config.get("custom_protections", {})
-        trade_duration_candles = int(protections.get("trade_duration_candles", 72))
-        lookback_period_fraction = float(
-            protections.get("lookback_period_fraction", 0.5)
-        )
+        trade_duration_candles = protections["trade_duration_candles"]
+        lookback_period_fraction = protections["lookback_period_fraction"]
 
         lookback_period_candles = max(
             1, int(round(fit_live_predictions_candles * lookback_period_fraction))
         )
 
-        cooldown = protections.get("cooldown", {})
-        cooldown_stop_duration_candles = int(cooldown.get("stop_duration_candles", 4))
+        cooldown = protections["cooldown"]
+        cooldown_stop_duration_candles = cooldown["stop_duration_candles"]
         stoploss_stop_duration_candles = max(
             cooldown_stop_duration_candles, trade_duration_candles
         )
@@ -336,7 +322,7 @@ class QuickAdapterV3(IStrategy):
 
         protections_list = []
 
-        if cooldown.get("enabled", True):
+        if cooldown["enabled"]:
             protections_list.append(
                 {
                     "method": "CooldownPeriod",
@@ -344,22 +330,20 @@ class QuickAdapterV3(IStrategy):
                 }
             )
 
-        drawdown = protections.get("drawdown", {})
-        if drawdown.get("enabled", True):
+        drawdown = protections["drawdown"]
+        if drawdown["enabled"]:
             protections_list.append(
                 {
                     "method": "MaxDrawdown",
                     "lookback_period_candles": lookback_period_candles,
                     "trade_limit": 2 * max_open_trades,
                     "stop_duration_candles": drawdown_stop_duration_candles,
-                    "max_allowed_drawdown": float(
-                        drawdown.get("max_allowed_drawdown", 0.2)
-                    ),
+                    "max_allowed_drawdown": drawdown["max_allowed_drawdown"],
                 }
             )
 
-        stoploss = protections.get("stoploss", {})
-        if stoploss.get("enabled", True):
+        stoploss = protections["stoploss"]
+        if stoploss["enabled"]:
             protections_list.append(
                 {
                     "method": "StoplossGuard",
@@ -377,9 +361,7 @@ class QuickAdapterV3(IStrategy):
     @property
     def startup_candle_count(self) -> int:
         # Match the predictions warmup period
-        return self.config.get("freqai", {}).get(
-            "fit_live_predictions_candles", DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-        )
+        return self._fit_live_predictions_candles
 
     @property
     def max_open_trades_per_side(self) -> int:
@@ -396,25 +378,25 @@ class QuickAdapterV3(IStrategy):
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
         return get_label_weighting_config(
-            as_dict(self.freqai_info.get("label_weighting")), logger
+            self.freqai_info.get("label_weighting"), logger
         )
 
     @cached_property
     def label_smoothing(self) -> dict[str, Any]:
         return get_label_smoothing_config(
-            as_dict(self.freqai_info.get("label_smoothing")), logger
+            self.freqai_info.get("label_smoothing"), logger
         )
 
     @cached_property
     def trade_price_target_method(self) -> str:
-        return get_exit_pricing_config(
-            as_dict(self.config.get("exit_pricing")), logger
-        )["trade_price_target_method"]
+        return get_exit_pricing_config(self.config.get("exit_pricing"), logger)[
+            "trade_price_target_method"
+        ]
 
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         return get_reversal_confirmation_config(
-            as_dict(self.config.get("reversal_confirmation")), logger
+            self.config.get("reversal_confirmation"), logger
         )
 
     @cached_property
@@ -448,11 +430,7 @@ class QuickAdapterV3(IStrategy):
                     label_col, label_smoothing["default"], label_smoothing["columns"]
                 )
                 if (
-                    col_smoothing_config["method"]
-                    in (
-                        QuickAdapterV3._SMOOTHING_SAVGOL,
-                        QuickAdapterV3._SMOOTHING_GAUSSIAN_FILTER1D,
-                    )
+                    col_smoothing_config["method"] in SMOOTHING_METHOD_MODES
                     and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
                 ):  # "wrap"
                     raise ValueError(
@@ -515,10 +493,13 @@ class QuickAdapterV3(IStrategy):
                 f"{self._pnl_momentum_window_size} candles "
                 f"(~{velocity_span_minutes} min velocity span)."
             )
-        self._exit_thresholds_calibration: dict[str, float] = {
-            **QuickAdapterV3.default_exit_thresholds_calibration,
-            **self.config.get("exit_pricing", {}).get("thresholds_calibration", {}),
-        }
+        self._exit_thresholds_calibration: dict[str, float] = (
+            get_exit_thresholds_calibration_config(
+                self.config.get("exit_pricing"),
+                logger,
+                self.default_exit_thresholds_calibration,
+            )
+        )
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
         self._cached_df_signature: dict[str, DfSignature] = {}
@@ -906,7 +887,13 @@ class QuickAdapterV3(IStrategy):
 
     def set_label_period_candles(self, pair: str, label_period_candles: Any) -> None:
         if is_finite_number(label_period_candles) and int(label_period_candles) > 0:
-            self._label_params[pair]["label_period_candles"] = int(label_period_candles)
+            label_period_candles = int(label_period_candles)
+            if (
+                self._label_params[pair].get("label_period_candles")
+                != label_period_candles
+            ):
+                self._label_params[pair]["label_period_candles"] = label_period_candles
+                self._invalidate_pair_caches(pair)
 
     def get_label_horizon_candles(self, pair: str) -> int:
         period = self.get_label_period_candles(pair)
@@ -943,9 +930,15 @@ class QuickAdapterV3(IStrategy):
             is_finite_number(label_natr_multiplier)
             and float(label_natr_multiplier) > 0.0
         ):
-            self._label_params[pair]["label_natr_multiplier"] = float(
-                label_natr_multiplier
-            )
+            label_natr_multiplier = float(label_natr_multiplier)
+            if (
+                self._label_params[pair].get("label_natr_multiplier")
+                != label_natr_multiplier
+            ):
+                self._label_params[pair]["label_natr_multiplier"] = (
+                    label_natr_multiplier
+                )
+                self._invalidate_pair_caches(pair)
 
     def get_label_natr_multiplier_fraction(
         self,
@@ -1780,13 +1773,20 @@ class QuickAdapterV3(IStrategy):
             idx = length + idx
         return min(max(0, idx), length - 1)
 
-    def _invalidate_pair_cache(
-        self, cache: _PairCacheT, pair: str, df_signature: DfSignature
-    ) -> _PairCacheT:
-        if self._cached_df_signature.get(pair) != df_signature:
-            cache = type(cache)({k: v for k, v in cache.items() if k[0] != pair})
-            self._cached_df_signature[pair] = df_signature
-        return cache
+    def _invalidate_pair_caches(
+        self, pair: str, df_signature: Optional[DfSignature] = None
+    ) -> None:
+        if df_signature is None or self._cached_df_signature.get(pair) != df_signature:
+            self._candle_deviation_cache = {
+                k: v for k, v in self._candle_deviation_cache.items() if k[0] != pair
+            }
+            self._candle_threshold_cache = {
+                k: v for k, v in self._candle_threshold_cache.items() if k[0] != pair
+            }
+            if df_signature is None:
+                self._cached_df_signature.pop(pair, None)
+            else:
+                self._cached_df_signature[pair] = df_signature
 
     def _calculate_candle_deviation(
         self,
@@ -1799,9 +1799,7 @@ class QuickAdapterV3(IStrategy):
         quantile_exponent: float = 1.5,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
-        self._candle_deviation_cache = self._invalidate_pair_cache(
-            self._candle_deviation_cache, pair, df_signature
-        )
+        self._invalidate_pair_caches(pair, df_signature)
         cache_key: CandleDeviationCacheKey = (
             pair,
             df_signature,
@@ -1869,9 +1867,7 @@ class QuickAdapterV3(IStrategy):
         candle_idx: int = -1,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
-        self._candle_threshold_cache = self._invalidate_pair_cache(
-            self._candle_threshold_cache, pair, df_signature
-        )
+        self._invalidate_pair_caches(pair, df_signature)
         cache_key: CandleThresholdCacheKey = (
             pair,
             df_signature,
@@ -2464,6 +2460,24 @@ class QuickAdapterV3(IStrategy):
                 f"supported values are {', '.join(QuickAdapterV3._TRADING_MODES)}"
             )
 
+    @cached_property
+    def _configured_leverage(self) -> Optional[float]:
+        leverage = self.config.get("leverage")
+        if leverage is None:
+            return None
+        if not is_finite_number(leverage):
+            logger.warning(
+                f"Invalid leverage value {leverage!r}: must be a finite number, "
+                "using proposed_leverage"
+            )
+            return None
+        leverage = float(leverage)
+        if leverage < 1.0:
+            logger.warning(
+                f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0"
+            )
+        return leverage
+
     def leverage(
         self,
         pair: str,
@@ -2475,7 +2489,10 @@ class QuickAdapterV3(IStrategy):
         side: str,
         **kwargs: Any,
     ) -> float:
-        return min(self.config.get("leverage", proposed_leverage), max_leverage)
+        configured_leverage = self._configured_leverage
+        if configured_leverage is None:
+            configured_leverage = proposed_leverage
+        return float(max(1.0, min(configured_leverage, max_leverage)))
 
     def plot_annotations(
         self,
