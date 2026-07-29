@@ -2575,8 +2575,7 @@ def _select_combined_metrics(
     Shared selection logic (coefficient parsing, the all-unit default, the skip
     rules for unselected or empty metrics), returning raw pre-imputation value
     arrays paired with metric name and coefficient in ``metrics`` iteration
-    order. Callers apply their own imputation, so the causal dependency mask
-    never adopts the causal imputer.
+    order. Imputation is left to the caller.
     """
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
@@ -2593,6 +2592,20 @@ def _select_combined_metrics(
     return selected
 
 
+def _aggregate_imputed_metrics(
+    imputed_metrics: list[NDArray[np.floating]],
+    coefficients: list[float],
+    aggregation: CombinedAggregation,
+    softmax_temperature: float,
+) -> NDArray[np.floating]:
+    return _aggregate_metrics(
+        np.vstack(imputed_metrics),
+        np.asarray(coefficients, dtype=float),
+        aggregation,
+        softmax_temperature,
+    )
+
+
 def _compute_combined_label_weights(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
@@ -2605,13 +2618,11 @@ def _compute_combined_label_weights(
     if len(selected) == 0:
         return np.asarray([], dtype=float)
 
-    stacked_metrics = np.vstack([impute(values) for _, values, _ in selected])
-    coefficients_array = np.asarray(
-        [coefficient for _, _, coefficient in selected], dtype=float
-    )
-
-    return _aggregate_metrics(
-        stacked_metrics, coefficients_array, aggregation, softmax_temperature
+    return _aggregate_imputed_metrics(
+        [impute(values) for _, values, _ in selected],
+        [coefficient for _, _, coefficient in selected],
+        aggregation,
+        softmax_temperature,
     )
 
 
@@ -2620,9 +2631,8 @@ def _nonfinite_imputation_dependency_mask(
 ) -> NDArray[np.bool_]:
     """Mark values whose legacy full-frame imputation is not prefix-stable.
 
-    Every non-finite input remains conservatively unavailable until the frame
-    boundary. This prevents an apparent trailing boundary in one prefix from
-    becoming an interior, median-imputed value after later pivots arrive.
+    A non-finite value's imputation flips (trailing zero vs interior median) as
+    later pivots arrive, so it stays unavailable until the frame boundary.
     """
     return ~np.isfinite(values)
 
@@ -2682,9 +2692,9 @@ def compute_label_weight_imputation_dependency_mask(
     if len(imputed_metrics) == 0:
         return dependency_mask
 
-    combined_weights = _aggregate_metrics(
-        np.vstack(imputed_metrics),
-        np.asarray(coefficients_list, dtype=float),
+    combined_weights = _aggregate_imputed_metrics(
+        imputed_metrics,
+        coefficients_list,
         label_weighting["aggregation"],
         label_weighting["softmax_temperature"],
     )
