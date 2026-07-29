@@ -92,51 +92,11 @@ Documentation serves as an operational specification, not narrative prose.
 
 ## Quality gates
 
-- Documented build/lint/type checks pass (where applicable).
+- Documented build/format/lint/type checks pass (where applicable).
 - Documented tests pass (where applicable).
 - Documentation updated to reflect changes when necessary.
 - Logs use appropriate levels (error, warn, info, debug).
 - Pull request title and commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) format.
-
-## Examples
-
-### Naming coherence
-
-**Good** (consistent style, clear semantics):
-
-```python
-threshold_value = 0.06
-processing_mode = "piecewise"
-```
-
-**Bad** (mixed styles, ambiguous):
-
-```python
-thresholdValue = 0.06    # inconsistent case style
-threshold_aim = 0.06     # synonym creates ambiguity
-```
-
-### Dynamic option generation
-
-```python
-DEFAULT_PARAMS = {
-    "threshold_value": 0.06,
-    "processing_mode": "piecewise",
-}
-
-def add_cli_options(parser):
-    for key, value in DEFAULT_PARAMS.items():
-        parser.add_argument(f"--{key}", type=type(value), default=value)
-```
-
-### Statistical reporting
-
-```markdown
-| Metric      | Value | Interpretation        |
-| ----------- | ----- | --------------------- |
-| KL(A‖B)     | 0.023 | < 0.1: low divergence |
-| Effect size | 0.12  | small to medium       |
-```
 
 ---
 
