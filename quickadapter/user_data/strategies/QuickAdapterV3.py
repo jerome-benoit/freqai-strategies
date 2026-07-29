@@ -39,10 +39,8 @@ from LabelTransformer import (
     get_label_column_config,
 )
 from pandas import DataFrame, Series, isna, to_numeric
-from scipy.stats import pearsonr, t
 from technical.pivots_points import pivots_points
 from Utils import (
-    DEFAULTS_EXIT_THRESHOLDS_CALIBRATION,
     _CACHE_MAXSIZE_LARGE,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
@@ -70,7 +68,6 @@ from Utils import (
     get_distance,
     get_custom_protections_config,
     get_exit_pricing_config,
-    get_exit_thresholds_calibration_config,
     get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
@@ -110,14 +107,13 @@ _TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 
 class _TradeHistory(TypedDict):
-    # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
-    # _UNREALIZED_PNL_TIMEFRAME_KEY / _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY
-    # constants (a TypedDict field cannot reference a constant).
+    # Key names must mirror the ``_UNREALIZED_PNL_CANDLE_DATE_KEY`` /
+    # ``_UNREALIZED_PNL_TIMEFRAME_KEY`` constants (a ``TypedDict`` field cannot
+    # reference a constant).
     unrealized_pnl: list[float]
     take_profit_price: list[_TakeProfitHistoryEntry]
     unrealized_pnl_candle_date: NotRequired[str]
     unrealized_pnl_timeframe: NotRequired[str]
-    unrealized_pnl_timeframe_minutes: NotRequired[int]
 
 
 logger = logging.getLogger(__name__)
@@ -182,15 +178,6 @@ class QuickAdapterV3(IStrategy):
     stoploss = -0.025
     use_custom_stoploss = True
 
-    default_exit_thresholds: ClassVar[dict[str, float]] = {
-        "t_decl_v": 0.675,
-        "t_decl_a": 0.675,
-    }
-
-    default_exit_thresholds_calibration: ClassVar[dict[str, float]] = (
-        DEFAULTS_EXIT_THRESHOLDS_CALIBRATION.copy()
-    )
-
     position_adjustment_enable = True
 
     # {stage: (natr_multiplier_fraction, stake_percent, color)}
@@ -215,21 +202,12 @@ class QuickAdapterV3(IStrategy):
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _UNREALIZED_PNL_CANDLE_DATE_KEY: Final[str] = "unrealized_pnl_candle_date"
     _UNREALIZED_PNL_TIMEFRAME_KEY: Final[str] = "unrealized_pnl_timeframe"
-    _LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY: Final[str] = (
-        "unrealized_pnl_timeframe_minutes"
-    )
-
-    # get_pnl_momentum differences the window twice: velocity needs >=2 first
-    # diffs (window>=3), acceleration >=2 second diffs (window>=4). 4 is the
-    # binding floor so both t-statistics are computable (n>=2); with fewer
-    # samples the acceleration t-statistic is structurally NaN.
-    _MIN_PNL_MOMENTUM_WINDOW_SIZE: Final[int] = 4
 
     # Rounding margin so the sized partial-exit remainder clears freqtrade's
-    # strict `remaining < min_exit_stake` guard.
+    # strict ``remaining < min_exit_stake`` guard.
     _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
 
-    # FreqAI is crashing if minimal_roi is a property
+    # FreqAI is crashing if ``minimal_roi`` is a property
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
     process_only_new_candles = True
@@ -244,7 +222,7 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def is_trade_runmode(self) -> bool:
-        # True in live and dry-run (runmode in TRADE_MODES), mirroring the
+        # True in live and dry-run (``runmode`` in ``TRADE_MODES``), mirroring the
         # regressor's ``self.live`` gate.
         return self.config.get("runmode") in TRADE_MODES
 
@@ -473,35 +451,10 @@ class QuickAdapterV3(IStrategy):
         # 30-minute velocity span needs ceil(30/tf)+1 samples (ceil so a
         # timeframe not dividing 30 still spans >=30 min).
         nominal_pnl_momentum_window_size = math.ceil(30 / self.timeframe_minutes) + 1
-        self._pnl_momentum_window_size = max(
-            QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE,
-            nominal_pnl_momentum_window_size,
-        )
+        self._pnl_momentum_window_size = nominal_pnl_momentum_window_size
         self._max_history_size = max(
             self._pnl_momentum_window_size,
             int(12 * 60 / self.timeframe_minutes),
-        )
-        if (
-            nominal_pnl_momentum_window_size
-            < QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE
-        ):
-            velocity_span_minutes = (
-                self._pnl_momentum_window_size - 1
-            ) * self.timeframe_minutes
-            logger.warning(
-                f"Timeframe {self.timeframe}: the nominal 30-minute PnL momentum "
-                f"window resolves to only {nominal_pnl_momentum_window_size} samples "
-                f"(< {QuickAdapterV3._MIN_PNL_MOMENTUM_WINDOW_SIZE} needed "
-                f"to compute an acceleration t-statistic); flooring to "
-                f"{self._pnl_momentum_window_size} candles "
-                f"(~{velocity_span_minutes} min velocity span)."
-            )
-        self._exit_thresholds_calibration: dict[str, float] = (
-            get_exit_thresholds_calibration_config(
-                self.config.get("exit_pricing"),
-                logger,
-                self.default_exit_thresholds_calibration,
-            )
         )
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
@@ -619,9 +572,6 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Exit Pricing:")
         logger.info(f"  trade_price_target_method: {self.trade_price_target_method}")
-        logger.info(
-            f"  thresholds_calibration: {format_dict(self._exit_thresholds_calibration, style='dict')}"
-        )
 
         logger.info("Custom Stoploss:")
         logger.info(
@@ -1001,6 +951,7 @@ class QuickAdapterV3(IStrategy):
         causal_mode = get_causal_mode(
             self.freqai_info.get("feature_parameters", {}), logger
         )
+        finite_gaussian_support = causal_mode
 
         for label_col in LABEL_COLUMNS:
             label_params = self.get_label_params(pair, label_col)
@@ -1039,6 +990,7 @@ class QuickAdapterV3(IStrategy):
                     indices=label_data.indices,
                     metrics=label_data.metrics,
                     weighting_config=col_weighting_config,
+                    finite_gaussian_support=finite_gaussian_support,
                     logger=logger,
                     known_at_lookahead=(
                         label_data.known_at_lookahead if causal_mode else None
@@ -1060,6 +1012,7 @@ class QuickAdapterV3(IStrategy):
                         known_at_lookahead=label_data.known_at_lookahead,
                         indices=label_data.indices,
                         fill_radius=weight_fill_radius(col_weighting_config),
+                        weighting_config=col_weighting_config,
                         imputation_dependency_mask=imputation_dependency_mask,
                     )
 
@@ -1137,7 +1090,7 @@ class QuickAdapterV3(IStrategy):
                 dataframe, timeperiod=self.get_label_period_candles(pair)
             )
         else:
-            # Per-candle HPO label_period_candles: NATR is computed once per
+            # Per-candle HPO ``label_period_candles``: NATR is computed once per
             # distinct period, then scattered back to its matching rows (mixing
             # per-row periods within one column is intentional).
             dataframe["natr_label_period_candles"] = np.nan
@@ -1551,11 +1504,6 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    def get_trade_unrealized_pnl_history(trade: Trade) -> list[float]:
-        history = QuickAdapterV3._get_trade_history(trade)
-        return history.get("unrealized_pnl", [])
-
-    @staticmethod
     def get_trade_take_profit_price_history(
         trade: Trade,
     ) -> list[_TakeProfitHistoryEntry]:
@@ -1575,7 +1523,6 @@ class QuickAdapterV3(IStrategy):
             candle_date.isoformat()
         )
         history[QuickAdapterV3._UNREALIZED_PNL_TIMEFRAME_KEY] = self.timeframe
-        history.pop(QuickAdapterV3._LEGACY_UNREALIZED_PNL_TIMEFRAME_MINUTES_KEY, None)
         trade.set_custom_data("history", history)
         return pnl_history
 
@@ -1745,34 +1692,35 @@ class QuickAdapterV3(IStrategy):
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             if min_stake is not None and min_stake > 0:
                 current_position_value = trade.amount * current_exit_rate
-                # min_stake is freqtrade's min_entry_stake, but its exit guard uses
-                # the larger min_exit_stake. For both the cost- and amount-driven
-                # minimum, min_exit_stake <= min_stake * max(exit/entry, 1/(1-|sl|)),
-                # so this upper bound keeps the shrunk remainder above the guard.
-                min_exit_stake_bound = (
-                    min_stake
-                    * max(
+                # Live/dry-run passes ``min_entry_stake``, while freqtrade's
+                # backtesting path already passes the adjusted minimum it guards.
+                min_remaining_position_value = min_stake
+                if self.is_trade_runmode:
+                    # For both the cost- and amount-driven minimum, ``min_exit_stake``
+                    # <= ``min_stake`` * max(exit/entry, 1/(1-|sl|)).
+                    min_remaining_position_value *= max(
                         current_exit_rate / current_entry_rate,
                         1.0 / (1.0 - abs(self.stoploss)),
                     )
-                    * (1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN)
+                min_remaining_position_value *= (
+                    1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
                 )
-                if current_position_value <= min_exit_stake_bound:
+                if current_position_value <= min_remaining_position_value:
                     return None
                 remaining_position_value = current_position_value * (
                     1 - trade_stake_percent
                 )
-                if remaining_position_value < min_exit_stake_bound:
+                if remaining_position_value < min_remaining_position_value:
                     initial_trade_partial_stake_amount = trade_partial_stake_amount
                     trade_partial_stake_amount = trade.stake_amount * (
-                        1 - min_exit_stake_bound / current_position_value
+                        1 - min_remaining_position_value / current_position_value
                     )
                     logger.info(
                         f"[{pair}] Trade {trade.trade_direction} stage "
                         f"{trade_exit_stage} | partial stake "
                         f"{format_number(initial_trade_partial_stake_amount)} -> "
                         f"{format_number(trade_partial_stake_amount)} to preserve "
-                        f"min_exit_stake_bound {format_number(min_exit_stake_bound)}"
+                        f"min_remaining_position_value {format_number(min_remaining_position_value)}"
                     )
             return (
                 -trade_partial_stake_amount,
@@ -2080,61 +2028,32 @@ class QuickAdapterV3(IStrategy):
         return True
 
     @staticmethod
-    def get_pnl_momentum(
+    def is_pnl_declining(
         unrealized_pnl_history: Sequence[float], window_size: int
-    ) -> tuple[
-        tuple[float, ...],
-        float,
-        float,
-        tuple[float, ...],
-        float,
-        float,
-    ]:
-        """Compute velocity (first derivative) and acceleration (second) from PnL history.
+    ) -> Optional[bool]:
+        """Return whether mean per-candle PnL velocity is strictly negative.
 
         ``window_size > 0`` truncates to the most recent window before
-        differencing. Returns
-        ``(velocity_values, velocity_mean, velocity_std, acceleration_values,
-        acceleration_mean, acceleration_std)``.
+        evaluating the direction. Because the mean of consecutive first
+        differences telescopes, this is equivalent to comparing the last and
+        first samples. A short window or one containing non-numeric or
+        non-finite samples is unmeasurable and returns ``None``.
         """
-        unrealized_pnl_history_array = np.asarray(unrealized_pnl_history, dtype=float)
-
-        if window_size > 0 and unrealized_pnl_history_array.size > window_size:
-            unrealized_pnl_history_array = unrealized_pnl_history_array[-window_size:]
-
-        velocity = np.diff(unrealized_pnl_history_array)
-        velocity_mean = np.nanmean(velocity) if velocity.size > 0 else 0.0
-        velocity_std = np.nanstd(velocity, ddof=1) if velocity.size > 1 else 0.0
-
-        acceleration = np.diff(velocity)
-        acceleration_mean = np.nanmean(acceleration) if acceleration.size > 0 else 0.0
-        acceleration_std = (
-            np.nanstd(acceleration, ddof=1) if acceleration.size > 1 else 0.0
-        )
-
-        return (
-            tuple(velocity.tolist()),
-            velocity_mean,
-            velocity_std,
-            tuple(acceleration.tolist()),
-            acceleration_mean,
-            acceleration_std,
-        )
-
-    @staticmethod
-    def _t_statistic(mean: float, std: float, n: int) -> float:
-        """Compute t-statistic for H0: mu = 0 as ``mean * sqrt(n) / std``.
-
-        Returns NaN when ``n < 2``, ``std`` is approximately zero, or any
-        input is non-finite.
-        """
-        if n < 2:
-            return np.nan
-        if not np.isfinite(mean) or not np.isfinite(std):
-            return np.nan
-        if np.isclose(std, 0.0):
-            return np.nan
-        return mean * math.sqrt(n) / std
+        try:
+            recent_unrealized_pnl_history = (
+                unrealized_pnl_history[-window_size:]
+                if window_size > 0
+                else unrealized_pnl_history
+            )
+            if len(recent_unrealized_pnl_history) < 2 or not all(
+                is_finite_number(pnl) for pnl in recent_unrealized_pnl_history
+            ):
+                return None
+            return bool(
+                recent_unrealized_pnl_history[-1] < recent_unrealized_pnl_history[0]
+            )
+        except (TypeError, ValueError, OverflowError, IndexError):
+            return None
 
     @staticmethod
     @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
@@ -2146,61 +2065,6 @@ class QuickAdapterV3(IStrategy):
         except (ValueError, TypeError):
             return False
         return True
-
-    @staticmethod
-    def _effective_df(x: tuple[float, ...]) -> float:
-        """Effective degrees of freedom with Bartlett's autocorrelation correction.
-
-        Computes ``df_eff = (n - 1) * (1 - rho1) / (1 + rho1)`` where ``rho1``
-        is the lag-1 autocorrelation clamped to ``[-0.99, 0.99]``. Falls back
-        to ``n - 1`` when ``n < 4`` or pearsonr fails. Result is bounded
-        below by 1.
-        """
-        n = len(x)
-        if n < 4:
-            return max(1.0, n - 1)
-
-        x_arr = np.asarray(x, dtype=float)
-        x_centered = x_arr - np.nanmean(x_arr)
-
-        try:
-            rho1, _ = pearsonr(x_centered[:-1], x_centered[1:])
-        except (ValueError, TypeError) as exc:
-            logger.debug(
-                "[%s] pearsonr failed, using standard df: %r", "effective_df", exc
-            )
-            return n - 1
-
-        if not np.isfinite(rho1):
-            return n - 1
-
-        # Clamp to avoid division by zero or negative n_eff
-        rho1 = np.clip(rho1, -0.99, 0.99)
-        correction_factor = (1 - rho1) / (1 + rho1)
-
-        n_eff = n * correction_factor
-        df_eff = max(1.0, n_eff - 1)
-
-        return df_eff
-
-    @staticmethod
-    def _t_critical(q: float, df: float, default_t: float) -> float:
-        """Critical t-value from Student's t-distribution at quantile ``q``.
-
-        Returns ``default_t`` on invalid inputs or scipy failure.
-        """
-        if not (0.0 < q < 1.0):
-            return default_t
-        if df < 1:
-            return default_t
-        try:
-            t_crit = float(t.ppf(q, df))
-            if not np.isfinite(t_crit):
-                return default_t
-            return t_crit
-        except (ValueError, TypeError, OverflowError) as exc:
-            logger.debug("[%s] t.ppf failed, using default_t: %r", "t_critical", exc)
-            return default_t
 
     def custom_exit(
         self,
@@ -2325,7 +2189,7 @@ class QuickAdapterV3(IStrategy):
         if len(trade_unrealized_pnl_history) < self._pnl_momentum_window_size:
             # Warm-up: without a full momentum window a 30-minute decline is not
             # measurable yet; fail open (never block a profitable take-profit
-            # exit) rather than gate on a partial, low-power series.
+            # exit) rather than gate on a partial-horizon series.
             self.throttle_callback(
                 pair=pair,
                 current_time=current_time,
@@ -2340,63 +2204,27 @@ class QuickAdapterV3(IStrategy):
             return QuickAdapterV3._take_profit_order_tag(
                 trade.trade_direction, trade_exit_stage
             )
-        (
-            trade_recent_velocity_values,
-            trade_recent_velocity_mean,
-            trade_recent_velocity_std,
-            trade_recent_acceleration_values,
-            trade_recent_acceleration_mean,
-            trade_recent_acceleration_std,
-        ) = QuickAdapterV3.get_pnl_momentum(
+        trade_recent_pnl_declining = QuickAdapterV3.is_pnl_declining(
             trade_unrealized_pnl_history, self._pnl_momentum_window_size
         )
 
-        q_decl = self._exit_thresholds_calibration.get("decline_quantile")
-
-        n_trade_recent_velocity = len(trade_recent_velocity_values)
-        n_trade_recent_acceleration = len(trade_recent_acceleration_values)
-
-        t_trade_recent_velocity = QuickAdapterV3._t_statistic(
-            trade_recent_velocity_mean,
-            trade_recent_velocity_std,
-            n_trade_recent_velocity,
-        )
-        t_trade_recent_acceleration = QuickAdapterV3._t_statistic(
-            trade_recent_acceleration_mean,
-            trade_recent_acceleration_std,
-            n_trade_recent_acceleration,
-        )
-
-        df_eff_trade_recent_velocity = QuickAdapterV3._effective_df(
-            trade_recent_velocity_values
-        )
-        df_eff_trade_recent_acceleration = QuickAdapterV3._effective_df(
-            trade_recent_acceleration_values
-        )
-
-        t_crit_trade_recent_velocity = QuickAdapterV3._t_critical(
-            q_decl,
-            df_eff_trade_recent_velocity,
-            QuickAdapterV3.default_exit_thresholds["t_decl_v"],
-        )
-        t_crit_trade_recent_acceleration = QuickAdapterV3._t_critical(
-            q_decl,
-            df_eff_trade_recent_acceleration,
-            QuickAdapterV3.default_exit_thresholds["t_decl_a"],
-        )
-
-        # Declining if t_stat ≤ -t_crit (one-sided test for μ < 0)
-        decl_checks: list[bool] = []
-        if np.isfinite(t_trade_recent_velocity):
-            decl_checks.append(t_trade_recent_velocity <= -t_crit_trade_recent_velocity)
-        if np.isfinite(t_trade_recent_acceleration):
-            decl_checks.append(
-                t_trade_recent_acceleration <= -t_crit_trade_recent_acceleration
+        if trade_recent_pnl_declining is None:
+            # A full but invalid history is still unmeasurable. Preserve the
+            # profitable-exit fail-open policy used for missing and warm-up
+            # history instead of trapping the trade on corrupted observations.
+            self.throttle_callback(
+                pair=pair,
+                current_time=current_time,
+                callback=lambda: logger.info(
+                    f"[{pair}] Trade {trade.trade_direction} stage "
+                    f"{trade_exit_stage} | PnL momentum gate unmeasurable "
+                    "(invalid history); take-profit exit not gated "
+                    "(fail-open)"
+                ),
             )
-        if len(decl_checks) == 0:
-            trade_recent_pnl_declining = True
-        else:
-            trade_recent_pnl_declining = all(decl_checks)
+            return QuickAdapterV3._take_profit_order_tag(
+                trade.trade_direction, trade_exit_stage
+            )
 
         trade_exit = trade_take_profit_exit and trade_recent_pnl_declining
 
@@ -2408,7 +2236,9 @@ class QuickAdapterV3(IStrategy):
                     f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
                     f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)} | "
                     f"Declining: {trade_recent_pnl_declining} "
-                    f"(tV:{format_number(t_trade_recent_velocity)}<=-t:{format_number(-t_crit_trade_recent_velocity)}, tA:{format_number(t_trade_recent_acceleration)}<=-t:{format_number(-t_crit_trade_recent_acceleration)})"
+                    f"(window end: "
+                    f"{format_number(trade_unrealized_pnl_history[-1])} < start: "
+                    f"{format_number(trade_unrealized_pnl_history[-self._pnl_momentum_window_size])})"
                 ),
             )
 
