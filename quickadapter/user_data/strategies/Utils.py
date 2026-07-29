@@ -3103,31 +3103,28 @@ def compute_label_weight_known_at_lookahead(
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
-    A metric-based pivot's weight source is backfilled from the adjacent closing
-    pivot, so it becomes computable at the next pivot's confirmation
-    ``i_{k+1} == known_at_positions[indices[k+1]]``. Its trailing pivot has no
-    closing swing (weight 0 via ``_impute_weights``), so it never resolves
-    in-frame -> ``n``. A uniform pivot instead has a configuration-defined unit
-    weight as soon as its own label is available. Off-pivot rows keep their
-    label availability, EXCEPT that a Gaussian fill spreads each pivot's weight
-    over a local band ``[idx-fill_radius, idx+fill_radius]``
-    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
-    never a global max (a global bound forces ``n`` on all rows -> total train
-    purge). Folded via ``max(label, weight)`` by the causal purge.
+    A metric-based pivot's weight is backfilled from the adjacent closing pivot,
+    so it becomes computable at the next pivot's confirmation
+    ``i_{k+1} == known_at_positions[indices[k+1]]``; the trailing pivot has no
+    closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
+    -> ``n``. A uniform pivot instead has a unit weight at its own label
+    availability. Off-pivot rows keep their label availability, except that a
+    Gaussian fill spreads each pivot's weight over a LOCAL band
+    ``[idx-fill_radius, idx+fill_radius]`` (0 disables) -- never a global max,
+    which would force ``n`` on all rows (total train purge). Folded via
+    ``max(label, weight)`` by the causal purge.
 
-    For adaptive k-NN bandwidths, a pivot's Gaussian band additionally waits
-    until every finite suffix of the remaining frame produces the same clipped
-    sigma. This jointly accounts for geometry and the effective rank
-    ``min(k, pivot_count - 1)`` as the number of future pivots varies, and
-    evaluates only atomically complete confirmation groups. If no in-frame
-    group provides the required proof, availability is the frame boundary ``n``.
-    This tracks when the final-frame sigma is knowable, rather than when a value
-    is merely computable from an incomplete prefix. Under pure Gaussian uniform
-    weighting, every bump is bounded by the raw unit pivot weight, so pivot
-    centers retain their own label availability for fixed, constant-clipped, and
-    adaptive bandwidths; adaptive off-center bands still wait separately for
-    the pivot confirmation and sigma. Other strategies and additive fills keep
-    their existing competing-band dependencies at pivot rows.
+    For adaptive k-NN bandwidths a pivot's band additionally waits until every
+    confirmable finite suffix of the frame yields the same clipped sigma --
+    jointly over geometry and the effective rank ``min(k, pivot_count - 1)`` --
+    evaluated only at atomically complete confirmation groups; this tracks when
+    the final-frame sigma is knowable, not merely computable from a prefix, and
+    is ``n`` absent such proof. Under pure-Gaussian ``uniform`` weighting every
+    bump is bounded by the unit pivot weight, so pivot centers keep their own
+    label availability (fixed, constant-clipped, adaptive), while adaptive
+    off-center bands still wait for the pivot confirmation and sigma. Other
+    strategies and additive fills keep their existing competing-band
+    dependencies.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
