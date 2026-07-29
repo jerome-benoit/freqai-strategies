@@ -4622,10 +4622,11 @@ def get_refit_model_training_parameters(
         )
 
     spec = _REGRESSOR_SPEC_BY_NAME[regressor]
-    # The sole caller refits the cold-started selection model (init_model=None),
-    # so initial_iterations is 0 here; the init_model branches above remain for
-    # warm-start callers. Clamp to >= 1 so a degenerate fit (fitted_iterations
-    # <= initial_iterations) degrades gracefully instead of raising.
+    # The sole caller refits the cold-started selection model
+    # (``init_model=None``), so ``initial_iterations`` is 0 here; the
+    # ``init_model`` branches above remain for warm-start callers. Clamp to
+    # >= 1 so a degenerate fit (``fitted_iterations`` <= ``initial_iterations``)
+    # degrades gracefully instead of raising.
     refit_iterations = max(fitted_iterations - initial_iterations, 1)
     for alias in spec.iteration_aliases:
         refit_parameters.pop(alias, None)
