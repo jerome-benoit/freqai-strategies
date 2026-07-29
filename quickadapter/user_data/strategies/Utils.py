@@ -2566,6 +2566,33 @@ def _aggregate_metrics(
         )
 
 
+def _select_combined_metrics(
+    metrics: dict[str, list[float]],
+    metric_coefficients: dict[str, Any],
+) -> list[tuple[str, NDArray[np.floating], float]]:
+    """Select the components feeding ``combined`` aggregation.
+
+    Shared selection logic (coefficient parsing, the all-unit default, the skip
+    rules for unselected or empty metrics), returning raw pre-imputation value
+    arrays paired with metric name and coefficient in ``metrics`` iteration
+    order. Callers apply their own imputation, so the causal dependency mask
+    never adopts the causal imputer.
+    """
+    coefficients = _parse_metric_coefficients(metric_coefficients)
+    if len(coefficients) == 0:
+        coefficients = {k: 1.0 for k in metrics.keys()}
+
+    selected: list[tuple[str, NDArray[np.floating], float]] = []
+    for metric_name, metric_values in metrics.items():
+        if metric_name not in coefficients:
+            continue
+        values_array = np.asarray(metric_values, dtype=float)
+        if values_array.size == 0:
+            continue
+        selected.append((metric_name, values_array, float(coefficients[metric_name])))
+    return selected
+
+
 def _compute_combined_label_weights(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
@@ -2574,31 +2601,14 @@ def _compute_combined_label_weights(
     *,
     impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
 ) -> NDArray[np.floating]:
-    if len(metrics) == 0:
+    selected = _select_combined_metrics(metrics, metric_coefficients)
+    if len(selected) == 0:
         return np.asarray([], dtype=float)
 
-    coefficients = _parse_metric_coefficients(metric_coefficients)
-    if len(coefficients) == 0:
-        coefficients = {k: 1.0 for k in metrics.keys()}
-
-    imputed_metrics: list[NDArray[np.floating]] = []
-    coefficients_list: list[float] = []
-
-    for metric_name, metric_values in metrics.items():
-        if metric_name not in coefficients:
-            continue
-        coefficient = coefficients[metric_name]
-        values_array = np.asarray(metric_values, dtype=float)
-        if values_array.size == 0:
-            continue
-        imputed_metrics.append(impute(values_array))
-        coefficients_list.append(float(coefficient))
-
-    if len(imputed_metrics) == 0:
-        return np.asarray([], dtype=float)
-
-    stacked_metrics = np.vstack(imputed_metrics)
-    coefficients_array = np.asarray(coefficients_list, dtype=float)
+    stacked_metrics = np.vstack([impute(values) for _, values, _ in selected])
+    coefficients_array = np.asarray(
+        [coefficient for _, _, coefficient in selected], dtype=float
+    )
 
     return _aggregate_metrics(
         stacked_metrics, coefficients_array, aggregation, softmax_temperature
@@ -2617,7 +2627,7 @@ def _nonfinite_imputation_dependency_mask(
     return ~np.isfinite(values)
 
 
-def compute_label_weight_imputation_mask(
+def compute_label_weight_imputation_dependency_mask(
     n_indices: int,
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
@@ -2630,6 +2640,12 @@ def compute_label_weight_imputation_mask(
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
+    if strategy == WEIGHT_STRATEGIES[0]:  # "none"
+        raise ValueError(
+            "compute_label_weight_imputation_dependency_mask must not be called "
+            f"with strategy={strategy!r}; callers must skip invocation when "
+            "weighting is disabled"
+        )
     if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
         return np.zeros(n_indices, dtype=bool)
     if strategy in metrics:
@@ -2648,19 +2664,12 @@ def compute_label_weight_imputation_mask(
             f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
         )
 
-    coefficients = _parse_metric_coefficients(label_weighting["metric_coefficients"])
-    if len(coefficients) == 0:
-        coefficients = {k: 1.0 for k in metrics.keys()}
-
     dependency_mask = np.zeros(n_indices, dtype=bool)
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
-    for metric_name, metric_values in metrics.items():
-        if metric_name not in coefficients:
-            continue
-        values_array = np.asarray(metric_values, dtype=float)
-        if values_array.size == 0:
-            continue
+    for metric_name, values_array, coefficient in _select_combined_metrics(
+        metrics, label_weighting["metric_coefficients"]
+    ):
         if values_array.shape != (n_indices,):
             raise ValueError(
                 f"Invalid metric {metric_name!r} shape {values_array.shape}: "
@@ -2668,7 +2677,7 @@ def compute_label_weight_imputation_mask(
             )
         dependency_mask |= _nonfinite_imputation_dependency_mask(values_array)
         imputed_metrics.append(_impute_weights(values_array))
-        coefficients_list.append(float(coefficients[metric_name]))
+        coefficients_list.append(coefficient)
 
     if len(imputed_metrics) == 0:
         return dependency_mask
