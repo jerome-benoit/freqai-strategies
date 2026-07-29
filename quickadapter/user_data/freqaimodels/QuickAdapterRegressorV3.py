@@ -7,7 +7,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
 from typing import (
     AbstractSet,
@@ -67,9 +67,7 @@ from LabelTransformer import (
 )
 
 from Utils import (
-    as_dict,
     enum_error_message,
-    DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES,
     DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
     DEFAULT_MAX_LABEL_PERIOD_CANDLES,
     DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
@@ -92,6 +90,7 @@ from Utils import (
     format_dict,
     format_number,
     get_causal_mode,
+    get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
     get_label_pipeline_config,
@@ -407,9 +406,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     }
     _POWER_MEAN_METRICS_SET: Final[frozenset[str]] = frozenset(_POWER_MEAN_MAP)
 
-    FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT: Final[int] = (
-        DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES
-    )
     MIN_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = DEFAULT_MIN_LABEL_PERIOD_CANDLES
     MAX_LABEL_PERIOD_CANDLES_DEFAULT: Final[int] = DEFAULT_MAX_LABEL_PERIOD_CANDLES
     MIN_LABEL_NATR_MULTIPLIER_DEFAULT: Final[float] = DEFAULT_MIN_LABEL_NATR_MULTIPLIER
@@ -441,6 +437,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
     OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
     OPTUNA_SEED_DEFAULT: Final[int] = 1
+    OPTUNA_RESET_LABEL_STUDY_ON_SCHEMA_MISMATCH_DEFAULT: Final[bool] = True
     OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT: Final[bool] = True
 
     _OPTUNA_BOOL_OPTIONS: Final[tuple[str, ...]] = (
@@ -448,6 +445,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "continuous",
         "warm_start",
         "space_reduction",
+        "reset_label_study_on_schema_mismatch",
         "vary_model_seed_by_trial",
     )
 
@@ -747,7 +745,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reasons=[str(exc)],
             )
 
-        summary = summarize_label_weight_support(label_weights, composed)
+        # Support is gated twice on purpose: here on the full split (fail-fast,
+        # esp. under support_policy='raise') and again post-pipeline in
+        # _fit_training_pipelines on the rows fed to model.fit. Outlier removal
+        # is non-monotone on support (pivot_equivalent_count/ESS use a
+        # max-relative threshold), so this pre-gate is not a conservative bound:
+        # keeping it changes some raise/fallback outcomes, and under 'raise' it
+        # can abort a split the post-pipeline gate would have passed.
+        return QuickAdapterRegressorV3._enforce_train_weight_support(
+            base_weights,
+            label_weights,
+            composed,
+            label_weighting_config,
+            context=context,
+        )
+
+    @staticmethod
+    def _enforce_train_weight_support(
+        base_weights: NDArray[np.floating],
+        label_weights: NDArray[np.floating],
+        sample_weights: NDArray[np.floating],
+        label_weighting_config: dict[str, Any],
+        *,
+        context: str,
+    ) -> NDArray[np.floating]:
+        """Enforce label-weight support on already-composed training weights.
+
+        Kish ``effective_sample_size`` is measured on the ``sample_weights``
+        passed in (full-split composed weights pre-pipeline, post-outlier
+        surviving weights post-pipeline); ``pivot_equivalent_count`` and
+        ``positive_label_weight_fraction`` derive from ``label_weights``.
+        """
+        policy = cast(
+            LabelWeightSupportPolicy, label_weighting_config["support_policy"]
+        )
+        summary = summarize_label_weight_support(label_weights, sample_weights)
         reasons: list[str] = []
         min_pivot_equivalent_count = label_weighting_config[
             "min_pivot_equivalent_count"
@@ -774,7 +806,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         if reasons:
             return QuickAdapterRegressorV3._apply_support_policy(
-                base_weights, context=context, policy=policy, reasons=reasons
+                base_weights,
+                context=context,
+                policy=policy,
+                reasons=reasons,
             )
         logger.debug(
             "%s: label weighting support passed "
@@ -785,7 +820,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             summary.positive_label_weight_fraction,
             summary.effective_sample_size,
         )
-        return composed
+        return sample_weights
 
     @staticmethod
     def _get_selection_category(method: str) -> Optional[str]:
@@ -1309,6 +1344,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "space_fraction": QuickAdapterRegressorV3.OPTUNA_SPACE_FRACTION_DEFAULT,
             "min_resource": QuickAdapterRegressorV3.OPTUNA_MIN_RESOURCE_DEFAULT,
             "seed": QuickAdapterRegressorV3.OPTUNA_SEED_DEFAULT,
+            "reset_label_study_on_schema_mismatch": (
+                QuickAdapterRegressorV3.OPTUNA_RESET_LABEL_STUDY_ON_SCHEMA_MISMATCH_DEFAULT
+            ),
             "vary_model_seed_by_trial": (
                 QuickAdapterRegressorV3.OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT
             ),
@@ -1389,19 +1427,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
         return get_label_weighting_config(
-            as_dict(self.freqai_info.get("label_weighting")), logger
+            self.freqai_info.get("label_weighting"), logger
         )
 
     @cached_property
     def label_pipeline(self) -> dict[str, Any]:
-        return get_label_pipeline_config(
-            as_dict(self.freqai_info.get("label_pipeline")), logger
-        )
+        return get_label_pipeline_config(self.freqai_info.get("label_pipeline"), logger)
 
     @cached_property
     def label_prediction(self) -> dict[str, Any]:
         return get_label_prediction_config(
-            as_dict(self.freqai_info.get("label_prediction")), logger
+            self.freqai_info.get("label_prediction"), logger
         )
 
     @cached_property
@@ -1435,6 +1471,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         migrate_config(self.config, logger)
+        self._fit_live_predictions_candles: int = get_fit_live_predictions_candles(
+            self.freqai_info, logger
+        )
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
@@ -1536,6 +1575,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info(f"  min_resource: {optuna_config.get('min_resource')}")
             logger.info(f"  seed: {optuna_config.get('seed')}")
+            logger.info(
+                "  reset_label_study_on_schema_mismatch: "
+                f"{optuna_config.get('reset_label_study_on_schema_mismatch')}"
+            )
             logger.info(
                 "  vary_model_seed_by_trial: "
                 f"{optuna_config.get('vary_model_seed_by_trial')}"
@@ -1641,7 +1684,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         logger.info("Label Hyperparameters:")
         logger.info(
-            f"  fit_live_predictions_candles: {self.freqai_info.get('fit_live_predictions_candles', QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT)}"
+            f"  fit_live_predictions_candles: {self._fit_live_predictions_candles}"
         )
         if self._optuna_hyperopt:
             logger.info(
@@ -1882,8 +1925,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         before splitting. After split + causal-guard filtering, train weights
         compose through ``_compose_train_weights_with_support`` (gated by
         ``support_policy``) and eval weights through ``_compose_eval_weights``
-        (bypasses ``support_policy``). ``_train_common`` then feeds them to
-        ``model.fit(sample_weight=...)``.
+        (bypasses ``support_policy``). Training support is rechecked after the
+        feature pipeline removes rows, before ``_train_common`` feeds the final
+        weights to ``model.fit(sample_weight=...)``.
         """
         method = self.data_split_parameters.get(
             "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
@@ -2213,15 +2257,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             unfiltered_df,
             pair,
         )
+        train_positions = features_filtered.index.get_indexer(
+            dd["train_features"].index
+        )
+        if (train_positions < 0).any():
+            raise ValueError(
+                f"[{pair}] _train_common: unable to align training rows to "
+                f"sample weight inputs (missing={int((train_positions < 0).sum())})"
+            )
+        train_weight_inputs = SampleWeightInputs(
+            base=weights.base[train_positions],
+            label=None if weights.label is None else weights.label[train_positions],
+            label_weighting_config=weights.label_weighting_config,
+        )
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
-        dd = self._apply_pipelines(dd, dk, pair)
-        if len(dd["train_features"]) != len(dd["train_weights"]):
-            raise RuntimeError(
-                f"Pipeline broke shape invariant: "
-                f"len(train_features)={len(dd['train_features'])} != "
-                f"len(train_weights)={len(dd['train_weights'])}"
-            )
+        dd = self._apply_pipelines(dd, train_weight_inputs, dk, pair)
         logger.info(f"Training model on {len(dd['train_features'].columns)} features")
         logger.info(f"Training model on {len(dd['train_features'])} data points")
         model = self.fit(dd, dk, **kwargs)
@@ -2470,34 +2521,99 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 context=f"[{pair}] refit",
             )
         )
+        data_dictionary["refit_weight_inputs"] = SampleWeightInputs(
+            base=refit_base_weights,
+            label=refit_label_weights,
+            label_weighting_config=weights.label_weighting_config,
+        )
         return data_dictionary
+
+    @staticmethod
+    def _sanitize_pipeline_weights(
+        features: pd.DataFrame,
+        weights: Any,
+        *,
+        pair: str,
+        context: str,
+    ) -> NDArray[np.floating]:
+        """Validate and normalize weights returned by the feature pipeline."""
+        expected_shape = (len(features),)
+        actual_shape = np.shape(weights)
+        if actual_shape != expected_shape:
+            raise RuntimeError(
+                f"[{pair}] post_feature_pipeline:{context}: feature pipeline broke "
+                f"sample-weight shape invariant (expected {expected_shape}, "
+                f"got {actual_shape})"
+            )
+        return sanitize_and_renormalize(
+            weights,
+            logger=logger,
+            context=f"[{pair}] post_feature_pipeline:{context}",
+        )
 
     def _fit_training_pipelines(
         self,
         features: pd.DataFrame,
         labels: pd.DataFrame,
         weights: NDArray[np.floating],
+        weight_inputs: SampleWeightInputs,
         dk: FreqaiDataKitchen,
         pair: str,
         context: str,
     ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
-        """Fit FreqAI pipelines and return their transformed training data."""
+        """Fit FreqAI pipelines and enforce support on the surviving train rows."""
         dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
         dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
-        features, labels, weights = dk.feature_pipeline.fit_transform(
-            features, labels, weights
+        pipeline_labels = labels
+        if weight_inputs.label is not None:
+            # Smuggle base/label weights as extra label columns so datasieve
+            # row-filters them in lockstep with the features. Relies on datasieve
+            # not altering y VALUES (X-only transforms + row drops) and restoring
+            # them via label_list. _sanitize_pipeline_weights guards row count,
+            # not a silent y-value transform: a future y-transforming step would
+            # corrupt these vectors undetected.
+            base_weight_column = object()
+            label_weight_column = object()
+            pipeline_labels = labels.copy()
+            pipeline_labels[base_weight_column] = weight_inputs.base
+            pipeline_labels[label_weight_column] = weight_inputs.label
+        features, pipeline_labels, weights = dk.feature_pipeline.fit_transform(
+            features, pipeline_labels, weights
         )
-        weights = sanitize_and_renormalize(
+        weights = QuickAdapterRegressorV3._sanitize_pipeline_weights(
+            features,
             weights,
-            logger=logger,
-            context=f"[{pair}] post_feature_pipeline:{context}",
+            pair=pair,
+            context=context,
         )
+        # Label-only re-gate: base-only weights carry no pivot/fraction/ESS
+        # support to recheck (settled pre-pipeline), so they skip this stage.
+        if weight_inputs.label is not None:
+            post_pipeline_base_weights = pipeline_labels.pop(
+                base_weight_column
+            ).to_numpy(dtype=float)
+            post_pipeline_label_weights = pipeline_labels.pop(
+                label_weight_column
+            ).to_numpy(dtype=float)
+            # Load-bearing: fit_transform captured label_list WITH the smuggled
+            # columns; restore it to the real labels or the next validation/test
+            # transform rebuilds y with the wrong column count (ValueError).
+            dk.feature_pipeline.label_list = pipeline_labels.columns
+            weights = QuickAdapterRegressorV3._enforce_train_weight_support(
+                post_pipeline_base_weights,
+                post_pipeline_label_weights,
+                weights,
+                weight_inputs.label_weighting_config,
+                context=f"[{pair}] post_feature_pipeline:{context}",
+            )
+        labels = pipeline_labels
         labels, _, _ = dk.label_pipeline.fit_transform(labels)
         return features, labels, weights
 
     def _apply_pipelines(
         self,
         dd: dict,
+        train_weight_inputs: SampleWeightInputs,
         dk: FreqaiDataKitchen,
         pair: str,
     ) -> dict:
@@ -2507,6 +2623,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dd["train_features"],
                 dd["train_labels"],
                 dd["train_weights"],
+                train_weight_inputs,
                 dk,
                 pair,
                 "train",
@@ -2529,10 +2646,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"transform (outlier removal); relax SVM/DBSCAN outlier "
                     f"thresholds or increase test_size"
                 )
-            dd["validation_weights"] = sanitize_and_renormalize(
-                dd["validation_weights"],
-                logger=logger,
-                context=f"[{pair}] post_feature_pipeline:validation",
+            dd["validation_weights"] = (
+                QuickAdapterRegressorV3._sanitize_pipeline_weights(
+                    dd["validation_features"],
+                    dd["validation_weights"],
+                    pair=pair,
+                    context="validation",
+                )
             )
             dd["validation_labels"], _, _ = dk.label_pipeline.transform(
                 dd["validation_labels"]
@@ -2586,10 +2706,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         dd["test_features"], dd["test_labels"], dd["test_weights"]
                     )
                 )
-                dd["test_weights"] = sanitize_and_renormalize(
+                dd["test_weights"] = QuickAdapterRegressorV3._sanitize_pipeline_weights(
+                    dd["test_features"],
                     dd["test_weights"],
-                    logger=logger,
-                    context=f"[{pair}] post_feature_pipeline:test",
+                    pair=pair,
+                    context="test",
                 )
                 dd["test_labels"], _, _ = dk.label_pipeline.transform(dd["test_labels"])
 
@@ -2890,6 +3011,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             data_dictionary["train_features"] = data_dictionary.pop("refit_features")
             data_dictionary["train_labels"] = data_dictionary.pop("refit_labels")
             data_dictionary["train_weights"] = data_dictionary.pop("refit_weights")
+            refit_weight_inputs = data_dictionary.pop("refit_weight_inputs")
             if (
                 not self.freqai_info.get("fit_live_predictions_candles", 0)
                 or not self.live
@@ -2903,6 +3025,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 data_dictionary["train_features"],
                 data_dictionary["train_labels"],
                 data_dictionary["train_weights"],
+                refit_weight_inputs,
                 dk,
                 dk.pair,
                 "refit",
@@ -2969,10 +3092,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         warmed_up = True
 
-        fit_live_predictions_candles = self.freqai_info.get(
-            "fit_live_predictions_candles",
-            QuickAdapterRegressorV3.FIT_LIVE_PREDICTIONS_CANDLES_DEFAULT,
-        )
+        fit_live_predictions_candles = self._fit_live_predictions_candles
 
         if self._optuna_hyperopt:
             self.optuna_throttle_callback(
@@ -4591,7 +4711,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params found has invalid optimization target value(s)"
             )
         if self.live:
-            self.optuna_save_best_params(pair, namespace)
+            if (
+                namespace == _OPTUNA_NAMESPACES.label
+                and study.user_attrs.get("selection_metadata")
+                != self._optuna_label_selection_metadata()
+            ):
+                logger.warning(
+                    f"[{pair}] Optuna {namespace} best params not persisted: "
+                    "the preserved study selection schema is incompatible"
+                )
+            else:
+                self.optuna_save_best_params(pair, namespace)
         return study
 
     @staticmethod
@@ -4789,7 +4919,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             case _:
                 assert_never(sampler)
 
-    @lru_cache(maxsize=8)
     def optuna_samplers_by_namespace(
         self, namespace: OptunaNamespace
     ) -> tuple[frozenset[OptunaSampler], OptunaSampler]:
@@ -4845,18 +4974,28 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         # cutoff's in-memory best, which stays causal as it predates the current
         # cutoff.
         continuous = self._optuna_config.get("continuous") or not self.live
+        label_schema_mismatch_preserved = False
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
                 pair, namespace, study_name, storage
             )
         elif namespace == _OPTUNA_NAMESPACES.label:
-            existing_study = QuickAdapterRegressorV3.optuna_load_study(
-                study_name, storage
-            )
-            if existing_study is not None:
-                existing_selection_metadata = existing_study.user_attrs.get(
-                    "selection_metadata"
+            try:
+                existing_study = QuickAdapterRegressorV3.optuna_load_study(
+                    study_name, storage
                 )
+                existing_selection_metadata = (
+                    existing_study.user_attrs.get("selection_metadata")
+                    if existing_study is not None
+                    else None
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{pair}] Optuna {namespace} study {study_name} inspection failed: {e!r}",
+                    exc_info=True,
+                )
+                return None
+            if existing_study is not None:
                 existing_schema_version = (
                     existing_selection_metadata.get("schema_version")
                     if isinstance(existing_selection_metadata, dict)
@@ -4873,14 +5012,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         if existing_schema_version is None
                         else f"v{existing_schema_version!r}"
                     )
+                    reset_study = self._optuna_config[
+                        "reset_label_study_on_schema_mismatch"
+                    ]
                     logger.warning(
                         f"[{pair}] Optuna {namespace} study {study_name}: "
                         f"selection schema {version_repr} incompatible "
-                        f"with v{target_version}; resetting study"
+                        f"with v{target_version}; "
+                        f"{'resetting' if reset_study else 'preserving'} study"
                     )
-                    QuickAdapterRegressorV3.optuna_delete_study(
-                        pair, namespace, study_name, storage
-                    )
+                    if reset_study:
+                        if not QuickAdapterRegressorV3.optuna_delete_study(
+                            pair, namespace, study_name, storage
+                        ):
+                            return None
+                    else:
+                        label_schema_mismatch_preserved = True
 
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
         if sampler not in samplers:
@@ -4899,7 +5046,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 storage=storage,
                 load_if_exists=not continuous,
             )
-            if namespace == _OPTUNA_NAMESPACES.label:
+            if (
+                namespace == _OPTUNA_NAMESPACES.label
+                and not label_schema_mismatch_preserved
+            ):
                 new_selection_metadata = self._optuna_label_selection_metadata()
                 existing_selection_metadata = study.user_attrs.get("selection_metadata")
                 if existing_selection_metadata != new_selection_metadata:
@@ -4992,9 +5142,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         namespace: OptunaNamespace,
         study_name: str,
         storage: optuna.storages.BaseStorage,
-    ) -> None:
+    ) -> bool:
         try:
             optuna.delete_study(study_name=study_name, storage=storage)
+            return True
         except KeyError as e:
             # A missing study is a benign no-op: non-live runs use a fresh
             # InMemoryStorage and the first live/dry-run optimization per pair
@@ -5003,11 +5154,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.debug(
                 f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"
             )
+            return True
         except Exception as e:
             logger.warning(
                 f"[{pair}] Optuna {namespace} study {study_name} deletion failed: {e!r}",
                 exc_info=True,
             )
+            return False
 
     @staticmethod
     def optuna_load_study(
@@ -5015,7 +5168,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> Optional[optuna.study.Study]:
         try:
             study = optuna.load_study(study_name=study_name, storage=storage)
-        except Exception:
+        except KeyError:
             study = None
         return study
 

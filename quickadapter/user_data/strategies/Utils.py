@@ -11,6 +11,7 @@ from enum import IntEnum
 from functools import lru_cache, singledispatch
 from logging import Logger
 from pathlib import Path
+from threading import Lock
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -43,6 +44,7 @@ from LabelTransformer import (
     LABEL_WEIGHT_SUPPORT_POLICIES,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_METHODS,
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
@@ -53,6 +55,7 @@ from LabelTransformer import (
     FillEpsilonBaseline,
     SmoothingMethod,
     SmoothingMode,
+    get_label_column_config,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -65,6 +68,11 @@ else:
     XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
+
+# lru_cache sizes: SMALL for bounded key spaces (windows, mode strings),
+# LARGE for open numeric/string keys (formatting, rounding, statistics).
+_CACHE_MAXSIZE_SMALL: Final[int] = 8
+_CACHE_MAXSIZE_LARGE: Final[int] = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +355,8 @@ class _NumericValidator:
     require_int: bool = False
 
     def __call__(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
         if self.require_int and not isinstance(value, int):
             return False
         if not isinstance(value, (int, float)) or not _is_finite_value(value):
@@ -413,7 +423,22 @@ class _DictValidator:
         return "must be a mapping"
 
 
-_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator
+@dataclass(frozen=True, slots=True)
+class _BoolValidator:
+    def __call__(self, value: Any) -> bool:
+        return isinstance(value, bool)
+
+    def message(self, param: str) -> str:
+        return "must be a boolean"
+
+
+_Validator = (
+    _EnumValidator
+    | _NumericValidator
+    | _RangeValidator
+    | _DictValidator
+    | _BoolValidator
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +480,89 @@ def _validate_params(
                 value = spec.output_type(value)
         result[param] = value
     return result
+
+
+def validate_range(
+    min_val: float | int,
+    max_val: float | int,
+    logger: Logger,
+    *,
+    name: str,
+    default_min: float | int,
+    default_max: float | int,
+    allow_equal: bool = False,
+    non_negative: bool = True,
+    finite_only: bool = True,
+    max_value: float | int | None = None,
+) -> tuple[float | int, float | int]:
+    min_name = f"min_{name}"
+    max_name = f"max_{name}"
+
+    if not isinstance(default_min, (int, float)) or not isinstance(
+        default_max, (int, float)
+    ):
+        raise ValueError(
+            f"Invalid {name}: defaults must be numeric, "
+            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
+        )
+    if default_min > default_max or (not allow_equal and default_min == default_max):
+        raise ValueError(
+            f"Invalid {name}: defaults ordering must have min < max, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+    if max_value is not None and (default_min > max_value or default_max > max_value):
+        raise ValueError(
+            f"Invalid {name}: defaults must be <= {max_value!r}, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+
+    def _validate_component(
+        value: float | int | None, name: str, default_value: float | int
+    ) -> float | int:
+        constraints = []
+        if finite_only:
+            constraints.append("finite")
+        if non_negative:
+            constraints.append("non-negative")
+        constraints.append("numeric")
+        if max_value is not None:
+            constraints.append(f"<= {max_value}")
+        constraint_str = " ".join(constraints)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or (finite_only and not _is_finite_value(value))
+            or (non_negative and value < 0)
+            or (max_value is not None and value > max_value)
+        ):
+            logger.warning(
+                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
+            )
+            return default_value
+        return value
+
+    sanitized_min = _validate_component(min_val, min_name, default_min)
+    sanitized_max = _validate_component(max_val, max_name, default_max)
+
+    ordering_ok = (
+        (sanitized_min < sanitized_max)
+        if not allow_equal
+        else (sanitized_min <= sanitized_max)
+    )
+    if not ordering_ok:
+        logger.warning(
+            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
+            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
+            f"using defaults {default_min!r}, {default_max!r}"
+        )
+        sanitized_min, sanitized_max = default_min, default_max
+
+    if sanitized_min != min_val or sanitized_max != max_val:
+        logger.warning(
+            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
+        )
+
+    return sanitized_min, sanitized_max
 
 
 _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -562,7 +670,7 @@ LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 _FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def _label_aux_column_name(label_col: str, suffix: str) -> str:
     """Derive a freqtrade-safe auxiliary column name from a label column.
 
@@ -941,11 +1049,20 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
+    if value is not None and not isinstance(value, dict):
+        logger.warning(
+            f"Invalid {name} value {value!r}: must be a mapping, using defaults"
+        )
+    return as_dict(value)
+
+
 def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
     return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
+CrossFieldValidatorFn = Callable[[dict[str, Any], str], None]
 
 
 _MISSING: Final = object()
@@ -984,90 +1101,165 @@ def _delete_path(config: dict[str, Any], path: str) -> bool:
     return False
 
 
+ConfigDeprecation = tuple[
+    str,
+    str | None,
+    Callable[[Any], bool] | None,
+    str | None,
+]
+
+
+def _renamed_config_key(old_path: str, new_path: str) -> ConfigDeprecation:
+    return old_path, new_path, None, None
+
+
 # Order matters: section renames before key moves (e.g. extrema_weighting.gamma -> label_weighting.gamma -> label_pipeline.gamma)
-CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
-    ("freqai.extrema_weighting", "freqai.label_weighting"),
-    ("freqai.extrema_smoothing", "freqai.label_smoothing"),
-    ("freqai.predictions_extrema", "freqai.label_prediction"),
-    ("freqai.label_smoothing.window", "freqai.label_smoothing.window_candles"),
-    (
+CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
+    _renamed_config_key("freqai.extrema_weighting", "freqai.label_weighting"),
+    _renamed_config_key("freqai.extrema_smoothing", "freqai.label_smoothing"),
+    _renamed_config_key("freqai.predictions_extrema", "freqai.label_prediction"),
+    _renamed_config_key(
+        "freqai.label_smoothing.window",
+        "freqai.label_smoothing.window_candles",
+    ),
+    _renamed_config_key(
         "freqai.label_prediction.thresholds_smoothing",
         "freqai.label_prediction.threshold_smoothing_method",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.threshold_smoothing_method",
         "freqai.label_prediction.threshold_method",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.threshold_outlier",
         "freqai.label_prediction.outlier_threshold_quantile",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.outlier_threshold_quantile",
         "freqai.label_prediction.outlier_quantile",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.extrema_fraction",
         "freqai.label_prediction.keep_extrema_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.keep_extrema_fraction",
         "freqai.label_prediction.keep_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.thresholds_alpha",
         "freqai.label_prediction.soft_extremum_alpha",
     ),
-    ("exit_pricing.trade_price_target", "exit_pricing.trade_price_target_method"),
-    (
+    _renamed_config_key(
+        "exit_pricing.trade_price_target",
+        "exit_pricing.trade_price_target_method",
+    ),
+    _renamed_config_key(
         "reversal_confirmation.lookback_period",
         "reversal_confirmation.lookback_period_candles",
     ),
-    ("reversal_confirmation.decay_ratio", "reversal_confirmation.decay_fraction"),
-    (
+    _renamed_config_key(
+        "reversal_confirmation.decay_ratio",
+        "reversal_confirmation.decay_fraction",
+    ),
+    _renamed_config_key(
         "reversal_confirmation.min_natr_ratio_percent",
         "reversal_confirmation.min_natr_multiplier_fraction",
     ),
-    (
+    _renamed_config_key(
         "reversal_confirmation.max_natr_ratio_percent",
         "reversal_confirmation.max_natr_multiplier_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.min_label_natr_ratio",
         "freqai.feature_parameters.min_label_natr_multiplier",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.max_label_natr_ratio",
         "freqai.feature_parameters.max_label_natr_multiplier",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.label_natr_ratio",
         "freqai.feature_parameters.label_natr_multiplier",
     ),
-    ("freqai.optuna_hyperopt.expansion_ratio", "freqai.optuna_hyperopt.space_fraction"),
-    (
+    _renamed_config_key(
+        "freqai.optuna_hyperopt.expansion_ratio",
+        "freqai.optuna_hyperopt.space_fraction",
+    ),
+    _renamed_config_key(
         "freqai.label_weighting.standardization",
         "freqai.label_pipeline.standardization",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_weighting.robust_quantiles",
         "freqai.label_pipeline.robust_quantiles",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_weighting.mmad_scaling_factor",
         "freqai.label_pipeline.mmad_scaling_factor",
     ),
-    ("freqai.label_weighting.normalization", "freqai.label_pipeline.normalization"),
-    ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
-    ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
-    ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+    _renamed_config_key(
+        "freqai.label_weighting.normalization",
+        "freqai.label_pipeline.normalization",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.minmax_range",
+        "freqai.label_pipeline.minmax_range",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.sigmoid_scale",
+        "freqai.label_pipeline.sigmoid_scale",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.gamma",
+        "freqai.label_pipeline.gamma",
+    ),
+    (
+        "exit_pricing.thresholds_calibration",
+        None,
+        None,
+        "the PnL momentum gate now uses the direction of mean per-candle PnL velocity",
+    ),
+    (
+        "freqai.feature_parameters.causal_mode",
+        None,
+        lambda value: value is False,
+        "feature_parameters.causal_mode=false is deprecated: "
+        "causal split guards disabled; label lookahead leakage possible. "
+        "Default causal_mode=true; causal_mode=false for acausal baselines only.",
+    ),
 )
+
+_WARNED_CONFIG_DEPRECATIONS: set[str] = set()
+_CONFIG_DEPRECATION_WARNING_LOCK = Lock()
+
+
+def _warn_config_deprecation_once(path: str, message: str, logger: Logger) -> None:
+    with _CONFIG_DEPRECATION_WARNING_LOCK:
+        if path in _WARNED_CONFIG_DEPRECATIONS:
+            return
+        _WARNED_CONFIG_DEPRECATIONS.add(path)
+    logger.warning(message)
 
 
 def migrate_config(config: dict[str, Any], logger: Logger) -> None:
-    for old_path, new_path in CONFIG_MIGRATIONS:
+    for old_path, new_path, predicate, guidance in CONFIG_DEPRECATIONS:
         old_value = _get_path(config, old_path)
         if old_value is _MISSING:
+            continue
+
+        if predicate is not None:
+            if predicate(old_value):
+                message = guidance or f"{old_path}={old_value!r} is deprecated"
+                _warn_config_deprecation_once(old_path, message, logger)
+            continue
+
+        if new_path is None:
+            _delete_path(config, old_path)
+            message = f"{old_path} is obsolete and ignored"
+            if guidance is not None:
+                message = f"{message}: {guidance}"
+            _warn_config_deprecation_once(old_path, message, logger)
             continue
 
         old_section = old_path.rsplit(".", 1)[0] if "." in old_path else ""
@@ -1079,19 +1271,16 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             _set_path(config, new_path, old_value)
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
+                message = f"{old_path!r} is deprecated, use {new_key!r} instead"
             else:
-                logger.warning(f"{old_path!r} is deprecated, use {new_path!r} instead")
+                message = f"{old_path!r} is deprecated, use {new_path!r} instead"
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(
-                    f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
-                )
+                message = f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
             else:
-                logger.warning(
-                    f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
-                )
+                message = f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
+        _warn_config_deprecation_once(old_path, message, logger)
 
 
 def _get_label_config(
@@ -1148,16 +1337,38 @@ def _get_label_config(
         return {"default": validated_default, "columns": {}}
 
 
-_LABEL_KIND_REGISTRY: Final[dict[str, tuple[dict[str, _ParamSpec], dict[str, Any]]]] = {
-    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING),
-    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE),
-    "label_smoothing": (_SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING),
-    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION),
+def _validate_smoothing_method_mode(
+    config: dict[str, Any],
+    config_name: str,
+) -> None:
+    method = config["method"]
+    valid_modes = SMOOTHING_METHOD_MODES.get(method)
+    if valid_modes is not None and config["mode"] not in valid_modes:
+        raise ValueError(
+            f"Invalid {config_name} mode value {config['mode']!r} for "
+            f"method {method!r}: supported values are {', '.join(valid_modes)}"
+        )
+
+
+_LABEL_KIND_REGISTRY: Final[
+    dict[
+        str,
+        tuple[dict[str, _ParamSpec], dict[str, Any], CrossFieldValidatorFn | None],
+    ]
+] = {
+    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING, None),
+    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE, None),
+    "label_smoothing": (
+        _SMOOTHING_SPECS,
+        DEFAULTS_LABEL_SMOOTHING,
+        _validate_smoothing_method_mode,
+    ),
+    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION, None),
 }
 
 
 def _label_kind_validator(kind: str) -> ValidateParamsFn:
-    specs, defaults = _LABEL_KIND_REGISTRY[kind]
+    specs, defaults, _ = _LABEL_KIND_REGISTRY[kind]
 
     def validate(
         config: dict[str, Any],
@@ -1171,7 +1382,7 @@ def _label_kind_validator(kind: str) -> ValidateParamsFn:
 
 def get_label_kind_config(
     kind: str,
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     if kind not in _LABEL_KIND_REGISTRY:
@@ -1179,35 +1390,45 @@ def get_label_kind_config(
             f"Unknown label kind {kind!r}: supported values are "
             f"{', '.join(_LABEL_KIND_REGISTRY)}"
         )
-    _, defaults = _LABEL_KIND_REGISTRY[kind]
-    return _get_label_config(
+    config = as_config_section(config, kind, logger)
+    _, defaults, cross_field_validator = _LABEL_KIND_REGISTRY[kind]
+    validated = _get_label_config(
         config, logger, kind, _label_kind_validator(kind), defaults
     )
+    if cross_field_validator is not None:
+        for label_col in LABEL_COLUMNS:
+            cross_field_validator(
+                get_label_column_config(
+                    label_col, validated["default"], validated["columns"]
+                ),
+                f"{kind} for label {label_col!r}",
+            )
+    return validated
 
 
 def get_label_weighting_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_weighting", config, logger)
 
 
 def get_label_pipeline_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_pipeline", config, logger)
 
 
 def get_label_smoothing_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_prediction", config, logger)
@@ -1224,10 +1445,121 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
+def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
     return _validate_params(
-        config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
+        as_config_section(config, "exit_pricing", logger),
+        logger,
+        "exit_pricing",
+        _EXIT_PRICING_SPECS,
+        DEFAULTS_EXIT_PRICING,
     )
+
+
+DEFAULTS_CUSTOM_PROTECTIONS: Final[dict[str, Any]] = {
+    "trade_duration_candles": 72,
+    "lookback_period_fraction": 0.5,
+}
+
+DEFAULTS_COOLDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "stop_duration_candles": 4,
+}
+
+DEFAULTS_DRAWDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "max_allowed_drawdown": 0.2,
+}
+
+DEFAULTS_STOPLOSS_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+}
+
+_CUSTOM_PROTECTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "trade_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "lookback_period_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+_COOLDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "stop_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+_DRAWDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "max_allowed_drawdown": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+}
+
+_STOPLOSS_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+}
+
+
+def get_custom_protections_config(config: Any, logger: Logger) -> dict[str, Any]:
+    config = as_config_section(config, "custom_protections", logger)
+    validated = _validate_params(
+        config,
+        logger,
+        "custom_protections",
+        _CUSTOM_PROTECTIONS_SPECS,
+        DEFAULTS_CUSTOM_PROTECTIONS,
+    )
+    validated["cooldown"] = _validate_params(
+        as_config_section(
+            config.get("cooldown"), "custom_protections.cooldown", logger
+        ),
+        logger,
+        "custom_protections.cooldown",
+        _COOLDOWN_PROTECTION_SPECS,
+        DEFAULTS_COOLDOWN_PROTECTION,
+    )
+    validated["drawdown"] = _validate_params(
+        as_config_section(
+            config.get("drawdown"), "custom_protections.drawdown", logger
+        ),
+        logger,
+        "custom_protections.drawdown",
+        _DRAWDOWN_PROTECTION_SPECS,
+        DEFAULTS_DRAWDOWN_PROTECTION,
+    )
+    validated["stoploss"] = _validate_params(
+        as_config_section(
+            config.get("stoploss"), "custom_protections.stoploss", logger
+        ),
+        logger,
+        "custom_protections.stoploss",
+        _STOPLOSS_PROTECTION_SPECS,
+        DEFAULTS_STOPLOSS_PROTECTION,
+    )
+    return validated
+
+
+_FIT_LIVE_PREDICTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "fit_live_predictions_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+
+def get_fit_live_predictions_candles(config: Any, logger: Logger) -> int:
+    return _validate_params(
+        as_config_section(config, "freqai", logger),
+        logger,
+        "freqai",
+        _FIT_LIVE_PREDICTIONS_SPECS,
+        {"fit_live_predictions_candles": DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES},
+    )["fit_live_predictions_candles"]
 
 
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
@@ -1252,8 +1584,9 @@ _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_reversal_confirmation_config(
-    config: dict[str, Any], logger: Logger
+    config: Any, logger: Logger
 ) -> dict[str, int | float]:
+    config = as_config_section(config, "reversal_confirmation", logger)
     validated = _validate_params(
         config,
         logger,
@@ -1281,6 +1614,7 @@ def get_reversal_confirmation_config(
         allow_equal=False,
         non_negative=True,
         finite_only=True,
+        max_value=1,
     )
 
     return {
@@ -1291,9 +1625,6 @@ def get_reversal_confirmation_config(
     }
 
 
-_CAUSAL_MODE_FALSE_WARNED: bool = False
-
-
 def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
     causal_mode = config.get("causal_mode", True)
     if not isinstance(causal_mode, bool):
@@ -1301,14 +1632,6 @@ def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
             f"Invalid causal_mode value {causal_mode!r}: must be bool, using True"
         )
         return True
-    global _CAUSAL_MODE_FALSE_WARNED
-    if causal_mode is False and not _CAUSAL_MODE_FALSE_WARNED:
-        logger.warning(
-            "feature_parameters.causal_mode=false is deprecated: "
-            "causal split guards disabled; label lookahead leakage possible. "
-            "Default causal_mode=true; causal_mode=false for acausal baselines only."
-        )
-        _CAUSAL_MODE_FALSE_WARNED = True
     return causal_mode
 
 
@@ -1685,26 +2008,26 @@ def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
     return diff.where(diff != 0, np.finfo(float).eps)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_odd_window(window: int) -> int:
     if window < 1:
         raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 1 else window + 1
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_even_window(window: int) -> int:
     if window < 1:
         raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 0 else window + 1
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_gaussian_std(window: int) -> float:
     return (window - 1) / 6.0 if window > 1 else 0.5
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_savgol_params(
     window: int, polyorder: int, mode: SmoothingMode
 ) -> tuple[int, int, str]:
@@ -1714,7 +2037,7 @@ def get_savgol_params(
     return window, polyorder, mode
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def _calculate_coeffs(
     window: int,
     win_type: SmoothingKernel,
@@ -1738,7 +2061,9 @@ def _calculate_coeffs(
             f"Invalid window type value {win_type!r}: "
             f"supported values are {', '.join(SMOOTHING_KERNELS)}"
         )
-    return coeffs / np.sum(coeffs)
+    normalized_coeffs = coeffs / np.sum(coeffs)
+    normalized_coeffs.setflags(write=False)
+    return normalized_coeffs
 
 
 def zero_phase_filter(
@@ -1895,8 +2220,95 @@ def _impute_weights(
     return weights
 
 
+def _causal_impute_weights(
+    weights: NDArray[np.floating],
+    *,
+    availability: NDArray[np.integer],
+    default_weight: float = 1.0,
+) -> NDArray[np.floating]:
+    """Impute each non-finite value from signals available at the same event."""
+    values = weights.astype(float, copy=True)
+    if values.size == 0:
+        return values
+    finite_mask = np.isfinite(values)
+    running_median = (
+        pd.Series(values)
+        .where(finite_mask)
+        .expanding()
+        .median()
+        .fillna(default_weight)
+        .to_numpy(dtype=float)
+    )
+    event_ends = np.flatnonzero(np.r_[availability[1:] != availability[:-1], True])
+    event_medians = np.repeat(
+        running_median[event_ends],
+        np.diff(np.r_[-1, event_ends]),
+    )
+    values[~finite_mask] = event_medians[~finite_mask]
+    return values
+
+
 _GAUSSIAN_FILL_CHUNK_BUDGET: Final[int] = 50_000_000
 _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
+
+# Gaussian fill support: rows within k*fill_sigma_candles of a pivot receive
+# its bump. sqrt(2*ln(100))=3.0349 sigma contains every value above 1% of the
+# pivot peak; k=4 retains a rounding margin and truncates only below exp(-8).
+_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
+_ZIGZAG_CONFIRMATION_ALPHA: Final[float] = 0.05
+# With all slopes successful, the one-sided Binomial(0.5) p-value is 2**-m.
+_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = math.ceil(
+    -math.log2(_ZIGZAG_CONFIRMATION_ALPHA)
+)
+
+
+def _compute_pivot_kth_neighbor_distances(
+    pivot_indices: NDArray[np.floating],
+    neighbors: int,
+) -> NDArray[np.floating]:
+    """Distance from each pivot to its k-th nearest pivot neighbor.
+
+    After sorting, binary-search the split of the k neighbors between the
+    monotone left and right distances: O(M log M) time and O(M) space.
+    """
+    pivot_count = pivot_indices.size
+    sorted_idx = np.argsort(pivot_indices, kind="stable")
+    sorted_positions = pivot_indices[sorted_idx]
+    k = min(int(neighbors), pivot_count - 1)
+    distances = np.empty(pivot_count, dtype=float)
+    for i, position in enumerate(sorted_positions):
+        min_left = max(0, k - (pivot_count - i - 1))
+        max_left = min(k, i)
+        left = min_left
+        right = max_left
+        while left < right:
+            left_count = (left + right) // 2
+            right_count = k - left_count
+            left_distance = (
+                position - sorted_positions[i - left_count] if left_count else 0.0
+            )
+            right_distance = (
+                sorted_positions[i + right_count] - position if right_count else 0.0
+            )
+            if left_distance < right_distance:
+                left = left_count + 1
+            else:
+                right = left_count
+        distances[i] = min(
+            max(
+                (position - sorted_positions[i - left_count] if left_count else 0.0),
+                (
+                    sorted_positions[i + k - left_count] - position
+                    if k - left_count
+                    else 0.0
+                ),
+            )
+            for left_count in (left - 1, left)
+            if min_left <= left_count <= max_left
+        )
+    result = np.empty(pivot_count, dtype=float)
+    result[sorted_idx] = distances
+    return result
 
 
 def _compute_pivot_sigmas(
@@ -1928,26 +2340,7 @@ def _compute_pivot_sigmas(
             f"supported values are {', '.join(FILL_BANDWIDTHS)}"
         )
 
-    sorted_idx = np.argsort(pivot_indices, kind="stable")
-    sorted_positions = pivot_indices[sorted_idx]
-    k = min(int(neighbors), M - 1)
-
-    d_k_sorted = np.empty(M, dtype=float)
-    for i, position in enumerate(sorted_positions):
-        left = max(0, i - k)
-        right = min(M, i + k + 1)
-        candidate_distances = np.abs(
-            np.concatenate(
-                (
-                    sorted_positions[left:i] - position,
-                    sorted_positions[i + 1 : right] - position,
-                )
-            )
-        )
-        d_k_sorted[i] = np.partition(candidate_distances, k - 1)[k - 1]
-    d_k = np.empty(M, dtype=float)
-    d_k[sorted_idx] = d_k_sorted
-
+    d_k = _compute_pivot_kth_neighbor_distances(pivot_indices, neighbors)
     sigmas = float(alpha) * d_k
     sigma_max = float(sigma_candles)
     sigma_min = float(sigma_min_candles)
@@ -1966,11 +2359,15 @@ def _gaussian_fill_weights(
     bandwidth_neighbors: int = 1,
     bandwidth_alpha: float = 1.0,
     sigma_min_candles: float = 0.5,
+    finite_support: bool = False,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
     """Per-row max of per-pivot Gaussian bumps.
 
-    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``.
+    ``Out[i] = max_p w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``. When
+    ``finite_support`` is true, values outside
+    ``ceil(4 * sigma_candles)`` are zero to match causal availability
+    propagation. The default retains the legacy unbounded Gaussian tails.
 
     With ``bandwidth == "fixed"``, ``sigma_p == sigma_candles`` for every
     pivot. Clustered pivots within ``~sigma_candles`` then let the strongest
@@ -1993,7 +2390,7 @@ def _gaussian_fill_weights(
             f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0"
         )
     pivot_indices_array = pivot_indices.astype(float)
-    pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
+    pivot_weights_array = pivot_weights.astype(float)
     pivot_sigmas = _compute_pivot_sigmas(
         pivot_indices=pivot_indices_array,
         sigma_candles=sigma_candles,
@@ -2002,7 +2399,6 @@ def _gaussian_fill_weights(
         alpha=bandwidth_alpha,
         sigma_min_candles=sigma_min_candles,
     )
-    inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
     M = pivot_indices_array.size
     if (
         logger is not None
@@ -2017,29 +2413,54 @@ def _gaussian_fill_weights(
             M,
             n_values,
         )
-    chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
-    if logger is not None and chunk < n_values:
-        logger.debug(
-            "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
-            "bandwidth=%s, sigma=[%.2f, %.2f]",
-            n_values,
-            M,
-            chunk,
-            chunk * M * 8 / 1e6,
-            bandwidth,
-            float(pivot_sigmas.min()),
-            float(pivot_sigmas.max()),
-        )
+    if not finite_support:
+        pivot_weights_row = pivot_weights_array[np.newaxis, :]
+        inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
+        chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
+        if logger is not None and chunk < n_values:
+            logger.debug(
+                "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
+                "bandwidth=%s, sigma=[%.2f, %.2f]",
+                n_values,
+                M,
+                chunk,
+                chunk * M * 8 / 1e6,
+                bandwidth,
+                float(pivot_sigmas.min()),
+                float(pivot_sigmas.max()),
+            )
+        out = np.zeros(n_values, dtype=float)
+        for start in range(0, n_values, chunk):
+            stop = min(start + chunk, n_values)
+            positions = np.arange(start, stop, dtype=float)
+            buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
+            np.multiply(buf, buf, out=buf)
+            np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
+            np.exp(buf, out=buf)
+            np.multiply(buf, pivot_weights_row, out=buf)
+            np.max(buf, axis=1, out=out[start:stop])
+        return out
+
     out = np.zeros(n_values, dtype=float)
-    for start in range(0, n_values, chunk):
-        stop = min(start + chunk, n_values)
+    support_radius = math.ceil(
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(sigma_candles)
+    )
+    for pivot, pivot_weight, pivot_sigma in zip(
+        pivot_indices_array,
+        pivot_weights_array,
+        pivot_sigmas,
+    ):
+        if pivot_weight == 0.0:
+            continue
+        start = max(0, int(pivot) - support_radius)
+        stop = min(n_values, int(pivot) + support_radius + 1)
         positions = np.arange(start, stop, dtype=float)
-        buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
-        np.multiply(buf, buf, out=buf)
-        np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
-        np.exp(buf, out=buf)
-        np.multiply(buf, pivot_weights_row, out=buf)
-        np.max(buf, axis=1, out=out[start:stop])
+        np.subtract(positions, pivot, out=positions)
+        np.multiply(positions, positions, out=positions)
+        np.multiply(positions, -0.5 / (pivot_sigma * pivot_sigma), out=positions)
+        np.exp(positions, out=positions)
+        np.multiply(positions, pivot_weight, out=positions)
+        np.maximum(out[start:stop], positions, out=out[start:stop])
     return out
 
 
@@ -2150,6 +2571,8 @@ def _compute_combined_label_weights(
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
     softmax_temperature: float,
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
 ) -> NDArray[np.floating]:
     if len(metrics) == 0:
         return np.asarray([], dtype=float)
@@ -2168,7 +2591,7 @@ def _compute_combined_label_weights(
         values_array = np.asarray(metric_values, dtype=float)
         if values_array.size == 0:
             continue
-        imputed_metrics.append(_impute_weights(values_array))
+        imputed_metrics.append(impute(values_array))
         coefficients_list.append(float(coefficient))
 
     if len(imputed_metrics) == 0:
@@ -2211,6 +2634,152 @@ def _compute_epsilon_floor(
     return float(eps) * b
 
 
+def _compute_label_weight_values(
+    n_indices: int,
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
+) -> NDArray[np.floating]:
+    strategy = label_weighting["strategy"]
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        weights = np.ones(n_indices, dtype=float)
+    elif strategy in metrics:
+        weights = np.asarray(metrics[strategy], dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
+        weights = _compute_combined_label_weights(
+            metrics=metrics,
+            metric_coefficients=label_weighting["metric_coefficients"],
+            aggregation=label_weighting["aggregation"],
+            softmax_temperature=label_weighting["softmax_temperature"],
+            impute=impute,
+        )
+    else:
+        raise ValueError(
+            f"Invalid weighting strategy value {strategy!r}: "
+            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
+        )
+    return impute(weights)
+
+
+def _compute_causal_epsilon_fill(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    known_at_lookahead: pd.Series,
+) -> NDArray[np.floating]:
+    """Per-row epsilon floor from pivot weights fixed at their availability."""
+    if len(known_at_lookahead) != n_values:
+        raise ValueError(
+            "Invalid known_at_lookahead length "
+            f"{len(known_at_lookahead)}: must be {n_values}"
+        )
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if not valid_mask.any():
+        return np.zeros(n_values, dtype=float)
+
+    source_indices = np.flatnonzero(valid_mask)
+    pivot_order = np.argsort(indices_array[valid_mask], kind="stable")
+    source_indices = source_indices[pivot_order]
+    pivot_indices = indices_array[source_indices]
+
+    known_at_positions = positions + known_at_lookahead_values
+    if label_weighting["strategy"] == WEIGHT_STRATEGIES[1]:  # "uniform"
+        pivot_available_at = known_at_positions[pivot_indices]
+    else:
+        pivot_available_at = np.empty(pivot_indices.size, dtype=np.int64)
+        pivot_available_at[:-1] = known_at_positions[pivot_indices[1:]]
+        pivot_available_at[-1] = n_values
+
+    resolved_mask = pivot_available_at < n_values
+    if not resolved_mask.any():
+        return np.zeros(n_values, dtype=float)
+
+    source_indices = source_indices[resolved_mask]
+    pivot_available_at = pivot_available_at[resolved_mask]
+    availability_order = np.argsort(pivot_available_at, kind="stable")
+    source_indices = source_indices[availability_order]
+    pivot_available_at = pivot_available_at[availability_order]
+    ordered_metrics = {
+        metric_name: np.asarray(metric_values)[source_indices].tolist()
+        for metric_name, metric_values in metrics.items()
+    }
+    pivot_values = _compute_label_weight_values(
+        source_indices.size,
+        ordered_metrics,
+        label_weighting,
+        impute=functools.partial(
+            _causal_impute_weights,
+            availability=pivot_available_at,
+        ),
+    )
+
+    baseline = label_weighting["fill_epsilon_baseline"]
+    if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
+        running_baseline = (
+            pd.Series(pivot_values).expanding().mean().to_numpy(dtype=float)
+        )
+    elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
+        running_baseline = (
+            pd.Series(pivot_values).expanding().median().to_numpy(dtype=float)
+        )
+    else:
+        raise ValueError(
+            f"Invalid fill_epsilon_baseline value {baseline!r}: "
+            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+        )
+
+    event_ends = np.flatnonzero(
+        np.r_[pivot_available_at[1:] != pivot_available_at[:-1], True]
+    )
+    availability_events = pivot_available_at[event_ends]
+    event_floors = float(label_weighting["fill_epsilon"]) * running_baseline[event_ends]
+
+    available_count = np.searchsorted(
+        availability_events, known_at_positions, side="right"
+    )
+    fill_weights = np.zeros(n_values, dtype=float)
+    has_available_pivot = available_count > 0
+    fill_weights[has_available_pivot] = event_floors[
+        available_count[has_available_pivot] - 1
+    ]
+    return fill_weights
+
+
+def _compute_epsilon_fill(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    weights: NDArray[np.floating],
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    known_at_lookahead: pd.Series | None,
+) -> NDArray[np.floating]:
+    if known_at_lookahead is not None:
+        return _compute_causal_epsilon_fill(
+            n_values,
+            indices_array,
+            valid_mask,
+            metrics,
+            label_weighting,
+            known_at_lookahead,
+        )
+    return np.full(
+        n_values,
+        _compute_epsilon_floor(
+            weights,
+            valid_mask,
+            label_weighting["fill_epsilon"],
+            label_weighting["fill_epsilon_baseline"],
+        ),
+        dtype=float,
+    )
+
+
 def _compute_gaussian_bumps(
     n_values: int,
     indices_array: NDArray[np.integer],
@@ -2218,6 +2787,7 @@ def _compute_gaussian_bumps(
     weights: NDArray[np.floating],
     label_weighting: dict[str, Any],
     *,
+    finite_support: bool,
     logger: Logger | None,
 ) -> NDArray[np.floating]:
     """Per-row max of per-pivot Gaussian bumps.
@@ -2234,6 +2804,7 @@ def _compute_gaussian_bumps(
         bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
         bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
         sigma_min_candles=label_weighting["fill_sigma_min_candles"],
+        finite_support=finite_support,
         logger=logger,
     )
 
@@ -2244,13 +2815,18 @@ def compute_label_weights(
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
     *,
+    finite_gaussian_support: bool = False,
     logger: Logger,
+    known_at_lookahead: pd.Series | None = None,
 ) -> NDArray[np.floating]:
     """Compute per-row label importance weights.
 
     Returns an array with positive values at pivot ``indices`` (scaled by
-    strategy) and off-pivot values controlled by ``fill_method``. Callers
-    must skip invocation when strategy is ``'none'``; this raises
+    strategy) and off-pivot values controlled by ``fill_method``.
+    ``known_at_lookahead`` enables a per-row causal epsilon baseline; ``None``
+    preserves the global non-causal baseline. ``finite_gaussian_support``
+    truncates Gaussian fills to the radius tracked by causal availability.
+    Callers must skip invocation when strategy is ``'none'``; this raises
     ValueError otherwise.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
@@ -2274,60 +2850,60 @@ def compute_label_weights(
             n_values,
         )
 
-    weights: NDArray[np.floating]
-
-    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
-        weights = np.ones(n_indices, dtype=float)
-    elif strategy in metrics:
-        weights = np.asarray(metrics[strategy], dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
-        weights = _compute_combined_label_weights(
-            metrics=metrics,
-            metric_coefficients=label_weighting["metric_coefficients"],
-            aggregation=label_weighting["aggregation"],
-            softmax_temperature=label_weighting["softmax_temperature"],
-        )
-    else:
-        raise ValueError(
-            f"Invalid weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
-        )
-
-    weights = _impute_weights(weights)
+    weights = _compute_label_weight_values(n_indices, metrics, label_weighting)
 
     if weights.size == 0:
         return np.zeros(n_values, dtype=float)
+    if weights.size != n_indices:
+        raise ValueError(
+            f"Invalid indices_array/weights values: length mismatch, "
+            f"got {n_indices} indices but {weights.size} weights"
+        )
 
     fill_method = label_weighting["fill_method"]
 
     if fill_method == FILL_METHODS[0]:  # "zero"
         fill_weights = np.zeros(n_values, dtype=float)
     elif fill_method == FILL_METHODS[1]:  # "epsilon"
-        fill_weights = np.full(
+        fill_weights = _compute_epsilon_fill(
             n_values,
-            _compute_epsilon_floor(
-                weights,
-                valid_mask,
-                label_weighting["fill_epsilon"],
-                label_weighting["fill_epsilon_baseline"],
-            ),
-            dtype=float,
+            indices_array,
+            valid_mask,
+            weights,
+            metrics,
+            label_weighting,
+            known_at_lookahead,
         )
     elif fill_method == FILL_METHODS[2]:  # "gaussian"
         fill_weights = _compute_gaussian_bumps(
-            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+            n_values,
+            indices_array,
+            valid_mask,
+            weights,
+            label_weighting,
+            finite_support=finite_gaussian_support,
+            logger=logger,
         )
     elif fill_method == FILL_METHODS[3]:  # "epsilon_gaussian"
         fill_weights = _compute_gaussian_bumps(
-            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+            n_values,
+            indices_array,
+            valid_mask,
+            weights,
+            label_weighting,
+            finite_support=finite_gaussian_support,
+            logger=logger,
         )
         np.add(
             fill_weights,
-            _compute_epsilon_floor(
-                weights,
+            _compute_epsilon_fill(
+                n_values,
+                indices_array,
                 valid_mask,
-                label_weighting["fill_epsilon"],
-                label_weighting["fill_epsilon_baseline"],
+                weights,
+                metrics,
+                label_weighting,
+                known_at_lookahead,
             ),
             out=fill_weights,
         )
@@ -2346,22 +2922,15 @@ def compute_label_weights(
     )
 
 
-# k for the weight-fill availability band: rows within k*fill_sigma_candles of a
-# pivot receive its Gaussian bump. Material radius (bump > 1% of pivot peak) is
-# sqrt(2*ln(100))=3.0349 sigma; k=4 -> tail exp(-8)=3.4e-4, ~30x below 1% with a
-# margin robust to sigma rounding (k=3 under-covers for larger sigma).
-_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
-
-
 def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     """Row radius over which a pivot's Gaussian-fill weight is causally shared.
 
     Zero unless the off-pivot fill spreads a pivot's weight into neighbors
     (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
     per-pivot sigma (including ``knn``, which clips below it), so
-    ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
-    support. The additive epsilon floor is a global O(fill_epsilon) term, left
-    unconstrained (negligible).
+    ``ceil(k*fill_sigma_candles)`` is the finite support used by Gaussian
+    generation. The additive epsilon floor uses its separate per-row causal
+    baseline, so it needs no local fill radius.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     if label_weighting["fill_method"] not in (
@@ -2375,40 +2944,207 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     )
 
 
+def _compute_knn_pivot_sigma_availability(
+    pivot_indices: NDArray[np.integer],
+    known_at_positions: NDArray[np.integer],
+    neighbors: int,
+    alpha: float,
+    sigma_min_candles: float,
+    sigma_candles: float,
+    n: int,
+) -> NDArray[np.int64]:
+    """Absolute availability position of each k-NN pivot bandwidth.
+
+    At each atomically complete confirmation group, the possible effective
+    k-th-neighbor distances include every confirmable finite suffix of the
+    remaining frame. Successive Zigzag pivots need at least five slope
+    observations and are therefore at least six candles apart. The bandwidth
+    settles once every possible clipped sigma equals its final value. Otherwise
+    it is knowable only at the frame boundary.
+    """
+    pivot_count = pivot_indices.size
+    availability = np.full(pivot_count, n, dtype=np.int64)
+    if pivot_count == 0:
+        return availability
+
+    pivot_positions = pivot_indices.astype(np.int64, copy=False)
+    pivot_confirmations = known_at_positions[pivot_positions]
+    confirmation_group_ends = np.flatnonzero(
+        np.r_[pivot_confirmations[:-1] != pivot_confirmations[1:], True]
+    )
+    pivot_spacing = _ZIGZAG_MIN_CONFIRMATION_SLOPES + 1
+    last_future_pivot_position = n - pivot_spacing
+    kth_distances = (
+        np.full(1, np.inf)
+        if pivot_count == 1
+        else _compute_pivot_kth_neighbor_distances(
+            pivot_positions.astype(float),
+            neighbors,
+        )
+    )
+    sigma_min = min(float(sigma_min_candles), float(sigma_candles))
+    sigma_max = float(sigma_candles)
+    alpha_value = float(alpha)
+    for i, (pivot_position, kth_distance) in enumerate(
+        zip(pivot_positions, kth_distances)
+    ):
+        raw_sigma = alpha_value * kth_distance
+        if raw_sigma >= sigma_max:
+            lower, upper = 0, n
+            while lower < upper:
+                middle = (lower + upper) // 2
+                if alpha_value * middle < sigma_max:
+                    lower = middle + 1
+                else:
+                    upper = middle
+            closer_radius = lower - 1
+            within_radius = closer_radius
+        elif raw_sigma <= sigma_min:
+            lower, upper = 0, n
+            while lower < upper:
+                middle = (lower + upper) // 2
+                if alpha_value * middle <= sigma_min:
+                    lower = middle + 1
+                else:
+                    upper = middle
+            within_radius = lower - 1
+            closer_radius = within_radius
+        else:
+            within_radius = int(kth_distance)
+            closer_radius = within_radius - 1
+        closer_left = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position - closer_radius,
+                side="left",
+            )
+        )
+        closer_right = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position + closer_radius,
+                side="right",
+            )
+        )
+        within_left = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position - within_radius,
+                side="left",
+            )
+        )
+        within_right = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position + within_radius,
+                side="right",
+            )
+        )
+        future_closer_end = pivot_position + closer_radius
+        future_within_end = pivot_position + within_radius
+
+        # Prefixes are evaluated only after complete confirmation groups. The
+        # stability predicate is monotone because each group removes suffixes
+        # from the same finite set of possible continuations.
+        left = int(np.searchsorted(confirmation_group_ends, i, side="left"))
+        right = confirmation_group_ends.size
+        while left < right:
+            middle = (left + right) // 2
+            bound = int(confirmation_group_ends[middle])
+            prefix_end = bound + 1
+            confirmed_neighbors = bound
+            if pivot_confirmations[bound] == pivot_confirmations[0]:
+                # Initial-orientation replay may confirm several pivots
+                # atomically. The last replayed pivot's internal confirmation
+                # is hidden by that watermark, but its successor must still be
+                # at least ``pivot_spacing`` candles later.
+                first_future_pivot_position = (
+                    int(pivot_positions[bound]) + pivot_spacing
+                )
+            else:
+                first_future_pivot_position = int(pivot_confirmations[bound]) + 1
+            has_future = first_future_pivot_position <= last_future_pivot_position
+            confirmed_rank = min(neighbors, confirmed_neighbors)
+            confirmed_closer = max(0, min(prefix_end, closer_right) - closer_left - 1)
+            confirmed_within = max(0, min(prefix_end, within_right) - within_left - 1)
+            last_future_closer_position = min(
+                last_future_pivot_position, future_closer_end
+            )
+            future_closer = (
+                0
+                if last_future_closer_position < first_future_pivot_position
+                else (last_future_closer_position - first_future_pivot_position)
+                // pivot_spacing
+                + 1
+            )
+            all_future_within = (
+                not has_future or last_future_pivot_position <= future_within_end
+            )
+
+            if raw_sigma >= sigma_max:
+                prefix_matches = (
+                    confirmed_neighbors == 0 or confirmed_closer < confirmed_rank
+                )
+                suffix_matches = (
+                    future_closer == 0
+                    if confirmed_neighbors == 0
+                    else confirmed_closer + future_closer < neighbors
+                )
+                stable = prefix_matches and suffix_matches
+            elif raw_sigma <= sigma_min:
+                stable = (
+                    confirmed_neighbors > 0
+                    and confirmed_within >= confirmed_rank
+                    and (confirmed_neighbors >= neighbors or all_future_within)
+                )
+            else:
+                stable = (
+                    confirmed_neighbors > 0
+                    and confirmed_closer < confirmed_rank <= confirmed_within
+                    and confirmed_closer + future_closer < neighbors
+                    and (confirmed_neighbors >= neighbors or all_future_within)
+                )
+            if stable:
+                right = middle
+            else:
+                left = middle + 1
+        if left < confirmation_group_ends.size:
+            bound = int(confirmation_group_ends[left])
+            availability[i] = pivot_confirmations[bound]
+    return availability
+
+
 def compute_label_weight_known_at_lookahead(
     known_at_lookahead: pd.Series,
     indices: Sequence[int] | NDArray[np.integer],
     fill_radius: int = 0,
+    *,
+    weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
-    A pivot's swing metric (its weight source) is backfilled from the adjacent
-    closing pivot, so it only becomes computable at the next pivot's
-    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]``, one pivot
-    later than the pivot's own label availability ``i_k``. The trailing pivot has
-    no closing swing (weight 0 via ``_impute_weights``, so it never resolves
-    in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
-    their label availability, EXCEPT that a Gaussian fill spreads each pivot's
-    weight over a local band ``[idx-fill_radius, idx+fill_radius]``
-    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
-    never a global max (a global bound forces ``n`` on all rows -> total train
-    purge). Folded via ``max(label, weight)`` by the causal purge.
+    A metric-based pivot's weight is backfilled from the adjacent closing pivot,
+    so it becomes computable at the next pivot's confirmation
+    ``i_{k+1} == known_at_positions[indices[k+1]]``; the trailing pivot has no
+    closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
+    -> ``n``. A uniform pivot instead has a unit weight at its own label
+    availability. Off-pivot rows keep their label availability, except that a
+    Gaussian fill spreads each pivot's weight over a LOCAL band
+    ``[idx-fill_radius, idx+fill_radius]`` (0 disables) -- never a global max,
+    which would force ``n`` on all rows (total train purge). Folded via
+    ``max(label, weight)`` by the causal purge.
 
-    The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
-    ``knn`` with ``fill_bandwidth_neighbors=1`` (a pivot sigma then depends only
-    on already-confirmed adjacent pivots), up to each pivot's material Gaussian
-    support (the tail beyond ``fill_radius`` is immaterial by design, see
-    ``weight_fill_radius``). Under ``knn`` with ``fill_bandwidth_neighbors>=2`` a
-    pivot sigma can depend on a k-th nearest neighbor confirmed after ``i_{k+1}``,
-    making ``i_{k+1}`` a lower bound. This understates the band availability only
-    when that neighbor also lies outside ``fill_radius``, which requires
-    ``fill_bandwidth_alpha < 0.25`` (otherwise ``fill_radius = ceil(4 *
-    fill_sigma_candles)`` covers it and the neighbor's own later availability
-    dominates the ``max`` fold): the understatement is nil at the default
-    ``fill_bandwidth_alpha=0.5`` and can otherwise reach a large fraction of the
-    peak weight on the affected rows. Prefer ``fill_bandwidth='fixed'``,
-    ``fill_bandwidth_neighbors=1``, or ``fill_bandwidth_alpha>=0.25`` for
-    exactness.
+    For adaptive k-NN bandwidths a pivot's band additionally waits until every
+    confirmable finite suffix of the frame yields the same clipped sigma --
+    jointly over geometry and the effective rank ``min(k, pivot_count - 1)`` --
+    evaluated only at atomically complete confirmation groups; this tracks when
+    the final-frame sigma is knowable, not merely computable from a prefix, and
+    is ``n`` absent such proof. Under pure-Gaussian ``uniform`` weighting every
+    bump is bounded by the unit pivot weight, so pivot centers keep their own
+    label availability (fixed, constant-clipped, adaptive), while adaptive
+    off-center bands still wait for the pivot confirmation and sigma. Other
+    strategies and additive fills keep their existing competing-band
+    dependencies.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2421,20 +3157,58 @@ def compute_label_weight_known_at_lookahead(
     idx = np.sort(idx[(idx >= 0) & (idx < n)])
     base = known_at_positions.copy()
     if idx.size:
-        avail_pivot = np.empty(idx.size, dtype=np.int64)
-        avail_pivot[:-1] = known_at_positions[idx[1:]]
-        avail_pivot[-1] = n
+        weight_availability = np.empty(idx.size, dtype=np.int64)
+        weight_availability[:-1] = known_at_positions[idx[1:]]
+        weight_availability[-1] = n
+        label_weighting = {
+            **DEFAULTS_LABEL_WEIGHTING,
+            **(weighting_config or {}),
+        }
+        adaptive_knn = (
+            fill_radius > 0
+            and label_weighting["fill_bandwidth"] == FILL_BANDWIDTHS[1]  # "knn"
+            and float(label_weighting["fill_sigma_min_candles"])
+            < float(label_weighting["fill_sigma_candles"])
+        )
+        uniform_gaussian = (
+            label_weighting["strategy"] == WEIGHT_STRATEGIES[1]
+            and label_weighting["fill_method"] == FILL_METHODS[2]  # "gaussian"
+        )
+        band_weight_availability = (
+            known_at_positions[idx].copy() if uniform_gaussian else weight_availability
+        )
+        avail_pivot = band_weight_availability.copy()
+        if adaptive_knn:
+            sigma_availability = _compute_knn_pivot_sigma_availability(
+                idx,
+                known_at_positions,
+                label_weighting["fill_bandwidth_neighbors"],
+                label_weighting["fill_bandwidth_alpha"],
+                label_weighting["fill_sigma_min_candles"],
+                label_weighting["fill_sigma_candles"],
+                n,
+            )
+            np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
-            for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
-                # Skip any pivot whose weight never resolves in-frame (sentinel
-                # availability == n): its Gaussian bump is 0, so it contributes
-                # to no row (on real _zigzag output only the trailing pivot).
-                if pivot_avail >= n:
+            for pivot_pos, pivot_avail, weight_avail in zip(
+                idx.tolist(),
+                avail_pivot.tolist(),
+                band_weight_availability.tolist(),
+            ):
+                # A metric-based trailing pivot never resolves in-frame and its
+                # Gaussian bump is 0. Pure-Gaussian uniform pivots use their own
+                # confirmation, so only that path retains the trailing band.
+                if weight_avail >= n:
                     continue
                 lo = max(0, pivot_pos - fill_radius)
                 hi = min(n, pivot_pos + fill_radius + 1)
                 np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
+        if uniform_gaussian:
+            base[idx] = np.maximum(
+                known_at_positions[idx],
+                band_weight_availability,
+            )
     base = np.clip(base, positions, n)
     return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
 
@@ -2463,7 +3237,7 @@ _SCIENTIFIC_THRESHOLD_HIGH = 1e12
 _SCIENTIFIC_THRESHOLD_LOW = 1e-6
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def format_number(value: int | float, significant_digits: int = 5) -> str:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
@@ -2655,7 +3429,7 @@ def format_dict(
     return f"{{{joined}}}" if style == "dict" else joined
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def calculate_min_extrema(
     length: int, fit_live_predictions_candles: int, min_extrema: int = 2
 ) -> int:
@@ -2780,7 +3554,7 @@ def calculate_zero_lag(series: pd.Series, period: int) -> pd.Series:
     return 2 * series - series.shift(int(lag))
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_ma_fn(
     mamode: str,
 ) -> Callable[
@@ -2804,7 +3578,7 @@ def get_ma_fn(
     return mamodes.get(mamode, mamodes["sma"])
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_zl_ma_fn(
     mamode: str,
 ) -> Callable[
@@ -2921,7 +3695,7 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     return smma
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_price_fn(pricemode: str) -> Callable[[pd.DataFrame], pd.Series]:
     pricemodes = {
         "average": ta.AVGPRICE,
@@ -3490,7 +4264,7 @@ def _zigzag(
         candidate_pivot_pos: int,
         direction: TrendDirection,
         min_slope: float = np.finfo(float).eps,
-        alpha: float = 0.05,
+        alpha: float = _ZIGZAG_CONFIRMATION_ALPHA,
     ) -> bool:
         start_pos = min(candidate_pivot_pos + 1, n)
         end_pos = min(pos + 1, n)
@@ -5022,7 +5796,7 @@ def get_optuna_study_model_parameters(
         raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def largest_divisor_to_step(integer: int, step: int) -> int | None:
     if not isinstance(integer, int) or integer <= 0:
         raise ValueError(
@@ -5068,7 +5842,7 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
     return nan_average(values, weights=shifted_exponentials)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_min_max_label_period_candles(
     fit_live_predictions_candles: int,
     candles_step: int,
@@ -5131,7 +5905,7 @@ def _validate_step_args(value: float | int, step: int) -> None:
         raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def round_to_step(value: float | int, step: int) -> int:
     """
     Round a value to the nearest multiple of a given step.
@@ -5154,7 +5928,7 @@ def round_to_step(value: float | int, step: int) -> int:
     return int(round(float(value) / step) * step)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def ceil_to_step(value: float | int, step: int) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
@@ -5164,7 +5938,7 @@ def ceil_to_step(value: float | int, step: int) -> int:
     return int(math.ceil(float(value) / step) * step)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def floor_to_step(value: float | int, step: int) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
@@ -5172,80 +5946,6 @@ def floor_to_step(value: float | int, step: int) -> int:
     if not np.isfinite(value):
         raise ValueError(f"Invalid value {value!r}: must be finite")
     return int(math.floor(float(value) / step) * step)
-
-
-def validate_range(
-    min_val: float | int,
-    max_val: float | int,
-    logger: Logger,
-    *,
-    name: str,
-    default_min: float | int,
-    default_max: float | int,
-    allow_equal: bool = False,
-    non_negative: bool = True,
-    finite_only: bool = True,
-) -> tuple[float | int, float | int]:
-    min_name = f"min_{name}"
-    max_name = f"max_{name}"
-
-    if not isinstance(default_min, (int, float)) or not isinstance(
-        default_max, (int, float)
-    ):
-        raise ValueError(
-            f"Invalid {name}: defaults must be numeric, "
-            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
-        )
-    if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(
-            f"Invalid {name}: defaults ordering must have min < max, "
-            f"got min={default_min!r}, max={default_max!r}"
-        )
-
-    def _validate_component(
-        value: float | int | None, name: str, default_value: float | int
-    ) -> float | int:
-        constraints = []
-        if finite_only:
-            constraints.append("finite")
-        if non_negative:
-            constraints.append("non-negative")
-        constraints.append("numeric")
-        constraint_str = " ".join(constraints)
-        if (
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or (finite_only and not _is_finite_value(value))
-            or (non_negative and value < 0)
-        ):
-            logger.warning(
-                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
-            )
-            return default_value
-        return value
-
-    sanitized_min = _validate_component(min_val, min_name, default_min)
-    sanitized_max = _validate_component(max_val, max_name, default_max)
-
-    ordering_ok = (
-        (sanitized_min < sanitized_max)
-        if not allow_equal
-        else (sanitized_min <= sanitized_max)
-    )
-    if not ordering_ok:
-        logger.warning(
-            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
-            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
-            f"using defaults {default_min!r}, {default_max!r}"
-        )
-        sanitized_min, sanitized_max = default_min, default_max
-
-    if sanitized_min != min_val or sanitized_max != max_val:
-        logger.warning(
-            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
-        )
-
-    return sanitized_min, sanitized_max
 
 
 def get_label_defaults(
