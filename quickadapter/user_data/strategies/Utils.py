@@ -2566,6 +2566,15 @@ def _aggregate_metrics(
         )
 
 
+def _invalid_weight_strategy_message(
+    strategy: str, metrics: dict[str, list[float]]
+) -> str:
+    return (
+        f"Invalid weighting strategy value {strategy!r}: "
+        f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
+    )
+
+
 def _select_combined_metrics(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
@@ -2631,8 +2640,9 @@ def _nonfinite_imputation_dependency_mask(
 ) -> NDArray[np.bool_]:
     """Mark values whose legacy full-frame imputation is not prefix-stable.
 
-    A non-finite value's imputation flips (trailing zero vs interior median) as
-    later pivots arrive, so it stays unavailable until the frame boundary.
+    A non-finite value's imputation is prefix-unstable (default or zero at
+    boundaries, interior median otherwise) as later pivots arrive, so it stays
+    unavailable until the frame boundary.
     """
     return ~np.isfinite(values)
 
@@ -2669,10 +2679,7 @@ def compute_label_weight_imputation_dependency_mask(
             )
         return _nonfinite_imputation_dependency_mask(values)
     if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
-        raise ValueError(
-            f"Invalid weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
-        )
+        raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
 
     dependency_mask = np.zeros(n_indices, dtype=bool)
     imputed_metrics: list[NDArray[np.floating]] = []
@@ -2757,10 +2764,7 @@ def _compute_label_weight_values(
             impute=impute,
         )
     else:
-        raise ValueError(
-            f"Invalid weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
-        )
+        raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
     return impute(weights)
 
 
