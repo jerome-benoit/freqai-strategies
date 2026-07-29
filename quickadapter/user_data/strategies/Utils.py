@@ -2251,6 +2251,65 @@ def _causal_impute_weights(
 _GAUSSIAN_FILL_CHUNK_BUDGET: Final[int] = 50_000_000
 _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 
+# Gaussian fill support: rows within k*fill_sigma_candles of a pivot receive
+# its bump. sqrt(2*ln(100))=3.0349 sigma contains every value above 1% of the
+# pivot peak; k=4 retains a rounding margin and truncates only below exp(-8).
+_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
+_ZIGZAG_CONFIRMATION_ALPHA: Final[float] = 0.05
+# With all slopes successful, the one-sided Binomial(0.5) p-value is 2**-m.
+_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = math.ceil(
+    -math.log2(_ZIGZAG_CONFIRMATION_ALPHA)
+)
+
+
+def _compute_pivot_kth_neighbor_distances(
+    pivot_indices: NDArray[np.floating],
+    neighbors: int,
+) -> NDArray[np.floating]:
+    """Distance from each pivot to its k-th nearest pivot neighbor.
+
+    After sorting, binary-search the split of the k neighbors between the
+    monotone left and right distances: O(M log M) time and O(M) space.
+    """
+    pivot_count = pivot_indices.size
+    sorted_idx = np.argsort(pivot_indices, kind="stable")
+    sorted_positions = pivot_indices[sorted_idx]
+    k = min(int(neighbors), pivot_count - 1)
+    distances = np.empty(pivot_count, dtype=float)
+    for i, position in enumerate(sorted_positions):
+        min_left = max(0, k - (pivot_count - i - 1))
+        max_left = min(k, i)
+        left = min_left
+        right = max_left
+        while left < right:
+            left_count = (left + right) // 2
+            right_count = k - left_count
+            left_distance = (
+                position - sorted_positions[i - left_count] if left_count else 0.0
+            )
+            right_distance = (
+                sorted_positions[i + right_count] - position if right_count else 0.0
+            )
+            if left_distance < right_distance:
+                left = left_count + 1
+            else:
+                right = left_count
+        distances[i] = min(
+            max(
+                (position - sorted_positions[i - left_count] if left_count else 0.0),
+                (
+                    sorted_positions[i + k - left_count] - position
+                    if k - left_count
+                    else 0.0
+                ),
+            )
+            for left_count in (left - 1, left)
+            if min_left <= left_count <= max_left
+        )
+    result = np.empty(pivot_count, dtype=float)
+    result[sorted_idx] = distances
+    return result
+
 
 def _compute_pivot_sigmas(
     pivot_indices: NDArray[np.floating],
@@ -2281,26 +2340,7 @@ def _compute_pivot_sigmas(
             f"supported values are {', '.join(FILL_BANDWIDTHS)}"
         )
 
-    sorted_idx = np.argsort(pivot_indices, kind="stable")
-    sorted_positions = pivot_indices[sorted_idx]
-    k = min(int(neighbors), M - 1)
-
-    d_k_sorted = np.empty(M, dtype=float)
-    for i, position in enumerate(sorted_positions):
-        left = max(0, i - k)
-        right = min(M, i + k + 1)
-        candidate_distances = np.abs(
-            np.concatenate(
-                (
-                    sorted_positions[left:i] - position,
-                    sorted_positions[i + 1 : right] - position,
-                )
-            )
-        )
-        d_k_sorted[i] = np.partition(candidate_distances, k - 1)[k - 1]
-    d_k = np.empty(M, dtype=float)
-    d_k[sorted_idx] = d_k_sorted
-
+    d_k = _compute_pivot_kth_neighbor_distances(pivot_indices, neighbors)
     sigmas = float(alpha) * d_k
     sigma_max = float(sigma_candles)
     sigma_min = float(sigma_min_candles)
@@ -2319,11 +2359,15 @@ def _gaussian_fill_weights(
     bandwidth_neighbors: int = 1,
     bandwidth_alpha: float = 1.0,
     sigma_min_candles: float = 0.5,
+    finite_support: bool = False,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
     """Per-row max of per-pivot Gaussian bumps.
 
-    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``.
+    ``Out[i] = max_p w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``. When
+    ``finite_support`` is true, values outside
+    ``ceil(4 * sigma_candles)`` are zero to match causal availability
+    propagation. The default retains the legacy unbounded Gaussian tails.
 
     With ``bandwidth == "fixed"``, ``sigma_p == sigma_candles`` for every
     pivot. Clustered pivots within ``~sigma_candles`` then let the strongest
@@ -2346,7 +2390,7 @@ def _gaussian_fill_weights(
             f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0"
         )
     pivot_indices_array = pivot_indices.astype(float)
-    pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
+    pivot_weights_array = pivot_weights.astype(float)
     pivot_sigmas = _compute_pivot_sigmas(
         pivot_indices=pivot_indices_array,
         sigma_candles=sigma_candles,
@@ -2355,7 +2399,6 @@ def _gaussian_fill_weights(
         alpha=bandwidth_alpha,
         sigma_min_candles=sigma_min_candles,
     )
-    inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
     M = pivot_indices_array.size
     if (
         logger is not None
@@ -2370,29 +2413,54 @@ def _gaussian_fill_weights(
             M,
             n_values,
         )
-    chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
-    if logger is not None and chunk < n_values:
-        logger.debug(
-            "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
-            "bandwidth=%s, sigma=[%.2f, %.2f]",
-            n_values,
-            M,
-            chunk,
-            chunk * M * 8 / 1e6,
-            bandwidth,
-            float(pivot_sigmas.min()),
-            float(pivot_sigmas.max()),
-        )
+    if not finite_support:
+        pivot_weights_row = pivot_weights_array[np.newaxis, :]
+        inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
+        chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
+        if logger is not None and chunk < n_values:
+            logger.debug(
+                "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
+                "bandwidth=%s, sigma=[%.2f, %.2f]",
+                n_values,
+                M,
+                chunk,
+                chunk * M * 8 / 1e6,
+                bandwidth,
+                float(pivot_sigmas.min()),
+                float(pivot_sigmas.max()),
+            )
+        out = np.zeros(n_values, dtype=float)
+        for start in range(0, n_values, chunk):
+            stop = min(start + chunk, n_values)
+            positions = np.arange(start, stop, dtype=float)
+            buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
+            np.multiply(buf, buf, out=buf)
+            np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
+            np.exp(buf, out=buf)
+            np.multiply(buf, pivot_weights_row, out=buf)
+            np.max(buf, axis=1, out=out[start:stop])
+        return out
+
     out = np.zeros(n_values, dtype=float)
-    for start in range(0, n_values, chunk):
-        stop = min(start + chunk, n_values)
+    support_radius = math.ceil(
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(sigma_candles)
+    )
+    for pivot, pivot_weight, pivot_sigma in zip(
+        pivot_indices_array,
+        pivot_weights_array,
+        pivot_sigmas,
+    ):
+        if pivot_weight == 0.0:
+            continue
+        start = max(0, int(pivot) - support_radius)
+        stop = min(n_values, int(pivot) + support_radius + 1)
         positions = np.arange(start, stop, dtype=float)
-        buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
-        np.multiply(buf, buf, out=buf)
-        np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
-        np.exp(buf, out=buf)
-        np.multiply(buf, pivot_weights_row, out=buf)
-        np.max(buf, axis=1, out=out[start:stop])
+        np.subtract(positions, pivot, out=positions)
+        np.multiply(positions, positions, out=positions)
+        np.multiply(positions, -0.5 / (pivot_sigma * pivot_sigma), out=positions)
+        np.exp(positions, out=positions)
+        np.multiply(positions, pivot_weight, out=positions)
+        np.maximum(out[start:stop], positions, out=out[start:stop])
     return out
 
 
@@ -2719,6 +2787,7 @@ def _compute_gaussian_bumps(
     weights: NDArray[np.floating],
     label_weighting: dict[str, Any],
     *,
+    finite_support: bool,
     logger: Logger | None,
 ) -> NDArray[np.floating]:
     """Per-row max of per-pivot Gaussian bumps.
@@ -2735,6 +2804,7 @@ def _compute_gaussian_bumps(
         bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
         bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
         sigma_min_candles=label_weighting["fill_sigma_min_candles"],
+        finite_support=finite_support,
         logger=logger,
     )
 
@@ -2745,6 +2815,7 @@ def compute_label_weights(
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
     *,
+    finite_gaussian_support: bool = False,
     logger: Logger,
     known_at_lookahead: pd.Series | None = None,
 ) -> NDArray[np.floating]:
@@ -2753,8 +2824,10 @@ def compute_label_weights(
     Returns an array with positive values at pivot ``indices`` (scaled by
     strategy) and off-pivot values controlled by ``fill_method``.
     ``known_at_lookahead`` enables a per-row causal epsilon baseline; ``None``
-    preserves the global non-causal baseline. Callers must skip invocation when
-    strategy is ``'none'``; this raises ValueError otherwise.
+    preserves the global non-causal baseline. ``finite_gaussian_support``
+    truncates Gaussian fills to the radius tracked by causal availability.
+    Callers must skip invocation when strategy is ``'none'``; this raises
+    ValueError otherwise.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
@@ -2803,11 +2876,23 @@ def compute_label_weights(
         )
     elif fill_method == FILL_METHODS[2]:  # "gaussian"
         fill_weights = _compute_gaussian_bumps(
-            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+            n_values,
+            indices_array,
+            valid_mask,
+            weights,
+            label_weighting,
+            finite_support=finite_gaussian_support,
+            logger=logger,
         )
     elif fill_method == FILL_METHODS[3]:  # "epsilon_gaussian"
         fill_weights = _compute_gaussian_bumps(
-            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+            n_values,
+            indices_array,
+            valid_mask,
+            weights,
+            label_weighting,
+            finite_support=finite_gaussian_support,
+            logger=logger,
         )
         np.add(
             fill_weights,
@@ -2837,21 +2922,14 @@ def compute_label_weights(
     )
 
 
-# k for the weight-fill availability band: rows within k*fill_sigma_candles of a
-# pivot receive its Gaussian bump. Material radius (bump > 1% of pivot peak) is
-# sqrt(2*ln(100))=3.0349 sigma; k=4 -> tail exp(-8)=3.4e-4, ~30x below 1% with a
-# margin robust to sigma rounding (k=3 under-covers for larger sigma).
-_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
-
-
 def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     """Row radius over which a pivot's Gaussian-fill weight is causally shared.
 
     Zero unless the off-pivot fill spreads a pivot's weight into neighbors
     (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
     per-pivot sigma (including ``knn``, which clips below it), so
-    ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
-    support. The additive epsilon floor uses its separate per-row causal
+    ``ceil(k*fill_sigma_candles)`` is the finite support used by Gaussian
+    generation. The additive epsilon floor uses its separate per-row causal
     baseline, so it needs no local fill radius.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
@@ -2866,40 +2944,207 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     )
 
 
+def _compute_knn_pivot_sigma_availability(
+    pivot_indices: NDArray[np.integer],
+    known_at_positions: NDArray[np.integer],
+    neighbors: int,
+    alpha: float,
+    sigma_min_candles: float,
+    sigma_candles: float,
+    n: int,
+) -> NDArray[np.int64]:
+    """Absolute availability position of each k-NN pivot bandwidth.
+
+    At each atomically complete confirmation group, the possible effective
+    k-th-neighbor distances include every confirmable finite suffix of the
+    remaining frame. Successive Zigzag pivots need at least five slope
+    observations and are therefore at least six candles apart. The bandwidth
+    settles once every possible clipped sigma equals its final value. Otherwise
+    it is knowable only at the frame boundary.
+    """
+    pivot_count = pivot_indices.size
+    availability = np.full(pivot_count, n, dtype=np.int64)
+    if pivot_count == 0:
+        return availability
+
+    pivot_positions = pivot_indices.astype(np.int64, copy=False)
+    pivot_confirmations = known_at_positions[pivot_positions]
+    confirmation_group_ends = np.flatnonzero(
+        np.r_[pivot_confirmations[:-1] != pivot_confirmations[1:], True]
+    )
+    pivot_spacing = _ZIGZAG_MIN_CONFIRMATION_SLOPES + 1
+    last_future_pivot_position = n - pivot_spacing
+    kth_distances = (
+        np.full(1, np.inf)
+        if pivot_count == 1
+        else _compute_pivot_kth_neighbor_distances(
+            pivot_positions.astype(float),
+            neighbors,
+        )
+    )
+    sigma_min = min(float(sigma_min_candles), float(sigma_candles))
+    sigma_max = float(sigma_candles)
+    alpha_value = float(alpha)
+    for i, (pivot_position, kth_distance) in enumerate(
+        zip(pivot_positions, kth_distances)
+    ):
+        raw_sigma = alpha_value * kth_distance
+        if raw_sigma >= sigma_max:
+            lower, upper = 0, n
+            while lower < upper:
+                middle = (lower + upper) // 2
+                if alpha_value * middle < sigma_max:
+                    lower = middle + 1
+                else:
+                    upper = middle
+            closer_radius = lower - 1
+            within_radius = closer_radius
+        elif raw_sigma <= sigma_min:
+            lower, upper = 0, n
+            while lower < upper:
+                middle = (lower + upper) // 2
+                if alpha_value * middle <= sigma_min:
+                    lower = middle + 1
+                else:
+                    upper = middle
+            within_radius = lower - 1
+            closer_radius = within_radius
+        else:
+            within_radius = int(kth_distance)
+            closer_radius = within_radius - 1
+        closer_left = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position - closer_radius,
+                side="left",
+            )
+        )
+        closer_right = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position + closer_radius,
+                side="right",
+            )
+        )
+        within_left = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position - within_radius,
+                side="left",
+            )
+        )
+        within_right = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position + within_radius,
+                side="right",
+            )
+        )
+        future_closer_end = pivot_position + closer_radius
+        future_within_end = pivot_position + within_radius
+
+        # Prefixes are evaluated only after complete confirmation groups. The
+        # stability predicate is monotone because each group removes suffixes
+        # from the same finite set of possible continuations.
+        left = int(np.searchsorted(confirmation_group_ends, i, side="left"))
+        right = confirmation_group_ends.size
+        while left < right:
+            middle = (left + right) // 2
+            bound = int(confirmation_group_ends[middle])
+            prefix_end = bound + 1
+            confirmed_neighbors = bound
+            if pivot_confirmations[bound] == pivot_confirmations[0]:
+                # Initial-orientation replay may confirm several pivots
+                # atomically. The last replayed pivot's internal confirmation
+                # is hidden by that watermark, but its successor must still be
+                # at least ``pivot_spacing`` candles later.
+                first_future_pivot_position = (
+                    int(pivot_positions[bound]) + pivot_spacing
+                )
+            else:
+                first_future_pivot_position = int(pivot_confirmations[bound]) + 1
+            has_future = first_future_pivot_position <= last_future_pivot_position
+            confirmed_rank = min(neighbors, confirmed_neighbors)
+            confirmed_closer = max(0, min(prefix_end, closer_right) - closer_left - 1)
+            confirmed_within = max(0, min(prefix_end, within_right) - within_left - 1)
+            last_future_closer_position = min(
+                last_future_pivot_position, future_closer_end
+            )
+            future_closer = (
+                0
+                if last_future_closer_position < first_future_pivot_position
+                else (last_future_closer_position - first_future_pivot_position)
+                // pivot_spacing
+                + 1
+            )
+            all_future_within = (
+                not has_future or last_future_pivot_position <= future_within_end
+            )
+
+            if raw_sigma >= sigma_max:
+                prefix_matches = (
+                    confirmed_neighbors == 0 or confirmed_closer < confirmed_rank
+                )
+                suffix_matches = (
+                    future_closer == 0
+                    if confirmed_neighbors == 0
+                    else confirmed_closer + future_closer < neighbors
+                )
+                stable = prefix_matches and suffix_matches
+            elif raw_sigma <= sigma_min:
+                stable = (
+                    confirmed_neighbors > 0
+                    and confirmed_within >= confirmed_rank
+                    and (confirmed_neighbors >= neighbors or all_future_within)
+                )
+            else:
+                stable = (
+                    confirmed_neighbors > 0
+                    and confirmed_closer < confirmed_rank <= confirmed_within
+                    and confirmed_closer + future_closer < neighbors
+                    and (confirmed_neighbors >= neighbors or all_future_within)
+                )
+            if stable:
+                right = middle
+            else:
+                left = middle + 1
+        if left < confirmation_group_ends.size:
+            bound = int(confirmation_group_ends[left])
+            availability[i] = pivot_confirmations[bound]
+    return availability
+
+
 def compute_label_weight_known_at_lookahead(
     known_at_lookahead: pd.Series,
     indices: Sequence[int] | NDArray[np.integer],
     fill_radius: int = 0,
+    *,
+    weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
-    A pivot's swing metric (its weight source) is backfilled from the adjacent
-    closing pivot, so it only becomes computable at the next pivot's
-    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]``, one pivot
-    later than the pivot's own label availability ``i_k``. The trailing pivot has
-    no closing swing (weight 0 via ``_impute_weights``, so it never resolves
-    in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
-    their label availability, EXCEPT that a Gaussian fill spreads each pivot's
-    weight over a local band ``[idx-fill_radius, idx+fill_radius]``
-    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
-    never a global max (a global bound forces ``n`` on all rows -> total train
-    purge). Folded via ``max(label, weight)`` by the causal purge.
+    A metric-based pivot's weight is backfilled from the adjacent closing pivot,
+    so it becomes computable at the next pivot's confirmation
+    ``i_{k+1} == known_at_positions[indices[k+1]]``; the trailing pivot has no
+    closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
+    -> ``n``. A uniform pivot instead has a unit weight at its own label
+    availability. Off-pivot rows keep their label availability, except that a
+    Gaussian fill spreads each pivot's weight over a LOCAL band
+    ``[idx-fill_radius, idx+fill_radius]`` (0 disables) -- never a global max,
+    which would force ``n`` on all rows (total train purge). Folded via
+    ``max(label, weight)`` by the causal purge.
 
-    The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
-    ``knn`` with ``fill_bandwidth_neighbors=1`` (a pivot sigma then depends only
-    on already-confirmed adjacent pivots), up to each pivot's material Gaussian
-    support (the tail beyond ``fill_radius`` is immaterial by design, see
-    ``weight_fill_radius``). Under ``knn`` with ``fill_bandwidth_neighbors>=2`` a
-    pivot sigma can depend on a k-th nearest neighbor confirmed after ``i_{k+1}``,
-    making ``i_{k+1}`` a lower bound. This understates the band availability only
-    when that neighbor also lies outside ``fill_radius``, which requires
-    ``fill_bandwidth_alpha < 0.25`` (otherwise ``fill_radius = ceil(4 *
-    fill_sigma_candles)`` covers it and the neighbor's own later availability
-    dominates the ``max`` fold): the understatement is nil at the default
-    ``fill_bandwidth_alpha=0.5`` and can otherwise reach a large fraction of the
-    peak weight on the affected rows. Prefer ``fill_bandwidth='fixed'``,
-    ``fill_bandwidth_neighbors=1``, or ``fill_bandwidth_alpha>=0.25`` for
-    exactness.
+    For adaptive k-NN bandwidths a pivot's band additionally waits until every
+    confirmable finite suffix of the frame yields the same clipped sigma --
+    jointly over geometry and the effective rank ``min(k, pivot_count - 1)`` --
+    evaluated only at atomically complete confirmation groups; this tracks when
+    the final-frame sigma is knowable, not merely computable from a prefix, and
+    is ``n`` absent such proof. Under pure-Gaussian ``uniform`` weighting every
+    bump is bounded by the unit pivot weight, so pivot centers keep their own
+    label availability (fixed, constant-clipped, adaptive), while adaptive
+    off-center bands still wait for the pivot confirmation and sigma. Other
+    strategies and additive fills keep their existing competing-band
+    dependencies.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2912,20 +3157,58 @@ def compute_label_weight_known_at_lookahead(
     idx = np.sort(idx[(idx >= 0) & (idx < n)])
     base = known_at_positions.copy()
     if idx.size:
-        avail_pivot = np.empty(idx.size, dtype=np.int64)
-        avail_pivot[:-1] = known_at_positions[idx[1:]]
-        avail_pivot[-1] = n
+        weight_availability = np.empty(idx.size, dtype=np.int64)
+        weight_availability[:-1] = known_at_positions[idx[1:]]
+        weight_availability[-1] = n
+        label_weighting = {
+            **DEFAULTS_LABEL_WEIGHTING,
+            **(weighting_config or {}),
+        }
+        adaptive_knn = (
+            fill_radius > 0
+            and label_weighting["fill_bandwidth"] == FILL_BANDWIDTHS[1]  # "knn"
+            and float(label_weighting["fill_sigma_min_candles"])
+            < float(label_weighting["fill_sigma_candles"])
+        )
+        uniform_gaussian = (
+            label_weighting["strategy"] == WEIGHT_STRATEGIES[1]
+            and label_weighting["fill_method"] == FILL_METHODS[2]  # "gaussian"
+        )
+        band_weight_availability = (
+            known_at_positions[idx].copy() if uniform_gaussian else weight_availability
+        )
+        avail_pivot = band_weight_availability.copy()
+        if adaptive_knn:
+            sigma_availability = _compute_knn_pivot_sigma_availability(
+                idx,
+                known_at_positions,
+                label_weighting["fill_bandwidth_neighbors"],
+                label_weighting["fill_bandwidth_alpha"],
+                label_weighting["fill_sigma_min_candles"],
+                label_weighting["fill_sigma_candles"],
+                n,
+            )
+            np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
-            for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
-                # Skip any pivot whose weight never resolves in-frame (sentinel
-                # availability == n): its Gaussian bump is 0, so it contributes
-                # to no row (on real _zigzag output only the trailing pivot).
-                if pivot_avail >= n:
+            for pivot_pos, pivot_avail, weight_avail in zip(
+                idx.tolist(),
+                avail_pivot.tolist(),
+                band_weight_availability.tolist(),
+            ):
+                # A metric-based trailing pivot never resolves in-frame and its
+                # Gaussian bump is 0. Pure-Gaussian uniform pivots use their own
+                # confirmation, so only that path retains the trailing band.
+                if weight_avail >= n:
                     continue
                 lo = max(0, pivot_pos - fill_radius)
                 hi = min(n, pivot_pos + fill_radius + 1)
                 np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
+        if uniform_gaussian:
+            base[idx] = np.maximum(
+                known_at_positions[idx],
+                band_weight_availability,
+            )
     base = np.clip(base, positions, n)
     return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
 
@@ -3981,7 +4264,7 @@ def _zigzag(
         candidate_pivot_pos: int,
         direction: TrendDirection,
         min_slope: float = np.finfo(float).eps,
-        alpha: float = 0.05,
+        alpha: float = _ZIGZAG_CONFIRMATION_ALPHA,
     ) -> bool:
         start_pos = min(candidate_pivot_pos + 1, n)
         end_pos = min(pos + 1, n)
