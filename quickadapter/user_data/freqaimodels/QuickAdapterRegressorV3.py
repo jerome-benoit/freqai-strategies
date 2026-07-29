@@ -201,6 +201,13 @@ class _OptunaLabelSamplers(NamedTuple):
     nsgaiii: Literal["nsgaiii"] = "nsgaiii"
 
 
+class _OptunaStudyMarker(NamedTuple):
+    user_attr_key: str
+    build_marker: Callable[[], Any]
+    is_compatible: Callable[[Any], bool]
+    reset_on_mismatch: bool
+
+
 class QuickAdapterRegressorV3(BaseRegressionModel):
     """
     The following freqaimodel is released to sponsors of the non-profit FreqAI open-source project.
@@ -4823,6 +4830,43 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"supported values are {', '.join(_OPTUNA_NAMESPACES)}"
             )
 
+    @staticmethod
+    def _optuna_label_selection_metadata_compatible(existing_marker: Any) -> bool:
+        schema_version = (
+            existing_marker.get("schema_version")
+            if isinstance(existing_marker, dict)
+            else None
+        )
+        return (
+            not isinstance(schema_version, bool)
+            and isinstance(schema_version, (int, np.integer))
+            and schema_version == _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION
+        )
+
+    def _optuna_study_marker(
+        self, namespace: OptunaNamespace
+    ) -> Optional[_OptunaStudyMarker]:
+        if namespace == _OPTUNA_NAMESPACES.hp:
+            identity = QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            return _OptunaStudyMarker(
+                user_attr_key="objective_identity",
+                build_marker=lambda: identity,
+                is_compatible=lambda existing: existing == identity,
+                reset_on_mismatch=True,
+            )
+        if namespace == _OPTUNA_NAMESPACES.label:
+            return _OptunaStudyMarker(
+                user_attr_key="selection_metadata",
+                build_marker=self._optuna_label_selection_metadata,
+                is_compatible=(
+                    QuickAdapterRegressorV3._optuna_label_selection_metadata_compatible
+                ),
+                reset_on_mismatch=bool(
+                    self._optuna_config["reset_label_study_on_schema_mismatch"]
+                ),
+            )
+        return None
+
     def optuna_create_study(
         self,
         pair: str,
@@ -4844,10 +4888,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         identifier = self.freqai_info.get("identifier")
         study_name = f"{identifier}-{pair}-{namespace}"
-        if namespace == _OPTUNA_NAMESPACES.hp:
-            study_name = (
-                f"{study_name}-{QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY}"
-            )
+        study_marker = self._optuna_study_marker(namespace)
 
         try:
             storage = self.optuna_create_storage(pair)
@@ -4863,18 +4904,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         # cutoff's in-memory best, which stays causal as it predates the current
         # cutoff.
         continuous = self._optuna_config.get("continuous") or not self.live
-        label_schema_mismatch_preserved = False
+        study_marker_mismatch_preserved = False
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
                 pair, namespace, study_name, storage
             )
-        elif namespace == _OPTUNA_NAMESPACES.label:
+        elif study_marker is not None:
             try:
                 existing_study = QuickAdapterRegressorV3.optuna_load_study(
                     study_name, storage
                 )
-                existing_selection_metadata = (
-                    existing_study.user_attrs.get("selection_metadata")
+                existing_marker = (
+                    existing_study.user_attrs.get(study_marker.user_attr_key)
                     if existing_study is not None
                     else None
                 )
@@ -4884,39 +4925,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     exc_info=True,
                 )
                 return None
-            if existing_study is not None:
-                existing_schema_version = (
-                    existing_selection_metadata.get("schema_version")
-                    if isinstance(existing_selection_metadata, dict)
-                    else None
+            if existing_study is not None and not study_marker.is_compatible(
+                existing_marker
+            ):
+                reset_study = study_marker.reset_on_mismatch
+                logger.warning(
+                    f"[{pair}] Optuna {namespace} study {study_name}: "
+                    f"stored {study_marker.user_attr_key} incompatible with "
+                    f"current; {'resetting' if reset_study else 'preserving'} study"
                 )
-                target_version = _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION
-                if (
-                    isinstance(existing_schema_version, bool)
-                    or not isinstance(existing_schema_version, (int, np.integer))
-                    or existing_schema_version != target_version
-                ):
-                    version_repr = (
-                        "none"
-                        if existing_schema_version is None
-                        else f"v{existing_schema_version!r}"
-                    )
-                    reset_study = self._optuna_config[
-                        "reset_label_study_on_schema_mismatch"
-                    ]
-                    logger.warning(
-                        f"[{pair}] Optuna {namespace} study {study_name}: "
-                        f"selection schema {version_repr} incompatible "
-                        f"with v{target_version}; "
-                        f"{'resetting' if reset_study else 'preserving'} study"
-                    )
-                    if reset_study:
-                        if not QuickAdapterRegressorV3.optuna_delete_study(
-                            pair, namespace, study_name, storage
-                        ):
-                            return None
-                    else:
-                        label_schema_mismatch_preserved = True
+                if reset_study:
+                    if not QuickAdapterRegressorV3.optuna_delete_study(
+                        pair, namespace, study_name, storage
+                    ):
+                        return None
+                else:
+                    study_marker_mismatch_preserved = True
 
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
         if sampler not in samplers:
@@ -4935,21 +4959,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 storage=storage,
                 load_if_exists=not continuous,
             )
-            if (
-                namespace == _OPTUNA_NAMESPACES.label
-                and not label_schema_mismatch_preserved
-            ):
-                new_selection_metadata = self._optuna_label_selection_metadata()
-                existing_selection_metadata = study.user_attrs.get("selection_metadata")
-                if existing_selection_metadata != new_selection_metadata:
-                    if isinstance(existing_selection_metadata, dict):
+            if study_marker is not None and not study_marker_mismatch_preserved:
+                target_marker = study_marker.build_marker()
+                existing_marker = study.user_attrs.get(study_marker.user_attr_key)
+                if existing_marker != target_marker:
+                    if existing_marker is not None:
                         logger.warning(
                             f"[{pair}] Optuna {namespace} study {study_name}: "
-                            f"selection_metadata change detected "
-                            f"(stored: {existing_selection_metadata!r}, "
-                            f"current: {new_selection_metadata!r})"
+                            f"{study_marker.user_attr_key} change detected "
+                            f"(stored: {existing_marker!r}, "
+                            f"current: {target_marker!r})"
                         )
-                    study.set_user_attr("selection_metadata", new_selection_metadata)
+                    study.set_user_attr(study_marker.user_attr_key, target_marker)
             return study
         except Exception as e:
             logger.error(
