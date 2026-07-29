@@ -390,9 +390,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         _SCIPY_METRICS_SET - _PROBABILITY_DISTANCE_METRICS_SET
     )
 
-    # Absolute tolerance (rtol=0) for constant-column detection in
-    # `_non_constant_objective_indices`; valid on the [0,1]-normalized
-    # output of `_normalize_objective_values`.
+    # Absolute tolerance (``rtol=0``) for constant-column detection in
+    # ``_non_constant_objective_indices``; valid on the [0,1]-normalized
+    # output of ``_normalize_objective_values``.
     _NON_CONSTANT_OBJECTIVE_ATOL: Final[float] = 1e-8
 
     _DENSITY_AGGREGATIONS: Final[tuple[DensityAggregation, ...]] = (
@@ -726,7 +726,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         if label_weights is None:
             # Non-"none" label-weighting strategy with no available label
-            # weights (zigzag produced zero pivots): the support policy
+            # weights (``zigzag`` produced zero pivots): the support policy
             # governs the contract -- ``raise`` raises, ``fallback``
             # warns. A direct return to base weights would bypass the
             # policy silently.
@@ -758,9 +758,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         # Support is gated twice on purpose: here on the full split (fail-fast,
-        # esp. under support_policy='raise') and again post-pipeline in
-        # _fit_training_pipelines on the rows fed to model.fit. Outlier removal
-        # is non-monotone on support (pivot_equivalent_count/ESS use a
+        # esp. under ``support_policy='raise'``) and again post-pipeline in
+        # ``_fit_training_pipelines`` on the rows fed to ``model.fit``. Outlier removal
+        # is non-monotone on support (``pivot_equivalent_count``/ESS use a
         # max-relative threshold), so this pre-gate is not a conservative bound:
         # keeping it changes some raise/fallback outcomes, and under 'raise' it
         # can abort a split the post-pipeline gate would have passed.
@@ -1089,8 +1089,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             # Cluster/density paths route the metric to SciPy/sklearn APIs
-            # (pairwise_distances, KMeans, KMedoids, NearestNeighbors) which
-            # reject aggregate metrics computed by reduction; restrict the
+            # (``pairwise_distances``, ``KMeans``, ``KMedoids``, ``NearestNeighbors``)
+            # which reject aggregate metrics computed by reduction; restrict the
             # valid set to SciPy-compatible non-probability metrics.
             valid_metrics = (
                 QuickAdapterRegressorV3._CLUSTER_DENSITY_DISTANCE_METRICS_SET
@@ -1521,7 +1521,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
-        # self.live is unset until IFreqaiModel.start(), so derive trade-mode
+        # ``self.live`` is unset until ``IFreqaiModel.start()``, so derive trade-mode
         # from the configured runmode here.
         trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
@@ -2434,8 +2434,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         # Recompose weights on the ACTUAL inner-train/validation rows instead of
-        # slicing the outer-train composition: a slice bypasses support_policy and
-        # lets sanitize_and_renormalize silently uniformize a pivot-sparse inner
+        # slicing the outer-train composition: a slice bypasses ``support_policy`` and
+        # lets ``sanitize_and_renormalize`` silently uniformize a pivot-sparse inner
         # split. Realign raw weight components to the split rows by index. The
         # recompose renormalizes each subset to mean 1 (proportional to, not
         # byte-identical with, the old slice), which is scale-invariant for the
@@ -2581,9 +2581,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             # Smuggle base/label weights as extra label columns so datasieve
             # row-filters them in lockstep with the features. Relies on datasieve
             # not altering y VALUES (X-only transforms + row drops) and restoring
-            # them via label_list. _sanitize_pipeline_weights guards row count,
-            # not a silent y-value transform: a future y-transforming step would
-            # corrupt these vectors undetected.
+            # them via ``label_list``. ``_sanitize_pipeline_weights`` guards
+            # row count, not a silent y-value transform: a future y-transforming
+            # step would corrupt these vectors undetected.
             base_weight_column = object()
             label_weight_column = object()
             pipeline_labels = labels.copy()
@@ -2607,9 +2607,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             post_pipeline_label_weights = pipeline_labels.pop(
                 label_weight_column
             ).to_numpy(dtype=float)
-            # Load-bearing: fit_transform captured label_list WITH the smuggled
+            # Load-bearing: ``fit_transform`` captured ``label_list`` WITH the smuggled
             # columns; restore it to the real labels or the next validation/test
-            # transform rebuilds y with the wrong column count (ValueError).
+            # transform rebuilds y with the wrong column count (``ValueError``).
             dk.feature_pipeline.label_list = pipeline_labels.columns
             weights = QuickAdapterRegressorV3._enforce_train_weight_support(
                 post_pipeline_base_weights,
@@ -4310,7 +4310,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         non_constant_mask = np.array(
             [
-                # rtol=0: pure absolute tolerance on [0,1]-normalized columns;
+                # ``rtol=0``: pure absolute tolerance on [0,1]-normalized columns;
                 # any finite rtol would leak column magnitude into the threshold.
                 not np.allclose(
                     normalized_matrix[:, column_index],
@@ -4847,7 +4847,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if storage_backend == QuickAdapterRegressorV3._STORAGE_FILE:
             journal_path = storage_dir / f"{storage_filename}.log"
 
-            # Pre-validate EOF: close the read_logs deferred-raise gap (see helper).
+            # Pre-validate EOF: close the ``read_logs`` deferred-raise gap (see helper).
             if QuickAdapterRegressorV3._optuna_journal_has_corrupt_tail(journal_path):
                 QuickAdapterRegressorV3._optuna_quarantine_journal(
                     journal_path,
@@ -4863,7 +4863,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             try:
                 storage = _build_journal_storage()
             except QuickAdapterRegressorV3._OPTUNA_JOURNAL_RECOVERABLE_ERRORS as exc:
-                # Replay-time corruption: quarantine + retry once. OSError is
+                # Replay-time corruption: quarantine + retry once. ``OSError`` is
                 # excluded from the tuple — FS failures stay operator-actionable.
                 quarantined = QuickAdapterRegressorV3._optuna_quarantine_journal(
                     journal_path, pair, exc
@@ -5191,8 +5191,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return True
         except KeyError as e:
             # A missing study is a benign no-op: non-live runs use a fresh
-            # InMemoryStorage and the first live/dry-run optimization per pair
-            # has none yet. optuna reports it as KeyError; other failures reach
+            # ``InMemoryStorage`` and the first live/dry-run optimization per pair
+            # has none yet. optuna reports it as ``KeyError``; other failures reach
             # the warning branch below.
             logger.debug(
                 f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"

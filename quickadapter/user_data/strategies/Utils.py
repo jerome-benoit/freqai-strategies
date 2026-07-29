@@ -69,7 +69,7 @@ else:
 
 T = TypeVar("T", pd.Series, float)
 
-# lru_cache sizes: SMALL for bounded key spaces (windows, mode strings),
+# ``lru_cache`` sizes: SMALL for bounded key spaces (windows, mode strings),
 # LARGE for open numeric/string keys (formatting, rounding, statistics).
 _CACHE_MAXSIZE_SMALL: Final[int] = 8
 _CACHE_MAXSIZE_LARGE: Final[int] = 128
@@ -316,9 +316,9 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
-    # np.isfinite raises/returns non-scalar on inputs it cannot reduce to a
-    # single finite float64 (Python ints >= 2**64 -> TypeError/OverflowError;
-    # array-likes -> a ValueError on bool()); treat all of those as non-finite.
+    # ``np.isfinite`` raises/returns non-scalar on inputs it cannot reduce to a
+    # single finite float64 (Python ints >= 2**64 -> ``TypeError``/``OverflowError``;
+    # array-likes -> a ``ValueError`` on ``bool()``); treat all of those as non-finite.
     try:
         return bool(np.isfinite(value))
     except (TypeError, OverflowError, ValueError):
@@ -1569,8 +1569,8 @@ DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
     "max_natr_multiplier_fraction": 0.0125,
 }
 
-# Scalars only: the coupled (min, max) natr pair needs validate_range's
-# cross-field ordering and per-component fallback, which _validate_params
+# Scalars only: the coupled (min, max) natr pair needs ``validate_range``'s
+# cross-field ordering and per-component fallback, which ``_validate_params``
 # cannot express.
 _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
     "lookback_period_candles": _ParamSpec(
@@ -4152,7 +4152,7 @@ def _zigzag(
         # orientation (scan restarts at initial_pivot_pos+1, before the
         # orientation confirmation candle i) must not claim availability earlier
         # than i, since its label depends on that orientation. Fold the latest
-        # confirmation seen so far so known_at never understates it.
+        # confirmation seen so far so ``known_at`` never understates it.
         confirmed_at_pos = max(
             confirmed_at_pos,
             resolve_through_pos,
@@ -4168,9 +4168,9 @@ def _zigzag(
             return
 
         # These swing metrics are backfilled onto the previous pivot from the
-        # adjacent closing pivot, confirmed at this pivot's known_at. The weight
+        # adjacent closing pivot, confirmed at this pivot's ``known_at``. The weight
         # is therefore causally available one pivot later than its label;
-        # compute_label_weight_known_at_lookahead derives that lag so the causal
+        # ``compute_label_weight_known_at_lookahead`` derives that lag so the causal
         # purge masks weights on max(label, weight) availability.
         if (
             pivots_values_log
