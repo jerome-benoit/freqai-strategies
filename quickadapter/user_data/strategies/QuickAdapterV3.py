@@ -1710,33 +1710,33 @@ class QuickAdapterV3(IStrategy):
                 current_position_value = trade.amount * current_exit_rate
                 # Live/dry-run passes min_entry_stake, while freqtrade's
                 # backtesting path already passes the adjusted minimum it guards.
-                min_exit_stake_bound = min_stake
+                min_remaining_position_value = min_stake
                 if self.is_trade_runmode:
                     # For both the cost- and amount-driven minimum, min_exit_stake
                     # <= min_stake * max(exit/entry, 1/(1-|sl|)).
-                    min_exit_stake_bound *= max(
+                    min_remaining_position_value *= max(
                         current_exit_rate / current_entry_rate,
                         1.0 / (1.0 - abs(self.stoploss)),
                     )
-                min_exit_stake_bound *= (
+                min_remaining_position_value *= (
                     1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
                 )
-                if current_position_value <= min_exit_stake_bound:
+                if current_position_value <= min_remaining_position_value:
                     return None
                 remaining_position_value = current_position_value * (
                     1 - trade_stake_percent
                 )
-                if remaining_position_value < min_exit_stake_bound:
+                if remaining_position_value < min_remaining_position_value:
                     initial_trade_partial_stake_amount = trade_partial_stake_amount
                     trade_partial_stake_amount = trade.stake_amount * (
-                        1 - min_exit_stake_bound / current_position_value
+                        1 - min_remaining_position_value / current_position_value
                     )
                     logger.info(
                         f"[{pair}] Trade {trade.trade_direction} stage "
                         f"{trade_exit_stage} | partial stake "
                         f"{format_number(initial_trade_partial_stake_amount)} -> "
                         f"{format_number(trade_partial_stake_amount)} to preserve "
-                        f"min_exit_stake_bound {format_number(min_exit_stake_bound)}"
+                        f"min_remaining_position_value {format_number(min_remaining_position_value)}"
                     )
             return (
                 -trade_partial_stake_amount,
