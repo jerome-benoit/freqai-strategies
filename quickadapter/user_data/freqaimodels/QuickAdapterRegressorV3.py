@@ -240,6 +240,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
+    # Bump this identity (e.g. -v2) on any semantic change to the hp objective
+    # (search space, scoring, or fit protocol): it gates warm-state study reuse
+    # and persisted best-params loading; a stale value silently reuses
+    # incompatible trials.
     _OPTUNA_HP_OBJECTIVE_IDENTITY: Final[str] = "candidate-cold-start-v1"
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
@@ -4965,6 +4969,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> Optional[_OptunaStudyMarker]:
         if namespace == _OPTUNA_NAMESPACES.hp:
             identity = QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            # hp always resets on identity mismatch: a changed objective makes
+            # prior trials incomparable (unlike label's schema, which the caller
+            # can preserve). A legacy study lacking objective_identity therefore
+            # mismatches and is reset once on the first live/dry-run after upgrade.
             return _OptunaStudyMarker(
                 user_attr_key="objective_identity",
                 build_marker=lambda: identity,
@@ -5048,8 +5056,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reset_study = study_marker.reset_on_mismatch
                 logger.warning(
                     f"[{pair}] Optuna {namespace} study {study_name}: "
-                    f"stored {study_marker.user_attr_key} incompatible with "
-                    f"current; {'resetting' if reset_study else 'preserving'} study"
+                    f"stored {study_marker.user_attr_key} {existing_marker!r} "
+                    f"incompatible with current; "
+                    f"{'resetting' if reset_study else 'preserving'} study"
                 )
                 if reset_study:
                     if not QuickAdapterRegressorV3.optuna_delete_study(
