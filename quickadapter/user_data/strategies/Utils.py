@@ -3329,13 +3329,10 @@ def compute_label_weight_known_at_lookahead(
                 band_weight_availability.tolist(),
                 dependency_mask.tolist(),
             ):
-                # Skip any pivot whose band weight never resolves in-frame
-                # (sentinel availability == n) only when its value has no
-                # imputation dependency. A metric-based trailing pivot's Gaussian
-                # bump is 0; pure-Gaussian uniform pivots use their own
-                # confirmation, so only that path retains the trailing band. An
-                # all-non-finite vector uses the non-zero legacy default even at
-                # the trailing pivot, so its band must be guarded.
+                # Skip pivots whose band weight never resolves in-frame
+                # (weight_avail == n): their Gaussian bump is zero. Exception: an
+                # imputation-dependent pivot keeps the non-zero legacy default for
+                # an all-non-finite metric, so its band must defer to n.
                 if weight_avail >= n and not pivot_dependency:
                     continue
                 lo = max(0, pivot_pos - fill_radius)
