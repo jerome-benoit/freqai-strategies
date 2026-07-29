@@ -106,8 +106,8 @@ _TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
 
 
 class _TradeHistory(TypedDict):
-    # Key names must mirror the _UNREALIZED_PNL_CANDLE_DATE_KEY /
-    # _UNREALIZED_PNL_TIMEFRAME_KEY constants (a TypedDict field cannot
+    # Key names must mirror the ``_UNREALIZED_PNL_CANDLE_DATE_KEY`` /
+    # ``_UNREALIZED_PNL_TIMEFRAME_KEY`` constants (a ``TypedDict`` field cannot
     # reference a constant).
     unrealized_pnl: list[float]
     take_profit_price: list[_TakeProfitHistoryEntry]
@@ -203,10 +203,10 @@ class QuickAdapterV3(IStrategy):
     _UNREALIZED_PNL_TIMEFRAME_KEY: Final[str] = "unrealized_pnl_timeframe"
 
     # Rounding margin so the sized partial-exit remainder clears freqtrade's
-    # strict `remaining < min_exit_stake` guard.
+    # strict ``remaining < min_exit_stake`` guard.
     _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
 
-    # FreqAI is crashing if minimal_roi is a property
+    # FreqAI is crashing if ``minimal_roi`` is a property
     minimal_roi = {str(timeframe_minutes * 864): -1}
 
     process_only_new_candles = True
@@ -221,7 +221,7 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def is_trade_runmode(self) -> bool:
-        # True in live and dry-run (runmode in TRADE_MODES), mirroring the
+        # True in live and dry-run (``runmode`` in ``TRADE_MODES``), mirroring the
         # regressor's ``self.live`` gate.
         return self.config.get("runmode") in TRADE_MODES
 
@@ -1079,7 +1079,7 @@ class QuickAdapterV3(IStrategy):
                 dataframe, timeperiod=self.get_label_period_candles(pair)
             )
         else:
-            # Per-candle HPO label_period_candles: NATR is computed once per
+            # Per-candle HPO ``label_period_candles``: NATR is computed once per
             # distinct period, then scattered back to its matching rows (mixing
             # per-row periods within one column is intentional).
             dataframe["natr_label_period_candles"] = np.nan
@@ -1681,12 +1681,12 @@ class QuickAdapterV3(IStrategy):
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             if min_stake is not None and min_stake > 0:
                 current_position_value = trade.amount * current_exit_rate
-                # Live/dry-run passes min_entry_stake, while freqtrade's
+                # Live/dry-run passes ``min_entry_stake``, while freqtrade's
                 # backtesting path already passes the adjusted minimum it guards.
                 min_remaining_position_value = min_stake
                 if self.is_trade_runmode:
-                    # For both the cost- and amount-driven minimum, min_exit_stake
-                    # <= min_stake * max(exit/entry, 1/(1-|sl|)).
+                    # For both the cost- and amount-driven minimum, ``min_exit_stake``
+                    # <= ``min_stake`` * max(exit/entry, 1/(1-|sl|)).
                     min_remaining_position_value *= max(
                         current_exit_rate / current_entry_rate,
                         1.0 / (1.0 - abs(self.stoploss)),

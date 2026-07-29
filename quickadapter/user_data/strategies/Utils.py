@@ -69,7 +69,7 @@ else:
 
 T = TypeVar("T", pd.Series, float)
 
-# lru_cache sizes: SMALL for bounded key spaces (windows, mode strings),
+# ``lru_cache`` sizes: SMALL for bounded key spaces (windows, mode strings),
 # LARGE for open numeric/string keys (formatting, rounding, statistics).
 _CACHE_MAXSIZE_SMALL: Final[int] = 8
 _CACHE_MAXSIZE_LARGE: Final[int] = 128
@@ -316,9 +316,9 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
-    # np.isfinite raises/returns non-scalar on inputs it cannot reduce to a
-    # single finite float64 (Python ints >= 2**64 -> TypeError/OverflowError;
-    # array-likes -> a ValueError on bool()); treat all of those as non-finite.
+    # ``np.isfinite`` raises/returns non-scalar on inputs it cannot reduce to a
+    # single finite float64 (Python ints >= 2**64 -> ``TypeError``/``OverflowError``;
+    # array-likes -> a ``ValueError`` on ``bool()``); treat all of those as non-finite.
     try:
         return bool(np.isfinite(value))
     except (TypeError, OverflowError, ValueError):
@@ -1569,8 +1569,8 @@ DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
     "max_natr_multiplier_fraction": 0.0125,
 }
 
-# Scalars only: the coupled (min, max) natr pair needs validate_range's
-# cross-field ordering and per-component fallback, which _validate_params
+# Scalars only: the coupled (min, max) natr pair needs ``validate_range``'s
+# cross-field ordering and per-component fallback, which ``_validate_params``
 # cannot express.
 _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
     "lookback_period_candles": _ParamSpec(
@@ -4152,7 +4152,7 @@ def _zigzag(
         # orientation (scan restarts at initial_pivot_pos+1, before the
         # orientation confirmation candle i) must not claim availability earlier
         # than i, since its label depends on that orientation. Fold the latest
-        # confirmation seen so far so known_at never understates it.
+        # confirmation seen so far so ``known_at`` never understates it.
         confirmed_at_pos = max(
             confirmed_at_pos,
             resolve_through_pos,
@@ -4168,9 +4168,9 @@ def _zigzag(
             return
 
         # These swing metrics are backfilled onto the previous pivot from the
-        # adjacent closing pivot, confirmed at this pivot's known_at. The weight
+        # adjacent closing pivot, confirmed at this pivot's ``known_at``. The weight
         # is therefore causally available one pivot later than its label;
-        # compute_label_weight_known_at_lookahead derives that lag so the causal
+        # ``compute_label_weight_known_at_lookahead`` derives that lag so the causal
         # purge masks weights on max(label, weight) availability.
         if (
             pivots_values_log
@@ -4622,10 +4622,11 @@ def get_refit_model_training_parameters(
         )
 
     spec = _REGRESSOR_SPEC_BY_NAME[regressor]
-    # best_iteration is combined-indexed under current xgboost/lightgbm, so
-    # fitted >= initial + 1 always holds; clamp defensively so a degenerate
-    # non-improving continual-learning refit degrades gracefully instead of
-    # raising and killing the whole training window.
+    # The sole caller refits the cold-started selection model
+    # (``init_model=None``), so ``initial_iterations`` is 0 here; the
+    # ``init_model`` branches above remain for warm-start callers. Clamp to
+    # >= 1 so a degenerate fit (``fitted_iterations`` <= ``initial_iterations``)
+    # degrades gracefully instead of raising.
     refit_iterations = max(fitted_iterations - initial_iterations, 1)
     for alias in spec.iteration_aliases:
         refit_parameters.pop(alias, None)
@@ -5126,6 +5127,7 @@ def optuna_load_best_params(
     logger: Logger | None = None,
     *,
     expected_selection_metadata: dict[str, Any] | None = None,
+    expected_objective_identity: str | None = None,
 ) -> dict[str, Any] | None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -5140,6 +5142,20 @@ def optuna_load_best_params(
                 logger,
                 expected_selection_metadata=expected_selection_metadata,
             )
+        if expected_objective_identity is not None:
+            if (
+                not isinstance(best_params, dict)
+                or best_params.get("objective_identity") != expected_objective_identity
+                or not isinstance(best_params.get("params"), dict)
+            ):
+                if logger is not None:
+                    logger.warning(
+                        f"[{pair}] Ignoring Optuna {namespace} best params: "
+                        f"objective identity does not match "
+                        f"{expected_objective_identity!r}"
+                    )
+                return None
+            return best_params["params"]
         return best_params
     return None
 
@@ -5151,6 +5167,7 @@ def optuna_save_best_params(
     params: dict[str, Any],
     logger: Logger,
     selection_metadata: dict[str, Any] | None = None,
+    objective_identity: str | None = None,
 ) -> None:
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
@@ -5163,6 +5180,11 @@ def optuna_save_best_params(
             }
             if selection_metadata is not None:
                 best_params["selection_metadata"] = selection_metadata
+        elif objective_identity is not None:
+            best_params = {
+                "objective_identity": objective_identity,
+                "params": params,
+            }
         else:
             best_params = params
         with best_params_path.open("w", encoding="utf-8") as write_file:

@@ -201,6 +201,13 @@ class _OptunaLabelSamplers(NamedTuple):
     nsgaiii: Literal["nsgaiii"] = "nsgaiii"
 
 
+class _OptunaStudyMarker(NamedTuple):
+    user_attr_key: str
+    build_marker: Callable[[], Any]
+    is_compatible: Callable[[Any], bool]
+    reset_on_mismatch: bool
+
+
 class QuickAdapterRegressorV3(BaseRegressionModel):
     """
     The following freqaimodel is released to sponsors of the non-profit FreqAI open-source project.
@@ -233,6 +240,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _SQRT_2: Final[float] = np.sqrt(2.0)
 
     _OPTUNA_LABEL_N_OBJECTIVES: Final[int] = 7
+    # Bump this identity (e.g. ``-v2``) on any semantic change to the ``hp``
+    # objective (search space, scoring, or fit protocol): it gates warm-state
+    # study reuse and persisted best-params loading; a stale value silently
+    # reuses incompatible trials.
+    _OPTUNA_HP_OBJECTIVE_IDENTITY: Final[str] = "candidate-cold-start-v1"
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
@@ -378,9 +390,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         _SCIPY_METRICS_SET - _PROBABILITY_DISTANCE_METRICS_SET
     )
 
-    # Absolute tolerance (rtol=0) for constant-column detection in
-    # `_non_constant_objective_indices`; valid on the [0,1]-normalized
-    # output of `_normalize_objective_values`.
+    # Absolute tolerance (``rtol=0``) for constant-column detection in
+    # ``_non_constant_objective_indices``; valid on the [0,1]-normalized
+    # output of ``_normalize_objective_values``.
     _NON_CONSTANT_OBJECTIVE_ATOL: Final[float] = 1e-8
 
     _DENSITY_AGGREGATIONS: Final[tuple[DensityAggregation, ...]] = (
@@ -714,7 +726,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         if label_weights is None:
             # Non-"none" label-weighting strategy with no available label
-            # weights (zigzag produced zero pivots): the support policy
+            # weights (``zigzag`` produced zero pivots): the support policy
             # governs the contract -- ``raise`` raises, ``fallback``
             # warns. A direct return to base weights would bypass the
             # policy silently.
@@ -746,9 +758,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         # Support is gated twice on purpose: here on the full split (fail-fast,
-        # esp. under support_policy='raise') and again post-pipeline in
-        # _fit_training_pipelines on the rows fed to model.fit. Outlier removal
-        # is non-monotone on support (pivot_equivalent_count/ESS use a
+        # esp. under ``support_policy='raise'``) and again post-pipeline in
+        # ``_fit_training_pipelines`` on the rows fed to ``model.fit``. Outlier removal
+        # is non-monotone on support (``pivot_equivalent_count``/ESS use a
         # max-relative threshold), so this pre-gate is not a conservative bound:
         # keeping it changes some raise/fallback outcomes, and under 'raise' it
         # can abort a split the post-pipeline gate would have passed.
@@ -1077,8 +1089,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             # Cluster/density paths route the metric to SciPy/sklearn APIs
-            # (pairwise_distances, KMeans, KMedoids, NearestNeighbors) which
-            # reject aggregate metrics computed by reduction; restrict the
+            # (``pairwise_distances``, ``KMeans``, ``KMedoids``, ``NearestNeighbors``)
+            # which reject aggregate metrics computed by reduction; restrict the
             # valid set to SciPy-compatible non-probability metrics.
             valid_metrics = (
                 QuickAdapterRegressorV3._CLUSTER_DENSITY_DISTANCE_METRICS_SET
@@ -1509,7 +1521,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         default_label_period_candles, default_label_natr_multiplier = (
             self._label_defaults
         )
-        # self.live is unset until IFreqaiModel.start(), so derive trade-mode
+        # ``self.live`` is unset until ``IFreqaiModel.start()``, so derive trade-mode
         # from the configured runmode here.
         trade_mode = self.config.get("runmode") in TRADE_MODES
         for pair in self.pairs:
@@ -2422,8 +2434,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         # Recompose weights on the ACTUAL inner-train/validation rows instead of
-        # slicing the outer-train composition: a slice bypasses support_policy and
-        # lets sanitize_and_renormalize silently uniformize a pivot-sparse inner
+        # slicing the outer-train composition: a slice bypasses ``support_policy`` and
+        # lets ``sanitize_and_renormalize`` silently uniformize a pivot-sparse inner
         # split. Realign raw weight components to the split rows by index. The
         # recompose renormalizes each subset to mean 1 (proportional to, not
         # byte-identical with, the old slice), which is scale-invariant for the
@@ -2569,9 +2581,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             # Smuggle base/label weights as extra label columns so datasieve
             # row-filters them in lockstep with the features. Relies on datasieve
             # not altering y VALUES (X-only transforms + row drops) and restoring
-            # them via label_list. _sanitize_pipeline_weights guards row count,
-            # not a silent y-value transform: a future y-transforming step would
-            # corrupt these vectors undetected.
+            # them via ``label_list``. ``_sanitize_pipeline_weights`` guards
+            # row count, not a silent y-value transform: a future y-transforming
+            # step would corrupt these vectors undetected.
             base_weight_column = object()
             label_weight_column = object()
             pipeline_labels = labels.copy()
@@ -2595,9 +2607,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             post_pipeline_label_weights = pipeline_labels.pop(
                 label_weight_column
             ).to_numpy(dtype=float)
-            # Load-bearing: fit_transform captured label_list WITH the smuggled
+            # Load-bearing: ``fit_transform`` captured ``label_list`` WITH the smuggled
             # columns; restore it to the real labels or the next validation/test
-            # transform rebuilds y with the wrong column count (ValueError).
+            # transform rebuilds y with the wrong column count (``ValueError``).
             dk.feature_pipeline.label_list = pipeline_labels.columns
             weights = QuickAdapterRegressorV3._enforce_train_weight_support(
                 post_pipeline_base_weights,
@@ -2925,7 +2937,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         validation_size = self._get_validation_size()
 
         model_training_parameters = copy.deepcopy(self.model_training_parameters)
-        init_model = self.get_init_model(dk.pair)
+        deployment_init_model = self.get_init_model(dk.pair)
+        selection_init_model = None if validation_size != 0 else deployment_init_model
 
         start_time = time.time()
         if self._optuna_hyperopt:
@@ -2947,7 +2960,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     self._optuna_config["space_reduction"],
                     self._optuna_config["space_fraction"],
                     model_path=dk.data_path,
-                    init_model=init_model,
+                    init_model=selection_init_model,
                     vary_model_seed_by_trial=self._optuna_config[
                         "vary_model_seed_by_trial"
                     ],
@@ -2977,7 +2990,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             eval_set=eval_set,
             eval_weights=eval_weights,
             model_training_parameters=copy.deepcopy(model_training_parameters),
-            init_model=init_model,
+            init_model=selection_init_model,
             model_path=dk.data_path,
         )
         if X_test is not None and not X_test.empty:
@@ -3006,7 +3019,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 self.regressor,
                 model,
                 model_training_parameters,
-                init_model,
+                selection_init_model,
             )
             data_dictionary["train_features"] = data_dictionary.pop("refit_features")
             data_dictionary["train_labels"] = data_dictionary.pop("refit_labels")
@@ -3042,7 +3055,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 eval_set=None,
                 eval_weights=None,
                 model_training_parameters=refit_model_training_parameters,
-                init_model=init_model,
+                init_model=deployment_init_model,
                 model_path=dk.data_path,
             )
         time_spent = time.time() - start_time
@@ -4297,7 +4310,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         non_constant_mask = np.array(
             [
-                # rtol=0: pure absolute tolerance on [0,1]-normalized columns;
+                # ``rtol=0``: pure absolute tolerance on [0,1]-normalized columns;
                 # any finite rtol would leak column magnitude into the threshold.
                 not np.allclose(
                     normalized_matrix[:, column_index],
@@ -4834,7 +4847,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if storage_backend == QuickAdapterRegressorV3._STORAGE_FILE:
             journal_path = storage_dir / f"{storage_filename}.log"
 
-            # Pre-validate EOF: close the read_logs deferred-raise gap (see helper).
+            # Pre-validate EOF: close the ``read_logs`` deferred-raise gap (see helper).
             if QuickAdapterRegressorV3._optuna_journal_has_corrupt_tail(journal_path):
                 QuickAdapterRegressorV3._optuna_quarantine_journal(
                     journal_path,
@@ -4850,7 +4863,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             try:
                 storage = _build_journal_storage()
             except QuickAdapterRegressorV3._OPTUNA_JOURNAL_RECOVERABLE_ERRORS as exc:
-                # Replay-time corruption: quarantine + retry once. OSError is
+                # Replay-time corruption: quarantine + retry once. ``OSError`` is
                 # excluded from the tuple — FS failures stay operator-actionable.
                 quarantined = QuickAdapterRegressorV3._optuna_quarantine_journal(
                     journal_path, pair, exc
@@ -4938,6 +4951,48 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 f"supported values are {', '.join(_OPTUNA_NAMESPACES)}"
             )
 
+    @staticmethod
+    def _optuna_label_selection_metadata_compatible(existing_marker: Any) -> bool:
+        schema_version = (
+            existing_marker.get("schema_version")
+            if isinstance(existing_marker, dict)
+            else None
+        )
+        return (
+            not isinstance(schema_version, bool)
+            and isinstance(schema_version, (int, np.integer))
+            and schema_version == _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION
+        )
+
+    def _optuna_study_marker(
+        self, namespace: OptunaNamespace
+    ) -> Optional[_OptunaStudyMarker]:
+        if namespace == _OPTUNA_NAMESPACES.hp:
+            identity = QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            # ``hp`` always resets on identity mismatch: a changed objective
+            # makes prior trials incomparable (unlike ``label``'s schema, which
+            # the caller can preserve). A legacy study lacking
+            # ``objective_identity`` therefore mismatches and is reset once on
+            # the first live/dry-run after upgrade.
+            return _OptunaStudyMarker(
+                user_attr_key="objective_identity",
+                build_marker=lambda: identity,
+                is_compatible=lambda existing: existing == identity,
+                reset_on_mismatch=True,
+            )
+        if namespace == _OPTUNA_NAMESPACES.label:
+            return _OptunaStudyMarker(
+                user_attr_key="selection_metadata",
+                build_marker=self._optuna_label_selection_metadata,
+                is_compatible=(
+                    QuickAdapterRegressorV3._optuna_label_selection_metadata_compatible
+                ),
+                reset_on_mismatch=bool(
+                    self._optuna_config["reset_label_study_on_schema_mismatch"]
+                ),
+            )
+        return None
+
     def optuna_create_study(
         self,
         pair: str,
@@ -4959,6 +5014,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         identifier = self.freqai_info.get("identifier")
         study_name = f"{identifier}-{pair}-{namespace}"
+        study_marker = self._optuna_study_marker(namespace)
 
         try:
             storage = self.optuna_create_storage(pair)
@@ -4974,18 +5030,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         # cutoff's in-memory best, which stays causal as it predates the current
         # cutoff.
         continuous = self._optuna_config.get("continuous") or not self.live
-        label_schema_mismatch_preserved = False
+        study_marker_mismatch_preserved = False
         if continuous:
             QuickAdapterRegressorV3.optuna_delete_study(
                 pair, namespace, study_name, storage
             )
-        elif namespace == _OPTUNA_NAMESPACES.label:
+        elif study_marker is not None:
             try:
                 existing_study = QuickAdapterRegressorV3.optuna_load_study(
                     study_name, storage
                 )
-                existing_selection_metadata = (
-                    existing_study.user_attrs.get("selection_metadata")
+                existing_marker = (
+                    existing_study.user_attrs.get(study_marker.user_attr_key)
                     if existing_study is not None
                     else None
                 )
@@ -4995,39 +5051,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     exc_info=True,
                 )
                 return None
-            if existing_study is not None:
-                existing_schema_version = (
-                    existing_selection_metadata.get("schema_version")
-                    if isinstance(existing_selection_metadata, dict)
-                    else None
+            if existing_study is not None and not study_marker.is_compatible(
+                existing_marker
+            ):
+                reset_study = study_marker.reset_on_mismatch
+                logger.warning(
+                    f"[{pair}] Optuna {namespace} study {study_name}: "
+                    f"stored {study_marker.user_attr_key} {existing_marker!r} "
+                    f"incompatible with current; "
+                    f"{'resetting' if reset_study else 'preserving'} study"
                 )
-                target_version = _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION
-                if (
-                    isinstance(existing_schema_version, bool)
-                    or not isinstance(existing_schema_version, (int, np.integer))
-                    or existing_schema_version != target_version
-                ):
-                    version_repr = (
-                        "none"
-                        if existing_schema_version is None
-                        else f"v{existing_schema_version!r}"
-                    )
-                    reset_study = self._optuna_config[
-                        "reset_label_study_on_schema_mismatch"
-                    ]
-                    logger.warning(
-                        f"[{pair}] Optuna {namespace} study {study_name}: "
-                        f"selection schema {version_repr} incompatible "
-                        f"with v{target_version}; "
-                        f"{'resetting' if reset_study else 'preserving'} study"
-                    )
-                    if reset_study:
-                        if not QuickAdapterRegressorV3.optuna_delete_study(
-                            pair, namespace, study_name, storage
-                        ):
-                            return None
-                    else:
-                        label_schema_mismatch_preserved = True
+                if reset_study:
+                    if not QuickAdapterRegressorV3.optuna_delete_study(
+                        pair, namespace, study_name, storage
+                    ):
+                        return None
+                else:
+                    study_marker_mismatch_preserved = True
 
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
         if sampler not in samplers:
@@ -5046,21 +5086,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 storage=storage,
                 load_if_exists=not continuous,
             )
-            if (
-                namespace == _OPTUNA_NAMESPACES.label
-                and not label_schema_mismatch_preserved
-            ):
-                new_selection_metadata = self._optuna_label_selection_metadata()
-                existing_selection_metadata = study.user_attrs.get("selection_metadata")
-                if existing_selection_metadata != new_selection_metadata:
-                    if isinstance(existing_selection_metadata, dict):
+            if study_marker is not None and not study_marker_mismatch_preserved:
+                target_marker = study_marker.build_marker()
+                existing_marker = study.user_attrs.get(study_marker.user_attr_key)
+                if existing_marker != target_marker:
+                    if existing_marker is not None:
                         logger.warning(
                             f"[{pair}] Optuna {namespace} study {study_name}: "
-                            f"selection_metadata change detected "
-                            f"(stored: {existing_selection_metadata!r}, "
-                            f"current: {new_selection_metadata!r})"
+                            f"{study_marker.user_attr_key} change detected "
+                            f"(stored: {existing_marker!r}, "
+                            f"current: {target_marker!r})"
                         )
-                    study.set_user_attr("selection_metadata", new_selection_metadata)
+                    study.set_user_attr(study_marker.user_attr_key, target_marker)
             return study
         except Exception as e:
             logger.error(
@@ -5118,6 +5155,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             selection_metadata=self._optuna_label_selection_metadata()
             if namespace == _OPTUNA_NAMESPACES.label
             else None,
+            objective_identity=QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            if namespace == _OPTUNA_NAMESPACES.hp
+            else None,
         )
 
     def optuna_load_best_params(
@@ -5134,6 +5174,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             namespace,
             logger,
             expected_selection_metadata=expected,
+            expected_objective_identity=QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
+            if namespace == _OPTUNA_NAMESPACES.hp
+            else None,
         )
 
     @staticmethod
@@ -5148,8 +5191,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return True
         except KeyError as e:
             # A missing study is a benign no-op: non-live runs use a fresh
-            # InMemoryStorage and the first live/dry-run optimization per pair
-            # has none yet. optuna reports it as KeyError; other failures reach
+            # ``InMemoryStorage`` and the first live/dry-run optimization per pair
+            # has none yet. optuna reports it as ``KeyError``; other failures reach
             # the warning branch below.
             logger.debug(
                 f"[{pair}] Optuna {namespace} study {study_name} absent; nothing to delete: {e!r}"
