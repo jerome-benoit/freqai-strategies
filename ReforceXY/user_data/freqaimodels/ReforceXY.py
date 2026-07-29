@@ -402,14 +402,27 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "training and evaluation."
             )
 
+        action_masking = self.model_type == ReforceXY._MODEL_TYPES[2]
+        configured_action_masking = self.rl_config.get("action_masking")
+        if (
+            "action_masking" in self.rl_config
+            and configured_action_masking is not action_masking
+        ):
+            raise ValueError(
+                "Config [global]: action_masking="
+                f"{configured_action_masking!r} conflicts with "
+                f"model_type={self.model_type!r}; expected {action_masking!r}."
+            )
+        self.action_masking: bool = action_masking
+        self.rl_config["action_masking"] = action_masking
+
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
                 "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
-        self.action_masking: bool = self.model_type == ReforceXY._MODEL_TYPES[2]  # "MaskablePPO"
-        self.rl_config.setdefault("action_masking", self.action_masking)
+
         self.inference_masking: bool = inference_masking
         self.recurrent: bool = (
             self.model_type == ReforceXY._MODEL_TYPES[1]
