@@ -323,9 +323,12 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
+    # Python integers are arbitrary-precision and always finite.
+    if isinstance(value, int):
+        return True
     # ``np.isfinite`` raises/returns non-scalar on inputs it cannot reduce to a
-    # single finite float64 (Python ints >= 2**64 -> ``TypeError``/``OverflowError``;
-    # array-likes -> a ``ValueError`` on ``bool()``); treat all of those as non-finite.
+    # single finite value (array-likes -> a ``ValueError`` on ``bool()``);
+    # treat all of those as non-finite.
     try:
         return bool(np.isfinite(value))
     except (TypeError, OverflowError, ValueError):
@@ -500,6 +503,7 @@ def require_numeric(
     max_exclusive: bool = False,
     require_int: bool = False,
 ) -> int | float:
+    """Return an exact built-in numeric value that satisfies the requested bounds."""
     validator = _NumericValidator(
         min_value=minimum,
         max_value=maximum,
@@ -507,7 +511,8 @@ def require_numeric(
         max_exclusive=max_exclusive,
         require_int=require_int,
     )
-    if not validator(value):
+    accepted_types = (int,) if require_int else (int, float)
+    if type(value) not in accepted_types or not validator(value):
         raise ValueError(
             f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
         )
