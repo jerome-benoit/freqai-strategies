@@ -36,6 +36,7 @@ import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
+from freqtrade.misc import pair_to_filename
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
@@ -2095,6 +2096,19 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
+_ZERO_PHASE_FILTER_DISPATCH: Final[
+    dict[SmoothingMethod, tuple[SmoothingKernel, Callable[[int], int]]]
+] = {
+    SMOOTHING_METHODS[1]: (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"
+    SMOOTHING_METHODS[2]: (SMOOTHING_KERNELS[1], get_odd_window),  # "kaiser"
+    SMOOTHING_METHODS[3]: (
+        SMOOTHING_KERNELS[2],
+        get_even_window,
+    ),  # "kaiser_bessel_derived"
+    SMOOTHING_METHODS[4]: (SMOOTHING_KERNELS[3], get_odd_window),  # "triang"
+}
+
+
 def smooth(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
@@ -2120,39 +2134,6 @@ def smooth(
 
     if method == SMOOTHING_METHODS[0]:  # "none"
         return series
-    elif method == SMOOTHING_METHODS[1]:  # "gaussian"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[2]:  # "kaiser"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[1],  # "kaiser"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
-        even_window = get_even_window(window_candles)
-        return zero_phase_filter(
-            series=series,
-            window=even_window,
-            win_type=SMOOTHING_KERNELS[2],  # "kaiser_bessel_derived"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[4]:  # "triang"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[3],  # "triang"
-            std=std,
-            beta=beta,
-        )
     elif method == SMOOTHING_METHODS[5]:  # "smm" (Simple Moving Median)
         return series.rolling(window=odd_window, center=True, min_periods=1).median()
     elif method == SMOOTHING_METHODS[6]:  # "sma" (Simple Moving Average)
@@ -2179,14 +2160,18 @@ def smooth(
             ),
             index=series.index,
         )
-    else:
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
-            std=std,
-            beta=beta,
-        )
+
+    win_type, window_selector = _ZERO_PHASE_FILTER_DISPATCH.get(
+        method,
+        _ZERO_PHASE_FILTER_DISPATCH[SMOOTHING_METHODS[1]],  # "gaussian"/odd default
+    )
+    return zero_phase_filter(
+        series=series,
+        window=window_selector(window_candles),
+        win_type=win_type,
+        std=std,
+        beta=beta,
+    )
 
 
 def _impute_weights(
@@ -2226,6 +2211,11 @@ def _impute_weights(
     return weights
 
 
+def _segment_ends(a: NDArray[np.integer]) -> NDArray[np.intp]:
+    """Indices of the last element of each consecutive run of equal values in ``a``."""
+    return np.flatnonzero(np.r_[a[1:] != a[:-1], True])
+
+
 def _causal_impute_weights(
     weights: NDArray[np.floating],
     *,
@@ -2245,7 +2235,7 @@ def _causal_impute_weights(
         .fillna(default_weight)
         .to_numpy(dtype=float)
     )
-    event_ends = np.flatnonzero(np.r_[availability[1:] != availability[:-1], True])
+    event_ends = _segment_ends(availability)
     event_medians = np.repeat(
         running_median[event_ends],
         np.diff(np.r_[-1, event_ends]),
@@ -2653,24 +2643,67 @@ def _nonfinite_imputation_dependency_mask(
     return ~np.isfinite(values)
 
 
+@dataclass(frozen=True, slots=True)
+class LabelWeightImputationMasks:
+    """Causal-availability masks for non-finite pivot-weight imputations.
+
+    Produced by :func:`compute_label_weight_imputation_dependency_mask` (see it
+    for the release algorithm) and consumed by
+    :func:`compute_label_weight_known_at_lookahead`.
+
+    - ``dependency_mask``: pivots deferred to the frame boundary ``n``
+    - ``leading_stable_mask``: subset of ``dependency_mask`` provably fixed at
+      ``0.0`` on the causal prefix, hence released early
+    - ``stable_release_index``: pivot index bounding that release prefix, or
+      ``-1`` when ``leading_stable_mask`` is empty
+    """
+
+    dependency_mask: NDArray[np.bool_]
+    leading_stable_mask: NDArray[np.bool_]
+    stable_release_index: int
+
+
 def compute_label_weight_imputation_dependency_mask(
     n_indices: int,
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
-) -> tuple[NDArray[np.bool_], NDArray[np.bool_]]:
+) -> LabelWeightImputationMasks:
     """Identify pivot weights whose non-finite imputation can change by prefix.
 
-    Returns ``(dependency_mask, leading_stable_mask)``. A ``dependency_mask``
-    pivot remains causally unavailable until the frame boundary; for
-    ``combined``, dependency propagates from every selected component and from
-    the aggregate before its final imputation. ``leading_stable_mask`` (a subset
-    of ``dependency_mask``) marks the leading non-finite run of a single-metric
-    strategy: those pivots impute to ``0.0`` and stabilize once the first finite
-    pivot's weight is known, so they need not defer to the frame boundary. It is
-    empty for ``uniform``, ``combined``, and all-non-finite metrics.
+    Returns a :class:`LabelWeightImputationMasks`. A ``dependency_mask`` pivot
+    remains causally unavailable until the frame boundary; for ``combined``,
+    dependency propagates from every selected component and from the aggregate
+    before its final imputation.
+
+    ``leading_stable_mask`` (a subset of ``dependency_mask``) marks non-finite
+    runs that impute to ``0.0`` and are provably fixed given only the causal
+    prefix, so they need not defer to the frame boundary:
+
+    - single-metric: the leading run ``[0, first_finite)`` imputes to ``0.0``
+      and stabilizes once the first finite pivot's weight is known;
+      ``stable_release_index = first_finite``. The terminal pivot and any
+      non-terminal trailing run stay deferred to ``n`` (their 0.0 is not
+      causal-prefix stable: a later closing pivot turns the metric finite).
+    - ``combined`` with every selected component leading with a non-finite run:
+      the aggregate is stably zero over ``[0, min_c first_finite_c)`` (the
+      shortest leading run bounds the all-zero prefix), released at the ``max``
+      over components ``stable_release_index = max_c first_finite_c`` (the latest
+      component confirmation; unequal run lengths must not leak). Guarded by an
+      empirical ``combined_weights[:S] == 0.0`` check.
+
+    ``stable_release_index`` is ``-1`` whenever ``leading_stable_mask`` is empty
+    (``uniform``, empty or all-non-finite metrics, a single metric with no
+    leading run such as all-finite or interior-only-NaN, and any ``combined``
+    case that fails the checks above); those pivots keep the nonzero default and
+    defer to ``n``. It is ``>= 0`` if and only if a leading run is released.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
+
+    def _empty_masks() -> LabelWeightImputationMasks:
+        zeros = np.zeros(n_indices, dtype=bool)
+        return LabelWeightImputationMasks(zeros, zeros.copy(), -1)
+
     if strategy == WEIGHT_STRATEGIES[0]:  # "none"
         raise ValueError(
             "compute_label_weight_imputation_dependency_mask must not be called "
@@ -2678,11 +2711,11 @@ def compute_label_weight_imputation_dependency_mask(
             "weighting is disabled"
         )
     if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
-        return np.zeros(n_indices, dtype=bool), np.zeros(n_indices, dtype=bool)
+        return _empty_masks()
     if strategy in metrics:
         values = np.asarray(metrics[strategy], dtype=float)
         if values.size == 0:
-            return np.zeros(n_indices, dtype=bool), np.zeros(n_indices, dtype=bool)
+            return _empty_masks()
         if values.shape != (n_indices,):
             raise ValueError(
                 f"Invalid metric {strategy!r} shape {values.shape}: "
@@ -2691,15 +2724,21 @@ def compute_label_weight_imputation_dependency_mask(
         dependency = _nonfinite_imputation_dependency_mask(values)
         leading_stable = np.zeros(n_indices, dtype=bool)
         finite = ~dependency
+        release_index = -1
         if finite.any():
-            leading_stable[: int(np.argmax(finite))] = True
-        return dependency, leading_stable
+            first_finite = int(np.argmax(finite))
+            if first_finite > 0:
+                leading_stable[:first_finite] = True
+                release_index = first_finite
+        return LabelWeightImputationMasks(dependency, leading_stable, release_index)
     if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
         raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
 
     dependency_mask = np.zeros(n_indices, dtype=bool)
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
+    first_finite_indices: list[int] = []
+    every_component_has_finite = True
     for metric_name, values_array, coefficient in _select_combined_metrics(
         metrics, label_weighting["metric_coefficients"]
     ):
@@ -2708,12 +2747,21 @@ def compute_label_weight_imputation_dependency_mask(
                 f"Invalid metric {metric_name!r} shape {values_array.shape}: "
                 f"must be ({n_indices},)"
             )
-        dependency_mask |= _nonfinite_imputation_dependency_mask(values_array)
+        component_finite = np.isfinite(values_array)
+        dependency_mask |= ~component_finite
         imputed_metrics.append(_impute_weights(values_array))
         coefficients_list.append(coefficient)
+        if component_finite.any():
+            first_finite_indices.append(int(np.argmax(component_finite)))
+        else:
+            # An all-non-finite component never confirms a finite weight
+            # in-frame, so it has no first_finite release candle; block the
+            # leading release and defer these pivots to n conservatively.
+            every_component_has_finite = False
 
     if len(imputed_metrics) == 0:
-        return dependency_mask, np.zeros(n_indices, dtype=bool)
+        empty = np.zeros(n_indices, dtype=bool)
+        return LabelWeightImputationMasks(dependency_mask, empty, -1)
 
     combined_weights = _aggregate_imputed_metrics(
         imputed_metrics,
@@ -2727,7 +2775,19 @@ def compute_label_weight_imputation_dependency_mask(
             f"must be ({n_indices},)"
         )
     dependency_mask |= _nonfinite_imputation_dependency_mask(combined_weights)
-    return dependency_mask, np.zeros(n_indices, dtype=bool)
+
+    leading_stable = np.zeros(n_indices, dtype=bool)
+    release_index = -1
+    if (
+        every_component_has_finite
+        and first_finite_indices
+        and min(first_finite_indices) >= 1
+    ):
+        stable_length = min(first_finite_indices)
+        if bool(np.all(combined_weights[:stable_length] == 0.0)):
+            leading_stable[:stable_length] = True
+            release_index = max(first_finite_indices)
+    return LabelWeightImputationMasks(dependency_mask, leading_stable, release_index)
 
 
 def _compute_epsilon_floor(
@@ -2751,8 +2811,9 @@ def _compute_epsilon_floor(
         b = float(np.nanmedian(pivot_values))
     else:
         raise ValueError(
-            f"Invalid fill_epsilon_baseline value {baseline!r}: "
-            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+            enum_error_message(
+                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
+            )
         )
     if not np.isfinite(b):
         b = 0.0
@@ -2851,13 +2912,12 @@ def _compute_causal_epsilon_fill(
         )
     else:
         raise ValueError(
-            f"Invalid fill_epsilon_baseline value {baseline!r}: "
-            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+            enum_error_message(
+                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
+            )
         )
 
-    event_ends = np.flatnonzero(
-        np.r_[pivot_available_at[1:] != pivot_available_at[:-1], True]
-    )
+    event_ends = _segment_ends(pivot_available_at)
     availability_events = pivot_available_at[event_ends]
     event_floors = float(label_weighting["fill_epsilon"]) * running_baseline[event_ends]
 
@@ -3091,9 +3151,7 @@ def _compute_knn_pivot_sigma_availability(
 
     pivot_positions = pivot_indices.astype(np.int64, copy=False)
     pivot_confirmations = known_at_positions[pivot_positions]
-    confirmation_group_ends = np.flatnonzero(
-        np.r_[pivot_confirmations[:-1] != pivot_confirmations[1:], True]
-    )
+    confirmation_group_ends = _segment_ends(pivot_confirmations)
     pivot_spacing = _ZIGZAG_MIN_CONFIRMATION_SLOPES + 1
     last_future_pivot_position = n - pivot_spacing
     kth_distances = (
@@ -3243,13 +3301,14 @@ def compute_label_weight_known_at_lookahead(
     *,
     imputation_dependency_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
     imputation_leading_stable_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
+    imputation_stable_release_index: int = -1,
     weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
     A metric-based pivot's weight is backfilled from the adjacent closing pivot,
     so it becomes computable at the next pivot's confirmation
-    ``i_{k+1} == known_at_positions[indices[k+1]]``; the trailing pivot has no
+    ``i_{k+1} == known_at_positions[indices[k+1]]``; the terminal pivot has no
     closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
     -> ``n``. A uniform pivot instead has a unit weight at its own label
     availability. Off-pivot rows keep their label availability, except that a
@@ -3270,14 +3329,15 @@ def compute_label_weight_known_at_lookahead(
     strategies and additive fills keep their existing competing-band
     dependencies.
 
-    ``imputation_dependency_mask`` marks pivot weights whose non-finite
-    imputation can change as the available prefix grows. Those pivots and their
-    Gaussian bands are unavailable until the frame boundary. An unresolved
-    trailing pivot is excluded only when it has no such dependency.
-    ``imputation_leading_stable_mask`` (a subset) marks a leading non-finite run
-    that imputes to 0.0 and stabilizes at the first finite pivot's confirmation;
-    those pivots are released there instead of at the frame boundary and their
-    zero-weight bands are skipped.
+    The imputation masks (``imputation_dependency_mask``,
+    ``imputation_leading_stable_mask``, ``imputation_stable_release_index``)
+    come from :func:`compute_label_weight_imputation_dependency_mask`.
+    Dependency pivots and their Gaussian bands wait for the frame boundary;
+    leading-stable pivots are released over
+    ``weight_availability[: imputation_stable_release_index + 1]``, folded via
+    ``max`` with each pivot's own label availability, with their zero-weight
+    bands skipped. The release applies only in the identity-order case (no
+    dropped pivot) where the run is a contiguous prefix.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -3349,16 +3409,19 @@ def compute_label_weight_known_at_lookahead(
             )
             np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
         avail_pivot[dependency_mask] = n
-        if leading_stable_mask.any() and np.array_equal(order, np.arange(idx.size)):
-            # Leading non-finite run imputes to 0.0, stable once the first finite
-            # pivot's weight is known (backfilled confirmation weight_availability
-            # [first_finite]), not at the frame boundary. Guarded to the sorted
-            # (identity-order) case where the run is a contiguous prefix.
-            first_finite = int(leading_stable_mask.sum())
-            if first_finite < weight_availability.size:
-                avail_pivot[leading_stable_mask] = int(
-                    weight_availability[first_finite]
-                )
+        if (
+            leading_stable_mask.any()
+            and idx.size == raw_idx.size
+            and np.array_equal(order, np.arange(idx.size))
+            and 0 <= imputation_stable_release_index < weight_availability.size
+        ):
+            # Prefix max (not weight_availability[stable_release_index]) stays
+            # leak-free if availability is non-monotone, at worst deferring
+            # later; guarded to identity order (contiguous prefix run).
+            release = int(
+                np.max(weight_availability[: imputation_stable_release_index + 1])
+            )
+            avail_pivot[leading_stable_mask] = release
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
             for (
@@ -5158,8 +5221,38 @@ _OPTUNA_BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
 _OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
 
 
+def _optuna_best_params_path(
+    base_path: Path, pair: str, namespace: OptunaNamespace
+) -> Path:
+    return base_path / f"optuna-{namespace}-best-params-{pair_to_filename(pair)}.json"
+
+
+def _warn_ambiguous_legacy_optuna_best_params(
+    base_path: Path,
+    pair: str,
+    namespace: OptunaNamespace,
+    best_params_path: Path,
+    logger: Logger | None,
+) -> None:
+    """Warn when a base-only legacy best-params file shadows the pair-safe path."""
+    if logger is None:
+        return
+    legacy_best_params_path = (
+        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+    )
+    if (
+        legacy_best_params_path != best_params_path
+        and legacy_best_params_path.is_file()
+    ):
+        logger.warning(
+            f"[{pair}] Ignoring ambiguous legacy Optuna {namespace} best params "
+            f"at {legacy_best_params_path}: filename does not encode the complete "
+            f"pair identity"
+        )
+
+
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
-"""Wire format version of optuna-label-best-params-{pair}.json.
+"""Wire format version of pair-specific Optuna label best-params JSON files.
 
 Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
@@ -5387,15 +5480,16 @@ def optuna_load_best_params(
     expected_selection_metadata: dict[str, Any] | None = None,
     expected_objective_identity: str | None = None,
 ) -> dict[str, Any] | None:
-    best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-    )
+    best_params_path = _optuna_best_params_path(base_path, pair, namespace)
     if not best_params_path.parent.is_dir():
         return None
     malformed = False
     with _locked_optuna_best_params(best_params_path, exclusive=False):
         _reject_optuna_best_params_symlink(best_params_path)
         if not best_params_path.is_file():
+            _warn_ambiguous_legacy_optuna_best_params(
+                base_path, pair, namespace, best_params_path, logger
+            )
             return None
         try:
             with best_params_path.open("r", encoding="utf-8") as read_file:
@@ -5454,9 +5548,7 @@ def optuna_save_best_params(
     selection_metadata: dict[str, Any] | None = None,
     objective_identity: str | None = None,
 ) -> None:
-    best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-    )
+    best_params_path = _optuna_best_params_path(base_path, pair, namespace)
     temporary_path: Path | None = None
     try:
         if namespace == _OPTUNA_NAMESPACES.label:
@@ -6286,24 +6378,28 @@ def round_to_step(value: float | int, step: int) -> int:
     return int(round(float(value) / step) * step)
 
 
-@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-def ceil_to_step(value: float | int, step: int) -> int:
+def _step_round(
+    value: float | int,
+    step: int,
+    int_op: Callable[[int, int], int],
+    float_op: Callable[[float], int],
+) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
-        return int(-(-int(value) // step) * step)
+        return int(int_op(int(value), step) * step)
     if not np.isfinite(value):
         raise ValueError(f"Invalid value {value!r}: must be finite")
-    return int(math.ceil(float(value) / step) * step)
+    return int(float_op(float(value) / step) * step)
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
+def ceil_to_step(value: float | int, step: int) -> int:
+    return _step_round(value, step, lambda v, s: -(-v // s), math.ceil)
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def floor_to_step(value: float | int, step: int) -> int:
-    _validate_step_args(value, step)
-    if isinstance(value, (int, np.integer)):
-        return int((int(value) // step) * step)
-    if not np.isfinite(value):
-        raise ValueError(f"Invalid value {value!r}: must be finite")
-    return int(math.floor(float(value) / step) * step)
+    return _step_round(value, step, lambda v, s: v // s, math.floor)
 
 
 def get_label_defaults(

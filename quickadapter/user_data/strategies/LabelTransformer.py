@@ -1,6 +1,7 @@
 import copy
 import fnmatch
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
@@ -305,16 +306,30 @@ class _LabelTransformerConfig:
         return get_label_column_config(column_name, self.default, self.columns)
 
 
+# registry is an unhashable Mapping -> eq=False
+@dataclass(frozen=True, eq=False, slots=True)
+class _ScalerFamily:
+    registry: Mapping[str, str]
+    type_names: tuple[str, ...]
+    kind: Literal["standardization", "normalization"]
+
+
 class LabelTransformer(BaseTransform):
-    _STANDARDIZATION_SCALERS: dict[str, str] = {
+    _STANDARDIZATION_SCALERS: Final[dict[str, str]] = {
         STANDARDIZATION_TYPES[1]: "standard_scaler",  # zscore
         STANDARDIZATION_TYPES[2]: "robust_scaler",  # robust
         STANDARDIZATION_TYPES[4]: "power_transformer",  # power_yj
     }
-    _NORMALIZATION_SCALERS: dict[str, str] = {
+    _NORMALIZATION_SCALERS: Final[dict[str, str]] = {
         NORMALIZATION_TYPES[0]: "maxabs_scaler",  # maxabs
         NORMALIZATION_TYPES[1]: "minmax_scaler",  # minmax
     }
+    _STANDARDIZATION_FAMILY: Final[_ScalerFamily] = _ScalerFamily(
+        _STANDARDIZATION_SCALERS, STANDARDIZATION_TYPES, "standardization"
+    )
+    _NORMALIZATION_FAMILY: Final[_ScalerFamily] = _ScalerFamily(
+        _NORMALIZATION_SCALERS, NORMALIZATION_TYPES, "normalization"
+    )
 
     def __init__(self, *, label_transformer: dict[str, Any]) -> None:
         super().__init__(name="LabelTransformer")
@@ -396,6 +411,26 @@ class LabelTransformer(BaseTransform):
         out[mask] = np.sign(values[mask]) * np.power(np.abs(values[mask]), exp)
         return out
 
+    @staticmethod
+    def _apply_registered_scaler(
+        values: NDArray[np.floating],
+        mask: NDArray[np.bool_],
+        state: _ColumnState,
+        method: str,
+        family: _ScalerFamily,
+        inverse: bool = False,
+    ) -> NDArray[np.floating]:
+        scaler_attr = family.registry.get(method)
+        if scaler_attr is None:
+            raise ValueError(
+                f"Invalid {family.kind} value {method!r}: "
+                f"supported values are {', '.join(family.type_names)}"
+            )
+        scaler = getattr(state, scaler_attr, None)
+        if scaler is None:
+            raise RuntimeError(f"{scaler_attr} not fitted")
+        return LabelTransformer._apply_scaler(values, mask, scaler, inverse=inverse)
+
     def _standardize(
         self,
         values: NDArray[np.floating],
@@ -416,16 +451,14 @@ class LabelTransformer(BaseTransform):
                 inverse=inverse,
             )
 
-        scaler_attr = self._STANDARDIZATION_SCALERS.get(method)
-        if scaler_attr is None:
-            raise ValueError(
-                f"Invalid standardization value {method!r}: "
-                f"supported values are {', '.join(STANDARDIZATION_TYPES)}"
-            )
-        scaler = getattr(state, scaler_attr, None)
-        if scaler is None:
-            raise RuntimeError(f"{scaler_attr} not fitted")
-        return LabelTransformer._apply_scaler(values, mask, scaler, inverse=inverse)
+        return LabelTransformer._apply_registered_scaler(
+            values,
+            mask,
+            state,
+            method,
+            self._STANDARDIZATION_FAMILY,
+            inverse=inverse,
+        )
 
     def _normalize(
         self,
@@ -442,16 +475,14 @@ class LabelTransformer(BaseTransform):
         if method == NORMALIZATION_TYPES[3]:  # none
             return values
 
-        scaler_attr = self._NORMALIZATION_SCALERS.get(method)
-        if scaler_attr is None:
-            raise ValueError(
-                f"Invalid normalization value {method!r}: "
-                f"supported values are {', '.join(NORMALIZATION_TYPES)}"
-            )
-        scaler = getattr(state, scaler_attr, None)
-        if scaler is None:
-            raise RuntimeError(f"{scaler_attr} not fitted")
-        return LabelTransformer._apply_scaler(values, mask, scaler, inverse=inverse)
+        return LabelTransformer._apply_registered_scaler(
+            values,
+            mask,
+            state,
+            method,
+            self._NORMALIZATION_FAMILY,
+            inverse=inverse,
+        )
 
     def _fit_standardization(
         self, values: NDArray[np.floating], state: _ColumnState
@@ -584,17 +615,18 @@ class LabelTransformer(BaseTransform):
 
         return X, y, sample_weight, feature_list
 
-    def transform(
+    def _transform_columns(
         self,
         X: ArrayLike,
-        y: ArrayOrNone = None,
-        sample_weight: ArrayOrNone = None,
-        feature_list: ListOrNone = None,
-        outlier_check: bool = False,
-        **kwargs,
+        y: ArrayOrNone,
+        sample_weight: ArrayOrNone,
+        feature_list: ListOrNone,
+        *,
+        inverse: bool,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
         if not self._fitted:
-            raise RuntimeError("LabelTransformer must be fitted before transform")
+            verb = "inverse_transform" if inverse else "transform"
+            raise RuntimeError(f"LabelTransformer must be fitted before {verb}")
 
         arr = np.asarray(X, dtype=float)
         was_1d = arr.ndim == 1
@@ -619,13 +651,24 @@ class LabelTransformer(BaseTransform):
             if col_name not in self._column_states:
                 raise ValueError(f"Column {col_name!r} was not present during fitting")
             result[:, i] = self._transform_column(
-                arr[:, i], self._column_states[col_name]
+                arr[:, i], self._column_states[col_name], inverse=inverse
             )
 
         if was_1d:
             result = result.flatten()
 
         return result, y, sample_weight, feature_list
+
+    def transform(
+        self,
+        X: ArrayLike,
+        y: ArrayOrNone = None,
+        sample_weight: ArrayOrNone = None,
+        feature_list: ListOrNone = None,
+        outlier_check: bool = False,
+        **kwargs,
+    ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
+        return self._transform_columns(X, y, sample_weight, feature_list, inverse=False)
 
     def fit_transform(
         self,
@@ -646,38 +689,4 @@ class LabelTransformer(BaseTransform):
         feature_list: ListOrNone = None,
         **kwargs,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
-        if not self._fitted:
-            raise RuntimeError(
-                "LabelTransformer must be fitted before inverse_transform"
-            )
-
-        arr = np.asarray(X, dtype=float)
-        was_1d = arr.ndim == 1
-        if was_1d:
-            arr = arr.reshape(-1, 1)
-
-        n_columns = arr.shape[1]
-
-        if feature_list is not None and len(feature_list) == n_columns:
-            column_names = list(feature_list)
-        else:
-            column_names = self._fitted_columns
-
-        if len(column_names) != n_columns:
-            raise ValueError(
-                f"Column count mismatch: fitted on {len(self._fitted_columns)} columns, "
-                f"got {n_columns}"
-            )
-
-        result = np.empty_like(arr)
-        for i, col_name in enumerate(column_names):
-            if col_name not in self._column_states:
-                raise ValueError(f"Column {col_name!r} was not present during fitting")
-            result[:, i] = self._transform_column(
-                arr[:, i], self._column_states[col_name], inverse=True
-            )
-
-        if was_1d:
-            result = result.flatten()
-
-        return result, y, sample_weight, feature_list
+        return self._transform_columns(X, y, sample_weight, feature_list, inverse=True)
