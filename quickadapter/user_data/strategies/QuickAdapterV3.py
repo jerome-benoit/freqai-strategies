@@ -1945,11 +1945,12 @@ class QuickAdapterV3(IStrategy):
         each ``k = 1..lookback_period_candles`` the close at ``-k`` strictly
         broke the threshold recomputed at ``-(k+1)`` with the natr-multiplier
         bounds geometrically decayed by ``decay_fraction ** k`` clamped to
-        ``[0, 1]``. Non-finite intermediate close or threshold aborts the chain
-        and falls back permissively to the current-candle result, which may
-        weaken strict multi-candle guarantees. Returns False on empty
-        dataframe, invalid side/order, non-finite rate, negative lookback,
-        ``decay_fraction`` outside ``(0, 1]``, or invalid min/max ordering.
+        ``[0, 1]``. A non-finite intermediate close or threshold aborts the
+        chain: entries fail closed, while exits retain the valid current-candle
+        result to allow exposure reduction without guaranteeing a profitable
+        exit. Returns False on empty dataframe, invalid side/order, non-finite
+        rate, negative lookback, ``decay_fraction`` outside ``(0, 1]``, or
+        invalid min/max ordering.
         """
         if df.empty:
             return False
@@ -2013,10 +2014,11 @@ class QuickAdapterV3(IStrategy):
         if lookback_period_candles == 0:
             return current_ok
 
+        unmeasurable_history_ok = order == QuickAdapterV3._ORDER_EXIT and current_ok
         for k in range(1, lookback_period_candles + 1):
             close_k = df.iloc[-k].get("close")
             if not isinstance(close_k, (int, float)) or not np.isfinite(close_k):
-                return current_ok
+                return unmeasurable_history_ok
 
             decay_factor = decay_fraction**k
             decayed_min_natr_multiplier_fraction = max(
@@ -2038,7 +2040,7 @@ class QuickAdapterV3(IStrategy):
             if not isinstance(threshold_k, (int, float)) or not np.isfinite(
                 threshold_k
             ):
-                return current_ok
+                return unmeasurable_history_ok
 
             if (side == QuickAdapterV3._TRADE_LONG and not (close_k > threshold_k)) or (
                 side == QuickAdapterV3._TRADE_SHORT and not (close_k < threshold_k)
