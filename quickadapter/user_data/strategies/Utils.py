@@ -1,12 +1,18 @@
 import copy
+import fcntl
 import functools
 import hashlib
 import inspect
 import json
 import math
+import os
 import re
-from collections.abc import Sequence
+import stat
+import tempfile
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import IntEnum
 from functools import lru_cache, singledispatch
 from logging import Logger
@@ -5148,6 +5154,7 @@ class _OptunaNamespaces(NamedTuple):
 # Exported for cross-module use; consumers may import despite the leading
 # underscore on the instance (the class ``_OptunaNamespaces`` stays private).
 _OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
+_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
 
 
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
@@ -5297,6 +5304,67 @@ def _validate_optuna_label_best_params(
     return params
 
 
+def _quarantine_corrupt_optuna_best_params(
+    best_params_path: Path,
+    pair: str,
+    namespace: OptunaNamespace,
+    cause: Exception,
+    logger: Logger | None,
+) -> Path | None:
+    """Atomically move malformed persisted best params out of the live path."""
+    if not best_params_path.exists():
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    quarantine_base = f"{best_params_path.name}.corrupt-{stamp}"
+    for index in range(_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT + 1):
+        suffix = "" if index == 0 else f"-{index}"
+        quarantine_path = best_params_path.with_name(f"{quarantine_base}{suffix}")
+        if not quarantine_path.exists():
+            break
+    else:
+        raise FileExistsError(best_params_path)
+    try:
+        best_params_path.rename(quarantine_path)
+    except OSError as quarantine_error:
+        if logger is not None:
+            logger.error(
+                f"[{pair}] Optuna {namespace} best params "
+                f"{best_params_path.name} quarantine failed: {quarantine_error!r}",
+                exc_info=True,
+            )
+        raise
+    if logger is not None:
+        logger.warning(
+            f"[{pair}] Optuna {namespace} best params {best_params_path.name} "
+            f"malformed ({cause!r}); quarantined to {quarantine_path.name}; "
+            "no persisted best params recovered"
+        )
+    return quarantine_path
+
+
+@contextmanager
+def _locked_optuna_best_params_directory(
+    best_params_path: Path,
+) -> Iterator[None]:
+    """Serialize best-params I/O across processes sharing the target directory."""
+    directory_fd = os.open(
+        best_params_path.parent,
+        os.O_RDONLY | os.O_DIRECTORY,
+    )
+    try:
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(directory_fd)
+
+
+def _reject_optuna_best_params_symlink(best_params_path: Path) -> None:
+    if best_params_path.is_symlink():
+        raise OSError(
+            f"Optuna best params path {best_params_path} must not be a symlink"
+        )
+
+
 def optuna_load_best_params(
     base_path: Path,
     pair: str,
@@ -5309,32 +5377,46 @@ def optuna_load_best_params(
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
-    if best_params_path.is_file():
-        with best_params_path.open("r", encoding="utf-8") as read_file:
-            best_params = json.load(read_file)
-        if namespace == _OPTUNA_NAMESPACES.label:
-            return _validate_optuna_label_best_params(
-                best_params,
+    with _locked_optuna_best_params_directory(best_params_path):
+        _reject_optuna_best_params_symlink(best_params_path)
+        if not best_params_path.is_file():
+            return None
+        try:
+            with best_params_path.open("r", encoding="utf-8") as read_file:
+                best_params = json.load(read_file)
+        except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+            quarantined = _quarantine_corrupt_optuna_best_params(
+                best_params_path,
                 pair,
+                namespace,
+                decode_error,
                 logger,
-                expected_selection_metadata=expected_selection_metadata,
             )
-        if expected_objective_identity is not None:
-            if (
-                not isinstance(best_params, dict)
-                or best_params.get("objective_identity") != expected_objective_identity
-                or not isinstance(best_params.get("params"), dict)
-            ):
-                if logger is not None:
-                    logger.warning(
-                        f"[{pair}] Ignoring Optuna {namespace} best params: "
-                        f"objective identity does not match "
-                        f"{expected_objective_identity!r}"
-                    )
-                return None
-            return best_params["params"]
-        return best_params
-    return None
+            if quarantined is None:
+                raise
+            return None
+    if namespace == _OPTUNA_NAMESPACES.label:
+        return _validate_optuna_label_best_params(
+            best_params,
+            pair,
+            logger,
+            expected_selection_metadata=expected_selection_metadata,
+        )
+    if expected_objective_identity is not None:
+        if (
+            not isinstance(best_params, dict)
+            or best_params.get("objective_identity") != expected_objective_identity
+            or not isinstance(best_params.get("params"), dict)
+        ):
+            if logger is not None:
+                logger.warning(
+                    f"[{pair}] Ignoring Optuna {namespace} best params: "
+                    f"objective identity does not match "
+                    f"{expected_objective_identity!r}"
+                )
+            return None
+        return best_params["params"]
+    return best_params
 
 
 def optuna_save_best_params(
@@ -5349,6 +5431,7 @@ def optuna_save_best_params(
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
+    temporary_path: Path | None = None
     try:
         if namespace == _OPTUNA_NAMESPACES.label:
             best_params: dict[str, Any] = {
@@ -5364,13 +5447,43 @@ def optuna_save_best_params(
             }
         else:
             best_params = params
-        with best_params_path.open("w", encoding="utf-8") as write_file:
-            json.dump(best_params, write_file, indent=4)
-    except Exception as e:
-        logger.error(
-            f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
-            exc_info=True,
-        )
+        with _locked_optuna_best_params_directory(best_params_path):
+            _reject_optuna_best_params_symlink(best_params_path)
+            try:
+                existing_mode = stat.S_IMODE(best_params_path.stat().st_mode)
+            except FileNotFoundError:
+                existing_mode = None
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=best_params_path.parent,
+                prefix=f".{best_params_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as write_file:
+                temporary_path = Path(write_file.name)
+                if existing_mode is not None:
+                    os.fchmod(write_file.fileno(), existing_mode)
+                json.dump(best_params, write_file, indent=4)
+                write_file.flush()
+                os.fsync(write_file.fileno())
+            os.replace(temporary_path, best_params_path)
+            temporary_path = None
+    except BaseException as error:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                logger.error(
+                    f"[{pair}] Optuna {namespace} best params temporary file "
+                    f"{temporary_path.name} cleanup failed: {cleanup_error!r}",
+                    exc_info=True,
+                )
+        if isinstance(error, Exception):
+            logger.error(
+                f"[{pair}] Optuna {namespace} failed to save best params: {error!r}",
+                exc_info=True,
+            )
         raise
 
 
