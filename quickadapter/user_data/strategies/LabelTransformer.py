@@ -306,6 +306,8 @@ class _LabelTransformerConfig:
         return get_label_column_config(column_name, self.default, self.columns)
 
 
+# eq=False: default eq=True on a frozen dataclass would synthesize a
+# __hash__ that raises TypeError on the unhashable ``registry`` mapping.
 @dataclass(frozen=True, eq=False, slots=True)
 class _ScalerFamily:
     registry: Mapping[str, str]
