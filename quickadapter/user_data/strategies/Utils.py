@@ -2658,8 +2658,10 @@ class LabelWeightImputationMasks:
     over the release prefix ``weight_availability[: stable_release_index + 1]``
     rather than the frame boundary. ``stable_release_index`` is the pivot index
     whose weight confirmation is that shared release candle (``first_finite`` for
-    a single metric, ``max`` over components for ``combined``), or ``-1`` when no
-    early release applies (the consumer also gates on the masks being non-empty).
+    a single metric with any finite value, ``max`` over components for
+    ``combined``), or ``-1`` only when no pivot is finite. The consumer applies
+    it solely when a stable mask is non-empty, so a non-negative index with empty
+    masks is inert.
     """
 
     dependency_mask: NDArray[np.bool_]
@@ -2698,11 +2700,13 @@ def compute_label_weight_imputation_dependency_mask(
       empirical ``combined_weights[:S] == 0.0`` check; ``trailing_stable_mask``
       is unused (empty) for ``combined``.
 
-    ``stable_release_index == -1`` (both stable masks empty, or single-metric
-    with all its finite/non-finite structure yielding no released pivot) for
-    ``uniform``, all-non-finite metrics, and any ``combined`` case that fails the
+    ``stable_release_index`` is ``-1`` only when no pivot is finite (``uniform``,
+    empty or all-non-finite metrics, and any ``combined`` case that fails the
     checks above; those pivots keep the nonzero legacy default and defer to
-    ``n``.
+    ``n``). A single metric with any finite value always reports
+    ``first_finite`` even when both stable masks are empty (e.g. all-finite or
+    interior-only-NaN); the consumer additionally gates the release on the masks
+    being non-empty, so such an index is inert.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
@@ -3451,11 +3455,12 @@ def compute_label_weight_known_at_lookahead(
             # Leading/trailing non-finite runs impute to 0.0 and are provably
             # fixed once every contributing component's first finite weight is
             # known. That shared candle is the max over the release prefix
-            # weight_availability[: stable_release_index + 1]; for single-metric
-            # (release index == first_finite) the prefix max equals
-            # weight_availability[first_finite]. Taking the prefix max rather
-            # than a single lookup stays correct without assuming
-            # weight_availability is monotone (combined max-over-components).
+            # weight_availability[: stable_release_index + 1]. Under the
+            # production invariant (zigzag confirmation watermark => monotone
+            # weight_availability) this equals weight_availability[
+            # stable_release_index]; the prefix max also stays leak-free if that
+            # invariant is ever violated (combined max-over-components, or a
+            # non-monotone availability), at worst deferring slightly later.
             # Guarded to the identity-order case (no dropped pivot) where the
             # runs are a contiguous prefix/suffix.
             release = int(
