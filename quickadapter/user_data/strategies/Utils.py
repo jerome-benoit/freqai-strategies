@@ -2204,6 +2204,11 @@ def _impute_weights(
     return weights
 
 
+def _segment_ends(a: NDArray[np.integer]) -> NDArray[np.intp]:
+    """Indices of the last element of each consecutive run of equal values in ``a``."""
+    return np.flatnonzero(np.r_[a[1:] != a[:-1], True])
+
+
 def _causal_impute_weights(
     weights: NDArray[np.floating],
     *,
@@ -2223,7 +2228,7 @@ def _causal_impute_weights(
         .fillna(default_weight)
         .to_numpy(dtype=float)
     )
-    event_ends = np.flatnonzero(np.r_[availability[1:] != availability[:-1], True])
+    event_ends = _segment_ends(availability)
     event_medians = np.repeat(
         running_median[event_ends],
         np.diff(np.r_[-1, event_ends]),
@@ -2729,8 +2734,9 @@ def _compute_epsilon_floor(
         b = float(np.nanmedian(pivot_values))
     else:
         raise ValueError(
-            f"Invalid fill_epsilon_baseline value {baseline!r}: "
-            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+            enum_error_message(
+                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
+            )
         )
     if not np.isfinite(b):
         b = 0.0
@@ -2829,13 +2835,12 @@ def _compute_causal_epsilon_fill(
         )
     else:
         raise ValueError(
-            f"Invalid fill_epsilon_baseline value {baseline!r}: "
-            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+            enum_error_message(
+                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
+            )
         )
 
-    event_ends = np.flatnonzero(
-        np.r_[pivot_available_at[1:] != pivot_available_at[:-1], True]
-    )
+    event_ends = _segment_ends(pivot_available_at)
     availability_events = pivot_available_at[event_ends]
     event_floors = float(label_weighting["fill_epsilon"]) * running_baseline[event_ends]
 
@@ -3069,9 +3074,7 @@ def _compute_knn_pivot_sigma_availability(
 
     pivot_positions = pivot_indices.astype(np.int64, copy=False)
     pivot_confirmations = known_at_positions[pivot_positions]
-    confirmation_group_ends = np.flatnonzero(
-        np.r_[pivot_confirmations[:-1] != pivot_confirmations[1:], True]
-    )
+    confirmation_group_ends = _segment_ends(pivot_confirmations)
     pivot_spacing = _ZIGZAG_MIN_CONFIRMATION_SLOPES + 1
     last_future_pivot_position = n - pivot_spacing
     kth_distances = (
