@@ -30,6 +30,7 @@ import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
+from freqtrade.misc import pair_to_filename
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
@@ -5212,8 +5213,14 @@ class _OptunaNamespaces(NamedTuple):
 _OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
 
 
+def _optuna_best_params_path(
+    base_path: Path, pair: str, namespace: OptunaNamespace
+) -> Path:
+    return base_path / f"optuna-{namespace}-best-params-{pair_to_filename(pair)}.json"
+
+
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
-"""Wire format version of optuna-label-best-params-{pair}.json.
+"""Wire format version of pair-specific Optuna label best-params JSON files.
 
 Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
@@ -5368,9 +5375,7 @@ def optuna_load_best_params(
     expected_selection_metadata: dict[str, Any] | None = None,
     expected_objective_identity: str | None = None,
 ) -> dict[str, Any] | None:
-    best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-    )
+    best_params_path = _optuna_best_params_path(base_path, pair, namespace)
     if best_params_path.is_file():
         with best_params_path.open("r", encoding="utf-8") as read_file:
             best_params = json.load(read_file)
@@ -5396,6 +5401,19 @@ def optuna_load_best_params(
                 return None
             return best_params["params"]
         return best_params
+    legacy_best_params_path = (
+        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+    )
+    if (
+        logger is not None
+        and legacy_best_params_path != best_params_path
+        and legacy_best_params_path.is_file()
+    ):
+        logger.warning(
+            f"[{pair}] Ignoring ambiguous legacy Optuna {namespace} best params "
+            f"at {legacy_best_params_path}: filename does not encode the complete "
+            f"pair identity"
+        )
     return None
 
 
@@ -5408,9 +5426,7 @@ def optuna_save_best_params(
     selection_metadata: dict[str, Any] | None = None,
     objective_identity: str | None = None,
 ) -> None:
-    best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-    )
+    best_params_path = _optuna_best_params_path(base_path, pair, namespace)
     try:
         if namespace == _OPTUNA_NAMESPACES.label:
             best_params: dict[str, Any] = {
