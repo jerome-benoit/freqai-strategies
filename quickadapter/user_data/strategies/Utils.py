@@ -2089,6 +2089,19 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
+_ZERO_PHASE_FILTER_DISPATCH: Final[
+    dict[SmoothingMethod, tuple[SmoothingKernel, Callable[[int], int]]]
+] = {
+    SMOOTHING_METHODS[1]: (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"
+    SMOOTHING_METHODS[2]: (SMOOTHING_KERNELS[1], get_odd_window),  # "kaiser"
+    SMOOTHING_METHODS[3]: (
+        SMOOTHING_KERNELS[2],
+        get_even_window,
+    ),  # "kaiser_bessel_derived"
+    SMOOTHING_METHODS[4]: (SMOOTHING_KERNELS[3], get_odd_window),  # "triang"
+}
+
+
 def smooth(
     series: pd.Series,
     method: SmoothingMethod = DEFAULTS_LABEL_SMOOTHING["method"],
@@ -2114,39 +2127,6 @@ def smooth(
 
     if method == SMOOTHING_METHODS[0]:  # "none"
         return series
-    elif method == SMOOTHING_METHODS[1]:  # "gaussian"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[2]:  # "kaiser"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[1],  # "kaiser"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
-        even_window = get_even_window(window_candles)
-        return zero_phase_filter(
-            series=series,
-            window=even_window,
-            win_type=SMOOTHING_KERNELS[2],  # "kaiser_bessel_derived"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[4]:  # "triang"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[3],  # "triang"
-            std=std,
-            beta=beta,
-        )
     elif method == SMOOTHING_METHODS[5]:  # "smm" (Simple Moving Median)
         return series.rolling(window=odd_window, center=True, min_periods=1).median()
     elif method == SMOOTHING_METHODS[6]:  # "sma" (Simple Moving Average)
@@ -2173,14 +2153,18 @@ def smooth(
             ),
             index=series.index,
         )
-    else:
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
-            std=std,
-            beta=beta,
-        )
+
+    win_type, window_selector = _ZERO_PHASE_FILTER_DISPATCH.get(
+        method,
+        _ZERO_PHASE_FILTER_DISPATCH[SMOOTHING_METHODS[1]],  # "gaussian"/odd default
+    )
+    return zero_phase_filter(
+        series=series,
+        window=window_selector(window_candles),
+        win_type=win_type,
+        std=std,
+        beta=beta,
+    )
 
 
 def _impute_weights(
@@ -6127,24 +6111,28 @@ def round_to_step(value: float | int, step: int) -> int:
     return int(round(float(value) / step) * step)
 
 
-@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-def ceil_to_step(value: float | int, step: int) -> int:
+def _step_round(
+    value: float | int,
+    step: int,
+    int_op: Callable[[int, int], int],
+    float_op: Callable[[float], int],
+) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
-        return int(-(-int(value) // step) * step)
+        return int(int_op(int(value), step) * step)
     if not np.isfinite(value):
         raise ValueError(f"Invalid value {value!r}: must be finite")
-    return int(math.ceil(float(value) / step) * step)
+    return int(float_op(float(value) / step) * step)
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
+def ceil_to_step(value: float | int, step: int) -> int:
+    return _step_round(value, step, lambda v, s: -(-v // s), math.ceil)
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def floor_to_step(value: float | int, step: int) -> int:
-    _validate_step_args(value, step)
-    if isinstance(value, (int, np.integer)):
-        return int((int(value) // step) * step)
-    if not np.isfinite(value):
-        raise ValueError(f"Invalid value {value!r}: must be finite")
-    return int(math.floor(float(value) / step) * step)
+    return _step_round(value, step, lambda v, s: v // s, math.floor)
 
 
 def get_label_defaults(
