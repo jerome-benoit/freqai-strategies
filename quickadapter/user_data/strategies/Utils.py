@@ -519,6 +519,15 @@ def require_numeric(
     return value
 
 
+def require_bool(value: Any, name: str, *, context: str) -> bool:
+    validator = _BoolValidator()
+    if not validator(value):
+        raise ValueError(
+            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
+        )
+    return value
+
+
 def validate_range(
     min_val: float | int,
     max_val: float | int,

@@ -105,6 +105,7 @@ from Utils import (
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
+    require_bool,
     require_numeric,
     sanitize_and_renormalize,
     safe_distribution_fit,
@@ -1376,11 +1377,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             **optuna_hyperopt,
         }
         for option in QuickAdapterRegressorV3._OPTUNA_BOOL_OPTIONS:
-            if not isinstance(optuna_config[option], bool):
-                raise ValueError(
-                    f"freqai.optuna_hyperopt.{option} must be a boolean "
-                    f"(got {type(optuna_config[option]).__name__})"
-                )
+            require_bool(
+                optuna_config[option],
+                option,
+                context="freqai.optuna_hyperopt",
+            )
         for option, (
             minimum,
             maximum,
