@@ -449,6 +449,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     OPTUNA_SPACE_REDUCTION_DEFAULT: Final[bool] = False
     OPTUNA_SPACE_FRACTION_DEFAULT: Final[float] = 0.4
     OPTUNA_SEED_DEFAULT: Final[int] = 1
+    _OPTUNA_SEED_MAX: Final[int] = 2**32 - 1
     OPTUNA_RESET_LABEL_STUDY_ON_SCHEMA_MISMATCH_DEFAULT: Final[bool] = True
     OPTUNA_VARY_MODEL_SEED_BY_TRIAL_DEFAULT: Final[bool] = True
 
@@ -460,6 +461,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "reset_label_study_on_schema_mismatch",
         "vary_model_seed_by_trial",
     )
+
+    _OPTUNA_INT_OPTION_BOUNDS: Final[dict[str, tuple[int, Optional[int]]]] = {
+        "n_jobs": (1, None),
+        "n_startup_trials": (0, None),
+        "n_trials": (1, None),
+        "timeout": (0, None),
+        "label_candles_step": (1, None),
+        "min_resource": (1, None),
+        "seed": (0, _OPTUNA_SEED_MAX),
+    }
 
     _DATA_SPLIT_METHODS: Final[tuple[str, ...]] = (
         "train_test_split",
@@ -1337,12 +1348,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _optuna_config(self) -> dict[str, Any]:
         optuna_default_config = {
             "enabled": False,
-            "n_jobs": min(
-                self.config.get("freqai", {})
-                .get("optuna_hyperopt", {})
-                .get("n_jobs", QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT),
-                max(int(self.max_system_threads / 4), 1),
-            ),
+            "n_jobs": QuickAdapterRegressorV3.OPTUNA_N_JOBS_DEFAULT,
             "sampler": QuickAdapterRegressorV3._OPTUNA_HPO_SAMPLERS.tpe,
             "storage": QuickAdapterRegressorV3._STORAGE_FILE,
             "continuous": True,
@@ -1374,6 +1380,35 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"freqai.optuna_hyperopt.{option} must be a boolean "
                     f"(got {type(optuna_config[option]).__name__})"
                 )
+        for option, (
+            minimum,
+            maximum,
+        ) in QuickAdapterRegressorV3._OPTUNA_INT_OPTION_BOUNDS.items():
+            value = optuna_config[option]
+            if (
+                type(value) is not int
+                or value < minimum
+                or (maximum is not None and value > maximum)
+            ):
+                constraint = (
+                    f"an integer >= {minimum}"
+                    if maximum is None
+                    else f"an integer in [{minimum}, {maximum}]"
+                )
+                raise ValueError(
+                    f"freqai.optuna_hyperopt.{option} must be {constraint} "
+                    f"(got {value!r})"
+                )
+        space_fraction = optuna_config["space_fraction"]
+        if (
+            type(space_fraction) not in (int, float)
+            or not 0 <= space_fraction <= 1
+            or not math.isfinite(space_fraction)
+        ):
+            raise ValueError(
+                "freqai.optuna_hyperopt.space_fraction must be a finite number "
+                f"in [0, 1] (got {space_fraction!r})"
+            )
         return optuna_config
 
     @property
