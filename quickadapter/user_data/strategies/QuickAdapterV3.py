@@ -1005,9 +1005,7 @@ class QuickAdapterV3(IStrategy):
                                 col_weighting_config,
                             )
                         )
-                        imputation_dependency_mask = (
-                            imputation_masks.dependency_mask
-                        )
+                        imputation_dependency_mask = imputation_masks.dependency_mask
                         imputation_leading_stable_mask = (
                             imputation_masks.leading_stable_mask
                         )
