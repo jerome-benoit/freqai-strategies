@@ -3544,32 +3544,47 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return pred_label_minima, pred_label_maxima
 
     @staticmethod
-    def safe_min_pred(pred_label: pd.Series) -> float:
+    def _safe_pred(
+        pred_label: pd.Series,
+        reducer: Callable[[pd.Series], float],
+        fallback: float,
+    ) -> float:
         try:
-            pred_label_minimum = pred_label.min()
+            reduced = reducer(pred_label)
         except Exception:
-            pred_label_minimum = None
+            reduced = None
         if (
-            pred_label_minimum is not None
-            and isinstance(pred_label_minimum, (int, float, np.number))
-            and np.isfinite(pred_label_minimum)
+            reduced is not None
+            and isinstance(reduced, (int, float, np.number))
+            and np.isfinite(reduced)
         ):
-            return float(pred_label_minimum)
-        return -2.0
+            return float(reduced)
+        return fallback
+
+    # ±2.0 fallbacks are out-of-[-1, 1] normalized-range sentinels.
+    @staticmethod
+    def safe_min_pred(pred_label: pd.Series) -> float:
+        return QuickAdapterRegressorV3._safe_pred(
+            pred_label, lambda series: series.min(), -2.0
+        )
 
     @staticmethod
     def safe_max_pred(pred_label: pd.Series) -> float:
-        try:
-            pred_label_maximum = pred_label.max()
-        except Exception:
-            pred_label_maximum = None
-        if (
-            pred_label_maximum is not None
-            and isinstance(pred_label_maximum, (int, float, np.number))
-            and np.isfinite(pred_label_maximum)
-        ):
-            return float(pred_label_maximum)
-        return 2.0
+        return QuickAdapterRegressorV3._safe_pred(
+            pred_label, lambda series: series.max(), 2.0
+        )
+
+    @staticmethod
+    def _resolve_min_max(
+        min_candidate: float,
+        max_candidate: float,
+        pred_label: pd.Series,
+    ) -> tuple[float, float]:
+        if not np.isfinite(min_candidate):
+            min_candidate = QuickAdapterRegressorV3.safe_min_pred(pred_label)
+        if not np.isfinite(max_candidate):
+            max_candidate = QuickAdapterRegressorV3.safe_max_pred(pred_label)
+        return min_candidate, max_candidate
 
     @staticmethod
     def soft_extremum_min_max(
@@ -3584,12 +3599,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pred_label, selection_method, keep_fraction
         )
         soft_minimum = soft_extremum(pred_label_minima, alpha=-alpha)
-        if not np.isfinite(soft_minimum):
-            soft_minimum = QuickAdapterRegressorV3.safe_min_pred(pred_label)
         soft_maximum = soft_extremum(pred_label_maxima, alpha=alpha)
-        if not np.isfinite(soft_maximum):
-            soft_maximum = QuickAdapterRegressorV3.safe_max_pred(pred_label)
-        return soft_minimum, soft_maximum
+        return QuickAdapterRegressorV3._resolve_min_max(
+            soft_minimum, soft_maximum, pred_label
+        )
 
     @staticmethod
     def median_min_max(
@@ -3605,17 +3618,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             min_val = np.nan
         else:
             min_val = np.nanmedian(pred_label_minima.to_numpy())
-        if not np.isfinite(min_val):
-            min_val = QuickAdapterRegressorV3.safe_min_pred(pred_label)
 
         if pred_label_maxima.empty:
             max_val = np.nan
         else:
             max_val = np.nanmedian(pred_label_maxima.to_numpy())
-        if not np.isfinite(max_val):
-            max_val = QuickAdapterRegressorV3.safe_max_pred(pred_label)
 
-        return min_val, max_val
+        return QuickAdapterRegressorV3._resolve_min_max(min_val, max_val, pred_label)
 
     @staticmethod
     def skimage_min_max(
@@ -3640,14 +3649,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         max_func = QuickAdapterRegressorV3.apply_skimage_threshold
 
         min_val = min_func(pred_label_minima, threshold_func)
-        if not np.isfinite(min_val):
-            min_val = QuickAdapterRegressorV3.safe_min_pred(pred_label)
-
         max_val = max_func(pred_label_maxima, threshold_func)
-        if not np.isfinite(max_val):
-            max_val = QuickAdapterRegressorV3.safe_max_pred(pred_label)
 
-        return min_val, max_val
+        return QuickAdapterRegressorV3._resolve_min_max(min_val, max_val, pred_label)
 
     @staticmethod
     def apply_skimage_threshold(
