@@ -305,6 +305,13 @@ class _LabelTransformerConfig:
         return get_label_column_config(column_name, self.default, self.columns)
 
 
+@dataclass(frozen=True, slots=True)
+class _ScalerFamily:
+    registry: dict[str, str]
+    type_names: tuple[str, ...]
+    kind: Literal["standardization", "normalization"]
+
+
 class LabelTransformer(BaseTransform):
     _STANDARDIZATION_SCALERS: dict[str, str] = {
         STANDARDIZATION_TYPES[1]: "standard_scaler",  # zscore
@@ -315,6 +322,12 @@ class LabelTransformer(BaseTransform):
         NORMALIZATION_TYPES[0]: "maxabs_scaler",  # maxabs
         NORMALIZATION_TYPES[1]: "minmax_scaler",  # minmax
     }
+    _STANDARDIZATION_FAMILY: Final[_ScalerFamily] = _ScalerFamily(
+        _STANDARDIZATION_SCALERS, STANDARDIZATION_TYPES, "standardization"
+    )
+    _NORMALIZATION_FAMILY: Final[_ScalerFamily] = _ScalerFamily(
+        _NORMALIZATION_SCALERS, NORMALIZATION_TYPES, "normalization"
+    )
 
     def __init__(self, *, label_transformer: dict[str, Any]) -> None:
         super().__init__(name="LabelTransformer")
@@ -402,16 +415,14 @@ class LabelTransformer(BaseTransform):
         mask: NDArray[np.bool_],
         state: _ColumnState,
         method: str,
-        registry: dict[str, str],
-        type_names: tuple[str, ...],
-        kind: str,
+        family: _ScalerFamily,
         inverse: bool = False,
     ) -> NDArray[np.floating]:
-        scaler_attr = registry.get(method)
+        scaler_attr = family.registry.get(method)
         if scaler_attr is None:
             raise ValueError(
-                f"Invalid {kind} value {method!r}: "
-                f"supported values are {', '.join(type_names)}"
+                f"Invalid {family.kind} value {method!r}: "
+                f"supported values are {', '.join(family.type_names)}"
             )
         scaler = getattr(state, scaler_attr, None)
         if scaler is None:
@@ -443,9 +454,7 @@ class LabelTransformer(BaseTransform):
             mask,
             state,
             method,
-            self._STANDARDIZATION_SCALERS,
-            STANDARDIZATION_TYPES,
-            "standardization",
+            self._STANDARDIZATION_FAMILY,
             inverse=inverse,
         )
 
@@ -469,9 +478,7 @@ class LabelTransformer(BaseTransform):
             mask,
             state,
             method,
-            self._NORMALIZATION_SCALERS,
-            NORMALIZATION_TYPES,
-            "normalization",
+            self._NORMALIZATION_FAMILY,
             inverse=inverse,
         )
 
@@ -606,7 +613,7 @@ class LabelTransformer(BaseTransform):
 
         return X, y, sample_weight, feature_list
 
-    def _apply_columns(
+    def _transform_columns(
         self,
         X: ArrayLike,
         y: ArrayOrNone,
@@ -659,7 +666,7 @@ class LabelTransformer(BaseTransform):
         outlier_check: bool = False,
         **kwargs,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
-        return self._apply_columns(X, y, sample_weight, feature_list, inverse=False)
+        return self._transform_columns(X, y, sample_weight, feature_list, inverse=False)
 
     def fit_transform(
         self,
@@ -680,4 +687,4 @@ class LabelTransformer(BaseTransform):
         feature_list: ListOrNone = None,
         **kwargs,
     ) -> tuple[ArrayLike, ArrayOrNone, ArrayOrNone, ListOrNone]:
-        return self._apply_columns(X, y, sample_weight, feature_list, inverse=True)
+        return self._transform_columns(X, y, sample_weight, feature_list, inverse=True)
