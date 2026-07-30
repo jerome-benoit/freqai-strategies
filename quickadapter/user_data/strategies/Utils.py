@@ -4317,7 +4317,9 @@ def _zigzag(
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
-        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / duration
+        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / (
+            end_pos - start_pos
+        )
         median_volume = np.nanmedian(volumes[start_pos:end_pos])
         if (
             np.isfinite(avg_volume_per_candle)
