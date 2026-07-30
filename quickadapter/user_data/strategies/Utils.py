@@ -5154,6 +5154,7 @@ class _OptunaNamespaces(NamedTuple):
 # Exported for cross-module use; consumers may import despite the leading
 # underscore on the instance (the class ``_OptunaNamespaces`` stays private).
 _OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
+_OPTUNA_BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
 _OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
 
 
@@ -5311,11 +5312,13 @@ def _quarantine_corrupt_optuna_best_params(
     cause: Exception,
     logger: Logger | None,
 ) -> Path | None:
-    """Atomically move malformed persisted best params out of the live path."""
+    """Atomically move corrupt persisted best params out of the live path."""
     if not best_params_path.exists():
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    quarantine_base = f"{best_params_path.name}.corrupt-{stamp}"
+    quarantine_base = (
+        f"{best_params_path.name}.{_OPTUNA_BEST_PARAMS_QUARANTINE_TAG}-{stamp}"
+    )
     for index in range(_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT + 1):
         suffix = "" if index == 0 else f"-{index}"
         quarantine_path = best_params_path.with_name(f"{quarantine_base}{suffix}")
@@ -5336,7 +5339,7 @@ def _quarantine_corrupt_optuna_best_params(
     if logger is not None:
         logger.warning(
             f"[{pair}] Optuna {namespace} best params {best_params_path.name} "
-            f"malformed ({cause!r}); quarantined to {quarantine_path.name}; "
+            f"corrupt ({cause!r}); quarantined to {quarantine_path.name}; "
             "no persisted best params recovered"
         )
     return quarantine_path
@@ -5368,6 +5371,7 @@ def _locked_optuna_best_params(
 
 
 def _reject_optuna_best_params_symlink(best_params_path: Path) -> None:
+    """Fail closed when the live best-params path is a symlink."""
     if best_params_path.is_symlink():
         raise OSError(
             f"Optuna best params path {best_params_path} must not be a symlink"
