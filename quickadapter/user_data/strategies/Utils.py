@@ -5343,19 +5343,23 @@ def _quarantine_corrupt_optuna_best_params(
 
 
 @contextmanager
-def _locked_optuna_best_params_directory(
+def _locked_optuna_best_params(
     best_params_path: Path,
 ) -> Iterator[None]:
-    """Serialize best-params I/O across processes sharing the target directory."""
-    directory_fd = os.open(
-        best_params_path.parent,
-        os.O_RDONLY | os.O_DIRECTORY,
+    """Serialize best-params I/O using a stable, writable lock file."""
+    lock_path = best_params_path.parent / ".optuna-best-params.lock"
+    lock_fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o666,
     )
     try:
-        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            raise OSError(f"Optuna best params lock {lock_path} must be a regular file")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         yield
     finally:
-        os.close(directory_fd)
+        os.close(lock_fd)
 
 
 def _reject_optuna_best_params_symlink(best_params_path: Path) -> None:
@@ -5379,7 +5383,7 @@ def optuna_load_best_params(
     )
     if not best_params_path.parent.is_dir():
         return None
-    with _locked_optuna_best_params_directory(best_params_path):
+    with _locked_optuna_best_params(best_params_path):
         _reject_optuna_best_params_symlink(best_params_path)
         if not best_params_path.is_file():
             return None
@@ -5449,12 +5453,12 @@ def optuna_save_best_params(
             }
         else:
             best_params = params
-        with _locked_optuna_best_params_directory(best_params_path):
+        with _locked_optuna_best_params(best_params_path):
             _reject_optuna_best_params_symlink(best_params_path)
             try:
-                existing_mode = stat.S_IMODE(best_params_path.stat().st_mode)
+                existing_metadata = best_params_path.stat()
             except FileNotFoundError:
-                existing_mode = None
+                existing_metadata = None
             temporary_path = best_params_path.with_name(
                 f".{best_params_path.name}.{uuid4().hex}.tmp"
             )
@@ -5467,8 +5471,25 @@ def optuna_save_best_params(
                 mode="w",
                 encoding="utf-8",
             ) as write_file:
-                if existing_mode is not None:
-                    os.fchmod(write_file.fileno(), existing_mode)
+                if existing_metadata is not None:
+                    temporary_metadata = os.fstat(write_file.fileno())
+                    if (
+                        temporary_metadata.st_uid != existing_metadata.st_uid
+                        or temporary_metadata.st_gid != existing_metadata.st_gid
+                    ):
+                        os.fchown(
+                            write_file.fileno(),
+                            existing_metadata.st_uid
+                            if temporary_metadata.st_uid != existing_metadata.st_uid
+                            else -1,
+                            existing_metadata.st_gid
+                            if temporary_metadata.st_gid != existing_metadata.st_gid
+                            else -1,
+                        )
+                    os.fchmod(
+                        write_file.fileno(),
+                        stat.S_IMODE(existing_metadata.st_mode),
+                    )
                 json.dump(best_params, write_file, indent=4)
                 write_file.flush()
                 os.fsync(write_file.fileno())
