@@ -2651,15 +2651,15 @@ def _nonfinite_imputation_dependency_mask(
 class LabelWeightImputationMasks:
     """Causal-availability masks for non-finite pivot-weight imputations.
 
-    See :func:`compute_label_weight_imputation_dependency_mask` for the release
-    algorithm.
+    Produced by :func:`compute_label_weight_imputation_dependency_mask` (see it
+    for the release algorithm) and consumed by
+    :func:`compute_label_weight_known_at_lookahead`.
 
-    - ``dependency_mask``: pivots unavailable until the frame boundary
-    - ``leading_stable_mask``: subset of ``dependency_mask`` whose imputation is
-      provably fixed at ``0.0`` on the causal prefix, released over the prefix
-      ``weight_availability[: stable_release_index + 1]``
-    - ``stable_release_index``: pivot index bounding the shared release prefix,
-      or ``-1`` when ``leading_stable_mask`` is empty (no releasable run)
+    - ``dependency_mask``: pivots deferred to the frame boundary ``n``
+    - ``leading_stable_mask``: subset of ``dependency_mask`` provably fixed at
+      ``0.0`` on the causal prefix, hence released early
+    - ``stable_release_index``: pivot index bounding that release prefix, or
+      ``-1`` when ``leading_stable_mask`` is empty
     """
 
     dependency_mask: NDArray[np.bool_]
