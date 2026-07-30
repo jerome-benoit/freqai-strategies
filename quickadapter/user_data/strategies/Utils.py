@@ -2654,10 +2654,12 @@ class LabelWeightImputationMasks:
     ``dependency_mask`` pivots remain unavailable until the frame boundary.
     ``leading_stable_mask`` and ``trailing_stable_mask`` (both subsets of
     ``dependency_mask``) mark non-finite runs whose imputation is provably fixed
-    at ``0.0`` given only the causal prefix; they are released at
-    ``weight_availability[stable_release_index]`` rather than the frame boundary.
-    ``stable_release_index`` is the pivot index whose weight confirmation is that
-    shared release candle (``-1`` when both stable masks are empty).
+    at ``0.0`` given only the causal prefix; they are released at the max over
+    the release prefix ``weight_availability[: stable_release_index + 1]`` rather
+    than the frame boundary. ``stable_release_index`` is the pivot index whose
+    weight confirmation is that shared release candle: ``first_finite`` for a
+    single metric, ``max`` over components for ``combined`` (``-1`` when both
+    stable masks are empty).
     """
 
     dependency_mask: NDArray[np.bool_]
