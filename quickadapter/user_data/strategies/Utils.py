@@ -2161,7 +2161,7 @@ def smooth(
 
     win_type, window_selector = _ZERO_PHASE_FILTER_DISPATCH.get(
         method,
-        (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"/odd default
+        _ZERO_PHASE_FILTER_DISPATCH[SMOOTHING_METHODS[1]],  # "gaussian"/odd default
     )
     return zero_phase_filter(
         series=series,
