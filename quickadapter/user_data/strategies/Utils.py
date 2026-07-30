@@ -8,7 +8,6 @@ import math
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,6 +29,7 @@ from typing import (
     cast,
     get_args,
 )
+from uuid import uuid4
 
 import numpy as np
 import optuna
@@ -5377,6 +5377,8 @@ def optuna_load_best_params(
     best_params_path = (
         base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
     )
+    if not best_params_path.parent.is_dir():
+        return None
     with _locked_optuna_best_params_directory(best_params_path):
         _reject_optuna_best_params_symlink(best_params_path)
         if not best_params_path.is_file():
@@ -5453,15 +5455,18 @@ def optuna_save_best_params(
                 existing_mode = stat.S_IMODE(best_params_path.stat().st_mode)
             except FileNotFoundError:
                 existing_mode = None
-            with tempfile.NamedTemporaryFile(
+            temporary_path = best_params_path.with_name(
+                f".{best_params_path.name}.{uuid4().hex}.tmp"
+            )
+            with os.fdopen(
+                os.open(
+                    temporary_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o666,
+                ),
                 mode="w",
                 encoding="utf-8",
-                dir=best_params_path.parent,
-                prefix=f".{best_params_path.name}.",
-                suffix=".tmp",
-                delete=False,
             ) as write_file:
-                temporary_path = Path(write_file.name)
                 if existing_mode is not None:
                     os.fchmod(write_file.fileno(), existing_mode)
                 json.dump(best_params, write_file, indent=4)
