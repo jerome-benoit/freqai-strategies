@@ -2221,7 +2221,7 @@ def _impute_weights(
 
 
 def _segment_ends(a: NDArray[np.integer]) -> NDArray[np.intp]:
-    """Indices of the last element of each run of equal values in ``a``."""
+    """Indices of the last element of each consecutive run of equal values in ``a``."""
     return np.flatnonzero(np.r_[a[1:] != a[:-1], True])
 
 
