@@ -2651,12 +2651,17 @@ def compute_label_weight_imputation_dependency_mask(
     n_indices: int,
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
-) -> NDArray[np.bool_]:
+) -> tuple[NDArray[np.bool_], NDArray[np.bool_]]:
     """Identify pivot weights whose non-finite imputation can change by prefix.
 
-    A marked pivot remains causally unavailable until the frame boundary. For
+    Returns ``(dependency_mask, leading_stable_mask)``. A ``dependency_mask``
+    pivot remains causally unavailable until the frame boundary; for
     ``combined``, dependency propagates from every selected component and from
-    the aggregate before its final imputation.
+    the aggregate before its final imputation. ``leading_stable_mask`` (a subset
+    of ``dependency_mask``) marks the leading non-finite run of a single-metric
+    strategy: those pivots impute to ``0.0`` and stabilize once the first finite
+    pivot's weight is known, so they need not defer to the frame boundary. It is
+    empty for ``uniform``, ``combined``, and all-non-finite metrics.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
@@ -2667,17 +2672,22 @@ def compute_label_weight_imputation_dependency_mask(
             "weighting is disabled"
         )
     if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
-        return np.zeros(n_indices, dtype=bool)
+        return np.zeros(n_indices, dtype=bool), np.zeros(n_indices, dtype=bool)
     if strategy in metrics:
         values = np.asarray(metrics[strategy], dtype=float)
         if values.size == 0:
-            return np.zeros(n_indices, dtype=bool)
+            return np.zeros(n_indices, dtype=bool), np.zeros(n_indices, dtype=bool)
         if values.shape != (n_indices,):
             raise ValueError(
                 f"Invalid metric {strategy!r} shape {values.shape}: "
                 f"must be ({n_indices},)"
             )
-        return _nonfinite_imputation_dependency_mask(values)
+        dependency = _nonfinite_imputation_dependency_mask(values)
+        leading_stable = np.zeros(n_indices, dtype=bool)
+        finite = ~dependency
+        if finite.any():
+            leading_stable[: int(np.argmax(finite))] = True
+        return dependency, leading_stable
     if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
         raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
 
@@ -2697,7 +2707,7 @@ def compute_label_weight_imputation_dependency_mask(
         coefficients_list.append(coefficient)
 
     if len(imputed_metrics) == 0:
-        return dependency_mask
+        return dependency_mask, np.zeros(n_indices, dtype=bool)
 
     combined_weights = _aggregate_imputed_metrics(
         imputed_metrics,
@@ -2711,7 +2721,7 @@ def compute_label_weight_imputation_dependency_mask(
             f"must be ({n_indices},)"
         )
     dependency_mask |= _nonfinite_imputation_dependency_mask(combined_weights)
-    return dependency_mask
+    return dependency_mask, np.zeros(n_indices, dtype=bool)
 
 
 def _compute_epsilon_floor(
@@ -3226,6 +3236,7 @@ def compute_label_weight_known_at_lookahead(
     fill_radius: int = 0,
     *,
     imputation_dependency_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
+    imputation_leading_stable_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
     weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
@@ -3257,6 +3268,10 @@ def compute_label_weight_known_at_lookahead(
     imputation can change as the available prefix grows. Those pivots and their
     Gaussian bands are unavailable until the frame boundary. An unresolved
     trailing pivot is excluded only when it has no such dependency.
+    ``imputation_leading_stable_mask`` (a subset) marks a leading non-finite run
+    that imputes to 0.0 and stabilizes at the first finite pivot's confirmation;
+    those pivots are released there instead of at the frame boundary and their
+    zero-weight bands are skipped.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -3266,26 +3281,33 @@ def compute_label_weight_known_at_lookahead(
         return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
     known_at_positions = positions + known_at_lookahead_values
     raw_idx = np.asarray(indices, dtype=int)
-    if imputation_dependency_mask is None:
-        raw_dependency_mask = np.zeros(raw_idx.size, dtype=bool)
-    else:
-        raw_dependency_mask = np.asarray(imputation_dependency_mask)
-        if raw_dependency_mask.shape != raw_idx.shape:
+
+    def _validate_pivot_mask(
+        mask: Sequence[bool] | NDArray[np.bool_] | None, name: str
+    ) -> NDArray[np.bool_]:
+        if mask is None:
+            return np.zeros(raw_idx.size, dtype=bool)
+        arr = np.asarray(mask)
+        if arr.shape != raw_idx.shape:
             raise ValueError(
-                "Invalid imputation_dependency_mask shape "
-                f"{raw_dependency_mask.shape}: must be {raw_idx.shape}"
+                f"Invalid {name} shape {arr.shape}: must be {raw_idx.shape}"
             )
-        if raw_dependency_mask.dtype != np.bool_:
-            raise ValueError(
-                "Invalid imputation_dependency_mask dtype "
-                f"{raw_dependency_mask.dtype}: must be bool"
-            )
+        if arr.dtype != np.bool_:
+            raise ValueError(f"Invalid {name} dtype {arr.dtype}: must be bool")
+        return arr
+
+    raw_dependency_mask = _validate_pivot_mask(
+        imputation_dependency_mask, "imputation_dependency_mask"
+    )
+    raw_leading_stable_mask = _validate_pivot_mask(
+        imputation_leading_stable_mask, "imputation_leading_stable_mask"
+    )
     valid_mask = (raw_idx >= 0) & (raw_idx < n)
     idx = raw_idx[valid_mask]
-    dependency_mask = raw_dependency_mask[valid_mask]
     order = np.argsort(idx, kind="stable")
     idx = idx[order]
-    dependency_mask = dependency_mask[order]
+    dependency_mask = raw_dependency_mask[valid_mask][order]
+    leading_stable_mask = raw_leading_stable_mask[valid_mask][order]
     base = known_at_positions.copy()
     if idx.size:
         weight_availability = np.empty(idx.size, dtype=np.int64)
@@ -3321,14 +3343,35 @@ def compute_label_weight_known_at_lookahead(
             )
             np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
         avail_pivot[dependency_mask] = n
+        if leading_stable_mask.any() and np.array_equal(order, np.arange(idx.size)):
+            # Leading non-finite run imputes to 0.0, stable once the first finite
+            # pivot's weight is known (backfilled confirmation weight_availability
+            # [first_finite]), not at the frame boundary. Guarded to the sorted
+            # (identity-order) case where the run is a contiguous prefix.
+            first_finite = int(leading_stable_mask.sum())
+            if first_finite < weight_availability.size:
+                avail_pivot[leading_stable_mask] = int(
+                    weight_availability[first_finite]
+                )
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
-            for pivot_pos, pivot_avail, weight_avail, pivot_dependency in zip(
+            for (
+                pivot_pos,
+                pivot_avail,
+                weight_avail,
+                pivot_dependency,
+                pivot_leading,
+            ) in zip(
                 idx.tolist(),
                 avail_pivot.tolist(),
                 band_weight_availability.tolist(),
                 dependency_mask.tolist(),
+                leading_stable_mask.tolist(),
             ):
+                # A leading-run pivot imputes to 0.0 (zero bump): its own row is
+                # released above; it spreads no band.
+                if pivot_leading:
+                    continue
                 # Skip pivots whose band weight never resolves in-frame
                 # (weight_avail == n): their Gaussian bump is zero. Exception: an
                 # imputation-dependent pivot keeps the non-zero legacy default for
