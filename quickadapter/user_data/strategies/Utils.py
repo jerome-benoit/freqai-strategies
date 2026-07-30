@@ -5345,18 +5345,23 @@ def _quarantine_corrupt_optuna_best_params(
 @contextmanager
 def _locked_optuna_best_params(
     best_params_path: Path,
+    *,
+    exclusive: bool,
 ) -> Iterator[None]:
-    """Serialize best-params I/O using a stable, writable lock file."""
+    """Serialize best-params I/O using a stable lock file."""
     lock_path = best_params_path.parent / ".optuna-best-params.lock"
     lock_fd = os.open(
         lock_path,
-        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        (os.O_RDWR if exclusive else os.O_RDONLY)
+        | os.O_CREAT
+        | os.O_CLOEXEC
+        | os.O_NOFOLLOW,
         0o666,
     )
     try:
         if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
             raise OSError(f"Optuna best params lock {lock_path} must be a regular file")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         yield
     finally:
         os.close(lock_fd)
@@ -5383,24 +5388,35 @@ def optuna_load_best_params(
     )
     if not best_params_path.parent.is_dir():
         return None
-    with _locked_optuna_best_params(best_params_path):
+    malformed = False
+    with _locked_optuna_best_params(best_params_path, exclusive=False):
         _reject_optuna_best_params_symlink(best_params_path)
         if not best_params_path.is_file():
             return None
         try:
             with best_params_path.open("r", encoding="utf-8") as read_file:
                 best_params = json.load(read_file)
-        except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
-            quarantined = _quarantine_corrupt_optuna_best_params(
-                best_params_path,
-                pair,
-                namespace,
-                decode_error,
-                logger,
-            )
-            if quarantined is None:
-                raise
-            return None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            malformed = True
+    if malformed:
+        with _locked_optuna_best_params(best_params_path, exclusive=True):
+            _reject_optuna_best_params_symlink(best_params_path)
+            if not best_params_path.is_file():
+                return None
+            try:
+                with best_params_path.open("r", encoding="utf-8") as read_file:
+                    best_params = json.load(read_file)
+            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                quarantined = _quarantine_corrupt_optuna_best_params(
+                    best_params_path,
+                    pair,
+                    namespace,
+                    decode_error,
+                    logger,
+                )
+                if quarantined is None:
+                    raise
+                return None
     if namespace == _OPTUNA_NAMESPACES.label:
         return _validate_optuna_label_best_params(
             best_params,
@@ -5453,7 +5469,7 @@ def optuna_save_best_params(
             }
         else:
             best_params = params
-        with _locked_optuna_best_params(best_params_path):
+        with _locked_optuna_best_params(best_params_path, exclusive=True):
             _reject_optuna_best_params_symlink(best_params_path)
             try:
                 existing_metadata = best_params_path.stat()
