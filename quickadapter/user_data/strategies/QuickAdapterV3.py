@@ -55,6 +55,7 @@ from Utils import (
     bottom_log_return,
     calculate_quantile,
     compose_label_lookahead,
+    compute_label_weight_imputation_dependency_mask,
     compute_label_weight_known_at_lookahead,
     compute_label_weights,
     ensure_datetime_series,
@@ -996,6 +997,18 @@ class QuickAdapterV3(IStrategy):
                     ),
                 )
                 if label_data.known_at_lookahead is not None:
+                    if causal_mode:
+                        (
+                            imputation_dependency_mask,
+                            imputation_leading_stable_mask,
+                        ) = compute_label_weight_imputation_dependency_mask(
+                            len(label_data.indices),
+                            label_data.metrics,
+                            col_weighting_config,
+                        )
+                    else:
+                        imputation_dependency_mask = None
+                        imputation_leading_stable_mask = None
                     dataframe[
                         label_weight_known_at_lookahead_column_name(label_col)
                     ] = compute_label_weight_known_at_lookahead(
@@ -1003,6 +1016,8 @@ class QuickAdapterV3(IStrategy):
                         indices=label_data.indices,
                         fill_radius=weight_fill_radius(col_weighting_config),
                         weighting_config=col_weighting_config,
+                        imputation_dependency_mask=imputation_dependency_mask,
+                        imputation_leading_stable_mask=imputation_leading_stable_mask,
                     )
 
             if label_col == EXTREMA_COLUMN:

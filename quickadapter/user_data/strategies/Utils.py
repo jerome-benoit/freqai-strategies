@@ -2566,6 +2566,55 @@ def _aggregate_metrics(
         )
 
 
+def _invalid_weight_strategy_message(
+    strategy: str, metrics: dict[str, list[float]]
+) -> str:
+    return (
+        f"Invalid weighting strategy value {strategy!r}: "
+        f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
+    )
+
+
+def _select_combined_metrics(
+    metrics: dict[str, list[float]],
+    metric_coefficients: dict[str, Any],
+) -> list[tuple[str, NDArray[np.floating], float]]:
+    """Select the components feeding ``combined`` aggregation.
+
+    Shared selection logic (coefficient parsing, the all-unit default, the skip
+    rules for unselected or empty metrics), returning raw pre-imputation value
+    arrays paired with metric name and coefficient in ``metrics`` iteration
+    order. Imputation is left to the caller.
+    """
+    coefficients = _parse_metric_coefficients(metric_coefficients)
+    if len(coefficients) == 0:
+        coefficients = {k: 1.0 for k in metrics.keys()}
+
+    selected: list[tuple[str, NDArray[np.floating], float]] = []
+    for metric_name, metric_values in metrics.items():
+        if metric_name not in coefficients:
+            continue
+        values_array = np.asarray(metric_values, dtype=float)
+        if values_array.size == 0:
+            continue
+        selected.append((metric_name, values_array, float(coefficients[metric_name])))
+    return selected
+
+
+def _aggregate_imputed_metrics(
+    imputed_metrics: list[NDArray[np.floating]],
+    coefficients: list[float],
+    aggregation: CombinedAggregation,
+    softmax_temperature: float,
+) -> NDArray[np.floating]:
+    return _aggregate_metrics(
+        np.vstack(imputed_metrics),
+        np.asarray(coefficients, dtype=float),
+        aggregation,
+        softmax_temperature,
+    )
+
+
 def _compute_combined_label_weights(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
@@ -2574,35 +2623,105 @@ def _compute_combined_label_weights(
     *,
     impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
 ) -> NDArray[np.floating]:
-    if len(metrics) == 0:
+    selected = _select_combined_metrics(metrics, metric_coefficients)
+    if len(selected) == 0:
         return np.asarray([], dtype=float)
 
-    coefficients = _parse_metric_coefficients(metric_coefficients)
-    if len(coefficients) == 0:
-        coefficients = {k: 1.0 for k in metrics.keys()}
+    return _aggregate_imputed_metrics(
+        [impute(values) for _, values, _ in selected],
+        [coefficient for _, _, coefficient in selected],
+        aggregation,
+        softmax_temperature,
+    )
 
+
+def _nonfinite_imputation_dependency_mask(
+    values: NDArray[np.floating],
+) -> NDArray[np.bool_]:
+    """Mark values whose legacy full-frame imputation is not prefix-stable.
+
+    A non-finite value's imputation is prefix-unstable (default or zero at
+    boundaries, interior median otherwise) as later pivots arrive, so it stays
+    unavailable until the frame boundary.
+    """
+    return ~np.isfinite(values)
+
+
+def compute_label_weight_imputation_dependency_mask(
+    n_indices: int,
+    metrics: dict[str, list[float]],
+    weighting_config: dict[str, Any],
+) -> tuple[NDArray[np.bool_], NDArray[np.bool_]]:
+    """Identify pivot weights whose non-finite imputation can change by prefix.
+
+    Returns ``(dependency_mask, leading_stable_mask)``. A ``dependency_mask``
+    pivot remains causally unavailable until the frame boundary; for
+    ``combined``, dependency propagates from every selected component and from
+    the aggregate before its final imputation. ``leading_stable_mask`` (a subset
+    of ``dependency_mask``) marks the leading non-finite run of a single-metric
+    strategy: those pivots impute to ``0.0`` and stabilize once the first finite
+    pivot's weight is known, so they need not defer to the frame boundary. It is
+    empty for ``uniform``, ``combined``, and all-non-finite metrics.
+    """
+    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
+    strategy = label_weighting["strategy"]
+    if strategy == WEIGHT_STRATEGIES[0]:  # "none"
+        raise ValueError(
+            "compute_label_weight_imputation_dependency_mask must not be called "
+            f"with strategy={strategy!r}; callers must skip invocation when "
+            "weighting is disabled"
+        )
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        return np.zeros(n_indices, dtype=bool), np.zeros(n_indices, dtype=bool)
+    if strategy in metrics:
+        values = np.asarray(metrics[strategy], dtype=float)
+        if values.size == 0:
+            return np.zeros(n_indices, dtype=bool), np.zeros(n_indices, dtype=bool)
+        if values.shape != (n_indices,):
+            raise ValueError(
+                f"Invalid metric {strategy!r} shape {values.shape}: "
+                f"must be ({n_indices},)"
+            )
+        dependency = _nonfinite_imputation_dependency_mask(values)
+        leading_stable = np.zeros(n_indices, dtype=bool)
+        finite = ~dependency
+        if finite.any():
+            leading_stable[: int(np.argmax(finite))] = True
+        return dependency, leading_stable
+    if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
+        raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
+
+    dependency_mask = np.zeros(n_indices, dtype=bool)
     imputed_metrics: list[NDArray[np.floating]] = []
     coefficients_list: list[float] = []
-
-    for metric_name, metric_values in metrics.items():
-        if metric_name not in coefficients:
-            continue
-        coefficient = coefficients[metric_name]
-        values_array = np.asarray(metric_values, dtype=float)
-        if values_array.size == 0:
-            continue
-        imputed_metrics.append(impute(values_array))
-        coefficients_list.append(float(coefficient))
+    for metric_name, values_array, coefficient in _select_combined_metrics(
+        metrics, label_weighting["metric_coefficients"]
+    ):
+        if values_array.shape != (n_indices,):
+            raise ValueError(
+                f"Invalid metric {metric_name!r} shape {values_array.shape}: "
+                f"must be ({n_indices},)"
+            )
+        dependency_mask |= _nonfinite_imputation_dependency_mask(values_array)
+        imputed_metrics.append(_impute_weights(values_array))
+        coefficients_list.append(coefficient)
 
     if len(imputed_metrics) == 0:
-        return np.asarray([], dtype=float)
+        return dependency_mask, np.zeros(n_indices, dtype=bool)
 
-    stacked_metrics = np.vstack(imputed_metrics)
-    coefficients_array = np.asarray(coefficients_list, dtype=float)
-
-    return _aggregate_metrics(
-        stacked_metrics, coefficients_array, aggregation, softmax_temperature
+    combined_weights = _aggregate_imputed_metrics(
+        imputed_metrics,
+        coefficients_list,
+        label_weighting["aggregation"],
+        label_weighting["softmax_temperature"],
     )
+    if combined_weights.shape != (n_indices,):
+        raise ValueError(
+            f"Invalid combined weights shape {combined_weights.shape}: "
+            f"must be ({n_indices},)"
+        )
+    dependency_mask |= _nonfinite_imputation_dependency_mask(combined_weights)
+    return dependency_mask, np.zeros(n_indices, dtype=bool)
 
 
 def _compute_epsilon_floor(
@@ -2655,10 +2774,7 @@ def _compute_label_weight_values(
             impute=impute,
         )
     else:
-        raise ValueError(
-            f"Invalid weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
-        )
+        raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
     return impute(weights)
 
 
@@ -3119,6 +3235,8 @@ def compute_label_weight_known_at_lookahead(
     indices: Sequence[int] | NDArray[np.integer],
     fill_radius: int = 0,
     *,
+    imputation_dependency_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
+    imputation_leading_stable_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
     weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
@@ -3145,6 +3263,15 @@ def compute_label_weight_known_at_lookahead(
     off-center bands still wait for the pivot confirmation and sigma. Other
     strategies and additive fills keep their existing competing-band
     dependencies.
+
+    ``imputation_dependency_mask`` marks pivot weights whose non-finite
+    imputation can change as the available prefix grows. Those pivots and their
+    Gaussian bands are unavailable until the frame boundary. An unresolved
+    trailing pivot is excluded only when it has no such dependency.
+    ``imputation_leading_stable_mask`` (a subset) marks a leading non-finite run
+    that imputes to 0.0 and stabilizes at the first finite pivot's confirmation;
+    those pivots are released there instead of at the frame boundary and their
+    zero-weight bands are skipped.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -3153,8 +3280,34 @@ def compute_label_weight_known_at_lookahead(
     if n == 0:
         return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
     known_at_positions = positions + known_at_lookahead_values
-    idx = np.asarray(indices, dtype=int)
-    idx = np.sort(idx[(idx >= 0) & (idx < n)])
+    raw_idx = np.asarray(indices, dtype=int)
+
+    def _validate_pivot_mask(
+        mask: Sequence[bool] | NDArray[np.bool_] | None, name: str
+    ) -> NDArray[np.bool_]:
+        if mask is None:
+            return np.zeros(raw_idx.size, dtype=bool)
+        arr = np.asarray(mask)
+        if arr.shape != raw_idx.shape:
+            raise ValueError(
+                f"Invalid {name} shape {arr.shape}: must be {raw_idx.shape}"
+            )
+        if arr.dtype != np.bool_:
+            raise ValueError(f"Invalid {name} dtype {arr.dtype}: must be bool")
+        return arr
+
+    raw_dependency_mask = _validate_pivot_mask(
+        imputation_dependency_mask, "imputation_dependency_mask"
+    )
+    raw_leading_stable_mask = _validate_pivot_mask(
+        imputation_leading_stable_mask, "imputation_leading_stable_mask"
+    )
+    valid_mask = (raw_idx >= 0) & (raw_idx < n)
+    idx = raw_idx[valid_mask]
+    order = np.argsort(idx, kind="stable")
+    idx = idx[order]
+    dependency_mask = raw_dependency_mask[valid_mask][order]
+    leading_stable_mask = raw_leading_stable_mask[valid_mask][order]
     base = known_at_positions.copy()
     if idx.size:
         weight_availability = np.empty(idx.size, dtype=np.int64)
@@ -3189,17 +3342,41 @@ def compute_label_weight_known_at_lookahead(
                 n,
             )
             np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
+        avail_pivot[dependency_mask] = n
+        if leading_stable_mask.any() and np.array_equal(order, np.arange(idx.size)):
+            # Leading non-finite run imputes to 0.0, stable once the first finite
+            # pivot's weight is known (backfilled confirmation weight_availability
+            # [first_finite]), not at the frame boundary. Guarded to the sorted
+            # (identity-order) case where the run is a contiguous prefix.
+            first_finite = int(leading_stable_mask.sum())
+            if first_finite < weight_availability.size:
+                avail_pivot[leading_stable_mask] = int(
+                    weight_availability[first_finite]
+                )
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
-            for pivot_pos, pivot_avail, weight_avail in zip(
+            for (
+                pivot_pos,
+                pivot_avail,
+                weight_avail,
+                pivot_dependency,
+                pivot_leading,
+            ) in zip(
                 idx.tolist(),
                 avail_pivot.tolist(),
                 band_weight_availability.tolist(),
+                dependency_mask.tolist(),
+                leading_stable_mask.tolist(),
             ):
-                # A metric-based trailing pivot never resolves in-frame and its
-                # Gaussian bump is 0. Pure-Gaussian uniform pivots use their own
-                # confirmation, so only that path retains the trailing band.
-                if weight_avail >= n:
+                # A leading-run pivot imputes to 0.0 (zero bump): its own row is
+                # released above; it spreads no band.
+                if pivot_leading:
+                    continue
+                # Skip pivots whose band weight never resolves in-frame
+                # (weight_avail == n): their Gaussian bump is zero. Exception: an
+                # imputation-dependent pivot keeps the non-zero legacy default for
+                # an all-non-finite metric, so its band must defer to n.
+                if weight_avail >= n and not pivot_dependency:
                     continue
                 lo = max(0, pivot_pos - fill_radius)
                 hi = min(n, pivot_pos + fill_radius + 1)
