@@ -2089,10 +2089,10 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-# Zero-phase filter dispatch: method -> (kernel, window_selector), mirroring the
-# get_ma_fn/get_price_fn table idiom. Only the window parity varies per method
-# (std stays odd-window-derived in smooth); unknown methods fall back to the
-# "gaussian"/odd default, preserving the legacy else-branch.
+# Zero-phase filter dispatch: method -> (kernel, window_selector). Module-level
+# Final table (_*_SPECS family), consumed via .get(method, default). Only the
+# window parity varies per method (std stays odd-window-derived in smooth); the
+# .get default reproduces the legacy "gaussian"/odd else-branch for unknown methods.
 _SMOOTHING_FILTER_SPECS: Final[
     dict[SmoothingMethod, tuple[SmoothingKernel, Callable[[int], int]]]
 ] = {
@@ -6119,7 +6119,7 @@ def _step_round(
     value: float | int,
     step: int,
     int_op: Callable[[int, int], int],
-    float_op: Callable[[float], float],
+    float_op: Callable[[float], int],
 ) -> int:
     _validate_step_args(value, step)
     if isinstance(value, (int, np.integer)):
