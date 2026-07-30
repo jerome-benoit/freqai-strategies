@@ -2651,17 +2651,16 @@ def _nonfinite_imputation_dependency_mask(
 class LabelWeightImputationMasks:
     """Causal-availability masks for non-finite pivot-weight imputations.
 
-    ``dependency_mask`` pivots remain unavailable until the frame boundary.
-    ``leading_stable_mask`` and ``trailing_stable_mask`` (both subsets of
-    ``dependency_mask``) mark non-finite pivots whose imputation is provably
-    fixed at ``0.0`` given only the causal prefix; they are released at the max
-    over the release prefix ``weight_availability[: stable_release_index + 1]``
-    rather than the frame boundary. ``stable_release_index`` is the pivot index
-    whose weight confirmation is that shared release candle (``first_finite`` for
-    a single metric with any finite value, ``max`` over components for
-    ``combined``), or ``-1`` only when no pivot is finite. The consumer applies
-    it solely when a stable mask is non-empty, so a non-negative index with empty
-    masks is inert.
+    See :func:`compute_label_weight_imputation_dependency_mask` for the release
+    algorithm.
+
+    - ``dependency_mask``: pivots unavailable until the frame boundary
+    - ``leading_stable_mask``/``trailing_stable_mask``: subsets of
+      ``dependency_mask`` whose imputation is provably fixed at ``0.0`` on the
+      causal prefix, released over the prefix
+      ``weight_availability[: stable_release_index + 1]``
+    - ``stable_release_index``: pivot index of the shared release candle, or
+      ``-1`` when no pivot is finite
     """
 
     dependency_mask: NDArray[np.bool_]
@@ -2800,9 +2799,6 @@ def compute_label_weight_imputation_dependency_mask(
 
     leading_stable = np.zeros(n_indices, dtype=bool)
     release_index = -1
-    # Every component must lead with a non-finite run (first_finite >= 1). The
-    # stable-zero prefix spans [0, min first_finite); the release candle is the
-    # max over components (latest confirmation) so unequal run lengths never leak.
     if (
         every_component_has_finite
         and first_finite_indices
@@ -3359,18 +3355,15 @@ def compute_label_weight_known_at_lookahead(
     strategies and additive fills keep their existing competing-band
     dependencies.
 
-    ``imputation_dependency_mask`` marks pivot weights whose non-finite
-    imputation can change as the available prefix grows. Those pivots and their
-    Gaussian bands are unavailable until the frame boundary. An unresolved
-    trailing pivot is excluded only when it has no such dependency.
-    ``imputation_leading_stable_mask`` and ``imputation_trailing_stable_mask``
-    (subsets) mark non-finite runs that impute to 0.0 and are provably fixed
-    given the causal prefix; both are released at the max over the release
-    prefix ``weight_availability[: imputation_stable_release_index + 1]`` (the
-    shared stabilization candle) instead of the frame boundary, folded via
-    ``max`` with each pivot's own label availability, and their zero-weight
-    bands are skipped. The release is applied only in the identity-order case
-    (no dropped pivot) where the runs are a contiguous prefix/suffix.
+    The imputation masks (``imputation_dependency_mask``,
+    ``imputation_leading_stable_mask``, ``imputation_trailing_stable_mask``,
+    ``imputation_stable_release_index``) come from
+    :func:`compute_label_weight_imputation_dependency_mask`. Dependency pivots
+    and their Gaussian bands wait for the frame boundary; stable-mask pivots are
+    released over ``weight_availability[: imputation_stable_release_index + 1]``,
+    folded via ``max`` with each pivot's own label availability, with their
+    zero-weight bands skipped. The release applies only in the identity-order
+    case (no dropped pivot) where the runs are a contiguous prefix/suffix.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -3452,17 +3445,10 @@ def compute_label_weight_known_at_lookahead(
             and np.array_equal(order, np.arange(idx.size))
             and 0 <= imputation_stable_release_index < weight_availability.size
         ):
-            # Leading/trailing non-finite runs impute to 0.0 and are provably
-            # fixed once every contributing component's first finite weight is
-            # known. That shared candle is the max over the release prefix
-            # weight_availability[: stable_release_index + 1]. Under the
-            # production invariant (zigzag confirmation watermark => monotone
-            # weight_availability) this equals weight_availability[
-            # stable_release_index]; the prefix max also stays leak-free if that
-            # invariant is ever violated (combined max-over-components, or a
-            # non-monotone availability), at worst deferring slightly later.
-            # Guarded to the identity-order case (no dropped pivot) where the
-            # runs are a contiguous prefix/suffix.
+            # Release stable-mask pivots at the prefix max
+            # weight_availability[: stable_release_index + 1]; this stays
+            # leak-free even if availability is non-monotone (at worst defers
+            # later). Guarded to identity order (contiguous prefix/suffix runs).
             release = int(
                 np.max(weight_availability[: imputation_stable_release_index + 1])
             )
