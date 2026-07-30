@@ -5448,12 +5448,15 @@ def _locked_optuna_best_params(
 ) -> Iterator[None]:
     """Serialize best-params I/O using a stable lock file."""
     lock_path = best_params_path.parent / ".optuna-best-params.lock"
+    # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
+    # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
     lock_fd = os.open(
         lock_path,
         (os.O_RDWR if exclusive else os.O_RDONLY)
         | os.O_CREAT
         | os.O_CLOEXEC
-        | os.O_NOFOLLOW,
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK,
         0o666,
     )
     try:
