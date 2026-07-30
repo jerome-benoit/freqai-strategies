@@ -202,18 +202,19 @@ the [FreqAI callback order][freqai-source].
 3. **Purge labels and impose an embargo gap.** Keep `causal_mode` enabled. Remove
    every training row whose label-information interval overlaps the next
    validation or prediction window. In the unsliced window frame, take the
-   row-wise maximum of every emitted label and weight `known_at_lookahead`, add
-   the row's local position, and map that availability position to its
-   information time. Treat every non-finite or out-of-frame availability position
-   as unavailable and purge it; never clip it to a boundary timestamp. Verify
-   that the latest retained cutoff precedes the scoring window. Then apply a
-   pre-registered non-negative gap between the latest retained information time
-   and that window to cover any additional data publication or execution delay.
-   If an inner procedure uses observations after a validation block, also
-   embargo the observations immediately after that block; the preferred
-   rolling-origin design never trains on future observations. Record the purged
-   row count and effective gap for every split. Use an external runner when the
-   native window schedule cannot express the pre-registered gap.
+   row-wise maximum of the `known_at_lookahead` values of all emitted labels
+   and weights, add the row's local position, and map that availability
+   position to its information time. Treat every non-finite or out-of-frame
+   availability position as unavailable and purge it; never clip it to a
+   boundary timestamp. Verify that the latest retained information time
+   precedes the scoring window. Then apply a pre-registered non-negative gap
+   between the latest retained information time and that window to cover any
+   additional data publication or execution delay. If an inner procedure uses
+   observations after a validation block, also embargo the observations
+   immediately after that block; the preferred rolling-origin design never
+   trains on future observations. Record the purged row count and effective
+   gap for every split. Use an external runner when the native window schedule
+   cannot express the pre-registered gap.
    These controls follow the purging and embargo concepts in [Advances in
    Financial Machine Learning][afml].
 4. **Separate the experiment from HPO.** First compare the incumbent and
@@ -228,7 +229,7 @@ the [FreqAI callback order][freqai-source].
    warm-start state used by an inner trial or selection model must have been
    fitted only on that split's training prefix; otherwise disable
    `continual_learning` during selection. Evaluate a pre-registered
-   continual-learning treatment only on later outer prediction windows.
+   `continual_learning` treatment only on later outer prediction windows.
 5. **Pair stochastic runs.** Use the same seed list for every candidate and at
    least five complete paired seeds for a promotion decision; fewer seeds are
    diagnostic only. Do not replace or omit a pre-registered seed: a
@@ -238,12 +239,12 @@ the [FreqAI callback order][freqai-source].
    rule were pre-registered. Retry the same seed only for a documented
    infrastructure failure, under one pre-registered retry budget and policy
    applied to both arms; exhausted retries make the experiment inconclusive.
-   Record the Optuna sampler and label-shuffling seed roles, regressor seed and
-   bootstrap seed separately. QuickAdapter currently derives both Optuna roles
-   from `freqai.optuna_hyperopt.seed`. Sequential HPO removes parallel
-   trial-scheduling nondeterminism and improves sampler replayability; exact
-   replay also requires deterministic backend settings and fixed software and
-   hardware. Otherwise, treat full searches as stochastic repetitions. If
+   Record the Optuna sampler and label-candle shuffling seed roles, regressor
+   seed and bootstrap seed separately. QuickAdapter currently derives both
+   Optuna roles from `freqai.optuna_hyperopt.seed`. Sequential HPO removes
+   parallel trial-scheduling nondeterminism and improves sampler replayability;
+   exact replay also requires deterministic backend settings and fixed software
+   and hardware. Otherwise, treat full searches as stochastic repetitions. If
    parallel HPO is the deployed behavior, also report its trial order.
 6. **Model execution costs explicitly.** Except for the single pre-registered
    component under test, hold position sizing, protections, order types and fill
@@ -263,12 +264,12 @@ the [FreqAI callback order][freqai-source].
    portfolio's net marked-equity path at the strategy or detail timeframe.
    Aggregate a copy at fixed UTC daily boundaries for paired net-log-return
    inference and consistent attribution of trades crossing model windows.
-   Before computing logs, require finite, strictly positive marked equity at
-   every timestamp in every paired run. Any candidate breach is an automatic
-   failed promotion gate for that cost case, remains counted, and must not be
-   relabelled an invalid seed or omitted. An incumbent breach makes the paired
-   log statistic undefined and the experiment inconclusive unless a finite
-   treatment was pre-registered.
+   Before computing log returns, require finite, strictly positive marked
+   equity at every timestamp in every paired run. Any candidate breach is an
+   automatic failed promotion gate for that cost case, remains counted, and
+   must not be relabelled an invalid seed or omitted. An incumbent breach makes
+   the paired log statistic undefined and the experiment inconclusive unless a
+   finite treatment was pre-registered.
    Compute drawdown from the full intraday path instead of daily marks or
    averaged interval drawdowns. Derive this path externally when the backtest
    output does not expose it; do not substitute closed-trade balance. Report net
@@ -287,8 +288,10 @@ the [FreqAI callback order][freqai-source].
    stationary-bootstrap sequence of calendar-day blocks, and apply the same seed
    selection and block sequence to every run entering every comparison.
    For drawdown, concatenate the selected days' full intraday equity-return
-   segments before recomputing the statistic. Pre-register an independent pilot
-   period, a block-length selection rule applied to representative paired
+   segments before recomputing the statistic. Because maximum drawdown is a
+   non-smooth path-dependent functional, read its bootstrap bound as
+   approximate rather than a calibrated interval. Pre-register an independent
+   pilot period, a block-length selection rule applied to representative paired
    differentials, and a conservative longer-dependence sensitivity range before
    running the pilot; fix the resulting settings before opening evaluation
    results and require the decision to hold throughout the range. Use at least
