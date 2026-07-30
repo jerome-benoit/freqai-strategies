@@ -1,6 +1,7 @@
 import copy
 import fnmatch
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
@@ -305,20 +306,20 @@ class _LabelTransformerConfig:
         return get_label_column_config(column_name, self.default, self.columns)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, eq=False, slots=True)
 class _ScalerFamily:
-    registry: dict[str, str]
+    registry: Mapping[str, str]
     type_names: tuple[str, ...]
     kind: Literal["standardization", "normalization"]
 
 
 class LabelTransformer(BaseTransform):
-    _STANDARDIZATION_SCALERS: dict[str, str] = {
+    _STANDARDIZATION_SCALERS: Final[dict[str, str]] = {
         STANDARDIZATION_TYPES[1]: "standard_scaler",  # zscore
         STANDARDIZATION_TYPES[2]: "robust_scaler",  # robust
         STANDARDIZATION_TYPES[4]: "power_transformer",  # power_yj
     }
-    _NORMALIZATION_SCALERS: dict[str, str] = {
+    _NORMALIZATION_SCALERS: Final[dict[str, str]] = {
         NORMALIZATION_TYPES[0]: "maxabs_scaler",  # maxabs
         NORMALIZATION_TYPES[1]: "minmax_scaler",  # minmax
     }
