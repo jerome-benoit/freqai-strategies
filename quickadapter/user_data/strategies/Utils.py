@@ -2655,9 +2655,8 @@ class LabelWeightImputationMasks:
     algorithm.
 
     - ``dependency_mask``: pivots unavailable until the frame boundary
-    - ``leading_stable_mask``/``trailing_stable_mask``: subsets of
-      ``dependency_mask`` whose imputation is provably fixed at ``0.0`` on the
-      causal prefix, released over the prefix
+    - ``leading_stable_mask``: subset of ``dependency_mask`` whose imputation is
+      provably fixed at ``0.0`` on the causal prefix, released over the prefix
       ``weight_availability[: stable_release_index + 1]``
     - ``stable_release_index``: pivot index of the shared release candle, or
       ``-1`` when no pivot is finite
@@ -2665,7 +2664,6 @@ class LabelWeightImputationMasks:
 
     dependency_mask: NDArray[np.bool_]
     leading_stable_mask: NDArray[np.bool_]
-    trailing_stable_mask: NDArray[np.bool_]
     stable_release_index: int
 
 
@@ -2681,38 +2679,36 @@ def compute_label_weight_imputation_dependency_mask(
     dependency propagates from every selected component and from the aggregate
     before its final imputation.
 
-    ``leading_stable_mask`` and ``trailing_stable_mask`` (subsets of
-    ``dependency_mask``) mark non-finite runs that impute to ``0.0`` and are
-    provably fixed given only the causal prefix, so they need not defer to the
-    frame boundary:
+    ``leading_stable_mask`` (a subset of ``dependency_mask``) marks non-finite
+    runs that impute to ``0.0`` and are provably fixed given only the causal
+    prefix, so they need not defer to the frame boundary:
 
-    - single-metric: the leading run ``[0, first_finite)`` and the terminal
-      pivot (the last pivot, which has no closing swing) both impute to ``0.0``
-      and stabilize once the first finite pivot's weight is known;
-      ``stable_release_index = first_finite``. A non-terminal pivot in a longer
-      trailing run stays deferred to ``n`` (its 0.0 is not causal-prefix stable).
+    - single-metric: the leading run ``[0, first_finite)`` imputes to ``0.0``
+      and stabilizes once the first finite pivot's weight is known;
+      ``stable_release_index = first_finite``. The terminal pivot and any
+      non-terminal trailing run stay deferred to ``n`` (their 0.0 is not
+      causal-prefix stable: a later closing pivot turns the metric finite).
     - ``combined`` with every selected component leading with a non-finite run:
       the aggregate is stably zero over ``[0, min_c first_finite_c)`` (the
       shortest leading run bounds the all-zero prefix), released at the ``max``
       over components ``stable_release_index = max_c first_finite_c`` (the latest
       component confirmation; unequal run lengths must not leak). Guarded by an
-      empirical ``combined_weights[:S] == 0.0`` check; ``trailing_stable_mask``
-      is unused (empty) for ``combined``.
+      empirical ``combined_weights[:S] == 0.0`` check.
 
     ``stable_release_index`` is ``-1`` only when no pivot is finite (``uniform``,
     empty or all-non-finite metrics, and any ``combined`` case that fails the
-    checks above; those pivots keep the nonzero legacy default and defer to
-    ``n``). A single metric with any finite value always reports
-    ``first_finite`` even when both stable masks are empty (e.g. all-finite or
-    interior-only-NaN); the consumer additionally gates the release on the masks
-    being non-empty, so such an index is inert.
+    checks above; those pivots keep the nonzero default and defer to ``n``). A
+    single metric with any finite value always reports ``first_finite`` even
+    when ``leading_stable_mask`` is empty (e.g. all-finite or interior-only-NaN);
+    the consumer additionally gates the release on the mask being non-empty, so
+    such an index is inert.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
 
     def _empty_masks() -> LabelWeightImputationMasks:
         zeros = np.zeros(n_indices, dtype=bool)
-        return LabelWeightImputationMasks(zeros, zeros.copy(), zeros.copy(), -1)
+        return LabelWeightImputationMasks(zeros, zeros.copy(), -1)
 
     if strategy == WEIGHT_STRATEGIES[0]:  # "none"
         raise ValueError(
@@ -2733,23 +2729,13 @@ def compute_label_weight_imputation_dependency_mask(
             )
         dependency = _nonfinite_imputation_dependency_mask(values)
         leading_stable = np.zeros(n_indices, dtype=bool)
-        trailing_stable = np.zeros(n_indices, dtype=bool)
         finite = ~dependency
         release_index = -1
         if finite.any():
             first_finite = int(np.argmax(finite))
-            last_finite = finite.size - 1 - int(np.argmax(finite[::-1]))
             leading_stable[:first_finite] = True
-            # The terminal pivot (always last, no closing swing) is provably
-            # 0.0, so its classification cannot flip. A non-terminal trailing
-            # pivot could still turn interior (nonzero) once its own later swing
-            # confirms, so releasing it early would leak; defer it to n.
-            if last_finite < n_indices - 1:
-                trailing_stable[n_indices - 1] = True
             release_index = first_finite
-        return LabelWeightImputationMasks(
-            dependency, leading_stable, trailing_stable, release_index
-        )
+        return LabelWeightImputationMasks(dependency, leading_stable, release_index)
     if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
         raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
 
@@ -2779,7 +2765,7 @@ def compute_label_weight_imputation_dependency_mask(
 
     if len(imputed_metrics) == 0:
         empty = np.zeros(n_indices, dtype=bool)
-        return LabelWeightImputationMasks(dependency_mask, empty, empty.copy(), -1)
+        return LabelWeightImputationMasks(dependency_mask, empty, -1)
 
     combined_weights = _aggregate_imputed_metrics(
         imputed_metrics,
@@ -2805,9 +2791,7 @@ def compute_label_weight_imputation_dependency_mask(
         if bool(np.all(combined_weights[:stable_length] == 0.0)):
             leading_stable[:stable_length] = True
             release_index = max(first_finite_indices)
-    return LabelWeightImputationMasks(
-        dependency_mask, leading_stable, np.zeros(n_indices, dtype=bool), release_index
-    )
+    return LabelWeightImputationMasks(dependency_mask, leading_stable, release_index)
 
 
 def _compute_epsilon_floor(
@@ -3323,7 +3307,6 @@ def compute_label_weight_known_at_lookahead(
     *,
     imputation_dependency_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
     imputation_leading_stable_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
-    imputation_trailing_stable_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
     imputation_stable_release_index: int = -1,
     weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
@@ -3353,14 +3336,14 @@ def compute_label_weight_known_at_lookahead(
     dependencies.
 
     The imputation masks (``imputation_dependency_mask``,
-    ``imputation_leading_stable_mask``, ``imputation_trailing_stable_mask``,
-    ``imputation_stable_release_index``) come from
-    :func:`compute_label_weight_imputation_dependency_mask`. Dependency pivots
-    and their Gaussian bands wait for the frame boundary; stable-mask pivots are
-    released over ``weight_availability[: imputation_stable_release_index + 1]``,
-    folded via ``max`` with each pivot's own label availability, with their
-    zero-weight bands skipped. The release applies only in the identity-order
-    case (no dropped pivot) where the runs are a contiguous prefix/suffix.
+    ``imputation_leading_stable_mask``, ``imputation_stable_release_index``)
+    come from :func:`compute_label_weight_imputation_dependency_mask`.
+    Dependency pivots and their Gaussian bands wait for the frame boundary;
+    leading-stable pivots are released over
+    ``weight_availability[: imputation_stable_release_index + 1]``, folded via
+    ``max`` with each pivot's own label availability, with their zero-weight
+    bands skipped. The release applies only in the identity-order case (no
+    dropped pivot) where the run is a contiguous prefix.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -3391,16 +3374,12 @@ def compute_label_weight_known_at_lookahead(
     raw_leading_stable_mask = _validate_pivot_mask(
         imputation_leading_stable_mask, "imputation_leading_stable_mask"
     )
-    raw_trailing_stable_mask = _validate_pivot_mask(
-        imputation_trailing_stable_mask, "imputation_trailing_stable_mask"
-    )
     valid_mask = (raw_idx >= 0) & (raw_idx < n)
     idx = raw_idx[valid_mask]
     order = np.argsort(idx, kind="stable")
     idx = idx[order]
     dependency_mask = raw_dependency_mask[valid_mask][order]
     leading_stable_mask = raw_leading_stable_mask[valid_mask][order]
-    trailing_stable_mask = raw_trailing_stable_mask[valid_mask][order]
     base = known_at_positions.copy()
     if idx.size:
         weight_availability = np.empty(idx.size, dtype=np.int64)
@@ -3437,19 +3416,18 @@ def compute_label_weight_known_at_lookahead(
             np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
         avail_pivot[dependency_mask] = n
         if (
-            (leading_stable_mask.any() or trailing_stable_mask.any())
+            leading_stable_mask.any()
             and idx.size == raw_idx.size
             and np.array_equal(order, np.arange(idx.size))
             and 0 <= imputation_stable_release_index < weight_availability.size
         ):
             # Prefix max (not weight_availability[stable_release_index]) stays
             # leak-free if availability is non-monotone, at worst deferring
-            # later; guarded to identity order (contiguous prefix/suffix runs).
+            # later; guarded to identity order (contiguous prefix run).
             release = int(
                 np.max(weight_availability[: imputation_stable_release_index + 1])
             )
             avail_pivot[leading_stable_mask] = release
-            avail_pivot[trailing_stable_mask] = release
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
             for (
@@ -3458,18 +3436,16 @@ def compute_label_weight_known_at_lookahead(
                 weight_avail,
                 pivot_dependency,
                 pivot_leading,
-                pivot_trailing,
             ) in zip(
                 idx.tolist(),
                 avail_pivot.tolist(),
                 band_weight_availability.tolist(),
                 dependency_mask.tolist(),
                 leading_stable_mask.tolist(),
-                trailing_stable_mask.tolist(),
             ):
-                # A leading/trailing-run pivot imputes to 0.0 (zero bump): its own
-                # row is released above; it spreads no band.
-                if pivot_leading or pivot_trailing:
+                # A leading-run pivot imputes to 0.0 (zero bump): its own row is
+                # released above; it spreads no band.
+                if pivot_leading:
                     continue
                 # Skip pivots whose band weight never resolves in-frame
                 # (weight_avail == n): their Gaussian bump is zero. Exception: an

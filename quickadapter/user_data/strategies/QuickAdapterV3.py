@@ -1009,16 +1009,12 @@ class QuickAdapterV3(IStrategy):
                         imputation_leading_stable_mask = (
                             imputation_masks.leading_stable_mask
                         )
-                        imputation_trailing_stable_mask = (
-                            imputation_masks.trailing_stable_mask
-                        )
                         imputation_stable_release_index = (
                             imputation_masks.stable_release_index
                         )
                     else:
                         imputation_dependency_mask = None
                         imputation_leading_stable_mask = None
-                        imputation_trailing_stable_mask = None
                         imputation_stable_release_index = -1
                     dataframe[
                         label_weight_known_at_lookahead_column_name(label_col)
@@ -1029,7 +1025,6 @@ class QuickAdapterV3(IStrategy):
                         weighting_config=col_weighting_config,
                         imputation_dependency_mask=imputation_dependency_mask,
                         imputation_leading_stable_mask=imputation_leading_stable_mask,
-                        imputation_trailing_stable_mask=imputation_trailing_stable_mask,
                         imputation_stable_release_index=imputation_stable_release_index,
                     )
 
