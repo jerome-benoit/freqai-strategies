@@ -2658,8 +2658,8 @@ class LabelWeightImputationMasks:
     - ``leading_stable_mask``: subset of ``dependency_mask`` whose imputation is
       provably fixed at ``0.0`` on the causal prefix, released over the prefix
       ``weight_availability[: stable_release_index + 1]``
-    - ``stable_release_index``: pivot index of the shared release candle, or
-      ``-1`` when no pivot is finite
+    - ``stable_release_index``: pivot index bounding the shared release prefix,
+      or ``-1`` when ``leading_stable_mask`` is empty (no releasable run)
     """
 
     dependency_mask: NDArray[np.bool_]
@@ -2695,13 +2695,11 @@ def compute_label_weight_imputation_dependency_mask(
       component confirmation; unequal run lengths must not leak). Guarded by an
       empirical ``combined_weights[:S] == 0.0`` check.
 
-    ``stable_release_index`` is ``-1`` only when no pivot is finite (``uniform``,
-    empty or all-non-finite metrics, and any ``combined`` case that fails the
-    checks above; those pivots keep the nonzero default and defer to ``n``). A
-    single metric with any finite value always reports ``first_finite`` even
-    when ``leading_stable_mask`` is empty (e.g. all-finite or interior-only-NaN);
-    the consumer additionally gates the release on the mask being non-empty, so
-    such an index is inert.
+    ``stable_release_index`` is ``-1`` whenever ``leading_stable_mask`` is empty
+    (``uniform``, empty or all-non-finite metrics, a single metric with no
+    leading run such as all-finite or interior-only-NaN, and any ``combined``
+    case that fails the checks above); those pivots keep the nonzero default and
+    defer to ``n``. It is ``>= 0`` if and only if a leading run is released.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
@@ -2733,8 +2731,9 @@ def compute_label_weight_imputation_dependency_mask(
         release_index = -1
         if finite.any():
             first_finite = int(np.argmax(finite))
-            leading_stable[:first_finite] = True
-            release_index = first_finite
+            if first_finite > 0:
+                leading_stable[:first_finite] = True
+                release_index = first_finite
         return LabelWeightImputationMasks(dependency, leading_stable, release_index)
     if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
         raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
@@ -3314,7 +3313,7 @@ def compute_label_weight_known_at_lookahead(
 
     A metric-based pivot's weight is backfilled from the adjacent closing pivot,
     so it becomes computable at the next pivot's confirmation
-    ``i_{k+1} == known_at_positions[indices[k+1]]``; the trailing pivot has no
+    ``i_{k+1} == known_at_positions[indices[k+1]]``; the terminal pivot has no
     closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
     -> ``n``. A uniform pivot instead has a unit weight at its own label
     availability. Off-pivot rows keep their label availability, except that a
