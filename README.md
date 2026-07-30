@@ -298,11 +298,13 @@ the [FreqAI callback order][freqai-source].
    10,000 replications per setting and record the bootstrap seed. Report the
    paired effect, one-sided confidence bound and seed distribution. Declare the
    result inconclusive when the pre-registered minimum number of effective
-   blocks, trades, scored days or valid seeds is not met, or when resampling is
-   degenerate. The stationary bootstrap preserves local dependence under its
-   assumptions; it does not create information absent from a short backtest
-   [Politis and Romano][stationary-bootstrap]. See [Politis and
-   White][block-length] for data-driven block-length selection.
+   blocks, trades, scored days or valid seeds is not met, when resampling is
+   degenerate, or when the paired series' stationarity and local-dependence
+   assumptions are not credible under a fixed or moving-window scheme. The
+   stationary bootstrap preserves local dependence under its assumptions; it
+   does not create information absent from a short backtest [Politis and
+   Romano][stationary-bootstrap]. See [Politis and White][block-length] for
+   data-driven block-length selection.
 9. **Control selection and decide once.** Orient effects so positive values
    favor the candidate. A promotion requires the one-sided lower confidence
    bound for the primary net-growth improvement to exceed its practical margin,
