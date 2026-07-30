@@ -306,8 +306,7 @@ class _LabelTransformerConfig:
         return get_label_column_config(column_name, self.default, self.columns)
 
 
-# eq=False keeps identity hashing: with the frozen default eq=True the
-# synthesized __hash__ raises TypeError when called, as ``registry`` is unhashable.
+# registry is an unhashable Mapping -> eq=False
 @dataclass(frozen=True, eq=False, slots=True)
 class _ScalerFamily:
     registry: Mapping[str, str]
