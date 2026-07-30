@@ -25,12 +25,12 @@ from typing import (
     get_args,
 )
 
-from freqtrade.misc import pair_to_filename
 import numpy as np
 import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
+from freqtrade.misc import pair_to_filename
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
