@@ -105,6 +105,7 @@ from Utils import (
     migrate_config,
     optuna_load_best_params,
     optuna_save_best_params,
+    require_numeric,
     sanitize_and_renormalize,
     safe_distribution_fit,
     summarize_label_weight_support,
@@ -1384,31 +1385,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             minimum,
             maximum,
         ) in QuickAdapterRegressorV3._OPTUNA_INT_OPTION_BOUNDS.items():
-            value = optuna_config[option]
-            if (
-                type(value) is not int
-                or value < minimum
-                or (maximum is not None and value > maximum)
-            ):
-                constraint = (
-                    f"an integer >= {minimum}"
-                    if maximum is None
-                    else f"an integer in [{minimum}, {maximum}]"
-                )
-                raise ValueError(
-                    f"freqai.optuna_hyperopt.{option} must be {constraint} "
-                    f"(got {value!r})"
-                )
-        space_fraction = optuna_config["space_fraction"]
-        if (
-            type(space_fraction) not in (int, float)
-            or not 0 <= space_fraction <= 1
-            or not math.isfinite(space_fraction)
-        ):
-            raise ValueError(
-                "freqai.optuna_hyperopt.space_fraction must be a finite number "
-                f"in [0, 1] (got {space_fraction!r})"
+            require_numeric(
+                optuna_config[option],
+                option,
+                context="freqai.optuna_hyperopt",
+                minimum=minimum,
+                maximum=maximum,
+                require_int=True,
             )
+        require_numeric(
+            optuna_config["space_fraction"],
+            "space_fraction",
+            context="freqai.optuna_hyperopt",
+            minimum=0,
+            maximum=1,
+        )
         return optuna_config
 
     @property

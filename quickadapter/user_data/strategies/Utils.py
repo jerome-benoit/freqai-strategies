@@ -489,6 +489,31 @@ def _validate_params(
     return result
 
 
+def require_numeric(
+    value: Any,
+    name: str,
+    *,
+    context: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    min_exclusive: bool = False,
+    max_exclusive: bool = False,
+    require_int: bool = False,
+) -> int | float:
+    validator = _NumericValidator(
+        min_value=minimum,
+        max_value=maximum,
+        min_exclusive=min_exclusive,
+        max_exclusive=max_exclusive,
+        require_int=require_int,
+    )
+    if not validator(value):
+        raise ValueError(
+            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
+        )
+    return value
+
+
 def validate_range(
     min_val: float | int,
     max_val: float | int,
