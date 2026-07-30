@@ -2653,13 +2653,13 @@ class LabelWeightImputationMasks:
 
     ``dependency_mask`` pivots remain unavailable until the frame boundary.
     ``leading_stable_mask`` and ``trailing_stable_mask`` (both subsets of
-    ``dependency_mask``) mark non-finite runs whose imputation is provably fixed
-    at ``0.0`` given only the causal prefix; they are released at the max over
-    the release prefix ``weight_availability[: stable_release_index + 1]`` rather
-    than the frame boundary. ``stable_release_index`` is the pivot index whose
-    weight confirmation is that shared release candle: ``first_finite`` for a
-    single metric, ``max`` over components for ``combined`` (``-1`` when both
-    stable masks are empty).
+    ``dependency_mask``) mark non-finite pivots whose imputation is provably
+    fixed at ``0.0`` given only the causal prefix; they are released at the max
+    over the release prefix ``weight_availability[: stable_release_index + 1]``
+    rather than the frame boundary. ``stable_release_index`` is the pivot index
+    whose weight confirmation is that shared release candle (``first_finite`` for
+    a single metric, ``max`` over components for ``combined``), or ``-1`` when no
+    early release applies (the consumer also gates on the masks being non-empty).
     """
 
     dependency_mask: NDArray[np.bool_]
@@ -2685,9 +2685,11 @@ def compute_label_weight_imputation_dependency_mask(
     provably fixed given only the causal prefix, so they need not defer to the
     frame boundary:
 
-    - single-metric: the leading run ``[0, first_finite)`` and the trailing run
-      ``(last_finite, n)`` both impute to ``0.0`` and stabilize once the first
-      finite pivot's weight is known; ``stable_release_index = first_finite``.
+    - single-metric: the leading run ``[0, first_finite)`` and the terminal
+      pivot (the last pivot, which has no closing swing) both impute to ``0.0``
+      and stabilize once the first finite pivot's weight is known;
+      ``stable_release_index = first_finite``. A non-terminal pivot in a longer
+      trailing run stays deferred to ``n`` (its 0.0 is not causal-prefix stable).
     - ``combined`` with every selected component leading with a non-finite run:
       the aggregate is stably zero over ``[0, min_c first_finite_c)`` (the
       shortest leading run bounds the all-zero prefix), released at the ``max``
@@ -2696,9 +2698,11 @@ def compute_label_weight_imputation_dependency_mask(
       empirical ``combined_weights[:S] == 0.0`` check; ``trailing_stable_mask``
       is unused (empty) for ``combined``.
 
-    Both masks are empty (and ``stable_release_index == -1``) for ``uniform``,
-    all-non-finite metrics, and any ``combined`` case that fails the checks
-    above; those pivots keep the nonzero legacy default and defer to ``n``.
+    ``stable_release_index == -1`` (both stable masks empty, or single-metric
+    with all its finite/non-finite structure yielding no released pivot) for
+    ``uniform``, all-non-finite metrics, and any ``combined`` case that fails the
+    checks above; those pivots keep the nonzero legacy default and defer to
+    ``n``.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     strategy = label_weighting["strategy"]
@@ -2733,7 +2737,15 @@ def compute_label_weight_imputation_dependency_mask(
             first_finite = int(np.argmax(finite))
             last_finite = finite.size - 1 - int(np.argmax(finite[::-1]))
             leading_stable[:first_finite] = True
-            trailing_stable[last_finite + 1 :] = True
+            # Only the terminal pivot (no closing swing) is provably 0.0 at
+            # weight_availability[first_finite]: it is always the last pivot, so
+            # its trailing-boundary classification cannot flip. A non-terminal
+            # pivot in a longer trailing run (a degenerate interior swing, e.g.
+            # zero-volume window) could still turn interior (median != 0.0)
+            # until its own later swing is confirmed, so releasing it early
+            # would leak; leave it deferred to n via dependency_mask.
+            if last_finite < n_indices - 1:
+                trailing_stable[n_indices - 1] = True
             release_index = first_finite
         return LabelWeightImputationMasks(
             dependency, leading_stable, trailing_stable, release_index
