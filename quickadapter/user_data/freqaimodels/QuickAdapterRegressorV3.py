@@ -3579,9 +3579,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         max_candidate: float,
         pred_label: pd.Series,
     ) -> tuple[float, float]:
-        # Finite candidates are returned unchanged (no float() coercion) to keep
-        # the pre-refactor behavior bit-for-bit; only non-finite candidates fall
-        # back to the explicit ±2.0 sentinels, which sit outside the default
+        # Finite candidates are returned unchanged (no ``float()`` coercion) to
+        # keep the pre-refactor behavior bit-for-bit; only non-finite candidates
+        # fall back to the explicit ±2.0 sentinels, which sit outside the default
         # [-1, 1] normalized label range.
         if not np.isfinite(min_candidate):
             min_candidate = QuickAdapterRegressorV3.safe_min_pred(pred_label)
