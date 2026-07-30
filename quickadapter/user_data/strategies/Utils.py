@@ -2090,10 +2090,10 @@ def zero_phase_filter(
 
 
 # Zero-phase filter dispatch: method -> (kernel, window_selector). Module-level
-# Final table (_*_SPECS family), consumed via .get(method, default). Only the
-# window parity varies per method (std stays odd-window-derived in smooth); the
-# .get default reproduces the legacy "gaussian"/odd else-branch for unknown methods.
-_SMOOTHING_FILTER_SPECS: Final[
+# Final dispatch table consumed via .get(method, default). Both the kernel and
+# the window parity vary per method, while std stays odd-window-derived in smooth;
+# the .get default reproduces the legacy "gaussian"/odd else-branch for unknown methods.
+_ZERO_PHASE_FILTER_DISPATCH: Final[
     dict[SmoothingMethod, tuple[SmoothingKernel, Callable[[int], int]]]
 ] = {
     SMOOTHING_METHODS[1]: (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"
@@ -2158,7 +2158,7 @@ def smooth(
             index=series.index,
         )
 
-    win_type, window_selector = _SMOOTHING_FILTER_SPECS.get(
+    win_type, window_selector = _ZERO_PHASE_FILTER_DISPATCH.get(
         method,
         (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"/odd default
     )
