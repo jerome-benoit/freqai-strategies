@@ -221,8 +221,8 @@ the [FreqAI callback order][freqai-source].
    component under test. If HPO is part of the proposed behavior, run a second
    nested experiment: tune regressor parameters only on time-ordered inner
    training/validation splits, then evaluate once on the untouched outer
-   window. QuickAdapter's dynamic label HPO is different: it selects label
-   parameters from causal morphology objectives in `fit_live_predictions()`;
+   prediction window. QuickAdapter's dynamic label HPO is different: it selects
+   label parameters from causal morphology objectives in `fit_live_predictions()`;
    reproduce that deployed selector and judge it only by later outer economic
    results. Do not reinterpret label trials as regressor-validation trials. Any
    warm-start state used by an inner trial or selection model must have been
