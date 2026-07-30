@@ -2089,10 +2089,6 @@ def zero_phase_filter(
     return pd.Series(filtered_values, index=series.index)
 
 
-# Zero-phase filter dispatch: method -> (kernel, window_selector). The kernel
-# varies per method; the window is odd except for kaiser_bessel_derived (even).
-# std stays odd-window-derived in smooth; the .get default reproduces the legacy
-# "gaussian"/odd else-branch for unknown methods.
 _ZERO_PHASE_FILTER_DISPATCH: Final[
     dict[SmoothingMethod, tuple[SmoothingKernel, Callable[[int], int]]]
 ] = {
