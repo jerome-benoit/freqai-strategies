@@ -323,9 +323,13 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
-    # ``np.isfinite`` raises/returns non-scalar on inputs it cannot reduce to a
-    # single finite float64 (Python ints >= 2**64 -> ``TypeError``/``OverflowError``;
-    # array-likes -> a ``ValueError`` on ``bool()``); treat all of those as non-finite.
+    # Short-circuit Python ints (always finite): ``np.isfinite`` raises on ints
+    # >= 2**64 (``TypeError``/``OverflowError``), so routing them through it
+    # would misclassify finite values as non-finite. ``np.isfinite`` also
+    # raises/returns non-scalar on array-likes (``ValueError`` on ``bool()``);
+    # treat those remaining failures as non-finite.
+    if isinstance(value, int):
+        return True
     try:
         return bool(np.isfinite(value))
     except (TypeError, OverflowError, ValueError):
@@ -487,6 +491,42 @@ def _validate_params(
                 value = spec.output_type(value)
         result[param] = value
     return result
+
+
+def require_numeric(
+    value: Any,
+    name: str,
+    *,
+    context: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    min_exclusive: bool = False,
+    max_exclusive: bool = False,
+    require_int: bool = False,
+) -> int | float:
+    """Return an exact built-in numeric value that satisfies the requested bounds."""
+    validator = _NumericValidator(
+        min_value=minimum,
+        max_value=maximum,
+        min_exclusive=min_exclusive,
+        max_exclusive=max_exclusive,
+        require_int=require_int,
+    )
+    accepted_types = (int,) if require_int else (int, float)
+    if type(value) not in accepted_types or not validator(value):
+        raise ValueError(
+            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
+        )
+    return value
+
+
+def require_bool(value: Any, name: str, *, context: str) -> bool:
+    validator = _BoolValidator()
+    if not validator(value):
+        raise ValueError(
+            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
+        )
+    return value
 
 
 def validate_range(
