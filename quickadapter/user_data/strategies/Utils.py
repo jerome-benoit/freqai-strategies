@@ -2758,8 +2758,9 @@ def compute_label_weight_imputation_dependency_mask(
         if component_finite.any():
             first_finite_indices.append(int(np.argmax(component_finite)))
         else:
-            # An all-non-finite component imputes to the nonzero default (1.0),
-            # so the aggregate leading run cannot be a stable zero.
+            # An all-non-finite component never confirms a finite weight
+            # in-frame, so it has no first_finite release candle; block the
+            # leading release and defer these pivots to n conservatively.
             every_component_has_finite = False
 
     if len(imputed_metrics) == 0:
