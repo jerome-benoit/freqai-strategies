@@ -2740,13 +2740,10 @@ def compute_label_weight_imputation_dependency_mask(
             first_finite = int(np.argmax(finite))
             last_finite = finite.size - 1 - int(np.argmax(finite[::-1]))
             leading_stable[:first_finite] = True
-            # Only the terminal pivot (no closing swing) is provably 0.0 at
-            # weight_availability[first_finite]: it is always the last pivot, so
-            # its trailing-boundary classification cannot flip. A non-terminal
-            # pivot in a longer trailing run (a degenerate interior swing, e.g.
-            # zero-volume window) could still turn interior (median != 0.0)
-            # until its own later swing is confirmed, so releasing it early
-            # would leak; leave it deferred to n via dependency_mask.
+            # The terminal pivot (always last, no closing swing) is provably
+            # 0.0, so its classification cannot flip. A non-terminal trailing
+            # pivot could still turn interior (nonzero) once its own later swing
+            # confirms, so releasing it early would leak; defer it to n.
             if last_finite < n_indices - 1:
                 trailing_stable[n_indices - 1] = True
             release_index = first_finite
@@ -2776,8 +2773,8 @@ def compute_label_weight_imputation_dependency_mask(
         if component_finite.any():
             first_finite_indices.append(int(np.argmax(component_finite)))
         else:
-            # An all-non-finite component imputes to the nonzero legacy default
-            # (1.0), so the aggregate leading run cannot be a stable zero.
+            # An all-non-finite component imputes to the nonzero default (1.0),
+            # so the aggregate leading run cannot be a stable zero.
             every_component_has_finite = False
 
     if len(imputed_metrics) == 0:
@@ -3445,10 +3442,9 @@ def compute_label_weight_known_at_lookahead(
             and np.array_equal(order, np.arange(idx.size))
             and 0 <= imputation_stable_release_index < weight_availability.size
         ):
-            # Release stable-mask pivots at the prefix max
-            # weight_availability[: stable_release_index + 1]; this stays
-            # leak-free even if availability is non-monotone (at worst defers
-            # later). Guarded to identity order (contiguous prefix/suffix runs).
+            # Prefix max (not weight_availability[stable_release_index]) stays
+            # leak-free if availability is non-monotone, at worst deferring
+            # later; guarded to identity order (contiguous prefix/suffix runs).
             release = int(
                 np.max(weight_availability[: imputation_stable_release_index + 1])
             )
