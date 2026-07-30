@@ -998,17 +998,24 @@ class QuickAdapterV3(IStrategy):
                 )
                 if label_data.known_at_lookahead is not None:
                     if causal_mode:
-                        (
-                            imputation_dependency_mask,
-                            imputation_leading_stable_mask,
-                        ) = compute_label_weight_imputation_dependency_mask(
-                            len(label_data.indices),
-                            label_data.metrics,
-                            col_weighting_config,
+                        imputation_masks = (
+                            compute_label_weight_imputation_dependency_mask(
+                                len(label_data.indices),
+                                label_data.metrics,
+                                col_weighting_config,
+                            )
+                        )
+                        imputation_dependency_mask = imputation_masks.dependency_mask
+                        imputation_leading_stable_mask = (
+                            imputation_masks.leading_stable_mask
+                        )
+                        imputation_stable_release_index = (
+                            imputation_masks.stable_release_index
                         )
                     else:
                         imputation_dependency_mask = None
                         imputation_leading_stable_mask = None
+                        imputation_stable_release_index = -1
                     dataframe[
                         label_weight_known_at_lookahead_column_name(label_col)
                     ] = compute_label_weight_known_at_lookahead(
@@ -1018,6 +1025,7 @@ class QuickAdapterV3(IStrategy):
                         weighting_config=col_weighting_config,
                         imputation_dependency_mask=imputation_dependency_mask,
                         imputation_leading_stable_mask=imputation_leading_stable_mask,
+                        imputation_stable_release_index=imputation_stable_release_index,
                     )
 
             if label_col == EXTREMA_COLUMN:
