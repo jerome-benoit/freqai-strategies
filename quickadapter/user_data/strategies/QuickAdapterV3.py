@@ -271,7 +271,7 @@ class QuickAdapterV3(IStrategy):
         return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
 
     @staticmethod
-    def _is_unlimited_open_trades(max_open_trades: float) -> bool:
+    def _is_unlimited_max_open_trades(max_open_trades: int | float) -> bool:
         return max_open_trades == -1 or max_open_trades == math.inf
 
     @cached_property
@@ -297,14 +297,14 @@ class QuickAdapterV3(IStrategy):
             fit_live_predictions_candles,
         )
         max_open_trades = self.config.get("max_open_trades", 0)
-        unlimited_open_trades = QuickAdapterV3._is_unlimited_open_trades(
+        unlimited_max_open_trades = QuickAdapterV3._is_unlimited_max_open_trades(
             max_open_trades
         )
         estimated_trade_limit = max(
             2,
             int(round(lookback_period_candles / max(1, trade_duration_candles))),
         )
-        if unlimited_open_trades:
+        if unlimited_max_open_trades:
             stoploss_trade_limit = estimated_trade_limit
             drawdown_trade_limit = 2 * estimated_trade_limit
         else:
@@ -361,7 +361,7 @@ class QuickAdapterV3(IStrategy):
     @property
     def max_open_trades_per_side(self) -> int:
         max_open_trades = self.config.get("max_open_trades", 0)
-        if QuickAdapterV3._is_unlimited_open_trades(max_open_trades):
+        if QuickAdapterV3._is_unlimited_max_open_trades(max_open_trades):
             return -1
         if self.is_short_allowed():
             if max_open_trades % 2 == 1:
@@ -2288,7 +2288,7 @@ class QuickAdapterV3(IStrategy):
             return False
         max_open_trades = self.config.get("max_open_trades", 0)
         if (
-            not QuickAdapterV3._is_unlimited_open_trades(max_open_trades)
+            not QuickAdapterV3._is_unlimited_max_open_trades(max_open_trades)
             and Trade.get_open_trade_count() >= max_open_trades
         ):
             return False
