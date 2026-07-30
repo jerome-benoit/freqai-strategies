@@ -267,7 +267,7 @@ the [FreqAI callback order][freqai-source].
    Before computing log returns, require finite, strictly positive marked
    equity at every timestamp in every paired run. Any candidate breach is an
    automatic failed promotion gate for that cost case, remains counted, and
-   must not be relabelled an invalid seed or omitted. An incumbent breach makes
+   must not be relabeled an invalid seed or omitted. An incumbent breach makes
    the paired log statistic undefined and the experiment inconclusive unless a
    finite treatment was pre-registered.
    Compute drawdown from the full intraday path instead of daily marks or
@@ -307,7 +307,7 @@ the [FreqAI callback order][freqai-source].
    data-driven block-length selection.
 9. **Control selection and decide once.** Orient effects so positive values
    favor the candidate. A promotion requires the one-sided lower confidence
-   bound for the primary net-growth improvement to exceed its practical margin,
+   bound for the primary net-log-return effect to exceed its practical margin,
    the lower bound for incumbent-minus-candidate maximum drawdown to exceed the
    negative degradation margin, all operational constraints to pass, and the
    conclusion to hold in every pre-registered cost case and on the untouched
