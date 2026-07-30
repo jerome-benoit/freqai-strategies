@@ -323,12 +323,13 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
-    # Python integers are arbitrary-precision and always finite.
+    # Short-circuit Python ints (always finite): ``np.isfinite`` raises on ints
+    # >= 2**64 (``TypeError``/``OverflowError``), so routing them through it
+    # would misclassify finite values as non-finite. ``np.isfinite`` also
+    # raises/returns non-scalar on array-likes (``ValueError`` on ``bool()``);
+    # treat those remaining failures as non-finite.
     if isinstance(value, int):
         return True
-    # ``np.isfinite`` raises/returns non-scalar on inputs it cannot reduce to a
-    # single finite value (array-likes -> a ``ValueError`` on ``bool()``);
-    # treat all of those as non-finite.
     try:
         return bool(np.isfinite(value))
     except (TypeError, OverflowError, ValueError):
