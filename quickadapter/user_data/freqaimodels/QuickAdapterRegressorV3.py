@@ -1979,9 +1979,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 split_builder = self._make_timeseries_split_datasets
             case _:
                 raise ValueError(
-                    f"Invalid data_split_parameters.method value {method!r}: "
-                    f"supported values are "
-                    f"{', '.join(QuickAdapterRegressorV3._DATA_SPLIT_METHODS)}"
+                    enum_error_message(
+                        "data_split_parameters.method",
+                        method,
+                        QuickAdapterRegressorV3._DATA_SPLIT_METHODS,
+                    )
                 )
 
         def split_fn(
@@ -3098,8 +3100,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> None:
         if namespace not in {_OPTUNA_NAMESPACES.label}:
             raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {_OPTUNA_NAMESPACES.label}"
+                enum_error_message("namespace", namespace, (_OPTUNA_NAMESPACES.label,))
             )
         if not callable(callback):
             raise ValueError(
@@ -3564,8 +3565,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pred_label_minima = pred_label[pred_label < -eps]
         else:
             raise ValueError(
-                f"Invalid selection_method value {selection_method!r}: "
-                f"supported values are {', '.join(EXTREMA_SELECTION_METHODS)}"
+                enum_error_message(
+                    "selection_method", selection_method, EXTREMA_SELECTION_METHODS
+                )
             )
 
         return pred_label_minima, pred_label_maxima
@@ -3668,8 +3670,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             threshold_func = getattr(skimage.filters, f"threshold_{method}")
         except AttributeError:
             raise ValueError(
-                f"Invalid skimage threshold method value {method!r}: "
-                f"supported values are {', '.join(SKIMAGE_THRESHOLD_METHODS)}"
+                enum_error_message(
+                    "skimage threshold method", method, SKIMAGE_THRESHOLD_METHODS
+                )
             )
 
         min_func = QuickAdapterRegressorV3.apply_skimage_threshold
@@ -4052,8 +4055,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid trial_selection_method value {trial_selection_method!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                enum_error_message(
+                    "trial_selection_method",
+                    trial_selection_method,
+                    QuickAdapterRegressorV3._DISTANCE_METHODS,
+                )
             )
 
         min_score_position = np.nanargmin(scores)
@@ -4126,8 +4132,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             else:
                 raise ValueError(
-                    f"Invalid selection_method value {selection_method!r}: "
-                    f"supported values are {', '.join(QuickAdapterRegressorV3._DISTANCE_METHODS)}"
+                    enum_error_message(
+                        "selection_method",
+                        selection_method,
+                        QuickAdapterRegressorV3._DISTANCE_METHODS,
+                    )
                 )
             ordered_cluster_indices = np.argsort(cluster_center_scores)
 
@@ -4164,8 +4173,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         else:
             raise ValueError(
-                f"Invalid cluster_method value {cluster_method!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._CLUSTER_METHODS)}"
+                enum_error_message(
+                    "cluster_method",
+                    cluster_method,
+                    QuickAdapterRegressorV3._CLUSTER_METHODS,
+                )
             )
 
     @staticmethod
@@ -4242,8 +4254,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             return np.nanmax(neighbor_distances, axis=1)
         else:
             raise ValueError(
-                f"Invalid aggregation value {aggregation!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._DENSITY_AGGREGATIONS)}"
+                enum_error_message(
+                    "aggregation",
+                    aggregation,
+                    QuickAdapterRegressorV3._DENSITY_AGGREGATIONS,
+                )
             )
 
     @staticmethod
@@ -4580,8 +4595,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
 
         raise ValueError(
-            f"Invalid label_method value {selection_method!r}: "
-            f"supported values are {', '.join(QuickAdapterRegressorV3._SELECTION_METHODS)}"
+            enum_error_message(
+                "label_method",
+                selection_method,
+                QuickAdapterRegressorV3._SELECTION_METHODS,
+            )
         )
 
     def _get_multi_objective_study_best_trial(
@@ -4589,8 +4607,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> Optional[optuna.trial.FrozenTrial]:
         if namespace not in {_OPTUNA_NAMESPACES.label}:
             raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {_OPTUNA_NAMESPACES.label}"
+                enum_error_message("namespace", namespace, (_OPTUNA_NAMESPACES.label,))
             )
         n_objectives = len(study.directions)
         if n_objectives < 2:
@@ -4912,8 +4929,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid optuna storage_backend value {storage_backend!r}: "
-                f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS)}"
+                enum_error_message(
+                    "optuna storage_backend",
+                    storage_backend,
+                    QuickAdapterRegressorV3._OPTUNA_STORAGE_BACKENDS,
+                )
             )
         return storage
 
@@ -4937,8 +4957,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         match sampler:
             case None:
                 raise ValueError(
-                    f"Invalid optuna sampler value {sampler!r}: "
-                    f"supported values are {', '.join(QuickAdapterRegressorV3._OPTUNA_SAMPLERS)}"
+                    enum_error_message(
+                        "optuna sampler",
+                        sampler,
+                        QuickAdapterRegressorV3._OPTUNA_SAMPLERS,
+                    )
                 )
             case QuickAdapterRegressorV3._OPTUNA_SAMPLERS.tpe:
                 return optuna.samplers.TPESampler(
@@ -4978,8 +5001,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         else:
             raise ValueError(
-                f"Invalid namespace value {namespace!r}: "
-                f"supported values are {', '.join(_OPTUNA_NAMESPACES)}"
+                enum_error_message("namespace", namespace, _OPTUNA_NAMESPACES)
             )
 
     @staticmethod
@@ -5103,8 +5125,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         samplers, sampler = self.optuna_samplers_by_namespace(namespace)
         if sampler not in samplers:
             raise ValueError(
-                f"Invalid optuna {namespace} sampler value {sampler!r}: "
-                f"supported values are {', '.join(samplers)}"
+                enum_error_message(
+                    f"optuna {namespace} sampler", sampler, tuple(samplers)
+                )
             )
 
         try:
