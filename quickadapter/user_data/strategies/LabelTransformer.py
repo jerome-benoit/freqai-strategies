@@ -21,6 +21,8 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 
+from EnumErrors import enum_error_message
+
 logger = logging.getLogger(__name__)
 
 
@@ -422,10 +424,7 @@ class LabelTransformer(BaseTransform):
     ) -> NDArray[np.floating]:
         scaler_attr = family.registry.get(method)
         if scaler_attr is None:
-            raise ValueError(
-                f"Invalid {family.kind} value {method!r}: "
-                f"supported values are {', '.join(family.type_names)}"
-            )
+            raise ValueError(enum_error_message(family.kind, method, family.type_names))
         scaler = getattr(state, scaler_attr, None)
         if scaler is None:
             raise RuntimeError(f"{scaler_attr} not fitted")
@@ -514,8 +513,7 @@ class LabelTransformer(BaseTransform):
             return
 
         raise ValueError(
-            f"Invalid standardization value {method!r}: "
-            f"supported values are {', '.join(STANDARDIZATION_TYPES)}"
+            enum_error_message("standardization", method, STANDARDIZATION_TYPES)
         )
 
     def _fit_normalization(
@@ -536,8 +534,7 @@ class LabelTransformer(BaseTransform):
             return
 
         raise ValueError(
-            f"Invalid normalization value {method!r}: "
-            f"supported values are {', '.join(NORMALIZATION_TYPES)}"
+            enum_error_message("normalization", method, NORMALIZATION_TYPES)
         )
 
     def _fit_column(
