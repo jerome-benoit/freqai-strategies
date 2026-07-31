@@ -2651,6 +2651,69 @@ def _aggregate_imputed_metrics(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _CombinedWeightPipeline:
+    """Single pass of the combined ``select -> impute -> aggregate`` pipeline.
+
+    ``selected`` is the :func:`_select_combined_metrics` output in selection
+    order ``(name, raw pre-imputation values, coefficient)``. ``combined_weights``
+    is the aggregated weights BEFORE any value-path final imputation:
+
+    - ``selected`` empty: ``combined_weights`` is ``np.asarray([], dtype=float)``
+      regardless of ``expected_length``;
+    - ``expected_length`` given and ``selected`` non-empty:
+      ``combined_weights.shape == (expected_length,)``;
+    - ``expected_length`` is ``None`` and ``selected`` non-empty:
+      ``combined_weights`` is the reduction over the selected components' shared
+      length.
+    """
+
+    selected: tuple[tuple[str, NDArray[np.floating], float], ...]
+    combined_weights: NDArray[np.floating]
+
+
+def _compute_combined_label_weight_pipeline(
+    metrics: dict[str, list[float]],
+    metric_coefficients: dict[str, Any],
+    aggregation: CombinedAggregation,
+    softmax_temperature: float,
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
+    expected_length: int | None = None,
+) -> _CombinedWeightPipeline:
+    """Run the combined ``select -> impute -> aggregate`` pipeline once.
+
+    When ``expected_length`` is not ``None``, raises ``ValueError`` on the first
+    selected component (in selection order) whose shape is not
+    ``(expected_length,)`` and on combined weights whose shape is not
+    ``(expected_length,)``; when ``None`` no shape validation is performed and
+    malformed inputs surface downstream (e.g. via ``np.vstack``).
+    """
+    selected = tuple(_select_combined_metrics(metrics, metric_coefficients))
+    if expected_length is not None:
+        for metric_name, values_array, _coefficient in selected:
+            if values_array.shape != (expected_length,):
+                raise ValueError(
+                    f"Invalid metric {metric_name!r} shape {values_array.shape}: "
+                    f"must be ({expected_length},)"
+                )
+    if len(selected) == 0:
+        return _CombinedWeightPipeline(selected, np.asarray([], dtype=float))
+
+    combined_weights = _aggregate_imputed_metrics(
+        [impute(values) for _, values, _ in selected],
+        [coefficient for _, _, coefficient in selected],
+        aggregation,
+        softmax_temperature,
+    )
+    if expected_length is not None and combined_weights.shape != (expected_length,):
+        raise ValueError(
+            f"Invalid combined weights shape {combined_weights.shape}: "
+            f"must be ({expected_length},)"
+        )
+    return _CombinedWeightPipeline(selected, combined_weights)
+
+
 def _compute_combined_label_weights(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
@@ -2659,16 +2722,13 @@ def _compute_combined_label_weights(
     *,
     impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
 ) -> NDArray[np.floating]:
-    selected = _select_combined_metrics(metrics, metric_coefficients)
-    if len(selected) == 0:
-        return np.asarray([], dtype=float)
-
-    return _aggregate_imputed_metrics(
-        [impute(values) for _, values, _ in selected],
-        [coefficient for _, _, coefficient in selected],
+    return _compute_combined_label_weight_pipeline(
+        metrics,
+        metric_coefficients,
         aggregation,
         softmax_temperature,
-    )
+        impute=impute,
+    ).combined_weights
 
 
 def _nonfinite_imputation_dependency_mask(
@@ -2774,23 +2834,21 @@ def compute_label_weight_imputation_dependency_mask(
     if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
         raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
 
+    pipeline = _compute_combined_label_weight_pipeline(
+        metrics,
+        label_weighting["metric_coefficients"],
+        label_weighting["aggregation"],
+        label_weighting["softmax_temperature"],
+        impute=_impute_weights,
+        expected_length=n_indices,
+    )
+
     dependency_mask = np.zeros(n_indices, dtype=bool)
-    imputed_metrics: list[NDArray[np.floating]] = []
-    coefficients_list: list[float] = []
     first_finite_indices: list[int] = []
     every_component_has_finite = True
-    for metric_name, values_array, coefficient in _select_combined_metrics(
-        metrics, label_weighting["metric_coefficients"]
-    ):
-        if values_array.shape != (n_indices,):
-            raise ValueError(
-                f"Invalid metric {metric_name!r} shape {values_array.shape}: "
-                f"must be ({n_indices},)"
-            )
+    for _metric_name, values_array, _coefficient in pipeline.selected:
         component_finite = np.isfinite(values_array)
         dependency_mask |= ~component_finite
-        imputed_metrics.append(_impute_weights(values_array))
-        coefficients_list.append(coefficient)
         if component_finite.any():
             first_finite_indices.append(int(np.argmax(component_finite)))
         else:
@@ -2799,21 +2857,11 @@ def compute_label_weight_imputation_dependency_mask(
             # leading release and defer these pivots to n conservatively.
             every_component_has_finite = False
 
-    if len(imputed_metrics) == 0:
+    if len(pipeline.selected) == 0:
         empty = np.zeros(n_indices, dtype=bool)
         return LabelWeightImputationMasks(dependency_mask, empty, -1)
 
-    combined_weights = _aggregate_imputed_metrics(
-        imputed_metrics,
-        coefficients_list,
-        label_weighting["aggregation"],
-        label_weighting["softmax_temperature"],
-    )
-    if combined_weights.shape != (n_indices,):
-        raise ValueError(
-            f"Invalid combined weights shape {combined_weights.shape}: "
-            f"must be ({n_indices},)"
-        )
+    combined_weights = pipeline.combined_weights
     dependency_mask |= _nonfinite_imputation_dependency_mask(combined_weights)
 
     leading_stable = np.zeros(n_indices, dtype=bool)
