@@ -1079,9 +1079,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if mode == "none":
             return default
 
-        msg = (
-            f"Invalid {ctx} {value!r}: supported values are {', '.join(valid_options)}"
-        )
+        msg = enum_error_message(ctx, value, valid_options)
         if mode == "raise":
             raise ValueError(msg)
         logger.warning(f"{msg}, using {default!r}")

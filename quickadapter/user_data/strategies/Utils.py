@@ -4851,7 +4851,7 @@ def get_ngboost_dist(dist_name: str) -> type:
 
     if dist_name not in dist_map:
         raise ValueError(
-            f"Invalid dist_name {dist_name!r}: supported values are {', '.join(dist_map.keys())}"
+            enum_error_message("dist_name", dist_name, tuple(dist_map.keys()))
         )
 
     return dist_map[dist_name]
