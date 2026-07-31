@@ -20,7 +20,6 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-
 from EnumErrors import enum_error_message
 
 logger = logging.getLogger(__name__)
