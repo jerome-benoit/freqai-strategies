@@ -1,8 +1,7 @@
-"""Single source of truth for enum validation error messages.
+"""Canonical enum validation error message. Dependency-free (stdlib only).
 
-Dependency-free module (standard library only) so it can be imported by
-``Utils`` (which imports from ``LabelTransformer``) and by ``LabelTransformer``
-itself without introducing an import cycle.
+Owns the ``Invalid <ctx> value <value>: supported values are <options>`` form;
+messages that deviate from it (custom prefix/infix/suffix) are built inline.
 """
 
 from collections.abc import Sequence
