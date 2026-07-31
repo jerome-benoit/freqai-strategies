@@ -37,6 +37,7 @@ import pandas as pd
 import scipy as sp
 import talib.abstract as ta
 from freqtrade.misc import pair_to_filename
+from EnumErrors import enum_error_message
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
@@ -1102,10 +1103,6 @@ def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
             f"Invalid {name} value {value!r}: must be a mapping, using defaults"
         )
     return as_dict(value)
-
-
-def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
-    return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
