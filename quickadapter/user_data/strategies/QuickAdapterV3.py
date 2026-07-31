@@ -59,6 +59,7 @@ from Utils import (
     compute_label_weight_known_at_lookahead,
     compute_label_weights,
     ensure_datetime_series,
+    enum_error_message,
     ewo,
     format_dict,
     format_number,
@@ -1349,8 +1350,11 @@ class QuickAdapterV3(IStrategy):
         )
         if trade_price_target_method_fn is None:
             raise ValueError(
-                f"Invalid trade_price_target_method value {self.trade_price_target_method!r}: "
-                f"supported values are {', '.join(TRADE_PRICE_TARGETS)}"
+                enum_error_message(
+                    "trade_price_target_method",
+                    self.trade_price_target_method,
+                    TRADE_PRICE_TARGETS,
+                )
             )
         return trade_price_target_method_fn()
 
@@ -1849,8 +1853,11 @@ class QuickAdapterV3(IStrategy):
             )
         else:
             raise ValueError(
-                f"Invalid interpolation_direction value {interpolation_direction!r}: "
-                f"supported values are {', '.join(QuickAdapterV3._INTERPOLATION_DIRECTIONS)}"
+                enum_error_message(
+                    "interpolation_direction",
+                    interpolation_direction,
+                    QuickAdapterV3._INTERPOLATION_DIRECTIONS,
+                )
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
@@ -1920,7 +1927,7 @@ class QuickAdapterV3(IStrategy):
             candle_threshold = base_price * (1 - current_deviation)
         else:
             raise ValueError(
-                f"Invalid side value {side!r}: supported values are {', '.join(QuickAdapterV3._TRADE_DIRECTIONS)}"
+                enum_error_message("side", side, QuickAdapterV3._TRADE_DIRECTIONS)
             )
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]
@@ -2344,8 +2351,9 @@ class QuickAdapterV3(IStrategy):
             return False
         else:
             raise ValueError(
-                f"Invalid trading_mode value {trading_mode!r}: "
-                f"supported values are {', '.join(QuickAdapterV3._TRADING_MODES)}"
+                enum_error_message(
+                    "trading_mode", trading_mode, QuickAdapterV3._TRADING_MODES
+                )
             )
 
     @cached_property
