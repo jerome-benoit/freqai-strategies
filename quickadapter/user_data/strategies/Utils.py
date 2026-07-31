@@ -37,6 +37,7 @@ import pandas as pd
 import scipy as sp
 import talib.abstract as ta
 from freqtrade.misc import pair_to_filename
+from EnumErrors import enum_error_message
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
@@ -1104,10 +1105,6 @@ def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
     return as_dict(value)
 
 
-def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
-    return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
-
-
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
 CrossFieldValidatorFn = Callable[[dict[str, Any], str], None]
 
@@ -2104,10 +2101,7 @@ def _calculate_coeffs(
     elif win_type == SMOOTHING_KERNELS[3]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
-        raise ValueError(
-            f"Invalid window type value {win_type!r}: "
-            f"supported values are {', '.join(SMOOTHING_KERNELS)}"
-        )
+        raise ValueError(enum_error_message("window type", win_type, SMOOTHING_KERNELS))
     normalized_coeffs = coeffs / np.sum(coeffs)
     normalized_coeffs.setflags(write=False)
     return normalized_coeffs
@@ -2372,8 +2366,7 @@ def _compute_pivot_sigmas(
         return np.full(M, float(sigma_candles), dtype=float)
     if bandwidth != FILL_BANDWIDTHS[1]:  # "knn"
         raise ValueError(
-            f"Invalid fill_bandwidth value {bandwidth!r}: "
-            f"supported values are {', '.join(FILL_BANDWIDTHS)}"
+            enum_error_message("fill_bandwidth", bandwidth, FILL_BANDWIDTHS)
         )
 
     d_k = _compute_pivot_kth_neighbor_distances(pivot_indices, neighbors)
@@ -3178,10 +3171,7 @@ def compute_label_weights(
             out=fill_weights,
         )
     else:
-        raise ValueError(
-            f"Invalid fill_method value {fill_method!r}: "
-            f"supported values are {', '.join(FILL_METHODS)}"
-        )
+        raise ValueError(enum_error_message("fill_method", fill_method, FILL_METHODS))
 
     return _scatter_weights(
         n_values=n_values,
@@ -4909,7 +4899,7 @@ def get_ngboost_dist(dist_name: str) -> type:
 
     if dist_name not in dist_map:
         raise ValueError(
-            f"Invalid dist_name {dist_name!r}: supported values are {', '.join(dist_map.keys())}"
+            enum_error_message("dist_name", dist_name, tuple(dist_map.keys()))
         )
 
     return dist_map[dist_name]
@@ -4952,10 +4942,7 @@ def get_refit_model_training_parameters(
         fitted_iterations = int(model.tree_count_)
         initial_iterations = 0
     else:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: "
-            f"supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
     spec = _REGRESSOR_SPEC_BY_NAME[regressor]
     # The sole caller refits the cold-started selection model
@@ -5015,10 +5002,7 @@ def fit_regressor(
 
     spec = _REGRESSOR_SPEC_BY_NAME.get(regressor)
     if spec is None:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: "
-            f"supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
     model_training_parameters.setdefault(spec.seed_param, 1)
     if trial is not None and vary_model_seed_by_trial:
         model_training_parameters[spec.seed_param] = (
