@@ -1335,6 +1335,12 @@ def _get_label_config(
     defaults_dict: dict[str, Any],
 ) -> dict[str, Any]:
     if "default" in config or "columns" in config:
+        ignored_keys = sorted(config.keys() - {"default", "columns"})
+        if ignored_keys:
+            logger.warning(
+                f"{config_name} uses per-label configuration: ignoring sibling keys {ignored_keys!r}"
+            )
+
         default_config = config.get("default", {})
         if not isinstance(default_config, dict):
             logger.warning(
