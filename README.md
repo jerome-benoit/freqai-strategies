@@ -407,6 +407,36 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
+ReforceXY optimizes fee-aware pair-local net log returns marked to liquidation.
+Inside `MyRLEnv` training and evaluation, an observation contains features and
+position state through candle close `t - 1`; its action fills at candle open
+`t`; a retained position is marked at candle close `t`, while an exit is
+liquidated at its open fill.
+Dry/live inference has the same observation schema but not universal
+same-close numerical parity. Its feature window is candle-aligned, while the
+appended trade state comes from Freqtrade's inherited `get_state_info()`.
+Freqtrade marks open-trade PnL with its authoritative configured exit-side
+rate, which may be cached or derived from an order book or ticker and is
+asynchronous with the feature candle close. Freqtrade remains authoritative
+for wallet allocation, stakes, portfolio exposure, order execution, fills, and
+protections. Models trained under earlier reward or clock contracts, or with
+frame stacking, are not compatible with the current template identifier.
+The runtime resolves the exchange fee for each pair independently and supplies
+it to one unregistered Freqtrade `LocalTrade` per position for fee-aware marks.
+The object is reused until exit; it is never added to the backtesting trade
+registry. An explicit top-level `fee` configuration remains authoritative,
+including `fee=0.0`.
+The contract currently requires dry/live mode, spot trading, unlimited stake,
+and `add_state_info=true`. It fails fast in FreqAI backtesting because that API
+does not expose the required state there. `frame_stacking` must remain `0`:
+training stacks persist across environment steps, but dry/live prediction calls
+do not persist stacked frame history. Reward shaping and additive bonuses must
+remain disabled for a promotable runtime contract. For `MaskablePPO`, omitted
+`inference_masking` defaults to `true`; any explicit value other than the JSON
+boolean `true` is rejected during model initialization. Other model types are
+not action-masked. Retrain models under the fresh
+`ReforceXY-PPO-causal-net-log-v1` identifier after applying this contract.
+
 ## Common workflows
 
 **List running compose services and the containers they created:**
