@@ -1,37 +1,40 @@
 import copy
-import fcntl
 import gc
 import json
 import logging
 import math
-import os
-import stat
+import signal
+import threading
 import time
 import warnings
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     ClassVar,
+    Dict,
     Final,
+    List,
     Literal,
     NamedTuple,
+    Optional,
+    Tuple,
+    Type,
+    Union,
     assert_never,
     cast,
 )
-from uuid import uuid4
 
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
 import optunahub
-import pandas as pd
+import stable_baselines3
 import torch as th
-from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
 from freqtrade.freqai.RL.BaseEnvironment import BaseEnvironment
@@ -39,8 +42,11 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
     BaseReinforcementLearningModel,
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
+from freqtrade.enums import TradingMode
+from freqtrade.persistence import LocalTrade
 from freqtrade.strategy import timeframe_to_minutes
-from gymnasium.spaces import Box
+from gymnasium import Env
+from gymnasium.spaces import Box, Discrete
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from optuna import Trial, TrialPruned, create_study, delete_study
@@ -72,102 +78,794 @@ from stable_baselines3.common.vec_env import (
     DummyVecEnv,
     SubprocVecEnv,
     VecEnv,
+    VecEnvWrapper,
     VecFrameStack,
     VecMonitor,
 )
 
-_DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
+
+_MAX_EXCEPTION_ENVELOPE_BYTES: Final[int] = 400
+_MAX_WORKER_STATUS_BYTES: Final[int] = 1024
+_REMOTE_LEARNING_DESCRIPTOR_ATTRIBUTE: Final[str] = (
+    "_reforcexy_remote_learning_descriptor"
+)
+_REMOTE_LEARNING_MARKER_TOKEN: Final[object] = object()
+_CONTROL_EXCEPTION_DESCRIPTOR_TAGS: Final[frozenset[bytes]] = frozenset(
+    {b"\x02", b"\x03", b"\x04", b"\x05", b"\x06", b"\x07", b"\x08"}
+)
+_DEFAULT_EXCEPTION_DESCRIPTOR_TAGS: Final[frozenset[bytes]] = frozenset(
+    {
+        b"\x00",
+        b"\x01",
+        b"\x02",
+        b"\x03",
+        b"\x04",
+        b"\x05",
+        b"\x06",
+        b"\x07",
+        b"\x08",
+        b"\x09",
+        b"\x0a",
+        b"\x0b",
+        b"\x0d",
+        b"\x0f",
+        b"\x10",
+    }
+)
+_LEARNING_EXCEPTION_DESCRIPTOR_TAGS: Final[frozenset[bytes]] = frozenset(
+    {
+        b"\x00",
+        b"\x01",
+        b"\x02",
+        b"\x03",
+        b"\x04",
+        b"\x05",
+        b"\x06",
+        b"\x07",
+        b"\x08",
+        b"\x0a",
+        b"\x0b",
+        b"\x0c",
+        b"\x0d",
+        b"\x0e",
+    }
+)
 
 
-def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return ``frame`` with a unique, chronologically ordered ``date_pred``,
-    keeping the most informative row per timestamp (a real prediction outranks a
-    zero/NaN placeholder). ``NaT`` ``date_pred`` rows are dropped: they match no
-    candle, and two or more of them break the ``validate="m:1"`` merge in
-    ``attach_return_values_to_return_dataframe`` (data_drawer.py:429-431) since
-    pandas treats repeated null keys as non-unique.
-    """
-    date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
-    valid = date_pred.notna()
-    if valid.all() and not date_pred[valid].duplicated().any():
-        return frame
-    work = frame.reset_index(drop=True)
-    content = [column for column in work.columns if column not in ("date_pred", "date")]
-    block = work[content]
-    numeric = block.apply(pd.to_numeric, errors="coerce")
-    is_numeric = numeric.notna()
-    informative = (block.notna() & is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
-    work = work.assign(
-        _dp=date_pred.to_numpy(),
-        _score=informative.sum(axis=1).to_numpy(),
-        _nonnull=block.notna().sum(axis=1).to_numpy(),
-        _order=work.index.to_numpy(),
-    )
-    contested = work[valid.to_numpy()].sort_values(
-        ["_dp", "_score", "_nonnull", "_order"], kind="stable"
-    )
-    kept = contested.drop_duplicates("_dp", keep="last")
-    return kept.drop(columns=["_dp", "_score", "_nonnull", "_order"]).reset_index(drop=True)
+class _LearningExceptionDecision(NamedTuple):
+    """Describe the objective-only exception outcome and diagnostic state."""
+
+    descriptor: bytes
+    diagnostic: Optional[str]
+    diagnostic_attempted: bool
 
 
-def _install_date_pred_dedup_patch() -> None:
-    """Keep ``FreqaiDataDrawer``'s per-pair prediction store free of duplicate
-    ``date_pred`` rows, which freqtrade 2026.7 does not deduplicate and its
-    ``validate="m:1"`` merge (data_drawer.py:429-431) then rejects with a
-    ``MergeError``. Duplicates persist across a crash or are re-created by the
-    positional trim in ``set_initial_return_values`` (data_drawer.py:319-321).
+class _TerminalExceptionDecision(NamedTuple):
+    """Classify one learning exception without rendering it more than once."""
 
-    Re-verify the three wrapped signatures against ``data_drawer.py`` on every
-    freqtrade bump.
-    """
-    if getattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, False):
-        return
-    original_set_initial = FreqaiDataDrawer.set_initial_return_values
-    original_append = FreqaiDataDrawer.append_model_predictions
-    original_attach = FreqaiDataDrawer.attach_return_values_to_return_dataframe
+    family: Optional[str]
+    prunes: bool
+    diagnostic: Optional[str]
+    diagnostic_attempted: bool
+    predicate_error: Optional[BaseException]
 
-    def set_initial_return_values(
-        self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
-    ) -> None:
-        original_set_initial(self, pair, pred_df, dataframe)
-        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
-        self.historic_predictions[pair] = frame
-        self.model_return_values[pair] = frame.tail(len(dataframe.index)).reset_index(drop=True)
 
-    def append_model_predictions(
-        self,
-        pair: str,
-        predictions: pd.DataFrame,
-        do_preds: NDArray[np.int_],
-        dk: FreqaiDataKitchen,
-        strat_df: pd.DataFrame,
-    ) -> None:
-        original_append(self, pair, predictions, do_preds, dk, strat_df)
-        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
-        self.historic_predictions[pair] = frame
-        self.model_return_values[pair] = frame.tail(len(strat_df.index)).reset_index(drop=True)
+class _RemoteLearningMarker(NamedTuple):
+    """Keep one validated learning replacement correlated to its decoded error."""
 
-    def attach_return_values_to_return_dataframe(
-        self, pair: str, dataframe: pd.DataFrame
-    ) -> pd.DataFrame:
-        self.model_return_values[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.model_return_values[pair]
+    token: object
+    owner_id: int
+    default_descriptor: bytes
+    replacement_descriptor: bytes
+    diagnostic_payload: bytes
+
+
+class _RemoteWorkerError(Exception):
+    """Represent an unclassified remote worker failure."""
+
+
+class _RemoteSystemExit(SystemExit):
+    """Represent a bounded internal fallback for an unsafe SystemExit code."""
+
+    def __init__(self, reason: str) -> None:
+        if type(reason) is not str or reason not in {"unavailable", "unsupported"}:
+            raise ValueError("invalid remote SystemExit reason")
+        self.reason = reason
+        super().__init__(f"SystemExit code {reason}")
+
+
+def _safe_system_exit_descriptor(error: SystemExit) -> bytes:
+    """Encode an allowlisted SystemExit code without arbitrary objects."""
+    if type(error) is _RemoteSystemExit:
+        try:
+            reason = error.reason
+        except BaseException:
+            return b"\x07unavailable"
+        if type(reason) is str and reason in {"unavailable", "unsupported"}:
+            return b"\x07" + reason.encode("ascii")
+        return b"\x07unavailable"
+    try:
+        code = SystemExit.code.__get__(error, type(error))
+    except BaseException:
+        return b"\x07unavailable"
+    if code is None:
+        return b"\x04"
+    if type(code) is bool:
+        return b"\x08" + (b"1" if code else b"0")
+    if type(code) is int:
+        if code.bit_length() > 2048:
+            return b"\x07unsupported"
+        try:
+            payload = str(code).encode("ascii")
+        except BaseException:
+            return b"\x07unavailable"
+        if len(payload) + 1 > _MAX_EXCEPTION_ENVELOPE_BYTES:
+            return b"\x07unsupported"
+        return b"\x05" + payload
+    if type(code) is str:
+        try:
+            payload = code.encode("utf-8", errors="surrogatepass")
+        except BaseException:
+            return b"\x07unavailable"
+        if len(payload) + 1 > _MAX_EXCEPTION_ENVELOPE_BYTES:
+            return b"\x07unsupported"
+        return b"\x06" + payload
+    return b"\x07unsupported"
+
+
+def _control_exception_descriptor(error: BaseException) -> Optional[bytes]:
+    """Select the runtime terminal-control family in Optuna precedence order."""
+    if isinstance(error, TrialPruned):
+        return b"\x03"
+    if isinstance(error, KeyboardInterrupt):
+        return b"\x02"
+    if isinstance(error, SystemExit):
+        return _safe_system_exit_descriptor(error)
+    return None
+
+
+def _default_exception_descriptor(error: BaseException) -> bytes:
+    """Describe behavior outside the objective's learning-error classifier."""
+    control_descriptor = _control_exception_descriptor(error)
+    if control_descriptor is not None:
+        return control_descriptor
+    if isinstance(error, AssertionError):
+        return b"\x01"
+    if isinstance(error, ValueError):
+        return b"\x0b"
+    if isinstance(error, FloatingPointError):
+        return b"\x0a"
+    if isinstance(error, RuntimeError):
+        return b"\x0d"
+    if isinstance(error, ConnectionError):
+        return b"\x09"
+    if isinstance(error, EOFError):
+        return b"\x0f"
+    if isinstance(error, OSError):
+        return b"\x10"
+    return b"\x00"
+
+
+def _learning_exception_descriptor(
+    error: BaseException,
+    default_descriptor: bytes,
+) -> _LearningExceptionDecision:
+    """Encode the shared objective classifier as an inert descriptor."""
+    if _control_exception_descriptor(error) is not None:
+        return _LearningExceptionDecision(default_descriptor, None, False)
+    decision = _classify_terminal_exception(error)
+    if decision.predicate_error is not None:
+        control_descriptor = _control_exception_descriptor(decision.predicate_error)
+        return _LearningExceptionDecision(
+            control_descriptor if control_descriptor is not None else b"\x00",
+            decision.diagnostic,
+            decision.diagnostic_attempted,
         )
-        return original_attach(self, pair, dataframe)
-
-    FreqaiDataDrawer.set_initial_return_values = set_initial_return_values
-    FreqaiDataDrawer.append_model_predictions = append_model_predictions
-    FreqaiDataDrawer.attach_return_values_to_return_dataframe = (
-        attach_return_values_to_return_dataframe
+    if decision.prunes:
+        descriptor = {
+            "assertion": b"\x01",
+            "value": b"\x0c",
+            "floating_point": b"\x0a",
+            "runtime": b"\x0e",
+        }[cast(str, decision.family)]
+    else:
+        descriptor = default_descriptor
+    return _LearningExceptionDecision(
+        descriptor,
+        decision.diagnostic,
+        decision.diagnostic_attempted,
     )
-    setattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, True)
 
 
-_install_date_pred_dedup_patch()
+def _classify_terminal_exception(error: BaseException) -> _TerminalExceptionDecision:
+    """Apply the objective's local handler order with one diagnostic render."""
+    if _control_exception_descriptor(error) is not None:
+        return _TerminalExceptionDecision(None, False, None, False, None)
+    if isinstance(error, AssertionError):
+        return _TerminalExceptionDecision("assertion", True, None, False, None)
+    if isinstance(error, ValueError):
+        family = "value"
+    elif isinstance(error, FloatingPointError):
+        return _TerminalExceptionDecision("floating_point", True, None, False, None)
+    elif isinstance(error, RuntimeError):
+        family = "runtime"
+    else:
+        return _TerminalExceptionDecision(None, False, None, False, None)
+
+    try:
+        diagnostic = str(error)
+        normalized_diagnostic = diagnostic.lower()
+    except BaseException as predicate_error:
+        return _TerminalExceptionDecision(
+            family,
+            False,
+            None,
+            True,
+            predicate_error,
+        )
+    return _TerminalExceptionDecision(
+        family,
+        "nan" in normalized_diagnostic or "inf" in normalized_diagnostic,
+        diagnostic,
+        True,
+        None,
+    )
+
+
+def _bounded_utf8(value: str, limit: int) -> bytes:
+    """Encode a strict-valid UTF-8 prefix without splitting a code point."""
+    if limit <= 0:
+        return b""
+    try:
+        encoded = str.encode(value, "utf-8", errors="replace")
+    except BaseException:
+        return b""
+    if len(encoded) <= limit:
+        return encoded
+    return encoded[:limit].decode("utf-8", errors="ignore").encode("utf-8")
+
+
+def _decode_exception_descriptor(descriptor: bytes) -> BaseException:
+    """Decode one fixed, allowlisted exception descriptor."""
+    if not descriptor:
+        raise ValueError("empty exception descriptor")
+    tag, encoded_value = descriptor[:1], descriptor[1:]
+    if tag == b"\x04":
+        if encoded_value:
+            raise ValueError("invalid SystemExit None descriptor")
+        return SystemExit()
+    if tag == b"\x05":
+        try:
+            value_text = encoded_value.decode("ascii")
+            if not value_text or len(descriptor) > _MAX_EXCEPTION_ENVELOPE_BYTES:
+                raise ValueError("invalid integer length")
+            value = int(value_text)
+            if str(value) != value_text:
+                raise ValueError("non-canonical integer")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ValueError("invalid SystemExit integer descriptor") from error
+        return SystemExit(value)
+    if tag == b"\x06":
+        try:
+            return SystemExit(encoded_value.decode("utf-8", errors="surrogatepass"))
+        except UnicodeDecodeError as error:
+            raise ValueError("invalid SystemExit string descriptor") from error
+    if tag == b"\x07":
+        if encoded_value not in (b"unavailable", b"unsupported"):
+            raise ValueError("invalid SystemExit sentinel descriptor")
+        return _RemoteSystemExit(encoded_value.decode("ascii"))
+    if tag == b"\x08":
+        if encoded_value == b"0":
+            return SystemExit(False)
+        if encoded_value == b"1":
+            return SystemExit(True)
+        raise ValueError("invalid SystemExit boolean descriptor")
+    if encoded_value:
+        raise ValueError("unexpected exception descriptor payload")
+    if tag == b"\x00":
+        return _RemoteWorkerError("remote worker operation failed")
+    if tag == b"\x01":
+        return AssertionError("remote assertion error")
+    if tag == b"\x02":
+        return KeyboardInterrupt("remote worker interrupted")
+    if tag == b"\x03":
+        return TrialPruned("remote worker trial pruned")
+    if tag == b"\x09":
+        return ConnectionError("remote worker connection error")
+    if tag == b"\x0a":
+        return FloatingPointError("remote floating-point error")
+    if tag == b"\x0b":
+        return ValueError("remote value error")
+    if tag == b"\x0c":
+        return ValueError("nan")
+    if tag == b"\x0d":
+        return RuntimeError("remote runtime error")
+    if tag == b"\x0e":
+        return RuntimeError("nan")
+    if tag == b"\x0f":
+        return EOFError("remote worker EOF error")
+    if tag == b"\x10":
+        return OSError("remote worker OS error")
+    raise ValueError("unknown exception descriptor")
+
+
+def _is_encoder_reachable_exception_pair(
+    default_descriptor: bytes,
+    replacement_descriptor: bytes,
+) -> bool:
+    """Accept only byte-distinct descriptor pairs emitted by the encoder."""
+    if not replacement_descriptor or replacement_descriptor == default_descriptor:
+        return False
+    default_tag = default_descriptor[:1]
+    replacement_tag = replacement_descriptor[:1]
+    if default_tag == b"\x0b":
+        return replacement_tag in (
+            {b"\x00", b"\x0c"} | _CONTROL_EXCEPTION_DESCRIPTOR_TAGS
+        )
+    if default_tag == b"\x0d":
+        return replacement_tag in (
+            {b"\x00", b"\x0e"} | _CONTROL_EXCEPTION_DESCRIPTOR_TAGS
+        )
+    return False
+
+
+def _descriptor_matches_decoded_error(
+    descriptor: bytes,
+    error: BaseException,
+) -> bool:
+    """Correlate one canonical descriptor with its exact decoded error type."""
+    tag = descriptor[:1]
+    expected_types: Dict[bytes, Type[BaseException]] = {
+        b"\x00": _RemoteWorkerError,
+        b"\x01": AssertionError,
+        b"\x02": KeyboardInterrupt,
+        b"\x03": TrialPruned,
+        b"\x09": ConnectionError,
+        b"\x0a": FloatingPointError,
+        b"\x0b": ValueError,
+        b"\x0c": ValueError,
+        b"\x0d": RuntimeError,
+        b"\x0e": RuntimeError,
+        b"\x0f": EOFError,
+        b"\x10": OSError,
+    }
+    if tag in expected_types:
+        return type(error) is expected_types[tag]
+    if tag == b"\x07":
+        if type(error) is not _RemoteSystemExit:
+            return False
+        try:
+            expected_error = _decode_exception_descriptor(descriptor)
+            return (
+                type(expected_error) is _RemoteSystemExit
+                and error.reason == expected_error.reason
+                and error.code == expected_error.code
+            )
+        except BaseException:
+            return False
+    if tag not in {b"\x04", b"\x05", b"\x06", b"\x08"}:
+        return False
+    if type(error) is not SystemExit:
+        return False
+    try:
+        actual_code = SystemExit.code.__get__(error, type(error))
+        expected_error = _decode_exception_descriptor(descriptor)
+        expected_code = SystemExit.code.__get__(expected_error, type(expected_error))
+    except BaseException:
+        return False
+    return type(actual_code) is type(expected_code) and actual_code == expected_code
+
+
+def _safe_exception_envelope(
+    error: BaseException,
+    *,
+    learning_primary: bool = False,
+) -> bytes:
+    """Encode an exception as inert, bounded primitive data."""
+    default_descriptor = _default_exception_descriptor(error)
+    learning_descriptor = default_descriptor
+    diagnostic: Optional[str] = None
+    diagnostic_attempted = False
+    if learning_primary:
+        decision = _learning_exception_descriptor(error, default_descriptor)
+        learning_descriptor = decision.descriptor
+        diagnostic = decision.diagnostic
+        diagnostic_attempted = decision.diagnostic_attempted
+    if diagnostic is None and not diagnostic_attempted:
+        try:
+            diagnostic = str(error)
+        except BaseException:
+            diagnostic = "exception message unavailable"
+    elif diagnostic is None:
+        diagnostic = "exception message unavailable"
+    replacement = (
+        b"" if learning_descriptor == default_descriptor else learning_descriptor
+    )
+    header_size = 5
+    if len(default_descriptor) + len(replacement) > (
+        _MAX_EXCEPTION_ENVELOPE_BYTES - header_size
+    ):
+        if default_descriptor[:1] in {b"\x05", b"\x06"}:
+            default_descriptor = b"\x07unsupported"
+        if replacement[:1] in {b"\x05", b"\x06"}:
+            replacement = b"\x07unsupported"
+    if replacement == default_descriptor or (
+        replacement
+        and not _is_encoder_reachable_exception_pair(default_descriptor, replacement)
+    ):
+        replacement = b""
+    diagnostic_limit = (
+        _MAX_EXCEPTION_ENVELOPE_BYTES
+        - header_size
+        - len(default_descriptor)
+        - len(replacement)
+    )
+    diagnostic_payload = _bounded_utf8(diagnostic, diagnostic_limit)
+    return (
+        b"\x11"
+        + len(default_descriptor).to_bytes(2, "big")
+        + len(replacement).to_bytes(2, "big")
+        + default_descriptor
+        + replacement
+        + diagnostic_payload
+    )
+
+
+def _decode_exception_envelope(payload: bytes) -> BaseException:
+    """Decode only the inert primitive exception envelope."""
+    try:
+        if not 5 <= len(payload) <= _MAX_EXCEPTION_ENVELOPE_BYTES:
+            raise ValueError("invalid child exception envelope length")
+        if payload[:1] != b"\x11":
+            raise ValueError("invalid child exception envelope version")
+        default_length = int.from_bytes(payload[1:3], "big")
+        replacement_length = int.from_bytes(payload[3:5], "big")
+        default_start = 5
+        default_end = default_start + default_length
+        replacement_end = default_end + replacement_length
+        if default_length == 0 or replacement_end > len(payload):
+            raise ValueError("invalid child exception descriptor lengths")
+        default_descriptor = payload[default_start:default_end]
+        replacement_descriptor = payload[default_end:replacement_end]
+        diagnostic_payload = payload[replacement_end:]
+        diagnostic = diagnostic_payload.decode("utf-8", errors="strict")
+        if default_descriptor[:1] not in _DEFAULT_EXCEPTION_DESCRIPTOR_TAGS:
+            raise ValueError("invalid default exception descriptor")
+        default_error = _decode_exception_descriptor(default_descriptor)
+        if replacement_descriptor:
+            if replacement_descriptor[:1] not in _LEARNING_EXCEPTION_DESCRIPTOR_TAGS:
+                raise ValueError("invalid learning replacement descriptor")
+            _decode_exception_descriptor(replacement_descriptor)
+            if not _is_encoder_reachable_exception_pair(
+                default_descriptor, replacement_descriptor
+            ):
+                raise ValueError("invalid learning exception descriptor pair")
+            object.__setattr__(
+                default_error,
+                _REMOTE_LEARNING_DESCRIPTOR_ATTRIBUTE,
+                _RemoteLearningMarker(
+                    _REMOTE_LEARNING_MARKER_TOKEN,
+                    id(default_error),
+                    default_descriptor,
+                    replacement_descriptor,
+                    diagnostic_payload,
+                ),
+            )
+        if diagnostic:
+            BaseException.add_note(default_error, f"Remote worker error: {diagnostic}")
+        return default_error
+    except BaseException:
+        return _RemoteWorkerError("invalid remote worker exception envelope")
+
+
+def _materialize_remote_learning_error(error: BaseException) -> BaseException:
+    """Apply a validated learning-only replacement without parsing diagnostics."""
+    try:
+        marker = vars(error).get(_REMOTE_LEARNING_DESCRIPTOR_ATTRIBUTE)
+        if marker is None:
+            return error
+        if (
+            type(marker) is not _RemoteLearningMarker
+            or marker.token is not _REMOTE_LEARNING_MARKER_TOKEN
+            or marker.owner_id != id(error)
+            or type(marker.default_descriptor) is not bytes
+            or type(marker.replacement_descriptor) is not bytes
+            or type(marker.diagnostic_payload) is not bytes
+        ):
+            raise TypeError("invalid remote learning descriptor marker")
+        default_descriptor = marker.default_descriptor
+        replacement_descriptor = marker.replacement_descriptor
+        if (
+            5
+            + len(default_descriptor)
+            + len(replacement_descriptor)
+            + len(marker.diagnostic_payload)
+            > _MAX_EXCEPTION_ENVELOPE_BYTES
+        ):
+            raise TypeError("oversized remote learning descriptor marker")
+        if default_descriptor[:1] not in _DEFAULT_EXCEPTION_DESCRIPTOR_TAGS:
+            raise TypeError("invalid remote default descriptor")
+        if replacement_descriptor[:1] not in _LEARNING_EXCEPTION_DESCRIPTOR_TAGS:
+            raise TypeError("invalid remote learning replacement")
+        _decode_exception_descriptor(default_descriptor)
+        if not _descriptor_matches_decoded_error(default_descriptor, error):
+            raise TypeError("remote default descriptor does not match its error")
+        if not _is_encoder_reachable_exception_pair(
+            default_descriptor, replacement_descriptor
+        ):
+            raise TypeError("invalid remote learning descriptor pair")
+        replacement = _decode_exception_descriptor(replacement_descriptor)
+        diagnostic = marker.diagnostic_payload.decode("utf-8", errors="strict")
+        if diagnostic and replacement_descriptor[:1] in {b"\x0c", b"\x0e"}:
+            replacement = type(replacement)(diagnostic)
+        if diagnostic:
+            BaseException.add_note(replacement, f"Remote worker error: {diagnostic}")
+        return replacement
+    except BaseException:
+        return error
+
+
+def _pack_worker_status(
+    primary_error: Optional[BaseException],
+    cleanup_error: Optional[BaseException],
+) -> bytes:
+    """Pack at most one bounded status frame for a worker process."""
+    primary_payload = (
+        b""
+        if primary_error is None
+        else _safe_exception_envelope(primary_error, learning_primary=True)
+    )
+    cleanup_payload = (
+        b"" if cleanup_error is None else _safe_exception_envelope(cleanup_error)
+    )
+    status = (
+        b"\x01"
+        + len(primary_payload).to_bytes(2, "big")
+        + primary_payload
+        + len(cleanup_payload).to_bytes(2, "big")
+        + cleanup_payload
+    )
+    if len(status) > _MAX_WORKER_STATUS_BYTES:
+        return b"\x01\x00\x00\x00\x01\x00"
+    return status
+
+
+def _unpack_worker_status(
+    status: bytes,
+) -> Tuple[Optional[BaseException], Optional[BaseException]]:
+    """Decode a worker status frame without executing child-provided data."""
+    if not status or status[:1] != b"\x01":
+        raise ValueError("invalid worker status version")
+    if len(status) < 5:
+        raise ValueError("truncated worker status")
+    primary_length = int.from_bytes(status[1:3], "big")
+    primary_end = 3 + primary_length
+    if len(status) < primary_end + 2:
+        raise ValueError("truncated worker primary status")
+    cleanup_length = int.from_bytes(status[primary_end : primary_end + 2], "big")
+    cleanup_start = primary_end + 2
+    cleanup_end = cleanup_start + cleanup_length
+    if cleanup_end != len(status):
+        raise ValueError("invalid worker cleanup status length")
+    primary_error = (
+        None
+        if primary_length == 0
+        else _decode_exception_envelope(status[3:primary_end])
+    )
+    cleanup_error = (
+        None
+        if cleanup_length == 0
+        else _decode_exception_envelope(status[cleanup_start:cleanup_end])
+    )
+    return primary_error, cleanup_error
+
+
+_REMOTE_EXCEPTION_INFO_KEY: Final[str] = "_reforcexy_remote_exception_v1"
+
+
+def _zero_box_observation(space: Any) -> NDArray[np.float32]:
+    """Return a deterministic inert observation for a failed remote operation."""
+    shape = getattr(space, "shape", None)
+    dtype = getattr(space, "dtype", np.float32)
+    if shape is None:
+        return np.zeros((1,), dtype=np.float32)
+    return np.zeros(shape, dtype=dtype)
+
+
+class _RemoteFailureEnv(Env):
+    """Keep the standard SB3 worker alive long enough to report bootstrap failure."""
+
+    metadata: ClassVar[Dict[str, Any]] = {"render_modes": []}
+    render_mode: Optional[str] = None
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self.observation_space = Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(1,),
+            dtype=np.float32,
+        )
+        self.action_space = Discrete(1)
+
+    def _result(self) -> Tuple[NDArray[np.float32], Dict[str, bytes]]:
+        return (
+            _zero_box_observation(self.observation_space),
+            {_REMOTE_EXCEPTION_INFO_KEY: self._payload},
+        )
+
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[NDArray[np.float32], Dict[str, bytes]]:
+        super().reset(seed=seed)
+        return self._result()
+
+    def step(
+        self, action: Any
+    ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, bytes]]:
+        observation, info = self._result()
+        return observation, 0.0, True, False, info
+
+    def _reforcexy_bootstrap_error(self) -> bytes:
+        return self._payload
+
+    def _reforcexy_prepare_close(self) -> Optional[bytes]:
+        return None
+
+
+class _ExceptionEnvelopeEnv(Env):
+    """Convert remote environment failures to bounded inert status envelopes."""
+
+    def __init__(self, env: BaseEnvironment) -> None:
+        self.env = env
+        self.observation_space = env.observation_space
+        self.action_space = env.action_space
+        self.metadata = getattr(env, "metadata", {"render_modes": []})
+        self.render_mode = getattr(env, "render_mode", None)
+        self._close_attempted = False
+
+    def _failure_result(
+        self, error: BaseException
+    ) -> Tuple[NDArray[np.float32], Dict[str, bytes]]:
+        return (
+            _zero_box_observation(self.observation_space),
+            {
+                _REMOTE_EXCEPTION_INFO_KEY: _safe_exception_envelope(
+                    error,
+                    learning_primary=True,
+                )
+            },
+        )
+
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Any, Dict[str, Any]]:
+        try:
+            if options is not None:
+                raise TypeError(
+                    "ReforceXY does not support Gymnasium reset options with "
+                    "Freqtrade BaseEnvironment"
+                )
+            return self.env.reset(seed=seed)
+        except BaseException as error:
+            return self._failure_result(error)
+
+    def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+        try:
+            return self.env.step(action)
+        except BaseException as error:
+            observation, info = self._failure_result(error)
+            return observation, 0.0, True, False, info
+
+    def render(self) -> Any:
+        return self.env.render()
+
+    def get_wrapper_attr(self, name: str) -> Any:
+        if name in {"_reforcexy_bootstrap_error", "_reforcexy_prepare_close"}:
+            return getattr(self, name)
+        getter = getattr(self.env, "get_wrapper_attr", None)
+        if callable(getter):
+            return getter(name)
+        return getattr(self.env, name)
+
+    def _reforcexy_bootstrap_error(self) -> None:
+        return None
+
+    def _reforcexy_prepare_close(self) -> Optional[bytes]:
+        if self._close_attempted:
+            return None
+        self._close_attempted = True
+        try:
+            self.env.close()
+        except BaseException as error:
+            return _safe_exception_envelope(error)
+        return None
+
+    def close(self) -> None:
+        payload = self._reforcexy_prepare_close()
+        if payload is not None:
+            raise _decode_exception_envelope(payload)
+
+
+def _guard_env_factory(
+    env_fn: Callable[[], BaseEnvironment],
+    timeout_seconds: float,
+) -> Callable[[], Env]:
+    """Wrap one factory without replacing SB3's worker or transport protocol."""
+
+    def make_guarded_env() -> Env:
+        outcome: List[Tuple[bool, Any]] = []
+
+        def construct() -> None:
+            try:
+                outcome.append((True, env_fn()))
+            except BaseException as error:
+                outcome.append((False, error))
+
+        thread = threading.Thread(target=construct, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+        if thread.is_alive():
+            return _RemoteFailureEnv(
+                _safe_exception_envelope(
+                    TimeoutError("SubprocVecEnv environment factory timed out")
+                )
+            )
+        if not outcome:
+            return _RemoteFailureEnv(
+                _safe_exception_envelope(
+                    RuntimeError("SubprocVecEnv environment factory produced no result")
+                )
+            )
+        succeeded, result = outcome[0]
+        if not succeeded:
+            return _RemoteFailureEnv(
+                _safe_exception_envelope(cast(BaseException, result))
+            )
+        return _ExceptionEnvelopeEnv(cast(BaseEnvironment, result))
+
+    return make_guarded_env
+
+
+class _ExceptionAwareSubprocVecEnv(VecEnvWrapper):
+    """Decode inert child failures while delegating execution to standard SB3."""
+
+    def _raise_remote_failure(self, infos: Any) -> None:
+        if not isinstance(infos, (list, tuple)):
+            return
+        for rank, info in enumerate(infos):
+            if not isinstance(info, Mapping) or _REMOTE_EXCEPTION_INFO_KEY not in info:
+                continue
+            payload = info[_REMOTE_EXCEPTION_INFO_KEY]
+            if type(payload) is not bytes:
+                error: BaseException = _RemoteWorkerError(
+                    "invalid remote worker exception payload"
+                )
+            else:
+                error = _decode_exception_envelope(payload)
+            try:
+                error.add_note(f"Remote worker rank: {rank}")
+            except BaseException:
+                pass
+            raise error
+
+    def reset(self) -> Any:
+        observations = self.venv.reset()
+        self.reset_infos = self.venv.reset_infos
+        self._raise_remote_failure(self.reset_infos)
+        return observations
+
+    def step_wait(self) -> Tuple[Any, Any, Any, Any]:
+        observations, rewards, dones, infos = self.venv.step_wait()
+        self.reset_infos = self.venv.reset_infos
+        self._raise_remote_failure(infos)
+        self._raise_remote_failure(self.reset_infos)
+        return observations, rewards, dones, infos
+
 
 ModelType = Literal["PPO", "RecurrentPPO", "MaskablePPO", "DQN", "QRDQN"]
 ScheduleTypeKnown = Literal["linear", "constant"]
-ScheduleType = ScheduleTypeKnown | Literal["unknown"]
+ScheduleType = Union[ScheduleTypeKnown, Literal["unknown"]]
 ExitPotentialMode = Literal[
     "canonical",
     "non_canonical",
@@ -179,7 +877,7 @@ TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "asinh", "c
 ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
 ActivationFunction = Literal["relu", "tanh", "elu", "leaky_relu"]
 OptimizerClassOptuna = Literal["adamw", "rmsprop"]
-OptimizerClass = OptimizerClassOptuna | Literal["adam"]
+OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
 StorageBackend = Literal["sqlite", "file"]
 SamplerType = Literal["tpe", "auto"]
@@ -218,8 +916,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "n_eval_envs": 1,                   // Number of DummyVecEnv or SubProcVecEnv evaluation environments
                 "multiprocessing": false,           // Use SubprocVecEnv if n_envs>1 (otherwise DummyVecEnv)
                 "eval_multiprocessing": false,      // Use SubprocVecEnv if n_eval_envs>1 (otherwise DummyVecEnv)
-                "frame_stacking": 0,                // Number of VecFrameStack stacks (set > 1 to use)
-                "inference_masking": true,          // Enable action masking during inference
+                "frame_stacking": 0,                // Must remain 0; dry/live calls do not persist frame history
+                "inference_masking": true,          // Required exact JSON boolean for MaskablePPO; defaults to true
                 "lr_schedule": false,               // Enable learning rate linear schedule
                 "cr_schedule": false,               // Enable clip range linear schedule
                 "n_eval_steps": 10_000,             // Number of environment steps between evaluations
@@ -292,7 +990,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON: Final[float] = 1e-6
     DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION: Final[float] = 0.01
 
-    _MODEL_TYPES: Final[tuple[ModelType, ...]] = (
+    _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
         "PPO",
         "RecurrentPPO",
         "MaskablePPO",
@@ -300,12 +998,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         "QRDQN",
     )
     _MODEL_TYPES_SET: Final[frozenset[ModelType]] = frozenset(_MODEL_TYPES)
-    _SCHEDULE_TYPES_KNOWN: Final[tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
-    _SCHEDULE_TYPES: Final[tuple[ScheduleType, ...]] = (
+    _SCHEDULE_TYPES_KNOWN: Final[Tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
+    _SCHEDULE_TYPES: Final[Tuple[ScheduleType, ...]] = (
         *_SCHEDULE_TYPES_KNOWN,
         "unknown",
     )
-    _EXIT_POTENTIAL_MODES: Final[tuple[ExitPotentialMode, ...]] = (
+    _EXIT_POTENTIAL_MODES: Final[Tuple[ExitPotentialMode, ...]] = (
         "canonical",
         "non_canonical",
         "progressive_release",
@@ -315,7 +1013,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _EXIT_POTENTIAL_MODES_SET: Final[frozenset[ExitPotentialMode]] = frozenset(
         _EXIT_POTENTIAL_MODES
     )
-    _TRANSFORM_FUNCTIONS: Final[tuple[TransformFunction, ...]] = (
+    _TRANSFORM_FUNCTIONS: Final[Tuple[TransformFunction, ...]] = (
         "tanh",
         "softsign",
         "arctan",
@@ -323,86 +1021,115 @@ class ReforceXY(BaseReinforcementLearningModel):
         "asinh",
         "clip",
     )
-    _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(_TRANSFORM_FUNCTIONS)
-    _EXIT_ATTENUATION_MODES: Final[tuple[ExitAttenuationMode, ...]] = (
+    _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(
+        _TRANSFORM_FUNCTIONS
+    )
+    _EXIT_ATTENUATION_MODES: Final[Tuple[ExitAttenuationMode, ...]] = (
         "legacy",
         "sqrt",
         "linear",
         "power",
         "half_life",
     )
-    _ACTIVATION_FUNCTIONS: Final[tuple[ActivationFunction, ...]] = (
+    _ACTIVATION_FUNCTIONS: Final[Tuple[ActivationFunction, ...]] = (
         "relu",
         "tanh",
         "elu",
         "leaky_relu",
     )
-    _OPTIMIZER_CLASSES_OPTUNA: Final[tuple[OptimizerClassOptuna, ...]] = (
+    _OPTIMIZER_CLASSES_OPTUNA: Final[Tuple[OptimizerClassOptuna, ...]] = (
         "adamw",
         "rmsprop",
     )
-    _OPTIMIZER_CLASSES: Final[tuple[OptimizerClass, ...]] = (
+    _OPTIMIZER_CLASSES: Final[Tuple[OptimizerClass, ...]] = (
         *_OPTIMIZER_CLASSES_OPTUNA,
         "adam",
     )
-    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
+    _NET_ARCH_SIZES: Final[Tuple[NetArchSize, ...]] = (
         "small",
         "medium",
         "large",
         "extra_large",
     )
-    _STORAGE_BACKENDS: Final[tuple[StorageBackend, ...]] = ("sqlite", "file")
+    _STORAGE_BACKENDS: Final[Tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLERS: Final[_Samplers] = _Samplers()
     _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
+    _JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
+    _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
     _JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
-    _JOURNAL_RECOVERABLE_ERRORS: Final[type[Exception] | tuple[type[Exception], ...]] = (
+    _JOURNAL_RECOVERABLE_ERRORS: Final[
+        type[Exception] | tuple[type[Exception], ...]
+    ] = (
         KeyError,
         AssertionError,
         TypeError,
         ValueError,
         json.JSONDecodeError,
     )
-    _QUARANTINE_TAG: Final[str] = "corrupt"
-    _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
-    _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
-    _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
+    _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
+    _SUBPROC_STARTUP_TIMEOUT_SECONDS: Final[float] = 120.0
+    _SUBPROC_SHUTDOWN_PHASE_TIMEOUT_SECONDS: Final[float] = 5.0
 
-    _action_masks_cache: ClassVar[dict[tuple[bool, float], NDArray[np.bool_]]] = {}
+    _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
+        self.pairs: List[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
                 "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
-        self.action_masking: bool = self.model_type == ReforceXY._MODEL_TYPES[2]  # "MaskablePPO"
-        self.rl_config.setdefault("action_masking", self.action_masking)
+        self.action_masking: bool = (
+            self.model_type == ReforceXY._MODEL_TYPES[2]
+        )  # "MaskablePPO"
+        configured_action_masking = self.rl_config.get("action_masking")
+        if configured_action_masking is not None and (
+            configured_action_masking is not self.action_masking
+        ):
+            raise ValueError(
+                "Config [global]: action_masking conflicts with model_type; "
+                f"expected {self.action_masking} for {self.model_type}"
+            )
+        self.rl_config["action_masking"] = self.action_masking
         self.inference_masking: bool = self.rl_config.get("inference_masking", True)
-        self.recurrent: bool = self.model_type == ReforceXY._MODEL_TYPES[1]  # "RecurrentPPO"
+        if self.action_masking and self.inference_masking is not True:
+            raise ValueError(
+                "Config [global]: rl_config.inference_masking=true (JSON boolean) "
+                "is required for MaskablePPO"
+            )
+        self.recurrent: bool = (
+            self.model_type == ReforceXY._MODEL_TYPES[1]
+        )  # "RecurrentPPO"
         self.lr_schedule: bool = self.rl_config.get("lr_schedule", False)
         self.cr_schedule: bool = self.rl_config.get("cr_schedule", False)
         self.n_envs: int = self.rl_config.get("n_envs", 1)
         self.n_eval_envs: int = self.rl_config.get("n_eval_envs", 1)
         self.multiprocessing: bool = self.rl_config.get("multiprocessing", False)
-        self.eval_multiprocessing: bool = self.rl_config.get("eval_multiprocessing", False)
+        self.eval_multiprocessing: bool = self.rl_config.get(
+            "eval_multiprocessing", False
+        )
         self.frame_stacking: int = self.rl_config.get("frame_stacking", 0)
         self.n_eval_steps: int = self.rl_config.get("n_eval_steps", 10_000)
         self.n_eval_episodes: int = self.rl_config.get("n_eval_episodes", 5)
-        self.max_no_improvement_evals: int = self.rl_config.get("max_no_improvement_evals", 0)
+        self.max_no_improvement_evals: int = self.rl_config.get(
+            "max_no_improvement_evals", 0
+        )
         self.min_evals: int = self.rl_config.get("min_evals", 0)
         self.rl_config.setdefault("tensorboard_throttle", 1)
         self.plot_new_best: bool = self.rl_config.get("plot_new_best", False)
         self.check_envs: bool = self.rl_config.get("check_envs", True)
-        self.progressbar_callback: ProgressBarCallback | None = None
+        self.progressbar_callback: Optional[ProgressBarCallback] = None
+        self._env_install_ownership_token: Optional[List[Optional[Any]]] = None
         # Optuna hyperopt
-        self.rl_config_optuna: dict[str, Any] = self.freqai_info.get("rl_config_optuna", {})
+        self.rl_config_optuna: Dict[str, Any] = self.freqai_info.get(
+            "rl_config_optuna", {}
+        )
         self.hyperopt: bool = (
             self.freqai_info.get("enabled", False)
             and self.rl_config_optuna.get("enabled", False)
@@ -410,15 +1137,19 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.optuna_timeout_hours: float = self.rl_config_optuna.get("timeout_hours", 0)
         self.optuna_n_trials: int = self.rl_config_optuna.get("n_trials", 100)
-        self.optuna_n_startup_trials: int = self.rl_config_optuna.get("n_startup_trials", 15)
-        self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
-        self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
-        self._model_params_cache: dict[str, Any] | None = None
-        self._lstm_states_cache: dict[
+        self.optuna_n_startup_trials: int = self.rl_config_optuna.get(
+            "n_startup_trials", 15
+        )
+        self.optuna_purge_period: int = int(
+            self.rl_config_optuna.get("purge_period", 0)
+        )
+        self.optuna_eval_callback: Optional[MaskableTrialEvalCallback] = None
+        self._model_params_cache: Optional[Dict[str, Any]] = None
+        self._lstm_states_cache: Dict[
             str,
-            tuple[
+            Tuple[
                 int,
-                tuple[NDArray[np.float32], NDArray[np.float32]] | None,
+                Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]],
                 NDArray[np.bool_],
             ],
         ] = {}
@@ -430,7 +1161,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         Configure GPU memory fraction limit from model_training_parameters.
         Called after config validation, before any CUDA operations.
         """
-        gpu_memory_fraction: float | None = self.model_training_parameters.get(
+        gpu_memory_fraction: Optional[float] = self.model_training_parameters.get(
             "gpu_memory_fraction"
         )
         if gpu_memory_fraction is None:
@@ -513,7 +1244,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning("Config [global]: n_envs=%r invalid; defaulting to 1", self.n_envs)
+            logger.warning(
+                "Config [global]: n_envs=%r invalid; defaulting to 1", self.n_envs
+            )
             self.n_envs = 1
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
@@ -549,6 +1282,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: frame_stacking=1 equivalent to no stacking; defaulting to 0"
             )
             self.frame_stacking = 0
+        if self.frame_stacking > 1:
+            raise ValueError(
+                "Config [global]: frame_stacking>1 is not supported because training "
+                "VecFrameStack persists successive frames while dry/live prediction "
+                "rebuilds non-persistent frame state on every call; set frame_stacking=0 "
+                "to avoid a train/dry/live frame-history mismatch"
+            )
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
                 "Config [global]: n_eval_steps=%r invalid; defaulting to 10000",
@@ -561,21 +1301,59 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.n_eval_episodes,
             )
             self.n_eval_episodes = 5
-        if not isinstance(self.optuna_purge_period, int) or self.optuna_purge_period < 0:
+        if (
+            not isinstance(self.optuna_purge_period, int)
+            or self.optuna_purge_period < 0
+        ):
             logger.warning(
                 "Config [global]: purge_period=%r invalid; defaulting to 0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
-        if self.rl_config_optuna.get("continuous", False) and self.optuna_purge_period > 0:
+        if (
+            self.rl_config_optuna.get("continuous", False)
+            and self.optuna_purge_period > 0
+        ):
             logger.warning(
                 "Config [global]: purge_period has no effect when continuous=True; defaulting to 0"
             )
             self.optuna_purge_period = 0
         add_state_info = self.rl_config.get("add_state_info", False)
-        if not add_state_info:
-            logger.warning(
-                "Config [global]: add_state_info=False may lead to desynchronized trade states after restart"
+        if add_state_info is not True:
+            raise ValueError(
+                "Config [global]: add_state_info=True is required by the pair-local "
+                "economic reward contract"
+            )
+        if self.config.get("trading_mode") != "spot":
+            raise ValueError(
+                "Config [global]: trading_mode='spot' is required until the RL "
+                "environment models leveraged PnL with Freqtrade parity"
+            )
+        if self.config.get("stake_amount") != "unlimited":
+            raise ValueError(
+                "Config [global]: stake_amount='unlimited' is required by the "
+                "compounded net liquidation reward contract"
+            )
+        model_reward_parameters: Mapping[str, Any] = self.rl_config.get(
+            "model_reward_parameters", {}
+        )
+        exit_potential_mode = str(
+            model_reward_parameters.get(
+                "exit_potential_mode", ReforceXY._EXIT_POTENTIAL_MODES[0]
+            )
+        )
+        if exit_potential_mode != ReforceXY._EXIT_POTENTIAL_MODES[0]:
+            raise ValueError(
+                "Config [global]: only exit_potential_mode='canonical' is supported"
+            )
+        if (
+            model_reward_parameters.get("hold_potential_enabled", False)
+            or model_reward_parameters.get("entry_additive_enabled", False)
+            or model_reward_parameters.get("exit_additive_enabled", False)
+        ):
+            raise ValueError(
+                "Config [global]: reward shaping must remain disabled for the "
+                "promotable pair-local economic reward contract"
             )
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
@@ -598,22 +1376,30 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
 
     def pack_env_dict(
-        self, pair: str, model_params: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, pair: str, model_params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         env_info = super().pack_env_dict(pair)
 
         config = env_info.setdefault("config", {})
+        if config.get("fee", None) is not None:
+            env_info.pop("fee", None)
+        elif self.data_provider:
+            env_info["fee"] = self.data_provider._exchange.get_fee(  # type: ignore
+                symbol=pair
+            )
         freqai_cfg = config.setdefault("freqai", {})
         rl_cfg = freqai_cfg.setdefault("rl_config", {})
         model_reward_parameters = rl_cfg.setdefault("model_reward_parameters", {})
 
-        gamma: float | None = None
+        gamma: Optional[float] = None
 
         if model_params and isinstance(model_params.get("gamma"), (int, float)):
             gamma = float(model_params.get("gamma"))
         elif self.hyperopt:
             best_trial_params = self.load_best_trial_params(pair)
-            if best_trial_params and isinstance(best_trial_params.get("gamma"), (int, float)):
+            if best_trial_params and isinstance(
+                best_trial_params.get("gamma"), (int, float)
+            ):
                 gamma = float(best_trial_params.get("gamma"))
 
         if (
@@ -631,13 +1417,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         if gamma is not None:
             model_reward_parameters["potential_gamma"] = gamma
         else:
-            logger.warning("Env [%s]: no valid discount gamma resolved for environment", pair)
+            logger.warning(
+                "Env [%s]: no valid discount gamma resolved for environment", pair
+            )
 
         return env_info
 
     def set_train_and_eval_environments(
         self,
-        data_dictionary: dict[str, DataFrame],
+        data_dictionary: Dict[str, DataFrame],
         prices_train: DataFrame,
         prices_test: DataFrame,
         dk: FreqaiDataKitchen,
@@ -656,6 +1444,18 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         if self.check_envs:
             logger.info("Env [%s]: checking environments", dk.pair)
+
+            def validate_and_close(env: BaseEnvironment) -> None:
+                primary_error: BaseException | None = None
+                try:
+                    check_env(env)
+                except BaseException as error:
+                    primary_error = error
+                    raise
+                finally:
+                    cleanup_errors = self._close_owned_envs(env)
+                    self._report_cleanup_errors(cleanup_errors, primary_error)
+
             _train_env_check = MyRLEnv(
                 df=train_df,
                 prices=prices_train,
@@ -663,10 +1463,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 seed=seed,
                 **env_dict,
             )
-            try:
-                check_env(_train_env_check)
-            finally:
-                _train_env_check.close()
+            validate_and_close(_train_env_check)
             _eval_env_check = MyRLEnv(
                 df=test_df,
                 prices=prices_test,
@@ -674,10 +1471,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 seed=seed + 10_000,
                 **env_dict,
             )
-            try:
-                check_env(_eval_env_check)
-            finally:
-                _eval_env_check.close()
+            validate_and_close(_eval_env_check)
 
         logger.info(
             "Env [%s]: populating %s train and %s eval environments",
@@ -685,24 +1479,44 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.n_envs,
             self.n_eval_envs,
         )
-        self.train_env, self.eval_env = self._get_train_and_eval_environments(
-            dk,
-            train_df=train_df,
-            test_df=test_df,
-            prices_train=prices_train,
-            prices_test=prices_test,
-            seed=seed,
-            env_info=env_dict,
-        )
+        train_env: Optional[VecEnv] = None
+        eval_env: Optional[VecEnv] = None
+        install_token = self._env_install_ownership_token
+        try:
+            train_env, eval_env = self._get_train_and_eval_environments(
+                dk,
+                train_df=train_df,
+                test_df=test_df,
+                prices_train=prices_train,
+                prices_test=prices_test,
+                seed=seed,
+                env_info=env_dict,
+            )
+            if install_token is not None:
+                install_token[:] = [train_env, eval_env]
+            self.train_env, self.eval_env = train_env, eval_env
+        except BaseException as error:
+            if self.train_env is train_env:
+                self.train_env = None
+            if self.eval_env is eval_env:
+                self.eval_env = None
+            if install_token is not None:
+                if install_token[0] is train_env:
+                    install_token[0] = None
+                if install_token[1] is eval_env:
+                    install_token[1] = None
+            cleanup_errors = self._close_owned_envs(train_env, eval_env)
+            self._report_cleanup_errors(cleanup_errors, error)
+            raise
 
-    def get_model_params(self) -> dict[str, Any]:
+    def get_model_params(self) -> Dict[str, Any]:
         """
         Get model parameters
         """
         if self._model_params_cache is not None:
             return copy.deepcopy(self._model_params_cache)
 
-        model_params: dict[str, Any] = copy.deepcopy(self.model_training_parameters)
+        model_params: Dict[str, Any] = copy.deepcopy(self.model_training_parameters)
 
         model_params.setdefault("seed", 42)
         model_params.setdefault("gamma", 0.95)
@@ -712,7 +1526,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             if isinstance(lr, (int, float)):
                 lr = float(lr)
                 model_params["learning_rate"] = get_schedule(
-                    cast("ScheduleTypeKnown", ReforceXY._SCHEDULE_TYPES[0]), lr
+                    cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), lr
                 )
                 logger.info(
                     "Config [global]: learning rate linear schedule enabled, initial=%.6f",
@@ -720,12 +1534,16 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
 
         # "PPO"
-        if not self.hyperopt and ReforceXY._MODEL_TYPES[0] in self.model_type and self.cr_schedule:
+        if (
+            not self.hyperopt
+            and ReforceXY._MODEL_TYPES[0] in self.model_type
+            and self.cr_schedule
+        ):
             cr = model_params.get("clip_range", 0.2)
             if isinstance(cr, (int, float)):
                 cr = float(cr)
                 model_params["clip_range"] = get_schedule(
-                    cast("ScheduleTypeKnown", ReforceXY._SCHEDULE_TYPES[0]), cr
+                    cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), cr
                 )
                 logger.info(
                     "Config [global]: clip range linear schedule enabled, initial=%.2f",
@@ -744,10 +1562,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         if not model_params.get("policy_kwargs"):
             model_params["policy_kwargs"] = {}
 
-        default_net_arch: list[int] = [128, 128]
-        net_arch: list[int] | dict[str, list[int]] | NetArchSize = model_params.get(
-            "policy_kwargs", {}
-        ).get("net_arch", default_net_arch)
+        default_net_arch: List[int] = [128, 128]
+        net_arch: Union[
+            List[int],
+            Dict[str, List[int]],
+            NetArchSize,
+        ] = model_params.get("policy_kwargs", {}).get("net_arch", default_net_arch)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -755,7 +1575,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if net_arch in ReforceXY._NET_ARCH_SIZES:
                     model_params["policy_kwargs"]["net_arch"] = get_net_arch(
                         self.model_type,
-                        cast("NetArchSize", net_arch),
+                        cast(NetArchSize, net_arch),
                     )
                 else:
                     logger.warning(
@@ -775,10 +1595,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                 }
             elif isinstance(net_arch, dict):
                 pi = (
-                    net_arch.get("pi") if isinstance(net_arch.get("pi"), list) else default_net_arch
+                    net_arch.get("pi")
+                    if isinstance(net_arch.get("pi"), list)
+                    else default_net_arch
                 )
                 vf = (
-                    net_arch.get("vf") if isinstance(net_arch.get("vf"), list) else default_net_arch
+                    net_arch.get("vf")
+                    if isinstance(net_arch.get("vf"), list)
+                    else default_net_arch
                 )
                 model_params["policy_kwargs"]["net_arch"] = {"pi": pi, "vf": vf}
             else:
@@ -797,7 +1621,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if net_arch in ReforceXY._NET_ARCH_SIZES:
                     model_params["policy_kwargs"]["net_arch"] = get_net_arch(
                         self.model_type,
-                        cast("NetArchSize", net_arch),
+                        cast(NetArchSize, net_arch),
                     )
                 else:
                     logger.warning(
@@ -839,7 +1663,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         total_timesteps: int,
         hyperopt: bool = False,
         hyperopt_reduction_factor: float = _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR,
-        model_params: dict[str, Any] | None = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Calculate evaluation frequency.
 
@@ -862,7 +1686,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            eval_freq: int | None = None
+            eval_freq: Optional[int] = None
             if model_params:
                 n_steps = model_params.get("n_steps")
                 if isinstance(n_steps, int) and n_steps > 0:
@@ -880,7 +1704,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             eval_freq = max(1, (self.n_eval_steps + n_envs - 1) // n_envs)
 
         if hyperopt and hyperopt_reduction_factor > 1.0:
-            eval_freq = max(1, round(eval_freq / hyperopt_reduction_factor))
+            eval_freq = max(1, int(round(eval_freq / hyperopt_reduction_factor)))
 
         return min(eval_freq, max_n_calls)
 
@@ -889,12 +1713,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         eval_env: BaseEnvironment,
         eval_freq: int,
         data_path: str,
-        trial: Trial | None = None,
-    ) -> list[BaseCallback]:
+        trial: Optional[Trial] = None,
+    ) -> List[BaseCallback]:
         """
         Get the model specific callbacks
         """
-        callbacks: list[BaseCallback] = []
+        callbacks: List[BaseCallback] = []
         no_improvement_callback = None
         rollout_plot_callback = None
         verbose = self.get_model_params().get("verbose", 0)
@@ -920,7 +1744,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.progressbar_callback = ProgressBarCallback()
             callbacks.append(self.progressbar_callback)
 
-        use_masking = self.action_masking and is_masking_supported(eval_env)
+        if self.action_masking and not is_masking_supported(eval_env):
+            raise ValueError(
+                "Evaluation [global]: action masking is required for MaskablePPO, "
+                "but the evaluation environment does not expose action masks"
+            )
+        use_masking = self.action_masking
         if not trial:
             self.eval_callback = MaskableEvalCallback(
                 eval_env,
@@ -951,7 +1780,756 @@ class ReforceXY(BaseReinforcementLearningModel):
             callbacks.append(self.optuna_eval_callback)
         return callbacks
 
-    def fit(self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs) -> Any:
+    @staticmethod
+    def _report_cleanup_errors(
+        cleanup_errors: List[Tuple[str, BaseException]],
+        primary_error: Optional[BaseException] = None,
+    ) -> None:
+        """Report cleanup failures without replacing a primary exception."""
+        if not cleanup_errors:
+            return
+
+        if primary_error is not None:
+            note_target = primary_error
+            errors_to_note = cleanup_errors
+        else:
+            note_target = cleanup_errors[0][1]
+            errors_to_note = cleanup_errors[1:]
+
+        for operation, cleanup_error in errors_to_note:
+            try:
+                note_target.add_note(
+                    f"Cleanup failed while {operation}: {cleanup_error!r}"
+                )
+            except BaseException:
+                pass
+
+        if primary_error is None:
+            raise note_target
+
+    def _close_owned_envs(
+        self, *envs: Optional[Any]
+    ) -> List[Tuple[str, BaseException]]:
+        """Close only explicitly owned environments and their wrapper chains."""
+        cleanup_errors: List[Tuple[str, BaseException]] = []
+        seen_resource_ids: set[int] = set()
+
+        def get_env_chain(env: Any) -> List[Any]:
+            chain: List[Any] = []
+            chain_ids: set[int] = set()
+            current = env
+            while current is not None:
+                current_id = id(current)
+                if current_id in chain_ids:
+                    cleanup_errors.append(
+                        (
+                            f"discovering {type(env).__name__} wrapper chain",
+                            RuntimeError("VecEnv wrapper chain contains a cycle"),
+                        )
+                    )
+                    break
+                chain.append(current)
+                chain_ids.add(current_id)
+                if not isinstance(current, VecEnvWrapper):
+                    break
+                try:
+                    current = current.venv
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (
+                            f"reading {type(current).__name__} wrapped environment",
+                            error,
+                        )
+                    )
+                    break
+            return chain
+
+        def close_monitor_writer(wrapper: VecMonitor) -> None:
+            try:
+                writer = wrapper.results_writer
+            except BaseException as error:
+                cleanup_errors.append(("reading VecMonitor results writer", error))
+                return
+            if writer is None or id(writer) in seen_resource_ids:
+                return
+            seen_resource_ids.add(id(writer))
+            try:
+                writer.close()
+            except BaseException as error:
+                cleanup_errors.append(("closing VecMonitor results writer", error))
+
+        def is_process_alive(process: Any) -> bool:
+            try:
+                return bool(process.is_alive())
+            except BaseException as error:
+                cleanup_errors.append((f"checking worker process {process!r}", error))
+                return True
+
+        def join_processes(processes: List[Any], operation: str) -> None:
+            deadline = time.monotonic() + self._SUBPROC_SHUTDOWN_PHASE_TIMEOUT_SECONDS
+            for process in processes:
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    process.join(timeout=remaining)
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"{operation} worker process {process!r}", error)
+                    )
+
+        def prepare_subproc_close(env: SubprocVecEnv) -> None:
+            try:
+                owned = hasattr(env, "_owned_worker_reports")
+            except BaseException as error:
+                cleanup_errors.append(
+                    ("checking SubprocVecEnv ownership marker", error)
+                )
+                return
+            if not owned:
+                return
+            try:
+                remotes = tuple(env.remotes)
+            except BaseException as error:
+                cleanup_errors.append(
+                    ("reading SubprocVecEnv remotes before cleanup", error)
+                )
+                return
+            requested: List[Tuple[int, Any]] = []
+            for index, remote in enumerate(remotes):
+                try:
+                    remote.send(("env_method", ("_reforcexy_prepare_close", (), {})))
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"requesting worker {index} environment cleanup", error)
+                    )
+                else:
+                    requested.append((index, remote))
+            deadline = time.monotonic() + self._SUBPROC_SHUTDOWN_PHASE_TIMEOUT_SECONDS
+            for index, remote in requested:
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    ready = bool(remote.poll(remaining))
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"polling worker {index} environment cleanup", error)
+                    )
+                    continue
+                if not ready:
+                    cleanup_errors.append(
+                        (
+                            f"waiting for worker {index} environment cleanup",
+                            TimeoutError(
+                                "SubprocVecEnv environment cleanup exceeded the "
+                                "bounded graceful deadline"
+                            ),
+                        )
+                    )
+                    continue
+                try:
+                    payload = remote.recv()
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"receiving worker {index} environment cleanup", error)
+                    )
+                    continue
+                if payload is None:
+                    continue
+                if type(payload) is not bytes:
+                    cleanup_error: BaseException = _RemoteWorkerError(
+                        "invalid remote cleanup exception payload"
+                    )
+                else:
+                    cleanup_error = _decode_exception_envelope(payload)
+                try:
+                    cleanup_error.add_note(f"Remote cleanup worker rank: {index}")
+                except BaseException:
+                    pass
+                cleanup_errors.append(
+                    (f"closing worker {index} environment", cleanup_error)
+                )
+
+        def teardown_subproc(env: SubprocVecEnv) -> None:
+            try:
+                remotes = tuple(getattr(env, "remotes", ()))
+            except BaseException as error:
+                cleanup_errors.append(("reading SubprocVecEnv remotes", error))
+                remotes = ()
+            try:
+                work_remotes = tuple(getattr(env, "work_remotes", ()))
+            except BaseException as error:
+                cleanup_errors.append(("reading SubprocVecEnv work remotes", error))
+                work_remotes = ()
+            try:
+                status_remotes = tuple(getattr(env, "_owned_worker_status_remotes", ()))
+            except BaseException as error:
+                cleanup_errors.append(
+                    ("reading SubprocVecEnv worker status remotes", error)
+                )
+                status_remotes = ()
+            try:
+                status_work_remotes = tuple(
+                    getattr(env, "_owned_worker_status_work_remotes", ())
+                )
+            except BaseException as error:
+                cleanup_errors.append(
+                    ("reading SubprocVecEnv worker status work remotes", error)
+                )
+                status_work_remotes = ()
+            try:
+                processes = list(getattr(env, "processes", ()))
+            except BaseException as error:
+                cleanup_errors.append(("reading SubprocVecEnv processes", error))
+                processes = []
+            try:
+                startup_threads = list(getattr(env, "_owned_startup_threads", ()))
+            except BaseException as error:
+                cleanup_errors.append(("reading SubprocVecEnv startup threads", error))
+                startup_threads = []
+            started_processes: List[Any] = []
+            for process in processes:
+                try:
+                    started = getattr(process, "_popen", None) is not None
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"reading worker process state {process!r}", error)
+                    )
+                    started = True
+                if started:
+                    started_processes.append(process)
+
+            seen_connection_ids: set[int] = set()
+            for remote in (*remotes, *work_remotes):
+                if id(remote) in seen_connection_ids:
+                    continue
+                seen_connection_ids.add(id(remote))
+                try:
+                    remote.close()
+                except BaseException as error:
+                    cleanup_errors.append(("closing SubprocVecEnv remote", error))
+
+            join_processes(started_processes, "joining endpoint-closed")
+
+            survivors = [
+                process for process in started_processes if is_process_alive(process)
+            ]
+            requested_signals: Dict[int, set[int]] = defaultdict(set)
+            for process in survivors:
+                cleanup_errors.append(
+                    (
+                        f"waiting for worker process {process!r} after endpoint close",
+                        TimeoutError(
+                            "SubprocVecEnv worker required forced shutdown after "
+                            "the graceful wait deadline"
+                        ),
+                    )
+                )
+                try:
+                    process.terminate()
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"terminating worker process {process!r}", error)
+                    )
+                else:
+                    requested_signals[id(process)].add(signal.SIGTERM)
+            join_processes(survivors, "joining terminated")
+
+            survivors = [process for process in survivors if is_process_alive(process)]
+            for process in survivors:
+                try:
+                    process.kill()
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"killing worker process {process!r}", error)
+                    )
+                else:
+                    requested_signals[id(process)].add(signal.SIGKILL)
+            join_processes(survivors, "joining killed")
+
+            final_survivors = [
+                process for process in survivors if is_process_alive(process)
+            ]
+
+            worker_reports: List[
+                Tuple[int, Optional[BaseException], Optional[BaseException]]
+            ] = []
+            for index, status_remote in enumerate(status_remotes):
+                try:
+                    has_status = bool(status_remote.poll())
+                except BaseException as error:
+                    cleanup_errors.append((f"polling worker {index} status", error))
+                    continue
+                if not has_status:
+                    continue
+                try:
+                    status = status_remote.recv_bytes(
+                        maxlength=_MAX_WORKER_STATUS_BYTES
+                    )
+                    primary_error, worker_cleanup_error = _unpack_worker_status(status)
+                    if primary_error is None and worker_cleanup_error is None:
+                        raise ValueError("empty worker status")
+                except EOFError:
+                    continue
+                except BaseException as error:
+                    cleanup_errors.append((f"reading worker {index} status", error))
+                    continue
+                worker_reports.append((index, primary_error, worker_cleanup_error))
+                if primary_error is not None:
+                    cleanup_errors.append((f"worker {index} failed", primary_error))
+                if worker_cleanup_error is not None:
+                    cleanup_errors.append(
+                        (
+                            f"worker {index} environment cleanup",
+                            worker_cleanup_error,
+                        )
+                    )
+            for remote in (*status_remotes, *status_work_remotes):
+                if id(remote) in seen_connection_ids:
+                    continue
+                seen_connection_ids.add(id(remote))
+                try:
+                    remote.close()
+                except BaseException as error:
+                    cleanup_errors.append(
+                        ("closing SubprocVecEnv worker status remote", error)
+                    )
+
+            reported_worker_indices = {index for index, _, _ in worker_reports}
+            for index, process in enumerate(processes):
+                if process not in started_processes or index in reported_worker_indices:
+                    continue
+                try:
+                    exitcode = process.exitcode
+                except BaseException as error:
+                    cleanup_errors.append((f"reading worker {index} exit code", error))
+                    continue
+                forced_exitcodes = {
+                    -requested_signal
+                    for requested_signal in requested_signals[id(process)]
+                }
+                if exitcode not in (None, 0) and exitcode not in forced_exitcodes:
+                    worker_error = RuntimeError(
+                        "SubprocVecEnv worker exited with code "
+                        f"{exitcode} without a status report"
+                    )
+                    cleanup_errors.append(
+                        (
+                            f"checking worker {index} exit code",
+                            worker_error,
+                        )
+                    )
+                    worker_reports.append((index, worker_error, None))
+
+            env._owned_worker_reports = worker_reports
+
+            thread_deadline = (
+                time.monotonic() + self._SUBPROC_SHUTDOWN_PHASE_TIMEOUT_SECONDS
+            )
+            for thread in startup_threads:
+                remaining = max(0.0, thread_deadline - time.monotonic())
+                try:
+                    thread.join(timeout=remaining)
+                except BaseException as error:
+                    cleanup_errors.append((f"joining startup thread {thread!r}", error))
+                    continue
+                try:
+                    thread_alive = bool(thread.is_alive())
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"checking startup thread {thread!r}", error)
+                    )
+                    thread_alive = True
+                if thread_alive:
+                    cleanup_errors.append(
+                        (
+                            f"stopping startup thread {thread!r}",
+                            RuntimeError(
+                                "SubprocVecEnv startup thread survived worker shutdown"
+                            ),
+                        )
+                    )
+
+            for process in final_survivors:
+                cleanup_errors.append(
+                    (
+                        f"stopping worker process {process!r}",
+                        RuntimeError("SubprocVecEnv worker survived forced shutdown"),
+                    )
+                )
+
+            for process in started_processes:
+                if process in final_survivors:
+                    continue
+                try:
+                    process.close()
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (f"closing worker process {process!r}", error)
+                    )
+
+            if not final_survivors:
+                try:
+                    env.waiting = False
+                    env.closed = True
+                except BaseException as error:
+                    cleanup_errors.append(("marking SubprocVecEnv as closed", error))
+
+        for env in envs:
+            if env is None:
+                continue
+            chain = get_env_chain(env)
+            if not chain or id(chain[0]) in seen_resource_ids:
+                continue
+
+            leaf = chain[-1]
+            chain_overlaps = any(
+                id(resource) in seen_resource_ids for resource in chain
+            )
+
+            if isinstance(leaf, SubprocVecEnv):
+                for resource in chain:
+                    if isinstance(resource, VecMonitor):
+                        close_monitor_writer(resource)
+                if id(leaf) not in seen_resource_ids:
+                    prepare_subproc_close(leaf)
+                    teardown_subproc(leaf)
+                seen_resource_ids.update(id(resource) for resource in chain)
+                continue
+
+            if chain_overlaps:
+                for resource in chain:
+                    if isinstance(resource, VecMonitor):
+                        close_monitor_writer(resource)
+                seen_resource_ids.update(id(resource) for resource in chain)
+                continue
+
+            try:
+                env.close()
+            except BaseException as error:
+                cleanup_errors.append((f"closing {type(env).__name__}", error))
+                if isinstance(leaf, DummyVecEnv):
+                    try:
+                        leaf_envs = tuple(leaf.envs)
+                    except BaseException as leaf_error:
+                        cleanup_errors.append(
+                            ("reading DummyVecEnv leaves", leaf_error)
+                        )
+                    else:
+                        for leaf_env in leaf_envs:
+                            if id(leaf_env) in seen_resource_ids:
+                                continue
+                            seen_resource_ids.add(id(leaf_env))
+                            try:
+                                leaf_env.close()
+                            except BaseException as leaf_error:
+                                cleanup_errors.append(
+                                    (
+                                        f"closing {type(leaf_env).__name__}",
+                                        leaf_error,
+                                    )
+                                )
+            seen_resource_ids.update(id(resource) for resource in chain)
+
+        return cleanup_errors
+
+    def _make_owned_dummy_vec_env(
+        self,
+        env_fns: List[Callable[[], BaseEnvironment]],
+        claimed_envs: List[BaseEnvironment],
+    ) -> DummyVecEnv:
+        """Construct a DummyVecEnv transactionally from raw owned leaves."""
+        acquired_envs: List[BaseEnvironment] = []
+
+        def claim_factory(
+            env_fn: Callable[[], BaseEnvironment],
+        ) -> Callable[[], BaseEnvironment]:
+            def make_owned_env() -> BaseEnvironment:
+                env = env_fn()
+                if any(env is claimed_env for claimed_env in claimed_envs):
+                    raise ValueError(
+                        "DummyVecEnv factories must return distinct raw environments"
+                    )
+                claimed_envs.append(env)
+                acquired_envs.append(env)
+                return env
+
+            return make_owned_env
+
+        try:
+            return DummyVecEnv([claim_factory(env_fn) for env_fn in env_fns])
+        except BaseException as error:
+            cleanup_errors = self._close_owned_envs(*acquired_envs)
+            claimed_envs[:] = [
+                claimed_env
+                for claimed_env in claimed_envs
+                if not any(
+                    claimed_env is acquired_env for acquired_env in acquired_envs
+                )
+            ]
+            self._report_cleanup_errors(cleanup_errors, error)
+            raise
+
+    def _make_owned_subproc_vec_env(
+        self, env_fns: List[Callable[[], BaseEnvironment]]
+    ) -> VecEnv:
+        """Construct standard SB3 workers with bounded child factory adapters."""
+        sb3_version = getattr(stable_baselines3, "__version__", None)
+        if sb3_version != "2.9.0":
+            raise RuntimeError(
+                "ReforceXY multiprocessing requires stable-baselines3==2.9.0; "
+                f"found {sb3_version!r}"
+            )
+
+        environment: Optional[SubprocVecEnv] = None
+        try:
+            guarded_factories = [
+                _guard_env_factory(
+                    env_fn,
+                    self._SUBPROC_STARTUP_TIMEOUT_SECONDS,
+                )
+                for env_fn in env_fns
+            ]
+            environment = SubprocVecEnv(
+                guarded_factories,
+                start_method="spawn",
+            )
+            environment._owned_worker_reports = []
+            requested: List[Tuple[int, Any]] = []
+            for rank, remote in enumerate(environment.remotes):
+                remote.send(("env_method", ("_reforcexy_bootstrap_error", (), {})))
+                requested.append((rank, remote))
+            deadline = time.monotonic() + self._SUBPROC_STARTUP_TIMEOUT_SECONDS
+            for rank, remote in requested:
+                remaining = max(0.0, deadline - time.monotonic())
+                if not remote.poll(remaining):
+                    raise TimeoutError(
+                        f"SubprocVecEnv worker {rank} bootstrap status timed out"
+                    )
+                payload = remote.recv()
+                if payload is None:
+                    continue
+                if type(payload) is not bytes:
+                    bootstrap_error: BaseException = _RemoteWorkerError(
+                        "invalid remote bootstrap exception payload"
+                    )
+                else:
+                    bootstrap_error = _decode_exception_envelope(payload)
+                try:
+                    bootstrap_error.add_note(f"Remote bootstrap worker rank: {rank}")
+                except BaseException:
+                    pass
+                raise bootstrap_error
+            return _ExceptionAwareSubprocVecEnv(environment)
+        except BaseException as error:
+            cleanup_errors = self._close_owned_envs(environment)
+            self._report_cleanup_errors(cleanup_errors, error)
+            raise
+
+    def _collect_training_cleanup_errors(
+        self,
+        *envs: Optional[Any],
+        model: Optional[Any] = None,
+    ) -> List[Tuple[str, BaseException]]:
+        """Close explicitly owned training resources and collect failures."""
+        cleanup_errors: List[Tuple[str, BaseException]] = []
+        owned_envs = tuple(env for env in envs if env is not None)
+
+        progressbar_callback = self.progressbar_callback
+        self.progressbar_callback = None
+        progressbar = None
+        if progressbar_callback is not None:
+            try:
+                progressbar = getattr(progressbar_callback, "pbar", None)
+            except BaseException as error:
+                cleanup_errors.append(("reading the progress bar", error))
+        progressbar_disabled = True
+        if progressbar is not None:
+            try:
+                progressbar_disabled = bool(getattr(progressbar, "disable", False))
+            except BaseException as error:
+                cleanup_errors.append(("reading the progress bar state", error))
+        if progressbar is not None and not progressbar_disabled:
+            try:
+                progressbar_callback.on_training_end()
+            except BaseException as error:
+                cleanup_errors.append(("ending the progress bar", error))
+
+        if model is not None:
+            try:
+                model_env = getattr(model, "env", None)
+            except BaseException as error:
+                cleanup_errors.append(("reading the model environment", error))
+            else:
+                if any(model_env is owned_env for owned_env in owned_envs):
+                    owned_envs = (*owned_envs, model_env)
+
+        if any(self.train_env is owned_env for owned_env in owned_envs):
+            self.train_env = None
+        if any(self.eval_env is owned_env for owned_env in owned_envs):
+            self.eval_env = None
+
+        cleanup_errors.extend(self._close_owned_envs(*owned_envs))
+        return cleanup_errors
+
+    def _cleanup_training_resources(
+        self,
+        *envs: Optional[Any],
+        model: Optional[Any] = None,
+        primary_error: Optional[BaseException] = None,
+    ) -> None:
+        """Close explicitly owned training resources without masking errors."""
+        try:
+            cleanup_errors = self._collect_training_cleanup_errors(*envs, model=model)
+        except BaseException as error:
+            if primary_error is None:
+                raise
+            self._report_cleanup_errors(
+                [("collecting training cleanup failures", error)], primary_error
+            )
+            return
+        self._report_cleanup_errors(cleanup_errors, primary_error)
+
+    def _learn_with_owned_cleanup(
+        self,
+        model: Any,
+        total_timesteps: int,
+        callbacks: List[BaseCallback],
+        train_env: Optional[Any],
+        eval_env: Optional[Any],
+        owned_envs: List[Optional[Any]],
+        cleanup_complete: List[bool],
+        *,
+        materialize_objective_worker_error: bool = False,
+    ) -> Optional[BaseException]:
+        """Run learning, close owned environments, and promote worker failures."""
+        learn_error: Optional[BaseException] = None
+        try:
+            model.learn(total_timesteps=total_timesteps, callback=callbacks)
+        except BaseException as error:
+            learn_error = error
+
+        try:
+            cleanup_errors = self._collect_training_cleanup_errors(
+                *owned_envs, model=model
+            )
+        except BaseException as error:
+            if learn_error is not None:
+                self._report_cleanup_errors(
+                    [("collecting training cleanup failures", error)], learn_error
+                )
+                raise learn_error
+            return error
+        cleanup_complete[0] = True
+
+        if isinstance(learn_error, (EOFError, ConnectionError)):
+            seen_env_ids: set[int] = set()
+            reported_failures: List[Tuple[int, int, BaseException]] = []
+            for env_order, env in enumerate((train_env, eval_env)):
+                current = env
+                chain_ids: set[int] = set()
+                while isinstance(current, VecEnvWrapper):
+                    current_id = id(current)
+                    if current_id in chain_ids:
+                        cleanup_errors.append(
+                            (
+                                f"discovering {type(env).__name__} worker reports",
+                                RuntimeError("VecEnv wrapper chain contains a cycle"),
+                            )
+                        )
+                        current = None
+                        break
+                    chain_ids.add(current_id)
+                    try:
+                        current = current.venv
+                    except BaseException as error:
+                        cleanup_errors.append(
+                            (
+                                f"reading {type(current).__name__} worker reports",
+                                error,
+                            )
+                        )
+                        current = None
+                        break
+                if not isinstance(current, SubprocVecEnv):
+                    continue
+                current_id = id(current)
+                if current_id in seen_env_ids:
+                    continue
+                seen_env_ids.add(current_id)
+                try:
+                    worker_reports = tuple(current._owned_worker_reports)
+                except BaseException as error:
+                    cleanup_errors.append(
+                        (
+                            f"reading {type(current).__name__} worker reports",
+                            error,
+                        )
+                    )
+                    continue
+                for worker_report in worker_reports:
+                    try:
+                        index, primary_error, _ = worker_report
+                        if type(index) is not int or index < 0:
+                            raise ValueError(
+                                "worker report index must be a non-negative integer"
+                            )
+                        if primary_error is not None and not isinstance(
+                            primary_error, BaseException
+                        ):
+                            raise TypeError(
+                                "worker report primary must be an exception or None"
+                            )
+                    except BaseException as error:
+                        cleanup_errors.append(
+                            ("validating a SubprocVecEnv worker report", error)
+                        )
+                        continue
+                    if primary_error is not None:
+                        reported_failures.append((env_order, index, primary_error))
+
+            if reported_failures:
+                try:
+                    reported_failures.sort(key=lambda item: (item[0], item[1]))
+                except BaseException as error:
+                    cleanup_errors.append(
+                        ("ordering SubprocVecEnv worker reports", error)
+                    )
+                    reported_failures = []
+            if reported_failures:
+                selected_error = reported_failures[0][2]
+                cleanup_errors = [
+                    (operation, cleanup_error)
+                    for operation, cleanup_error in cleanup_errors
+                    if cleanup_error is not selected_error
+                ]
+                promoted_error = (
+                    _materialize_remote_learning_error(selected_error)
+                    if materialize_objective_worker_error
+                    else selected_error
+                )
+                cleanup_errors.insert(
+                    0,
+                    ("handling the parent worker transport failure", learn_error),
+                )
+                self._report_cleanup_errors(cleanup_errors, promoted_error)
+                raise promoted_error
+
+        if learn_error is not None:
+            outward_error = (
+                _materialize_remote_learning_error(learn_error)
+                if materialize_objective_worker_error
+                else learn_error
+            )
+            self._report_cleanup_errors(cleanup_errors, outward_error)
+            raise outward_error
+
+        if cleanup_errors:
+            cleanup_error = cleanup_errors[0][1]
+            self._report_cleanup_errors(cleanup_errors[1:], cleanup_error)
+            return cleanup_error
+        return None
+
+    def fit(
+        self, data_dictionary: Dict[str, Any], dk: FreqaiDataKitchen, **kwargs
+    ) -> Any:
         """
         Model fitting method
         :param data_dictionary: dict = common data dictionary containing all train/test features/labels/weights.
@@ -959,133 +2537,178 @@ class ReforceXY(BaseReinforcementLearningModel):
         :return:
         model Any = trained model to be used for inference in dry/live/backtesting
         """
-        train_df = data_dictionary.get("train_features")
-        train_timesteps = len(train_df)
-        if train_timesteps <= 0:
-            raise ValueError(f"Training [{dk.pair}]: train_features dataframe has zero length")
-        test_df = data_dictionary.get("test_features")
-        eval_timesteps = len(test_df)
-        train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
-        total_timesteps = ReforceXY._ceil_to_multiple(train_timesteps * train_cycles, self.n_envs)
-        train_days = steps_to_days(train_timesteps, self.config.get("timeframe"))
-        eval_days = steps_to_days(eval_timesteps, self.config.get("timeframe"))
-        total_days = steps_to_days(total_timesteps, self.config.get("timeframe"))
-
-        logger.info("Model [%s]: type=%s", dk.pair, self.model_type)
-        logger.info(
-            "Training [%s]: %s steps (%s days), %s cycles, %s env(s) -> total %s steps (%s days)",
-            dk.pair,
-            train_timesteps,
-            train_days,
-            train_cycles,
-            self.n_envs,
-            total_timesteps,
-            total_days,
-        )
-        logger.info(
-            "Training [%s]: eval %s steps (%s days), %s episodes, %s env(s)",
-            dk.pair,
-            eval_timesteps,
-            eval_days,
-            self.n_eval_episodes,
-            self.n_eval_envs,
-        )
-        logger.info(
-            "Config [%s]: multiprocessing=%s, eval_multiprocessing=%s, "
-            "frame_stacking=%s, action_masking=%s, recurrent=%s, hyperopt=%s",
-            dk.pair,
-            self.multiprocessing,
-            self.eval_multiprocessing,
-            self.frame_stacking,
-            self.action_masking,
-            self.recurrent,
-            self.hyperopt,
-        )
-
-        start_time = time.time()
-        if self.hyperopt:
-            best_params = self.optimize(dk, total_timesteps)
-            if best_params is None:
-                logger.error(
-                    "Hyperopt [%s]: optimization failed, using default model params",
-                    dk.pair,
+        owned_envs: List[Optional[Any]] = [self.train_env, self.eval_env]
+        cleanup_complete = [False]
+        model: Optional[Any] = None
+        primary_error: BaseException | None = None
+        try:
+            train_df = data_dictionary.get("train_features")
+            train_timesteps = len(train_df)
+            if train_timesteps <= 0:
+                raise ValueError(
+                    f"Training [{dk.pair}]: train_features dataframe has zero length"
                 )
-                best_params = self.get_model_params()
-            model_params = best_params
-        else:
-            model_params = self.get_model_params()
-        logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
+            test_df = data_dictionary.get("test_features")
+            eval_timesteps = len(test_df)
+            train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
+            total_timesteps = ReforceXY._ceil_to_multiple(
+                train_timesteps * train_cycles, self.n_envs
+            )
+            train_days = steps_to_days(train_timesteps, self.config.get("timeframe"))
+            eval_days = steps_to_days(eval_timesteps, self.config.get("timeframe"))
+            total_days = steps_to_days(total_timesteps, self.config.get("timeframe"))
 
-        # "PPO"
-        if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            n_steps = model_params.get("n_steps", 0)
-            min_timesteps = 2 * n_steps * self.n_envs
-            if total_timesteps <= min_timesteps:
-                logger.warning(
-                    "Training [%s]: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
-                    dk.pair,
-                    total_timesteps,
-                    min_timesteps,
-                    self.model_type,
-                )
-            if n_steps > 0:
-                rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
-                if aligned_total_timesteps != total_timesteps:
-                    total_timesteps = aligned_total_timesteps
-                    logger.info(
-                        "Training [%s]: aligned total %s steps (%s days) for model %s",
+            logger.info("Model [%s]: type=%s", dk.pair, self.model_type)
+            logger.info(
+                "Training [%s]: %s steps (%s days), %s cycles, %s env(s) -> total %s steps (%s days)",
+                dk.pair,
+                train_timesteps,
+                train_days,
+                train_cycles,
+                self.n_envs,
+                total_timesteps,
+                total_days,
+            )
+            logger.info(
+                "Training [%s]: eval %s steps (%s days), %s episodes, %s env(s)",
+                dk.pair,
+                eval_timesteps,
+                eval_days,
+                self.n_eval_episodes,
+                self.n_eval_envs,
+            )
+            logger.info(
+                "Config [%s]: multiprocessing=%s, eval_multiprocessing=%s, "
+                "frame_stacking=%s, action_masking=%s, recurrent=%s, hyperopt=%s",
+                dk.pair,
+                self.multiprocessing,
+                self.eval_multiprocessing,
+                self.frame_stacking,
+                self.action_masking,
+                self.recurrent,
+                self.hyperopt,
+            )
+
+            start_time = time.time()
+            if self.hyperopt:
+                best_params = self.optimize(dk, total_timesteps)
+                if best_params is None:
+                    logger.error(
+                        "Hyperopt [%s]: optimization failed, using default model params",
+                        dk.pair,
+                    )
+                    best_params = self.get_model_params()
+                model_params = best_params
+            else:
+                model_params = self.get_model_params()
+            logger.info(
+                "Model [%s]: %s params: %s",
+                dk.pair,
+                self.model_type,
+                model_params,
+            )
+
+            # "PPO"
+            if ReforceXY._MODEL_TYPES[0] in self.model_type:
+                n_steps = model_params.get("n_steps", 0)
+                min_timesteps = 2 * n_steps * self.n_envs
+                if total_timesteps <= min_timesteps:
+                    logger.warning(
+                        "Training [%s]: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
                         dk.pair,
                         total_timesteps,
-                        steps_to_days(total_timesteps, self.config.get("timeframe")),
+                        min_timesteps,
                         self.model_type,
                     )
+                if n_steps > 0:
+                    rollout = n_steps * self.n_envs
+                    aligned_total_timesteps = ReforceXY._ceil_to_multiple(
+                        total_timesteps, rollout
+                    )
+                    if aligned_total_timesteps != total_timesteps:
+                        total_timesteps = aligned_total_timesteps
+                        logger.info(
+                            "Training [%s]: aligned total %s steps (%s days) for model %s",
+                            dk.pair,
+                            total_timesteps,
+                            steps_to_days(
+                                total_timesteps, self.config.get("timeframe")
+                            ),
+                            self.model_type,
+                        )
 
-        if self.activate_tensorboard:
-            tensorboard_log_path = Path(self.full_path / "tensorboard" / Path(dk.data_path).name)
-        else:
-            tensorboard_log_path = None
+            if self.activate_tensorboard:
+                tensorboard_log_path = Path(
+                    self.full_path / "tensorboard" / Path(dk.data_path).name
+                )
+            else:
+                tensorboard_log_path = None
 
-        # Rebuild train and eval environments before training to sync model parameters
-        prices_train, prices_test = self.build_ohlc_price_dataframes(
-            dk.data_dictionary, dk.pair, dk
-        )
-        self.set_train_and_eval_environments(dk.data_dictionary, prices_train, prices_test, dk)
-
-        model = self.get_init_model(dk.pair)
-        if model is not None:
-            logger.info(
-                "Training [%s]: continual training activated, starting from previously trained model state",
-                dk.pair,
+            prices_train, prices_test = self.build_ohlc_price_dataframes(
+                dk.data_dictionary, dk.pair, dk
             )
-            model.set_env(self.train_env)
-        else:
-            model = self.MODELCLASS(
-                self.policy_type,
-                self.train_env,
-                tensorboard_log=tensorboard_log_path,
-                **model_params,
-            )
+            try:
+                self.close_envs()
+            finally:
+                owned_envs.clear()
 
-        eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
-        callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
-        try:
+            install_token: List[Optional[Any]] = [None, None]
+            self._env_install_ownership_token = install_token
+            try:
+                self.set_train_and_eval_environments(
+                    dk.data_dictionary, prices_train, prices_test, dk
+                )
+            finally:
+                if self._env_install_ownership_token is install_token:
+                    published_envs = [self.train_env, self.eval_env]
+                    self._env_install_ownership_token = None
+                    owned_envs[:] = [*published_envs, *install_token]
+
+            model = self.get_init_model(dk.pair)
+            if model is not None:
+                logger.info(
+                    "Training [%s]: continual training activated, starting from previously trained model state",
+                    dk.pair,
+                )
+                model.set_env(self.train_env)
+            else:
+                model = self.MODELCLASS(
+                    self.policy_type,
+                    self.train_env,
+                    tensorboard_log=tensorboard_log_path,
+                    **model_params,
+                )
+
+            eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
+            callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
             logger.debug(
                 "Training [%s]: starting model.learn with total_timesteps=%d, eval_freq=%d",
                 dk.pair,
                 total_timesteps,
                 eval_freq,
             )
-            model.learn(total_timesteps=total_timesteps, callback=callbacks)
+            cleanup_error = self._learn_with_owned_cleanup(
+                model,
+                total_timesteps,
+                callbacks,
+                self.train_env,
+                self.eval_env,
+                owned_envs,
+                cleanup_complete,
+            )
+            if cleanup_error is not None:
+                raise cleanup_error
             logger.debug("Training [%s]: model.learn completed", dk.pair)
-        except KeyboardInterrupt:
-            pass
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            if self.progressbar_callback:
-                self.progressbar_callback.on_training_end()
-            self.close_envs()
-            if hasattr(model, "env") and model.env is not None:
-                model.env.close()
+            if not cleanup_complete[0]:
+                self._cleanup_training_resources(
+                    *owned_envs, model=model, primary_error=primary_error
+                )
+
+        assert model is not None
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
 
@@ -1094,7 +2717,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         if model_filepath.is_file():
             logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
-                best_model = self.MODELCLASS.load(dk.data_path / f"{model_filename}_model")
+                best_model = self.MODELCLASS.load(
+                    dk.data_path / f"{model_filename}_model"
+                )
                 return best_model
             except Exception as e:
                 logger.error(
@@ -1128,13 +2753,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             position, _, trade_duration = self.get_state_info(dk.pair)
             virtual_position = ReforceXY._normalize_position(position)
             virtual_trade_duration = trade_duration
-        np_dataframe: NDArray[np.float32] = dataframe.to_numpy(dtype=np.float32, copy=False)
+        np_dataframe: NDArray[np.float32] = dataframe.to_numpy(
+            dtype=np.float32, copy=False
+        )
         n = np_dataframe.shape[0]
         window_size: int = self.CONV_WIDTH
         frame_stacking: int = self.frame_stacking
         frame_stacking_enabled: bool = bool(frame_stacking) and frame_stacking > 1
-        inference_masking: bool = self.action_masking and self.inference_masking
-
         if window_size <= 0 or n < window_size:
             return DataFrame(
                 {label: [np.nan] * n for label in dk.label_list}, index=dataframe.index
@@ -1166,7 +2791,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         frame_buffer: deque[np.float32] = deque(
             maxlen=frame_stacking if frame_stacking_enabled else None
         )
-        zero_frame: NDArray[np.float32] | None = None
+        zero_frame: Optional[NDArray[np.float32]] = None
         model_id = id(model)
         lstm_states_cache_valid = (
             self.live
@@ -1190,17 +2815,22 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.live,
                 self.recurrent,
             )
-            lstm_states: tuple[NDArray[np.float32], NDArray[np.float32]] | None = None
+            lstm_states: Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]] = (
+                None
+            )
             episode_start = np.array([True], dtype=bool)
 
         def _predict(start_idx: int) -> int:
             nonlocal zero_frame, lstm_states, episode_start
             end_idx: int = start_idx + window_size
             np_observation = np_dataframe[start_idx:end_idx, :]
-            action_masks_param: dict[str, Any] = {}
+            action_masks_param: Dict[str, Any] = {}
 
             if add_state_info:
                 if self.live:
+                    # Freqtrade remains authoritative for dry/live trade state.
+                    # Its PnL uses an exit-side rate that is not guaranteed to
+                    # equal MyRLEnv's candle-close training mark.
                     position, pnl, trade_duration = self.get_state_info(dk.pair)
                     position = ReforceXY._normalize_position(position)
                     state_block = np.tile(
@@ -1246,7 +2876,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     1, np_observation.shape[0], np_observation.shape[1]
                 )
 
-            if inference_masking:
+            if self.action_masking:
                 action_masks_param["action_masks"] = ReforceXY.get_action_masks(
                     self.can_short, action_mask_position
                 )
@@ -1279,7 +2909,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                     dk.pair,
                     observations.shape,
                 )
-                action, _ = model.predict(observations, deterministic=True, **action_masks_param)
+                action, _ = model.predict(
+                    observations, deterministic=True, **action_masks_param
+                )
                 action = int(action.item())
                 logger.debug(
                     "Predict [%s]: predicted action=%s (%d)",
@@ -1290,7 +2922,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
             return action
 
-        predicted_actions: list[int] = []
+        predicted_actions: List[int] = []
         for start_idx in range(0, n - window_size + 1):
             action = _predict(start_idx)
             predicted_actions.append(action)
@@ -1309,7 +2941,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if self.live and self.recurrent:
             self._lstm_states_cache[dk.pair] = (model_id, lstm_states, episode_start)
 
-        return DataFrame(dict.fromkeys(dk.label_list, actions_df["action"]))
+        return DataFrame({label: actions_df["action"] for label in dk.label_list})
 
     @staticmethod
     def delete_study(study_name: str, storage: BaseStorage) -> None:
@@ -1332,15 +2964,15 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _optuna_retrain_counters_path(self) -> Path:
         return Path(self.full_path / "optuna-retrain-counters.json")
 
-    def _load_optuna_retrain_counters(self, pair: str) -> dict[str, int]:
+    def _load_optuna_retrain_counters(self, pair: str) -> Dict[str, int]:
         counters_path = self._optuna_retrain_counters_path()
         if not counters_path.is_file():
             return {}
         try:
             with counters_path.open("r", encoding="utf-8") as read_file:
-                data: dict[str, int] = json.load(read_file)
+                data: Dict[str, int] = json.load(read_file)
             if isinstance(data, dict):
-                result: dict[str, int] = {}
+                result: Dict[str, int] = {}
                 for key, value in data.items():
                     if isinstance(key, str) and isinstance(value, int):
                         result[key] = value
@@ -1355,7 +2987,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         return {}
 
-    def _save_optuna_retrain_counters(self, counters: dict[str, int], pair: str) -> None:
+    def _save_optuna_retrain_counters(
+        self, counters: Dict[str, int], pair: str
+    ) -> None:
         counters_path = self._optuna_retrain_counters_path()
         try:
             with counters_path.open("w", encoding="utf-8") as write_file:
@@ -1417,7 +3051,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         op_code = record.get(ReforceXY._JOURNAL_OP_CODE_KEY)
         if op_code is None and fail_open_missing_op_code:
             return False
-        return type(op_code) is not int or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
+        return (
+            type(op_code) is not int
+            or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
+        )
 
     @staticmethod
     def _create_recovered_journal_storage(
@@ -1448,7 +3085,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _quarantine_journal(journal_path: Path, cause: Exception) -> Path | None:
         if not journal_path.exists():
             return None
-        quarantine_path = ReforceXY._quarantine_path(journal_path, datetime.now(timezone.utc))
+        quarantine_path = ReforceXY._quarantine_path(
+            journal_path, datetime.now(timezone.utc)
+        )
         journal_path.rename(quarantine_path)
         logger.warning(
             "Optuna journal %s corrupt (%r); quarantined to %s; resuming with fresh journal",
@@ -1459,22 +3098,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         return quarantine_path
 
     @staticmethod
-    def _quarantine_path(path: Path, now: datetime) -> Path:
-        """Quarantine target path for a corrupt Optuna artefact.
-
-        The tag and timestamp are appended after the complete filename
-        (extension included) so live-artefact globs never match quarantined
-        files. Collisions are bounded by ``_QUARANTINE_TIE_BREAK_LIMIT``;
-        exhausted candidates raise instead of reusing a quarantine file.
-        """
+    def _quarantine_path(journal_path: Path, now: datetime) -> Path:
         stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
-        base_name = f"{path.name}.{ReforceXY._QUARANTINE_TAG}-{stamp}"
-        for index in range(ReforceXY._QUARANTINE_TIE_BREAK_LIMIT + 1):
+        base_name = f"{journal_path.name}.{ReforceXY._JOURNAL_QUARANTINE_TAG}-{stamp}"
+        for index in range(ReforceXY._JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1):
             suffix = "" if index == 0 else f"-{index}"
-            candidate = path.with_name(f"{base_name}{suffix}")
+            candidate = journal_path.with_name(f"{base_name}{suffix}")
             if not candidate.exists():
                 return candidate
-        raise FileExistsError(path)
+        raise FileExistsError(journal_path)
 
     def create_storage(self, pair: str) -> BaseStorage:
         """
@@ -1505,7 +3137,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         return storage
 
     @staticmethod
-    def study_has_best_trial(study: Study | None) -> bool:
+    def study_has_best_trial(study: Optional[Study]) -> bool:
         if study is None:
             return False
         try:
@@ -1521,7 +3153,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Hyperopt [global]: unsupported sampler '{sampler_value}'. "
                 f"Valid: {', '.join(ReforceXY._SAMPLERS)}"
             )
-        sampler = cast("SamplerType", sampler_value)
+        sampler = cast(SamplerType, sampler_value)
         seed = self.rl_config_optuna.get("seed", 42)
         match sampler:
             case ReforceXY._SAMPLERS.tpe:
@@ -1541,12 +3173,16 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Hyperopt [global]: using AutoSampler (seed=%d)",
                     seed,
                 )
-                return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
+                return optunahub.load_module("samplers/auto_sampler").AutoSampler(
+                    seed=seed
+                )
             case _:
                 assert_never(sampler)
 
     @staticmethod
-    def create_pruner(min_resource: int, max_resource: int, reduction_factor: int) -> BasePruner:
+    def create_pruner(
+        min_resource: int, max_resource: int, reduction_factor: int
+    ) -> BasePruner:
         logger.info(
             "Hyperopt [global]: using HyperbandPruner (min_resource=%d, max_resource=%d, reduction_factor=%d)",
             min_resource,
@@ -1564,12 +3200,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         return ((value + multiple - 1) // multiple) * multiple
 
     @staticmethod
-    def _ppo_resources(total_timesteps: int, n_envs: int, reduction_factor: int) -> tuple[int, int]:
+    def _ppo_resources(
+        total_timesteps: int, n_envs: int, reduction_factor: int
+    ) -> Tuple[int, int]:
         min_n_steps = ReforceXY._PPO_N_STEPS_MIN
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
         min_resource = max(
             2 * reduction_factor,
-            round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR) * n_envs,
+            round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR)
+            * n_envs,
         )
         rollout = max_n_steps * n_envs
         return (
@@ -1577,7 +3216,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             max(min_resource, ReforceXY._ceil_to_multiple(total_timesteps, rollout)),
         )
 
-    def optimize(self, dk: FreqaiDataKitchen, total_timesteps: int) -> dict[str, Any] | None:
+    def optimize(
+        self, dk: FreqaiDataKitchen, total_timesteps: int
+    ) -> Optional[Dict[str, Any]]:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
         """
@@ -1588,7 +3229,8 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         pair_purge_count = self._increment_optuna_retrain_counter(dk.pair)
         pair_purge_triggered = (
-            self.optuna_purge_period > 0 and pair_purge_count % self.optuna_purge_period == 0
+            self.optuna_purge_period > 0
+            and pair_purge_count % self.optuna_purge_period == 0
         )
 
         if continuous or pair_purge_triggered:
@@ -1625,7 +3267,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         study: Study = create_study(
             study_name=study_name,
             sampler=self.create_sampler(),
-            pruner=ReforceXY.create_pruner(min_resource, max_resource, reduction_factor),
+            pruner=ReforceXY.create_pruner(
+                min_resource, max_resource, reduction_factor
+            ),
             direction=direction,
             storage=storage,
             load_if_exists=load_if_exists,
@@ -1739,236 +3383,69 @@ class ReforceXY(BaseReinforcementLearningModel):
             convert_optuna_params_to_model_params(self.model_type, best_trial_params),
         )
 
-    def _best_trial_params_path(self, pair: str) -> Path:
-        return self.full_path / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
-
-    def _resolve_legacy_best_trial_params(
-        self, pair: str, best_trial_params_path: Path
-    ) -> Path | None:
-        base = pair.split("/")[0]
-        legacy_path = self.full_path / f"hyperopt-best-params-{base}.json"
-        if (
-            legacy_path == best_trial_params_path
-            or legacy_path.is_symlink()
-            or not legacy_path.is_file()
-        ):
-            return None
-        base_pair_count = sum(1 for configured in self.pairs if configured.split("/")[0] == base)
-        if base_pair_count == 1:
-            return legacy_path
-        logger.warning(
-            "Hyperopt [%s]: ignoring ambiguous legacy best params at %s: "
-            "filename does not encode the complete pair identity",
-            pair,
-            legacy_path,
-        )
-        return None
-
-    @staticmethod
-    @contextmanager
-    def _locked_best_trial_params(
-        best_trial_params_path: Path, *, exclusive: bool
-    ) -> Iterator[None]:
-        lock_path = best_trial_params_path.parent / ReforceXY._BEST_PARAMS_LOCK_FILENAME
-        # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
-        # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
-        # A shared reader omits O_CREAT: a read-only mount cannot create the lock,
-        # and os.replace atomicity keeps a lock-free read consistent.
-        open_flags = (
-            ((os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY)
-            | os.O_CLOEXEC
-            | os.O_NOFOLLOW
-            | os.O_NONBLOCK
-        )
-        try:
-            lock_fd = os.open(lock_path, open_flags, 0o666)
-        except FileNotFoundError:
-            if exclusive:
-                raise
-            yield
-            return
-        try:
-            if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
-                raise OSError(f"Hyperopt best params lock {lock_path} must be a regular file")
-            fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-            yield
-        finally:
-            os.close(lock_fd)
-
-    @staticmethod
-    def _reject_best_trial_params_symlink(best_trial_params_path: Path) -> None:
-        if best_trial_params_path.is_symlink():
-            raise OSError(
-                f"Hyperopt best params path {best_trial_params_path} must not be a symlink"
-            )
-
-    @staticmethod
-    def _quarantine_corrupt_best_trial_params(
-        best_trial_params_path: Path, pair: str, cause: Exception
-    ) -> Path | None:
-        if not best_trial_params_path.exists():
-            return None
-        quarantine_path = ReforceXY._quarantine_path(
-            best_trial_params_path, datetime.now(timezone.utc)
-        )
-        try:
-            best_trial_params_path.rename(quarantine_path)
-        except OSError as quarantine_error:
-            logger.error(
-                "Hyperopt [%s]: best params %s quarantine failed: %r",
-                pair,
-                best_trial_params_path.name,
-                quarantine_error,
-                exc_info=True,
-            )
-            raise
-        logger.warning(
-            "Hyperopt [%s]: best params %s corrupt (%r); quarantined to %s; "
-            "no persisted best params recovered",
-            pair,
-            best_trial_params_path.name,
-            cause,
-            quarantine_path.name,
-        )
-        return quarantine_path
-
-    def save_best_trial_params(self, best_trial_params: dict[str, Any], pair: str) -> None:
+    def save_best_trial_params(
+        self, best_trial_params: Dict[str, Any], pair: str
+    ) -> None:
         """
         Save the best trial hyperparameters found during hyperparameter optimization
         """
-        best_trial_params_path = self._best_trial_params_path(pair)
-        logger.info("Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path)
-        temporary_path: Path | None = None
+        best_trial_params_filename = f"hyperopt-best-params-{pair.split('/')[0]}"
+        best_trial_params_path = Path(
+            self.full_path / f"{best_trial_params_filename}.json"
+        )
+        logger.info(
+            "Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path
+        )
         try:
-            with self._locked_best_trial_params(best_trial_params_path, exclusive=True):
-                self._reject_best_trial_params_symlink(best_trial_params_path)
-                try:
-                    existing_metadata = best_trial_params_path.stat()
-                except FileNotFoundError:
-                    existing_metadata = None
-                temporary_path = best_trial_params_path.with_name(
-                    f".{best_trial_params_path.name}.{uuid4().hex}.tmp"
-                )
-                with os.fdopen(
-                    os.open(
-                        temporary_path,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                        0o666,
-                    ),
-                    mode="w",
-                    encoding="utf-8",
-                ) as write_file:
-                    if existing_metadata is not None:
-                        temporary_metadata = os.fstat(write_file.fileno())
-                        if (
-                            temporary_metadata.st_uid != existing_metadata.st_uid
-                            or temporary_metadata.st_gid != existing_metadata.st_gid
-                        ):
-                            # Best-effort: a non-root process on a cross-uid bind
-                            # mount lacks CAP_CHOWN; the previous in-place write
-                            # never chowned, so a failure must not abort the save.
-                            try:
-                                os.fchown(
-                                    write_file.fileno(),
-                                    existing_metadata.st_uid
-                                    if temporary_metadata.st_uid != existing_metadata.st_uid
-                                    else -1,
-                                    existing_metadata.st_gid
-                                    if temporary_metadata.st_gid != existing_metadata.st_gid
-                                    else -1,
-                                )
-                            except PermissionError as chown_error:
-                                logger.debug(
-                                    "Hyperopt [%s]: best params ownership preservation skipped: %r",
-                                    pair,
-                                    chown_error,
-                                )
-                        os.fchmod(
-                            write_file.fileno(),
-                            stat.S_IMODE(existing_metadata.st_mode),
-                        )
-                    json.dump(best_trial_params, write_file, indent=4)
-                    write_file.flush()
-                    os.fsync(write_file.fileno())
-                temporary_path.replace(best_trial_params_path)
-                temporary_path = None
-        except BaseException as error:
-            if temporary_path is not None:
-                try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError as cleanup_error:
-                    logger.error(
-                        "Hyperopt [%s]: best params temporary file %s cleanup failed: %r",
-                        pair,
-                        temporary_path.name,
-                        cleanup_error,
-                        exc_info=True,
-                    )
-            if isinstance(error, Exception):
-                logger.error(
-                    "Hyperopt [%s]: failed to save best params to %s: %r",
-                    pair,
-                    best_trial_params_path,
-                    error,
-                    exc_info=True,
-                )
+            with best_trial_params_path.open("w", encoding="utf-8") as write_file:
+                json.dump(best_trial_params, write_file, indent=4)
+        except Exception as e:
+            logger.error(
+                "Hyperopt [%s]: failed to save best params to %s: %r",
+                pair,
+                best_trial_params_path,
+                e,
+                exc_info=True,
+            )
             raise
 
-    def load_best_trial_params(self, pair: str) -> dict[str, Any] | None:
+    def load_best_trial_params(self, pair: str) -> Optional[Dict[str, Any]]:
         """
         Load the best trial hyperparameters found and saved during hyperparameter optimization
         """
-        best_trial_params_path = self._best_trial_params_path(pair)
-        if not best_trial_params_path.parent.is_dir():
-            return None
-        malformed = False
-        with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
-            self._reject_best_trial_params_symlink(best_trial_params_path)
-            if not best_trial_params_path.is_file():
-                legacy_path = self._resolve_legacy_best_trial_params(pair, best_trial_params_path)
-                if legacy_path is None:
-                    return None
-                best_trial_params_path = legacy_path
+        best_trial_params_filename = f"hyperopt-best-params-{pair.split('/')[0]}"
+        best_trial_params_path = Path(
+            self.full_path / f"{best_trial_params_filename}.json"
+        )
+        if best_trial_params_path.is_file():
             logger.info(
                 "Hyperopt [%s]: loading best params from %s",
                 pair,
                 best_trial_params_path,
             )
-            try:
-                with best_trial_params_path.open("r", encoding="utf-8") as read_file:
-                    best_trial_params = json.load(read_file)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                malformed = True
-        if malformed:
-            with self._locked_best_trial_params(best_trial_params_path, exclusive=True):
-                self._reject_best_trial_params_symlink(best_trial_params_path)
-                if not best_trial_params_path.is_file():
-                    return None
-                try:
-                    with best_trial_params_path.open("r", encoding="utf-8") as read_file:
-                        best_trial_params = json.load(read_file)
-                except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
-                    quarantined = self._quarantine_corrupt_best_trial_params(
-                        best_trial_params_path, pair, decode_error
-                    )
-                    if quarantined is None:
-                        raise
-                    return None
-        return best_trial_params
+            with best_trial_params_path.open("r", encoding="utf-8") as read_file:
+                best_trial_params = json.load(read_file)
+            return best_trial_params
+        return None
 
     def _get_train_and_eval_environments(
         self,
         dk: FreqaiDataKitchen,
-        train_df: DataFrame | None = None,
-        test_df: DataFrame | None = None,
-        prices_train: DataFrame | None = None,
-        prices_test: DataFrame | None = None,
-        seed: int | None = None,
-        env_info: dict[str, Any] | None = None,
-        trial: Trial | None = None,
-        model_params: dict[str, Any] | None = None,
-    ) -> tuple[VecEnv, VecEnv]:
-        if train_df is None or test_df is None or prices_train is None or prices_test is None:
+        train_df: Optional[DataFrame] = None,
+        test_df: Optional[DataFrame] = None,
+        prices_train: Optional[DataFrame] = None,
+        prices_test: Optional[DataFrame] = None,
+        seed: Optional[int] = None,
+        env_info: Optional[Dict[str, Any]] = None,
+        trial: Optional[Trial] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[VecEnv, VecEnv]:
+        if (
+            train_df is None
+            or test_df is None
+            or prices_train is None
+            or prices_test is None
+        ):
             train_df = dk.data_dictionary["train_features"]
             test_df = dk.data_dictionary["test_features"]
             prices_train, prices_test = self.build_ohlc_price_dataframes(
@@ -1978,7 +3455,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if trial is not None:
             seed += trial.number
         set_random_seed(seed)
-        env_info: dict[str, Any] = (
+        env_info: Dict[str, Any] = (
             self.pack_env_dict(dk.pair, model_params) if env_info is None else env_info
         )
         env_prefix = f"trial_{trial.number}_" if trial is not None else ""
@@ -2008,25 +3485,35 @@ class ReforceXY(BaseReinforcementLearningModel):
             for i in range(self.n_eval_envs)
         ]
 
-        if self.multiprocessing and self.n_envs > 1:
-            train_env = SubprocVecEnv(train_fns, start_method="spawn")
-        else:
-            train_env = DummyVecEnv(train_fns)
-        if self.eval_multiprocessing and self.n_eval_envs > 1:
-            eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
-        else:
-            eval_env = DummyVecEnv(eval_fns)
+        train_env: Optional[VecEnv] = None
+        eval_env: Optional[VecEnv] = None
+        claimed_dummy_envs: List[BaseEnvironment] = []
+        try:
+            if self.multiprocessing and self.n_envs > 1:
+                train_env = self._make_owned_subproc_vec_env(train_fns)
+            else:
+                train_env = self._make_owned_dummy_vec_env(
+                    train_fns, claimed_dummy_envs
+                )
+            if self.eval_multiprocessing and self.n_eval_envs > 1:
+                eval_env = self._make_owned_subproc_vec_env(eval_fns)
+            else:
+                eval_env = self._make_owned_dummy_vec_env(eval_fns, claimed_dummy_envs)
+            claimed_dummy_envs.clear()
 
-        if bool(self.frame_stacking) and self.frame_stacking > 1:
-            train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
-            eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
+            if bool(self.frame_stacking) and self.frame_stacking > 1:
+                train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
+                eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
 
-        train_env = VecMonitor(train_env)
-        eval_env = VecMonitor(eval_env)
+            train_env = VecMonitor(train_env)
+            eval_env = VecMonitor(eval_env)
+            return train_env, eval_env
+        except BaseException as error:
+            cleanup_errors = self._close_owned_envs(train_env, eval_env)
+            self._report_cleanup_errors(cleanup_errors, error)
+            raise
 
-        return train_env, eval_env
-
-    def get_optuna_params(self, trial: Trial) -> dict[str, Any]:
+    def get_optuna_params(self, trial: Trial) -> Dict[str, Any]:
         # "RecurrentPPO"
         if ReforceXY._MODEL_TYPES[1] in self.model_type:
             return sample_params_recurrentppo(trial)
@@ -2044,7 +3531,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Hyperopt [{trial.study.study_name}]: model type '{self.model_type}' not supported"
             )
 
-    def objective(self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int) -> float:
+    def objective(
+        self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int
+    ) -> float:
         """
         Objective function for Optuna trials hyperparameter optimization
         """
@@ -2088,14 +3577,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
         params["seed"] = params.get("seed", 42) + trial.number
-        logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
+        logger.info(
+            "Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params
+        )
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
             n_steps = params.get("n_steps", 0)
             if n_steps > 0:
                 rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
+                aligned_total_timesteps = ReforceXY._ceil_to_multiple(
+                    total_timesteps, rollout
+                )
                 if aligned_total_timesteps != total_timesteps:
                     total_timesteps = aligned_total_timesteps
 
@@ -2112,74 +3605,92 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        train_env, eval_env = self._get_train_and_eval_environments(
-            dk, trial=trial, model_params=params
-        )
-
-        model = self.MODELCLASS(
-            self.policy_type,
-            train_env,
-            tensorboard_log=tensorboard_log_path,
-            **params,
-        )
-
-        eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
-        callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
+        train_env: Optional[VecEnv] = None
+        eval_env: Optional[VecEnv] = None
+        model: Optional[Any] = None
+        callbacks_ready = False
+        cleanup_complete = [False]
+        primary_error: BaseException | None = None
         try:
-            model.learn(total_timesteps=total_timesteps, callback=callbacks)
-        except AssertionError as e:
-            logger.warning(
-                "Hyperopt [%s]: trial #%d encountered NaN (AssertionError): %r",
-                study_name,
-                trial.number,
-                e,
-                exc_info=True,
+            train_env, eval_env = self._get_train_and_eval_environments(
+                dk, trial=trial, model_params=params
             )
-            nan_encountered = True
-        except ValueError as e:
-            if any(x in str(e).lower() for x in ("nan", "inf")):
+            model = self.MODELCLASS(
+                self.policy_type,
+                train_env,
+                tensorboard_log=tensorboard_log_path,
+                **params,
+            )
+            eval_freq = self.get_eval_freq(
+                total_timesteps, hyperopt=True, model_params=params
+            )
+            cleanup_error: Optional[BaseException] = None
+            try:
+                callbacks = self.get_callbacks(
+                    eval_env, eval_freq, str(dk.data_path), trial
+                )
+                callbacks_ready = True
+                cleanup_error = self._learn_with_owned_cleanup(
+                    model,
+                    total_timesteps,
+                    callbacks,
+                    train_env,
+                    eval_env,
+                    [train_env, eval_env],
+                    cleanup_complete,
+                    materialize_objective_worker_error=True,
+                )
+            except (
+                AssertionError,
+                ValueError,
+                FloatingPointError,
+                RuntimeError,
+            ) as e:
+                if not callbacks_ready:
+                    raise
+                decision = _classify_terminal_exception(e)
+                if decision.predicate_error is not None:
+                    raise decision.predicate_error
+                if not decision.prunes:
+                    raise
+                family = {
+                    "assertion": "AssertionError",
+                    "value": "ValueError",
+                    "floating_point": "FloatingPointError",
+                    "runtime": "RuntimeError",
+                }[cast(str, decision.family)]
+                diagnostic = (
+                    "" if decision.diagnostic is None else f": {decision.diagnostic}"
+                )
                 logger.warning(
-                    "Hyperopt [%s]: trial #%d encountered NaN/Inf (ValueError): %r",
+                    "Hyperopt [%s]: trial #%d encountered NaN/Inf (%s)%s",
                     study_name,
                     trial.number,
-                    e,
-                    exc_info=True,
+                    family,
+                    diagnostic,
                 )
                 nan_encountered = True
-            else:
-                raise
-        except FloatingPointError as e:
-            logger.warning(
-                "Hyperopt [%s]: trial #%d encountered NaN/Inf (FloatingPointError): %r",
-                study_name,
-                trial.number,
-                e,
-                exc_info=True,
-            )
-            nan_encountered = True
-        except RuntimeError as e:
-            if any(x in str(e).lower() for x in ("nan", "inf")):
-                logger.warning(
-                    "Hyperopt [%s]: trial #%d encountered NaN/Inf (RuntimeError): %r",
-                    study_name,
-                    trial.number,
-                    e,
-                    exc_info=True,
-                )
-                nan_encountered = True
-            else:
-                raise
+            if cleanup_error is not None:
+                raise cleanup_error
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            if self.progressbar_callback:
-                self.progressbar_callback.on_training_end()
-            train_env.close()
-            eval_env.close()
-            if hasattr(model, "env") and model.env is not None:
-                model.env.close()
-            del model, train_env, eval_env
+            try:
+                if not cleanup_complete[0]:
+                    self._cleanup_training_resources(
+                        train_env,
+                        eval_env,
+                        model=model,
+                        primary_error=primary_error,
+                    )
+            finally:
+                del model, train_env, eval_env
 
         if nan_encountered:
-            raise TrialPruned(f"Hyperopt [{study_name}]: NaN encountered during training")
+            raise TrialPruned(
+                f"Hyperopt [{study_name}]: NaN encountered during training"
+            )
 
         if self.optuna_eval_callback.is_pruned:
             raise TrialPruned(f"Hyperopt [{study_name}]: pruned by eval callback")
@@ -2190,26 +3701,25 @@ class ReforceXY(BaseReinforcementLearningModel):
         """
         Closes the training and evaluation environments if they are open
         """
-        if self.train_env:
-            try:
-                self.train_env.close()
-            finally:
-                self.train_env = None
-        if self.eval_env:
-            try:
-                self.eval_env.close()
-            finally:
-                self.eval_env = None
+        owned_envs = (self.train_env, self.eval_env)
+        self.train_env = None
+        self.eval_env = None
+        cleanup_errors = self._close_owned_envs(*owned_envs)
+        self._report_cleanup_errors(cleanup_errors)
+
+    def _on_stop(self) -> None:
+        """Close owned environments through the bounded shutdown path."""
+        self.close_envs()
 
 
 def make_env(
-    MyRLEnv: type[BaseEnvironment],
+    MyRLEnv: Type[BaseEnvironment],
     env_id: str,
     rank: int,
     seed: int,
     df: DataFrame,
     price: DataFrame,
-    env_info: dict[str, Any],
+    env_info: Dict[str, Any],
 ) -> Callable[[], BaseEnvironment]:
     """
     Utility function for multiprocessed env.
@@ -2231,22 +3741,73 @@ def make_env(
     return _init
 
 
-MyRLEnv: type[BaseEnvironment]
+MyRLEnv: Type[BaseEnvironment]
 
 
 class MyRLEnv(Base5ActionRLEnv):
-    """Env."""
+    """Spot-only pair-local environment with compounded net liquidation rewards."""
+
+    _MIN_LIQUIDATION_VALUE: Final[float] = 1e-12
+    _IGNORED_LEGACY_REWARD_PARAMETERS: Final[frozenset[str]] = frozenset(
+        {
+            "check_invariants",
+            "efficiency_center",
+            "efficiency_weight",
+            "exit_attenuation_mode",
+            "exit_factor_threshold",
+            "exit_half_life",
+            "exit_linear_slope",
+            "exit_plateau",
+            "exit_plateau_grace",
+            "exit_power_tau",
+            "hold_penalty_power",
+            "hold_penalty_ratio",
+            "idle_penalty_power",
+            "idle_penalty_ratio",
+            "pnl_amplification_sensitivity",
+            "win_reward_factor",
+        }
+    )
+    _warned_legacy_reward_parameters: ClassVar[set[str]] = set()
 
     def __init__(self, *args, **kwargs):
+        config = kwargs.get("config", {})
+        if kwargs.get("live", False) is not True:
+            raise ValueError(
+                "Env: the stateful pair-local economic reward contract is not "
+                "supported in FreqAI backtesting; live=True is required"
+            )
+        if config.get("trading_mode") != "spot":
+            raise ValueError(
+                "Env: trading_mode='spot' is required until leveraged PnL has "
+                "Freqtrade parity"
+            )
+        if config.get("stake_amount") != "unlimited":
+            raise ValueError(
+                "Env: stake_amount='unlimited' is required by the compounded "
+                "net liquidation reward contract"
+            )
         super().__init__(*args, **kwargs)
+        if getattr(self, "add_state_info", False) is not True:
+            raise ValueError(
+                f"Env [{self.id}]: add_state_info=True is required by the "
+                "pair-local economic reward contract"
+            )
         self._set_observation_space()
         self.action_masking: bool = self.rl_config.get("action_masking", False)
 
         # === INTERNAL STATE ===
-        self._last_closed_position: Positions | None = None
+        self._last_closed_position: Optional[Positions] = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
         self._min_unrealized_profit: float = np.inf
+        self._previous_liquidation_value: float = 1.0
+        self._reward_liquidation_value: float = 1.0
+        self._next_liquidation_value: float = 1.0
+        self._last_economic_reward: float = 0.0
+        self._reward_scale: float = ReforceXY.DEFAULT_BASE_FACTOR
+        self._expected_next_position: Positions = self._position
+        self._economic_ruin: bool = False
         self._last_potential: float = 0.0
         # === PBRS INSTRUMENTATION ===
         self._last_prev_potential: float = 0.0
@@ -2264,6 +3825,17 @@ class MyRLEnv(Base5ActionRLEnv):
         model_reward_parameters: Mapping[str, Any] = self.rl_config.get(
             "model_reward_parameters", {}
         )
+        ignored_parameters = self._IGNORED_LEGACY_REWARD_PARAMETERS.intersection(
+            model_reward_parameters
+        ).difference(self._warned_legacy_reward_parameters)
+        if ignored_parameters:
+            logger.warning(
+                "Env [%s]: legacy reward parameters have no effect under the "
+                "economic reward contract: %s",
+                self.id,
+                ", ".join(sorted(ignored_parameters)),
+            )
+            self._warned_legacy_reward_parameters.update(ignored_parameters)
         self.max_trade_duration_candles: int = int(
             model_reward_parameters.get(
                 "max_trade_duration_candles",
@@ -2273,17 +3845,14 @@ class MyRLEnv(Base5ActionRLEnv):
         self.max_idle_duration_candles: int = int(
             model_reward_parameters.get(
                 "max_idle_duration_candles",
-                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * self.max_trade_duration_candles,
+                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER
+                * self.max_trade_duration_candles,
             )
         )
         # === PBRS COMMON PARAMETERS ===
-        self._potential_gamma = float(model_reward_parameters.get("potential_gamma", 0.95))
-        if np.isclose(self._potential_gamma, 0.0):
-            logger.warning(
-                "PBRS [%s]: potential_gamma=0 detected; PBRS delta will be -Φ(s) "
-                "instead of γΦ(s')-Φ(s). This may cause unexpected reward behavior.",
-                self.id,
-            )
+        self._potential_gamma = float(
+            model_reward_parameters.get("potential_gamma", 0.95)
+        )
 
         # === EXIT POTENTIAL MODE ===
         # exit_potential_mode options:
@@ -2297,15 +3866,10 @@ class MyRLEnv(Base5ActionRLEnv):
                 "exit_potential_mode", ReforceXY._EXIT_POTENTIAL_MODES[0]
             )  # "canonical"
         )
-        if self._exit_potential_mode not in ReforceXY._EXIT_POTENTIAL_MODES_SET:
-            logger.warning(
-                "PBRS [%s]: exit_potential_mode=%r invalid; defaulting to %r. Valid: %s",
-                self.id,
-                self._exit_potential_mode,
-                ReforceXY._EXIT_POTENTIAL_MODES[0],
-                ", ".join(ReforceXY._EXIT_POTENTIAL_MODES),
+        if self._exit_potential_mode != ReforceXY._EXIT_POTENTIAL_MODES[0]:
+            raise ValueError(
+                f"PBRS [{self.id}]: only exit_potential_mode='canonical' is supported"
             )
-            self._exit_potential_mode = ReforceXY._EXIT_POTENTIAL_MODES[0]  # "canonical"
         self._exit_potential_decay: float = float(
             model_reward_parameters.get(
                 "exit_potential_decay", ReforceXY.DEFAULT_EXIT_POTENTIAL_DECAY
@@ -2328,13 +3892,13 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._entry_additive_transform_pnl: TransformFunction = cast(
-            "TransformFunction",
+            TransformFunction,
             model_reward_parameters.get(
                 "entry_additive_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._entry_additive_transform_duration: TransformFunction = cast(
-            "TransformFunction",
+            TransformFunction,
             model_reward_parameters.get(
                 "entry_additive_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
@@ -2356,17 +3920,24 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._hold_potential_transform_pnl: TransformFunction = cast(
-            "TransformFunction",
+            TransformFunction,
             model_reward_parameters.get(
                 "hold_potential_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._hold_potential_transform_duration: TransformFunction = cast(
-            "TransformFunction",
+            TransformFunction,
             model_reward_parameters.get(
                 "hold_potential_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
+        if self._hold_potential_enabled and (
+            not np.isfinite(self._potential_gamma)
+            or not (0.0 < self._potential_gamma <= 1.0)
+        ):
+            raise ValueError(
+                f"PBRS [{self.id}]: potential_gamma must be finite and in (0, 1]"
+            )
         # === EXIT ADDITIVE (non-PBRS additive term) ===
         self._exit_additive_enabled: bool = bool(
             model_reward_parameters.get(
@@ -2379,59 +3950,40 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._exit_additive_gain: float = float(
-            model_reward_parameters.get("exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN)
+            model_reward_parameters.get(
+                "exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN
+            )
         )
         self._exit_additive_transform_pnl: TransformFunction = cast(
-            "TransformFunction",
+            TransformFunction,
             model_reward_parameters.get(
                 "exit_additive_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._exit_additive_transform_duration: TransformFunction = cast(
-            "TransformFunction",
+            TransformFunction,
             model_reward_parameters.get(
                 "exit_additive_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
-        # === PBRS INVARIANCE CHECKS ===
-        # "canonical"
-        if self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]:
-            if self._entry_additive_enabled or self._exit_additive_enabled:
-                logger.warning(
-                    "PBRS [%s]: canonical mode, additive disabled (use exit_potential_mode=%s to enable)",
-                    self.id,
-                    ReforceXY._EXIT_POTENTIAL_MODES[1],
-                )
-                self._entry_additive_enabled = False
-                self._exit_additive_enabled = False
-        # "non_canonical"
-        elif self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1] and (
-            self._entry_additive_enabled or self._exit_additive_enabled
+        if (
+            self._hold_potential_enabled
+            or self._entry_additive_enabled
+            or self._exit_additive_enabled
         ):
-            logger.warning("PBRS [%s]: non-canonical mode, additive enabled", self.id)
-
-        if MyRLEnv.is_unsupported_pbrs_config(
-            self._hold_potential_enabled, getattr(self, "add_state_info", False)
-        ):
-            logger.warning(
-                "PBRS [%s]: hold_potential_enabled=True requires add_state_info=True, enabling",
-                self.id,
+            raise ValueError(
+                f"Env [{self.id}]: reward shaping must remain disabled for the "
+                "promotable pair-local economic reward contract"
             )
-            self.add_state_info = True
-            self._set_observation_space()
 
         # === PNL TARGET ===
         self._pnl_target = float(self.profit_aim * self.rr)
-        if self._pnl_target <= 0:
-            logger.warning(
-                "PBRS [%s]: pnl_target=%.6f must be > 0 (profit_aim=%.4f, rr=%.4f); "
-                "defaulting to 0.01",
-                self.id,
-                self._pnl_target,
-                self.profit_aim,
-                self.rr,
+        if self._hold_potential_enabled and (
+            not np.isfinite(self._pnl_target) or self._pnl_target <= 0
+        ):
+            raise ValueError(
+                f"PBRS [{self.id}]: profit_aim * rr must be finite and positive"
             )
-            self._pnl_target = 0.01
 
     def _get_next_position(self, action: int) -> Positions:
         if action == Actions.Long_enter.value and self._position == Positions.Neutral:
@@ -2448,33 +4000,123 @@ class MyRLEnv(Base5ActionRLEnv):
             return Positions.Neutral
         return self._position
 
+    def _validated_price(self, value: Any, *, context: str) -> float:
+        """Return a finite positive price or fail the current training trial."""
+        try:
+            price = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Env [{self.id}]: {context} price is not numeric at "
+                f"tick={self._current_tick}: {value!r}"
+            ) from exc
+        if not np.isfinite(price) or price <= 0.0:
+            raise ValueError(
+                f"Env [{self.id}]: {context} price must be finite and positive at "
+                f"tick={self._current_tick}: {price!r}"
+            )
+        return price
+
+    def _liquidation_value_from_pnl(self, pnl: float, *, context: str) -> float:
+        """Convert net unrealized PnL to a finite liquidation value."""
+        if not np.isfinite(pnl):
+            raise ValueError(
+                f"Env [{self.id}]: {context} PnL is not finite at "
+                f"tick={self._current_tick}: {pnl!r}"
+            )
+        liquidation_value = 1.0 + float(pnl)
+        if liquidation_value <= 0.0:
+            self._economic_ruin = True
+            return self._MIN_LIQUIDATION_VALUE
+        return liquidation_value
+
     def _get_entry_unrealized_profit(self, next_position: Positions) -> float:
-        current_open = self.prices.iloc[self._current_tick].open
-        if not isinstance(current_open, (int, float, np.floating)) or not np.isfinite(current_open):
-            return 0.0
+        if self._local_trade is None or self._position != next_position:
+            raise RuntimeError(
+                f"Env [{self.id}]: entry liquidation requested before the "
+                "LocalTrade entry fill"
+            )
+        return self._get_liquidation_pnl(self.prices.iloc[self._current_tick].open)
 
-        next_pnl = 0.0
-        if next_position == Positions.Long:
-            current_price = self.add_exit_fee(current_open)
-            last_trade_price = self.add_entry_fee(current_open)
-            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
-                next_pnl = (current_price - last_trade_price) / last_trade_price
-        elif next_position == Positions.Short:
-            current_price = self.add_entry_fee(current_open)
-            last_trade_price = self.add_exit_fee(current_open)
-            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
-                next_pnl = (last_trade_price - current_price) / last_trade_price
+    def _assert_local_trade_synchronized(self) -> LocalTrade:
+        """Return the active native trade after checking environment alignment."""
+        if self._position not in (Positions.Long, Positions.Short):
+            raise RuntimeError(
+                f"Env [{self.id}]: LocalTrade requested while position is neutral"
+            )
+        if self._last_trade_tick is None or self._local_trade is None:
+            raise RuntimeError(
+                f"Env [{self.id}]: open position has no synchronized LocalTrade"
+            )
+        if not (0 <= self._last_trade_tick <= self._current_tick < len(self.prices)):
+            raise RuntimeError(
+                f"Env [{self.id}]: LocalTrade entry/current ticks are out of bounds "
+                f"(entry={self._last_trade_tick}, current={self._current_tick})"
+            )
 
-        if not np.isfinite(next_pnl):
+        entry_open = self._validated_price(
+            self.prices.iloc[self._last_trade_tick].open,
+            context="entry open",
+        )
+        expected_short = self._position == Positions.Short
+        if (
+            self._local_trade.pair != self.pair
+            or self._local_trade.trading_mode != TradingMode.SPOT
+            or self._local_trade.leverage != 1.0
+            or self._local_trade.is_short != expected_short
+            or not np.isclose(
+                self._local_trade.open_rate,
+                entry_open,
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or not np.isclose(
+                self._local_trade.fee_open,
+                self.fee,
+                rtol=0.0,
+                atol=1e-15,
+            )
+            or self._local_trade.fee_close is None
+            or not np.isclose(
+                self._local_trade.fee_close,
+                self.fee,
+                rtol=0.0,
+                atol=1e-15,
+            )
+        ):
+            raise RuntimeError(
+                f"Env [{self.id}]: LocalTrade is out of sync with position or "
+                f"entry tick={self._last_trade_tick}"
+            )
+        return self._local_trade
+
+    def _get_liquidation_pnl(self, mark_price: float) -> float:
+        """Mark the reusable native LocalTrade without registering it."""
+        mark_price = self._validated_price(mark_price, context="liquidation mark")
+        pnl = self._assert_local_trade_synchronized().calc_profit_ratio(mark_price)
+
+        if not np.isfinite(pnl):
+            raise ValueError(
+                f"Env [{self.id}]: liquidation PnL is not finite at "
+                f"tick={self._current_tick}: {pnl!r}"
+            )
+        return float(pnl)
+
+    def get_unrealized_profit(self) -> float:
+        """Mark the observable position state to the current candle close."""
+        if self._position == Positions.Neutral or self._last_trade_tick is None:
             return 0.0
-        return float(next_pnl)
+        close_price = self._validated_price(
+            self.prices.iloc[self._current_tick].close,
+            context="current close",
+        )
+        return self._get_liquidation_pnl(close_price)
 
     def _get_next_transition_state(
         self,
         action: int,
         trade_duration: float,
         current_pnl: float,
-    ) -> tuple[Positions, int, float]:
+    ) -> Tuple[Positions, int, float]:
         """Compute next transition state tuple (next_position, next_duration, next_pnl).
 
         Parameters
@@ -2538,7 +4180,7 @@ class MyRLEnv(Base5ActionRLEnv):
         gain: float,
         transform_pnl: TransformFunction,
         transform_duration: TransformFunction,
-        risk_reward_ratio: float | None = None,
+        risk_reward_ratio: Optional[float] = None,
     ) -> float:
         """Generic bounded bi-component signal combining PnL and duration."""
         if not enabled:
@@ -2705,7 +4347,10 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         mode = self._exit_potential_mode
         # "canonical" or "non_canonical"
-        if mode == ReforceXY._EXIT_POTENTIAL_MODES[0] or mode == ReforceXY._EXIT_POTENTIAL_MODES[1]:
+        if (
+            mode == ReforceXY._EXIT_POTENTIAL_MODES[0]
+            or mode == ReforceXY._EXIT_POTENTIAL_MODES[1]
+        ):
             return 0.0
         # "progressive_release"
         if mode == ReforceXY._EXIT_POTENTIAL_MODES[2]:
@@ -2750,7 +4395,9 @@ class MyRLEnv(Base5ActionRLEnv):
         )  # "canonical"
 
     @staticmethod
-    def is_unsupported_pbrs_config(hold_potential_enabled: bool, add_state_info: bool) -> bool:
+    def is_unsupported_pbrs_config(
+        hold_potential_enabled: bool, add_state_info: bool
+    ) -> bool:
         """Return True if PBRS potential relies on hidden state.
 
         Case: hold_potential enabled while auxiliary state info (pnl, trade_duration) is excluded
@@ -2954,7 +4601,9 @@ class MyRLEnv(Base5ActionRLEnv):
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
-            logger.debug("PBRS [%s]: all PBRS features disabled, returning zeros", self.id)
+            logger.debug(
+                "PBRS [%s]: all PBRS features disabled, returning zeros", self.id
+            )
             self._last_prev_potential = float(prev_potential)
             self._last_next_potential = float(prev_potential)
             self._last_entry_additive = 0.0
@@ -3004,7 +4653,11 @@ class MyRLEnv(Base5ActionRLEnv):
                 next_potential = 0.0
                 reward_shaping = 0.0
 
-            if is_entry and self._entry_additive_enabled and not self.is_pbrs_invariant_mode():
+            if (
+                is_entry
+                and self._entry_additive_enabled
+                and not self.is_pbrs_invariant_mode()
+            ):
                 entry_additive = self._compute_entry_additive(
                     next_pnl,
                     pnl_target,
@@ -3015,9 +4668,11 @@ class MyRLEnv(Base5ActionRLEnv):
 
         elif is_exit:
             if (
-                self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]  # "canonical"
+                self._exit_potential_mode
+                == ReforceXY._EXIT_POTENTIAL_MODES[0]  # "canonical"
             ) or (
-                self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]  # "non_canonical"
+                self._exit_potential_mode
+                == ReforceXY._EXIT_POTENTIAL_MODES[1]  # "non_canonical"
             ):
                 next_potential = 0.0
                 reward_shaping = -prev_potential
@@ -3061,7 +4716,9 @@ class MyRLEnv(Base5ActionRLEnv):
             self.total_features = signal_features
 
         self.shape = (self.window_size, self.total_features)
-        self.observation_space = Box(low=-np.inf, high=np.inf, shape=self.shape, dtype=np.float32)
+        self.observation_space = Box(
+            low=-np.inf, high=np.inf, shape=self.shape, dtype=np.float32
+        )
 
     def _is_valid(self, action: int) -> bool:
         return ReforceXY.get_action_masks(self.can_short, self._position)[action]
@@ -3071,24 +4728,38 @@ class MyRLEnv(Base5ActionRLEnv):
         df: DataFrame,
         prices: DataFrame,
         window_size: int,
-        reward_kwargs: dict[str, Any],
+        reward_kwargs: Dict[str, Any],
         starting_point=True,
     ) -> None:
         """
         Resets the environment when the agent fails
         """
+        self._local_trade: Optional[LocalTrade] = None
         super().reset_env(df, prices, window_size, reward_kwargs, starting_point)
         self._set_observation_space()
 
-    def reset(self, seed=None, **kwargs) -> tuple[NDArray[np.float32], dict[str, Any]]:
+    def reset(self, seed=None, **kwargs) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
+        """Reset one tick before the first executable open.
+
+        A feature window ending at ``start_tick - 1`` produces the signal that
+        executes at ``prices.iloc[start_tick].open`` on the first call to
+        :meth:`step`.  This mirrors the prediction/strategy candle alignment.
         """
-        Reset is called at the beginning of every episode
-        """
-        observation, history = super().reset(seed, **kwargs)
-        self._last_closed_position: Positions | None = None
+        _, history = super().reset(seed, **kwargs)
+        self._current_tick = self._start_tick - 1
+        self._position_history = (self._current_tick * [None]) + [self._position]
+        self._last_closed_position: Optional[Positions] = None
+        self._local_trade = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
+        self._previous_liquidation_value = 1.0
+        self._reward_liquidation_value = 1.0
+        self._next_liquidation_value = 1.0
+        self._last_economic_reward = 0.0
+        self._reward_scale = ReforceXY.DEFAULT_BASE_FACTOR
+        self._expected_next_position = self._position
+        self._economic_ruin = False
         self._last_potential = 0.0
         self._last_prev_potential = 0.0
         self._last_next_potential = 0.0
@@ -3102,7 +4773,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_idle_penalty = 0.0
         self._last_hold_penalty = 0.0
         self._last_exit_reward = 0.0
-        return observation, history
+        return self._get_observation(), history
 
     def _compute_time_attenuation_coefficient(
         self,
@@ -3125,7 +4796,9 @@ class MyRLEnv(Base5ActionRLEnv):
             model_reward_parameters.get("exit_plateau", ReforceXY.DEFAULT_EXIT_PLATEAU)
         )
         exit_plateau_grace = float(
-            model_reward_parameters.get("exit_plateau_grace", ReforceXY.DEFAULT_EXIT_PLATEAU_GRACE)
+            model_reward_parameters.get(
+                "exit_plateau_grace", ReforceXY.DEFAULT_EXIT_PLATEAU_GRACE
+            )
         )
         if exit_plateau_grace < 0.0:
             logger.warning(
@@ -3142,7 +4815,9 @@ class MyRLEnv(Base5ActionRLEnv):
             return 1.0 / math.sqrt(1.0 + dr)
 
         def _linear(dr: float, p: Mapping[str, Any]) -> float:
-            slope = float(p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE))
+            slope = float(
+                p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE)
+            )
             if slope < 0.0:
                 logger.warning(
                     "PBRS [%s]: exit_linear_slope=%.2f invalid; defaulting to 1.0",
@@ -3156,7 +4831,10 @@ class MyRLEnv(Base5ActionRLEnv):
             tau = p.get("exit_power_tau")
             if isinstance(tau, (int, float)):
                 tau = float(tau)
-                alpha = -math.log(tau) / ReforceXY._LOG_2 if 0.0 < tau <= 1.0 else 1.0
+                if 0.0 < tau <= 1.0:
+                    alpha = -math.log(tau) / ReforceXY._LOG_2
+                else:
+                    alpha = 1.0
             else:
                 alpha = 1.0
             return 1.0 / math.pow(1.0 + dr, alpha)
@@ -3167,7 +4845,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 return 1.0
             return math.pow(2.0, -dr / hl)
 
-        strategies: dict[str, Callable[[float, Mapping[str, Any]], float]] = {
+        strategies: Dict[str, Callable[[float, Mapping[str, Any]], float]] = {
             ReforceXY._EXIT_ATTENUATION_MODES[0]: _legacy,
             ReforceXY._EXIT_ATTENUATION_MODES[1]: _sqrt,
             ReforceXY._EXIT_ATTENUATION_MODES[2]: _linear,
@@ -3183,7 +4861,7 @@ class MyRLEnv(Base5ActionRLEnv):
         else:
             effective_dr = duration_ratio
 
-        strategy_fn = strategies.get(exit_attenuation_mode)
+        strategy_fn = strategies.get(exit_attenuation_mode, None)
         if strategy_fn is None:
             logger.warning(
                 "PBRS [%s]: exit_attenuation_mode=%r invalid; defaulting to %r. Valid: %s",
@@ -3195,7 +4873,9 @@ class MyRLEnv(Base5ActionRLEnv):
             strategy_fn = _linear
 
         try:
-            time_attenuation_coefficient = strategy_fn(effective_dr, model_reward_parameters)
+            time_attenuation_coefficient = strategy_fn(
+                effective_dr, model_reward_parameters
+            )
         except Exception as e:
             logger.warning(
                 "PBRS [%s]: exit_attenuation_mode=%r failed (%r); defaulting to %r (effective_dr=%.5f)",
@@ -3206,7 +4886,9 @@ class MyRLEnv(Base5ActionRLEnv):
                 effective_dr,
                 exc_info=True,
             )
-            time_attenuation_coefficient = _linear(effective_dr, model_reward_parameters)
+            time_attenuation_coefficient = _linear(
+                effective_dr, model_reward_parameters
+            )
 
         return time_attenuation_coefficient
 
@@ -3220,7 +4902,11 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         Compute exit factor: base_factor · time_attenuation_coefficient · pnl_target_coefficient · efficiency_coefficient.
         """
-        if not (np.isfinite(base_factor) and np.isfinite(pnl) and np.isfinite(duration_ratio)):
+        if not (
+            np.isfinite(base_factor)
+            and np.isfinite(pnl)
+            and np.isfinite(duration_ratio)
+        ):
             return 0.0
 
         time_attenuation_coefficient = self._compute_time_attenuation_coefficient(
@@ -3230,7 +4916,9 @@ class MyRLEnv(Base5ActionRLEnv):
         pnl_target_coefficient = self._compute_pnl_target_coefficient(
             pnl, self._pnl_target, model_reward_parameters
         )
-        efficiency_coefficient = self._compute_efficiency_coefficient(pnl, model_reward_parameters)
+        efficiency_coefficient = self._compute_efficiency_coefficient(
+            pnl, model_reward_parameters
+        )
 
         exit_factor = (
             base_factor
@@ -3242,7 +4930,9 @@ class MyRLEnv(Base5ActionRLEnv):
         check_invariants = model_reward_parameters.get(
             "check_invariants", ReforceXY.DEFAULT_CHECK_INVARIANTS
         )
-        check_invariants = check_invariants if isinstance(check_invariants, bool) else True
+        check_invariants = (
+            check_invariants if isinstance(check_invariants, bool) else True
+        )
         if check_invariants:
             if not np.isfinite(exit_factor):
                 logger.warning(
@@ -3308,10 +4998,14 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
 
                 if pnl_ratio > 1.0:
-                    pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
+                    pnl_target_coefficient = (
+                        1.0 + win_reward_factor * base_pnl_target_coefficient
+                    )
                 elif pnl_ratio < -(1.0 / self.rr):
                     loss_penalty_factor = win_reward_factor * self.rr
-                    pnl_target_coefficient = 1.0 + loss_penalty_factor * base_pnl_target_coefficient
+                    pnl_target_coefficient = (
+                        1.0 + loss_penalty_factor * base_pnl_target_coefficient
+                    )
 
         return pnl_target_coefficient
 
@@ -3322,10 +5016,14 @@ class MyRLEnv(Base5ActionRLEnv):
         Compute exit efficiency coefficient (typically 0.5-1.5) based on exit timing quality.
         """
         efficiency_weight = float(
-            model_reward_parameters.get("efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT)
+            model_reward_parameters.get(
+                "efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT
+            )
         )
         efficiency_center = float(
-            model_reward_parameters.get("efficiency_center", ReforceXY.DEFAULT_EFFICIENCY_CENTER)
+            model_reward_parameters.get(
+                "efficiency_center", ReforceXY.DEFAULT_EFFICIENCY_CENTER
+            )
         )
 
         efficiency_coefficient = 1.0
@@ -3351,164 +5049,110 @@ class MyRLEnv(Base5ActionRLEnv):
 
         return efficiency_coefficient
 
-    def calculate_reward(self, action: int) -> float:
-        """Compute per-step reward and apply potential-based reward shaping (PBRS).
+    def calculate_reward(
+        self,
+        action: int,
+        *,
+        previous_position: Positions,
+        transition_pnl: float,
+        action_valid: bool,
+    ) -> float:
+        """Compute the causal pair-local net liquidation log-return.
 
-        Reward Pipeline:
-            1. Invalid action penalty
-            2. Idle penalty
-            3. Hold overtime penalty
-            4. Exit reward
-            5. Default fallback (0.0 if no specific reward)
-            6. PBRS computation and application: R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-        The final shaped reward is what the RL agent receives for learning.
-        In canonical PBRS mode, the learned policy is theoretically equivalent
-        to training on base rewards only (policy invariance).
-
-        Parameters
-        ----------
-        action : int
-            Action index taken by the agent
-
-        Returns
-        -------
-        float
-            Shaped reward R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-            Implementation: base_reward + reward_shaping + entry_additive + exit_additive
-
-            where:
-            - R(s,a,s') / base_reward: Base reward (invalid/idle/hold penalty or exit reward)
-            - Δ(s,a,s') / reward_shaping: PBRS delta term = γ·Φ(s') - Φ(s)
-            - entry_additive: Optional entry bonus (breaks PBRS invariance)
-            - exit_additive: Optional exit bonus (breaks PBRS invariance)
+        ``previous_liquidation_value`` is the liquidation value visible in the
+        observation that selected ``action``. ``transition_pnl`` is marked at the
+        current close when a position remains open, or at the current open when
+        the action exits. No separate wallet or order accounting is introduced.
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
-        base_reward: float | None = None
 
         self._last_invalid_penalty = 0.0
         self._last_idle_penalty = 0.0
         self._last_hold_penalty = 0.0
         self._last_exit_reward = 0.0
+        self._last_potential = 0.0
+        self._last_prev_potential = 0.0
+        self._last_next_potential = 0.0
+        self._last_reward_shaping = 0.0
+        self._last_entry_additive = 0.0
+        self._last_exit_additive = 0.0
 
-        # 1. Invalid action
-        if not self.action_masking and not self._is_valid(action):
+        invalid_penalty = 0.0
+        if not self.action_masking and not action_valid:
             self.tensorboard_log("invalid", category="actions")
-            base_reward = float(
-                model_reward_parameters.get("invalid_action", ReforceXY.DEFAULT_INVALID_ACTION)
+            invalid_penalty = float(
+                model_reward_parameters.get(
+                    "invalid_action", ReforceXY.DEFAULT_INVALID_ACTION
+                )
             )
-            self._last_invalid_penalty = float(base_reward)
+            if not np.isfinite(invalid_penalty):
+                raise ValueError(
+                    f"Env [{self.id}]: invalid_action reward must be finite"
+                )
+            self._last_invalid_penalty = invalid_penalty
 
-        max_trade_duration = max(1, self.max_trade_duration_candles)
-        trade_duration = self.get_trade_duration()
-        duration_ratio = trade_duration / max_trade_duration
         base_factor = float(
             model_reward_parameters.get("base_factor", ReforceXY.DEFAULT_BASE_FACTOR)
         )
-        idle_factor = base_factor * (self.profit_aim / self.rr)
-        hold_factor = idle_factor
+        if not np.isfinite(base_factor) or base_factor <= 0.0:
+            raise ValueError(
+                f"Env [{self.id}]: base_factor must be finite and positive"
+            )
+        self._reward_scale = base_factor
 
-        # 2. Idle penalty
+        position_was_open = previous_position in (Positions.Long, Positions.Short)
+        position_is_open = self._position in (Positions.Long, Positions.Short)
+        if position_was_open or position_is_open:
+            reward_liquidation_value = self._liquidation_value_from_pnl(
+                transition_pnl, context="transition liquidation"
+            )
+            next_liquidation_value = (
+                reward_liquidation_value if position_is_open else 1.0
+            )
+        else:
+            reward_liquidation_value = 1.0
+            next_liquidation_value = 1.0
+
+        previous_liquidation_value = self._previous_liquidation_value
         if (
-            base_reward is None
-            and action == Actions.Neutral.value
-            and self._position == Positions.Neutral
+            not np.isfinite(previous_liquidation_value)
+            or previous_liquidation_value <= 0.0
         ):
-            max_idle_duration = max(1, self.max_idle_duration_candles)
-            idle_penalty_ratio = float(
-                model_reward_parameters.get(
-                    "idle_penalty_ratio", ReforceXY.DEFAULT_IDLE_PENALTY_RATIO
-                )
+            raise RuntimeError(
+                f"Env [{self.id}]: previous liquidation value is invalid at "
+                f"tick={self._current_tick}: {previous_liquidation_value!r}"
             )
-            idle_penalty_power = float(
-                model_reward_parameters.get(
-                    "idle_penalty_power", ReforceXY.DEFAULT_IDLE_PENALTY_POWER
-                )
-            )
-            idle_duration = self.get_idle_duration()
-            idle_duration_ratio = idle_duration / max(1, max_idle_duration)
-            base_reward = (
-                -idle_factor * idle_penalty_ratio * idle_duration_ratio**idle_penalty_power
-            )
-            self._last_idle_penalty = float(base_reward)
 
-        # 3. Hold overtime penalty
-        if (
-            base_reward is None
-            and self._position in (Positions.Short, Positions.Long)
-            and action == Actions.Neutral.value
-        ):
-            hold_penalty_ratio = float(
-                model_reward_parameters.get(
-                    "hold_penalty_ratio", ReforceXY.DEFAULT_HOLD_PENALTY_RATIO
-                )
-            )
-            hold_penalty_power = float(
-                model_reward_parameters.get(
-                    "hold_penalty_power", ReforceXY.DEFAULT_HOLD_PENALTY_POWER
-                )
-            )
-            if duration_ratio < 1.0:
-                base_reward = 0.0
-            else:
-                base_reward = (
-                    -hold_factor * hold_penalty_ratio * (duration_ratio - 1.0) ** hold_penalty_power
-                )
-                self._last_hold_penalty = float(base_reward)
-
-        # 4. Exit rewards
-        pnl: float = self.get_unrealized_profit()
-        if (
-            base_reward is None
-            and action == Actions.Long_exit.value
-            and self._position == Positions.Long
-        ):
-            base_reward = pnl * self._get_exit_factor(
-                base_factor, pnl, duration_ratio, model_reward_parameters
-            )
-            self._last_exit_reward = float(base_reward)
-        if (
-            base_reward is None
-            and action == Actions.Short_exit.value
-            and self._position == Positions.Short
-        ):
-            base_reward = pnl * self._get_exit_factor(
-                base_factor, pnl, duration_ratio, model_reward_parameters
-            )
-            self._last_exit_reward = float(base_reward)
-
-        # 5. Default
-        if base_reward is None:
-            base_reward = 0.0
-
-        # 6. Potential-based reward shaping
-        hold_potential_scale = self._hold_potential_ratio * base_factor
-        entry_additive_scale = self._entry_additive_ratio * base_factor
-        exit_additive_scale = self._exit_additive_ratio * base_factor
-
-        reward_shaping, entry_additive, exit_additive = self._compute_pbrs_components(
-            action=action,
-            trade_duration=trade_duration,
-            max_trade_duration=max_trade_duration,
-            current_pnl=pnl,
-            pnl_target=self._pnl_target,
-            hold_potential_scale=hold_potential_scale,
-            entry_additive_scale=entry_additive_scale,
-            exit_additive_scale=exit_additive_scale,
+        economic_reward = base_factor * (
+            math.log(reward_liquidation_value) - math.log(previous_liquidation_value)
         )
+        if not np.isfinite(economic_reward):
+            raise RuntimeError(
+                f"Env [{self.id}]: economic reward is not finite at "
+                f"tick={self._current_tick}: {economic_reward!r}"
+            )
 
-        return base_reward + reward_shaping + entry_additive + exit_additive
+        self._reward_liquidation_value = reward_liquidation_value
+        self._next_liquidation_value = next_liquidation_value
+        self._last_economic_reward = float(economic_reward)
+        if position_was_open and not position_is_open:
+            self._last_exit_reward = float(economic_reward)
+
+        return float(economic_reward + invalid_penalty)
 
     def _get_observation(self) -> NDArray[np.float32]:
-        start_idx = max(self._start_tick, self._current_tick - self.window_size)
-        end_idx = min(self._current_tick, len(self.signal_features))
+        end_idx = min(self._current_tick + 1, len(self.signal_features))
+        start_idx = max(0, end_idx - self.window_size)
         features_window = self.signal_features.iloc[start_idx:end_idx]
         features_window_array = features_window.to_numpy(dtype=np.float32, copy=False)
         if features_window_array.shape[0] < self.window_size:
             pad_size = self.window_size - features_window_array.shape[0]
-            pad_array = np.zeros((pad_size, features_window_array.shape[1]), dtype=np.float32)
-            features_window_array = np.concatenate([pad_array, features_window_array], axis=0)
+            pad_array = np.zeros(
+                (pad_size, features_window_array.shape[1]), dtype=np.float32
+            )
+            features_window_array = np.concatenate(
+                [pad_array, features_window_array], axis=0
+            )
         if self.add_state_info:
             observations = np.concatenate(
                 [
@@ -3541,19 +5185,46 @@ class MyRLEnv(Base5ActionRLEnv):
     def _enter_trade(self, action: int) -> None:
         self._position = self._get_position(action)
         self._last_trade_tick = self._current_tick
+        entry_open = self._validated_price(
+            self.prices.iloc[self._last_trade_tick].open,
+            context="entry open",
+        )
+        self._local_trade = LocalTrade(
+            pair=self.pair,
+            open_rate=entry_open,
+            amount=1.0,
+            stake_amount=entry_open,
+            fee_open=float(self.fee),
+            fee_close=float(self.fee),
+            is_short=self._position == Positions.Short,
+            leverage=1.0,
+            trading_mode=TradingMode.SPOT,
+            open_date=datetime.fromtimestamp(0, timezone.utc),
+            is_open=True,
+        )
+        self._assert_local_trade_synchronized()
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
 
-    def _exit_trade(self) -> None:
-        self._update_total_profit()
+    def _exit_trade(self, exit_pnl: float) -> None:
+        self._assert_local_trade_synchronized()
+        exit_liquidation_value = self._liquidation_value_from_pnl(
+            exit_pnl,
+            context="exit liquidation",
+        )
+        if self.compound_trades:
+            self._total_profit *= exit_liquidation_value
+        else:
+            self._total_profit += exit_liquidation_value - 1.0
         self._last_closed_position = self._position
         self._position = Positions.Neutral
         self._last_trade_tick = None
+        self._local_trade = None
         self._last_closed_trade_tick = self._current_tick
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
 
-    def execute_trade(self, action: int) -> str | None:
+    def execute_trade(self, action: int, *, exit_pnl: float = 0.0) -> Optional[str]:
         """
         Execute trade based on the given action
         """
@@ -3567,7 +5238,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
         # Exit trade based on action
         if action in (Actions.Long_exit.value, Actions.Short_exit.value):
-            self._exit_trade()
+            self._exit_trade(exit_pnl)
             return f"{self._last_closed_position.name}_exit"
 
         return None
@@ -3602,18 +5273,81 @@ class MyRLEnv(Base5ActionRLEnv):
         self._total_reward_shaping += reward_shaping_delta
         return reward + reward_shaping_delta
 
-    def step(self, action: int) -> tuple[NDArray[np.float32], float, bool, bool, dict[str, Any]]:
-        """
-        Take a step in the environment based on the provided action
-        """
+    def step(
+        self, action: int
+    ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
+        """Fill at the next open, mark at its close, then expose the next state."""
+        previous_position = self._position
+        pre_pnl = float(self.get_unrealized_profit())
+        previous_liquidation_value = self._previous_liquidation_value
+        observable_liquidation_value = (
+            1.0 + pre_pnl
+            if previous_position in (Positions.Long, Positions.Short)
+            else 1.0
+        )
+        if (
+            not np.isfinite(observable_liquidation_value)
+            or observable_liquidation_value <= 0.0
+            or not np.isclose(
+                previous_liquidation_value,
+                observable_liquidation_value,
+                rtol=1e-10,
+                atol=1e-12,
+            )
+        ):
+            raise RuntimeError(
+                f"Env [{self.id}]: reward carry does not match the observable "
+                f"liquidation value at tick={self._current_tick}: "
+                f"carry={previous_liquidation_value!r}, "
+                f"observable={observable_liquidation_value!r}"
+            )
+
+        action_valid = self._is_valid(action)
+        self._expected_next_position = self._get_next_position(action)
         self._current_tick += 1
-        self._update_unrealized_total_profit()
-        pre_pnl = self.get_unrealized_profit()
+        fill_open = self._validated_price(self.current_price(), context="fill open")
+        mark_close = self._validated_price(
+            self.prices.iloc[self._current_tick].close,
+            context="mark close",
+        )
+
+        exit_pnl = 0.0
+        if (
+            previous_position in (Positions.Long, Positions.Short)
+            and self._expected_next_position == Positions.Neutral
+        ):
+            exit_pnl = self._get_liquidation_pnl(fill_open)
+
+        trade_type = self.execute_trade(action, exit_pnl=exit_pnl)
+        if self._position != self._expected_next_position:
+            raise RuntimeError(
+                f"Env [{self.id}]: action transition mismatch at "
+                f"tick={self._current_tick}: expected={self._expected_next_position.name}, "
+                f"actual={self._position.name}"
+            )
+
+        transition_pnl = (
+            self._get_liquidation_pnl(mark_close)
+            if self._position in (Positions.Long, Positions.Short)
+            else exit_pnl
+        )
+        reward = self.calculate_reward(
+            action,
+            previous_position=previous_position,
+            transition_pnl=transition_pnl,
+            action_valid=action_valid,
+        )
+
+        self._total_unrealized_profit = (
+            self._total_profit * self._reward_liquidation_value
+            if self._position in (Positions.Long, Positions.Short)
+            else self._total_profit
+        )
+        self._previous_liquidation_value = self._next_liquidation_value
         self._update_portfolio_log_returns()
-        reward = self.calculate_reward(action)
-        trade_type = self.execute_trade(action)
         if trade_type is not None:
-            self.append_trade_history(trade_type, self.current_price(), pre_pnl)
+            trade_pnl = exit_pnl if self._position == Positions.Neutral else 0.0
+            self.append_trade_history(trade_type, fill_open, trade_pnl)
         elif action != Actions.Neutral.value:
             logger.warning(
                 "Env [%s]: invalid action=%s (%d) in position=%s at tick=%d",
@@ -3625,9 +5359,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         self._position_history.append(self._position)
         terminated = self.is_terminated()
-        if terminated:
-            reward = self._apply_terminal_pbrs_correction(reward)
-            self._last_potential = 0.0
+        truncated = self.is_truncated()
         self.total_reward += reward
         pnl = self.get_unrealized_profit()
         self._update_max_unrealized_profit(pnl)
@@ -3636,18 +5368,32 @@ class MyRLEnv(Base5ActionRLEnv):
         max_idle_duration = max(1, self.max_idle_duration_candles)
         idle_duration = self.get_idle_duration()
         trade_duration = self.get_trade_duration()
+        drawdown_breached = bool(
+            self._total_profit < self.max_drawdown
+            or self._total_unrealized_profit < self.max_drawdown
+        )
         info = {
             "tick": self._current_tick,
             "position": float(self._position.value),
             "action": action,
             "pre_pnl": round(pre_pnl, 5),
             "pnl": round(pnl, 5),
+            "transition_pnl": round(transition_pnl, 5),
             "delta_pnl": round(delta_pnl, 5),
             "max_pnl": round(self.get_max_unrealized_profit(), 5),
             "min_pnl": round(self.get_min_unrealized_profit(), 5),
-            "most_recent_return": round(self.get_most_recent_return(), 5),
+            "most_recent_return": round(
+                self._last_economic_reward / self._reward_scale, 5
+            ),
             "most_recent_profit": round(self.get_most_recent_profit(), 5),
             "total_profit": round(self._total_profit, 5),
+            "total_unrealized_profit": round(self._total_unrealized_profit, 5),
+            "reward_economic": round(self._last_economic_reward, 5),
+            "previous_liquidation_value": round(previous_liquidation_value, 8),
+            "reward_liquidation_value": round(self._reward_liquidation_value, 8),
+            "next_liquidation_value": round(self._next_liquidation_value, 8),
+            "economic_ruin": self._economic_ruin,
+            "drawdown_breached": drawdown_breached,
             "prev_potential": round(self._last_prev_potential, 5),
             "next_potential": round(self._last_next_potential, 5),
             "reward_entry_additive": round(self._last_entry_additive, 5),
@@ -3664,7 +5410,9 @@ class MyRLEnv(Base5ActionRLEnv):
             "idle_duration": idle_duration,
             "idle_ratio": (idle_duration / max_idle_duration),
             "trade_duration": trade_duration,
-            "duration_ratio": (trade_duration / max(1, self.max_trade_duration_candles)),
+            "duration_ratio": (
+                trade_duration / max(1, self.max_trade_duration_candles)
+            ),
             "trade_count": len(self.trade_history) // 2,
         }
         self._update_history(info)
@@ -3672,11 +5420,13 @@ class MyRLEnv(Base5ActionRLEnv):
             self._get_observation(),
             reward,
             terminated,
-            self.is_truncated(),
+            truncated,
             info,
         )
 
-    def append_trade_history(self, trade_type: str, price: float, profit: float) -> None:
+    def append_trade_history(
+        self, trade_type: str, price: float, profit: float
+    ) -> None:
         self.trade_history.append(
             {
                 "tick": self._current_tick,
@@ -3687,14 +5437,10 @@ class MyRLEnv(Base5ActionRLEnv):
         )
 
     def is_terminated(self) -> bool:
-        return (
-            self._current_tick == self._end_tick
-            or self._total_profit < self.max_drawdown
-            or self._total_unrealized_profit < self.max_drawdown
-        )
+        return self._economic_ruin
 
     def is_truncated(self) -> bool:
-        return False
+        return self._current_tick >= self._end_tick and not self.is_terminated()
 
     def is_tradesignal(self, action: int) -> bool:
         """
@@ -3752,6 +5498,12 @@ class MyRLEnv(Base5ActionRLEnv):
             return self._current_tick - self._start_tick
         return self._current_tick - self._last_closed_trade_tick
 
+    def get_trade_duration(self) -> int:
+        """Return the raw count of completed candle marks since entry."""
+        if self._position == Positions.Neutral or self._last_trade_tick is None:
+            return 0
+        return self._current_tick - self._last_trade_tick + 1
+
     def get_max_unrealized_profit(self) -> float:
         """
         Get the maximum unrealized profit if the agent is in a trade
@@ -3765,11 +5517,9 @@ class MyRLEnv(Base5ActionRLEnv):
         return self._max_unrealized_profit
 
     def _update_max_unrealized_profit(self, pnl: float) -> None:
-        if (
-            self._position in (Positions.Long, Positions.Short)
-            and pnl > self._max_unrealized_profit
-        ):
-            self._max_unrealized_profit = pnl
+        if self._position in (Positions.Long, Positions.Short):
+            if pnl > self._max_unrealized_profit:
+                self._max_unrealized_profit = pnl
 
     def get_min_unrealized_profit(self) -> float:
         """
@@ -3784,11 +5534,9 @@ class MyRLEnv(Base5ActionRLEnv):
         return self._min_unrealized_profit
 
     def _update_min_unrealized_profit(self, pnl: float) -> None:
-        if (
-            self._position in (Positions.Long, Positions.Short)
-            and pnl < self._min_unrealized_profit
-        ):
-            self._min_unrealized_profit = pnl
+        if self._position in (Positions.Long, Positions.Short):
+            if pnl < self._min_unrealized_profit:
+                self._min_unrealized_profit = pnl
 
     def get_most_recent_return(self) -> float:
         """
@@ -3852,7 +5600,9 @@ class MyRLEnv(Base5ActionRLEnv):
         return 0.0
 
     def _update_portfolio_log_returns(self):
-        self.portfolio_log_returns[self._current_tick] = self.get_most_recent_return()
+        self.portfolio_log_returns[self._current_tick] = (
+            self._last_economic_reward / self._reward_scale
+        )
 
     def get_most_recent_profit(self) -> float:
         """
@@ -3905,7 +5655,7 @@ class MyRLEnv(Base5ActionRLEnv):
         return 0.0
 
     def previous_tick(self) -> int:
-        return max(self._current_tick - 1, self._start_tick)
+        return max(self._current_tick - 1, self._start_tick - 1)
 
     def previous_price(self) -> float:
         return self.prices.iloc[self.previous_tick()].get("open")
@@ -3927,7 +5677,9 @@ class MyRLEnv(Base5ActionRLEnv):
         if self.trade_history:
             _trade_history_df = DataFrame(self.trade_history)
             if "tick" in _trade_history_df.columns:
-                _rollout_history = merge(_rollout_history, _trade_history_df, on="tick", how="left")
+                _rollout_history = merge(
+                    _rollout_history, _trade_history_df, on="tick", how="left"
+                )
 
         try:
             history = merge(
@@ -3986,7 +5738,12 @@ class MyRLEnv(Base5ActionRLEnv):
 
             ticks = history.get("tick")
             history_open = history.get("open")
-            if ticks is None or len(ticks) == 0 or history_open is None or len(history_open) == 0:
+            if (
+                ticks is None
+                or len(ticks) == 0
+                or history_open is None
+                or len(history_open) == 0
+            ):
                 return fig
 
             axs[0].plot(ticks, history_open, linewidth=1, color="orchid", zorder=1)
@@ -4108,7 +5865,7 @@ class InfoMetricsCallback(TensorboardCallback):
         self.throttle = 1 if throttle < 1 else throttle
 
     def _safe_logger_record(
-        self, key: str, value: Any, exclude: tuple[str, ...] | None = None
+        self, key: str, value: Any, exclude: Optional[Tuple[str, ...]] = None
     ) -> None:
         try:
             self.logger.record(key, value, exclude=exclude)
@@ -4139,9 +5896,9 @@ class InfoMetricsCallback(TensorboardCallback):
 
     @staticmethod
     def _build_train_freq(
-        train_freq: TrainFreq | int | tuple[int, ...] | list[int] | None,
-    ) -> int | None:
-        train_freq_val: int | None = None
+        train_freq: Optional[Union[TrainFreq, int, Tuple[int, ...], List[int]]],
+    ) -> Optional[int]:
+        train_freq_val: Optional[int] = None
         if isinstance(train_freq, TrainFreq) and hasattr(train_freq, "frequency"):
             if isinstance(train_freq.frequency, int):
                 train_freq_val = train_freq.frequency
@@ -4160,11 +5917,13 @@ class InfoMetricsCallback(TensorboardCallback):
         env = getattr(self, "training_env", None)
         while env is not None:
             if hasattr(env, "n_stack"):
-                with suppress(Exception):
-                    n_stack = int(env.n_stack)
+                try:
+                    n_stack = int(getattr(env, "n_stack"))
+                except Exception:
+                    pass
                 break
             env = getattr(env, "venv", None)
-        hparam_dict: dict[str, Any] = {
+        hparam_dict: Dict[str, Any] = {
             "algorithm": self.model.__class__.__name__,
             "n_envs": int(self.model.n_envs),
             "n_stack": n_stack,
@@ -4200,7 +5959,9 @@ class InfoMetricsCallback(TensorboardCallback):
             )
             if getattr(self.model, "target_kl", None) is not None:
                 hparam_dict["target_kl"] = float(self.model.target_kl)
-            if ReforceXY._MODEL_TYPES[1] in self.model.__class__.__name__:  # "RecurrentPPO"
+            if (
+                ReforceXY._MODEL_TYPES[1] in self.model.__class__.__name__
+            ):  # "RecurrentPPO"
                 policy = getattr(self.model, "policy", None)
                 if policy is not None:
                     lstm_actor = getattr(policy, "lstm_actor", None)
@@ -4218,7 +5979,9 @@ class InfoMetricsCallback(TensorboardCallback):
                     "gradient_steps": int(self.model.gradient_steps),
                     "learning_starts": int(self.model.learning_starts),
                     "target_update_interval": int(self.model.target_update_interval),
-                    "exploration_initial_eps": float(self.model.exploration_initial_eps),
+                    "exploration_initial_eps": float(
+                        self.model.exploration_initial_eps
+                    ),
                     "exploration_final_eps": float(self.model.exploration_final_eps),
                     "exploration_fraction": float(self.model.exploration_fraction),
                     "exploration_rate": float(self.model.exploration_rate),
@@ -4231,7 +5994,7 @@ class InfoMetricsCallback(TensorboardCallback):
                 hparam_dict.update({"train_freq": train_freq})
             if ReforceXY._MODEL_TYPES[4] in self.model.__class__.__name__:  # "QRDQN"
                 hparam_dict.update({"n_quantiles": int(self.model.n_quantiles)})
-        metric_dict: dict[str, float | int] = {
+        metric_dict: Dict[str, float | int] = {
             "eval/mean_reward": 0.0,
             "eval/mean_reward_std": 0.0,
             "rollout/ep_rew_mean": 0.0,
@@ -4277,7 +6040,9 @@ class InfoMetricsCallback(TensorboardCallback):
         logger_exclude = ("stdout", "log", "json", "csv")
 
         def _is_number(x: Any) -> bool:
-            return isinstance(x, (int, float, np.integer, np.floating)) and not isinstance(x, bool)
+            return isinstance(
+                x, (int, float, np.integer, np.floating)
+            ) and not isinstance(x, bool)
 
         def _is_finite_number(x: Any) -> bool:
             if not _is_number(x):
@@ -4287,12 +6052,14 @@ class InfoMetricsCallback(TensorboardCallback):
             except Exception:
                 return False
 
-        infos_list: list[dict[str, Any]] | None = self.locals.get("infos")
-        aggregated_info: dict[str, Any] = {}
+        infos_list: List[Dict[str, Any]] | None = self.locals.get("infos")
+        aggregated_info: Dict[str, Any] = {}
 
         if isinstance(infos_list, list) and infos_list:
-            numeric_acc: dict[str, list[float]] = defaultdict(list)
-            non_numeric_counts: dict[str, dict[Any, int]] = defaultdict(lambda: defaultdict(int))
+            numeric_acc: Dict[str, List[float]] = defaultdict(list)
+            non_numeric_counts: Dict[str, Dict[Any, int]] = defaultdict(
+                lambda: defaultdict(int)
+            )
             filtered_values: int = 0
 
             for info_dict in infos_list:
@@ -4313,8 +6080,10 @@ class InfoMetricsCallback(TensorboardCallback):
                     continue
                 aggregated_info[k] = np.mean(values)
                 if len(values) > 1:
-                    with suppress(Exception):
+                    try:
                         aggregated_info[f"{k}_std"] = np.std(values, ddof=1)
+                    except Exception:
+                        pass
 
             for key in ("reward", "pnl"):
                 values = numeric_acc.get(key)
@@ -4338,12 +6107,16 @@ class InfoMetricsCallback(TensorboardCallback):
                 if not counts:
                     continue
                 if len(counts) == 1:
-                    with suppress(Exception):
+                    try:
                         aggregated_info[f"{k}_mode"] = next(iter(counts.keys()))
+                    except Exception:
+                        pass
                 else:
                     aggregated_info[f"{k}_mode"] = "mixed"
 
-            self._safe_logger_record("info/n_envs", len(infos_list), exclude=logger_exclude)
+            self._safe_logger_record(
+                "info/n_envs", len(infos_list), exclude=logger_exclude
+            )
 
             if filtered_values > 0:
                 self._safe_logger_record(
@@ -4358,8 +6131,10 @@ class InfoMetricsCallback(TensorboardCallback):
         except Exception:
             tensorboard_metrics_list = []
 
-        aggregated_tensorboard_metrics: dict[str, dict[str, Any]] = defaultdict(dict)
-        aggregated_tensorboard_metric_counts: dict[str, dict[str, int]] = defaultdict(dict)
+        aggregated_tensorboard_metrics: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        aggregated_tensorboard_metric_counts: Dict[str, Dict[str, int]] = defaultdict(
+            dict
+        )
         for env_metrics in tensorboard_metrics_list or []:
             if not isinstance(env_metrics, dict):
                 continue
@@ -4386,8 +6161,10 @@ class InfoMetricsCallback(TensorboardCallback):
 
         if isinstance(infos_list, list) and infos_list:
             cat_keys = ("action", "position")
-            cat_counts: dict[str, dict[Any, int]] = {k: defaultdict(int) for k in cat_keys}
-            cat_totals: dict[str, int] = dict.fromkeys(cat_keys, 0)
+            cat_counts: Dict[str, Dict[Any, int]] = {
+                k: defaultdict(int) for k in cat_keys
+            }
+            cat_totals: Dict[str, int] = {k: 0 for k in cat_keys}
             for info_dict in infos_list:
                 if not isinstance(info_dict, dict):
                     continue
@@ -4416,8 +6193,14 @@ class InfoMetricsCallback(TensorboardCallback):
                     self._safe_logger_record(
                         f"{category}/{metric}_sum", value, exclude=logger_exclude
                     )
-                    count = aggregated_tensorboard_metric_counts.get(category, {}).get(metric)
-                    if _is_finite_number(value) and isinstance(count, int) and count > 0:
+                    count = aggregated_tensorboard_metric_counts.get(category, {}).get(
+                        metric
+                    )
+                    if (
+                        _is_finite_number(value)
+                        and isinstance(count, int)
+                        and count > 0
+                    ):
                         self._safe_logger_record(
                             f"{category}/{metric}_mean",
                             float(value) / float(count),
@@ -4432,7 +6215,9 @@ class InfoMetricsCallback(TensorboardCallback):
             else:
                 progress_done = 0.0
             progress_remaining = 1.0 - progress_done
-            self._safe_logger_record("train/progress_done", progress_done, exclude=logger_exclude)
+            self._safe_logger_record(
+                "train/progress_done", progress_done, exclude=logger_exclude
+            )
             self._safe_logger_record(
                 "train/progress_remaining", progress_remaining, exclude=logger_exclude
             )
@@ -4468,7 +6253,9 @@ class InfoMetricsCallback(TensorboardCallback):
             lr = getattr(self.model, "learning_rate", None)
             lr = _eval_schedule(lr)
             if _is_finite_number(lr):
-                self._safe_logger_record("train/learning_rate", float(lr), exclude=logger_exclude)
+                self._safe_logger_record(
+                    "train/learning_rate", float(lr), exclude=logger_exclude
+                )
         except Exception:
             pass
 
@@ -4477,7 +6264,9 @@ class InfoMetricsCallback(TensorboardCallback):
                 cr = getattr(self.model, "clip_range", None)
                 cr = _eval_schedule(cr)
                 if _is_finite_number(cr):
-                    self._safe_logger_record("train/clip_range", float(cr), exclude=logger_exclude)
+                    self._safe_logger_record(
+                        "train/clip_range", float(cr), exclude=logger_exclude
+                    )
             except Exception:
                 pass
 
@@ -4537,9 +6326,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
         deterministic: bool = True,
         render: bool = False,
         use_masking: bool = True,
-        best_model_save_path: str | None = None,
-        callback_on_new_best: BaseCallback | None = None,
-        callback_after_eval: BaseCallback | None = None,
+        best_model_save_path: Optional[str] = None,
+        callback_on_new_best: Optional[BaseCallback] = None,
+        callback_after_eval: Optional[BaseCallback] = None,
         verbose: int = 0,
         **kwargs,
     ):
@@ -4629,7 +6418,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
             try:
                 logger_exclude = ("stdout", "log", "json", "csv")
                 self.logger.record("eval/idx", self.eval_idx, exclude=logger_exclude)
-                self.logger.record("eval/num_timesteps", self.num_timesteps, exclude=logger_exclude)
+                self.logger.record(
+                    "eval/num_timesteps", self.num_timesteps, exclude=logger_exclude
+                )
                 self.logger.record(
                     "eval/last_mean_reward", last_mean_reward, exclude=logger_exclude
                 )
@@ -4694,7 +6485,7 @@ class SimpleLinearSchedule:
     :param initial_value: (float or str) The initial value for the schedule
     """
 
-    def __init__(self, initial_value: float | str) -> None:
+    def __init__(self, initial_value: Union[float, str]) -> None:
         # Force conversion to float
         self.initial_value = float(initial_value)
 
@@ -4705,11 +6496,15 @@ class SimpleLinearSchedule:
         return f"SimpleLinearSchedule(initial_value={self.initial_value})"
 
 
-def deepmerge(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+def deepmerge(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge two dicts without mutating inputs"""
     dst_copy = copy.deepcopy(dst)
     for k, v in src.items():
-        if k in dst_copy and isinstance(dst_copy[k], Mapping) and isinstance(v, Mapping):
+        if (
+            k in dst_copy
+            and isinstance(dst_copy[k], Mapping)
+            and isinstance(v, Mapping)
+        ):
             dst_copy[k] = deepmerge(dst_copy[k], v)
         else:
             dst_copy[k] = v
@@ -4723,7 +6518,7 @@ def _compute_gradient_steps(tf: int, ss: int) -> int:
 
 
 def compute_gradient_steps(train_freq: Any, subsample_steps: Any) -> int:
-    tf: int | None = None
+    tf: Optional[int] = None
     if isinstance(train_freq, TrainFreq):
         tf = train_freq.frequency if isinstance(train_freq.frequency, int) else None
     if isinstance(train_freq, (tuple, list)) and train_freq:
@@ -4731,7 +6526,7 @@ def compute_gradient_steps(train_freq: Any, subsample_steps: Any) -> int:
     elif isinstance(train_freq, int):
         tf = train_freq
 
-    ss: int | None = subsample_steps if isinstance(subsample_steps, int) else None
+    ss: Optional[int] = subsample_steps if isinstance(subsample_steps, int) else None
 
     if isinstance(tf, int) and isinstance(ss, int):
         return _compute_gradient_steps(tf, ss)
@@ -4757,7 +6552,7 @@ def steps_to_days(steps: int, timeframe: str) -> float:
 
 def get_schedule_type(
     schedule: Any,
-) -> tuple[ScheduleType, float, float]:
+) -> Tuple[ScheduleType, float, float]:
     if isinstance(schedule, (int, float)):
         try:
             schedule = float(schedule)
@@ -4798,7 +6593,9 @@ def get_schedule(
         return ConstantSchedule(initial_value)
 
 
-def get_net_arch(model_type: str, net_arch_type: NetArchSize) -> list[int] | dict[str, list[int]]:
+def get_net_arch(
+    model_type: str, net_arch_type: NetArchSize
+) -> Union[List[int], Dict[str, List[int]]]:
     """
     Get network architecture
     """
@@ -4831,7 +6628,7 @@ def get_net_arch(model_type: str, net_arch_type: NetArchSize) -> list[int] | dic
 
 def get_activation_fn(
     activation_fn_name: ActivationFunction,
-) -> type[th.nn.Module]:
+) -> Type[th.nn.Module]:
     """
     Get activation function
     """
@@ -4845,7 +6642,7 @@ def get_activation_fn(
 
 def get_optimizer_class(
     optimizer_class_name: OptimizerClass,
-) -> type[th.optim.Optimizer]:
+) -> Type[th.optim.Optimizer]:
     """
     Get optimizer class
     """
@@ -4857,10 +6654,10 @@ def get_optimizer_class(
 
 
 def convert_optuna_params_to_model_params(
-    model_type: str, optuna_params: dict[str, Any]
-) -> dict[str, Any]:
-    model_params: dict[str, Any] = {}
-    policy_kwargs: dict[str, Any] = {}
+    model_type: str, optuna_params: Dict[str, Any]
+) -> Dict[str, Any]:
+    model_params: Dict[str, Any] = {}
+    policy_kwargs: Dict[str, Any] = {}
 
     lr = optuna_params.get("learning_rate")
     if lr is None:
@@ -4883,7 +6680,9 @@ def convert_optuna_params_to_model_params(
         ]
         for param in required_ppo_params:
             if optuna_params.get(param) is None:
-                raise ValueError(f"Hyperopt [{model_type}]: missing '{param}' in params")
+                raise ValueError(
+                    f"Hyperopt [{model_type}]: missing '{param}' in params"
+                )
         cr = optuna_params.get("clip_range")
         cr = get_schedule(
             optuna_params.get("cr_schedule", ReforceXY._SCHEDULE_TYPES[1]),
@@ -4907,10 +6706,14 @@ def convert_optuna_params_to_model_params(
         if optuna_params.get("target_kl") is not None:
             model_params["target_kl"] = float(optuna_params.get("target_kl"))
         if ReforceXY._MODEL_TYPES[1] in model_type:  # "RecurrentPPO"
-            policy_kwargs["lstm_hidden_size"] = int(optuna_params.get("lstm_hidden_size"))
+            policy_kwargs["lstm_hidden_size"] = int(
+                optuna_params.get("lstm_hidden_size")
+            )
             policy_kwargs["n_lstm_layers"] = int(optuna_params.get("n_lstm_layers"))
             if optuna_params.get("enable_critic_lstm") is not None:
-                policy_kwargs["enable_critic_lstm"] = bool(optuna_params.get("enable_critic_lstm"))
+                policy_kwargs["enable_critic_lstm"] = bool(
+                    optuna_params.get("enable_critic_lstm")
+                )
     elif ReforceXY._MODEL_TYPES[3] in model_type:  # "DQN"
         required_dqn_params = [
             "gamma",
@@ -4926,7 +6729,9 @@ def convert_optuna_params_to_model_params(
         ]
         for param in required_dqn_params:
             if optuna_params.get(param) is None:
-                raise ValueError(f"Hyperopt [{model_type}]: missing '{param}' in params")
+                raise ValueError(
+                    f"Hyperopt [{model_type}]: missing '{param}' in params"
+                )
         train_freq = optuna_params.get("train_freq")
         subsample_steps = optuna_params.get("subsample_steps")
         gradient_steps = compute_gradient_steps(train_freq, subsample_steps)
@@ -4939,15 +6744,24 @@ def convert_optuna_params_to_model_params(
                 "buffer_size": int(optuna_params.get("buffer_size")),
                 "train_freq": train_freq,
                 "gradient_steps": gradient_steps,
-                "exploration_fraction": float(optuna_params.get("exploration_fraction")),
-                "exploration_initial_eps": float(optuna_params.get("exploration_initial_eps")),
-                "exploration_final_eps": float(optuna_params.get("exploration_final_eps")),
-                "target_update_interval": int(optuna_params.get("target_update_interval")),
+                "exploration_fraction": float(
+                    optuna_params.get("exploration_fraction")
+                ),
+                "exploration_initial_eps": float(
+                    optuna_params.get("exploration_initial_eps")
+                ),
+                "exploration_final_eps": float(
+                    optuna_params.get("exploration_final_eps")
+                ),
+                "target_update_interval": int(
+                    optuna_params.get("target_update_interval")
+                ),
                 "learning_starts": int(optuna_params.get("learning_starts")),
             }
         )
         if (
-            ReforceXY._MODEL_TYPES[4] in model_type and optuna_params.get("n_quantiles") is not None
+            ReforceXY._MODEL_TYPES[4] in model_type
+            and optuna_params.get("n_quantiles") is not None
         ):  # "QRDQN"
             policy_kwargs["n_quantiles"] = int(optuna_params["n_quantiles"])
     else:
@@ -4958,19 +6772,19 @@ def convert_optuna_params_to_model_params(
         if net_arch_value in ReforceXY._NET_ARCH_SIZES:
             policy_kwargs["net_arch"] = get_net_arch(
                 model_type,
-                cast("NetArchSize", net_arch_value),
+                cast(NetArchSize, net_arch_value),
             )
     if optuna_params.get("activation_fn"):
         activation_fn_value = str(optuna_params["activation_fn"])
         if activation_fn_value in ReforceXY._ACTIVATION_FUNCTIONS:
             policy_kwargs["activation_fn"] = get_activation_fn(
-                cast("ActivationFunction", activation_fn_value)
+                cast(ActivationFunction, activation_fn_value)
             )
     if optuna_params.get("optimizer_class"):
         optimizer_value = str(optuna_params["optimizer_class"])
         if optimizer_value in ReforceXY._OPTIMIZER_CLASSES:
             policy_kwargs["optimizer_class"] = get_optimizer_class(
-                cast("OptimizerClass", optimizer_value)
+                cast(OptimizerClass, optimizer_value)
             )
     if optuna_params.get("ortho_init") is not None:
         policy_kwargs["ortho_init"] = bool(optuna_params["ortho_init"])
@@ -4979,10 +6793,12 @@ def convert_optuna_params_to_model_params(
     return model_params
 
 
-def get_common_ppo_optuna_params(trial: Trial) -> dict[str, Any]:
+def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
     return {
         "n_steps": trial.suggest_categorical("n_steps", list(ReforceXY._PPO_N_STEPS)),
-        "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256, 512, 1024]),
+        "batch_size": trial.suggest_categorical(
+            "batch_size", [64, 128, 256, 512, 1024]
+        ),
         "gamma": trial.suggest_categorical(
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]
         ),
@@ -5003,7 +6819,9 @@ def get_common_ppo_optuna_params(trial: Trial) -> dict[str, Any]:
             "target_kl", [None, 0.003, 0.01, 0.015, 0.02, 0.03, 0.04, 0.1]
         ),
         "ortho_init": trial.suggest_categorical("ortho_init", [True, False]),
-        "net_arch": trial.suggest_categorical("net_arch", list(ReforceXY._NET_ARCH_SIZES)),
+        "net_arch": trial.suggest_categorical(
+            "net_arch", list(ReforceXY._NET_ARCH_SIZES)
+        ),
         "activation_fn": trial.suggest_categorical(
             "activation_fn", list(ReforceXY._ACTIVATION_FUNCTIONS)
         ),
@@ -5013,7 +6831,7 @@ def get_common_ppo_optuna_params(trial: Trial) -> dict[str, Any]:
     }
 
 
-def sample_params_ppo(trial: Trial) -> dict[str, Any]:
+def sample_params_ppo(trial: Trial) -> Dict[str, Any]:
     """
     Sampler for PPO hyperparams
     """
@@ -5022,7 +6840,7 @@ def sample_params_ppo(trial: Trial) -> dict[str, Any]:
     )
 
 
-def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
+def sample_params_recurrentppo(trial: Trial) -> Dict[str, Any]:
     """
     Sampler for RecurrentPPO hyperparams
     """
@@ -5030,15 +6848,21 @@ def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
     ppo_optuna_params.update(
         {
             "n_lstm_layers": trial.suggest_int("n_lstm_layers", 1, 2),
-            "lstm_hidden_size": trial.suggest_categorical("lstm_hidden_size", [64, 128, 256, 512]),
-            "enable_critic_lstm": trial.suggest_categorical("enable_critic_lstm", [True, False]),
+            "lstm_hidden_size": trial.suggest_categorical(
+                "lstm_hidden_size", [64, 128, 256, 512]
+            ),
+            "enable_critic_lstm": trial.suggest_categorical(
+                "enable_critic_lstm", [True, False]
+            ),
         }
     )
     return convert_optuna_params_to_model_params("RecurrentPPO", ppo_optuna_params)
 
 
-def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
-    exploration_final_eps = trial.suggest_float("exploration_final_eps", 0.01, 0.2, step=0.01)
+def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
+    exploration_final_eps = trial.suggest_float(
+        "exploration_final_eps", 0.01, 0.2, step=0.01
+    )
     exploration_initial_eps = trial.suggest_float(
         "exploration_initial_eps", exploration_final_eps, 1.0
     )
@@ -5056,7 +6880,9 @@ def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
         "gamma": trial.suggest_categorical(
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]
         ),
-        "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256, 512, 1024]),
+        "batch_size": trial.suggest_categorical(
+            "batch_size", [64, 128, 256, 512, 1024]
+        ),
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
         "lr_schedule": trial.suggest_categorical(
             "lr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
@@ -5075,7 +6901,9 @@ def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
         "learning_starts": trial.suggest_categorical(
             "learning_starts", [500, 1000, 2000, 5000, 10000, 25000, 50000]
         ),
-        "net_arch": trial.suggest_categorical("net_arch", list(ReforceXY._NET_ARCH_SIZES)),
+        "net_arch": trial.suggest_categorical(
+            "net_arch", list(ReforceXY._NET_ARCH_SIZES)
+        ),
         "activation_fn": trial.suggest_categorical(
             "activation_fn", list(ReforceXY._ACTIVATION_FUNCTIONS)
         ),
@@ -5085,7 +6913,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
     }
 
 
-def sample_params_dqn(trial: Trial) -> dict[str, Any]:
+def sample_params_dqn(trial: Trial) -> Dict[str, Any]:
     """
     Sampler for DQN hyperparams
     """
@@ -5094,10 +6922,12 @@ def sample_params_dqn(trial: Trial) -> dict[str, Any]:
     )
 
 
-def sample_params_qrdqn(trial: Trial) -> dict[str, Any]:
+def sample_params_qrdqn(trial: Trial) -> Dict[str, Any]:
     """
     Sampler for QRDQN hyperparams
     """
     dqn_optuna_params = get_common_dqn_optuna_params(trial)
     dqn_optuna_params.update({"n_quantiles": trial.suggest_int("n_quantiles", 10, 250)})
-    return convert_optuna_params_to_model_params(ReforceXY._MODEL_TYPES[4], dqn_optuna_params)
+    return convert_optuna_params_to_model_params(
+        ReforceXY._MODEL_TYPES[4], dqn_optuna_params
+    )

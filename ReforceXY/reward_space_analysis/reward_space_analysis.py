@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Synthetic reward space analysis utilities for ReforceXY.
+"""Synthetic analysis of ReforceXY's pair-local economic reward.
 
-Implements sample generation, reward computation with PBRS, statistical analysis,
-and feature importance calculation with reproducible parameter hashing.
+The reference reward is the scaled log change in a fee-aware liquidation value.
+Optional shaping is restricted to canonical potential-based reward shaping (PBRS).
 """
 
 from __future__ import annotations
@@ -46,9 +46,7 @@ except Exception:
 
 AttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "asinh"]
-ExitPotentialMode = Literal[
-    "canonical", "non_canonical", "progressive_release", "spike_cancel", "retain_previous"
-]
+ExitPotentialMode = Literal["canonical"]
 
 
 class Actions(IntEnum):
@@ -73,13 +71,14 @@ DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 # Tolerance for PBRS invariance classification.
 #
 # When `reward_invariance_correction` is available (reward_shaping - reward_pbrs_delta),
-# canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL.
-#
-# When that diagnostic column is not available (e.g., reporting from partial datasets),
-# we fall back to the weaker heuristic |Σ shaping| < PBRS_INVARIANCE_TOL.
+# canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL. A raw
+# shaping sum is never a classifier: for gamma < 1, only the discounted shaping
+# sum has the PBRS telescoping interpretation.
 PBRS_INVARIANCE_TOL: float = 1e-6
 # Default discount factor γ for potential-based reward shaping
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
+BASE_ENVIRONMENT_FEE_FALLBACK: float = 0.0015
+MIN_LIQUIDATION_VALUE: float = 1e-12
 
 # Default risk/reward ratio (RR)
 RISK_REWARD_RATIO_DEFAULT: float = 2.0
@@ -98,7 +97,6 @@ INTERNAL_GUARDS: dict[str, float] = {
     "sim_pnl_conservation_tol": 1e-10,
     "sim_zero_pnl_epsilon": 1e-12,
     "sim_zero_reward_epsilon": 1e-12,
-    "sim_extreme_pnl_threshold": 0.2,
     "histogram_epsilon": 1e-10,
     "distribution_identity_epsilon": 1e-12,
     "efficiency_min_range_epsilon": 1e-6,
@@ -114,13 +112,41 @@ ALLOWED_TRANSFORMS = {
     "asinh",
     "clip",
 }
-ALLOWED_EXIT_POTENTIAL_MODES = {
-    "canonical",
-    "non_canonical",
-    "progressive_release",
-    "spike_cancel",
-    "retain_previous",
-}
+ALLOWED_EXIT_POTENTIAL_MODES = {"canonical"}
+
+# Accepted during the migration window but ignored by the economic reward.
+DEPRECATED_REWARD_PARAMETERS: frozenset[str] = frozenset(
+    {
+        "idle_penalty_ratio",
+        "idle_penalty_power",
+        "hold_penalty_ratio",
+        "hold_penalty_power",
+        "exit_attenuation_mode",
+        "exit_plateau",
+        "exit_plateau_grace",
+        "exit_linear_slope",
+        "exit_power_tau",
+        "exit_half_life",
+        "efficiency_weight",
+        "efficiency_center",
+        "win_reward_factor",
+        "pnl_amplification_sensitivity",
+        "exit_factor_threshold",
+        "exit_potential_decay",
+        "entry_additive_enabled",
+        "entry_additive_ratio",
+        "entry_additive_gain",
+        "entry_additive_transform_pnl",
+        "entry_additive_transform_duration",
+        "exit_additive_enabled",
+        "exit_additive_ratio",
+        "exit_additive_gain",
+        "exit_additive_transform_pnl",
+        "exit_additive_transform_duration",
+        "entry_fee_rate",
+        "exit_fee_rate",
+    }
+)
 
 # Supported trading modes
 TRADING_MODES: tuple[str, ...] = ("spot", "margin", "futures")
@@ -134,6 +160,8 @@ _ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
     "base_factor": 100.0,
+    # One fee mirrors the native LocalTrade open/close fee inputs.
+    "fee_rate": BASE_ENVIRONMENT_FEE_FALLBACK,
     # Idle penalty defaults
     "idle_penalty_ratio": 1.0,
     "idle_penalty_power": 1.025,
@@ -163,7 +191,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     # Potential-based reward shaping core parameters
     # Discount factor γ for potential term (0 ≤ γ ≤ 1)
     "potential_gamma": POTENTIAL_GAMMA_DEFAULT,
-    # Exit potential modes: canonical | non_canonical | progressive_release | spike_cancel | retain_previous
+    # Only canonical PBRS is supported by the economic reward contract.
     "exit_potential_mode": "canonical",
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
@@ -191,6 +219,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
 DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "invalid_action": "Penalty for invalid actions",
     "base_factor": "Base reward scale",
+    "fee_rate": "Unified fee rate used by Freqtrade spot LocalTrade",
     "idle_penalty_power": "Idle penalty exponent",
     "idle_penalty_ratio": "Idle penalty ratio",
     "max_trade_duration_candles": "Trade duration cap (candles)",
@@ -211,8 +240,8 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "exit_factor_threshold": "Warn if |exit_factor| exceeds",
     # PBRS parameters
     "potential_gamma": "PBRS discount γ (0-1)",
-    "exit_potential_mode": "Exit potential mode (canonical|non_canonical|progressive_release|spike_cancel|retain_previous)",
-    "exit_potential_decay": "Decay for progressive_release (0-1)",
+    "exit_potential_mode": "Exit potential mode (canonical only)",
+    "exit_potential_decay": "Deprecated legacy exit-potential decay (no-op)",
     "hold_potential_enabled": "Enable hold potential Φ",
     "hold_potential_ratio": "Hold potential ratio",
     "hold_potential_gain": "Hold potential gain",
@@ -240,7 +269,8 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
 _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     # key: {min: ..., max: ...}  (bounds are inclusive where it makes sense)
     "invalid_action": {"max": 0.0},  # penalty should be <= 0
-    "base_factor": {"min": 0.0},
+    "base_factor": {"min": 1e-12},
+    "fee_rate": {"min": 0.0, "max": 0.1},
     "idle_penalty_power": {"min": 0.0},
     "idle_penalty_ratio": {"min": 0.0},
     "max_trade_duration_candles": {"min": 1.0},
@@ -588,6 +618,21 @@ def validate_reward_parameters(
     sanitized = dict(params)
     adjustments: dict[str, dict[str, Any]] = {}
 
+    exit_mode = _get_str_param(sanitized, "exit_potential_mode", "canonical")
+    if exit_mode != "canonical":
+        if strict:
+            raise ValueError(
+                "Param: exit_potential_mode must be 'canonical' for the economic reward, "
+                f"got {exit_mode!r}"
+            )
+        sanitized["exit_potential_mode"] = "canonical"
+        adjustments["exit_potential_mode"] = {
+            "original": exit_mode,
+            "adjusted": "canonical",
+            "reason": "canonical_only",
+            "validation_mode": "strict" if strict else "relaxed",
+        }
+
     # Boolean parameter coercion
     _bool_keys = [
         "check_invariants",
@@ -609,6 +654,46 @@ def validate_reward_parameters(
                     "reason": "bool_coerce",
                     "validation_mode": "strict" if strict else "relaxed",
                 },
+            )
+
+    for additive_key in ("entry_additive_enabled", "exit_additive_enabled"):
+        if not _get_bool_param(sanitized, additive_key, False):
+            continue
+        if strict:
+            raise ValueError(
+                f"Param: {additive_key} is incompatible with canonical PBRS and must be false"
+            )
+        original_val = sanitized[additive_key]
+        sanitized[additive_key] = False
+        adjustments[additive_key] = {
+            "original": original_val,
+            "adjusted": False,
+            "reason": "canonical_pbrs_suppresses_additives",
+            "validation_mode": "relaxed",
+        }
+
+    if _get_bool_param(sanitized, "hold_potential_enabled", False):
+        gamma = _get_float_param(
+            sanitized,
+            "potential_gamma",
+            POTENTIAL_GAMMA_DEFAULT,
+        )
+        if not np.isfinite(gamma) or not (0.0 < gamma <= 1.0):
+            raise ValueError(
+                "Param: potential_gamma must be finite and in (0, 1] when "
+                "hold_potential_enabled=True"
+            )
+        profit_aim = _get_float_param(sanitized, "profit_aim", np.nan)
+        risk_reward_ratio = _get_float_param(
+            sanitized,
+            "risk_reward_ratio",
+            _get_float_param(sanitized, "rr", np.nan),
+        )
+        pnl_target = profit_aim * risk_reward_ratio
+        if not np.isfinite(pnl_target) or pnl_target <= 0.0:
+            raise ValueError(
+                "Param: profit_aim * risk_reward_ratio must be finite and positive "
+                "when hold_potential_enabled=True"
             )
 
     # Coerce and clamp numeric-bounded parameters
@@ -765,7 +850,10 @@ class RewardContext:
     Attributes
     ----------
     current_pnl : float
-        Unrealized PnL at the current tick (state s').
+        Fee-aware liquidation PnL observable in state s.
+    next_pnl : float | None
+        Fee-aware transition PnL at the causal fill/mark for s'. ``None`` keeps
+        the compatibility fallback used by direct analytical API callers.
     """
 
     current_pnl: float
@@ -775,11 +863,15 @@ class RewardContext:
     min_unrealized_profit: float
     position: Positions
     action: Actions
+    previous_liquidation_value: float = 1.0
+    next_pnl: float | None = None
+    next_trade_duration: int | None = None
 
 
 @dataclasses.dataclass
 class RewardBreakdown:
     total: float = 0.0
+    economic_component: float = 0.0
     invalid_penalty: float = 0.0
     idle_penalty: float = 0.0
     hold_penalty: float = 0.0
@@ -794,6 +886,13 @@ class RewardBreakdown:
     base_reward: float = 0.0
     pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') - Φ(s)
     invariance_correction: float = 0.0
+    previous_liquidation_value: float = 1.0
+    reward_liquidation_value: float = 1.0
+    next_liquidation_value: float = 1.0
+    economic_ruin: bool = False
+    terminated: bool = False
+    truncated: bool = False
+    invalid_action: bool = False
 
 
 def _compute_time_attenuation_coefficient(
@@ -1183,240 +1282,200 @@ def calculate_reward(
     action_masking: bool,
     prev_potential: float = np.nan,
 ) -> RewardBreakdown:
-    """Calculate complete reward with base reward and PBRS shaping.
+    """Return the economic reward and optional canonical PBRS diagnostics.
 
-    This function computes the full reward pipeline including base reward calculation,
-    PBRS (Potential-Based Reward Shaping), and optional additives.
+    The economic component is ``base_factor * log(L_reward / L_previous)``.
+    ``L`` is the pair-local, fee-aware liquidation value. Entry therefore pays
+    the complete simulated round-trip fee immediately, holds recognize the
+    incremental marked-to-liquidation return, exits recognize the final mark,
+    and a neutral self-loop has zero economic reward.
 
-    Reward Formula
-    --------------
-    R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-    where:
-        - R(s,a,s'): Base reward (invalid/idle/hold penalty or exit reward)
-        - Δ(s,a,s'): PBRS delta term = γ·Φ(s') - Φ(s)
-        - entry_additive: Optional entry bonus (disabled in canonical mode)
-        - exit_additive: Optional exit bonus (disabled in canonical mode)
-
-    Parameters
-    ----------
-    context : RewardContext
-        Current reward context (position, action, PnL, duration, etc.)
-    params : RewardParams
-        Reward parameter dictionary with configuration
-    base_factor : float
-        Base scaling factor for reward components
-    profit_aim : float
-        Target profit for normalization
-    risk_reward_ratio : float
-        Risk/reward ratio for trade evaluation
-    short_allowed : bool
-        Whether short positions are permitted
-    action_masking : bool
-        Whether to apply action masking (affects invalid action penalty)
-    prev_potential : float, optional
-        Previous state potential Φ(s), by default np.nan
-
-    Returns
-    -------
-    RewardBreakdown
-        Complete breakdown of reward components including:
-        - total: Final shaped reward R'(s,a,s')
-        - base_reward: R(s,a,s')
-        - reward_shaping: Δ(s,a,s')
-        - entry_additive: Entry bonus
-        - exit_additive: Exit bonus
-        - prev_potential: Φ(s)
-        - next_potential: Φ(s')
-        - pbrs_delta: Same as reward_shaping
-        - And component-specific values (invalid_penalty, idle_penalty, etc.)
-
-    Notes
-    -----
-    This is the reference implementation for the reward calculation used in testing
-    and analysis. It mirrors the logic in ReforceXY.calculate_reward() but returns
-    a detailed breakdown for diagnostic purposes.
+    ``profit_aim`` and ``risk_reward_ratio`` are retained only because FreqAI's
+    base environment and the optional potential function require them. They do
+    not alter the economic component.
     """
     breakdown = RewardBreakdown()
-
     is_valid = _is_valid_action(
         context.position,
         context.action,
         short_allowed=short_allowed,
     )
-
-    base_reward: float | None = None
-    if not is_valid and not action_masking:
-        breakdown.invalid_penalty = _get_float_param(params, "invalid_action")
-        base_reward = breakdown.invalid_penalty
-
-    base_factor = _get_float_param(params, "base_factor", base_factor)
-
-    if "profit_aim" in params:
-        profit_aim = _get_float_param(params, "profit_aim", float(profit_aim))
-
-    if "risk_reward_ratio" in params:
-        risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
-    elif "rr" in params:
-        risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
-
-    pnl_target = float(profit_aim * risk_reward_ratio)
-
-    idle_factor = base_factor * (profit_aim / risk_reward_ratio)
-    hold_factor = idle_factor
-
-    max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
-    current_duration_ratio = _compute_duration_ratio(
-        context.trade_duration, max_trade_duration_candles
-    )
-
-    # Base reward calculation
-    if base_reward is None:
-        if context.action == Actions.Neutral:
-            if context.position == Positions.Neutral:
-                base_reward = _idle_penalty(context, idle_factor, params)
-                breakdown.idle_penalty = base_reward
-            elif context.position in (Positions.Long, Positions.Short):
-                base_reward = _hold_penalty(context, hold_factor, params)
-                breakdown.hold_penalty = base_reward
-            else:
-                base_reward = 0.0
-        else:
-            is_exit_action = (
-                context.action == Actions.Long_exit and context.position == Positions.Long
-            ) or (context.action == Actions.Short_exit and context.position == Positions.Short)
-            if is_exit_action:
-                base_reward = _compute_exit_reward(
-                    base_factor,
-                    pnl_target,
-                    current_duration_ratio,
-                    context,
-                    params,
-                    risk_reward_ratio,
-                )
-                breakdown.exit_component = base_reward
-            else:
-                base_reward = 0.0
-
-    breakdown.base_reward = float(base_reward)
-
-    # === PBRS INTEGRATION ===
-    current_pnl = context.current_pnl if context.position != Positions.Neutral else 0.0
-
+    breakdown.invalid_action = not is_valid
     next_position = _get_next_position(
-        context.position, context.action, short_allowed=short_allowed
+        context.position,
+        context.action,
+        short_allowed=short_allowed,
     )
     is_entry = context.position == Positions.Neutral and next_position in (
         Positions.Long,
         Positions.Short,
     )
-    is_exit = (
-        context.position
-        in (
-            Positions.Long,
-            Positions.Short,
-        )
-        and next_position == Positions.Neutral
+    is_exit = context.position in (Positions.Long, Positions.Short) and (
+        next_position == Positions.Neutral
     )
-    is_hold = context.position in (
-        Positions.Long,
-        Positions.Short,
-    ) and next_position in (Positions.Long, Positions.Short)
     is_neutral = context.position == Positions.Neutral and next_position == Positions.Neutral
+    base_factor = _get_float_param(params, "base_factor", base_factor)
+    if not np.isfinite(base_factor) or base_factor <= 0.0:
+        raise ValueError(f"Reward: invalid base_factor={base_factor!r}")
 
-    if is_entry:
-        next_duration_ratio = 0.0
-        if context.action == Actions.Long_enter:
-            next_pnl = _compute_unrealized_pnl_estimate(
-                Positions.Long,
-                entry_open=1.0,
-                current_open=1.0,
-                params=params,
-            )
-        elif context.action == Actions.Short_enter:
-            next_pnl = _compute_unrealized_pnl_estimate(
-                Positions.Short,
-                entry_open=1.0,
-                current_open=1.0,
-                params=params,
-            )
-        else:
-            next_pnl = current_pnl
-    elif is_hold:
-        next_duration_ratio = _compute_duration_ratio(
-            context.trade_duration, max_trade_duration_candles
+    previous_liquidation_value = float(context.previous_liquidation_value)
+    if not np.isfinite(previous_liquidation_value) or previous_liquidation_value <= 0.0:
+        raise ValueError(
+            "Reward: previous_liquidation_value must be finite and strictly positive, "
+            f"got {previous_liquidation_value!r}"
         )
-        # Optionally simulate unrealized PnL during holds to feed Φ(s)
-        if _get_bool_param(params, "unrealized_pnl", False):
-            center_unrealized = 0.5 * (
-                context.max_unrealized_profit + context.min_unrealized_profit
+    if context.next_pnl is not None:
+        observable_liquidation_value = (
+            1.0 + float(context.current_pnl)
+            if context.position in (Positions.Long, Positions.Short)
+            else 1.0
+        )
+        if (
+            not np.isfinite(observable_liquidation_value)
+            or observable_liquidation_value <= 0.0
+            or not np.isclose(
+                previous_liquidation_value,
+                observable_liquidation_value,
+                rtol=1e-10,
+                atol=1e-12,
             )
-            beta = _get_float_param(params, "pnl_amplification_sensitivity")
-            next_pnl = float(center_unrealized * math.tanh(beta * next_duration_ratio))
-        else:
-            next_pnl = current_pnl
-    elif is_exit:
-        next_pnl = 0.0
-        next_duration_ratio = 0.0
+        ):
+            raise ValueError(
+                "Reward: previous_liquidation_value must match the liquidation "
+                f"value observable in state s, got carry={previous_liquidation_value!r}, "
+                f"observable={observable_liquidation_value!r}"
+            )
+
+    if context.next_pnl is not None:
+        next_pnl = float(context.next_pnl)
+    elif is_entry:
+        pnl_estimator = (
+            _compute_unrealized_pnl_estimate
+            if _get_bool_param(params, "hold_potential_enabled")
+            else _compute_spot_local_trade_pnl_estimate
+        )
+        next_pnl = pnl_estimator(
+            next_position,
+            entry_open=1.0,
+            current_open=1.0,
+            params=params,
+        )
+    elif context.position in (Positions.Long, Positions.Short):
+        next_pnl = float(context.current_pnl)
     else:
-        next_pnl = current_pnl
-        next_duration_ratio = current_duration_ratio
+        next_pnl = 0.0
 
-    # Apply PBRS only if enabled and not neutral self-loop
-    exit_mode = _get_str_param(params, "exit_potential_mode")
+    if is_entry or context.position in (Positions.Long, Positions.Short):
+        reward_liquidation_value = 1.0 + next_pnl
+        next_liquidation_value = 1.0 if is_exit else reward_liquidation_value
+    else:
+        reward_liquidation_value = 1.0
+        next_liquidation_value = 1.0
 
-    hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
-    entry_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "entry_additive_enabled")
-    )
-    exit_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "exit_additive_enabled")
-    )
-
-    pbrs_enabled = bool(hold_potential_enabled or entry_additive_enabled or exit_additive_enabled)
-
-    if pbrs_enabled:
-        # Stored potential carried across steps.
-        prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
-
-        if is_neutral:
-            # Neutral self-loop keeps stored potential unchanged.
-            breakdown.prev_potential = prev_potential
-            breakdown.next_potential = prev_potential
-            breakdown.total = base_reward
-            return breakdown
-
-        reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive = (
-            compute_pbrs_components(
-                current_pnl=current_pnl,
-                pnl_target=pnl_target,
-                current_duration_ratio=current_duration_ratio,
-                next_pnl=next_pnl,
-                next_duration_ratio=next_duration_ratio,
-                is_exit=is_exit,
-                is_entry=is_entry,
-                prev_potential=prev_potential,
-                params=params,
-                risk_reward_ratio=risk_reward_ratio,
-                base_factor=base_factor,
-            )
+    if not np.isfinite(reward_liquidation_value):
+        raise ValueError(
+            f"Reward: reward_liquidation_value must be finite, got {reward_liquidation_value!r}"
         )
+    if reward_liquidation_value <= 0.0:
+        breakdown.economic_ruin = True
+        breakdown.terminated = True
+        reward_liquidation_value = MIN_LIQUIDATION_VALUE
+        if not is_exit:
+            next_liquidation_value = reward_liquidation_value
 
-        breakdown.reward_shaping = reward_shaping
-        breakdown.prev_potential = prev_potential
-        breakdown.next_potential = next_potential
-        breakdown.entry_additive = entry_additive
-        breakdown.exit_additive = exit_additive
-        breakdown.pbrs_delta = pbrs_delta
-        breakdown.invariance_correction = reward_shaping - pbrs_delta
-        breakdown.total = base_reward + reward_shaping + entry_additive + exit_additive
-        return breakdown
+    economic_component = base_factor * (
+        math.log(reward_liquidation_value) - math.log(previous_liquidation_value)
+    )
+    if not np.isfinite(economic_component):
+        raise RuntimeError("Reward: economic reward is not finite")
+    breakdown.economic_component = float(economic_component)
+    breakdown.previous_liquidation_value = previous_liquidation_value
+    breakdown.reward_liquidation_value = float(reward_liquidation_value)
+    breakdown.next_liquidation_value = float(next_liquidation_value)
+    if is_exit:
+        # Compatibility diagnostic: this is no longer a sparse exit reward.
+        breakdown.exit_component = float(economic_component)
+
+    if not is_valid and not action_masking:
+        breakdown.invalid_penalty = _get_float_param(params, "invalid_action")
+        if not np.isfinite(breakdown.invalid_penalty):
+            raise ValueError("Reward: invalid_action reward must be finite")
+
+    breakdown.base_reward = float(economic_component + breakdown.invalid_penalty)
+
+    if "profit_aim" in params:
+        profit_aim = _get_float_param(params, "profit_aim", float(profit_aim))
+    if "risk_reward_ratio" in params:
+        risk_reward_ratio = _get_float_param(
+            params,
+            "risk_reward_ratio",
+            float(risk_reward_ratio),
+        )
+    elif "rr" in params:
+        risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
 
     prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
     breakdown.prev_potential = prev_potential
     breakdown.next_potential = prev_potential
-    breakdown.total = base_reward
 
+    hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
+    if hold_potential_enabled:
+        gamma = _get_float_param(params, "potential_gamma", POTENTIAL_GAMMA_DEFAULT)
+        if not np.isfinite(gamma) or not (0.0 < gamma <= 1.0):
+            raise ValueError(
+                "Reward: potential_gamma must be finite and in (0, 1] when PBRS is active"
+            )
+        max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
+        current_duration_ratio = _compute_duration_ratio(
+            context.trade_duration,
+            max_trade_duration_candles,
+        )
+        next_trade_duration = (
+            context.next_trade_duration
+            if context.next_trade_duration is not None
+            else (0 if is_entry or is_exit else context.trade_duration)
+        )
+        next_duration_ratio = (
+            0.0
+            if is_exit
+            else _compute_duration_ratio(
+                next_trade_duration,
+                max_trade_duration_candles,
+            )
+        )
+        pnl_target = float(profit_aim * risk_reward_ratio)
+        if not np.isfinite(pnl_target) or pnl_target <= 0.0:
+            raise ValueError(
+                "Reward: profit_aim * risk_reward_ratio must be finite and positive "
+                "when PBRS is active"
+            )
+        if not is_neutral:
+            reward_shaping, next_potential, pbrs_delta, _, _ = compute_pbrs_components(
+                current_pnl=float(context.current_pnl),
+                pnl_target=pnl_target,
+                current_duration_ratio=current_duration_ratio,
+                next_pnl=0.0 if is_exit else next_pnl,
+                next_duration_ratio=next_duration_ratio,
+                is_exit=is_exit,
+                is_entry=is_entry,
+                prev_potential=prev_potential,
+                params={**params, "exit_potential_mode": "canonical"},
+                risk_reward_ratio=risk_reward_ratio,
+                base_factor=base_factor,
+            )
+            breakdown.reward_shaping = reward_shaping
+            breakdown.next_potential = next_potential
+            breakdown.pbrs_delta = pbrs_delta
+            breakdown.invariance_correction = reward_shaping - pbrs_delta
+
+    if breakdown.terminated:
+        terminal_reward_shaping = -prev_potential if hold_potential_enabled else 0.0
+        breakdown.reward_shaping = terminal_reward_shaping
+        breakdown.next_potential = 0.0
+        breakdown.pbrs_delta = terminal_reward_shaping
+        breakdown.invariance_correction = 0.0
+
+    breakdown.total = breakdown.base_reward + breakdown.reward_shaping
     return breakdown
 
 
@@ -1454,6 +1513,7 @@ _SAMPLE_DURATION_HAZARD_OVERTIME_MULTIPLIER = 4.0
 _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY = 0.9
 _SAMPLE_EXIT_PROBABILITY_MIN = 0.002
 _SAMPLE_EXIT_PROBABILITY_MAX = 0.2
+_SAMPLE_INVALID_ACTION_PROBABILITY = 0.05
 
 
 def _sampling_probabilities(
@@ -1504,6 +1564,7 @@ def _sample_action(
     max_trade_duration_candles: int,
     idle_duration: int,
     max_idle_duration_candles: int,
+    action_masking: bool = True,
 ) -> tuple[Actions, float, float, float]:
     entry_prob, exit_prob, neutral_prob = _sampling_probabilities(
         position,
@@ -1513,6 +1574,15 @@ def _sample_action(
         idle_duration=idle_duration,
         max_idle_duration_candles=max_idle_duration_candles,
     )
+
+    if not action_masking and rng.random() < _SAMPLE_INVALID_ACTION_PROBABILITY:
+        invalid_actions = [
+            action
+            for action in Actions
+            if not _is_valid_action(position, action, short_allowed=short_allowed)
+        ]
+        if invalid_actions:
+            return rng.choice(invalid_actions), entry_prob, exit_prob, neutral_prob
 
     if position == Positions.Neutral:
         if short_allowed:
@@ -1562,31 +1632,26 @@ def simulate_samples(
     """Simulate synthetic samples for reward analysis.
 
     The synthetic generator produces a *coherent trajectory* (state carried across samples)
-    so PJRS/PBRS stored-potential mechanics can be exercised realistically.
+    so liquidation-value and PBRS state can be exercised realistically.
 
-    Notes
-    -----
-    - PnL is a state variable while in position (may be non-zero on holds).
-    - Neutral states always have pnl=0.
-    - Realized PnL appears on the exit step (position still Long/Short).
+    Each row is one causal transition. The row state is marked at the previous
+    close, its action fills at the next open, and a position that remains open
+    is marked at that candle's close. An exit is liquidated at its fill open.
     """
 
     rng = random.Random(seed)
+    resolved_base_factor = _get_float_param(params, "base_factor", base_factor)
     max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
-
-    # Theoretical PBRS invariance flag
-    exit_mode = _get_str_param(params, "exit_potential_mode")
-    entry_enabled_raw = _get_bool_param(params, "entry_additive_enabled")
-    exit_enabled_raw = _get_bool_param(params, "exit_additive_enabled")
-
-    entry_enabled, exit_enabled, _additives_suppressed = _resolve_additive_enablement(
-        exit_mode,
-        entry_enabled_raw,
-        exit_enabled_raw,
+    pnl_estimator = (
+        _compute_unrealized_pnl_estimate
+        if _get_bool_param(params, "hold_potential_enabled")
+        else _compute_spot_local_trade_pnl_estimate
     )
-    pbrs_invariant = bool(exit_mode == "canonical" and not (entry_enabled or exit_enabled))
+
+    # The implemented shaping contract is canonical-only; additives are no-ops.
+    pbrs_invariant = True
 
     max_idle_duration_candles = get_max_idle_duration_candles(
         params, max_trade_duration_candles=max_trade_duration_candles
@@ -1595,6 +1660,8 @@ def simulate_samples(
 
     samples: list[dict[str, float]] = []
     prev_potential: float = 0.0
+    previous_liquidation_value: float = 1.0
+    cumulative_pair_log_return: float = 0.0
 
     # Stateful trajectory variables
     position = Positions.Neutral
@@ -1605,47 +1672,32 @@ def simulate_samples(
     min_unrealized_profit = 0.0
 
     # Synthetic market state
-    current_open = 1.0
-    entry_open = current_open
+    previous_close = 1.0
+    entry_open = previous_close
 
-    for _ in range(num_samples):
-        # Simulate synthetic open-price movement.
+    for sample_index in range(num_samples):
         duration_ratio = (
             _compute_duration_ratio(trade_duration, max_trade_duration_candles)
             if position in (Positions.Long, Positions.Short)
             else 0.0
         )
         open_return_std = pnl_base_std * (1.0 + pnl_duration_vol_scale * duration_ratio)
-        step_return = rng.gauss(0.0, open_return_std)
+        gap_return = rng.gauss(0.0, open_return_std * 0.5)
+        intrabar_return = rng.gauss(0.0, open_return_std * math.sqrt(0.75))
 
-        # Small directional drift so long/short trajectories are not perfectly symmetric
+        # Small directional drift so long/short trajectories are not perfectly symmetric.
         drift = 0.001 * duration_ratio
         if position == Positions.Long:
-            step_return += drift
+            intrabar_return += drift
         elif position == Positions.Short:
-            step_return -= drift
+            intrabar_return -= drift
 
-        if not np.isfinite(step_return):
-            step_return = 0.0
-        step_return = float(np.clip(step_return, -0.95, 0.95))
-
-        current_open = float(max(1e-6, current_open * (1.0 + step_return)))
-
-        # Compute fee-aware unrealized PnL from (entry_open, current_open)
-        if position in (Positions.Long, Positions.Short):
-            pnl = _compute_unrealized_pnl_estimate(
-                position,
-                entry_open=entry_open,
-                current_open=current_open,
-                params=params,
-            )
-            pnl = float(np.clip(pnl, -0.15, 0.15))
-            max_unrealized_profit = max(max_unrealized_profit, pnl)
-            min_unrealized_profit = min(min_unrealized_profit, pnl)
-        else:
-            pnl = 0.0
-            max_unrealized_profit = 0.0
-            min_unrealized_profit = 0.0
+        gap_return = float(np.clip(gap_return, -0.95, 0.95)) if np.isfinite(gap_return) else 0.0
+        intrabar_return = (
+            float(np.clip(intrabar_return, -0.95, 0.95)) if np.isfinite(intrabar_return) else 0.0
+        )
+        fill_open = float(max(1e-6, previous_close * (1.0 + gap_return)))
+        mark_close = float(max(1e-6, fill_open * (1.0 + intrabar_return)))
 
         action, sample_entry_prob, sample_exit_prob, sample_neutral_prob = _sample_action(
             position,
@@ -1655,7 +1707,46 @@ def simulate_samples(
             max_trade_duration_candles=max_trade_duration_candles,
             idle_duration=idle_duration,
             max_idle_duration_candles=max_idle_duration_candles,
+            action_masking=action_masking,
         )
+
+        next_position = _get_next_position(
+            position,
+            action,
+            short_allowed=short_allowed,
+        )
+        is_entry = position == Positions.Neutral and next_position in (
+            Positions.Long,
+            Positions.Short,
+        )
+        is_exit = position in (Positions.Long, Positions.Short) and (
+            next_position == Positions.Neutral
+        )
+        transition_entry_open = fill_open if is_entry else entry_open
+        if is_exit:
+            transition_pnl = pnl_estimator(
+                position,
+                entry_open=entry_open,
+                current_open=fill_open,
+                params=params,
+            )
+        elif next_position in (Positions.Long, Positions.Short):
+            transition_pnl = pnl_estimator(
+                next_position,
+                entry_open=transition_entry_open,
+                current_open=mark_close,
+                params=params,
+            )
+        else:
+            transition_pnl = 0.0
+        transition_pnl = float(transition_pnl)
+
+        if is_entry:
+            next_trade_duration = 1
+        elif next_position in (Positions.Long, Positions.Short):
+            next_trade_duration = min(trade_duration + 1, max_trade_duration_cap)
+        else:
+            next_trade_duration = 0
 
         context = RewardContext(
             current_pnl=pnl,
@@ -1665,6 +1756,9 @@ def simulate_samples(
             min_unrealized_profit=min_unrealized_profit,
             position=position,
             action=action,
+            previous_liquidation_value=previous_liquidation_value,
+            next_pnl=transition_pnl,
+            next_trade_duration=next_trade_duration,
         )
 
         breakdown = calculate_reward(
@@ -1678,11 +1772,19 @@ def simulate_samples(
             prev_potential=prev_potential,
         )
         prev_potential = breakdown.next_potential
+        previous_liquidation_value = breakdown.next_liquidation_value
+        if resolved_base_factor > 0.0:
+            cumulative_pair_log_return += breakdown.economic_component / resolved_base_factor
 
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
+        breakdown.truncated = bool(sample_index == num_samples - 1 and not breakdown.terminated)
         samples.append(
             {
                 "pnl": context.current_pnl,
+                "next_pnl": transition_pnl,
+                "previous_close": previous_close,
+                "fill_open": fill_open,
+                "mark_close": mark_close,
                 "trade_duration": context.trade_duration,
                 "idle_duration": context.idle_duration,
                 "duration_ratio": _compute_duration_ratio(
@@ -1696,6 +1798,7 @@ def simulate_samples(
                 "sample_exit_prob": sample_exit_prob,
                 "sample_neutral_prob": sample_neutral_prob,
                 "reward": breakdown.total,
+                "reward_economic": breakdown.economic_component,
                 "reward_invalid": breakdown.invalid_penalty,
                 "reward_idle": breakdown.idle_penalty,
                 "reward_hold": breakdown.hold_penalty,
@@ -1710,53 +1813,53 @@ def simulate_samples(
                 "reward_base": breakdown.base_reward,
                 "reward_pbrs_delta": breakdown.pbrs_delta,
                 "reward_invariance_correction": breakdown.invariance_correction,
-                "is_invalid": float(breakdown.invalid_penalty != 0.0),
+                "previous_liquidation_value": breakdown.previous_liquidation_value,
+                "reward_liquidation_value": breakdown.reward_liquidation_value,
+                "next_liquidation_value": breakdown.next_liquidation_value,
+                "economic_log_return": (
+                    breakdown.economic_component / resolved_base_factor
+                    if resolved_base_factor > 0.0
+                    else 0.0
+                ),
+                "cumulative_pair_log_return": cumulative_pair_log_return,
+                "synthetic_pair_equity": math.exp(cumulative_pair_log_return),
+                "economic_ruin": bool(breakdown.economic_ruin),
+                "terminated": bool(breakdown.terminated),
+                "truncated": bool(breakdown.truncated),
+                "drawdown_breached": np.nan,
+                "drawdown_breached_available": False,
+                "is_invalid": float(breakdown.invalid_action),
                 "pbrs_invariant": bool(pbrs_invariant),
             }
         )
 
-        # Transition state
-        if position == Positions.Neutral:
-            if action == Actions.Neutral:
-                idle_duration = min(idle_duration + 1, max_idle_duration_candles)
-            elif action == Actions.Long_enter:
-                position = Positions.Long
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Long,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
-            elif action == Actions.Short_enter and short_allowed:
-                position = Positions.Short
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Short,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
+        if breakdown.terminated:
+            break
+
+        # Carry the close-marked post-action state into the next observation.
+        previous_close = mark_close
+        if is_entry:
+            entry_open = fill_open
+            max_unrealized_profit = transition_pnl
+            min_unrealized_profit = transition_pnl
+        elif next_position in (Positions.Long, Positions.Short):
+            max_unrealized_profit = max(max_unrealized_profit, transition_pnl)
+            min_unrealized_profit = min(min_unrealized_profit, transition_pnl)
+        else:
+            max_unrealized_profit = 0.0
+            min_unrealized_profit = 0.0
+
+        if next_position == Positions.Neutral:
+            idle_duration = 0 if is_exit else min(idle_duration + 1, max_idle_duration_candles)
+            pnl = 0.0
         else:
             idle_duration = 0
-            if action == Actions.Neutral:
-                trade_duration = min(trade_duration + 1, max_trade_duration_cap)
-            elif action in (Actions.Long_exit, Actions.Short_exit):
-                position = Positions.Neutral
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
+            pnl = transition_pnl
+        position = next_position
+        trade_duration = next_trade_duration
 
     df = pd.DataFrame(samples)
-    df.attrs["reward_params"] = dict(params)
+    df.attrs["reward_params"] = {**params, "base_factor": resolved_base_factor}
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
@@ -1769,18 +1872,22 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
 
     eps_pnl = float(INTERNAL_GUARDS.get("sim_zero_pnl_epsilon", 1e-12))
     eps_reward = float(INTERNAL_GUARDS.get("sim_zero_reward_epsilon", 1e-12))
-    thr_extreme = float(INTERNAL_GUARDS.get("sim_extreme_pnl_threshold", 0.2))
+
+    for column in ("pnl", "next_pnl"):
+        if not np.isfinite(df[column].to_numpy(dtype=float)).all():
+            raise AssertionError(f"Sim: {column} contains a non-finite value")
 
     # INVARIANT 1: Action-position compatibility
-    long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
-    short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
+    valid_rows = df["is_invalid"] == 0.0
+    long_exits = df[valid_rows & (df["action"] == 2.0) & (df["position"] != 1.0)]
+    short_exits = df[valid_rows & (df["action"] == 4.0) & (df["position"] != 0.0)]
     if len(long_exits) > 0:
         raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
     if len(short_exits) > 0:
         raise AssertionError(f"Sim: {len(short_exits)} Short_exit actions without Short position")
 
-    long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
-    short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
+    long_entries = df[valid_rows & (df["action"] == 1.0) & (df["position"] != 0.5)]
+    short_entries = df[valid_rows & (df["action"] == 3.0) & (df["position"] != 0.5)]
     if len(long_entries) > 0:
         raise AssertionError(
             f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
@@ -1817,13 +1924,50 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
             f"Sim: {len(non_exit_with_exit_reward)} non-exit actions have non-zero exit reward"
         )
 
-    # INVARIANT 5: Bounded values
-    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]
-    if len(extreme_pnl) > 0:
-        max_abs_pnl = float(df["pnl"].abs().max())
-        raise AssertionError(
-            f"Sim: {len(extreme_pnl)} samples with extreme PnL, max |PnL| = {max_abs_pnl:.6f}"
-        )
+    # INVARIANT 5: liquidation values are positive and carried step-to-step.
+    liquidation_columns = [
+        "previous_liquidation_value",
+        "reward_liquidation_value",
+        "next_liquidation_value",
+    ]
+    for column in liquidation_columns:
+        values = df[column].to_numpy(dtype=float)
+        if not np.isfinite(values).all() or (values <= 0.0).any():
+            raise AssertionError(f"Sim: {column} contains a non-positive or non-finite value")
+    if len(df) > 1 and not np.allclose(
+        df["next_liquidation_value"].to_numpy(dtype=float)[:-1],
+        df["previous_liquidation_value"].to_numpy(dtype=float)[1:],
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise AssertionError("Sim: liquidation value was not carried across transitions")
+
+    # INVARIANT 6: economic reward is exactly the scaled log-liquidation delta.
+    reward_params = df.attrs.get("reward_params", {})
+    base_factor = _get_float_param(reward_params, "base_factor", 100.0)
+    expected_economic = base_factor * np.log(
+        df["reward_liquidation_value"] / df["previous_liquidation_value"]
+    )
+    if not np.allclose(
+        df["reward_economic"],
+        expected_economic,
+        rtol=1e-12,
+        atol=1e-12,
+    ):
+        raise AssertionError("Sim: economic reward does not match the log-liquidation formula")
+    expected_total = df["reward_economic"] + df["reward_invalid"] + df["reward_shaping"]
+    if not np.allclose(df["reward"], expected_total, rtol=1e-12, atol=1e-12):
+        raise AssertionError("Sim: total reward decomposition is inconsistent")
+
+    # INVARIANT 7: only economic ruin terminates; finite sample exhaustion truncates.
+    if not (df["terminated"] == df["economic_ruin"]).all():
+        raise AssertionError("Sim: termination must correspond exactly to economic ruin")
+    if bool(df["terminated"].any()) and not bool(df["terminated"].iloc[-1]):
+        raise AssertionError("Sim: trajectory continued after economic termination")
+    if bool(df["terminated"].iloc[-1]) and bool(df["truncated"].iloc[-1]):
+        raise AssertionError("Sim: terminal ruin cannot also be a truncation")
+    if not bool(df["terminated"].iloc[-1]) and not bool(df["truncated"].iloc[-1]):
+        raise AssertionError("Sim: non-terminal trajectory must end with truncation")
 
 
 def _compute_summary_stats(df: pd.DataFrame) -> dict[str, Any]:
@@ -1831,21 +1975,18 @@ def _compute_summary_stats(df: pd.DataFrame) -> dict[str, Any]:
     action_summary = df.groupby("action")["reward"].agg(["count", "mean", "std", "min", "max"])
     component_share = df[
         [
+            "reward_economic",
             "reward_invalid",
-            "reward_idle",
-            "reward_hold",
             "reward_exit",
             "reward_shaping",
-            "reward_entry_additive",
-            "reward_exit_additive",
         ]
     ].apply(lambda col: (col != 0).mean())
 
     components = [
+        "reward_economic",
         "reward_invalid",
-        "reward_idle",
-        "reward_hold",
         "reward_exit",
+        "reward_shaping",
         "reward",
     ]
     component_bounds = (
@@ -1919,8 +2060,8 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         pnl_max = pnl_min + 1e-6
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
-    idle_stats = _binned_stats(df, "idle_duration", "reward_idle", idle_bins)
-    hold_stats = _binned_stats(df, "trade_duration", "reward_hold", trade_bins)
+    idle_stats = _binned_stats(df, "idle_duration", "reward_economic", idle_bins)
+    hold_stats = _binned_stats(df, "trade_duration", "reward_economic", trade_bins)
     exit_stats = _binned_stats(df, "pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
@@ -1929,9 +2070,8 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
 
     requested_fields = [
         "reward",
+        "reward_economic",
         "reward_invalid",
-        "reward_idle",
-        "reward_hold",
         "reward_exit",
         "pnl",
         "trade_duration",
@@ -1980,8 +2120,12 @@ def _compute_representativity_stats(
     pnl_extreme = float((df["pnl"].abs() >= 0.14).mean())
 
     duration_overage_share = float((df["duration_ratio"] > 1.0).mean())
-    idle_activated = float((df["reward_idle"] != 0).mean())
-    hold_activated = float((df["reward_hold"] != 0).mean())
+    idle_activated = float(
+        ((df["position"] == Positions.Neutral.value) & (df["reward_economic"] != 0)).mean()
+    )
+    hold_activated = float(
+        ((df["position"] != Positions.Neutral.value) & (df["reward_economic"] != 0)).mean()
+    )
     exit_activated = float((df["reward_exit"] != 0).mean())
 
     return {
@@ -2318,6 +2462,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
 
     # Keep optional list stable and explicit
     numeric_optional = {
+        "reward_economic",
         "reward_exit",
         "reward_idle",
         "reward_hold",
@@ -2331,6 +2476,15 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
         "reward_exit_additive",
         "prev_potential",
         "next_potential",
+        "previous_liquidation_value",
+        "reward_liquidation_value",
+        "next_liquidation_value",
+        "economic_log_return",
+        "cumulative_pair_log_return",
+        "synthetic_pair_equity",
+        "economic_ruin",
+        "terminated",
+        "truncated",
         "is_invalid",
     }
 
@@ -2800,7 +2954,9 @@ def distribution_diagnostics(
 ) -> dict[str, Any]:
     """Return mapping col-> diagnostics (tests, moments, entropy, divergences).
 
-    Skips missing columns; selects Shapiro-Wilk when n<=5000 else K2; ignores non-finite intermediates.
+    Skips missing columns and selects Shapiro-Wilk when n<5000. Constant
+    distributions have no defined normality test and omit those results in
+    relaxed mode.
     """
     diagnostics = {}
     _ = seed  # placeholder to keep signature for future reproducibility extensions
@@ -2815,6 +2971,33 @@ def distribution_diagnostics(
 
         diagnostics[f"{col}_mean"] = float(np.mean(data))
         diagnostics[f"{col}_std"] = float(np.std(data, ddof=1))
+        if np.ptp(data) == 0:
+            message = (
+                f"Stats: Shapiro-Wilk and Anderson-Darling normality tests for {col} are undefined "
+                "(constant distribution); result unavailable"
+            )
+            if strict_diagnostics:
+                raise AssertionError(message)
+            diagnostics[f"{col}_skewness"] = INTERNAL_GUARDS.get(
+                "distribution_constant_fallback_moment", 0.0
+            )
+            diagnostics[f"{col}_kurtosis"] = INTERNAL_GUARDS.get(
+                "distribution_constant_fallback_moment", 0.0
+            )
+            diagnostics[f"{col}_shapiro_available"] = False
+            diagnostics[f"{col}_shapiro_reason"] = "constant_distribution"
+            diagnostics[f"{col}_anderson_available"] = False
+            diagnostics[f"{col}_anderson_reason"] = "constant_distribution"
+            diagnostics[f"{col}_qq_r_squared"] = INTERNAL_GUARDS.get(
+                "distribution_constant_fallback_qq_r2", 1.0
+            )
+            warnings.warn(
+                message,
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            continue
+
         skew_v = float(stats.skew(data))
         kurt_v = float(stats.kurtosis(data, fisher=True))
         diagnostics[f"{col}_skewness"] = skew_v
@@ -2828,6 +3011,7 @@ def distribution_diagnostics(
 
         if len(data) < 5000:
             sw_stat, sw_pval = stats.shapiro(data)
+            diagnostics[f"{col}_shapiro_available"] = True
             diagnostics[f"{col}_shapiro_stat"] = float(sw_stat)
             diagnostics[f"{col}_shapiro_pval"] = float(sw_pval)
             diagnostics[f"{col}_is_normal_shapiro"] = bool(sw_pval > 0.05)
@@ -3014,37 +3198,40 @@ def _get_potential_gamma(params: RewardParams) -> float:
 # === PBRS IMPLEMENTATION ===
 
 
-def _get_fee_rates(params: RewardParams) -> tuple[float, float]:
-    """Return clamped `(entry_fee_rate, exit_fee_rate)`.
+def _get_fee_rate(params: RewardParams) -> float:
+    """Return the unified fee used by Freqtrade's spot ``LocalTrade``.
 
-    Semantics follow Freqtrade's `BaseEnvironment` fee helpers:
-    - Entry fee is applied as multiplication: `price * (1 + entry_fee_rate)`.
-    - Exit fee is applied as division: `price / (1 + exit_fee_rate)`.
-
-    Notes:
-    - Supports two tunables (`entry_fee_rate`, `exit_fee_rate`).
-    - Missing/non-finite values fall back to the min bound (usually 0.0).
-    - Values are clamped to `_PARAMETER_BOUNDS`.
-
-    This function intentionally clamps (never raises) so callers do not need to
-    pre-run `validate_reward_parameters()`.
+    Runtime supplies the same pair-specific fee to ``LocalTrade.fee_open`` and
+    ``LocalTrade.fee_close``. ``entry_fee_rate`` and ``exit_fee_rate`` remain
+    accepted only as migration aliases. When asymmetric legacy values are
+    supplied, the larger value is used conservatively and a warning is emitted.
     """
 
-    raw_entry_fee_rate = _get_float_param(params, "entry_fee_rate")
-    raw_exit_fee_rate = _get_float_param(params, "exit_fee_rate")
+    if "fee_rate" in params:
+        raw_fee_rate = _get_float_param(params, "fee_rate")
+    else:
+        entry_fee_rate = _get_float_param(params, "entry_fee_rate", 0.0)
+        exit_fee_rate = _get_float_param(params, "exit_fee_rate", 0.0)
+        raw_fee_rate = max(entry_fee_rate, exit_fee_rate)
+        if not np.isclose(entry_fee_rate, exit_fee_rate):
+            warnings.warn(
+                "Param: asymmetric legacy fee rates cannot mirror Freqtrade; "
+                f"using conservative fee_rate={raw_fee_rate:.6g}",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
 
-    entry_fee_rate, _ = _clamp_float_to_bounds(
-        "entry_fee_rate",
-        float(raw_entry_fee_rate),
-        strict=False,
-    )
-    exit_fee_rate, _ = _clamp_float_to_bounds(
-        "exit_fee_rate",
-        float(raw_exit_fee_rate),
-        strict=False,
-    )
+    fee_rate = float(raw_fee_rate)
+    if not np.isfinite(fee_rate) or fee_rate < 0.0:
+        raise ValueError(f"Reward: fee_rate must be finite and non-negative, got {fee_rate!r}")
+    return fee_rate
 
-    return entry_fee_rate, exit_fee_rate
+
+def _get_fee_rates(params: RewardParams) -> tuple[float, float]:
+    """Return symmetric fee rates for backward-compatible helper callers."""
+
+    fee_rate = _get_fee_rate(params)
+    return fee_rate, fee_rate
 
 
 def _apply_entry_fee(price: float, entry_fee_rate: float) -> float:
@@ -3054,7 +3241,7 @@ def _apply_entry_fee(price: float, entry_fee_rate: float) -> float:
 def _apply_exit_fee(price: float, exit_fee_rate: float) -> float:
     denom = 1.0 + exit_fee_rate
     if denom <= 0.0 or not np.isfinite(denom):
-        return float(price)
+        raise ValueError(f"Reward: invalid exit fee denominator {denom!r}")
     return float(price / denom)
 
 
@@ -3065,45 +3252,57 @@ def _compute_unrealized_pnl_estimate(
     current_open: float,
     params: RewardParams,
 ) -> float:
-    """Estimate unrealized PnL using fee application parity with Freqtrade.
+    """Retain the historical BaseEnvironment estimate for analytical PBRS.
 
-    Long:
-        entry_price = entry_open * (1 + entry_fee_rate)
-        current_price = current_open / (1 + exit_fee_rate)
-        pnl = (current_price - entry_price) / entry_price
-
-    Short:
-        entry_price = entry_open / (1 + exit_fee_rate)
-        current_price = current_open * (1 + entry_fee_rate)
-        pnl = (entry_price - current_price) / entry_price
+    This helper is compatibility-only and is selected only when the
+    non-promotable ``hold_potential_enabled`` mode is active. Promotable
+    analysis uses ``_compute_spot_local_trade_pnl_estimate``.
     """
 
     if position not in (Positions.Long, Positions.Short):
         return 0.0
 
     if not np.isfinite(entry_open) or entry_open <= 0.0:
-        return 0.0
+        raise ValueError(f"Reward: entry_open must be finite and positive, got {entry_open!r}")
     if not np.isfinite(current_open) or current_open <= 0.0:
-        return 0.0
+        raise ValueError(f"Reward: current_open must be finite and positive, got {current_open!r}")
 
     entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
 
     if position == Positions.Long:
         current_price = _apply_exit_fee(current_open, exit_fee_rate)
         entry_price = _apply_entry_fee(entry_open, entry_fee_rate)
-        if entry_price == 0.0 or not np.isfinite(entry_price):
-            return 0.0
+        if entry_price <= 0.0 or not np.isfinite(entry_price):
+            raise ValueError(f"Reward: invalid long entry price {entry_price!r}")
         pnl = (current_price - entry_price) / entry_price
     else:
         current_price = _apply_entry_fee(current_open, entry_fee_rate)
         entry_price = _apply_exit_fee(entry_open, exit_fee_rate)
-        if entry_price == 0.0 or not np.isfinite(entry_price):
-            return 0.0
+        if entry_price <= 0.0 or not np.isfinite(entry_price):
+            raise ValueError(f"Reward: invalid short entry price {entry_price!r}")
         pnl = (entry_price - current_price) / entry_price
 
     if not np.isfinite(pnl):
-        return 0.0
+        raise ValueError(f"Reward: unrealized PnL is not finite: {pnl!r}")
     return float(pnl)
+
+
+def _compute_spot_local_trade_pnl_estimate(
+    position: Positions,
+    *,
+    entry_open: float,
+    current_open: float,
+    params: RewardParams,
+) -> float:
+    """Mirror ``LocalTrade.calc_profit_ratio`` for spot leverage-one analysis."""
+    long_weight = float(position.value)
+    direction = 2.0 * long_weight - 1.0
+    fee_rate = _get_fee_rate(params)
+    open_trade_value = entry_open * (1.0 + direction * fee_rate)
+    close_trade_value = current_open * (1.0 - direction * fee_rate)
+    mark_ratio = close_trade_value / open_trade_value
+    pnl = long_weight * (mark_ratio - 1.0) + (1.0 - long_weight) * (1.0 - mark_ratio)
+    return float(f"{pnl:.8f}") + 0.0
 
 
 def _loss_duration_multiplier(pnl_ratio: float, risk_reward_ratio: float) -> float:
@@ -3193,49 +3392,18 @@ def _compute_exit_additive(
 
 
 def _compute_exit_potential(prev_potential: float, params: RewardParams) -> float:
-    """Exit potential per mode (canonical/non_canonical -> 0; others transform Φ(prev))."""
+    """Release all potential at exit as required by canonical PBRS."""
     mode = _get_str_param(params, "exit_potential_mode")
-    if mode == "canonical" or mode == "non_canonical":
-        return _fail_safely("canonical_exit_potential")
-
-    if mode == "progressive_release":
-        decay = _get_float_param(params, "exit_potential_decay")
-        if not np.isfinite(decay) or decay < 0.0:
-            warnings.warn(
-                f"PBRS: exit_potential_decay={decay} invalid or < 0; falling back to 0.0",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
-            )
-            decay = 0.0
-        if decay > 1.0:
-            warnings.warn(
-                f"PBRS: exit_potential_decay={decay} > 1; falling back to 1.0",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
-            )
-            decay = 1.0
-        next_potential = prev_potential * (1.0 - decay)
-    elif mode == "spike_cancel":
-        gamma = _get_potential_gamma(params)
-        if gamma <= 0.0 or not np.isfinite(gamma):
-            next_potential = prev_potential
-        else:
-            next_potential = prev_potential / gamma
-    elif mode == "retain_previous":
-        next_potential = prev_potential
-    else:
+    if mode != "canonical":
         _warn_unknown_mode(
             "exit_potential_mode",
             mode,
             sorted(ALLOWED_EXIT_POTENTIAL_MODES),
-            "canonical (via _fail_safely)",
+            "canonical",
             stacklevel=2,
         )
-        next_potential = _fail_safely("invalid_exit_potential_mode")
-
-    if not np.isfinite(next_potential):
-        next_potential = _fail_safely("non_finite_next_exit_potential")
-    return float(next_potential)
+    _ = prev_potential
+    return 0.0
 
 
 def compute_pbrs_components(
@@ -3265,7 +3433,7 @@ def compute_pbrs_components(
     R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
 
     where:
-        Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
+        Delta(s,a,s') = gamma * Phi(s') - Phi(s)  (PBRS shaping term)
 
     Hold Potential Formula
     ----------------------
@@ -3285,8 +3453,8 @@ def compute_pbrs_components(
     tuple[float, float, float, float, float]
         (reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive)
 
-        - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
-        - next_potential: Φ(s'), the potential function value for next state
+        - reward_shaping: Delta(s,a,s') = gamma * Phi(s') - Phi(s), the PBRS shaping term
+        - next_potential: Phi(s'), the potential function value for next state
         - pbrs_delta: Same as reward_shaping (kept for backward compatibility)
         - entry_additive: Optional non-PBRS entry bonus (0.0 if disabled or not entry)
         - exit_additive: Optional non-PBRS exit bonus (0.0 if disabled or not exit)
@@ -3589,7 +3757,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Enable fail-fast mode for statistical diagnostics: raise on zero-width bootstrap CIs or undefined "
-            "skewness/kurtosis/Anderson/Q-Q metrics produced by constant distributions instead of applying graceful replacements."
+            "Shapiro-Wilk/skewness/kurtosis/Anderson/Q-Q metrics produced by constant distributions instead of applying graceful replacements."
         ),
     )
     parser.add_argument(
@@ -3612,7 +3780,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--unrealized_pnl",
         action="store_true",
-        help="Simulate unrealized PnL during holds to feed Φ(s) (optional; default: disabled).",
+        help=(
+            "Deprecated compatibility alias; emits a warning and is ignored because "
+            "analytical trajectories are always fee-aware marked-to-liquidation."
+        ),
     )
     return parser
 
@@ -3741,8 +3912,7 @@ def write_complete_statistical_analysis(
     hypothesis_tests = statistical_hypothesis_tests(df, adjust_method=adjust_method, seed=test_seed)
     metrics_for_ci = [
         "reward",
-        "reward_idle",
-        "reward_hold",
+        "reward_economic",
         "reward_exit",
         "pnl",
     ]
@@ -3768,6 +3938,8 @@ def write_complete_statistical_analysis(
     if real_df is not None:
         distribution_shift = compute_distribution_shift_metrics(df, real_df)
 
+    pbrs_footer_summary = "Unverified (PBRS diagnostics unavailable)"
+
     # Write comprehensive report
     with report_path.open("w", encoding="utf-8") as f:
         # Header
@@ -3778,6 +3950,15 @@ def write_complete_statistical_analysis(
         f.write(f"| Generated | {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} |\n")
         f.write(f"| Total Samples | {len(df):,} |\n")
         f.write(f"| Random Seed | {seed} |\n")
+        f.write("| Reward Contract | pair-local net log liquidation return |\n")
+        f.write(f"| Unified Fee Rate | {_get_fee_rate(reward_params):.6f} |\n")
+        f.write(
+            "| Fee Source | analytical assumption; replace with effective runtime fee for exact parity |\n"
+        )
+        f.write("| Costs Excluded | spread, slippage, funding, latency, market impact |\n")
+        f.write("| True Termination | economic ruin only |\n")
+        f.write("| Sample-Limit End | truncation; PBRS potential preserved for bootstrap |\n")
+        f.write("| Drawdown Diagnostic | unavailable in analytical simulation |\n")
         # Blank separator to visually group core simulation vs PBRS parameters
         f.write("|  |  |\n")
         # Core PBRS parameters exposed in run configuration if present
@@ -3847,13 +4028,10 @@ def write_complete_statistical_analysis(
         ]
         # Enforce deterministic logical ordering of components if present
         preferred_order = [
+            "reward_economic",
             "reward_invalid",
-            "reward_idle",
-            "reward_hold",
             "reward_exit",
             "reward_shaping",
-            "reward_entry_additive",
-            "reward_exit_additive",
         ]
         for comp in preferred_order:
             if comp in comp_share.index:
@@ -3905,9 +4083,11 @@ def write_complete_statistical_analysis(
         f.write("### 2.4 Component Activation Rates\n\n")
         f.write("| Component | Activation Rate |\n")
         f.write("|-----------|----------------|\n")
-        f.write(f"| Idle penalty | {representativity_stats['idle_activated']:.1%} |\n")
-        f.write(f"| Hold penalty | {representativity_stats['hold_activated']:.1%} |\n")
-        f.write(f"| Exit reward | {representativity_stats['exit_activated']:.1%} |\n")
+        f.write(f"| Neutral economic return | {representativity_stats['idle_activated']:.1%} |\n")
+        f.write(
+            f"| In-position economic return | {representativity_stats['hold_activated']:.1%} |\n"
+        )
+        f.write(f"| Exit economic return | {representativity_stats['exit_activated']:.1%} |\n")
         f.write("\n")
 
         # Section 3: Reward Component Relationships
@@ -3915,7 +4095,7 @@ def write_complete_statistical_analysis(
         f.write("## 3. Reward Component Analysis\n\n")
         f.write("Analysis of how reward components behave under different conditions.\n\n")
 
-        f.write("### 3.1 Idle Penalty vs Duration\n\n")
+        f.write("### 3.1 Neutral Economic Return vs Idle Duration\n\n")
         if relationship_stats["idle_stats"].empty:
             f.write("_No idle samples present._\n\n")
         else:
@@ -3924,7 +4104,7 @@ def write_complete_statistical_analysis(
                 idle_df.index.name = "bin"
             f.write(_df_to_md(idle_df, index_name=idle_df.index.name, ndigits=6))
 
-        f.write("### 3.2 Hold Penalty vs Trade Duration\n\n")
+        f.write("### 3.2 Economic Return vs Trade Duration\n\n")
         if relationship_stats["hold_stats"].empty:
             f.write("_No hold samples present._\n\n")
         else:
@@ -3933,7 +4113,7 @@ def write_complete_statistical_analysis(
                 hold_df.index.name = "bin"
             f.write(_df_to_md(hold_df, index_name=hold_df.index.name, ndigits=6))
 
-        f.write("### 3.3 Exit Reward vs PnL\n\n")
+        f.write("### 3.3 Exit Economic Return vs PnL\n\n")
         if relationship_stats["exit_stats"].empty:
             f.write("_No exit samples present._\n\n")
         else:
@@ -3977,10 +4157,10 @@ def write_complete_statistical_analysis(
                 f"| Shaping (Φ) | {pbrs_activation['shaping']:.1%} | Potential-based reward shaping |\n"
             )
             f.write(
-                f"| Entry Additive | {pbrs_activation['entry_additive']:.1%} | Non-PBRS entry reward |\n"
+                f"| Entry Additive | {pbrs_activation['entry_additive']:.1%} | Deprecated compatibility field (always zero) |\n"
             )
             f.write(
-                f"| Exit Additive | {pbrs_activation['exit_additive']:.1%} | Non-PBRS exit reward |\n"
+                f"| Exit Additive | {pbrs_activation['exit_additive']:.1%} | Deprecated compatibility field (always zero) |\n"
             )
             f.write("\n")
 
@@ -4053,82 +4233,100 @@ def write_complete_statistical_analysis(
             (
                 entry_additive_effective,
                 exit_additive_effective,
-                additives_suppressed,
+                _additives_suppressed,
             ) = _resolve_additive_enablement(
                 exit_potential_mode,
                 entry_additive_enabled_raw,
                 exit_additive_enabled_raw,
             )
 
-            # True PBRS invariance classification:
-            # - Canonical requires canonical mode AND no effective additives.
-            # - When `reward_invariance_correction` is present, we use it as the primary
-            #   diagnostic (reward_shaping - reward_pbrs_delta).
-            # - Otherwise, we fall back to the weaker heuristic |Σ shaping| ≈ 0.
-            is_theoretically_invariant = exit_potential_mode == "canonical" and not (
-                entry_additive_effective or exit_additive_effective
+            # Theoretical eligibility comes from configuration. Numerical
+            # verification then requires the term-by-term PBRS correction.
+            config_is_canonical = exit_potential_mode == "canonical" and not (
+                entry_additive_enabled_raw or exit_additive_enabled_raw
             )
 
-            has_inv_correction = "reward_invariance_correction" in df.columns
-            max_abs_inv_correction: float | None
-            if has_inv_correction:
-                max_abs_inv_correction = float(df["reward_invariance_correction"].abs().max())
-                correction_near_zero = max_abs_inv_correction < PBRS_INVARIANCE_TOL
-            else:
-                max_abs_inv_correction = None
-                correction_near_zero = None
-            shaping_near_zero = abs(total_shaping) < PBRS_INVARIANCE_TOL
+            correction_series = (
+                pd.to_numeric(df["reward_invariance_correction"], errors="coerce")
+                if "reward_invariance_correction" in df.columns
+                else None
+            )
+            correction_is_available = bool(
+                correction_series is not None
+                and len(correction_series) == len(df)
+                and correction_series.notna().all()
+            )
+            max_abs_inv_correction: float | None = None
+            if correction_is_available and correction_series is not None:
+                max_abs_inv_correction = float(correction_series.abs().max())
 
-            suppression_note = ""
-            if additives_suppressed:
-                suppression_note = (
-                    " Additives are suppressed in canonical mode"
-                    f" (requested entry_additive_enabled={bool(entry_additive_enabled_raw)},"
-                    f" exit_additive_enabled={bool(exit_additive_enabled_raw)})."
+            potential_gamma = _get_potential_gamma(reward_params)
+            shaping_values = pd.to_numeric(df["reward_shaping"], errors="coerce").to_numpy(
+                dtype=float
+            )
+            discounted_shaping_sum: float | None = None
+            pbrs_boundary_term: float | None = None
+            pbrs_telescoping_residual: float | None = None
+            if np.isfinite(shaping_values).all() and len(shaping_values) > 0:
+                discounts = np.power(potential_gamma, np.arange(len(shaping_values), dtype=float))
+                discounted_shaping_sum = float(np.dot(discounts, shaping_values))
+                if all(column in df.columns for column in ("prev_potential", "next_potential")):
+                    initial_potential = float(df["prev_potential"].iloc[0])
+                    final_potential = float(df["next_potential"].iloc[-1])
+                    if np.isfinite(initial_potential) and np.isfinite(final_potential):
+                        pbrs_boundary_term = float(
+                            -initial_potential
+                            + math.pow(potential_gamma, len(shaping_values)) * final_potential
+                        )
+                        pbrs_telescoping_residual = discounted_shaping_sum - pbrs_boundary_term
+
+            final_terminated = bool(df.get("terminated", pd.Series([False])).iloc[-1])
+            final_truncated = bool(df.get("truncated", pd.Series([False])).iloc[-1])
+            if final_terminated:
+                boundary_note = "True termination: Phi(final)=0 is required."
+            elif final_truncated:
+                boundary_note = (
+                    "Truncation: Phi(final) is preserved for value-function bootstrap; "
+                    "a non-zero boundary term is expected."
                 )
-
-            # Prepare invariance summary markdown block
-            if is_theoretically_invariant:
-                if correction_near_zero is True:
-                    invariance_status = "✅ Canonical"
-                    invariance_note = (
-                        "Theoretical invariance preserved (canonical mode, no additives, max|correction|≈0)."
-                        + suppression_note
-                    )
-                elif correction_near_zero is False:
-                    invariance_status = "⚠️ Canonical (with warning)"
-                    invariance_note = (
-                        "Canonical mode but invariance correction is non-zero"
-                        f" (max|correction|={max_abs_inv_correction:.6e})." + suppression_note
-                    )
-                else:
-                    # Fallback: without invariance correction, use Σ shaping as a heuristic.
-                    if shaping_near_zero:
-                        invariance_status = "✅ Canonical"
-                        invariance_note = (
-                            "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)."
-                            + suppression_note
-                        )
-                    else:
-                        invariance_status = "⚠️ Canonical (with warning)"
-                        invariance_note = (
-                            "Canonical mode but Σ shaping is non-zero"
-                            f" (Σ={total_shaping:.6f}; correction column unavailable)."
-                            + suppression_note
-                        )
             else:
-                invariance_status = "❌ Non-canonical"
+                boundary_note = "Episode boundary is unavailable in this dataset."
+
+            if not config_is_canonical:
+                invariance_status = "❌ Ineligible configuration"
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
-                if entry_additive_effective or exit_additive_effective:
-                    additive_types = []
-                    if entry_additive_effective:
-                        additive_types.append("entry")
-                    if exit_additive_effective:
-                        additive_types.append("exit")
-                    reasons.append(f"additives={additive_types}")
-                invariance_note = f"Modified for flexibility: {', '.join(reasons)}"
+                if entry_additive_enabled_raw:
+                    reasons.append("entry_additive_enabled=True")
+                if exit_additive_enabled_raw:
+                    reasons.append("exit_additive_enabled=True")
+                invariance_note = "PBRS invariance is not eligible: " + ", ".join(reasons)
+            elif not correction_is_available:
+                invariance_status = "⚪ Unverified"
+                invariance_note = (
+                    "Configuration is canonical with no additives, but the term-by-term "
+                    "invariance correction is unavailable. The raw shaping sum is not a classifier."
+                )
+            elif (
+                max_abs_inv_correction is not None and max_abs_inv_correction < PBRS_INVARIANCE_TOL
+            ):
+                if _get_bool_param(reward_params, "hold_potential_enabled", False):
+                    invariance_status = "✅ Canonical verified"
+                else:
+                    invariance_status = "✅ PBRS disabled; invariant"
+                invariance_note = (
+                    "Canonical configuration, no additives, and "
+                    "max|reward_shaping - reward_pbrs_delta| is within tolerance. " + boundary_note
+                )
+            else:
+                invariance_status = "❌ Canonical contract violation"
+                invariance_note = (
+                    "Configuration is canonical, but the term-by-term invariance correction "
+                    f"exceeds tolerance (max={max_abs_inv_correction:.6e}). " + boundary_note
+                )
+
+            pbrs_footer_summary = invariance_status
             # Summarize PBRS invariance
             f.write("**PBRS Invariance Summary:**\n\n")
             f.write("| Field | Value |\n")
@@ -4140,8 +4338,33 @@ def write_complete_statistical_analysis(
             f.write(f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw)} |\n")
             f.write(f"| Entry Additive Effective | {bool(entry_additive_effective)} |\n")
             f.write(f"| Exit Additive Effective | {bool(exit_additive_effective)} |\n")
-            f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
-            f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
+            f.write(f"| Raw Σ Shaping Reward (descriptive only) | {total_shaping:.6f} |\n")
+            f.write(f"| Abs Raw Σ Shaping (not a classifier) | {abs(total_shaping):.6e} |\n")
+            f.write(f"| Discount Gamma | {potential_gamma:.8f} |\n")
+            f.write(
+                "| Discounted Σ gamma^t Shaping | "
+                + (
+                    f"{discounted_shaping_sum:.6f}"
+                    if discounted_shaping_sum is not None
+                    else "unavailable"
+                )
+                + " |\n"
+            )
+            f.write(
+                "| PBRS Boundary -Phi(0)+gamma^T Phi(T) | "
+                + (f"{pbrs_boundary_term:.6f}" if pbrs_boundary_term is not None else "unavailable")
+                + " |\n"
+            )
+            f.write(
+                "| Discounted Telescoping Residual | "
+                + (
+                    f"{pbrs_telescoping_residual:.6e}"
+                    if pbrs_telescoping_residual is not None
+                    else "unavailable"
+                )
+                + " |\n"
+            )
+            f.write(f"| Episode Boundary | {boundary_note} |\n")
             f.write(f"| Σ Entry Additive | {entry_add_total:.6f} |\n")
             f.write(f"| Σ Exit Additive | {exit_add_total:.6f} |\n\n")
 
@@ -4275,7 +4498,11 @@ def write_complete_statistical_analysis(
                         f.write(f"| Std Dev | {dist_diagnostics[f'{col}_std']:.4f} |\n")
                         f.write(f"| Skewness | {dist_diagnostics[f'{col}_skewness']:.4f} |\n")
                         f.write(f"| Kurtosis | {dist_diagnostics[f'{col}_kurtosis']:.4f} |\n")
-                        if f"{col}_shapiro_pval" in dist_diagnostics:
+                        if dist_diagnostics.get(f"{col}_shapiro_available") is False:
+                            reason = dist_diagnostics.get(f"{col}_shapiro_reason", "unavailable")
+                            reason_label = str(reason).replace("_", " ")
+                            f.write(f"| Normal? (Shapiro-Wilk) | N/A ({reason_label}) |\n")
+                        elif f"{col}_shapiro_pval" in dist_diagnostics:
                             is_normal = (
                                 "✅ Yes"
                                 if dist_diagnostics[f"{col}_is_normal_shapiro"]
@@ -4285,7 +4512,11 @@ def write_complete_statistical_analysis(
                                 f"| Normal? (Shapiro-Wilk) | {is_normal} (p={dist_diagnostics[f'{col}_shapiro_pval']:.4e}) |\n"
                             )
                         # Anderson-Darling diagnostics
-                        if f"{col}_anderson_stat" in dist_diagnostics:
+                        if dist_diagnostics.get(f"{col}_anderson_available") is False:
+                            reason = dist_diagnostics.get(f"{col}_anderson_reason", "unavailable")
+                            reason_label = str(reason).replace("_", " ")
+                            f.write(f"| Normal? (Anderson-Darling) | N/A ({reason_label}) |\n")
+                        elif f"{col}_anderson_stat" in dist_diagnostics:
                             f.write(
                                 f"| Anderson-Darling stat | {dist_diagnostics[f'{col}_anderson_stat']:.4f} |\n"
                             )
@@ -4357,24 +4588,7 @@ def write_complete_statistical_analysis(
         else:
             f.write("6. **Distribution Shift** - Not performed (no real episodes provided)\n")
         if "reward_shaping" in df.columns:
-            _total_shaping = float(df["reward_shaping"].sum())
-            if "reward_invariance_correction" in df.columns:
-                _max_abs_corr = float(df["reward_invariance_correction"].abs().max())
-                _canonical = _max_abs_corr < PBRS_INVARIANCE_TOL
-                _pbrs_summary = (
-                    "Canonical (max|correction| ≈ 0)"
-                    if _canonical
-                    else f"Canonical (with warning; max|correction|={_max_abs_corr:.6e})"
-                )
-            else:
-                _canonical = abs(_total_shaping) < PBRS_INVARIANCE_TOL
-                _pbrs_summary = (
-                    "Canonical (Σ shaping ≈ 0)"
-                    if _canonical
-                    else f"Canonical (with warning; Σ shaping={_total_shaping:.6f})"
-                )
-
-            f.write("7. **PBRS Invariance** - " + _pbrs_summary + "\n")
+            f.write("7. **PBRS Invariance** - " + pbrs_footer_summary + "\n")
         f.write("\n")
         f.write("**Generated Files:**\n")
         f.write("- `reward_samples.csv` - Raw synthetic samples\n")
@@ -4393,8 +4607,24 @@ def main() -> None:
     for key, value in vars(args).items():
         if key in _tunable_keys and value is not None:
             params[key] = value
-    # Then apply --params KEY=VALUE overrides (highest precedence)
-    params.update(parse_overrides(args.params))
+    # Then apply --params KEY=VALUE overrides (highest precedence).
+    overrides = parse_overrides(args.params)
+    unrealized_pnl_requested = bool(args.unrealized_pnl)
+    if "unrealized_pnl" in overrides:
+        unrealized_pnl_requested = True
+        overrides.pop("unrealized_pnl")
+    if unrealized_pnl_requested:
+        warnings.warn(
+            "CLI: --unrealized_pnl / unrealized_pnl parameter is deprecated and "
+            "ignored; analytical trajectories are always fee-aware "
+            "marked-to-liquidation",
+            RewardDiagnosticsWarning,
+            stacklevel=2,
+        )
+    params.update(overrides)
+    # Hybrid scalars are needed during conditional PBRS validation.
+    params.setdefault("profit_aim", float(args.profit_aim))
+    params.setdefault("risk_reward_ratio", float(args.risk_reward_ratio))
 
     params_validated, adjustments = validate_reward_parameters(
         params, strict=args.strict_validation
@@ -4421,7 +4651,6 @@ def main() -> None:
         params["action_masking"] = _to_bool(params["action_masking"])
     else:
         params["action_masking"] = cli_action_masking
-    params["unrealized_pnl"] = bool(getattr(args, "unrealized_pnl", False))
     # Propagate strict flag into params for downstream runtime guards
     params["strict_validation"] = bool(getattr(args, "strict_validation", True))
 
@@ -4449,10 +4678,16 @@ def main() -> None:
         "position",
         "action",
         "reward",
+        "reward_economic",
         "reward_invalid",
-        "reward_idle",
-        "reward_hold",
         "reward_exit",
+        "previous_liquidation_value",
+        "reward_liquidation_value",
+        "next_liquidation_value",
+        "synthetic_pair_equity",
+        "economic_ruin",
+        "terminated",
+        "truncated",
     ]
     nan_issues = {
         c: int(df[c].isna().sum()) for c in critical_cols if c in df.columns and df[c].isna().any()
@@ -4490,7 +4725,6 @@ def main() -> None:
         "bootstrap_resamples",
         "pvalue_adjust",
         "real_episodes",
-        "unrealized_pnl",
         "action_masking",
     ]
 
@@ -4549,11 +4783,73 @@ def main() -> None:
         resolved_reward_params: dict[str, Any] = dict(
             params
         )  # already validated/normalized upstream
+        legacy_pbrs_fee_compatibility = _get_bool_param(
+            params,
+            "hold_potential_enabled",
+        )
         manifest: dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": len(df),
             "seed": int(args.seed),
-            "pnl_target": float(profit_aim * risk_reward_ratio),
+            "reward_contract": {
+                "name": "pair_local_net_log_liquidation_return",
+                "version": 2,
+                "formula": "base_factor * log(reward_liquidation_value / previous_liquidation_value)",
+                "pbrs_mode": "canonical"
+                if _get_bool_param(params, "hold_potential_enabled")
+                else "disabled",
+                "promotion_eligible": not any(
+                    _get_bool_param(params, key)
+                    for key in (
+                        "hold_potential_enabled",
+                        "entry_additive_enabled",
+                        "exit_additive_enabled",
+                    )
+                ),
+                "clock": {
+                    "state": "previous_close",
+                    "action_fill": "next_open",
+                    "retained_position_mark": "next_close",
+                    "exit_mark": "next_open",
+                },
+            },
+            "cost_accounting": {
+                "fee_rate": _get_fee_rate(params),
+                "fee_source": "analytical_assumption",
+                "default_basis": (
+                    "legacy BaseEnvironment analytical PBRS compatibility"
+                    if legacy_pbrs_fee_compatibility
+                    else "Freqtrade LocalTrade spot leverage=1"
+                ),
+                "exact_runtime_parity_requires_effective_fee": True,
+                "fee_application": (
+                    "legacy entry multiplication and exit division"
+                    if legacy_pbrs_fee_compatibility
+                    else "LocalTrade.calc_profit_ratio open/close values"
+                ),
+                "pnl_rounding_decimals": (None if legacy_pbrs_fee_compatibility else 8),
+                "runtime_object_lifetime": "one unregistered LocalTrade per open position",
+                "analytical_pbrs_compatibility": (
+                    "legacy BaseEnvironment division estimate"
+                    if legacy_pbrs_fee_compatibility
+                    else "disabled"
+                ),
+                "included": ["simulated_entry_fee", "simulated_exit_fee"],
+                "excluded": ["spread", "slippage", "funding", "latency", "market_impact"],
+            },
+            "episode_boundaries": {
+                "termination": "economic_ruin",
+                "truncation": "synthetic_sample_limit",
+                "pbrs_on_termination": "potential_released_to_zero",
+                "pbrs_on_truncation": "potential_preserved_for_bootstrap",
+                "drawdown_breached": "unavailable_in_analytical_simulation",
+            },
+            "compatibility_only": {
+                "pnl_target": float(profit_aim * risk_reward_ratio),
+                "deprecated_reward_parameters": sorted(
+                    key for key in DEPRECATED_REWARD_PARAMETERS if key in params
+                ),
+            },
             "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
