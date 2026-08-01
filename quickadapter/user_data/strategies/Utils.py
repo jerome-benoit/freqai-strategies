@@ -5230,6 +5230,7 @@ def fit_regressor(
             if early_stopping_rounds is not None and has_eval_set
             else False,
             callbacks=fit_callbacks if fit_callbacks else None,
+            init_model=init_model,
         )
 
         if pruning_callback is not None:
