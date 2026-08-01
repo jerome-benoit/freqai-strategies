@@ -1338,7 +1338,7 @@ def _get_label_config(
         ignored_keys = sorted(config.keys() - {"default", "columns"})
         if ignored_keys:
             logger.warning(
-                f"{config_name} uses per-label configuration: ignoring sibling keys {ignored_keys!r}"
+                f"{config_name} uses per-label format, ignoring sibling flat keys {ignored_keys!r}"
             )
 
         default_config = config.get("default", {})
