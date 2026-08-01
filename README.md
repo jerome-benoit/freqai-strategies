@@ -164,7 +164,7 @@ configuration and may override them.
 
 The `label_weighting`, `label_smoothing`, `label_pipeline` and
 `label_prediction` sections accept either the flat paths listed above or a
-per-label form using `default` and `columns.<glob>`. Do not mix both forms in
+per-label format using `default` and `columns.<glob>`. Do not mix both formats in
 one section: once `default` or `columns` is present, sibling flat keys are
 ignored with a warning. Matching column patterns are applied from least to most
 specific; equally specific patterns follow declaration order, so the later one
