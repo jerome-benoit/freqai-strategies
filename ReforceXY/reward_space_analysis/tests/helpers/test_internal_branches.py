@@ -38,24 +38,25 @@ def test_get_bool_param_none_and_invalid_literal():
     assert _get_bool_param(params_invalid, "check_invariants", True) is True
 
 
-def test_calculate_reward_unrealized_pnl_hold_path():
-    """Verify unrealized PnL branch activates during hold action.
+def test_calculate_reward_current_pnl_hold_path():
+    """Verify current PnL drives liquidation value during a hold action.
 
-    Tests that when hold_potential_enabled and unrealized_pnl are both True,
-    the reward calculation uses max/min unrealized profit to compute next_pnl
-    via the tanh transformation path.
+    The reward calculation uses current_pnl for next_pnl. The extrema remain
+    available to other diagnostics but do not replace current_pnl here.
 
     **Setup:**
     - Position: Long, Action: Neutral (hold)
-    - PnL: 0.01, max_unrealized_profit: 0.02, min_unrealized_profit: -0.01
-    - Parameters: hold_potential_enabled=True, unrealized_pnl=True
+    - Current PnL: 0.01
+    - Extrema: max_unrealized_profit=0.02, min_unrealized_profit=-0.01
+    - Parameters: hold_potential_enabled=True
     - Trade duration: 5 steps
 
     **Assertions:**
+    - Reward and next liquidation values equal 1 + current_pnl
     - Both prev_potential and next_potential are finite
     - At least one potential is non-zero (shaping should activate)
     """
-    # Exercise unrealized_pnl branch during hold to cover next_pnl tanh path
+    # Exercise the fee-aware marked-to-liquidation hold path.
     context = make_ctx(
         pnl=0.01,
         trade_duration=5,
@@ -67,7 +68,6 @@ def test_calculate_reward_unrealized_pnl_hold_path():
     )
     params = {
         "hold_potential_enabled": True,
-        "unrealized_pnl": True,
         "pnl_amplification_sensitivity": 0.5,
     }
     breakdown = calculate_reward_with_defaults(
@@ -78,6 +78,8 @@ def test_calculate_reward_unrealized_pnl_hold_path():
         risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         prev_potential=np.nan,
     )
+    assert math.isclose(breakdown.reward_liquidation_value, 1.01)
+    assert math.isclose(breakdown.next_liquidation_value, 1.01)
     assert math.isfinite(breakdown.prev_potential)
     assert math.isfinite(breakdown.next_potential)
     # shaping should activate (non-zero or zero after potential difference)

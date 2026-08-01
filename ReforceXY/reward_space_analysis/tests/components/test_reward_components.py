@@ -14,22 +14,16 @@ from reward_space_analysis import (
     _compute_hold_potential,
     _compute_pnl_target_coefficient,
     _get_exit_factor,
-    _get_float_param,
     get_max_idle_duration_candles,
 )
 
 from ..constants import EFFICIENCY, PARAMS, SCENARIOS, TOLERANCE
 from ..helpers import (
     RewardScenarioConfig,
-    ThresholdTestConfig,
-    ValidationConfig,
-    assert_component_sum_integrity,
     assert_exit_factor_plateau_behavior,
-    assert_hold_penalty_threshold_behavior,
     assert_progressive_scaling_behavior,
     assert_reward_calculation_scenarios,
     calculate_reward_with_defaults,
-    make_idle_penalty_test_contexts,
 )
 from ..test_base import RewardSpaceTestBase
 
@@ -58,70 +52,42 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         self.assertFinite(val, name="hold_potential")
 
-    def test_hold_penalty_basic_calculation(self):
-        """Test hold penalty calculation when trade_duration exceeds max_duration.
-
-        Verifies:
-        - trade_duration > max_duration → hold_penalty < 0
-        - Total reward equals sum of active components
-        """
+    def test_hold_economic_log_delta_calculation(self):
+        """A hold recognizes only the log change in liquidation value."""
         context = self.make_ctx(
             pnl=0.01,
-            trade_duration=150,  # > default max_duration (128)
+            trade_duration=150,
             idle_duration=0,
             max_unrealized_profit=0.02,
             min_unrealized_profit=0.0,
             position=Positions.Long,
             action=Actions.Neutral,
+            previous_liquidation_value=0.995,
         )
         breakdown = calculate_reward_with_defaults(context, self.DEFAULT_PARAMS)
-        self.assertLess(breakdown.hold_penalty, 0, "Hold penalty should be negative")
-        config = ValidationConfig(
-            tolerance_strict=TOLERANCE.IDENTITY_STRICT,
-            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
-            exclude_components=["idle_penalty", "exit_component", "invalid_penalty"],
-            component_description="hold + shaping/additives",
+        expected = float(self.DEFAULT_PARAMS["base_factor"]) * math.log(1.01 / 0.995)
+        self.assertAlmostEqualFloat(
+            breakdown.economic_component, expected, tolerance=TOLERANCE.IDENTITY_STRICT
         )
-        assert_component_sum_integrity(self, breakdown, config)
+        self.assertEqual(breakdown.hold_penalty, 0.0)
+        self.assertAlmostEqualFloat(breakdown.total, expected, tolerance=TOLERANCE.IDENTITY_STRICT)
 
-    def test_hold_penalty_threshold_behavior(self):
-        """Test hold penalty activation at max_duration threshold.
-
-        Verifies:
-        - duration < max_duration → hold_penalty = 0
-        - duration >= max_duration → hold_penalty <= 0
-        """
-        max_duration = 128
-        threshold_test_cases = [
-            (64, "before max_duration"),
-            (127, "just before max_duration"),
-            (128, "exactly at max_duration"),
-            (129, "just after max_duration"),
-        ]
-
-        def context_factory(trade_duration):
-            return self.make_ctx(
-                pnl=0.0,
-                trade_duration=trade_duration,
-                idle_duration=0,
-                position=Positions.Long,
-                action=Actions.Neutral,
-            )
-
-        config = ThresholdTestConfig(
-            max_duration=max_duration,
-            test_cases=threshold_test_cases,
-            tolerance=TOLERANCE.IDENTITY_RELAXED,
-        )
-        assert_hold_penalty_threshold_behavior(
-            self,
-            context_factory,
-            self.DEFAULT_PARAMS,
-            PARAMS.BASE_FACTOR,
-            PARAMS.PROFIT_AIM,
-            1.0,
-            config,
-        )
+    def test_hold_reward_is_independent_of_duration_threshold(self):
+        """Duration thresholds do not alter the economic mark-to-liquidation reward."""
+        rewards = []
+        for trade_duration in (64, 127, 128, 129):
+            with self.subTest(trade_duration=trade_duration):
+                context = self.make_ctx(
+                    pnl=0.0,
+                    trade_duration=trade_duration,
+                    idle_duration=0,
+                    position=Positions.Long,
+                    action=Actions.Neutral,
+                )
+                breakdown = calculate_reward_with_defaults(context, self.DEFAULT_PARAMS)
+                rewards.append(breakdown.economic_component)
+                self.assertEqual(breakdown.hold_penalty, 0.0)
+        self.assertTrue(all(value == 0.0 for value in rewards))
 
     def test_hold_penalty_progressive_scaling(self):
         """Test hold penalty scales progressively with increasing duration.
@@ -147,46 +113,15 @@ class TestRewardComponents(RewardSpaceTestBase):
 
         assert_progressive_scaling_behavior(self, penalties, durations, "Hold penalty")
 
-    def test_idle_penalty_calculation(self):
-        """Test idle penalty calculation for neutral idle state.
-
-        Verifies:
-        - idle_duration > 0 → idle_penalty < 0
-        - Component sum integrity maintained
-        """
-        context = self.make_ctx(
-            pnl=0.0,
-            trade_duration=0,
-            idle_duration=20,
-            max_unrealized_profit=0.0,
-            min_unrealized_profit=0.0,
-            position=Positions.Neutral,
-            action=Actions.Neutral,
-        )
-
-        def validate_idle_penalty(test_case, breakdown, description, tolerance):
-            test_case.assertLess(breakdown.idle_penalty, 0, "Idle penalty should be negative")
-            config = ValidationConfig(
-                tolerance_strict=TOLERANCE.IDENTITY_STRICT,
-                tolerance_relaxed=tolerance,
-                exclude_components=["hold_penalty", "exit_component", "invalid_penalty"],
-                component_description="idle + shaping/additives",
-            )
-            assert_component_sum_integrity(test_case, breakdown, config)
-
-        scenarios = [(context, self.DEFAULT_PARAMS, "idle_penalty_basic")]
-        config = RewardScenarioConfig(
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            tolerance_relaxed=TOLERANCE.IDENTITY_RELAXED,
-        )
-        assert_reward_calculation_scenarios(
-            self,
-            scenarios,
-            config,
-            validate_idle_penalty,
-        )
+    def test_neutral_self_loop_has_zero_economic_reward(self):
+        """A neutral self-loop remains at liquidation value one, regardless of idling."""
+        context = self.make_ctx(idle_duration=20)
+        breakdown = calculate_reward_with_defaults(context, self.DEFAULT_PARAMS)
+        self.assertEqual(breakdown.previous_liquidation_value, 1.0)
+        self.assertEqual(breakdown.reward_liquidation_value, 1.0)
+        self.assertEqual(breakdown.next_liquidation_value, 1.0)
+        self.assertEqual(breakdown.economic_component, 0.0)
+        self.assertEqual(breakdown.idle_penalty, 0.0)
 
     def test_pnl_target_coefficient_zero_pnl(self):
         """PnL target coefficient returns neutral value for zero PnL.
@@ -530,13 +465,8 @@ class TestRewardComponents(RewardSpaceTestBase):
             "Exit component must not be positive when pnl < 0",
         )
 
-    def test_max_idle_duration_candles_logic(self):
-        """Test max idle duration candles parameter affects penalty magnitude.
-
-        Verifies:
-        - penalty(max=50) < penalty(max=200) < 0
-        - Smaller max → larger penalty magnitude
-        """
+    def test_max_idle_duration_does_not_change_economic_reward(self):
+        """Sampling limits do not leak into the neutral economic reward."""
         params_small = self.base_params(max_idle_duration_candles=50)
         params_large = self.base_params(max_idle_duration_candles=200)
         context = self.make_ctx(
@@ -548,9 +478,10 @@ class TestRewardComponents(RewardSpaceTestBase):
         )
         small = calculate_reward_with_defaults(context, params_small)
         large = calculate_reward_with_defaults(context, params_large)
-        self.assertLess(small.idle_penalty, 0.0)
-        self.assertLess(large.idle_penalty, 0.0)
-        self.assertGreater(large.idle_penalty, small.idle_penalty)
+        self.assertEqual(small.idle_penalty, 0.0)
+        self.assertEqual(large.idle_penalty, 0.0)
+        self.assertEqual(small.economic_component, 0.0)
+        self.assertEqual(large.economic_component, 0.0)
 
     @pytest.mark.smoke
     def test_exit_factor_calculation(self):
@@ -645,94 +576,32 @@ class TestRewardComponents(RewardSpaceTestBase):
             validate_zero_penalty,
         )
 
-    def test_win_reward_factor_saturation(self):
-        """Test PnL amplification factor saturates at asymptotic limit.
-
-        Verifies:
-        - Amplification ratio increases monotonically with PnL
-        - Saturation approaches (1 + win_reward_factor)
-        - Observed matches theoretical saturation behavior
-        """
-        win_reward_factor = 3.0
-        beta = 0.5
-        profit_aim = PARAMS.PROFIT_AIM
-        risk_reward_ratio = PARAMS.RISK_REWARD_RATIO
-        pnl_target = profit_aim * risk_reward_ratio
-        params = self.base_params(
-            win_reward_factor=win_reward_factor,
-            pnl_amplification_sensitivity=beta,
-            efficiency_weight=0.0,
-            exit_attenuation_mode="linear",
-            exit_plateau=False,
-            exit_linear_slope=0.0,
+    def test_base_factor_scales_log_return_linearly(self):
+        """The sole economic scale is ``base_factor``."""
+        context = self.make_ctx(
+            pnl=0.08,
+            position=Positions.Long,
+            action=Actions.Long_exit,
         )
+        params = self.base_params(win_reward_factor=1000.0)
         params.pop("base_factor", None)
-        pnl_values = [pnl_target * m for m in (1.05, 2.0, 5.0, 10.0)]
-        ratios_observed: list[float] = []
-        for pnl in pnl_values:
-            context = self.make_ctx(
-                pnl=pnl,
-                trade_duration=0,
-                idle_duration=0,
-                max_unrealized_profit=pnl,
-                min_unrealized_profit=0.0,
-                position=Positions.Long,
-                action=Actions.Long_exit,
-            )
-            br = calculate_reward_with_defaults(
-                context,
-                params,
-                base_factor=1.0,
-                profit_aim=profit_aim,
-                risk_reward_ratio=risk_reward_ratio,
-            )
-            ratio = br.exit_component / pnl if pnl != 0 else 0.0
-            ratios_observed.append(float(ratio))
-        self.assertMonotonic(
-            ratios_observed,
-            non_decreasing=True,
-            tolerance=TOLERANCE.IDENTITY_STRICT,
-            name="pnl_amplification_ratio",
-        )
-        asymptote = 1.0 + win_reward_factor
-        final_ratio = ratios_observed[-1]
-        self.assertFinite(final_ratio, name="final_ratio")
-        self.assertLess(
-            abs(final_ratio - asymptote),
-            0.001,
-            f"Final amplification {final_ratio:.6f} not close to asymptote {asymptote:.6f}",
-        )
-        expected_ratios: list[float] = []
-        for pnl in pnl_values:
-            pnl_ratio = pnl / pnl_target
-            expected = 1.0 + win_reward_factor * math.tanh(beta * (pnl_ratio - 1.0))
-            expected_ratios.append(expected)
-        for obs, exp in zip(ratios_observed, expected_ratios, strict=False):
-            self.assertFinite(obs, name="observed_ratio")
-            self.assertFinite(exp, name="expected_ratio")
-            self.assertLess(
-                abs(obs - exp),
-                5e-06,
-                f"Observed amplification {obs:.8f} deviates from expected {exp:.8f}",
-            )
+        unit = calculate_reward_with_defaults(context, params, base_factor=1.0)
+        for scale in (1.0, PARAMS.RISK_REWARD_RATIO, PARAMS.BASE_FACTOR):
+            with self.subTest(scale=scale):
+                scaled = calculate_reward_with_defaults(context, params, base_factor=scale)
+                self.assertAlmostEqualFloat(
+                    scaled.economic_component,
+                    scale * unit.economic_component,
+                    tolerance=TOLERANCE.IDENTITY_STRICT,
+                )
 
-    def test_idle_penalty_fallback_and_proportionality(self):
-        """Test idle penalty fallback and proportional scaling behavior.
-
-        Verifies:
-        - max_idle_duration = None → use max_trade_duration as fallback
-        - penalty(duration=40) ≈ 2 * penalty(duration=20)
-        - Proportional scaling with idle duration
-        """
-        base_factor = PARAMS.BASE_FACTOR
-        profit_aim = PARAMS.PROFIT_AIM
-        risk_reward_ratio = PARAMS.RISK_REWARD_RATIO
+    def test_idle_duration_fallback_is_sampling_only(self):
+        """The derived idle limit remains available but does not shape reward."""
         max_trade_duration_candles = PARAMS.TRADE_DURATION_MEDIUM
 
         params = self.base_params(
             max_idle_duration_candles=None,
             max_trade_duration_candles=max_trade_duration_candles,
-            base_factor=base_factor,
         )
         expected_max_idle_duration_candles = int(
             DEFAULT_IDLE_DURATION_MULTIPLIER * max_trade_duration_candles
@@ -743,52 +612,15 @@ class TestRewardComponents(RewardSpaceTestBase):
             "Expected fallback max_idle_duration from max_trade_duration",
         )
 
-        base_context_kwargs = {
-            "pnl": 0.0,
-            "trade_duration": 0,
-            "position": Positions.Neutral,
-            "action": Actions.Neutral,
-        }
-        idle_scenarios = [20, 40, 120]
-        contexts_and_descriptions = make_idle_penalty_test_contexts(
-            self.make_ctx, idle_scenarios, base_context_kwargs
-        )
+        for idle_duration in (20, 40, 120):
+            with self.subTest(idle_duration=idle_duration):
+                breakdown = calculate_reward_with_defaults(
+                    self.make_ctx(idle_duration=idle_duration), params
+                )
+                self.assertEqual(breakdown.idle_penalty, 0.0)
+                self.assertEqual(breakdown.total, 0.0)
 
-        results = []
-        for context, description in contexts_and_descriptions:
-            breakdown = calculate_reward_with_defaults(
-                context,
-                params,
-                base_factor=base_factor,
-                profit_aim=profit_aim,
-                risk_reward_ratio=risk_reward_ratio,
-            )
-            results.append((breakdown, context.idle_duration, description))
-
-        br_a, br_b, br_mid = [r[0] for r in results]
-        self.assertLess(br_a.idle_penalty, 0.0)
-        self.assertLess(br_b.idle_penalty, 0.0)
-        self.assertLess(br_mid.idle_penalty, 0.0)
-
-        ratio = br_b.idle_penalty / br_a.idle_penalty if br_a.idle_penalty != 0 else None
-        self.assertIsNotNone(ratio)
-        if ratio is not None:
-            self.assertAlmostEqualFloat(abs(ratio), 2.0, tolerance=0.2)
-
-        idle_penalty_ratio = _get_float_param(params, "idle_penalty_ratio", 1.0)
-        idle_penalty_power = _get_float_param(params, "idle_penalty_power", 1.025)
-        idle_factor = base_factor * (profit_aim / risk_reward_ratio)
-        observed_ratio = abs(br_mid.idle_penalty) / (idle_factor * idle_penalty_ratio)
-        if observed_ratio > 0:
-            implied_max_idle_duration_candles = 120 / observed_ratio ** (1 / idle_penalty_power)
-            tolerance = 0.05 * expected_max_idle_duration_candles
-            self.assertAlmostEqualFloat(
-                implied_max_idle_duration_candles,
-                float(expected_max_idle_duration_candles),
-                tolerance=tolerance,
-            )
-
-    # Owns invariant: components-pbrs-breakdown-fields-119
+    # Owns invariant: components-economic-pbrs-breakdown-119
     def test_pbrs_breakdown_fields_finite_and_aligned(self):
         """Test PBRS breakdown fields are finite and mathematically aligned.
 
