@@ -11,6 +11,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 USER ftuser
 RUN pip install --user --no-cache-dir \
+    cmaes==${cmaes_version} \
     optuna==${optuna_version} \
     optuna-dashboard==${optuna_dashboard_version} \
     optunahub==${optunahub_version} \
