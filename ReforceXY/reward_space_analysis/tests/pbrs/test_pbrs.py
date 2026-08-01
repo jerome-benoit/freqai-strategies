@@ -19,7 +19,7 @@ from reward_space_analysis import (
     _compute_exit_additive,
     _compute_exit_potential,
     _compute_hold_potential,
-    _compute_unrealized_pnl_estimate,
+    _compute_spot_local_trade_pnl_estimate,
     _get_float_param,
     apply_potential_shaping,
     get_max_idle_duration_candles,
@@ -595,42 +595,42 @@ class TestPBRS(RewardSpaceTestBase):
 
     # Owns invariant: pbrs-unified-fee-primitives-122
     def test_unrealized_pnl_uses_unified_freqtrade_fee(self):
-        """Long and short marks reproduce Freqtrade's symmetric fee primitives."""
+        """Long and short marks reproduce native spot LocalTrade fee primitives."""
         params = self.base_params(fee_rate=0.1)
 
-        pnl_long = _compute_unrealized_pnl_estimate(
+        pnl_long = _compute_spot_local_trade_pnl_estimate(
             Positions.Long,
             entry_open=1.0,
             current_open=1.0,
             params=params,
         )
-        expected_pnl_long = 1.0 / (1.1**2) - 1.0
+        expected_pnl_long = float(f"{((1.0 - 0.1) / (1.0 + 0.1)) - 1.0:.8f}")
         self.assertAlmostEqualFloat(
             float(pnl_long),
             float(expected_pnl_long),
             tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Long entry PnL mismatch for division-based exit fee",
+            msg="Long entry PnL mismatch for native LocalTrade fees",
         )
 
-        pnl_short = _compute_unrealized_pnl_estimate(
+        pnl_short = _compute_spot_local_trade_pnl_estimate(
             Positions.Short,
             entry_open=1.0,
             current_open=1.0,
             params=params,
         )
-        expected_pnl_short = 2.0 - 1.1**2 - 1.0
+        expected_pnl_short = float(f"{1.0 - ((1.0 + 0.1) / (1.0 - 0.1)):.8f}")
         self.assertAlmostEqualFloat(
             float(pnl_short),
             float(expected_pnl_short),
             tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Short entry PnL mismatch for division-based exit fee",
+            msg="Short entry PnL mismatch for native LocalTrade fees",
         )
 
     def test_simulate_samples_records_fee_aware_entry_mark(self):
-        """The entry row records the immediate fee-aware liquidation mark."""
+        """The entry row records the promotable native LocalTrade liquidation mark."""
         params = self.base_params(
             exit_potential_mode="canonical",
-            hold_potential_enabled=True,
+            hold_potential_enabled=False,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
             fee_rate=0.001,
@@ -661,7 +661,7 @@ class TestPBRS(RewardSpaceTestBase):
             "Expected Neutral position on Long_enter row",
         )
 
-        expected_pnl = _compute_unrealized_pnl_estimate(
+        expected_pnl = _compute_spot_local_trade_pnl_estimate(
             Positions.Long,
             entry_open=1.0,
             current_open=1.0,
@@ -672,7 +672,7 @@ class TestPBRS(RewardSpaceTestBase):
             entry_mark,
             1.0 + expected_pnl,
             tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Expected entry liquidation mark to include the unified fee",
+            msg="Expected entry liquidation mark to use native LocalTrade fees",
         )
 
     def test_calculate_reward_hold_uses_current_duration_ratio(self):
