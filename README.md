@@ -31,7 +31,8 @@ Adapt the configuration to your needs: edit `user_data/config.json` to set your
 exchange API keys and tune the `freqai` section.
 
 The API server is disabled by default. Before enabling it, replace its username,
-password, JWT secret and WebSocket token; keep the Compose port bound to
+password, JWT secret and WebSocket token: the template ships public placeholders
+that provide no protection until changed. Keep the Compose port bound to
 localhost unless access is protected by a VPN or SSH tunnel.
 
 Then build and start the container:
@@ -197,7 +198,7 @@ chronological runner which trains, predicts, updates state and only then advance
 to the next window, or with a forward dry-run. Keep native-backtest and
 full-loop results in separate report sections. This repository does not provide
 that chronological runner. See the [FreqAI running guide][freqai-running] and
-the [FreqAI train/predict/callback order][freqai-source] and
+the [FreqAI sliding-window train and predict loop][freqai-source] and
 [backtesting replay loop][freqai-replay].
 
 #### Procedure
@@ -387,7 +388,7 @@ and result hashes.
 [freqai-parameters]: https://www.freqtrade.io/en/stable/freqai-parameter-table/#general-configuration-parameters
 [freqai-running]: https://www.freqtrade.io/en/stable/freqai-running/
 [freqai-replay]: https://github.com/freqtrade/freqtrade/blob/2026.7/freqtrade/freqai/freqai_interface.py#L900-L927
-[freqai-source]: https://github.com/freqtrade/freqtrade/blob/2026.7/freqtrade/freqai/freqai_interface.py#L348-L408
+[freqai-source]: https://github.com/freqtrade/freqtrade/blob/2026.7/freqtrade/freqai/freqai_interface.py#L273-L410
 [freqtrade-backtesting]: https://www.freqtrade.io/en/stable/backtesting/
 [hansen-spa]: https://doi.org/10.1198/073500105000000063
 [holm]: https://www.jstor.org/stable/4615733

@@ -134,6 +134,7 @@
       //     "window_candles": 5,
       //     "beta": 12.0
       //   }
+      // }
     },
     "label_pipeline": {
       // Alternative per-label format: uncomment instead of adding sibling flat keys:
