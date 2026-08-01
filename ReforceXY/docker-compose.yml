@@ -19,10 +19,16 @@ services:
       args:
         cmaes_version: 0.13.0
         freqtrade_image: ${REFORCEXY_FREQTRADE_IMAGE:-freqtradeorg/freqtrade@sha256:9caa7cb0a8a13f9639ad3980114f3af0ffbd896d43736eeb65f8d0db8c009093}
+        reforcexy_git_commit: ${REFORCEXY_GIT_COMMIT:-}
+        scipy_version: 1.18.0
         optuna_version: 4.9.0
         optuna_dashboard_version: 0.20.0
         optunahub_version: 0.4.1
         matplotlib_version: 3.11.1
+        gymnasium_version: 1.3.0
+        runtime_requirements_sha256: ${REFORCEXY_RUNTIME_REQUIREMENTS_SHA256:-}
+        sb3_contrib_version: 2.9.0
+        stable_baselines3_version: 2.9.0
     restart: unless-stopped
     container_name: freqtrade-ReforceXY
     environment:
