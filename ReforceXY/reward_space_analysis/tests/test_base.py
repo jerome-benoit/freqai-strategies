@@ -42,8 +42,9 @@ def make_ctx(
     min_unrealized_profit: float = 0.0,
     position: Positions = Positions.Neutral,
     action: Actions = Actions.Neutral,
+    previous_liquidation_value: float = 1.0,
 ) -> RewardContext:
-    """Create a RewardContext with neutral defaults."""
+    """Create a RewardContext with neutral economic-state defaults."""
     return RewardContext(
         current_pnl=pnl,
         trade_duration=trade_duration,
@@ -52,6 +53,7 @@ def make_ctx(
         min_unrealized_profit=min_unrealized_profit,
         position=position,
         action=action,
+        previous_liquidation_value=previous_liquidation_value,
     )
 
 
@@ -95,6 +97,7 @@ class RewardSpaceTestBase(unittest.TestCase):
         min_unrealized_profit: float = 0.0,
         position: Positions = Positions.Neutral,
         action: Actions = Actions.Neutral,
+        previous_liquidation_value: float = 1.0,
     ) -> RewardContext:
         """Create a RewardContext with neutral defaults."""
         return make_ctx(
@@ -105,6 +108,7 @@ class RewardSpaceTestBase(unittest.TestCase):
             min_unrealized_profit=min_unrealized_profit,
             position=position,
             action=action,
+            previous_liquidation_value=previous_liquidation_value,
         )
 
     def base_params(self, **overrides) -> dict[str, Any]:
@@ -199,8 +203,9 @@ class RewardSpaceTestBase(unittest.TestCase):
 
         Returns
         -------
-        pd.DataFrame with columns: reward, reward_idle, reward_hold, reward_exit,
-        pnl, trade_duration, idle_duration, position. Guarantees: no NaN; reward_idle==0 where idle_duration==0.
+        A complete economic-reward analysis frame. ``reward_economic`` is the
+        scaled log change in the two liquidation-value columns and the legacy
+        idle/hold columns are retained as zero-valued compatibility diagnostics.
         """
         if seed is not None:
             RewardSpaceTestBase.seed_all(seed)
@@ -218,22 +223,53 @@ class RewardSpaceTestBase(unittest.TestCase):
             idle_duration = np.zeros(n)
         else:
             idle_duration = np.random.uniform(5, 60, n)
-        reward_idle = np.where(idle_duration > 0, np.random.normal(-1, 0.3, n), 0.0)
-        reward_hold = np.random.normal(-0.5, 0.2, n)
-        reward_exit = np.random.normal(0.8, 0.6, n)
+        reward_economic = reward
+        reward_invalid = np.zeros(n)
+        reward_shaping = np.zeros(n)
+        previous_liquidation_value = np.ones(n)
+        reward_liquidation_value = np.exp(reward_economic / PARAMS.BASE_FACTOR)
+        next_liquidation_value = reward_liquidation_value.copy()
+        reward_idle = np.zeros(n)
+        reward_hold = np.zeros(n)
         position = np.random.choice([0.0, 0.5, 1.0], n)
-        return pd.DataFrame(
+        action = np.random.choice([0, 1, 2, 3, 4], n)
+        reward_exit = np.where(np.isin(action, [2, 4]), reward_economic, 0.0)
+        truncated = np.zeros(n, dtype=bool)
+        if n:
+            truncated[-1] = True
+        df = pd.DataFrame(
             {
-                "reward": reward,
+                "reward": reward_economic + reward_invalid + reward_shaping,
+                "reward_economic": reward_economic,
+                "reward_invalid": reward_invalid,
                 "reward_idle": reward_idle,
                 "reward_hold": reward_hold,
                 "reward_exit": reward_exit,
+                "reward_shaping": reward_shaping,
+                "reward_entry_additive": np.zeros(n),
+                "reward_exit_additive": np.zeros(n),
+                "reward_base": reward_economic + reward_invalid,
+                "reward_pbrs_delta": np.zeros(n),
+                "reward_invariance_correction": np.zeros(n),
+                "prev_potential": np.zeros(n),
+                "next_potential": np.zeros(n),
+                "previous_liquidation_value": previous_liquidation_value,
+                "reward_liquidation_value": reward_liquidation_value,
+                "next_liquidation_value": next_liquidation_value,
+                "economic_log_return": reward_economic / PARAMS.BASE_FACTOR,
                 "pnl": pnl,
                 "trade_duration": trade_duration,
                 "idle_duration": idle_duration,
                 "position": position,
+                "action": action,
+                "pbrs_invariant": np.ones(n, dtype=bool),
+                "economic_ruin": np.zeros(n, dtype=bool),
+                "terminated": np.zeros(n, dtype=bool),
+                "truncated": truncated,
             }
         )
+        df.attrs["reward_params"] = self.base_params(base_factor=PARAMS.BASE_FACTOR)
+        return df
 
     def assertAlmostEqualFloat(
         self,
