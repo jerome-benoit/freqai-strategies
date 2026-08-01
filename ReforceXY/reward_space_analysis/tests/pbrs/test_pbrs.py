@@ -626,6 +626,22 @@ class TestPBRS(RewardSpaceTestBase):
             msg="Short entry PnL mismatch for native LocalTrade fees",
         )
 
+        boundary_long = _compute_spot_local_trade_pnl_estimate(
+            Positions.Long,
+            entry_open=0.0023495419767750668,
+            current_open=0.0013865227751233074,
+            params=self.base_params(fee_rate=0.03242886144889218),
+        )
+        self.assertEqual(boundary_long, -0.44694724)
+
+        boundary_short = _compute_spot_local_trade_pnl_estimate(
+            Positions.Short,
+            entry_open=0.002034122119849911,
+            current_open=0.0012583412865205445,
+            params=self.base_params(fee_rate=0.08376601506746104),
+        )
+        self.assertEqual(boundary_short, 0.26827052)
+
     def test_simulate_samples_records_fee_aware_entry_mark(self):
         """The entry row records the promotable native LocalTrade liquidation mark."""
         params = self.base_params(

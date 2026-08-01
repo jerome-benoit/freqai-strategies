@@ -16,6 +16,7 @@ import numbers
 import pickle
 import random
 import warnings
+from decimal import Decimal, localcontext
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -3295,14 +3296,26 @@ def _compute_spot_local_trade_pnl_estimate(
     params: RewardParams,
 ) -> float:
     """Mirror ``LocalTrade.calc_profit_ratio`` for spot leverage-one analysis."""
-    long_weight = float(position.value)
-    direction = 2.0 * long_weight - 1.0
+    if position == Positions.Neutral:
+        return 0.0
+
     fee_rate = _get_fee_rate(params)
-    open_trade_value = entry_open * (1.0 + direction * fee_rate)
-    close_trade_value = current_open * (1.0 - direction * fee_rate)
-    mark_ratio = close_trade_value / open_trade_value
-    pnl = long_weight * (mark_ratio - 1.0) + (1.0 - long_weight) * (1.0 - mark_ratio)
-    return float(f"{pnl:.8f}") + 0.0
+    with localcontext() as context:
+        context.prec = 64
+        entry_value = Decimal(str(entry_open))
+        mark_value = Decimal(str(current_open))
+        fee_value = Decimal(str(fee_rate))
+        entry_fee = entry_value * fee_value
+        mark_fee = mark_value * fee_value
+        if position == Positions.Long:
+            open_trade_value = float(entry_value + entry_fee)
+            close_trade_value = float(mark_value - mark_fee)
+            pnl = close_trade_value / open_trade_value - 1.0
+        else:
+            open_trade_value = float(entry_value - entry_fee)
+            close_trade_value = float(mark_value + mark_fee)
+            pnl = 1.0 - close_trade_value / open_trade_value
+    return round(pnl, 8) + 0.0
 
 
 def _loss_duration_multiplier(pnl_ratio: float, risk_reward_ratio: float) -> float:
