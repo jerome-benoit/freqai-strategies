@@ -423,14 +423,27 @@ Then build and start the container:
 ./docker-compose.sh up -d --build
 ```
 
-The wrapper requires a clean committed ReforceXY tree, resolves
-`stable_freqairl` to its current immutable digest, and passes the Git commit to
-the container together with the loaded-source checksums. Use it for every
-Compose command that can start training or evaluation. It rejects `exec`,
-`start`, `restart`, `unpause` and `--no-recreate`, which can reuse stale
-container metadata or loaded code; use `run` or `up` for a new run. Direct
-`docker compose` commands that only inspect or stop an existing stack remain
-safe.
+The wrapper requires a clean committed ReforceXY tree, resolves the Freqtrade
+base image to an immutable digest, records the clean Git commit and loaded
+source digests, and captures the exact derived image ID. Use it for every
+ReforceXY Compose command. It rejects commands and overrides that can replace
+the validated Compose configuration, source tree, runtime image, environment,
+or container metadata.
+
+For `up`, `create`, and `run`, a requested `--build` is performed exactly once
+before provenance validation and is removed from the final Compose arguments.
+The final container is selected by the captured content-addressed image ID.
+An effective `--no-build` uses an existing image only when its labels match the
+clean commit, immutable base, and locked runtime; otherwise the wrapper fails
+before a build or container creation. Use `./docker-compose.sh build --pull`
+when an explicit base-image refresh is required.
+
+The wrapper always uses the tracked Compose file, the physical `ReforceXY/`
+project directory, and the tracked `user_data` destination. Alternative Compose
+files, project directories, env files, project names, profiles, and `run`
+environment or volume overrides are outside the provenance contract. Effective
+dry-run mode is also rejected because wrapper-owned build and image-ID
+checkpoints cannot be simulated safely. Help remains side-effect-free.
 
 ### Supported models
 
@@ -446,7 +459,7 @@ The rewarding logic and tunables are documented in the
 
 ### Runtime reproducibility
 
-Each ReforceXY fit writes a schema-v2
+Each ReforceXY fit writes a schema-v3
 `reforcexy-run-manifest-<run-instance-id>.json` beside the trained model. Its
 matching inputs are stored below
 `reproducibility-inputs/<run-instance-id>/`. A retry never overwrites evidence
@@ -483,9 +496,12 @@ Keep the manifest with its model directory, configuration and data artifacts.
 Equal `reproduction_id` values prove equal recorded inputs; they do not promise
 bit-identical floating-point results on every CPU/GPU.
 
-Schema v2 includes the schema version itself in the `reproduction_id` domain.
-Schema-v1 evidence remains historical and immutable: it is not rewritten or
-compared as equivalent to schema-v2 evidence.
+Schema v3 includes the schema version itself in the `reproduction_id` domain.
+Schema-v1 and schema-v2 evidence remains historical and immutable: it is not
+rewritten or compared as equivalent to schema-v3 evidence. The manifest records
+metadata and deterministic fingerprints of the full inputs; preserve the source
+configuration and input data separately because only configured Optuna state is
+snapshotted.
 
 `KeyboardInterrupt` finalizes the manifest as `interrupted`, attempts every
 owned cleanup, and then propagates the original interruption. Cleanup failures

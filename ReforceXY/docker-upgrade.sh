@@ -241,7 +241,10 @@ if [ "$rebuild_local_image" = true ]; then
   echo_timestamped "Info: $message"
   send_telegram_message "$message"
   cd -- "$SCRIPT_DIR" || exit 1
-  compose_image=$(command docker compose config --images | command sed -n '1p')
+  compose_image=$(
+    command "${SCRIPT_DIR}/docker-compose.sh" config --images |
+      command sed -n '1p'
+  )
   if [ -z "$compose_image" ]; then
     echo_timestamped "Error: ReforceXY image name was not resolved"
     exit 1
