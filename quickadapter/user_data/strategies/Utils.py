@@ -5193,6 +5193,9 @@ def fit_regressor(
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             if loss_function not in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
                 model_training_parameters.pop("rsm", None)
+            # CatBoost init_model is CPU-only and raises on GPU; drop it so
+            # continual_learning cold-starts there instead.
+            init_model = None
         else:
             n_jobs = model_training_parameters.pop("n_jobs", None)
             if n_jobs is not None:
@@ -5230,6 +5233,7 @@ def fit_regressor(
             if early_stopping_rounds is not None and has_eval_set
             else False,
             callbacks=fit_callbacks if fit_callbacks else None,
+            init_model=init_model,
         )
 
         if pruning_callback is not None:
