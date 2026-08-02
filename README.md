@@ -497,7 +497,12 @@ The BasedPyright and type-stub versions are pinned in each project's
 follow their rolling `stable_freqai` and `stable_freqairl` tags, so record the
 resolved image digests when a reproducible audit is required.
 
-ReforceXY optimizes fee-aware pair-local net log returns marked to liquidation.
+`MyRLEnv` emits fee-aware pair-local net log-return increments marked to
+liquidation. Their undiscounted raw sum telescopes to the pair-local net log
+return for a completed trade. PPO instead optimizes a discounted return; when
+`gamma < 1`, discounting changes the objective and weights reward timing. This
+reward contract does not model wallet or portfolio equity, nor exchange
+liquidation mechanics.
 Inside `MyRLEnv` training and evaluation, an observation contains features and
 position state through candle close `t - 1`; its action fills at candle open
 `t`; a retained position is marked at candle close `t`, while an exit is

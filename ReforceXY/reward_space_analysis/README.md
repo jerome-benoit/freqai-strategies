@@ -146,14 +146,17 @@ F(s, a, s') = gamma * Phi(s') - Phi(s)
 Any analytical run with shaping enabled is explicitly non-promotable and does
 not represent the active runtime reward.
 
-A true terminal state is economic ruin. Its liquidation value is clamped to
-`1e-12`, and the synthetic trajectory stops. A normal sample-limit or dataset
-end is a Gymnasium truncation so the value function can bootstrap. In the
-compatibility-only analytical PBRS mode, potential is released on termination
-and preserved on truncation. Entry and exit additive rewards are always
-suppressed. Strict mode rejects non-canonical modes and enabled additives;
-relaxed mode normalizes the mode to `canonical` and disables the additives
-explicitly.
+Within this pair-local analytical contract, `economic_ruin` is a numerical
+boundary reached when the modelled value `1 + pnl_net` is non-positive. The
+value is floored to `1e-12` solely to keep the logarithmic reward finite, and
+the synthetic trajectory stops. This surrogate is not an exchange liquidation,
+margin call, bankruptcy, or wallet/portfolio outcome. A normal sample-limit or
+dataset end is a Gymnasium truncation so the value function can bootstrap. In
+the compatibility-only analytical PBRS mode, potential is released on
+termination and preserved on truncation. Entry and exit additive rewards are
+always suppressed. Strict mode rejects non-canonical modes and enabled
+additives; relaxed mode normalizes the mode to `canonical` and disables the
+additives explicitly.
 
 The report never uses the raw sum `sum(reward_shaping)` to classify invariance.
 For `gamma < 1`, canonical PBRS telescopes only after discounting:
@@ -352,8 +355,9 @@ different output directory per cell and the same seed set across candidates.
 
 ## Troubleshooting
 
-- Economic ruin: the value is clamped to `1e-12`, terminal PBRS is applied, and
-  the trajectory stops. Inspect the price/PnL path before interpreting it.
+- Pair-local numerical ruin: the modelled value is floored to `1e-12`, terminal
+  PBRS is applied, and the trajectory stops. This is not an exchange
+  liquidation event; inspect the price/PnL path before interpreting it.
 - Unexpected fee loss at entry: the liquidation mark pre-charges the simulated
   round-trip fee by design.
 - Non-canonical PBRS error: remove the legacy mode and use `canonical`.
