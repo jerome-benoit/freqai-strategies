@@ -75,8 +75,8 @@
     "listen_port": 8080,
     "verbosity": "error",
     "enable_openapi": false,
-    "jwt_secret_key": "",
-    "ws_token": "",
+    "jwt_secret_key": "change-me-before-enabling-the-api",
+    "ws_token": "change-me-before-enabling-the-api",
     "CORS_origins": [],
     "username": "freqtrader",
     "password": "freqtrader"
@@ -110,7 +110,7 @@
       "min_pivot_equivalent_count": 3,
       "min_positive_label_weight_fraction": 0.01,
       "min_effective_sample_size": 3.0
-      // Per-label format:
+      // Alternative per-label format: remove the sibling keys above, then uncomment:
       // "default": {
       //   "strategy": "none"
       // },
@@ -124,7 +124,7 @@
       "method": "kaiser",
       "window_candles": 5,
       "beta": 10.0
-      // Per-label format:
+      // Alternative per-label format: remove the sibling keys above, then uncomment:
       // "default": {
       //   "method": "none"
       // },
@@ -134,9 +134,10 @@
       //     "window_candles": 5,
       //     "beta": 12.0
       //   }
+      // }
     },
     "label_pipeline": {
-      // Per-label format:
+      // Alternative per-label format: uncomment instead of adding sibling flat keys:
       // "default": {
       //   "standardization": "none",
       //   "normalization": "minmax",
@@ -154,7 +155,7 @@
       "method": "thresholding",
       "threshold_method": "isodata",
       "keep_fraction": 0.0075
-      // Per-label format:
+      // Alternative per-label format: remove the sibling keys above, then uncomment:
       // "default": {
       //   "method": "thresholding",
       //   "threshold_method": "mean"
