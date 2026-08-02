@@ -235,22 +235,23 @@ class _EvaluationHorizonTracker:
         horizon_complete = (
             self.terminal_tick == self.end_tick and observed_steps == expected_steps
         )
-        time_limit_truncated = self.terminal_info.get("TimeLimit.truncated", False)
-        if not isinstance(time_limit_truncated, bool):
+        has_time_limit_truncated = "TimeLimit.truncated" in self.terminal_info
+        has_economic_ruin = "economic_ruin" in self.terminal_info
+        time_limit_truncated = self.terminal_info.get("TimeLimit.truncated")
+        economic_ruin = self.terminal_info.get("economic_ruin")
+        if has_time_limit_truncated and not isinstance(time_limit_truncated, bool):
             raise RuntimeError(
                 "Evaluation horizon contract: info['TimeLimit.truncated'] must be a boolean"
             )
-        economic_ruin = self.terminal_info.get("economic_ruin")
-        if economic_ruin is not None and not isinstance(economic_ruin, bool):
+        if has_economic_ruin and not isinstance(economic_ruin, bool):
             raise RuntimeError(
                 "Evaluation horizon contract: info['economic_ruin'] must be a boolean"
             )
-        legacy_end_of_data = (
-            horizon_complete and "economic_ruin" not in self.terminal_info
-        )
-        if economic_ruin is True:
+        if not has_time_limit_truncated or not has_economic_ruin:
+            reason = "missing_terminal_semantics"
+        elif economic_ruin is True:
             reason = "economic_ruin"
-        elif horizon_complete and (time_limit_truncated or legacy_end_of_data):
+        elif horizon_complete and time_limit_truncated is True:
             reason = "end_of_data"
         else:
             reason = "early_termination"
@@ -265,7 +266,11 @@ class _EvaluationHorizonTracker:
             coverage_fraction=coverage_fraction,
             horizon_complete=horizon_complete,
             reason=reason,
-            eligible=reason == "end_of_data",
+            eligible=(
+                horizon_complete
+                and time_limit_truncated is True
+                and economic_ruin is False
+            ),
         )
 
 
