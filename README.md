@@ -446,6 +446,46 @@ holdout observation. A successful internal full-horizon pass is only a
 diagnostic gate; external rolling-origin evaluation over multiple training seeds
 remains mandatory before promotion.
 
+Run that external evaluation pair-locally and pre-register it before inspecting
+candidate results. Evaluate training windows of 30, 60, and 90 days crossed with
+1, 5, 10, and 25 training cycles, using the same ten fixed seeds for every arm.
+Advance each rolling origin by the configured two-day prediction period. Use at
+least five complete folds; prefer at least twelve months of folds when the data
+history permits it. Keep dates, pairs, initial capital, fill rules, and retraining
+cadence identical across candidates.
+
+Score costs at 1x, 2x, and 3x the configured assumption, with 2x as the primary
+scenario. Compare against no-trade, risk-matched buy-and-hold, a simple
+non-ML rule, a masked-random policy, and a deterministic rule. The primary
+pair-local estimand is the net log-equity improvement over the corresponding
+baseline:
+
+```text
+DeltaL = log(E_T_model) - log(E_T_baseline)
+```
+
+Report every fold, pair, regime, and seed. Use a block bootstrap confidence
+interval and report the interquartile mean (IQM) with its confidence interval.
+Control repeated selection with the Deflated Sharpe Ratio (DSR) and Probability
+of Backtest Overfitting (PBO). Keep an append-only external ledger of every
+attempt, including failed and abandoned configurations. The terminal holdout
+must remain untouched while features, parameters, seeds, windows, or decision
+thresholds are chosen. No experiment runner or correction harness is part of
+this repository.
+
+Pre-register the hard gates. The recommended conservative gates are DSR >= 0.95,
+PBO <= 0.10, a positive lower bound for the 95% block-bootstrap interval of
+DeltaL at 2x costs, at least 8 of 10 positive seeds at 1x costs and 7 of 10 at
+2x costs, and a positive lower confidence bound for the IQM. Reject results
+concentrated in one pair or one market regime.
+
+Promotion requires the pre-registered statistical and cost gates to pass before
+a real Freqtrade dry-run. The dry-run must exercise Freqtrade's wallet, stake,
+order, fill, protection, and multi-pair behavior; the pair-local RL environment
+does not reproduce those global mechanics. Complete at least 90 days of forward
+dry-run observation before considering a limited live deployment. Neither an
+internal holdout pass nor a native backtest is a live-readiness result.
+
 With the template values (`train_period_days=90`, `test_size=0.333`, and
 `validation_holdout_fraction=0.5`), approximately 60 days feed model updates,
 15 days feed selection, and 15 days form the one-shot holdout. Therefore a
