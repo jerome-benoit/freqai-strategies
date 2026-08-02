@@ -175,7 +175,7 @@
       "max_no_improvement_evals": 0, // Maximum consecutive evaluations without a new best model
       "min_evals": 0, // Number of evaluations before start to count evaluations without improvements
       "check_envs": true, // Check that an environment follows Gym API
-      "plot_new_best": true // Enable tensorboard rollout plot upon finding a new best model
+      "plot_new_best": false // Enable tensorboard rollout plot upon finding a new best model
     },
     "rl_config_optuna": {
       "enabled": true, // Enable optuna hyperopt
