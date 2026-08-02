@@ -18,16 +18,17 @@ services:
       dockerfile: Dockerfile
       args:
         optuna_version: 4.9.0
+        matplotlib_version: 3.11.1
     restart: unless-stopped
     container_name: freqtrade-ReforceXY
     environment:
       - TZ=Europe/Paris
     volumes:
       - "./user_data:/freqtrade/user_data"
-    # Expose api on port 8082
+    # Expose the API on localhost port 8082
     # Please read the https://www.freqtrade.io/en/stable/rest-api/ documentation
     # for more information.
     ports:
-      - "0.0.0.0:8082:8080"
+      - "127.0.0.1:8082:8080"
     # Default command used when running `docker compose up`
     command: trade
