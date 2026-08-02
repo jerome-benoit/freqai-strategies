@@ -1,4 +1,5 @@
-FROM freqtradeorg/freqtrade:stable_freqairl AS runtime
+ARG freqtrade_image=freqtradeorg/freqtrade@sha256:e808ec0d6c14cf5a2ea8406093b05e8b9230ac363ebdac573101988cd1450410
+FROM ${freqtrade_image} AS runtime
 
 ARG optuna_version=4.9.0
 ARG optuna_dashboard_version=0.20.0
