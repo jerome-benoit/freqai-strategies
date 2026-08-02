@@ -67,7 +67,7 @@ _LOG_2 = math.log(2.0)
 
 DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 
-# Tolerance for PBRS invariance classification.
+# Tolerance for PBRS algebraic-conformance classification.
 #
 # When `reward_invariance_correction` is available (reward_shaping - reward_pbrs_delta),
 # canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL. A raw
@@ -3473,7 +3473,7 @@ def compute_pbrs_components(
     Notes
     -----
     In canonical mode (exit_potential_mode='canonical'), entry_additive and exit_additive
-    are forced to 0.0 to preserve PBRS policy invariance.
+    are forced to 0.0 to satisfy the canonical PBRS algebraic configuration.
     """
     gamma = _get_potential_gamma(params)
 
@@ -3949,7 +3949,7 @@ def write_complete_statistical_analysis(
     if real_df is not None:
         distribution_shift = compute_distribution_shift_metrics(df, real_df)
 
-    pbrs_footer_summary = "Unverified (PBRS diagnostics unavailable)"
+    pbrs_footer_summary = "Algebraic conformance unverified (PBRS diagnostics unavailable)"
 
     # Write comprehensive report
     with report_path.open("w", encoding="utf-8") as f:
@@ -4213,25 +4213,25 @@ def write_complete_statistical_analysis(
                 f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s') - Φ(s) |\n")  # noqa: RUF001
                 f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
                 f.write(
-                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"
+                    f"| Mean Algebraic Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"
                 )
                 f.write(
-                    f"| Std Invariance Correction | {std_inv_corr:.6f} | Variability of correction |\n"
+                    f"| Std Algebraic Correction | {std_inv_corr:.6f} | Variability of correction |\n"
                 )
                 f.write(
-                    f"| Max \\|Invariance Correction\\| | {max_inv_corr:.6e} | Peak deviation from pure PBRS |\n"
+                    f"| Max \\|Algebraic Correction\\| | {max_inv_corr:.6e} | Peak deviation from pure PBRS |\n"
                 )
                 f.write(
                     f"| Mean \\|PBRS\\| / \\|Base\\| Ratio | {pbrs_to_base_ratio:.4f} | Shaping magnitude vs base reward |\n"
                 )
                 f.write("\n")
 
-            # PBRS invariance check
+            # PBRS algebraic-conformance check
             total_shaping = df["reward_shaping"].sum()
             entry_add_total = df.get("reward_entry_additive", pd.Series([0])).sum()
             exit_add_total = df.get("reward_exit_additive", pd.Series([0])).sum()
 
-            # Get configuration for proper invariance assessment
+            # Get configuration for the algebraic assessment
             reward_params = df.attrs.get("reward_params", {}) if hasattr(df, "attrs") else {}
             exit_potential_mode = _get_str_param(reward_params, "exit_potential_mode", "canonical")
             entry_additive_enabled_raw = _get_bool_param(
@@ -4251,8 +4251,8 @@ def write_complete_statistical_analysis(
                 exit_additive_enabled_raw,
             )
 
-            # Theoretical eligibility comes from configuration. Numerical
-            # verification then requires the term-by-term PBRS correction.
+            # Canonical configuration is necessary. Numerical algebraic
+            # conformance then requires the term-by-term PBRS correction.
             config_is_canonical = exit_potential_mode == "canonical" and not (
                 entry_additive_enabled_raw or exit_additive_enabled_raw
             )
@@ -4304,7 +4304,7 @@ def write_complete_statistical_analysis(
                 boundary_note = "Episode boundary is unavailable in this dataset."
 
             if not config_is_canonical:
-                invariance_status = "❌ Ineligible configuration"
+                invariance_status = "❌ Non-conformant configuration"
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
@@ -4312,37 +4312,40 @@ def write_complete_statistical_analysis(
                     reasons.append("entry_additive_enabled=True")
                 if exit_additive_enabled_raw:
                     reasons.append("exit_additive_enabled=True")
-                invariance_note = "PBRS invariance is not eligible: " + ", ".join(reasons)
+                invariance_note = (
+                    "Canonical PBRS algebraic conformance is unavailable: " + ", ".join(reasons)
+                )
             elif not correction_is_available:
-                invariance_status = "⚪ Unverified"
+                invariance_status = "⚪ Algebraic conformance unverified"
                 invariance_note = (
                     "Configuration is canonical with no additives, but the term-by-term "
-                    "invariance correction is unavailable. The raw shaping sum is not a classifier."
+                    "algebraic correction is unavailable. The raw shaping sum is not a classifier."
                 )
             elif (
                 max_abs_inv_correction is not None and max_abs_inv_correction < PBRS_INVARIANCE_TOL
             ):
                 if _get_bool_param(reward_params, "hold_potential_enabled", False):
-                    invariance_status = "✅ Canonical verified"
+                    invariance_status = "✅ Canonical algebraic conformance"
                 else:
-                    invariance_status = "✅ PBRS disabled; invariant"
+                    invariance_status = "✅ PBRS disabled"
                 invariance_note = (
                     "Canonical configuration, no additives, and "
-                    "max|reward_shaping - reward_pbrs_delta| is within tolerance. " + boundary_note
+                    "max|reward_shaping - reward_pbrs_delta| is within tolerance. "
+                    "This algebraic check does not prove policy invariance. " + boundary_note
                 )
             else:
-                invariance_status = "❌ Canonical contract violation"
+                invariance_status = "❌ Algebraic contract violation"
                 invariance_note = (
-                    "Configuration is canonical, but the term-by-term invariance correction "
+                    "Configuration is canonical, but the term-by-term algebraic correction "
                     f"exceeds tolerance (max={max_abs_inv_correction:.6e}). " + boundary_note
                 )
 
             pbrs_footer_summary = invariance_status
-            # Summarize PBRS invariance
-            f.write("**PBRS Invariance Summary:**\n\n")
+            # Summarize PBRS algebraic conformance
+            f.write("**PBRS Algebraic Conformance Summary:**\n\n")
             f.write("| Field | Value |\n")
             f.write("|-------|-------|\n")
-            f.write(f"| Invariance Status | {invariance_status} |\n")
+            f.write(f"| Algebraic Status | {invariance_status} |\n")
             f.write(f"| Analysis Note | {invariance_note} |\n")
             f.write(f"| Exit Potential Mode | {exit_potential_mode} |\n")
             f.write(f"| Entry Additive Enabled | {bool(entry_additive_enabled_raw)} |\n")
@@ -4599,7 +4602,7 @@ def write_complete_statistical_analysis(
         else:
             f.write("6. **Distribution Shift** - Not performed (no real episodes provided)\n")
         if "reward_shaping" in df.columns:
-            f.write("7. **PBRS Invariance** - " + pbrs_footer_summary + "\n")
+            f.write("7. **PBRS Algebraic Conformance** - " + pbrs_footer_summary + "\n")
         f.write("\n")
         f.write("**Generated Files:**\n")
         f.write("- `reward_samples.csv` - Raw synthetic samples\n")

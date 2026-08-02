@@ -407,12 +407,13 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
-`MyRLEnv` emits fee-aware pair-local net log-return increments marked to
-liquidation. Their undiscounted raw sum telescopes to the pair-local net log
-return for a completed trade. PPO instead optimizes a discounted return; when
-`gamma < 1`, discounting changes the objective and weights reward timing. This
-reward contract does not model wallet or portfolio equity, nor exchange
-liquidation mechanics.
+`MyRLEnv` emits a fee-aware pair-local economic component marked to
+liquidation. Only the undiscounted sum of `reward_economic` telescopes to the
+pair-local net log return for a completed trade. Total reward also includes an
+invalid-action penalty when masking is disabled, so it does not generally
+telescope. PPO trains on discounted total reward; when `gamma < 1`, discounting
+changes the objective and weights reward timing. This reward contract does not
+model global wallet or portfolio equity, nor exchange liquidation mechanics.
 Inside `MyRLEnv` training and evaluation, an observation contains features and
 position state through candle close `t - 1`; its action fills at candle open
 `t`; a retained position is marked at candle close `t`, while an exit is

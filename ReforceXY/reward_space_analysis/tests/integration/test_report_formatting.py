@@ -167,7 +167,7 @@ class TestReportFormatting(RewardSpaceTestBase):
 
         Verifies:
         - PBRS Metrics subsection exists when PBRS columns present
-        - Section includes Mean Base Reward, Mean PBRS Term, Mean Invariance Correction
+        - Section includes Mean Base Reward, Mean PBRS Term, and algebraic correction metrics
         - All metrics are formatted with proper precision
         """
         # Create df with PBRS columns
@@ -216,9 +216,9 @@ class TestReportFormatting(RewardSpaceTestBase):
             "Std Base Reward",
             "Mean PBRS Delta",
             "Std PBRS Delta",
-            "Mean Invariance Correction",
-            "Std Invariance Correction",
-            "Max \\|Invariance Correction\\|",
+            "Mean Algebraic Correction",
+            "Std Algebraic Correction",
+            "Max \\|Algebraic Correction\\|",
             "Mean \\|PBRS\\| / \\|Base\\| Ratio",
         ]
 

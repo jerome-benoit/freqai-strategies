@@ -158,19 +158,26 @@ always suppressed. Strict mode rejects non-canonical modes and enabled
 additives; relaxed mode normalizes the mode to `canonical` and disables the
 additives explicitly.
 
-The report never uses the raw sum `sum(reward_shaping)` to classify invariance.
-For `gamma < 1`, canonical PBRS telescopes only after discounting:
+The report never uses the raw sum `sum(reward_shaping)` to classify algebraic
+conformance. For `gamma < 1`, canonical PBRS telescopes only after discounting:
 
 ```text
 sum(gamma^t * F_t) = -Phi_0 + gamma^T * Phi_T
 ```
 
-The discounted sum, boundary term, and residual are diagnostics. Classification
-requires both a canonical/no-additive configuration and a finite term-by-term
-`reward_shaping - reward_pbrs_delta` check within tolerance. If that correction
-column is absent, the result is `Unverified`, irrespective of any raw sum. On a
-true termination `Phi_T` must be zero; on a bootstrapable truncation it is
-preserved and the boundary term may be non-zero.
+The discounted sum, boundary term, and residual are diagnostics. Algebraic
+classification requires both a canonical/no-additive configuration and a finite
+term-by-term `reward_shaping - reward_pbrs_delta` check within tolerance. If that
+correction column is absent, algebraic conformance is unverified, irrespective
+of any raw sum. On a true termination `Phi_T` must be zero; on a bootstrapable
+truncation it is preserved and the boundary term may be non-zero.
+
+These checks do not prove policy invariance. That theorem additionally requires
+the learner and shaping term to use the same discount factor, `Phi` to be a
+function of the learner's Markov-observable state (or a sufficient belief
+state), and the shaped and unshaped learning problems to retain identical
+termination and truncation boundaries. This report establishes neither those
+state-sufficiency assumptions nor learner-discount equality.
 
 `profit_aim`, `rr`/`risk_reward_ratio`, and duration parameters remain available
 only for the optional observable potential and FreqAI constructor compatibility.
@@ -284,7 +291,7 @@ The economic contract is observable through:
 | `economic_log_return` | `reward_economic / base_factor` |
 | `cumulative_pair_log_return` | Sum of economic log returns |
 | `synthetic_pair_equity` | Exponential of the cumulative log return |
-| `economic_ruin` | Liquidation value reached zero before clamping |
+| `economic_ruin` | Modelled `1 + pnl_net` was non-positive before numerical flooring |
 | `terminated` | True only for economic ruin |
 | `truncated` | True when the requested sample limit ends normally |
 | `drawdown_breached` | Unavailable (`NaN`) in the pair-local simulator |
