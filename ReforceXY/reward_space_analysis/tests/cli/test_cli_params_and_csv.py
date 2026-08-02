@@ -169,8 +169,8 @@ class TestParamsPropagation(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Missing statistical_analysis.md")
         content = report_path.read_text(encoding="utf-8")
-        # Section numbering includes PBRS invariance line 7
-        self.assertIn("PBRS Invariance", content)
+        # Section numbering includes the PBRS algebraic-conformance line 7
+        self.assertIn("PBRS Algebraic Conformance", content)
 
     def test_strict_diagnostics_constant_distribution_succeeds(self):
         """Run with --strict_diagnostics and low num_samples; expect success, exercising assertion branches before graceful fallback paths."""

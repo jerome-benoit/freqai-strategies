@@ -4376,19 +4376,21 @@ class MyRLEnv(Base5ActionRLEnv):
         return next_potential
 
     def is_pbrs_invariant_mode(self) -> bool:
-        """Return True if current configuration preserves PBRS policy invariance.
+        """Return whether the configuration meets necessary canonical PBRS conditions.
 
-        PBRS policy invariance (Ng et al. 1999) requires:
+        This check covers only:
         1. Canonical exit mode: Φ(terminal) = 0
         2. No path-dependent additives: entry_additive = exit_additive = 0
 
-        When True, the shaped policy π'(s) is guaranteed to be equivalent to
-        the policy π(s) learned with base rewards only.
+        A True result is not sufficient proof of policy invariance. Such a proof
+        additionally requires the learner and shaping term to use the same gamma,
+        Φ to depend on a Markov-observable state (or sufficient belief state), and
+        unchanged termination and truncation boundaries.
 
         Returns
         -------
         bool
-            True if configuration preserves theoretical PBRS invariance
+            True if the necessary canonical configuration conditions hold.
         """
         return self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0] and not (
             self._entry_additive_enabled or self._exit_additive_enabled

@@ -1031,12 +1031,12 @@ class TestPBRS(RewardSpaceTestBase):
         )
         total_shaping = df["reward_shaping"].sum()
         self.assertGreater(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        invariance_status = "❌ Ineligible configuration"
+        invariance_status = "❌ Non-conformant configuration"
         section = []
-        section.append("**PBRS Invariance Summary:**\n")
+        section.append("**PBRS Algebraic Conformance Summary:**\n")
         section.append("| Field | Value |\n")
         section.append("|-------|-------|\n")
-        section.append(f"| Invariance | {invariance_status} |\n")
+        section.append(f"| Algebraic Status | {invariance_status} |\n")
         section.append(f"| Note | Total shaping = {total_shaping:.6f} (non-zero) |\n")
         section.append(f"| Raw Σ Shaping Reward (descriptive only) | {total_shaping:.6f} |\n")
         section.append(f"| Abs Raw Σ Shaping (not a classifier) | {abs(total_shaping):.6e} |\n")
@@ -1044,7 +1044,7 @@ class TestPBRS(RewardSpaceTestBase):
         section.append(f"| Σ Exit Additive | {df['reward_exit_additive'].sum():.6f} |\n")
         content = "".join(section)
         assert_pbrs_invariance_report_classification(
-            self, content, "Ineligible configuration", expect_additives=False
+            self, content, "Non-conformant configuration", expect_additives=False
         )
         self.assertRegex(content, "Raw Σ Shaping Reward \\(descriptive only\\) \\| 0\\.008000 \\|")
         m_abs = re.search(
@@ -1193,7 +1193,7 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant: pbrs-canonical-correction-report-116
     @pytest.mark.smoke
     def test_pbrs_canonical_verified_by_termwise_correction(self):
-        """Invariant 116: correction and discounted telescoping verify canonical PBRS."""
+        """Invariant 116: correction and discounted telescoping verify PBRS algebra."""
 
         small_vals = [0.19, -0.105, -0.1]
         total_shaping = float(sum(small_vals))
@@ -1254,7 +1254,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical near-zero test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical verified", expect_additives=False
+            self, content, "Canonical algebraic conformance", expect_additives=False
         )
         self.assertRegex(content, r"\| Raw Σ Shaping Reward \(descriptive only\) \| -0\.015000 \|")
         m_abs = re.search(
@@ -1329,7 +1329,7 @@ class TestPBRS(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Report file missing for canonical additives test")
         content = report_path.read_text(encoding="utf-8")
-        self.assertIn("Ineligible configuration", content)
+        self.assertIn("Non-conformant configuration", content)
         self.assertIn("entry_additive_enabled=True", content)
         self.assertIn("exit_additive_enabled=True", content)
         self.assertIn("| Entry Additive Enabled | True |", content)
@@ -1338,7 +1338,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("| Exit Additive Effective | False |", content)
 
     def test_pbrs_canonical_contract_violation_report(self):
-        """A non-zero termwise correction is a canonical contract violation."""
+        """A non-zero termwise correction is an algebraic contract violation."""
 
         shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # Σ not near 0
         total_shaping = float(sum(shaping_vals))
@@ -1390,7 +1390,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical warning test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical contract violation", expect_additives=False
+            self, content, "Algebraic contract violation", expect_additives=False
         )
         expected_corr_fragment = f"{max_abs_corr:.6e}"
         self.assertIn(expected_corr_fragment, content)
@@ -1445,7 +1445,7 @@ class TestPBRS(RewardSpaceTestBase):
             report_path.exists(), "Report file missing for non-canonical full report test"
         )
         content = report_path.read_text(encoding="utf-8")
-        self.assertIn("Ineligible configuration", content)
+        self.assertIn("Non-conformant configuration", content)
         self.assertIn("exit_potential_mode='progressive_release'", content)
         self.assertIn("entry_additive_enabled=True", content)
         self.assertIn("exit_additive_enabled=True", content)
@@ -1500,7 +1500,7 @@ class TestPBRS(RewardSpaceTestBase):
             report_path.exists(), "Report file missing for non-canonical mode-only reason test"
         )
         content = report_path.read_text(encoding="utf-8")
-        self.assertIn("Ineligible configuration", content)
+        self.assertIn("Non-conformant configuration", content)
         self.assertIn("exit_potential_mode='retain_previous'", content)
         self.assertNotIn("additives=['entry', 'exit']", content)
 
@@ -1579,7 +1579,7 @@ class TestPBRS(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         self.assertTrue(report_path.exists(), "Report file missing for PBRS absence test")
         content = report_path.read_text(encoding="utf-8")
-        self.assertIn("Unverified", content)
+        self.assertIn("Algebraic conformance unverified", content)
         self.assertIn("raw shaping sum is not a classifier", content)
         self.assertIn("_Not performed (no real episodes provided)._", content)
 
