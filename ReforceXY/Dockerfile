@@ -1,4 +1,4 @@
-ARG freqtrade_image=freqtradeorg/freqtrade@sha256:9caa7cb0a8a13f9639ad3980114f3af0ffbd896d43736eeb65f8d0db8c009093
+ARG freqtrade_image=freqtradeorg/freqtrade@sha256:e808ec0d6c14cf5a2ea8406093b05e8b9230ac363ebdac573101988cd1450410
 FROM ${freqtrade_image}
 
 ARG optuna_version=4.9.0
