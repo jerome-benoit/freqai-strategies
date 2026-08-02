@@ -235,7 +235,25 @@ class _EvaluationHorizonTracker:
         horizon_complete = (
             self.terminal_tick == self.end_tick and observed_steps == expected_steps
         )
-        reason = "end_of_data" if horizon_complete else "early_termination"
+        time_limit_truncated = self.terminal_info.get("TimeLimit.truncated", False)
+        if not isinstance(time_limit_truncated, bool):
+            raise RuntimeError(
+                "Evaluation horizon contract: info['TimeLimit.truncated'] must be a boolean"
+            )
+        economic_ruin = self.terminal_info.get("economic_ruin")
+        if economic_ruin is not None and not isinstance(economic_ruin, bool):
+            raise RuntimeError(
+                "Evaluation horizon contract: info['economic_ruin'] must be a boolean"
+            )
+        legacy_end_of_data = (
+            horizon_complete and "economic_ruin" not in self.terminal_info
+        )
+        if economic_ruin is True:
+            reason = "economic_ruin"
+        elif horizon_complete and (time_limit_truncated or legacy_end_of_data):
+            reason = "end_of_data"
+        else:
+            reason = "early_termination"
         coverage_fraction = observed_steps / expected_steps
         if not np.isfinite(coverage_fraction):
             raise RuntimeError(
@@ -247,7 +265,7 @@ class _EvaluationHorizonTracker:
             coverage_fraction=coverage_fraction,
             horizon_complete=horizon_complete,
             reason=reason,
-            eligible=horizon_complete,
+            eligible=reason == "end_of_data",
         )
 
 
@@ -448,7 +466,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
     _VALIDATION_SEED_OFFSET: Final[int] = 10_000
     _HOLDOUT_SEED_OFFSET: Final[int] = 20_000
-    _OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION: Final[int] = 1
+    _OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION: Final[int] = 2
     _OPTUNA_RETRAIN_COUNTER_SCHEMA_VERSION: Final[int] = 1
     _OPTUNA_STUDY_CONTRACT_ATTR: Final[str] = "reforcexy_study_contract"
     _OPTUNA_STUDY_STATUS_ATTR: Final[str] = "reforcexy_study_status"
@@ -2337,7 +2355,28 @@ class ReforceXY(BaseReinforcementLearningModel):
         }
         model_params = self.get_model_params()
         model_seed = int(model_params.get("seed", 42))
-        base_env_info = BaseReinforcementLearningModel.pack_env_dict(self, dk.pair)
+        policy_gamma = model_params.get("gamma")
+        if (
+            isinstance(policy_gamma, bool)
+            or not isinstance(policy_gamma, (int, float))
+            or not np.isfinite(policy_gamma)
+        ):
+            raise RuntimeError(
+                "Hyperopt contract: resolved policy gamma must be a finite number"
+            )
+        policy_gamma = float(policy_gamma)
+        effective_env_info = self.pack_env_dict(dk.pair, model_params)
+        configured_fee = self.config.get("fee")
+        if configured_fee is not None:
+            effective_fee = configured_fee
+            effective_fee_source = "config"
+        else:
+            effective_fee = effective_env_info.get("fee")
+            effective_fee_source = "environment"
+        eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True)
+        evaluation_runs_per_trial_upper_bound = total_timesteps // (
+            self.n_envs * eval_freq
+        )
         contract = {
             "schema_version": ReforceXY._OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION,
             "context": {
@@ -2351,7 +2390,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "policy_type": self.policy_type,
                 "model_type": self.model_type,
                 "model_params": model_params,
+                "policy_gamma": policy_gamma,
+                "policy_return": "discounted",
                 "resolved_device": str(get_device(model_params.get("device", "auto"))),
+                "selection_metric": "undiscounted_episode_reward",
                 "nonfinite_error_classifier": {
                     "semantic_version": ReforceXY._NONFINITE_ERROR_CLASSIFIER_VERSION,
                     "context_chars": ReforceXY._NONFINITE_ERROR_CONTEXT_CHARS,
@@ -2400,10 +2442,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "rl_config": self.rl_config,
                 "reward_parameters": self.reward_params,
                 "stake_amount": self.config.get("stake_amount"),
-                "fee": base_env_info.get("fee"),
-                "can_short": base_env_info.get("can_short"),
-                "live": base_env_info.get("live"),
-                "window_size": base_env_info.get("window_size"),
+                "fee": {
+                    "source": effective_fee_source,
+                    "value": effective_fee,
+                },
+                "can_short": effective_env_info.get("can_short"),
+                "live": effective_env_info.get("live"),
+                "window_size": effective_env_info.get("window_size"),
                 "action_masking": self.action_masking,
                 "frame_stacking": self.frame_stacking,
                 "material_constants": self._material_environment_constants(),
@@ -2411,8 +2456,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             "budget": {
                 "n_trials": self.optuna_n_trials,
                 "total_timesteps": total_timesteps,
+                "hpo_timesteps_upper_bound": self.optuna_n_trials * total_timesteps,
+                "selected_model_fit_timesteps": total_timesteps,
                 "n_envs": self.n_envs,
-                "eval_freq": self.get_eval_freq(total_timesteps, hyperopt=True),
+                "eval_freq": eval_freq,
+                "evaluation_runs_per_trial_upper_bound": (
+                    evaluation_runs_per_trial_upper_bound
+                ),
                 "n_eval_envs": self.n_eval_envs,
                 "n_eval_episodes": self.n_eval_episodes,
                 "min_resource": min_resource,
@@ -3442,6 +3492,30 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if self.optuna_timeout_hours
                 else None
             )
+            eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True)
+            evaluation_runs_per_trial_upper_bound = total_timesteps // (
+                self.n_envs * eval_freq
+            )
+            logger.info(
+                "Hyperopt [%s]: planned upper budget remaining_trials=%d "
+                "hpo_timesteps=%d selected_model_fit_timesteps=%d "
+                "evaluation_runs=%d evaluation_episodes=%d",
+                study_name,
+                remaining_trials,
+                remaining_trials * total_timesteps,
+                total_timesteps,
+                remaining_trials * evaluation_runs_per_trial_upper_bound,
+                remaining_trials
+                * evaluation_runs_per_trial_upper_bound
+                * self.n_eval_episodes,
+            )
+            if timeout_seconds is None and remaining_trials > 0:
+                logger.warning(
+                    "Hyperopt [%s]: no wall-clock timeout is configured; execution "
+                    "is bounded only by the remaining trial budget (%d)",
+                    study_name,
+                    remaining_trials,
+                )
             executed_trials: List[int] = []
             started_at = time.monotonic()
             if remaining_trials > 0:
