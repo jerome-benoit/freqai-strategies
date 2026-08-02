@@ -76,7 +76,7 @@
     "verbosity": "error",
     "enable_openapi": false,
     "jwt_secret_key": "change-me-before-enabling-the-api",
-    "ws_token": "",
+    "ws_token": "change-me-before-enabling-the-api",
     "CORS_origins": [],
     "username": "freqtrader",
     "password": "freqtrader"
