@@ -5209,6 +5209,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             pair,
             namespace,
             logger,
+            pairs=self.pairs,
             expected_selection_metadata=expected,
             expected_objective_identity=QuickAdapterRegressorV3._OPTUNA_HP_OBJECTIVE_IDENTITY
             if namespace == _OPTUNA_NAMESPACES.hp

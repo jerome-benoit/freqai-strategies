@@ -1740,17 +1740,29 @@ class ReforceXY(BaseReinforcementLearningModel):
             / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
         )
 
-    def _warn_ambiguous_legacy_best_trial_params(
+    def _resolve_legacy_best_trial_params(
         self, pair: str, best_trial_params_path: Path
-    ) -> None:
-        legacy_path = self.full_path / f"hyperopt-best-params-{pair.split('/')[0]}.json"
-        if legacy_path != best_trial_params_path and legacy_path.is_file():
-            logger.warning(
-                "Hyperopt [%s]: ignoring ambiguous legacy best params at %s: "
-                "filename does not encode the complete pair identity",
-                pair,
-                legacy_path,
-            )
+    ) -> Optional[Path]:
+        base = pair.split("/")[0]
+        legacy_path = self.full_path / f"hyperopt-best-params-{base}.json"
+        if (
+            legacy_path == best_trial_params_path
+            or legacy_path.is_symlink()
+            or not legacy_path.is_file()
+        ):
+            return None
+        base_pair_count = sum(
+            1 for configured in self.pairs if configured.split("/")[0] == base
+        )
+        if base_pair_count == 1:
+            return legacy_path
+        logger.warning(
+            "Hyperopt [%s]: ignoring ambiguous legacy best params at %s: "
+            "filename does not encode the complete pair identity",
+            pair,
+            legacy_path,
+        )
+        return None
 
     @staticmethod
     @contextmanager
@@ -1762,15 +1774,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
         # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
-        lock_fd = os.open(
-            lock_path,
-            (os.O_RDWR if exclusive else os.O_RDONLY)
-            | os.O_CREAT
-            | os.O_CLOEXEC
-            | os.O_NOFOLLOW
-            | os.O_NONBLOCK,
-            0o666,
-        )
+        # A shared reader omits O_CREAT: a read-only mount cannot create the lock,
+        # and os.replace atomicity keeps a lock-free read consistent.
+        open_flags = (
+            (os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY
+        ) | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            lock_fd = os.open(lock_path, open_flags, 0o666)
+        except FileNotFoundError:
+            if exclusive:
+                raise
+            yield
+            return
         try:
             if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
                 raise OSError(
@@ -1857,15 +1872,26 @@ class ReforceXY(BaseReinforcementLearningModel):
                             temporary_metadata.st_uid != existing_metadata.st_uid
                             or temporary_metadata.st_gid != existing_metadata.st_gid
                         ):
-                            os.fchown(
-                                write_file.fileno(),
-                                existing_metadata.st_uid
-                                if temporary_metadata.st_uid != existing_metadata.st_uid
-                                else -1,
-                                existing_metadata.st_gid
-                                if temporary_metadata.st_gid != existing_metadata.st_gid
-                                else -1,
-                            )
+                            # Best-effort: a non-root process on a cross-uid bind
+                            # mount lacks CAP_CHOWN; the previous in-place write
+                            # never chowned, so a failure must not abort the save.
+                            try:
+                                os.fchown(
+                                    write_file.fileno(),
+                                    existing_metadata.st_uid
+                                    if temporary_metadata.st_uid != existing_metadata.st_uid
+                                    else -1,
+                                    existing_metadata.st_gid
+                                    if temporary_metadata.st_gid != existing_metadata.st_gid
+                                    else -1,
+                                )
+                            except PermissionError as chown_error:
+                                logger.debug(
+                                    "Hyperopt [%s]: best params ownership "
+                                    "preservation skipped: %r",
+                                    pair,
+                                    chown_error,
+                                )
                         os.fchmod(
                             write_file.fileno(),
                             stat.S_IMODE(existing_metadata.st_mode),
@@ -1909,10 +1935,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
             self._reject_best_trial_params_symlink(best_trial_params_path)
             if not best_trial_params_path.is_file():
-                self._warn_ambiguous_legacy_best_trial_params(
+                legacy_path = self._resolve_legacy_best_trial_params(
                     pair, best_trial_params_path
                 )
-                return None
+                if legacy_path is None:
+                    return None
+                best_trial_params_path = legacy_path
             logger.info(
                 "Hyperopt [%s]: loading best params from %s",
                 pair,

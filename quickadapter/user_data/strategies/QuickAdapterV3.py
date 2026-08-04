@@ -2468,4 +2468,6 @@ class QuickAdapterV3(IStrategy):
         # tolerable here. The regressor's ``optuna_load_best_params``
         # passes ``expected_selection_metadata`` and rejects drift before
         # re-running HPO selection.
-        return optuna_load_best_params(self.models_full_path, pair, namespace, logger)
+        return optuna_load_best_params(
+            self.models_full_path, pair, namespace, logger, pairs=self.pairs
+        )

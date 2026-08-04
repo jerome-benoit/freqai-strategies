@@ -5311,28 +5311,39 @@ def _optuna_best_params_path(
     return base_path / f"optuna-{namespace}-best-params-{pair_to_filename(pair)}.json"
 
 
-def _warn_ambiguous_legacy_optuna_best_params(
+def _resolve_legacy_optuna_best_params(
     base_path: Path,
     pair: str,
     namespace: OptunaNamespace,
     best_params_path: Path,
+    pairs: Sequence[str] | None,
     logger: Logger | None,
-) -> None:
-    """Warn when a base-only legacy best-params file shadows the pair-safe path."""
-    if logger is None:
-        return
+) -> Path | None:
+    """Return a usable legacy base-only best-params file, or None.
+
+    The legacy filename encodes only the pair base; reusing it is safe only
+    when exactly one configured pair maps to that base. Otherwise it is
+    ambiguous and must be ignored (with a warning).
+    """
+    base = pair.split("/")[0]
     legacy_best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
+        base_path / f"optuna-{namespace}-best-params-{base}.json"
     )
     if (
-        legacy_best_params_path != best_params_path
-        and legacy_best_params_path.is_file()
+        legacy_best_params_path == best_params_path
+        or legacy_best_params_path.is_symlink()
+        or not legacy_best_params_path.is_file()
     ):
+        return None
+    if pairs is not None and sum(1 for p in pairs if p.split("/")[0] == base) == 1:
+        return legacy_best_params_path
+    if logger is not None:
         logger.warning(
             f"[{pair}] Ignoring ambiguous legacy Optuna {namespace} best params "
             f"at {legacy_best_params_path}: filename does not encode the complete "
             f"pair identity"
         )
+    return None
 
 
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
@@ -5547,15 +5558,18 @@ def _locked_optuna_best_params(
     lock_path = best_params_path.parent / ".optuna-best-params.lock"
     # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
     # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
-    lock_fd = os.open(
-        lock_path,
-        (os.O_RDWR if exclusive else os.O_RDONLY)
-        | os.O_CREAT
-        | os.O_CLOEXEC
-        | os.O_NOFOLLOW
-        | os.O_NONBLOCK,
-        0o666,
-    )
+    # A shared reader omits O_CREAT: a read-only mount cannot create the lock,
+    # and os.replace atomicity keeps a lock-free read consistent.
+    open_flags = (
+        (os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY
+    ) | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        lock_fd = os.open(lock_path, open_flags, 0o666)
+    except FileNotFoundError:
+        if exclusive:
+            raise
+        yield
+        return
     try:
         if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
             raise OSError(f"Optuna best params lock {lock_path} must be a regular file")
@@ -5579,6 +5593,7 @@ def optuna_load_best_params(
     namespace: OptunaNamespace,
     logger: Logger | None = None,
     *,
+    pairs: Sequence[str] | None = None,
     expected_selection_metadata: dict[str, Any] | None = None,
     expected_objective_identity: str | None = None,
 ) -> dict[str, Any] | None:
@@ -5589,10 +5604,12 @@ def optuna_load_best_params(
     with _locked_optuna_best_params(best_params_path, exclusive=False):
         _reject_optuna_best_params_symlink(best_params_path)
         if not best_params_path.is_file():
-            _warn_ambiguous_legacy_optuna_best_params(
-                base_path, pair, namespace, best_params_path, logger
+            legacy_best_params_path = _resolve_legacy_optuna_best_params(
+                base_path, pair, namespace, best_params_path, pairs, logger
             )
-            return None
+            if legacy_best_params_path is None:
+                return None
+            best_params_path = legacy_best_params_path
         try:
             with best_params_path.open("r", encoding="utf-8") as read_file:
                 best_params = json.load(read_file)
@@ -5691,15 +5708,25 @@ def optuna_save_best_params(
                         temporary_metadata.st_uid != existing_metadata.st_uid
                         or temporary_metadata.st_gid != existing_metadata.st_gid
                     ):
-                        os.fchown(
-                            write_file.fileno(),
-                            existing_metadata.st_uid
-                            if temporary_metadata.st_uid != existing_metadata.st_uid
-                            else -1,
-                            existing_metadata.st_gid
-                            if temporary_metadata.st_gid != existing_metadata.st_gid
-                            else -1,
-                        )
+                        # Best-effort: a non-root process on a cross-uid bind
+                        # mount lacks CAP_CHOWN; the previous in-place write
+                        # never chowned, so a failure must not abort the save.
+                        try:
+                            os.fchown(
+                                write_file.fileno(),
+                                existing_metadata.st_uid
+                                if temporary_metadata.st_uid != existing_metadata.st_uid
+                                else -1,
+                                existing_metadata.st_gid
+                                if temporary_metadata.st_gid != existing_metadata.st_gid
+                                else -1,
+                            )
+                        except PermissionError as chown_error:
+                            if logger is not None:
+                                logger.debug(
+                                    f"[{pair}] Optuna {namespace} best params "
+                                    f"ownership preservation skipped: {chown_error!r}"
+                                )
                     os.fchmod(
                         write_file.fileno(),
                         stat.S_IMODE(existing_metadata.st_mode),
