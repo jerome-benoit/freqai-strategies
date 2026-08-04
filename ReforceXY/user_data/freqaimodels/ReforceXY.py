@@ -272,11 +272,6 @@ class ReforceXY(BaseReinforcementLearningModel):
     _STORAGE_BACKENDS: Final[Tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLERS: Final[_Samplers] = _Samplers()
     _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
-    _JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
-    _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
-    _BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
-    _BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
-    _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     _JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
     _JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
     _JOURNAL_RECOVERABLE_ERRORS: Final[
@@ -288,6 +283,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         ValueError,
         json.JSONDecodeError,
     )
+    _QUARANTINE_TAG: Final[str] = "corrupt"
+    _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
+    _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -1444,15 +1442,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         return quarantine_path
 
     @staticmethod
-    def _quarantine_path(journal_path: Path, now: datetime) -> Path:
+    def _quarantine_path(path: Path, now: datetime) -> Path:
         stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
-        base_name = f"{journal_path.name}.{ReforceXY._JOURNAL_QUARANTINE_TAG}-{stamp}"
-        for index in range(ReforceXY._JOURNAL_QUARANTINE_TIE_BREAK_LIMIT + 1):
+        base_name = f"{path.name}.{ReforceXY._QUARANTINE_TAG}-{stamp}"
+        for index in range(ReforceXY._QUARANTINE_TIE_BREAK_LIMIT + 1):
             suffix = "" if index == 0 else f"-{index}"
-            candidate = journal_path.with_name(f"{base_name}{suffix}")
+            candidate = path.with_name(f"{base_name}{suffix}")
             if not candidate.exists():
                 return candidate
-        raise FileExistsError(journal_path)
+        raise FileExistsError(path)
 
     def create_storage(self, pair: str) -> BaseStorage:
         """
@@ -1790,20 +1788,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     ) -> Optional[Path]:
         if not best_trial_params_path.exists():
             return None
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        quarantine_base = (
-            f"{best_trial_params_path.name}."
-            f"{ReforceXY._BEST_PARAMS_QUARANTINE_TAG}-{stamp}"
+        quarantine_path = ReforceXY._quarantine_path(
+            best_trial_params_path, datetime.now(timezone.utc)
         )
-        for index in range(ReforceXY._BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT + 1):
-            suffix = "" if index == 0 else f"-{index}"
-            quarantine_path = best_trial_params_path.with_name(
-                f"{quarantine_base}{suffix}"
-            )
-            if not quarantine_path.exists():
-                break
-        else:
-            raise FileExistsError(best_trial_params_path)
         try:
             best_trial_params_path.rename(quarantine_path)
         except OSError as quarantine_error:
