@@ -1443,6 +1443,13 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     @staticmethod
     def _quarantine_path(path: Path, now: datetime) -> Path:
+        """Quarantine target path for a corrupt Optuna artefact.
+
+        The tag and timestamp are appended after the complete filename
+        (extension included) so live-artefact globs never match quarantined
+        files. Collisions are bounded by ``_QUARANTINE_TIE_BREAK_LIMIT``;
+        exhausted candidates raise instead of reusing a quarantine file.
+        """
         stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
         base_name = f"{path.name}.{ReforceXY._QUARANTINE_TAG}-{stamp}"
         for index in range(ReforceXY._QUARANTINE_TIE_BREAK_LIMIT + 1):
