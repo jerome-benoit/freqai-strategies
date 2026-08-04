@@ -103,6 +103,7 @@ from Utils import (
     label_weight_column_name,
     label_weight_known_at_lookahead_column_name,
     migrate_config,
+    _optuna_quarantine_path,
     optuna_load_best_params,
     optuna_save_best_params,
     require_bool,
@@ -4784,26 +4785,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return study
 
     @staticmethod
-    def _optuna_quarantine_path(journal_path: Path, now: datetime) -> Path:
-        """Quarantine target path for a corrupt Optuna journal.
-
-        The tag is appended *after* ``.log`` so the live-journal glob
-        ``optuna-*.log`` never matches quarantined artefacts. Collisions
-        are bounded by ``_OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT``;
-        exhausted candidates raise instead of reusing a quarantine file.
-        """
-        stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
-        tag = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TAG
-        base_name = f"{journal_path.name}.{tag}-{stamp}"
-        limit = QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT
-        for index in range(limit + 1):
-            suffix = "" if index == 0 else f"-{index}"
-            candidate = journal_path.with_name(f"{base_name}{suffix}")
-            if not candidate.exists():
-                return candidate
-        raise FileExistsError(journal_path)
-
-    @staticmethod
     def _optuna_quarantine_journal(
         journal_path: Path, pair: str, cause: Exception
     ) -> Optional[Path]:
@@ -4817,8 +4798,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """
         if not journal_path.exists():
             return None
-        quarantine_path = QuickAdapterRegressorV3._optuna_quarantine_path(
-            journal_path, datetime.now(timezone.utc)
+        quarantine_path = _optuna_quarantine_path(
+            journal_path,
+            datetime.now(timezone.utc),
+            tag=QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TAG,
+            limit=QuickAdapterRegressorV3._OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT,
         )
         try:
             journal_path.rename(quarantine_path)

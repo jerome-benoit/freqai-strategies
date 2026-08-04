@@ -5482,6 +5482,26 @@ def _validate_optuna_label_best_params(
     return params
 
 
+def _optuna_quarantine_path(
+    path: Path, now: datetime, *, tag: str, limit: int
+) -> Path:
+    """Quarantine target path for a corrupt Optuna artefact.
+
+    The tag and timestamp are appended after the complete filename
+    (extension included) so live-artefact globs never match quarantined
+    files. Collisions are bounded by ``limit``; exhausted candidates raise
+    instead of reusing a quarantine file.
+    """
+    stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
+    base_name = f"{path.name}.{tag}-{stamp}"
+    for index in range(limit + 1):
+        suffix = "" if index == 0 else f"-{index}"
+        candidate = path.with_name(f"{base_name}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(path)
+
+
 def _quarantine_corrupt_optuna_best_params(
     best_params_path: Path,
     pair: str,
@@ -5492,17 +5512,12 @@ def _quarantine_corrupt_optuna_best_params(
     """Atomically move corrupt persisted best params out of the live path."""
     if not best_params_path.exists():
         return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    quarantine_base = (
-        f"{best_params_path.name}.{_OPTUNA_BEST_PARAMS_QUARANTINE_TAG}-{stamp}"
+    quarantine_path = _optuna_quarantine_path(
+        best_params_path,
+        datetime.now(timezone.utc),
+        tag=_OPTUNA_BEST_PARAMS_QUARANTINE_TAG,
+        limit=_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT,
     )
-    for index in range(_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT + 1):
-        suffix = "" if index == 0 else f"-{index}"
-        quarantine_path = best_params_path.with_name(f"{quarantine_base}{suffix}")
-        if not quarantine_path.exists():
-            break
-    else:
-        raise FileExistsError(best_params_path)
     try:
         best_params_path.rename(quarantine_path)
     except OSError as quarantine_error:
