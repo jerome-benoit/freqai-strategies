@@ -1,12 +1,16 @@
 import copy
+import fcntl
 import gc
 import json
 import logging
 import math
+import os
+import stat
 import time
 import warnings
 from collections import defaultdict, deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -25,6 +29,7 @@ from typing import (
     assert_never,
     cast,
 )
+from uuid import uuid4
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -269,6 +274,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
     _JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
     _JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
+    _BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
+    _BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
+    _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     _JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
     _JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
     _JOURNAL_RECOVERABLE_ERRORS: Final[
@@ -1721,50 +1729,226 @@ class ReforceXY(BaseReinforcementLearningModel):
             convert_optuna_params_to_model_params(self.model_type, best_trial_params),
         )
 
+    def _best_trial_params_path(self, pair: str) -> Path:
+        return (
+            self.full_path
+            / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
+        )
+
+    def _warn_ambiguous_legacy_best_trial_params(
+        self, pair: str, best_trial_params_path: Path
+    ) -> None:
+        legacy_path = self.full_path / f"hyperopt-best-params-{pair.split('/')[0]}.json"
+        if legacy_path != best_trial_params_path and legacy_path.is_file():
+            logger.warning(
+                "Hyperopt [%s]: ignoring ambiguous legacy best params at %s: "
+                "filename does not encode the complete pair identity",
+                pair,
+                legacy_path,
+            )
+
+    @staticmethod
+    @contextmanager
+    def _locked_best_trial_params(
+        best_trial_params_path: Path, *, exclusive: bool
+    ) -> Iterator[None]:
+        lock_path = (
+            best_trial_params_path.parent / ReforceXY._BEST_PARAMS_LOCK_FILENAME
+        )
+        # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
+        # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
+        lock_fd = os.open(
+            lock_path,
+            (os.O_RDWR if exclusive else os.O_RDONLY)
+            | os.O_CREAT
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK,
+            0o666,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+                raise OSError(
+                    f"Hyperopt best params lock {lock_path} must be a regular file"
+                )
+            fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            os.close(lock_fd)
+
+    @staticmethod
+    def _reject_best_trial_params_symlink(best_trial_params_path: Path) -> None:
+        if best_trial_params_path.is_symlink():
+            raise OSError(
+                f"Hyperopt best params path {best_trial_params_path} "
+                "must not be a symlink"
+            )
+
+    @staticmethod
+    def _quarantine_corrupt_best_trial_params(
+        best_trial_params_path: Path, pair: str, cause: Exception
+    ) -> Optional[Path]:
+        if not best_trial_params_path.exists():
+            return None
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        quarantine_base = (
+            f"{best_trial_params_path.name}."
+            f"{ReforceXY._BEST_PARAMS_QUARANTINE_TAG}-{stamp}"
+        )
+        for index in range(ReforceXY._BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT + 1):
+            suffix = "" if index == 0 else f"-{index}"
+            quarantine_path = best_trial_params_path.with_name(
+                f"{quarantine_base}{suffix}"
+            )
+            if not quarantine_path.exists():
+                break
+        else:
+            raise FileExistsError(best_trial_params_path)
+        try:
+            best_trial_params_path.rename(quarantine_path)
+        except OSError as quarantine_error:
+            logger.error(
+                "Hyperopt [%s]: best params %s quarantine failed: %r",
+                pair,
+                best_trial_params_path.name,
+                quarantine_error,
+                exc_info=True,
+            )
+            raise
+        logger.warning(
+            "Hyperopt [%s]: best params %s corrupt (%r); quarantined to %s; "
+            "no persisted best params recovered",
+            pair,
+            best_trial_params_path.name,
+            cause,
+            quarantine_path.name,
+        )
+        return quarantine_path
+
     def save_best_trial_params(
         self, best_trial_params: Dict[str, Any], pair: str
     ) -> None:
         """
         Save the best trial hyperparameters found during hyperparameter optimization
         """
-        best_trial_params_filename = f"hyperopt-best-params-{pair.split('/')[0]}"
-        best_trial_params_path = Path(
-            self.full_path / f"{best_trial_params_filename}.json"
-        )
+        best_trial_params_path = self._best_trial_params_path(pair)
         logger.info(
             "Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path
         )
+        temporary_path: Optional[Path] = None
         try:
-            with best_trial_params_path.open("w", encoding="utf-8") as write_file:
-                json.dump(best_trial_params, write_file, indent=4)
-        except Exception as e:
-            logger.error(
-                "Hyperopt [%s]: failed to save best params to %s: %r",
-                pair,
-                best_trial_params_path,
-                e,
-                exc_info=True,
-            )
+            with self._locked_best_trial_params(
+                best_trial_params_path, exclusive=True
+            ):
+                self._reject_best_trial_params_symlink(best_trial_params_path)
+                try:
+                    existing_metadata = best_trial_params_path.stat()
+                except FileNotFoundError:
+                    existing_metadata = None
+                temporary_path = best_trial_params_path.with_name(
+                    f".{best_trial_params_path.name}.{uuid4().hex}.tmp"
+                )
+                with os.fdopen(
+                    os.open(
+                        temporary_path,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o666,
+                    ),
+                    mode="w",
+                    encoding="utf-8",
+                ) as write_file:
+                    if existing_metadata is not None:
+                        temporary_metadata = os.fstat(write_file.fileno())
+                        if (
+                            temporary_metadata.st_uid != existing_metadata.st_uid
+                            or temporary_metadata.st_gid != existing_metadata.st_gid
+                        ):
+                            os.fchown(
+                                write_file.fileno(),
+                                existing_metadata.st_uid
+                                if temporary_metadata.st_uid != existing_metadata.st_uid
+                                else -1,
+                                existing_metadata.st_gid
+                                if temporary_metadata.st_gid != existing_metadata.st_gid
+                                else -1,
+                            )
+                        os.fchmod(
+                            write_file.fileno(),
+                            stat.S_IMODE(existing_metadata.st_mode),
+                        )
+                    json.dump(best_trial_params, write_file, indent=4)
+                    write_file.flush()
+                    os.fsync(write_file.fileno())
+                os.replace(temporary_path, best_trial_params_path)
+                temporary_path = None
+        except BaseException as error:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    logger.error(
+                        "Hyperopt [%s]: best params temporary file %s cleanup "
+                        "failed: %r",
+                        pair,
+                        temporary_path.name,
+                        cleanup_error,
+                        exc_info=True,
+                    )
+            if isinstance(error, Exception):
+                logger.error(
+                    "Hyperopt [%s]: failed to save best params to %s: %r",
+                    pair,
+                    best_trial_params_path,
+                    error,
+                    exc_info=True,
+                )
             raise
 
     def load_best_trial_params(self, pair: str) -> Optional[Dict[str, Any]]:
         """
         Load the best trial hyperparameters found and saved during hyperparameter optimization
         """
-        best_trial_params_filename = f"hyperopt-best-params-{pair.split('/')[0]}"
-        best_trial_params_path = Path(
-            self.full_path / f"{best_trial_params_filename}.json"
-        )
-        if best_trial_params_path.is_file():
+        best_trial_params_path = self._best_trial_params_path(pair)
+        if not best_trial_params_path.parent.is_dir():
+            return None
+        malformed = False
+        with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
+            self._reject_best_trial_params_symlink(best_trial_params_path)
+            if not best_trial_params_path.is_file():
+                self._warn_ambiguous_legacy_best_trial_params(
+                    pair, best_trial_params_path
+                )
+                return None
             logger.info(
                 "Hyperopt [%s]: loading best params from %s",
                 pair,
                 best_trial_params_path,
             )
-            with best_trial_params_path.open("r", encoding="utf-8") as read_file:
-                best_trial_params = json.load(read_file)
-            return best_trial_params
-        return None
+            try:
+                with best_trial_params_path.open("r", encoding="utf-8") as read_file:
+                    best_trial_params = json.load(read_file)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                malformed = True
+        if malformed:
+            with self._locked_best_trial_params(
+                best_trial_params_path, exclusive=True
+            ):
+                self._reject_best_trial_params_symlink(best_trial_params_path)
+                if not best_trial_params_path.is_file():
+                    return None
+                try:
+                    with best_trial_params_path.open(
+                        "r", encoding="utf-8"
+                    ) as read_file:
+                        best_trial_params = json.load(read_file)
+                except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                    quarantined = self._quarantine_corrupt_best_trial_params(
+                        best_trial_params_path, pair, decode_error
+                    )
+                    if quarantined is None:
+                        raise
+                    return None
+        return best_trial_params
 
     def _get_train_and_eval_environments(
         self,
