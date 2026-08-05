@@ -57,6 +57,7 @@ All test classes inherit from `RewardSpaceTestBase` (defined in `test_base.py`):
 ```python
 from ..test_base import RewardSpaceTestBase
 
+
 class TestMyFeature(RewardSpaceTestBase):
     def test_something(self):
         self.assertFinite(value)  # unittest-style assertion
@@ -135,8 +136,7 @@ Individual tests can add additional markers:
 
 ```python
 @pytest.mark.smoke
-def test_quick_check(self):
-    ...
+def test_quick_check(self): ...
 ```
 
 ## Running Tests
