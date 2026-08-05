@@ -1769,16 +1769,17 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _locked_best_trial_params(
         best_trial_params_path: Path, *, exclusive: bool
     ) -> Iterator[None]:
-        lock_path = (
-            best_trial_params_path.parent / ReforceXY._BEST_PARAMS_LOCK_FILENAME
-        )
+        lock_path = best_trial_params_path.parent / ReforceXY._BEST_PARAMS_LOCK_FILENAME
         # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
         # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
         # A shared reader omits O_CREAT: a read-only mount cannot create the lock,
         # and os.replace atomicity keeps a lock-free read consistent.
         open_flags = (
-            (os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY
-        ) | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+            ((os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY)
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK
+        )
         try:
             lock_fd = os.open(lock_path, open_flags, 0o666)
         except FileNotFoundError:
@@ -1846,9 +1847,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         temporary_path: Optional[Path] = None
         try:
-            with self._locked_best_trial_params(
-                best_trial_params_path, exclusive=True
-            ):
+            with self._locked_best_trial_params(best_trial_params_path, exclusive=True):
                 self._reject_best_trial_params_symlink(best_trial_params_path)
                 try:
                     existing_metadata = best_trial_params_path.stat()
@@ -1879,10 +1878,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                                 os.fchown(
                                     write_file.fileno(),
                                     existing_metadata.st_uid
-                                    if temporary_metadata.st_uid != existing_metadata.st_uid
+                                    if temporary_metadata.st_uid
+                                    != existing_metadata.st_uid
                                     else -1,
                                     existing_metadata.st_gid
-                                    if temporary_metadata.st_gid != existing_metadata.st_gid
+                                    if temporary_metadata.st_gid
+                                    != existing_metadata.st_gid
                                     else -1,
                                 )
                             except PermissionError as chown_error:
@@ -1952,9 +1953,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             except (json.JSONDecodeError, UnicodeDecodeError):
                 malformed = True
         if malformed:
-            with self._locked_best_trial_params(
-                best_trial_params_path, exclusive=True
-            ):
+            with self._locked_best_trial_params(best_trial_params_path, exclusive=True):
                 self._reject_best_trial_params_symlink(best_trial_params_path)
                 if not best_trial_params_path.is_file():
                     return None

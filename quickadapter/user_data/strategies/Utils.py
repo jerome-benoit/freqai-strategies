@@ -5326,9 +5326,7 @@ def _resolve_legacy_optuna_best_params(
     ambiguous and must be ignored (with a warning).
     """
     base = pair.split("/")[0]
-    legacy_best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{base}.json"
-    )
+    legacy_best_params_path = base_path / f"optuna-{namespace}-best-params-{base}.json"
     if (
         legacy_best_params_path == best_params_path
         or legacy_best_params_path.is_symlink()
@@ -5493,9 +5491,7 @@ def _validate_optuna_label_best_params(
     return params
 
 
-def _optuna_quarantine_path(
-    path: Path, now: datetime, *, tag: str, limit: int
-) -> Path:
+def _optuna_quarantine_path(path: Path, now: datetime, *, tag: str, limit: int) -> Path:
     """Quarantine target path for a corrupt Optuna artefact.
 
     The tag and timestamp are appended after the complete filename
@@ -5561,8 +5557,11 @@ def _locked_optuna_best_params(
     # A shared reader omits O_CREAT: a read-only mount cannot create the lock,
     # and os.replace atomicity keeps a lock-free read consistent.
     open_flags = (
-        (os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY
-    ) | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+        ((os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY)
+        | os.O_CLOEXEC
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+    )
     try:
         lock_fd = os.open(lock_path, open_flags, 0o666)
     except FileNotFoundError:
