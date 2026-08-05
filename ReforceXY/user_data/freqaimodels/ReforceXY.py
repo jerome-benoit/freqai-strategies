@@ -37,6 +37,7 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import optunahub
 import torch as th
+from freqtrade.enums import RunMode
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
 from freqtrade.freqai.RL.BaseEnvironment import BaseEnvironment
@@ -207,6 +208,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON: Final[float] = 1e-6
     DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION: Final[float] = 0.01
+    DEFAULT_INFERENCE_MASKING: Final[bool] = True
 
     _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
         "PPO",
@@ -296,17 +298,51 @@ class ReforceXY(BaseReinforcementLearningModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        runmode = self.config.get("runmode")
+        if self.model_type == ReforceXY._MODEL_TYPES[1] and runmode in (
+            RunMode.DRY_RUN,
+            RunMode.LIVE,
+        ):
+            raise ValueError(
+                "Config [global]: RecurrentPPO is disabled in dry-run and live "
+                "because ReforceXY does not maintain complete causal observation "
+                "history or durable episode state across process restarts."
+            )
+
+        inference_masking = self.rl_config.get(
+            "inference_masking", ReforceXY.DEFAULT_INFERENCE_MASKING
+        )
+        if (
+            self.model_type == ReforceXY._MODEL_TYPES[2]
+            and inference_masking is not True
+        ):
+            raise ValueError(
+                "Config [global]: MaskablePPO requires inference_masking=true "
+                "so inference uses the same ReforceXY action-mask mechanism as "
+                "training and evaluation."
+            )
+
+        action_masking = self.model_type == ReforceXY._MODEL_TYPES[2]
+        configured_action_masking = self.rl_config.get("action_masking")
+        if (
+            "action_masking" in self.rl_config
+            and configured_action_masking is not action_masking
+        ):
+            raise ValueError(
+                "Config [global]: action_masking="
+                f"{configured_action_masking!r} conflicts with "
+                f"model_type={self.model_type!r}; expected {action_masking!r}."
+            )
+        self.action_masking: bool = action_masking
+        self.rl_config["action_masking"] = action_masking
+
         self.pairs: List[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
                 "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
-        self.action_masking: bool = (
-            self.model_type == ReforceXY._MODEL_TYPES[2]
-        )  # "MaskablePPO"
-        self.rl_config.setdefault("action_masking", self.action_masking)
-        self.inference_masking: bool = self.rl_config.get("inference_masking", True)
+        self.inference_masking: bool = inference_masking
         self.recurrent: bool = (
             self.model_type == ReforceXY._MODEL_TYPES[1]
         )  # "RecurrentPPO"
