@@ -228,7 +228,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.4"
+    version = "3.13.0-rc.5"
 
     _TEST_SIZE: Final[float] = 0.1
     _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
