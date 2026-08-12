@@ -35,6 +35,7 @@ from datasieve.transforms import SKLearnWrapper
 from freqtrade.enums import TRADE_MODES
 from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
+from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from numpy.typing import NDArray
 from optuna.storages import JournalStorage
@@ -114,6 +115,92 @@ from Utils import (
     soft_extremum,
     zigzag,
 )
+
+_DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
+
+
+def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return ``frame`` with a unique ``date_pred`` per row, keeping the most
+    informative row per timestamp.
+
+    freqtrade 2026.7 ``FreqaiDataDrawer.set_initial_return_values`` trims the new
+    prediction window by position (``new_pred.iloc[len(common_dates):]``) instead
+    of by date value. When the persisted history overlaps the tail of the
+    analysis window (the normal restart geometry), the trim misaligns and the
+    following ``pd.concat`` re-creates duplicate ``date_pred`` rows, which the
+    ``validate="m:1"`` merge in ``attach_return_values_to_return_dataframe`` then
+    rejects with a ``MergeError``. This repairs the store in memory: a real
+    prediction outranks a zero/NaN placeholder, and ``NaT`` rows are preserved as
+    they never match the merge key.
+    """
+    date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
+    valid = date_pred.notna()
+    if not date_pred[valid].duplicated().any():
+        return frame
+    work = frame.reset_index(drop=True)
+    content = [column for column in work.columns if column not in ("date_pred", "date")]
+    block = work[content]
+    numeric = block.apply(pd.to_numeric, errors="coerce")
+    is_numeric = numeric.notna()
+    informative = (block.notna() & is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
+    work = work.assign(
+        _dp=date_pred.to_numpy(),
+        _valid=valid.to_numpy(),
+        _score=informative.sum(axis=1).to_numpy(),
+        _nonnull=block.notna().sum(axis=1).to_numpy(),
+        _order=work.index.to_numpy(),
+    )
+    contested = work[work["_valid"]].sort_values(
+        ["_dp", "_score", "_nonnull", "_order"], kind="stable"
+    )
+    kept = pd.concat([contested.drop_duplicates("_dp", keep="last"), work[~work["_valid"]]])
+    kept = kept.sort_values("_dp", kind="stable", na_position="last")
+    return kept.drop(columns=["_dp", "_valid", "_score", "_nonnull", "_order"]).reset_index(
+        drop=True
+    )
+
+
+def _install_date_pred_dedup_patch() -> None:
+    """Wrap ``FreqaiDataDrawer`` so the freqtrade seam bug cannot leave duplicate
+    ``date_pred`` rows (see ``_dedupe_historic_predictions_on_date_pred``).
+
+    Re-verify against ``freqtrade/freqai/data_drawer.py`` on every freqtrade bump:
+    the three wrapped method signatures must still hold.
+    """
+    if getattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, False):
+        return
+    original_set_initial = FreqaiDataDrawer.set_initial_return_values
+    original_append = FreqaiDataDrawer.append_model_predictions
+    original_attach = FreqaiDataDrawer.attach_return_values_to_return_dataframe
+
+    def set_initial_return_values(self, pair, pred_df, dataframe):
+        original_set_initial(self, pair, pred_df, dataframe)
+        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = frame
+        self.model_return_values[pair] = frame.tail(len(dataframe.index)).reset_index(drop=True)
+
+    def append_model_predictions(self, pair, predictions, do_preds, dk, strat_df):
+        original_append(self, pair, predictions, do_preds, dk, strat_df)
+        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = frame
+        self.model_return_values[pair] = frame.tail(len(strat_df.index)).reset_index(drop=True)
+
+    def attach_return_values_to_return_dataframe(self, pair, dataframe):
+        self.model_return_values[pair] = _dedupe_historic_predictions_on_date_pred(
+            self.model_return_values[pair]
+        )
+        return original_attach(self, pair, dataframe)
+
+    FreqaiDataDrawer.set_initial_return_values = set_initial_return_values
+    FreqaiDataDrawer.append_model_predictions = append_model_predictions
+    FreqaiDataDrawer.attach_return_values_to_return_dataframe = (
+        attach_return_values_to_return_dataframe
+    )
+    setattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, True)
+
+
+_install_date_pred_dedup_patch()
+
 
 OptunaSampler = Literal["tpe", "auto", "nsgaii", "nsgaiii"]
 ScalerType = Literal["minmax", "maxabs", "standard", "robust"]
