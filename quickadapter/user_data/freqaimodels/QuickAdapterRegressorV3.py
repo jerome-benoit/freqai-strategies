@@ -120,25 +120,9 @@ _DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return ``frame`` with a unique ``date_pred`` per row, keeping the most
-    informative row per timestamp.
-
-    Primary case: a ``historic_predictions`` store that already holds duplicate
-    ``date_pred`` rows (e.g. persisted across a crash). freqtrade 2026.7
-    ``FreqaiDataDrawer.set_initial_return_values`` carries that frame through
-    unchanged — its ``pd.concat`` (data_drawer.py:335) preserves ``hist_preds`` —
-    so the duplicates survive into ``model_return_values`` and the
-    ``validate="m:1"`` merge in ``attach_return_values_to_return_dataframe``
-    (data_drawer.py:429-431) rejects them with a ``MergeError``. Secondary case:
-    ``set_initial_return_values`` counts the overlapping dates
-    (``len(common_dates)``, data_drawer.py:319) but trims ``new_pred`` by position
-    (``new_pred.iloc[len(common_dates):]``, data_drawer.py:321); when the shared
-    dates are not a contiguous, singly-occurring head prefix of ``new_pred`` — a
-    gapped store, or one overlapping the tail of the analysis window, both
-    possible with strictly monotonic dates — that trim misaligns and the concat
-    introduces fresh duplicates. This repairs the store in memory: a real
-    prediction outranks a zero/NaN placeholder, and ``NaT`` rows are preserved as
-    they never match the merge key.
+    """Return ``frame`` with unique non-NaT ``date_pred``, keeping the most
+    informative row per timestamp (a real prediction outranks a zero/NaN
+    placeholder); ``NaT`` rows are preserved and rows keep their original order.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
     valid = date_pred.notna()
@@ -168,11 +152,14 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Wrap ``FreqaiDataDrawer`` so the freqtrade seam bug cannot leave duplicate
-    ``date_pred`` rows (see ``_dedupe_historic_predictions_on_date_pred``).
+    """Keep ``FreqaiDataDrawer``'s per-pair prediction store free of duplicate
+    ``date_pred`` rows, which freqtrade 2026.7 does not deduplicate and its
+    ``validate="m:1"`` merge (data_drawer.py:429-431) then rejects with a
+    ``MergeError``. Duplicates persist across a crash or are re-created by the
+    positional trim in ``set_initial_return_values`` (data_drawer.py:319-321).
 
-    Re-verify against ``freqtrade/freqai/data_drawer.py`` on every freqtrade bump:
-    the three wrapped method signatures must still hold.
+    Re-verify the three wrapped signatures against ``data_drawer.py`` on every
+    freqtrade bump.
     """
     if getattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, False):
         return
