@@ -489,6 +489,29 @@ _Cronjob setup (daily check at 3:00 AM):_
 0 3 * * * cd /path/to/freqai-strategies/ReforceXY && ./docker-upgrade.sh >> user_data/logs/docker-upgrade.log 2>&1
 ```
 
+**Repair duplicated FreqAI historic predictions:**
+
+FreqAI stores rolling predictions per pair in
+`user_data/models/<identifier>/historic_predictions.pkl`. After a brutal stop,
+its crash recovery can append duplicate `date_pred` rows; FreqAI's many-to-one
+merge then raises `MergeError` and stops analyzing that pair. This tool removes
+the duplicates, keeping the most informative row per `date_pred`. Stop the bot
+first (a running bot re-persists the in-memory state), and run it inside the
+container so it uses the same pandas that wrote the file. The original is kept as
+a timestamped `.corrupt-<stamp>` copy; omit `--apply` to preview (dry-run).
+
+```shell
+cd quickadapter  # or ReforceXY
+docker compose stop
+docker compose run --rm -T --entrypoint python freqtrade - \
+  < ../scripts/historic_predictions_deduplicate.py            # dry-run
+docker compose run --rm -T --entrypoint python freqtrade - --apply \
+  < ../scripts/historic_predictions_deduplicate.py
+```
+
+Pass `--identifier <id>` to repair a single model directory or `--path <file>`
+for one file; the default scans `user_data/models/*/historic_predictions.pkl`.
+
 ---
 
 ## Note
