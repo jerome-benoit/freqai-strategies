@@ -16,8 +16,9 @@ numerics, non-zero), then by non-null count, then by most-recent write. A real
 prediction is therefore never discarded in favour of an all-NaN placeholder; a
 real all-zero row and a zero-filled placeholder are byte-identical, so collapsing
 them loses nothing. FreqAI also mirrors the store to
-``historic_predictions.backup.pkl`` on every clean save and falls back to it if
-the primary fails to load, so the tool deduplicates the backup as well.
+``historic_predictions.backup.pkl`` on every clean save and falls back to it
+only when the primary is truncated (loading it raises ``EOFError``), so the tool
+deduplicates the backup as well.
 
 Run it inside the freqtrade container so it uses the same pandas that wrote the
 file; the host pandas may be unable to unpickle it. Stop the bot first: a running

@@ -497,10 +497,11 @@ its crash recovery can append duplicate `date_pred` rows; FreqAI's many-to-one
 merge then raises `MergeError` and stops analyzing that pair. This tool removes
 the duplicates, keeping the most informative row per `date_pred`. FreqAI also
 mirrors the store to `historic_predictions.backup.pkl` on every clean save and
-falls back to it if the primary fails to load, so the tool repairs the backup
-too. Stop the bot first (a running bot re-persists the in-memory state), and run
-it inside the container so it uses the same pandas that wrote the file. Each
-repaired file is kept as a timestamped `.corrupt-<stamp>` copy; omit `--apply` to
+falls back to it only when the primary is truncated (loading it raises
+`EOFError`), so the tool repairs the backup too. Stop the bot first (a running
+bot re-persists the in-memory state), and run it inside the container so it uses
+the same pandas that wrote the file. Before each file is rewritten, its original
+is copied aside as a timestamped `.corrupt-<stamp>` file; omit `--apply` to
 preview (dry-run).
 
 ```shell
