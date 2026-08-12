@@ -315,6 +315,22 @@ def test_main_skips_unreadable_target(tmp_path: Path) -> None:
         assert not frame["date_pred"].duplicated().any()
 
 
+def test_cloudpickle_reads_stdlib_pickle(tmp_path: Path) -> None:
+    if importlib.util.find_spec("cloudpickle") is None:
+        return  # absent on host; interop exercised in-container only
+    import cloudpickle
+
+    store = {"SUI/USD:USD": pd.DataFrame([_row("2026-08-12 12:10:00", 0.9, 1, 100.0)])}
+    path = tmp_path / "historic_predictions.pkl"
+    with path.open("wb") as handle:
+        pickle.dump(store, handle)
+    hp._atomic_write_pickle(store, path)
+    with path.open("rb") as handle:
+        reloaded = cloudpickle.load(handle)
+    assert list(reloaded) == ["SUI/USD:USD"]
+    assert not reloaded["SUI/USD:USD"]["date_pred"].duplicated().any()
+
+
 def _run_all() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0
