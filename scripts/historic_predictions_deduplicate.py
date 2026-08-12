@@ -7,9 +7,9 @@ pair to a ``pandas.DataFrame`` keyed on the candle timestamp copied into
 ``date_pred``). After a brutal stop (SIGKILL/OOM/power loss), FreqAI's clean-exit
 save is skipped and, on restart, its backfill can leave the store with the same
 ``date_pred`` appearing more than once. FreqAI then merges predictions onto the
-candle frame with a left join, so duplicate keys silently row-explode the merge;
-only builds that add a ``validate="m:1"`` guard raise ``MergeError`` instead,
-which stops that pair from being analyzed.
+candle frame with a left join, so duplicate keys silently multiply the affected
+candle rows; only builds that add a ``validate="m:1"`` guard raise ``MergeError``
+instead, which stops that pair from being analyzed.
 
 This tool removes the duplicate ``date_pred`` rows, keeping the most informative
 row per timestamp: rows are ranked by informative cells (non-null and, for
@@ -155,7 +155,7 @@ def deduplicate_store(
 
 
 def _quarantine_original(path: Path, now: datetime) -> Path:
-    """Copy the pre-dedup file aside as ``<name>.original-<stamp>`` (kept, not lost)."""
+    """Copy the pre-dedup file aside as ``<name>.original-<stamp>``."""
     stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
     base = f"{path.name}.{DEFAULTS['quarantine_tag']}-{stamp}"
     for index in range(DEFAULTS["quarantine_tie_break_limit"] + 1):
