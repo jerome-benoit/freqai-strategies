@@ -123,18 +123,22 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     """Return ``frame`` with a unique ``date_pred`` per row, keeping the most
     informative row per timestamp.
 
-    freqtrade 2026.7 ``FreqaiDataDrawer.set_initial_return_values`` counts the
-    overlapping dates (``len(common_dates)``) but trims ``new_pred`` by position
-    (``new_pred.iloc[len(common_dates):]``). That count matches the overlap's
-    position only when the shared dates are a contiguous head prefix of
-    ``new_pred`` and appear once on each side. A crash-persisted store that
-    overlaps the tail of the analysis window, or that already holds duplicate
-    ``date_pred`` rows, breaks that correspondence, so the following ``pd.concat``
-    reintroduces duplicate ``date_pred`` values, which the ``validate="m:1"``
-    merge in ``attach_return_values_to_return_dataframe`` then rejects with a
-    ``MergeError``. This repairs the store in memory: a real prediction outranks a
-    zero/NaN placeholder, and ``NaT`` rows are preserved as they never match the
-    merge key.
+    Primary case: a ``historic_predictions`` store that already holds duplicate
+    ``date_pred`` rows (e.g. persisted across a crash). freqtrade 2026.7
+    ``FreqaiDataDrawer.set_initial_return_values`` carries that frame through
+    unchanged — its ``pd.concat`` (data_drawer.py:335) preserves ``hist_preds`` —
+    so the duplicates survive into ``model_return_values`` and the
+    ``validate="m:1"`` merge in ``attach_return_values_to_return_dataframe``
+    (data_drawer.py:429-431) rejects them with a ``MergeError``. Secondary case:
+    ``set_initial_return_values`` counts the overlapping dates
+    (``len(common_dates)``, data_drawer.py:319) but trims ``new_pred`` by position
+    (``new_pred.iloc[len(common_dates):]``, data_drawer.py:321); when the shared
+    dates are not a contiguous, singly-occurring head prefix of ``new_pred`` — a
+    gapped store, or one overlapping the tail of the analysis window, both
+    possible with strictly monotonic dates — that trim misaligns and the concat
+    introduces fresh duplicates. This repairs the store in memory: a real
+    prediction outranks a zero/NaN placeholder, and ``NaT`` rows are preserved as
+    they never match the merge key.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
     valid = date_pred.notna()
