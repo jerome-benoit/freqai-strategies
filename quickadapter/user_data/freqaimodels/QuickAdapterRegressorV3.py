@@ -173,19 +173,30 @@ def _install_date_pred_dedup_patch() -> None:
     original_append = FreqaiDataDrawer.append_model_predictions
     original_attach = FreqaiDataDrawer.attach_return_values_to_return_dataframe
 
-    def set_initial_return_values(self, pair, pred_df, dataframe):
+    def set_initial_return_values(
+        self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
+    ) -> None:
         original_set_initial(self, pair, pred_df, dataframe)
         frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
         self.historic_predictions[pair] = frame
         self.model_return_values[pair] = frame.tail(len(dataframe.index)).reset_index(drop=True)
 
-    def append_model_predictions(self, pair, predictions, do_preds, dk, strat_df):
+    def append_model_predictions(
+        self,
+        pair: str,
+        predictions: pd.DataFrame,
+        do_preds: NDArray[np.int_],
+        dk: FreqaiDataKitchen,
+        strat_df: pd.DataFrame,
+    ) -> None:
         original_append(self, pair, predictions, do_preds, dk, strat_df)
         frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
         self.historic_predictions[pair] = frame
         self.model_return_values[pair] = frame.tail(len(strat_df.index)).reset_index(drop=True)
 
-    def attach_return_values_to_return_dataframe(self, pair, dataframe):
+    def attach_return_values_to_return_dataframe(
+        self, pair: str, dataframe: pd.DataFrame
+    ) -> pd.DataFrame:
         self.model_return_values[pair] = _dedupe_historic_predictions_on_date_pred(
             self.model_return_values[pair]
         )
