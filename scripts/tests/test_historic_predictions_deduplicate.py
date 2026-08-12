@@ -331,6 +331,16 @@ def test_cloudpickle_reads_stdlib_pickle(tmp_path: Path) -> None:
     assert not reloaded["SUI/USD:USD"]["date_pred"].duplicated().any()
 
 
+def test_informative_score_ignores_nat_datetime_cells() -> None:
+    frame = pd.DataFrame(
+        {
+            "&s-extrema": [0.0, 0.0],
+            "signal_time": pd.to_datetime([pd.Timestamp("2026-01-01", tz="UTC"), pd.NaT]),
+        }
+    )
+    assert list(hp._informative_score(frame)) == [1, 0]  # NaT datetime cell not informative
+
+
 def _run_all() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

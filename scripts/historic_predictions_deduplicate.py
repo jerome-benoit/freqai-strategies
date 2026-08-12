@@ -74,7 +74,7 @@ def _informative_score(frame: pd.DataFrame) -> pd.Series:
     block = frame[columns]
     numeric = block.apply(pd.to_numeric, errors="coerce")
     is_numeric = numeric.notna()
-    informative = (is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
+    informative = (block.notna() & is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
     return informative.sum(axis=1).astype("int64")
 
 
