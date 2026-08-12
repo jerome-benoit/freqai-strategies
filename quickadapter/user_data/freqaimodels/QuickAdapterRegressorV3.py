@@ -154,7 +154,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         ["_dp", "_score", "_nonnull", "_order"], kind="stable"
     )
     kept = pd.concat([contested.drop_duplicates("_dp", keep="last"), work[~work["_valid"]]])
-    kept = kept.sort_values("_dp", kind="stable", na_position="last")
+    kept = kept.sort_values("_order", kind="stable")
     return kept.drop(columns=["_dp", "_valid", "_score", "_nonnull", "_order"]).reset_index(
         drop=True
     )
