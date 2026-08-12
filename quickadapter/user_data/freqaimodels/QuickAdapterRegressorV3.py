@@ -120,13 +120,16 @@ _DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return ``frame`` with unique non-NaT ``date_pred``, keeping the most
-    informative row per timestamp (a real prediction outranks a zero/NaN
-    placeholder); ``NaT`` rows are preserved and rows keep their original order.
+    """Return ``frame`` with a unique, chronologically ordered ``date_pred``,
+    keeping the most informative row per timestamp (a real prediction outranks a
+    zero/NaN placeholder). ``NaT`` ``date_pred`` rows are dropped: they match no
+    candle, and two or more of them break the ``validate="m:1"`` merge in
+    ``attach_return_values_to_return_dataframe`` (data_drawer.py:429-431) since
+    pandas treats repeated null keys as non-unique.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
     valid = date_pred.notna()
-    if not date_pred[valid].duplicated().any():
+    if valid.all() and not date_pred[valid].duplicated().any():
         return frame
     work = frame.reset_index(drop=True)
     content = [column for column in work.columns if column not in ("date_pred", "date")]
@@ -136,19 +139,15 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     informative = (block.notna() & is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
     work = work.assign(
         _dp=date_pred.to_numpy(),
-        _valid=valid.to_numpy(),
         _score=informative.sum(axis=1).to_numpy(),
         _nonnull=block.notna().sum(axis=1).to_numpy(),
         _order=work.index.to_numpy(),
     )
-    contested = work[work["_valid"]].sort_values(
+    contested = work[valid.to_numpy()].sort_values(
         ["_dp", "_score", "_nonnull", "_order"], kind="stable"
     )
-    kept = pd.concat([contested.drop_duplicates("_dp", keep="last"), work[~work["_valid"]]])
-    kept = kept.sort_values("_order", kind="stable")
-    return kept.drop(columns=["_dp", "_valid", "_score", "_nonnull", "_order"]).reset_index(
-        drop=True
-    )
+    kept = contested.drop_duplicates("_dp", keep="last")
+    return kept.drop(columns=["_dp", "_score", "_nonnull", "_order"]).reset_index(drop=True)
 
 
 def _install_date_pred_dedup_patch() -> None:
