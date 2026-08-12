@@ -495,10 +495,13 @@ FreqAI stores rolling predictions per pair in
 `user_data/models/<identifier>/historic_predictions.pkl`. After a brutal stop,
 its crash recovery can append duplicate `date_pred` rows; FreqAI's many-to-one
 merge then raises `MergeError` and stops analyzing that pair. This tool removes
-the duplicates, keeping the most informative row per `date_pred`. Stop the bot
-first (a running bot re-persists the in-memory state), and run it inside the
-container so it uses the same pandas that wrote the file. The original is kept as
-a timestamped `.corrupt-<stamp>` copy; omit `--apply` to preview (dry-run).
+the duplicates, keeping the most informative row per `date_pred`. FreqAI also
+mirrors the store to `historic_predictions.backup.pkl` on every clean save and
+falls back to it if the primary fails to load, so the tool repairs the backup
+too. Stop the bot first (a running bot re-persists the in-memory state), and run
+it inside the container so it uses the same pandas that wrote the file. Each
+repaired file is kept as a timestamped `.corrupt-<stamp>` copy; omit `--apply` to
+preview (dry-run).
 
 ```shell
 cd quickadapter  # or ReforceXY
@@ -510,7 +513,8 @@ docker compose run --rm -T --entrypoint python freqtrade - --apply \
 ```
 
 Pass `--identifier <id>` to repair a single model directory or `--path <file>`
-for one file; the default scans `user_data/models/*/historic_predictions.pkl`.
+for one file; the default scans every `historic_predictions.pkl` and
+`historic_predictions.backup.pkl` under `user_data/models/`.
 
 ---
 

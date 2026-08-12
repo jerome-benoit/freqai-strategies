@@ -11,8 +11,13 @@ more than once. FreqAI then merges predictions onto the candle frame with
 silently row-explodes the merge), which stops that pair from being analyzed.
 
 This tool removes the duplicate ``date_pred`` rows, keeping the most informative
-row per timestamp so a real prediction is never discarded in favour of a
-backfill placeholder (placeholders are all-zero or all-NaN except ``date_pred``).
+row per timestamp: rows are ranked by informative cells (non-null and, for
+numerics, non-zero), then by non-null count, then by most-recent write. A real
+prediction is therefore never discarded in favour of an all-NaN placeholder; a
+real all-zero row and a zero-filled placeholder are byte-identical, so collapsing
+them loses nothing. FreqAI also mirrors the store to
+``historic_predictions.backup.pkl`` on every clean save and falls back to it if
+the primary fails to load, so the tool deduplicates the backup as well.
 
 Run it inside the freqtrade container so it uses the same pandas that wrote the
 file; the host pandas may be unable to unpickle it. Stop the bot first: a running
@@ -36,6 +41,9 @@ import pandas as pd
 
 DEFAULTS: dict[str, Any] = {
     "user_data": "/freqtrade/user_data",
+    "models_dirname": "models",
+    "store_filename": "historic_predictions.pkl",
+    "backup_filename": "historic_predictions.backup.pkl",
     "quarantine_tag": "corrupt",
     "quarantine_tie_break_limit": 99,
 }
@@ -45,14 +53,20 @@ DEFAULTS: dict[str, Any] = {
 _CONTENT_EXCLUDE = ("date_pred", "date")
 
 
+def _content_columns(frame: pd.DataFrame) -> list[str]:
+    return [column for column in frame.columns if column not in _CONTENT_EXCLUDE]
+
+
 def _informative_score(frame: pd.DataFrame) -> pd.Series:
     """Count informative cells per row (non-null and, for numerics, non-zero).
 
     FreqAI backfill placeholders are all-zero or all-NaN except ``date_pred``, so
     a plain non-null count would rank a zero-filled placeholder as high as a real
-    prediction. Treating zero as non-informative lets a real row always win.
+    prediction. Treating zero as non-informative lets a real row outrank a zero
+    placeholder; ties against an all-NaN placeholder are then broken by the
+    non-null count (see ``_nonnull_count``).
     """
-    columns = [column for column in frame.columns if column not in _CONTENT_EXCLUDE]
+    columns = _content_columns(frame)
     if not columns:
         return pd.Series(0, index=frame.index, dtype="int64")
     block = frame[columns]
@@ -62,28 +76,51 @@ def _informative_score(frame: pd.DataFrame) -> pd.Series:
     return informative.sum(axis=1).astype("int64")
 
 
+def _nonnull_count(frame: pd.DataFrame) -> pd.Series:
+    """Count non-null content cells per row (tie-break below informativeness).
+
+    A real all-zero row has non-null zeros; an all-NaN placeholder does not, so
+    this keeps the real row when both score zero on informativeness.
+    """
+    columns = _content_columns(frame)
+    if not columns:
+        return pd.Series(0, index=frame.index, dtype="int64")
+    return frame[columns].notna().sum(axis=1).astype("int64")
+
+
 def deduplicate_pair(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Return the frame with unique ``date_pred`` and the removed-row count."""
+    """Return the frame with unique non-NaT ``date_pred`` and the removed count.
+
+    Only rows with a valid (non-NaT) ``date_pred`` can duplicate FreqAI's
+    many-to-one merge key, so NaT rows are preserved untouched.
+    """
     if frame is None or frame.empty or "date_pred" not in frame.columns:
         return frame, 0
     normalized = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
-    if not normalized.duplicated().any():
+    valid = normalized.notna()
+    if not normalized[valid].duplicated().any():
         return frame, 0
     work = frame.reset_index(drop=True)
     work = work.assign(
         _dp=normalized.to_numpy(),
+        _valid=valid.to_numpy(),
         _score=_informative_score(work).to_numpy(),
+        _nonnull=_nonnull_count(work).to_numpy(),
         _order=work.index.to_numpy(),
     )
-    # Sort so the kept row per timestamp is the most informative, breaking ties
-    # by the latest original position (most recent write).
-    work = work.sort_values(
-        ["_dp", "_score", "_order"], kind="stable", na_position="last"
+    # Among duplicate timestamps keep the most informative row, breaking ties by
+    # non-null count (a real all-zero row beats an all-NaN placeholder) then by
+    # the latest original position; NaT rows are carried through untouched.
+    contested = work[work["_valid"]].sort_values(
+        ["_dp", "_score", "_nonnull", "_order"], kind="stable"
     )
-    kept = work.drop_duplicates(subset="_dp", keep="last")
+    kept_contested = contested.drop_duplicates(subset="_dp", keep="last")
+    kept = pd.concat([kept_contested, work[~work["_valid"]]])
     kept = kept.sort_values("_dp", kind="stable", na_position="last")
     removed = len(frame) - len(kept)
-    result = kept.drop(columns=["_dp", "_score", "_order"]).reset_index(drop=True)
+    result = kept.drop(columns=["_dp", "_valid", "_score", "_nonnull", "_order"]).reset_index(
+        drop=True
+    )
     return result, removed
 
 
@@ -109,11 +146,8 @@ def deduplicate_store(
             }
         )
         if removed:
-            after = deduplicated
-            duplicated = pd.to_datetime(
-                after["date_pred"], utc=True, errors="coerce"
-            ).duplicated()
-            if duplicated.any():
+            after_normalized = pd.to_datetime(deduplicated["date_pred"], utc=True, errors="coerce")
+            if after_normalized[after_normalized.notna()].duplicated().any():
                 raise AssertionError(f"[{pair}] duplicate date_pred remain after dedup")
     return new_store, report, total_removed
 
@@ -132,16 +166,40 @@ def _quarantine_original(path: Path, now: datetime) -> Path:
 
 
 def _atomic_write_pickle(store: dict[str, pd.DataFrame], path: Path) -> None:
-    """Write the store atomically (temp + fsync + os.replace), preserving mode."""
+    """Write the store atomically (temp + fsync + os.replace), preserving mode/owner.
+
+    Uses the stdlib ``pickle``: FreqAI writes the store with joblib's vendored
+    cloudpickle, but a plain ``dict`` of DataFrames pickles to a standard stream
+    that ``pickle`` round-trips and FreqAI's ``cloudpickle.load`` reads back;
+    standalone ``cloudpickle`` is not importable in the freqtrade image.
+    """
     temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        existing_mode = path.stat().st_mode
+        existing_stat = path.stat()
         payload = pickle.dumps(store, protocol=pickle.HIGHEST_PROTOCOL)
-        file_descriptor = os.open(
-            temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666
-        )
+        file_descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
         with os.fdopen(file_descriptor, mode="wb") as write_file:
-            os.fchmod(write_file.fileno(), stat.S_IMODE(existing_mode))
+            temporary_stat = os.fstat(write_file.fileno())
+            if (
+                temporary_stat.st_uid != existing_stat.st_uid
+                or temporary_stat.st_gid != existing_stat.st_gid
+            ):
+                # Best-effort: a non-root process on a cross-uid bind mount lacks
+                # CAP_CHOWN; the store was never chowned before, so failure here
+                # must not abort the repair.
+                try:
+                    os.fchown(
+                        write_file.fileno(),
+                        existing_stat.st_uid
+                        if temporary_stat.st_uid != existing_stat.st_uid
+                        else -1,
+                        existing_stat.st_gid
+                        if temporary_stat.st_gid != existing_stat.st_gid
+                        else -1,
+                    )
+                except PermissionError:
+                    pass
+            os.fchmod(write_file.fileno(), stat.S_IMODE(existing_stat.st_mode))
             write_file.write(payload)
             write_file.flush()
             os.fsync(write_file.fileno())
@@ -159,20 +217,24 @@ def load_store(path: Path) -> dict[str, pd.DataFrame]:
     return store
 
 
-def find_targets(
-    user_data: Path, identifier: str | None, path: str | None
-) -> list[Path]:
+def find_targets(user_data: Path, identifier: str | None, path: str | None) -> list[Path]:
     if path is not None:
         target = Path(path)
         if not target.is_file():
             raise FileNotFoundError(target)
         return [target]
+    filenames = (DEFAULTS["store_filename"], DEFAULTS["backup_filename"])
+    models = user_data / DEFAULTS["models_dirname"]
     if identifier is not None:
-        target = user_data / "models" / identifier / "historic_predictions.pkl"
-        if not target.is_file():
-            raise FileNotFoundError(target)
-        return [target]
-    return sorted(user_data.glob("models/*/historic_predictions.pkl"))
+        directory = models / identifier
+        existing = [directory / name for name in filenames if (directory / name).is_file()]
+        if not existing:
+            raise FileNotFoundError(directory / DEFAULTS["store_filename"])
+        return existing
+    found: list[Path] = []
+    for name in filenames:
+        found.extend(models.glob(f"*/{name}"))
+    return sorted(found)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -196,9 +258,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _print_report(
-    path: Path, report: list[dict[str, Any]], removed: int, apply: bool
-) -> None:
+def _print_report(path: Path, report: list[dict[str, Any]], removed: int, apply: bool) -> None:
     mode = "apply" if apply else "dry-run"
     print(f"# {path} | mode={mode} | pandas={pd.__version__}")
     print(f"{'pair':<24}{'rows_before':>12}{'removed':>10}{'rows_after':>12}")
@@ -216,7 +276,11 @@ def main(argv: list[str] | None = None) -> int:
     user_data = Path(args.user_data)
     targets = find_targets(user_data, args.identifier, args.path)
     if not targets:
-        print(f"# no historic_predictions.pkl found under {user_data}/models/")
+        print(
+            f"# no {DEFAULTS['store_filename']} found under "
+            f"{user_data}/{DEFAULTS['models_dirname']}/",
+            file=sys.stderr,
+        )
         return 0
     changed_files = 0
     for target in targets:
@@ -226,12 +290,10 @@ def main(argv: list[str] | None = None) -> int:
         if removed and args.apply:
             quarantine = _quarantine_original(target, datetime.now(timezone.utc))
             _atomic_write_pickle(new_store, target)
-            print(
-                f"# quarantined original to {quarantine.name}; wrote deduplicated store"
-            )
+            print(f"# quarantined original to {quarantine.name}; wrote deduplicated store")
             changed_files += 1
         elif removed:
-            print("# dry-run: re-run with --apply to write changes")
+            print("# dry-run: re-run with --apply to write changes", file=sys.stderr)
     print(f"# files scanned: {len(targets)} | files changed: {changed_files}")
     return 0
 
