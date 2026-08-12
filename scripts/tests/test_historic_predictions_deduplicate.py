@@ -13,6 +13,7 @@ import importlib.util
 import inspect
 import io
 import pickle
+import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -317,7 +318,7 @@ def test_main_skips_unreadable_target(tmp_path: Path) -> None:
 
 def test_cloudpickle_reads_stdlib_pickle(tmp_path: Path) -> None:
     if importlib.util.find_spec("cloudpickle") is None:
-        return  # absent on host; interop exercised in-container only
+        raise unittest.SkipTest("cloudpickle absent on host; interop exercised in-container only")
     import cloudpickle
 
     store = {"SUI/USD:USD": pd.DataFrame([_row("2026-08-12 12:10:00", 0.9, 1, 100.0)])}
@@ -344,6 +345,7 @@ def test_informative_score_ignores_nat_datetime_cells() -> None:
 def _run_all() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0
+    skipped = 0
     import tempfile
 
     for test in tests:
@@ -353,11 +355,19 @@ def _run_all() -> int:
                     test(Path(directory))
             else:
                 test()
-            print(f"PASS {test.__name__}")
+        except unittest.SkipTest as reason:
+            skipped += 1
+            print(f"SKIP {test.__name__}: {reason}")
+            continue
         except Exception as error:  # noqa: BLE001 - self-test reporter
             failures += 1
             print(f"FAIL {test.__name__}: {error!r}")
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
+            continue
+        print(f"PASS {test.__name__}")
+    summary = f"\n{len(tests) - failures - skipped}/{len(tests) - skipped} passed"
+    if skipped:
+        summary += f", {skipped} skipped"
+    print(summary)
     return 1 if failures else 0
 
 
