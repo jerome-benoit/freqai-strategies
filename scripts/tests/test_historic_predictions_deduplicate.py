@@ -295,6 +295,26 @@ def test_main_apply_dedups_and_quarantines(tmp_path: Path) -> None:
     assert "files changed: 0" in replay.getvalue()  # idempotent
 
 
+def test_main_skips_unreadable_target(tmp_path: Path) -> None:
+    models = tmp_path / "models"
+    bad = models / "id1"
+    bad.mkdir(parents=True)
+    (bad / "historic_predictions.pkl").write_bytes(b"not a pickle")
+    good = models / "id2"
+    good.mkdir(parents=True)
+    with (good / "historic_predictions.pkl").open("wb") as handle:
+        pickle.dump(_dup_store(), handle)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = hp.main(["--user-data", str(tmp_path), "--apply"])
+    assert code == 1
+    assert "files skipped: 1" in out.getvalue()
+    assert "files changed: 1" in out.getvalue()
+    assert "skipped unreadable store" in err.getvalue()
+    for frame in hp.load_store(good / "historic_predictions.pkl").values():
+        assert not frame["date_pred"].duplicated().any()
+
+
 def _run_all() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

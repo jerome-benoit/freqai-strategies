@@ -284,8 +284,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     changed_files = 0
+    skipped_files = 0
     for target in targets:
-        store = load_store(target)
+        try:
+            store = load_store(target)
+        except (OSError, EOFError, pickle.UnpicklingError, TypeError) as error:
+            skipped_files += 1
+            print(f"# {target}: skipped unreadable store: {error!r}", file=sys.stderr)
+            continue
         new_store, report, removed = deduplicate_store(store)
         _print_report(target, report, removed, args.apply)
         if removed and args.apply:
@@ -295,8 +301,11 @@ def main(argv: list[str] | None = None) -> int:
             changed_files += 1
         elif removed:
             print("# dry-run: re-run with --apply to write changes", file=sys.stderr)
-    print(f"# files scanned: {len(targets)} | files changed: {changed_files}")
-    return 0
+    print(
+        f"# files scanned: {len(targets)} | files changed: {changed_files} "
+        f"| files skipped: {skipped_files}"
+    )
+    return 1 if skipped_files else 0
 
 
 if __name__ == "__main__":
