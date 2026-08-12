@@ -489,6 +489,38 @@ _Cronjob setup (daily check at 3:00 AM):_
 0 3 * * * cd /path/to/freqai-strategies/ReforceXY && ./docker-upgrade.sh >> user_data/logs/docker-upgrade.log 2>&1
 ```
 
+**Repair duplicated FreqAI historic predictions:**
+
+FreqAI stores rolling predictions per pair in
+`user_data/models/<identifier>/historic_predictions.pkl`. After a brutal stop,
+its crash recovery can leave duplicate `date_pred` rows. FreqAI's left merge on
+`date_pred` then multiplies the affected candle rows instead of matching them
+one-to-one, corrupting that pair's analysis. This tool removes the duplicates,
+keeping the most informative row per `date_pred`. FreqAI also
+mirrors the store to `historic_predictions.backup.pkl` on every clean save and
+falls back to it only when the primary is truncated (loading it raises
+`EOFError`), so the tool repairs the backup too. Stop the bot first (a running
+bot re-persists the in-memory state), and run it inside the container so it uses
+the same pandas that wrote the file. Before each file is rewritten, its original
+is copied aside as a timestamped `.original-<stamp>` file; omit `--apply` to
+preview (dry-run).
+
+```shell
+cd quickadapter  # or ReforceXY
+docker compose stop
+docker compose run --rm -T --entrypoint python freqtrade - \
+  < ../scripts/historic_predictions_deduplicate.py            # dry-run
+docker compose run --rm -T --entrypoint python freqtrade - --apply \
+  < ../scripts/historic_predictions_deduplicate.py
+```
+
+Pass `--identifier <id>` to repair a single model directory or `--path <file>`
+for one file; the default scans every `historic_predictions.pkl` and
+`historic_predictions.backup.pkl` under `user_data/models/`.
+
+The tool exits `1` when it skipped any unreadable store, so a scripted or cron
+run can detect a partial repair, and `0` otherwise, including a clean dry-run.
+
 ---
 
 ## Note
