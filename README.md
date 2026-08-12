@@ -518,6 +518,9 @@ Pass `--identifier <id>` to repair a single model directory or `--path <file>`
 for one file; the default scans every `historic_predictions.pkl` and
 `historic_predictions.backup.pkl` under `user_data/models/`.
 
+The tool exits `1` when it skipped any unreadable store, so a scripted or cron
+run can detect a partial repair, and `0` otherwise, including a clean dry-run.
+
 ---
 
 ## Note
