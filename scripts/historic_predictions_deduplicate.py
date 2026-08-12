@@ -177,7 +177,6 @@ def _atomic_write_pickle(store: dict[str, pd.DataFrame], path: Path) -> None:
     temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
         existing_stat = path.stat()
-        payload = pickle.dumps(store, protocol=pickle.HIGHEST_PROTOCOL)
         file_descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
         with os.fdopen(file_descriptor, mode="wb") as write_file:
             temporary_stat = os.fstat(write_file.fileno())
@@ -201,7 +200,7 @@ def _atomic_write_pickle(store: dict[str, pd.DataFrame], path: Path) -> None:
                 except PermissionError:
                     pass
             os.fchmod(write_file.fileno(), stat.S_IMODE(existing_stat.st_mode))
-            write_file.write(payload)
+            pickle.dump(store, write_file, protocol=pickle.HIGHEST_PROTOCOL)
             write_file.flush()
             os.fsync(write_file.fileno())
         os.replace(temporary_path, path)
