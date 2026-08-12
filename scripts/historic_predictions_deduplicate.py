@@ -5,10 +5,11 @@ FreqAI persists rolling predictions per pair in
 ``user_data/models/<identifier>/historic_predictions.pkl`` (a ``dict`` mapping a
 pair to a ``pandas.DataFrame`` keyed on the candle timestamp copied into
 ``date_pred``). After a brutal stop (SIGKILL/OOM/power loss), FreqAI's clean-exit
-save is skipped and, on restart, its backfill can append the same ``date_pred``
-more than once. FreqAI then merges predictions onto the candle frame with
-``validate="m:1"`` and raises ``MergeError`` (or, on builds without that guard,
-silently row-explodes the merge), which stops that pair from being analyzed.
+save is skipped and, on restart, its backfill can leave the store with the same
+``date_pred`` appearing more than once. FreqAI then merges predictions onto the
+candle frame with a left join, so duplicate keys silently row-explode the merge;
+only builds that add a ``validate="m:1"`` guard raise ``MergeError`` instead,
+which stops that pair from being analyzed.
 
 This tool removes the duplicate ``date_pred`` rows, keeping the most informative
 row per timestamp: rows are ranked by informative cells (non-null and, for

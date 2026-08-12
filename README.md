@@ -493,9 +493,10 @@ _Cronjob setup (daily check at 3:00 AM):_
 
 FreqAI stores rolling predictions per pair in
 `user_data/models/<identifier>/historic_predictions.pkl`. After a brutal stop,
-its crash recovery can append duplicate `date_pred` rows; FreqAI's many-to-one
-merge then raises `MergeError` and stops analyzing that pair. This tool removes
-the duplicates, keeping the most informative row per `date_pred`. FreqAI also
+its crash recovery can leave duplicate `date_pred` rows. FreqAI's left merge on
+`date_pred` then multiplies the affected candle rows instead of matching them
+one-to-one, corrupting that pair's analysis. This tool removes the duplicates,
+keeping the most informative row per `date_pred`. FreqAI also
 mirrors the store to `historic_predictions.backup.pkl` on every clean save and
 falls back to it only when the primary is truncated (loading it raises
 `EOFError`), so the tool repairs the backup too. Stop the bot first (a running
