@@ -23,7 +23,7 @@ deduplicates the backup as well.
 
 Run it inside the freqtrade container so it uses the same pandas that wrote the
 file; the host pandas may be unable to unpickle it. Stop the bot first: a running
-bot holds the store in memory and would re-persist the corrupt state.
+bot holds the store in memory and would re-persist the duplicated state.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ DEFAULTS: dict[str, Any] = {
     "models_dirname": "models",
     "store_filename": "historic_predictions.pkl",
     "backup_filename": "historic_predictions.backup.pkl",
-    "quarantine_tag": "corrupt",
+    "quarantine_tag": "original",
     "quarantine_tie_break_limit": 99,
 }
 
@@ -155,7 +155,7 @@ def deduplicate_store(
 
 
 def _quarantine_original(path: Path, now: datetime) -> Path:
-    """Copy the pre-dedup file aside as ``<name>.corrupt-<stamp>`` (kept, not lost)."""
+    """Copy the pre-dedup file aside as ``<name>.original-<stamp>`` (kept, not lost)."""
     stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
     base = f"{path.name}.{DEFAULTS['quarantine_tag']}-{stamp}"
     for index in range(DEFAULTS["quarantine_tie_break_limit"] + 1):

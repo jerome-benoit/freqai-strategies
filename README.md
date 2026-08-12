@@ -502,7 +502,7 @@ falls back to it only when the primary is truncated (loading it raises
 `EOFError`), so the tool repairs the backup too. Stop the bot first (a running
 bot re-persists the in-memory state), and run it inside the container so it uses
 the same pandas that wrote the file. Before each file is rewritten, its original
-is copied aside as a timestamped `.corrupt-<stamp>` file; omit `--apply` to
+is copied aside as a timestamped `.original-<stamp>` file; omit `--apply` to
 preview (dry-run).
 
 ```shell

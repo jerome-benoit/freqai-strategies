@@ -229,7 +229,7 @@ def test_find_targets_glob_includes_backup_excludes_quarantine(tmp_path: Path) -
     model.mkdir(parents=True)
     (model / "historic_predictions.pkl").touch()
     (model / "historic_predictions.backup.pkl").touch()
-    (model / "historic_predictions.pkl.corrupt-20260812T000000000000Z").touch()
+    (model / "historic_predictions.pkl.original-20260812T000000000000Z").touch()
     names = {p.name for p in hp.find_targets(tmp_path, None, None)}
     assert names == {"historic_predictions.pkl", "historic_predictions.backup.pkl"}
     assert {p.name for p in hp.find_targets(tmp_path, "id1", None)} == names
@@ -272,7 +272,7 @@ def test_main_dry_run_writes_nothing(tmp_path: Path) -> None:
         code = hp.main(["--path", str(path)])
     assert code == 0
     assert path.read_bytes() == before
-    assert not list(tmp_path.glob("*.corrupt-*"))
+    assert not list(tmp_path.glob("*.original-*"))
     assert "files changed: 0" in buffer.getvalue()
 
 
@@ -284,7 +284,7 @@ def test_main_apply_dedups_and_quarantines(tmp_path: Path) -> None:
     with contextlib.redirect_stdout(buffer):
         code = hp.main(["--path", str(path), "--apply"])
     assert code == 0
-    quarantined = list(tmp_path.glob("historic_predictions.pkl.corrupt-*"))
+    quarantined = list(tmp_path.glob("historic_predictions.pkl.original-*"))
     assert len(quarantined) == 1
     for frame in hp.load_store(path).values():
         assert not frame["date_pred"].duplicated().any()
