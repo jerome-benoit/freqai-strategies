@@ -2,7 +2,8 @@
 line-length = 100
 target-version = "py311"
 
-# Pin ruff's default lint set: the repo idiom is timezone.utc / os.replace, so
-# opinionated UP/PTH rules (e.g. UP017, PTH105) are intentionally not selected.
+# Restrict to Pyflakes and core pycodestyle E4/E7/E9: modern ruff enables UP by
+# default, and UP017 would rewrite the repo idiom timezone.utc to datetime.UTC, so
+# keeping opinionated rewrites opt-in preserves it.
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
