@@ -1,16 +1,22 @@
 import copy
+import fcntl
 import functools
 import hashlib
 import inspect
 import json
 import math
+import os
 import re
-from collections.abc import Sequence
+import stat
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import IntEnum
 from functools import lru_cache, singledispatch
 from logging import Logger
 from pathlib import Path
+from threading import Lock
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -23,12 +29,15 @@ from typing import (
     cast,
     get_args,
 )
+from uuid import uuid4
 
 import numpy as np
 import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
+from freqtrade.misc import pair_to_filename
+from EnumErrors import enum_error_message
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
@@ -43,6 +52,7 @@ from LabelTransformer import (
     LABEL_WEIGHT_SUPPORT_POLICIES,
     NORMALIZATION_TYPES,
     PREDICTION_METHODS,
+    SMOOTHING_METHOD_MODES,
     SMOOTHING_METHODS,
     SMOOTHING_MODES,
     STANDARDIZATION_TYPES,
@@ -53,6 +63,7 @@ from LabelTransformer import (
     FillEpsilonBaseline,
     SmoothingMethod,
     SmoothingMode,
+    get_label_column_config,
 )
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
@@ -65,6 +76,11 @@ else:
     XGBoostTrainingCallback = object
 
 T = TypeVar("T", pd.Series, float)
+
+# ``lru_cache`` sizes: SMALL for bounded key spaces (windows, mode strings),
+# LARGE for open numeric/string keys (formatting, rounding, statistics).
+_CACHE_MAXSIZE_SMALL: Final[int] = 8
+_CACHE_MAXSIZE_LARGE: Final[int] = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,9 +324,13 @@ def safe_log_ratio(
 
 
 def _is_finite_value(value: Any) -> bool:
-    # np.isfinite raises/returns non-scalar on inputs it cannot reduce to a
-    # single finite float64 (Python ints >= 2**64 -> TypeError/OverflowError;
-    # array-likes -> a ValueError on bool()); treat all of those as non-finite.
+    # Short-circuit Python ints (always finite): ``np.isfinite`` raises on ints
+    # >= 2**64 (``TypeError``/``OverflowError``), so routing them through it
+    # would misclassify finite values as non-finite. ``np.isfinite`` also
+    # raises/returns non-scalar on array-likes (``ValueError`` on ``bool()``);
+    # treat those remaining failures as non-finite.
+    if isinstance(value, int):
+        return True
     try:
         return bool(np.isfinite(value))
     except (TypeError, OverflowError, ValueError):
@@ -347,6 +367,8 @@ class _NumericValidator:
     require_int: bool = False
 
     def __call__(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
         if self.require_int and not isinstance(value, int):
             return False
         if not isinstance(value, (int, float)) or not _is_finite_value(value):
@@ -413,7 +435,22 @@ class _DictValidator:
         return "must be a mapping"
 
 
-_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator
+@dataclass(frozen=True, slots=True)
+class _BoolValidator:
+    def __call__(self, value: Any) -> bool:
+        return isinstance(value, bool)
+
+    def message(self, param: str) -> str:
+        return "must be a boolean"
+
+
+_Validator = (
+    _EnumValidator
+    | _NumericValidator
+    | _RangeValidator
+    | _DictValidator
+    | _BoolValidator
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +492,125 @@ def _validate_params(
                 value = spec.output_type(value)
         result[param] = value
     return result
+
+
+def require_numeric(
+    value: Any,
+    name: str,
+    *,
+    context: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    min_exclusive: bool = False,
+    max_exclusive: bool = False,
+    require_int: bool = False,
+) -> int | float:
+    """Return an exact built-in numeric value that satisfies the requested bounds."""
+    validator = _NumericValidator(
+        min_value=minimum,
+        max_value=maximum,
+        min_exclusive=min_exclusive,
+        max_exclusive=max_exclusive,
+        require_int=require_int,
+    )
+    accepted_types = (int,) if require_int else (int, float)
+    if type(value) not in accepted_types or not validator(value):
+        raise ValueError(
+            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
+        )
+    return value
+
+
+def require_bool(value: Any, name: str, *, context: str) -> bool:
+    validator = _BoolValidator()
+    if not validator(value):
+        raise ValueError(
+            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
+        )
+    return value
+
+
+def validate_range(
+    min_val: float | int,
+    max_val: float | int,
+    logger: Logger,
+    *,
+    name: str,
+    default_min: float | int,
+    default_max: float | int,
+    allow_equal: bool = False,
+    non_negative: bool = True,
+    finite_only: bool = True,
+    max_value: float | int | None = None,
+) -> tuple[float | int, float | int]:
+    min_name = f"min_{name}"
+    max_name = f"max_{name}"
+
+    if not isinstance(default_min, (int, float)) or not isinstance(
+        default_max, (int, float)
+    ):
+        raise ValueError(
+            f"Invalid {name}: defaults must be numeric, "
+            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
+        )
+    if default_min > default_max or (not allow_equal and default_min == default_max):
+        raise ValueError(
+            f"Invalid {name}: defaults ordering must have min < max, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+    if max_value is not None and (default_min > max_value or default_max > max_value):
+        raise ValueError(
+            f"Invalid {name}: defaults must be <= {max_value!r}, "
+            f"got min={default_min!r}, max={default_max!r}"
+        )
+
+    def _validate_component(
+        value: float | int | None, name: str, default_value: float | int
+    ) -> float | int:
+        constraints = []
+        if finite_only:
+            constraints.append("finite")
+        if non_negative:
+            constraints.append("non-negative")
+        constraints.append("numeric")
+        if max_value is not None:
+            constraints.append(f"<= {max_value}")
+        constraint_str = " ".join(constraints)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or (finite_only and not _is_finite_value(value))
+            or (non_negative and value < 0)
+            or (max_value is not None and value > max_value)
+        ):
+            logger.warning(
+                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
+            )
+            return default_value
+        return value
+
+    sanitized_min = _validate_component(min_val, min_name, default_min)
+    sanitized_max = _validate_component(max_val, max_name, default_max)
+
+    ordering_ok = (
+        (sanitized_min < sanitized_max)
+        if not allow_equal
+        else (sanitized_min <= sanitized_max)
+    )
+    if not ordering_ok:
+        logger.warning(
+            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
+            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
+            f"using defaults {default_min!r}, {default_max!r}"
+        )
+        sanitized_min, sanitized_max = default_min, default_max
+
+    if sanitized_min != min_val or sanitized_max != max_val:
+        logger.warning(
+            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
+        )
+
+    return sanitized_min, sanitized_max
 
 
 _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -562,7 +718,7 @@ LABEL_COLUMNS: Final[tuple[str, ...]] = (EXTREMA_COLUMN,)
 _FREQAI_LABEL_SIGIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^&-?")
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def _label_aux_column_name(label_col: str, suffix: str) -> str:
     """Derive a freqtrade-safe auxiliary column name from a label column.
 
@@ -941,11 +1097,16 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def enum_error_message(ctx: str, value: Any, options: Sequence[str]) -> str:
-    return f"Invalid {ctx} value {value!r}: supported values are {', '.join(options)}"
+def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
+    if value is not None and not isinstance(value, dict):
+        logger.warning(
+            f"Invalid {name} value {value!r}: must be a mapping, using defaults"
+        )
+    return as_dict(value)
 
 
 ValidateParamsFn = Callable[[dict[str, Any], Logger, str], dict[str, Any]]
+CrossFieldValidatorFn = Callable[[dict[str, Any], str], None]
 
 
 _MISSING: Final = object()
@@ -984,90 +1145,165 @@ def _delete_path(config: dict[str, Any], path: str) -> bool:
     return False
 
 
+ConfigDeprecation = tuple[
+    str,
+    str | None,
+    Callable[[Any], bool] | None,
+    str | None,
+]
+
+
+def _renamed_config_key(old_path: str, new_path: str) -> ConfigDeprecation:
+    return old_path, new_path, None, None
+
+
 # Order matters: section renames before key moves (e.g. extrema_weighting.gamma -> label_weighting.gamma -> label_pipeline.gamma)
-CONFIG_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
-    ("freqai.extrema_weighting", "freqai.label_weighting"),
-    ("freqai.extrema_smoothing", "freqai.label_smoothing"),
-    ("freqai.predictions_extrema", "freqai.label_prediction"),
-    ("freqai.label_smoothing.window", "freqai.label_smoothing.window_candles"),
-    (
+CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
+    _renamed_config_key("freqai.extrema_weighting", "freqai.label_weighting"),
+    _renamed_config_key("freqai.extrema_smoothing", "freqai.label_smoothing"),
+    _renamed_config_key("freqai.predictions_extrema", "freqai.label_prediction"),
+    _renamed_config_key(
+        "freqai.label_smoothing.window",
+        "freqai.label_smoothing.window_candles",
+    ),
+    _renamed_config_key(
         "freqai.label_prediction.thresholds_smoothing",
         "freqai.label_prediction.threshold_smoothing_method",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.threshold_smoothing_method",
         "freqai.label_prediction.threshold_method",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.threshold_outlier",
         "freqai.label_prediction.outlier_threshold_quantile",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.outlier_threshold_quantile",
         "freqai.label_prediction.outlier_quantile",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.extrema_fraction",
         "freqai.label_prediction.keep_extrema_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.keep_extrema_fraction",
         "freqai.label_prediction.keep_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_prediction.thresholds_alpha",
         "freqai.label_prediction.soft_extremum_alpha",
     ),
-    ("exit_pricing.trade_price_target", "exit_pricing.trade_price_target_method"),
-    (
+    _renamed_config_key(
+        "exit_pricing.trade_price_target",
+        "exit_pricing.trade_price_target_method",
+    ),
+    _renamed_config_key(
         "reversal_confirmation.lookback_period",
         "reversal_confirmation.lookback_period_candles",
     ),
-    ("reversal_confirmation.decay_ratio", "reversal_confirmation.decay_fraction"),
-    (
+    _renamed_config_key(
+        "reversal_confirmation.decay_ratio",
+        "reversal_confirmation.decay_fraction",
+    ),
+    _renamed_config_key(
         "reversal_confirmation.min_natr_ratio_percent",
         "reversal_confirmation.min_natr_multiplier_fraction",
     ),
-    (
+    _renamed_config_key(
         "reversal_confirmation.max_natr_ratio_percent",
         "reversal_confirmation.max_natr_multiplier_fraction",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.min_label_natr_ratio",
         "freqai.feature_parameters.min_label_natr_multiplier",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.max_label_natr_ratio",
         "freqai.feature_parameters.max_label_natr_multiplier",
     ),
-    (
+    _renamed_config_key(
         "freqai.feature_parameters.label_natr_ratio",
         "freqai.feature_parameters.label_natr_multiplier",
     ),
-    ("freqai.optuna_hyperopt.expansion_ratio", "freqai.optuna_hyperopt.space_fraction"),
-    (
+    _renamed_config_key(
+        "freqai.optuna_hyperopt.expansion_ratio",
+        "freqai.optuna_hyperopt.space_fraction",
+    ),
+    _renamed_config_key(
         "freqai.label_weighting.standardization",
         "freqai.label_pipeline.standardization",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_weighting.robust_quantiles",
         "freqai.label_pipeline.robust_quantiles",
     ),
-    (
+    _renamed_config_key(
         "freqai.label_weighting.mmad_scaling_factor",
         "freqai.label_pipeline.mmad_scaling_factor",
     ),
-    ("freqai.label_weighting.normalization", "freqai.label_pipeline.normalization"),
-    ("freqai.label_weighting.minmax_range", "freqai.label_pipeline.minmax_range"),
-    ("freqai.label_weighting.sigmoid_scale", "freqai.label_pipeline.sigmoid_scale"),
-    ("freqai.label_weighting.gamma", "freqai.label_pipeline.gamma"),
+    _renamed_config_key(
+        "freqai.label_weighting.normalization",
+        "freqai.label_pipeline.normalization",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.minmax_range",
+        "freqai.label_pipeline.minmax_range",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.sigmoid_scale",
+        "freqai.label_pipeline.sigmoid_scale",
+    ),
+    _renamed_config_key(
+        "freqai.label_weighting.gamma",
+        "freqai.label_pipeline.gamma",
+    ),
+    (
+        "exit_pricing.thresholds_calibration",
+        None,
+        None,
+        "the PnL momentum gate now uses the direction of mean per-candle PnL velocity",
+    ),
+    (
+        "freqai.feature_parameters.causal_mode",
+        None,
+        lambda value: value is False,
+        "feature_parameters.causal_mode=false is deprecated: "
+        "causal split guards disabled; label lookahead leakage possible. "
+        "Default causal_mode=true; causal_mode=false for acausal baselines only.",
+    ),
 )
+
+_WARNED_CONFIG_DEPRECATIONS: set[str] = set()
+_CONFIG_DEPRECATION_WARNING_LOCK = Lock()
+
+
+def _warn_config_deprecation_once(path: str, message: str, logger: Logger) -> None:
+    with _CONFIG_DEPRECATION_WARNING_LOCK:
+        if path in _WARNED_CONFIG_DEPRECATIONS:
+            return
+        _WARNED_CONFIG_DEPRECATIONS.add(path)
+    logger.warning(message)
 
 
 def migrate_config(config: dict[str, Any], logger: Logger) -> None:
-    for old_path, new_path in CONFIG_MIGRATIONS:
+    for old_path, new_path, predicate, guidance in CONFIG_DEPRECATIONS:
         old_value = _get_path(config, old_path)
         if old_value is _MISSING:
+            continue
+
+        if predicate is not None:
+            if predicate(old_value):
+                message = guidance or f"{old_path}={old_value!r} is deprecated"
+                _warn_config_deprecation_once(old_path, message, logger)
+            continue
+
+        if new_path is None:
+            _delete_path(config, old_path)
+            message = f"{old_path} is obsolete and ignored"
+            if guidance is not None:
+                message = f"{message}: {guidance}"
+            _warn_config_deprecation_once(old_path, message, logger)
             continue
 
         old_section = old_path.rsplit(".", 1)[0] if "." in old_path else ""
@@ -1079,19 +1315,16 @@ def migrate_config(config: dict[str, Any], logger: Logger) -> None:
             _set_path(config, new_path, old_value)
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(f"{old_path!r} is deprecated, use {new_key!r} instead")
+                message = f"{old_path!r} is deprecated, use {new_key!r} instead"
             else:
-                logger.warning(f"{old_path!r} is deprecated, use {new_path!r} instead")
+                message = f"{old_path!r} is deprecated, use {new_path!r} instead"
         else:
             _delete_path(config, old_path)
             if old_section == new_section:
-                logger.warning(
-                    f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
-                )
+                message = f"{new_section!r} has both {new_key!r} and deprecated {old_path.rsplit('.', 1)[-1]!r}, using {new_key!r}"
             else:
-                logger.warning(
-                    f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
-                )
+                message = f"{new_section!r} has {new_key!r} and deprecated {old_path!r}, using {new_path!r}"
+        _warn_config_deprecation_once(old_path, message, logger)
 
 
 def _get_label_config(
@@ -1102,6 +1335,12 @@ def _get_label_config(
     defaults_dict: dict[str, Any],
 ) -> dict[str, Any]:
     if "default" in config or "columns" in config:
+        ignored_keys = sorted(config.keys() - {"default", "columns"})
+        if ignored_keys:
+            logger.warning(
+                f"{config_name} uses per-label format, ignoring sibling flat keys {ignored_keys!r}"
+            )
+
         default_config = config.get("default", {})
         if not isinstance(default_config, dict):
             logger.warning(
@@ -1148,16 +1387,38 @@ def _get_label_config(
         return {"default": validated_default, "columns": {}}
 
 
-_LABEL_KIND_REGISTRY: Final[dict[str, tuple[dict[str, _ParamSpec], dict[str, Any]]]] = {
-    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING),
-    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE),
-    "label_smoothing": (_SMOOTHING_SPECS, DEFAULTS_LABEL_SMOOTHING),
-    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION),
+def _validate_smoothing_method_mode(
+    config: dict[str, Any],
+    config_name: str,
+) -> None:
+    method = config["method"]
+    valid_modes = SMOOTHING_METHOD_MODES.get(method)
+    if valid_modes is not None and config["mode"] not in valid_modes:
+        raise ValueError(
+            f"Invalid {config_name} mode value {config['mode']!r} for "
+            f"method {method!r}: supported values are {', '.join(valid_modes)}"
+        )
+
+
+_LABEL_KIND_REGISTRY: Final[
+    dict[
+        str,
+        tuple[dict[str, _ParamSpec], dict[str, Any], CrossFieldValidatorFn | None],
+    ]
+] = {
+    "label_weighting": (_WEIGHTING_SPECS, DEFAULTS_LABEL_WEIGHTING, None),
+    "label_pipeline": (_PIPELINE_SPECS, DEFAULTS_LABEL_PIPELINE, None),
+    "label_smoothing": (
+        _SMOOTHING_SPECS,
+        DEFAULTS_LABEL_SMOOTHING,
+        _validate_smoothing_method_mode,
+    ),
+    "label_prediction": (_PREDICTION_SPECS, DEFAULTS_LABEL_PREDICTION, None),
 }
 
 
 def _label_kind_validator(kind: str) -> ValidateParamsFn:
-    specs, defaults = _LABEL_KIND_REGISTRY[kind]
+    specs, defaults, _ = _LABEL_KIND_REGISTRY[kind]
 
     def validate(
         config: dict[str, Any],
@@ -1171,7 +1432,7 @@ def _label_kind_validator(kind: str) -> ValidateParamsFn:
 
 def get_label_kind_config(
     kind: str,
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     if kind not in _LABEL_KIND_REGISTRY:
@@ -1179,35 +1440,45 @@ def get_label_kind_config(
             f"Unknown label kind {kind!r}: supported values are "
             f"{', '.join(_LABEL_KIND_REGISTRY)}"
         )
-    _, defaults = _LABEL_KIND_REGISTRY[kind]
-    return _get_label_config(
+    config = as_config_section(config, kind, logger)
+    _, defaults, cross_field_validator = _LABEL_KIND_REGISTRY[kind]
+    validated = _get_label_config(
         config, logger, kind, _label_kind_validator(kind), defaults
     )
+    if cross_field_validator is not None:
+        for label_col in LABEL_COLUMNS:
+            cross_field_validator(
+                get_label_column_config(
+                    label_col, validated["default"], validated["columns"]
+                ),
+                f"{kind} for label {label_col!r}",
+            )
+    return validated
 
 
 def get_label_weighting_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_weighting", config, logger)
 
 
 def get_label_pipeline_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_pipeline", config, logger)
 
 
 def get_label_smoothing_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_smoothing", config, logger)
 
 
 def get_label_prediction_config(
-    config: dict[str, Any],
+    config: Any,
     logger: Logger,
 ) -> dict[str, Any]:
     return get_label_kind_config("label_prediction", config, logger)
@@ -1224,10 +1495,121 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_exit_pricing_config(config: dict[str, Any], logger: Logger) -> dict[str, str]:
+def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
     return _validate_params(
-        config, logger, "exit_pricing", _EXIT_PRICING_SPECS, DEFAULTS_EXIT_PRICING
+        as_config_section(config, "exit_pricing", logger),
+        logger,
+        "exit_pricing",
+        _EXIT_PRICING_SPECS,
+        DEFAULTS_EXIT_PRICING,
     )
+
+
+DEFAULTS_CUSTOM_PROTECTIONS: Final[dict[str, Any]] = {
+    "trade_duration_candles": 72,
+    "lookback_period_fraction": 0.5,
+}
+
+DEFAULTS_COOLDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "stop_duration_candles": 4,
+}
+
+DEFAULTS_DRAWDOWN_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+    "max_allowed_drawdown": 0.2,
+}
+
+DEFAULTS_STOPLOSS_PROTECTION: Final[dict[str, Any]] = {
+    "enabled": True,
+}
+
+_CUSTOM_PROTECTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "trade_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+    "lookback_period_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
+}
+
+_COOLDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "stop_duration_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+_DRAWDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+    "max_allowed_drawdown": _ParamSpec(
+        _NumericValidator(
+            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
+        ),
+        output_type=float,
+    ),
+}
+
+_STOPLOSS_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
+}
+
+
+def get_custom_protections_config(config: Any, logger: Logger) -> dict[str, Any]:
+    config = as_config_section(config, "custom_protections", logger)
+    validated = _validate_params(
+        config,
+        logger,
+        "custom_protections",
+        _CUSTOM_PROTECTIONS_SPECS,
+        DEFAULTS_CUSTOM_PROTECTIONS,
+    )
+    validated["cooldown"] = _validate_params(
+        as_config_section(
+            config.get("cooldown"), "custom_protections.cooldown", logger
+        ),
+        logger,
+        "custom_protections.cooldown",
+        _COOLDOWN_PROTECTION_SPECS,
+        DEFAULTS_COOLDOWN_PROTECTION,
+    )
+    validated["drawdown"] = _validate_params(
+        as_config_section(
+            config.get("drawdown"), "custom_protections.drawdown", logger
+        ),
+        logger,
+        "custom_protections.drawdown",
+        _DRAWDOWN_PROTECTION_SPECS,
+        DEFAULTS_DRAWDOWN_PROTECTION,
+    )
+    validated["stoploss"] = _validate_params(
+        as_config_section(
+            config.get("stoploss"), "custom_protections.stoploss", logger
+        ),
+        logger,
+        "custom_protections.stoploss",
+        _STOPLOSS_PROTECTION_SPECS,
+        DEFAULTS_STOPLOSS_PROTECTION,
+    )
+    return validated
+
+
+_FIT_LIVE_PREDICTIONS_SPECS: Final[dict[str, _ParamSpec]] = {
+    "fit_live_predictions_candles": _ParamSpec(
+        _NumericValidator(min_value=1, require_int=True), output_type=int
+    ),
+}
+
+
+def get_fit_live_predictions_candles(config: Any, logger: Logger) -> int:
+    return _validate_params(
+        as_config_section(config, "freqai", logger),
+        logger,
+        "freqai",
+        _FIT_LIVE_PREDICTIONS_SPECS,
+        {"fit_live_predictions_candles": DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES},
+    )["fit_live_predictions_candles"]
 
 
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
@@ -1237,8 +1619,8 @@ DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
     "max_natr_multiplier_fraction": 0.0125,
 }
 
-# Scalars only: the coupled (min, max) natr pair needs validate_range's
-# cross-field ordering and per-component fallback, which _validate_params
+# Scalars only: the coupled (min, max) natr pair needs ``validate_range``'s
+# cross-field ordering and per-component fallback, which ``_validate_params``
 # cannot express.
 _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
     "lookback_period_candles": _ParamSpec(
@@ -1252,8 +1634,9 @@ _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
 
 
 def get_reversal_confirmation_config(
-    config: dict[str, Any], logger: Logger
+    config: Any, logger: Logger
 ) -> dict[str, int | float]:
+    config = as_config_section(config, "reversal_confirmation", logger)
     validated = _validate_params(
         config,
         logger,
@@ -1292,9 +1675,6 @@ def get_reversal_confirmation_config(
     }
 
 
-_CAUSAL_MODE_FALSE_WARNED: bool = False
-
-
 def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
     causal_mode = config.get("causal_mode", True)
     if not isinstance(causal_mode, bool):
@@ -1302,14 +1682,6 @@ def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
             f"Invalid causal_mode value {causal_mode!r}: must be bool, using True"
         )
         return True
-    global _CAUSAL_MODE_FALSE_WARNED
-    if causal_mode is False and not _CAUSAL_MODE_FALSE_WARNED:
-        logger.warning(
-            "feature_parameters.causal_mode=false is deprecated: "
-            "causal split guards disabled; label lookahead leakage possible. "
-            "Default causal_mode=true; causal_mode=false for acausal baselines only."
-        )
-        _CAUSAL_MODE_FALSE_WARNED = True
     return causal_mode
 
 
@@ -1686,26 +2058,26 @@ def non_zero_diff(s1: pd.Series, s2: pd.Series) -> pd.Series:
     return diff.where(diff != 0, np.finfo(float).eps)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_odd_window(window: int) -> int:
     if window < 1:
         raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 1 else window + 1
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_even_window(window: int) -> int:
     if window < 1:
         raise ValueError(f"Invalid window value {window!r}: must be > 0")
     return window if window % 2 == 0 else window + 1
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_gaussian_std(window: int) -> float:
     return (window - 1) / 6.0 if window > 1 else 0.5
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_savgol_params(
     window: int, polyorder: int, mode: SmoothingMode
 ) -> tuple[int, int, str]:
@@ -1715,7 +2087,7 @@ def get_savgol_params(
     return window, polyorder, mode
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def _calculate_coeffs(
     window: int,
     win_type: SmoothingKernel,
@@ -1735,11 +2107,10 @@ def _calculate_coeffs(
     elif win_type == SMOOTHING_KERNELS[3]:  # "triang"
         coeffs = sp.signal.windows.triang(M=window, sym=True)
     else:
-        raise ValueError(
-            f"Invalid window type value {win_type!r}: "
-            f"supported values are {', '.join(SMOOTHING_KERNELS)}"
-        )
-    return coeffs / np.sum(coeffs)
+        raise ValueError(enum_error_message("window type", win_type, SMOOTHING_KERNELS))
+    normalized_coeffs = coeffs / np.sum(coeffs)
+    normalized_coeffs.setflags(write=False)
+    return normalized_coeffs
 
 
 def zero_phase_filter(
@@ -1763,6 +2134,19 @@ def zero_phase_filter(
     values = series.to_numpy(dtype=float)
     filtered_values = sp.signal.filtfilt(b, a, values, padlen=padlen)
     return pd.Series(filtered_values, index=series.index)
+
+
+_ZERO_PHASE_FILTER_DISPATCH: Final[
+    dict[SmoothingMethod, tuple[SmoothingKernel, Callable[[int], int]]]
+] = {
+    SMOOTHING_METHODS[1]: (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"
+    SMOOTHING_METHODS[2]: (SMOOTHING_KERNELS[1], get_odd_window),  # "kaiser"
+    SMOOTHING_METHODS[3]: (
+        SMOOTHING_KERNELS[2],
+        get_even_window,
+    ),  # "kaiser_bessel_derived"
+    SMOOTHING_METHODS[4]: (SMOOTHING_KERNELS[3], get_odd_window),  # "triang"
+}
 
 
 def smooth(
@@ -1790,39 +2174,6 @@ def smooth(
 
     if method == SMOOTHING_METHODS[0]:  # "none"
         return series
-    elif method == SMOOTHING_METHODS[1]:  # "gaussian"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[2]:  # "kaiser"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[1],  # "kaiser"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
-        even_window = get_even_window(window_candles)
-        return zero_phase_filter(
-            series=series,
-            window=even_window,
-            win_type=SMOOTHING_KERNELS[2],  # "kaiser_bessel_derived"
-            std=std,
-            beta=beta,
-        )
-    elif method == SMOOTHING_METHODS[4]:  # "triang"
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[3],  # "triang"
-            std=std,
-            beta=beta,
-        )
     elif method == SMOOTHING_METHODS[5]:  # "smm" (Simple Moving Median)
         return series.rolling(window=odd_window, center=True, min_periods=1).median()
     elif method == SMOOTHING_METHODS[6]:  # "sma" (Simple Moving Average)
@@ -1849,14 +2200,18 @@ def smooth(
             ),
             index=series.index,
         )
-    else:
-        return zero_phase_filter(
-            series=series,
-            window=odd_window,
-            win_type=SMOOTHING_KERNELS[0],  # "gaussian"
-            std=std,
-            beta=beta,
-        )
+
+    win_type, window_selector = _ZERO_PHASE_FILTER_DISPATCH.get(
+        method,
+        _ZERO_PHASE_FILTER_DISPATCH[SMOOTHING_METHODS[1]],  # "gaussian"/odd default
+    )
+    return zero_phase_filter(
+        series=series,
+        window=window_selector(window_candles),
+        win_type=win_type,
+        std=std,
+        beta=beta,
+    )
 
 
 def _impute_weights(
@@ -1896,8 +2251,100 @@ def _impute_weights(
     return weights
 
 
+def _segment_ends(a: NDArray[np.integer]) -> NDArray[np.intp]:
+    """Indices of the last element of each consecutive run of equal values in ``a``."""
+    return np.flatnonzero(np.r_[a[1:] != a[:-1], True])
+
+
+def _causal_impute_weights(
+    weights: NDArray[np.floating],
+    *,
+    availability: NDArray[np.integer],
+    default_weight: float = 1.0,
+) -> NDArray[np.floating]:
+    """Impute each non-finite value from signals available at the same event."""
+    values = weights.astype(float, copy=True)
+    if values.size == 0:
+        return values
+    finite_mask = np.isfinite(values)
+    running_median = (
+        pd.Series(values)
+        .where(finite_mask)
+        .expanding()
+        .median()
+        .fillna(default_weight)
+        .to_numpy(dtype=float)
+    )
+    event_ends = _segment_ends(availability)
+    event_medians = np.repeat(
+        running_median[event_ends],
+        np.diff(np.r_[-1, event_ends]),
+    )
+    values[~finite_mask] = event_medians[~finite_mask]
+    return values
+
+
 _GAUSSIAN_FILL_CHUNK_BUDGET: Final[int] = 50_000_000
 _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
+
+# Gaussian fill support: rows within k*fill_sigma_candles of a pivot receive
+# its bump. sqrt(2*ln(100))=3.0349 sigma contains every value above 1% of the
+# pivot peak; k=4 retains a rounding margin and truncates only below exp(-8).
+_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
+_ZIGZAG_CONFIRMATION_ALPHA: Final[float] = 0.05
+# With all slopes successful, the one-sided Binomial(0.5) p-value is 2**-m.
+_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = math.ceil(
+    -math.log2(_ZIGZAG_CONFIRMATION_ALPHA)
+)
+
+
+def _compute_pivot_kth_neighbor_distances(
+    pivot_indices: NDArray[np.floating],
+    neighbors: int,
+) -> NDArray[np.floating]:
+    """Distance from each pivot to its k-th nearest pivot neighbor.
+
+    After sorting, binary-search the split of the k neighbors between the
+    monotone left and right distances: O(M log M) time and O(M) space.
+    """
+    pivot_count = pivot_indices.size
+    sorted_idx = np.argsort(pivot_indices, kind="stable")
+    sorted_positions = pivot_indices[sorted_idx]
+    k = min(int(neighbors), pivot_count - 1)
+    distances = np.empty(pivot_count, dtype=float)
+    for i, position in enumerate(sorted_positions):
+        min_left = max(0, k - (pivot_count - i - 1))
+        max_left = min(k, i)
+        left = min_left
+        right = max_left
+        while left < right:
+            left_count = (left + right) // 2
+            right_count = k - left_count
+            left_distance = (
+                position - sorted_positions[i - left_count] if left_count else 0.0
+            )
+            right_distance = (
+                sorted_positions[i + right_count] - position if right_count else 0.0
+            )
+            if left_distance < right_distance:
+                left = left_count + 1
+            else:
+                right = left_count
+        distances[i] = min(
+            max(
+                (position - sorted_positions[i - left_count] if left_count else 0.0),
+                (
+                    sorted_positions[i + k - left_count] - position
+                    if k - left_count
+                    else 0.0
+                ),
+            )
+            for left_count in (left - 1, left)
+            if min_left <= left_count <= max_left
+        )
+    result = np.empty(pivot_count, dtype=float)
+    result[sorted_idx] = distances
+    return result
 
 
 def _compute_pivot_sigmas(
@@ -1925,30 +2372,10 @@ def _compute_pivot_sigmas(
         return np.full(M, float(sigma_candles), dtype=float)
     if bandwidth != FILL_BANDWIDTHS[1]:  # "knn"
         raise ValueError(
-            f"Invalid fill_bandwidth value {bandwidth!r}: "
-            f"supported values are {', '.join(FILL_BANDWIDTHS)}"
+            enum_error_message("fill_bandwidth", bandwidth, FILL_BANDWIDTHS)
         )
 
-    sorted_idx = np.argsort(pivot_indices, kind="stable")
-    sorted_positions = pivot_indices[sorted_idx]
-    k = min(int(neighbors), M - 1)
-
-    d_k_sorted = np.empty(M, dtype=float)
-    for i, position in enumerate(sorted_positions):
-        left = max(0, i - k)
-        right = min(M, i + k + 1)
-        candidate_distances = np.abs(
-            np.concatenate(
-                (
-                    sorted_positions[left:i] - position,
-                    sorted_positions[i + 1 : right] - position,
-                )
-            )
-        )
-        d_k_sorted[i] = np.partition(candidate_distances, k - 1)[k - 1]
-    d_k = np.empty(M, dtype=float)
-    d_k[sorted_idx] = d_k_sorted
-
+    d_k = _compute_pivot_kth_neighbor_distances(pivot_indices, neighbors)
     sigmas = float(alpha) * d_k
     sigma_max = float(sigma_candles)
     sigma_min = float(sigma_min_candles)
@@ -1967,11 +2394,15 @@ def _gaussian_fill_weights(
     bandwidth_neighbors: int = 1,
     bandwidth_alpha: float = 1.0,
     sigma_min_candles: float = 0.5,
+    finite_support: bool = False,
     logger: Logger | None = None,
 ) -> NDArray[np.floating]:
     """Per-row max of per-pivot Gaussian bumps.
 
-    Out[i] = max over p of ``w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``.
+    ``Out[i] = max_p w_p * exp(-(i - p)**2 / (2 * sigma_p**2))``. When
+    ``finite_support`` is true, values outside
+    ``ceil(4 * sigma_candles)`` are zero to match causal availability
+    propagation. The default retains the legacy unbounded Gaussian tails.
 
     With ``bandwidth == "fixed"``, ``sigma_p == sigma_candles`` for every
     pivot. Clustered pivots within ``~sigma_candles`` then let the strongest
@@ -1994,7 +2425,7 @@ def _gaussian_fill_weights(
             f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0"
         )
     pivot_indices_array = pivot_indices.astype(float)
-    pivot_weights_row = pivot_weights.astype(float)[np.newaxis, :]
+    pivot_weights_array = pivot_weights.astype(float)
     pivot_sigmas = _compute_pivot_sigmas(
         pivot_indices=pivot_indices_array,
         sigma_candles=sigma_candles,
@@ -2003,7 +2434,6 @@ def _gaussian_fill_weights(
         alpha=bandwidth_alpha,
         sigma_min_candles=sigma_min_candles,
     )
-    inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
     M = pivot_indices_array.size
     if (
         logger is not None
@@ -2018,29 +2448,54 @@ def _gaussian_fill_weights(
             M,
             n_values,
         )
-    chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
-    if logger is not None and chunk < n_values:
-        logger.debug(
-            "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
-            "bandwidth=%s, sigma=[%.2f, %.2f]",
-            n_values,
-            M,
-            chunk,
-            chunk * M * 8 / 1e6,
-            bandwidth,
-            float(pivot_sigmas.min()),
-            float(pivot_sigmas.max()),
-        )
+    if not finite_support:
+        pivot_weights_row = pivot_weights_array[np.newaxis, :]
+        inv_two_sigma_sq_row = (0.5 / (pivot_sigmas * pivot_sigmas))[np.newaxis, :]
+        chunk = max(1, _GAUSSIAN_FILL_CHUNK_BUDGET // max(M, 1))
+        if logger is not None and chunk < n_values:
+            logger.debug(
+                "gaussian_fill: N=%d, M=%d, chunk=%d, ~%.0f MB peak buffer, "
+                "bandwidth=%s, sigma=[%.2f, %.2f]",
+                n_values,
+                M,
+                chunk,
+                chunk * M * 8 / 1e6,
+                bandwidth,
+                float(pivot_sigmas.min()),
+                float(pivot_sigmas.max()),
+            )
+        out = np.zeros(n_values, dtype=float)
+        for start in range(0, n_values, chunk):
+            stop = min(start + chunk, n_values)
+            positions = np.arange(start, stop, dtype=float)
+            buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
+            np.multiply(buf, buf, out=buf)
+            np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
+            np.exp(buf, out=buf)
+            np.multiply(buf, pivot_weights_row, out=buf)
+            np.max(buf, axis=1, out=out[start:stop])
+        return out
+
     out = np.zeros(n_values, dtype=float)
-    for start in range(0, n_values, chunk):
-        stop = min(start + chunk, n_values)
+    support_radius = math.ceil(
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(sigma_candles)
+    )
+    for pivot, pivot_weight, pivot_sigma in zip(
+        pivot_indices_array,
+        pivot_weights_array,
+        pivot_sigmas,
+    ):
+        if pivot_weight == 0.0:
+            continue
+        start = max(0, int(pivot) - support_radius)
+        stop = min(n_values, int(pivot) + support_radius + 1)
         positions = np.arange(start, stop, dtype=float)
-        buf = positions[:, np.newaxis] - pivot_indices_array[np.newaxis, :]
-        np.multiply(buf, buf, out=buf)
-        np.multiply(buf, -inv_two_sigma_sq_row, out=buf)
-        np.exp(buf, out=buf)
-        np.multiply(buf, pivot_weights_row, out=buf)
-        np.max(buf, axis=1, out=out[start:stop])
+        np.subtract(positions, pivot, out=positions)
+        np.multiply(positions, positions, out=positions)
+        np.multiply(positions, -0.5 / (pivot_sigma * pivot_sigma), out=positions)
+        np.exp(positions, out=positions)
+        np.multiply(positions, pivot_weight, out=positions)
+        np.maximum(out[start:stop], positions, out=out[start:stop])
     return out
 
 
@@ -2146,41 +2601,280 @@ def _aggregate_metrics(
         )
 
 
+def _invalid_weight_strategy_message(
+    strategy: str, metrics: dict[str, list[float]]
+) -> str:
+    return (
+        f"Invalid weighting strategy value {strategy!r}: "
+        f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
+    )
+
+
+def _select_combined_metrics(
+    metrics: dict[str, list[float]],
+    metric_coefficients: dict[str, Any],
+) -> list[tuple[str, NDArray[np.floating], float]]:
+    """Select the components feeding ``combined`` aggregation.
+
+    Shared selection logic (coefficient parsing, the all-unit default, the skip
+    rules for unselected or empty metrics), returning raw pre-imputation value
+    arrays paired with metric name and coefficient in ``metrics`` iteration
+    order. Imputation is left to the caller.
+    """
+    coefficients = _parse_metric_coefficients(metric_coefficients)
+    if len(coefficients) == 0:
+        coefficients = {k: 1.0 for k in metrics.keys()}
+
+    selected: list[tuple[str, NDArray[np.floating], float]] = []
+    for metric_name, metric_values in metrics.items():
+        if metric_name not in coefficients:
+            continue
+        values_array = np.asarray(metric_values, dtype=float)
+        if values_array.size == 0:
+            continue
+        selected.append((metric_name, values_array, float(coefficients[metric_name])))
+    return selected
+
+
+def _aggregate_imputed_metrics(
+    imputed_metrics: list[NDArray[np.floating]],
+    coefficients: list[float],
+    aggregation: CombinedAggregation,
+    softmax_temperature: float,
+) -> NDArray[np.floating]:
+    return _aggregate_metrics(
+        np.vstack(imputed_metrics),
+        np.asarray(coefficients, dtype=float),
+        aggregation,
+        softmax_temperature,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _CombinedWeightPipeline:
+    """Single pass of the combined ``select -> impute -> aggregate`` pipeline.
+
+    ``selected`` is the :func:`_select_combined_metrics` output in selection
+    order ``(name, raw pre-imputation values, coefficient)``. ``combined_weights``
+    is the aggregated weights BEFORE any value-path final imputation:
+
+    - ``selected`` empty: ``combined_weights`` is ``np.asarray([], dtype=float)``
+      regardless of ``expected_length``;
+    - ``expected_length`` given and ``selected`` non-empty:
+      ``combined_weights.shape == (expected_length,)``;
+    - ``expected_length`` is ``None`` and ``selected`` non-empty:
+      ``combined_weights`` is the reduction over the selected components' shared
+      length.
+    """
+
+    selected: tuple[tuple[str, NDArray[np.floating], float], ...]
+    combined_weights: NDArray[np.floating]
+
+
+def _compute_combined_label_weight_pipeline(
+    metrics: dict[str, list[float]],
+    metric_coefficients: dict[str, Any],
+    aggregation: CombinedAggregation,
+    softmax_temperature: float,
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
+    expected_length: int | None = None,
+) -> _CombinedWeightPipeline:
+    """Run the combined ``select -> impute -> aggregate`` pipeline once.
+
+    When ``expected_length`` is not ``None``, raises ``ValueError`` on the first
+    selected component (in selection order) whose shape is not
+    ``(expected_length,)`` and on combined weights whose shape is not
+    ``(expected_length,)``; when ``None`` no shape validation is performed and
+    malformed inputs surface downstream (e.g. via ``np.vstack``).
+    """
+    selected = tuple(_select_combined_metrics(metrics, metric_coefficients))
+    if expected_length is not None:
+        for metric_name, values_array, _coefficient in selected:
+            if values_array.shape != (expected_length,):
+                raise ValueError(
+                    f"Invalid metric {metric_name!r} shape {values_array.shape}: "
+                    f"must be ({expected_length},)"
+                )
+    if len(selected) == 0:
+        return _CombinedWeightPipeline(selected, np.asarray([], dtype=float))
+
+    combined_weights = _aggregate_imputed_metrics(
+        [impute(values) for _, values, _ in selected],
+        [coefficient for _, _, coefficient in selected],
+        aggregation,
+        softmax_temperature,
+    )
+    if expected_length is not None and combined_weights.shape != (expected_length,):
+        raise ValueError(
+            f"Invalid combined weights shape {combined_weights.shape}: "
+            f"must be ({expected_length},)"
+        )
+    return _CombinedWeightPipeline(selected, combined_weights)
+
+
 def _compute_combined_label_weights(
     metrics: dict[str, list[float]],
     metric_coefficients: dict[str, Any],
     aggregation: CombinedAggregation,
     softmax_temperature: float,
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
 ) -> NDArray[np.floating]:
-    if len(metrics) == 0:
-        return np.asarray([], dtype=float)
+    return _compute_combined_label_weight_pipeline(
+        metrics,
+        metric_coefficients,
+        aggregation,
+        softmax_temperature,
+        impute=impute,
+    ).combined_weights
 
-    coefficients = _parse_metric_coefficients(metric_coefficients)
-    if len(coefficients) == 0:
-        coefficients = {k: 1.0 for k in metrics.keys()}
 
-    imputed_metrics: list[NDArray[np.floating]] = []
-    coefficients_list: list[float] = []
+def _nonfinite_imputation_dependency_mask(
+    values: NDArray[np.floating],
+) -> NDArray[np.bool_]:
+    """Mark values whose legacy full-frame imputation is not prefix-stable.
 
-    for metric_name, metric_values in metrics.items():
-        if metric_name not in coefficients:
-            continue
-        coefficient = coefficients[metric_name]
-        values_array = np.asarray(metric_values, dtype=float)
-        if values_array.size == 0:
-            continue
-        imputed_metrics.append(_impute_weights(values_array))
-        coefficients_list.append(float(coefficient))
+    A non-finite value's imputation is prefix-unstable (default or zero at
+    boundaries, interior median otherwise) as later pivots arrive, so it stays
+    unavailable until the frame boundary.
+    """
+    return ~np.isfinite(values)
 
-    if len(imputed_metrics) == 0:
-        return np.asarray([], dtype=float)
 
-    stacked_metrics = np.vstack(imputed_metrics)
-    coefficients_array = np.asarray(coefficients_list, dtype=float)
+@dataclass(frozen=True, slots=True)
+class LabelWeightImputationMasks:
+    """Causal-availability masks for non-finite pivot-weight imputations.
 
-    return _aggregate_metrics(
-        stacked_metrics, coefficients_array, aggregation, softmax_temperature
+    Produced by :func:`compute_label_weight_imputation_dependency_mask` (see it
+    for the release algorithm) and consumed by
+    :func:`compute_label_weight_known_at_lookahead`.
+
+    - ``dependency_mask``: pivots deferred to the frame boundary ``n``
+    - ``leading_stable_mask``: subset of ``dependency_mask`` provably fixed at
+      ``0.0`` on the causal prefix, hence released early
+    - ``stable_release_index``: pivot index bounding that release prefix, or
+      ``-1`` when ``leading_stable_mask`` is empty
+    """
+
+    dependency_mask: NDArray[np.bool_]
+    leading_stable_mask: NDArray[np.bool_]
+    stable_release_index: int
+
+
+def compute_label_weight_imputation_dependency_mask(
+    n_indices: int,
+    metrics: dict[str, list[float]],
+    weighting_config: dict[str, Any],
+) -> LabelWeightImputationMasks:
+    """Identify pivot weights whose non-finite imputation can change by prefix.
+
+    Returns a :class:`LabelWeightImputationMasks`. A ``dependency_mask`` pivot
+    remains causally unavailable until the frame boundary; for ``combined``,
+    dependency propagates from every selected component and from the aggregate
+    before its final imputation.
+
+    ``leading_stable_mask`` (a subset of ``dependency_mask``) marks non-finite
+    runs that impute to ``0.0`` and are provably fixed given only the causal
+    prefix, so they need not defer to the frame boundary:
+
+    - single-metric: the leading run ``[0, first_finite)`` imputes to ``0.0``
+      and stabilizes once the first finite pivot's weight is known;
+      ``stable_release_index = first_finite``. The terminal pivot and any
+      non-terminal trailing run stay deferred to ``n`` (their 0.0 is not
+      causal-prefix stable: a later closing pivot turns the metric finite).
+    - ``combined`` with every selected component leading with a non-finite run:
+      the aggregate is stably zero over ``[0, min_c first_finite_c)`` (the
+      shortest leading run bounds the all-zero prefix), released at the ``max``
+      over components ``stable_release_index = max_c first_finite_c`` (the latest
+      component confirmation; unequal run lengths must not leak). Guarded by an
+      empirical ``combined_weights[:S] == 0.0`` check.
+
+    ``stable_release_index`` is ``-1`` whenever ``leading_stable_mask`` is empty
+    (``uniform``, empty or all-non-finite metrics, a single metric with no
+    leading run such as all-finite or interior-only-NaN, and any ``combined``
+    case that fails the checks above); those pivots keep the nonzero default and
+    defer to ``n``. It is ``>= 0`` if and only if a leading run is released.
+    """
+    label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
+    strategy = label_weighting["strategy"]
+
+    def _empty_masks() -> LabelWeightImputationMasks:
+        zeros = np.zeros(n_indices, dtype=bool)
+        return LabelWeightImputationMasks(zeros, zeros.copy(), -1)
+
+    if strategy == WEIGHT_STRATEGIES[0]:  # "none"
+        raise ValueError(
+            "compute_label_weight_imputation_dependency_mask must not be called "
+            f"with strategy={strategy!r}; callers must skip invocation when "
+            "weighting is disabled"
+        )
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        return _empty_masks()
+    if strategy in metrics:
+        values = np.asarray(metrics[strategy], dtype=float)
+        if values.size == 0:
+            return _empty_masks()
+        if values.shape != (n_indices,):
+            raise ValueError(
+                f"Invalid metric {strategy!r} shape {values.shape}: "
+                f"must be ({n_indices},)"
+            )
+        dependency = _nonfinite_imputation_dependency_mask(values)
+        leading_stable = np.zeros(n_indices, dtype=bool)
+        finite = ~dependency
+        release_index = -1
+        if finite.any():
+            first_finite = int(np.argmax(finite))
+            if first_finite > 0:
+                leading_stable[:first_finite] = True
+                release_index = first_finite
+        return LabelWeightImputationMasks(dependency, leading_stable, release_index)
+    if strategy != WEIGHT_STRATEGIES[8]:  # "combined"
+        raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
+
+    pipeline = _compute_combined_label_weight_pipeline(
+        metrics,
+        label_weighting["metric_coefficients"],
+        label_weighting["aggregation"],
+        label_weighting["softmax_temperature"],
+        impute=_impute_weights,
+        expected_length=n_indices,
     )
+
+    dependency_mask = np.zeros(n_indices, dtype=bool)
+    first_finite_indices: list[int] = []
+    every_component_has_finite = True
+    for _metric_name, values_array, _coefficient in pipeline.selected:
+        component_finite = np.isfinite(values_array)
+        dependency_mask |= ~component_finite
+        if component_finite.any():
+            first_finite_indices.append(int(np.argmax(component_finite)))
+        else:
+            # An all-non-finite component never confirms a finite weight
+            # in-frame, so it has no first_finite release candle; block the
+            # leading release and defer these pivots to n conservatively.
+            every_component_has_finite = False
+
+    if len(pipeline.selected) == 0:
+        empty = np.zeros(n_indices, dtype=bool)
+        return LabelWeightImputationMasks(dependency_mask, empty, -1)
+
+    combined_weights = pipeline.combined_weights
+    dependency_mask |= _nonfinite_imputation_dependency_mask(combined_weights)
+
+    leading_stable = np.zeros(n_indices, dtype=bool)
+    release_index = -1
+    if (
+        every_component_has_finite
+        and first_finite_indices
+        and min(first_finite_indices) >= 1
+    ):
+        stable_length = min(first_finite_indices)
+        if bool(np.all(combined_weights[:stable_length] == 0.0)):
+            leading_stable[:stable_length] = True
+            release_index = max(first_finite_indices)
+    return LabelWeightImputationMasks(dependency_mask, leading_stable, release_index)
 
 
 def _compute_epsilon_floor(
@@ -2204,12 +2898,155 @@ def _compute_epsilon_floor(
         b = float(np.nanmedian(pivot_values))
     else:
         raise ValueError(
-            f"Invalid fill_epsilon_baseline value {baseline!r}: "
-            f"supported values are {', '.join(FILL_EPSILON_BASELINES)}"
+            enum_error_message(
+                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
+            )
         )
     if not np.isfinite(b):
         b = 0.0
     return float(eps) * b
+
+
+def _compute_label_weight_values(
+    n_indices: int,
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    *,
+    impute: Callable[[NDArray[np.floating]], NDArray[np.floating]] = _impute_weights,
+) -> NDArray[np.floating]:
+    strategy = label_weighting["strategy"]
+    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
+        weights = np.ones(n_indices, dtype=float)
+    elif strategy in metrics:
+        weights = np.asarray(metrics[strategy], dtype=float)
+    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
+        weights = _compute_combined_label_weights(
+            metrics=metrics,
+            metric_coefficients=label_weighting["metric_coefficients"],
+            aggregation=label_weighting["aggregation"],
+            softmax_temperature=label_weighting["softmax_temperature"],
+            impute=impute,
+        )
+    else:
+        raise ValueError(_invalid_weight_strategy_message(strategy, metrics))
+    return impute(weights)
+
+
+def _compute_causal_epsilon_fill(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    known_at_lookahead: pd.Series,
+) -> NDArray[np.floating]:
+    """Per-row epsilon floor from pivot weights fixed at their availability."""
+    if len(known_at_lookahead) != n_values:
+        raise ValueError(
+            "Invalid known_at_lookahead length "
+            f"{len(known_at_lookahead)}: must be {n_values}"
+        )
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
+        known_at_lookahead
+    )
+    if not valid_mask.any():
+        return np.zeros(n_values, dtype=float)
+
+    source_indices = np.flatnonzero(valid_mask)
+    pivot_order = np.argsort(indices_array[valid_mask], kind="stable")
+    source_indices = source_indices[pivot_order]
+    pivot_indices = indices_array[source_indices]
+
+    known_at_positions = positions + known_at_lookahead_values
+    if label_weighting["strategy"] == WEIGHT_STRATEGIES[1]:  # "uniform"
+        pivot_available_at = known_at_positions[pivot_indices]
+    else:
+        pivot_available_at = np.empty(pivot_indices.size, dtype=np.int64)
+        pivot_available_at[:-1] = known_at_positions[pivot_indices[1:]]
+        pivot_available_at[-1] = n_values
+
+    resolved_mask = pivot_available_at < n_values
+    if not resolved_mask.any():
+        return np.zeros(n_values, dtype=float)
+
+    source_indices = source_indices[resolved_mask]
+    pivot_available_at = pivot_available_at[resolved_mask]
+    availability_order = np.argsort(pivot_available_at, kind="stable")
+    source_indices = source_indices[availability_order]
+    pivot_available_at = pivot_available_at[availability_order]
+    ordered_metrics = {
+        metric_name: np.asarray(metric_values)[source_indices].tolist()
+        for metric_name, metric_values in metrics.items()
+    }
+    pivot_values = _compute_label_weight_values(
+        source_indices.size,
+        ordered_metrics,
+        label_weighting,
+        impute=functools.partial(
+            _causal_impute_weights,
+            availability=pivot_available_at,
+        ),
+    )
+
+    baseline = label_weighting["fill_epsilon_baseline"]
+    if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
+        running_baseline = (
+            pd.Series(pivot_values).expanding().mean().to_numpy(dtype=float)
+        )
+    elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
+        running_baseline = (
+            pd.Series(pivot_values).expanding().median().to_numpy(dtype=float)
+        )
+    else:
+        raise ValueError(
+            enum_error_message(
+                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
+            )
+        )
+
+    event_ends = _segment_ends(pivot_available_at)
+    availability_events = pivot_available_at[event_ends]
+    event_floors = float(label_weighting["fill_epsilon"]) * running_baseline[event_ends]
+
+    available_count = np.searchsorted(
+        availability_events, known_at_positions, side="right"
+    )
+    fill_weights = np.zeros(n_values, dtype=float)
+    has_available_pivot = available_count > 0
+    fill_weights[has_available_pivot] = event_floors[
+        available_count[has_available_pivot] - 1
+    ]
+    return fill_weights
+
+
+def _compute_epsilon_fill(
+    n_values: int,
+    indices_array: NDArray[np.integer],
+    valid_mask: NDArray[np.bool_],
+    weights: NDArray[np.floating],
+    metrics: dict[str, list[float]],
+    label_weighting: dict[str, Any],
+    known_at_lookahead: pd.Series | None,
+) -> NDArray[np.floating]:
+    if known_at_lookahead is not None:
+        return _compute_causal_epsilon_fill(
+            n_values,
+            indices_array,
+            valid_mask,
+            metrics,
+            label_weighting,
+            known_at_lookahead,
+        )
+    return np.full(
+        n_values,
+        _compute_epsilon_floor(
+            weights,
+            valid_mask,
+            label_weighting["fill_epsilon"],
+            label_weighting["fill_epsilon_baseline"],
+        ),
+        dtype=float,
+    )
 
 
 def _compute_gaussian_bumps(
@@ -2219,6 +3056,7 @@ def _compute_gaussian_bumps(
     weights: NDArray[np.floating],
     label_weighting: dict[str, Any],
     *,
+    finite_support: bool,
     logger: Logger | None,
 ) -> NDArray[np.floating]:
     """Per-row max of per-pivot Gaussian bumps.
@@ -2235,6 +3073,7 @@ def _compute_gaussian_bumps(
         bandwidth_neighbors=label_weighting["fill_bandwidth_neighbors"],
         bandwidth_alpha=label_weighting["fill_bandwidth_alpha"],
         sigma_min_candles=label_weighting["fill_sigma_min_candles"],
+        finite_support=finite_support,
         logger=logger,
     )
 
@@ -2245,13 +3084,18 @@ def compute_label_weights(
     metrics: dict[str, list[float]],
     weighting_config: dict[str, Any],
     *,
+    finite_gaussian_support: bool = False,
     logger: Logger,
+    known_at_lookahead: pd.Series | None = None,
 ) -> NDArray[np.floating]:
     """Compute per-row label importance weights.
 
     Returns an array with positive values at pivot ``indices`` (scaled by
-    strategy) and off-pivot values controlled by ``fill_method``. Callers
-    must skip invocation when strategy is ``'none'``; this raises
+    strategy) and off-pivot values controlled by ``fill_method``.
+    ``known_at_lookahead`` enables a per-row causal epsilon baseline; ``None``
+    preserves the global non-causal baseline. ``finite_gaussian_support``
+    truncates Gaussian fills to the radius tracked by causal availability.
+    Callers must skip invocation when strategy is ``'none'``; this raises
     ValueError otherwise.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
@@ -2275,68 +3119,65 @@ def compute_label_weights(
             n_values,
         )
 
-    weights: NDArray[np.floating]
-
-    if strategy == WEIGHT_STRATEGIES[1]:  # "uniform"
-        weights = np.ones(n_indices, dtype=float)
-    elif strategy in metrics:
-        weights = np.asarray(metrics[strategy], dtype=float)
-    elif strategy == WEIGHT_STRATEGIES[8]:  # "combined"
-        weights = _compute_combined_label_weights(
-            metrics=metrics,
-            metric_coefficients=label_weighting["metric_coefficients"],
-            aggregation=label_weighting["aggregation"],
-            softmax_temperature=label_weighting["softmax_temperature"],
-        )
-    else:
-        raise ValueError(
-            f"Invalid weighting strategy value {strategy!r}: "
-            f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
-        )
-
-    weights = _impute_weights(weights)
+    weights = _compute_label_weight_values(n_indices, metrics, label_weighting)
 
     if weights.size == 0:
         return np.zeros(n_values, dtype=float)
+    if weights.size != n_indices:
+        raise ValueError(
+            f"Invalid indices_array/weights values: length mismatch, "
+            f"got {n_indices} indices but {weights.size} weights"
+        )
 
     fill_method = label_weighting["fill_method"]
 
     if fill_method == FILL_METHODS[0]:  # "zero"
         fill_weights = np.zeros(n_values, dtype=float)
     elif fill_method == FILL_METHODS[1]:  # "epsilon"
-        fill_weights = np.full(
+        fill_weights = _compute_epsilon_fill(
             n_values,
-            _compute_epsilon_floor(
-                weights,
-                valid_mask,
-                label_weighting["fill_epsilon"],
-                label_weighting["fill_epsilon_baseline"],
-            ),
-            dtype=float,
+            indices_array,
+            valid_mask,
+            weights,
+            metrics,
+            label_weighting,
+            known_at_lookahead,
         )
     elif fill_method == FILL_METHODS[2]:  # "gaussian"
         fill_weights = _compute_gaussian_bumps(
-            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+            n_values,
+            indices_array,
+            valid_mask,
+            weights,
+            label_weighting,
+            finite_support=finite_gaussian_support,
+            logger=logger,
         )
     elif fill_method == FILL_METHODS[3]:  # "epsilon_gaussian"
         fill_weights = _compute_gaussian_bumps(
-            n_values, indices_array, valid_mask, weights, label_weighting, logger=logger
+            n_values,
+            indices_array,
+            valid_mask,
+            weights,
+            label_weighting,
+            finite_support=finite_gaussian_support,
+            logger=logger,
         )
         np.add(
             fill_weights,
-            _compute_epsilon_floor(
-                weights,
+            _compute_epsilon_fill(
+                n_values,
+                indices_array,
                 valid_mask,
-                label_weighting["fill_epsilon"],
-                label_weighting["fill_epsilon_baseline"],
+                weights,
+                metrics,
+                label_weighting,
+                known_at_lookahead,
             ),
             out=fill_weights,
         )
     else:
-        raise ValueError(
-            f"Invalid fill_method value {fill_method!r}: "
-            f"supported values are {', '.join(FILL_METHODS)}"
-        )
+        raise ValueError(enum_error_message("fill_method", fill_method, FILL_METHODS))
 
     return _scatter_weights(
         n_values=n_values,
@@ -2347,22 +3188,15 @@ def compute_label_weights(
     )
 
 
-# k for the weight-fill availability band: rows within k*fill_sigma_candles of a
-# pivot receive its Gaussian bump. Material radius (bump > 1% of pivot peak) is
-# sqrt(2*ln(100))=3.0349 sigma; k=4 -> tail exp(-8)=3.4e-4, ~30x below 1% with a
-# margin robust to sigma rounding (k=3 under-covers for larger sigma).
-_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
-
-
 def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     """Row radius over which a pivot's Gaussian-fill weight is causally shared.
 
     Zero unless the off-pivot fill spreads a pivot's weight into neighbors
     (``gaussian``/``epsilon_gaussian``). ``fill_sigma_candles`` upper-bounds the
     per-pivot sigma (including ``knn``, which clips below it), so
-    ``ceil(k*fill_sigma_candles)`` covers every pivot's material Gaussian
-    support. The additive epsilon floor is a global O(fill_epsilon) term, left
-    unconstrained (negligible).
+    ``ceil(k*fill_sigma_candles)`` is the finite support used by Gaussian
+    generation. The additive epsilon floor uses its separate per-row causal
+    baseline, so it needs no local fill radius.
     """
     label_weighting = {**DEFAULTS_LABEL_WEIGHTING, **weighting_config}
     if label_weighting["fill_method"] not in (
@@ -2376,40 +3210,218 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     )
 
 
+def _compute_knn_pivot_sigma_availability(
+    pivot_indices: NDArray[np.integer],
+    known_at_positions: NDArray[np.integer],
+    neighbors: int,
+    alpha: float,
+    sigma_min_candles: float,
+    sigma_candles: float,
+    n: int,
+) -> NDArray[np.int64]:
+    """Absolute availability position of each k-NN pivot bandwidth.
+
+    At each atomically complete confirmation group, the possible effective
+    k-th-neighbor distances include every confirmable finite suffix of the
+    remaining frame. Successive Zigzag pivots need at least five slope
+    observations and are therefore at least six candles apart. The bandwidth
+    settles once every possible clipped sigma equals its final value. Otherwise
+    it is knowable only at the frame boundary.
+    """
+    pivot_count = pivot_indices.size
+    availability = np.full(pivot_count, n, dtype=np.int64)
+    if pivot_count == 0:
+        return availability
+
+    pivot_positions = pivot_indices.astype(np.int64, copy=False)
+    pivot_confirmations = known_at_positions[pivot_positions]
+    confirmation_group_ends = _segment_ends(pivot_confirmations)
+    pivot_spacing = _ZIGZAG_MIN_CONFIRMATION_SLOPES + 1
+    last_future_pivot_position = n - pivot_spacing
+    kth_distances = (
+        np.full(1, np.inf)
+        if pivot_count == 1
+        else _compute_pivot_kth_neighbor_distances(
+            pivot_positions.astype(float),
+            neighbors,
+        )
+    )
+    sigma_min = min(float(sigma_min_candles), float(sigma_candles))
+    sigma_max = float(sigma_candles)
+    alpha_value = float(alpha)
+    for i, (pivot_position, kth_distance) in enumerate(
+        zip(pivot_positions, kth_distances)
+    ):
+        raw_sigma = alpha_value * kth_distance
+        if raw_sigma >= sigma_max:
+            lower, upper = 0, n
+            while lower < upper:
+                middle = (lower + upper) // 2
+                if alpha_value * middle < sigma_max:
+                    lower = middle + 1
+                else:
+                    upper = middle
+            closer_radius = lower - 1
+            within_radius = closer_radius
+        elif raw_sigma <= sigma_min:
+            lower, upper = 0, n
+            while lower < upper:
+                middle = (lower + upper) // 2
+                if alpha_value * middle <= sigma_min:
+                    lower = middle + 1
+                else:
+                    upper = middle
+            within_radius = lower - 1
+            closer_radius = within_radius
+        else:
+            within_radius = int(kth_distance)
+            closer_radius = within_radius - 1
+        closer_left = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position - closer_radius,
+                side="left",
+            )
+        )
+        closer_right = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position + closer_radius,
+                side="right",
+            )
+        )
+        within_left = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position - within_radius,
+                side="left",
+            )
+        )
+        within_right = int(
+            np.searchsorted(
+                pivot_positions,
+                pivot_position + within_radius,
+                side="right",
+            )
+        )
+        future_closer_end = pivot_position + closer_radius
+        future_within_end = pivot_position + within_radius
+
+        # Prefixes are evaluated only after complete confirmation groups. The
+        # stability predicate is monotone because each group removes suffixes
+        # from the same finite set of possible continuations.
+        left = int(np.searchsorted(confirmation_group_ends, i, side="left"))
+        right = confirmation_group_ends.size
+        while left < right:
+            middle = (left + right) // 2
+            bound = int(confirmation_group_ends[middle])
+            prefix_end = bound + 1
+            confirmed_neighbors = bound
+            if pivot_confirmations[bound] == pivot_confirmations[0]:
+                # Initial-orientation replay may confirm several pivots
+                # atomically. The last replayed pivot's internal confirmation
+                # is hidden by that watermark, but its successor must still be
+                # at least ``pivot_spacing`` candles later.
+                first_future_pivot_position = (
+                    int(pivot_positions[bound]) + pivot_spacing
+                )
+            else:
+                first_future_pivot_position = int(pivot_confirmations[bound]) + 1
+            has_future = first_future_pivot_position <= last_future_pivot_position
+            confirmed_rank = min(neighbors, confirmed_neighbors)
+            confirmed_closer = max(0, min(prefix_end, closer_right) - closer_left - 1)
+            confirmed_within = max(0, min(prefix_end, within_right) - within_left - 1)
+            last_future_closer_position = min(
+                last_future_pivot_position, future_closer_end
+            )
+            future_closer = (
+                0
+                if last_future_closer_position < first_future_pivot_position
+                else (last_future_closer_position - first_future_pivot_position)
+                // pivot_spacing
+                + 1
+            )
+            all_future_within = (
+                not has_future or last_future_pivot_position <= future_within_end
+            )
+
+            if raw_sigma >= sigma_max:
+                prefix_matches = (
+                    confirmed_neighbors == 0 or confirmed_closer < confirmed_rank
+                )
+                suffix_matches = (
+                    future_closer == 0
+                    if confirmed_neighbors == 0
+                    else confirmed_closer + future_closer < neighbors
+                )
+                stable = prefix_matches and suffix_matches
+            elif raw_sigma <= sigma_min:
+                stable = (
+                    confirmed_neighbors > 0
+                    and confirmed_within >= confirmed_rank
+                    and (confirmed_neighbors >= neighbors or all_future_within)
+                )
+            else:
+                stable = (
+                    confirmed_neighbors > 0
+                    and confirmed_closer < confirmed_rank <= confirmed_within
+                    and confirmed_closer + future_closer < neighbors
+                    and (confirmed_neighbors >= neighbors or all_future_within)
+                )
+            if stable:
+                right = middle
+            else:
+                left = middle + 1
+        if left < confirmation_group_ends.size:
+            bound = int(confirmation_group_ends[left])
+            availability[i] = pivot_confirmations[bound]
+    return availability
+
+
 def compute_label_weight_known_at_lookahead(
     known_at_lookahead: pd.Series,
     indices: Sequence[int] | NDArray[np.integer],
     fill_radius: int = 0,
+    *,
+    imputation_dependency_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
+    imputation_leading_stable_mask: Sequence[bool] | NDArray[np.bool_] | None = None,
+    imputation_stable_release_index: int = -1,
+    weighting_config: dict[str, Any] | None = None,
 ) -> pd.Series:
     """Per-row causal availability (in candles) of the label WEIGHT column.
 
-    A pivot's swing metric (its weight source) is backfilled from the adjacent
-    closing pivot, so it only becomes computable at the next pivot's
-    confirmation ``i_{k+1} == known_at_positions[indices[k+1]]``, one pivot
-    later than the pivot's own label availability ``i_k``. The trailing pivot has
-    no closing swing (weight 0 via ``_impute_weights``, so it never resolves
-    in-frame -> ``n``). Pivot rows are bumped to that lag; off-pivot rows keep
-    their label availability, EXCEPT that a Gaussian fill spreads each pivot's
-    weight over a local band ``[idx-fill_radius, idx+fill_radius]``
-    (0 disables), whose availability is bounded too. The band is LOCAL per pivot,
-    never a global max (a global bound forces ``n`` on all rows -> total train
-    purge). Folded via ``max(label, weight)`` by the causal purge.
+    A metric-based pivot's weight is backfilled from the adjacent closing pivot,
+    so it becomes computable at the next pivot's confirmation
+    ``i_{k+1} == known_at_positions[indices[k+1]]``; the terminal pivot has no
+    closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
+    -> ``n``. A uniform pivot instead has a unit weight at its own label
+    availability. Off-pivot rows keep their label availability, except that a
+    Gaussian fill spreads each pivot's weight over a LOCAL band
+    ``[idx-fill_radius, idx+fill_radius]`` (0 disables) -- never a global max,
+    which would force ``n`` on all rows (total train purge). Folded via
+    ``max(label, weight)`` by the causal purge.
 
-    The ``i_{k+1}`` availability is exact for ``fill_bandwidth='fixed'`` and for
-    ``knn`` with ``fill_bandwidth_neighbors=1`` (a pivot sigma then depends only
-    on already-confirmed adjacent pivots), up to each pivot's material Gaussian
-    support (the tail beyond ``fill_radius`` is immaterial by design, see
-    ``weight_fill_radius``). Under ``knn`` with ``fill_bandwidth_neighbors>=2`` a
-    pivot sigma can depend on a k-th nearest neighbor confirmed after ``i_{k+1}``,
-    making ``i_{k+1}`` a lower bound. This understates the band availability only
-    when that neighbor also lies outside ``fill_radius``, which requires
-    ``fill_bandwidth_alpha < 0.25`` (otherwise ``fill_radius = ceil(4 *
-    fill_sigma_candles)`` covers it and the neighbor's own later availability
-    dominates the ``max`` fold): the understatement is nil at the default
-    ``fill_bandwidth_alpha=0.5`` and can otherwise reach a large fraction of the
-    peak weight on the affected rows. Prefer ``fill_bandwidth='fixed'``,
-    ``fill_bandwidth_neighbors=1``, or ``fill_bandwidth_alpha>=0.25`` for
-    exactness.
+    For adaptive k-NN bandwidths a pivot's band additionally waits until every
+    confirmable finite suffix of the frame yields the same clipped sigma --
+    jointly over geometry and the effective rank ``min(k, pivot_count - 1)`` --
+    evaluated only at atomically complete confirmation groups; this tracks when
+    the final-frame sigma is knowable, not merely computable from a prefix, and
+    is ``n`` absent such proof. Under pure-Gaussian ``uniform`` weighting every
+    bump is bounded by the unit pivot weight, so pivot centers keep their own
+    label availability (fixed, constant-clipped, adaptive), while adaptive
+    off-center bands still wait for the pivot confirmation and sigma. Other
+    strategies and additive fills keep their existing competing-band
+    dependencies.
+
+    The imputation masks (``imputation_dependency_mask``,
+    ``imputation_leading_stable_mask``, ``imputation_stable_release_index``)
+    come from :func:`compute_label_weight_imputation_dependency_mask`.
+    Dependency pivots and their Gaussian bands wait for the frame boundary;
+    leading-stable pivots are released over
+    ``weight_availability[: imputation_stable_release_index + 1]``, folded via
+    ``max`` with each pivot's own label availability, with their zero-weight
+    bands skipped. The release applies only in the identity-order case (no
+    dropped pivot) where the run is a contiguous prefix.
     """
     n = len(known_at_lookahead)
     positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
@@ -2418,24 +3430,115 @@ def compute_label_weight_known_at_lookahead(
     if n == 0:
         return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
     known_at_positions = positions + known_at_lookahead_values
-    idx = np.asarray(indices, dtype=int)
-    idx = np.sort(idx[(idx >= 0) & (idx < n)])
+    raw_idx = np.asarray(indices, dtype=int)
+
+    def _validate_pivot_mask(
+        mask: Sequence[bool] | NDArray[np.bool_] | None, name: str
+    ) -> NDArray[np.bool_]:
+        if mask is None:
+            return np.zeros(raw_idx.size, dtype=bool)
+        arr = np.asarray(mask)
+        if arr.shape != raw_idx.shape:
+            raise ValueError(
+                f"Invalid {name} shape {arr.shape}: must be {raw_idx.shape}"
+            )
+        if arr.dtype != np.bool_:
+            raise ValueError(f"Invalid {name} dtype {arr.dtype}: must be bool")
+        return arr
+
+    raw_dependency_mask = _validate_pivot_mask(
+        imputation_dependency_mask, "imputation_dependency_mask"
+    )
+    raw_leading_stable_mask = _validate_pivot_mask(
+        imputation_leading_stable_mask, "imputation_leading_stable_mask"
+    )
+    valid_mask = (raw_idx >= 0) & (raw_idx < n)
+    idx = raw_idx[valid_mask]
+    order = np.argsort(idx, kind="stable")
+    idx = idx[order]
+    dependency_mask = raw_dependency_mask[valid_mask][order]
+    leading_stable_mask = raw_leading_stable_mask[valid_mask][order]
     base = known_at_positions.copy()
     if idx.size:
-        avail_pivot = np.empty(idx.size, dtype=np.int64)
-        avail_pivot[:-1] = known_at_positions[idx[1:]]
-        avail_pivot[-1] = n
+        weight_availability = np.empty(idx.size, dtype=np.int64)
+        weight_availability[:-1] = known_at_positions[idx[1:]]
+        weight_availability[-1] = n
+        label_weighting = {
+            **DEFAULTS_LABEL_WEIGHTING,
+            **(weighting_config or {}),
+        }
+        adaptive_knn = (
+            fill_radius > 0
+            and label_weighting["fill_bandwidth"] == FILL_BANDWIDTHS[1]  # "knn"
+            and float(label_weighting["fill_sigma_min_candles"])
+            < float(label_weighting["fill_sigma_candles"])
+        )
+        uniform_gaussian = (
+            label_weighting["strategy"] == WEIGHT_STRATEGIES[1]
+            and label_weighting["fill_method"] == FILL_METHODS[2]  # "gaussian"
+        )
+        band_weight_availability = (
+            known_at_positions[idx].copy() if uniform_gaussian else weight_availability
+        )
+        avail_pivot = band_weight_availability.copy()
+        if adaptive_knn:
+            sigma_availability = _compute_knn_pivot_sigma_availability(
+                idx,
+                known_at_positions,
+                label_weighting["fill_bandwidth_neighbors"],
+                label_weighting["fill_bandwidth_alpha"],
+                label_weighting["fill_sigma_min_candles"],
+                label_weighting["fill_sigma_candles"],
+                n,
+            )
+            np.maximum(avail_pivot, sigma_availability, out=avail_pivot)
+        avail_pivot[dependency_mask] = n
+        if (
+            leading_stable_mask.any()
+            and idx.size == raw_idx.size
+            and np.array_equal(order, np.arange(idx.size))
+            and 0 <= imputation_stable_release_index < weight_availability.size
+        ):
+            # Prefix max (not weight_availability[stable_release_index]) stays
+            # leak-free if availability is non-monotone, at worst deferring
+            # later; guarded to identity order (contiguous prefix run).
+            release = int(
+                np.max(weight_availability[: imputation_stable_release_index + 1])
+            )
+            avail_pivot[leading_stable_mask] = release
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
-            for pivot_pos, pivot_avail in zip(idx.tolist(), avail_pivot.tolist()):
-                # Skip any pivot whose weight never resolves in-frame (sentinel
-                # availability == n): its Gaussian bump is 0, so it contributes
-                # to no row (on real _zigzag output only the trailing pivot).
-                if pivot_avail >= n:
+            for (
+                pivot_pos,
+                pivot_avail,
+                weight_avail,
+                pivot_dependency,
+                pivot_leading,
+            ) in zip(
+                idx.tolist(),
+                avail_pivot.tolist(),
+                band_weight_availability.tolist(),
+                dependency_mask.tolist(),
+                leading_stable_mask.tolist(),
+            ):
+                # A leading-run pivot imputes to 0.0 (zero bump): its own row is
+                # released above; it spreads no band.
+                if pivot_leading:
+                    continue
+                # Skip pivots whose band weight never resolves in-frame
+                # (weight_avail == n): their Gaussian bump is zero. Exception: an
+                # imputation-dependent pivot keeps the non-zero legacy default for
+                # an all-non-finite metric, so its band must defer to n.
+                if weight_avail >= n and not pivot_dependency:
                     continue
                 lo = max(0, pivot_pos - fill_radius)
                 hi = min(n, pivot_pos + fill_radius + 1)
                 np.maximum(base[lo:hi], pivot_avail, out=base[lo:hi])
+        if uniform_gaussian:
+            base[idx] = np.maximum(
+                known_at_positions[idx],
+                band_weight_availability,
+            )
     base = np.clip(base, positions, n)
     return pd.Series(base - positions, index=known_at_lookahead.index, dtype=np.int64)
 
@@ -2464,7 +3567,7 @@ _SCIENTIFIC_THRESHOLD_HIGH = 1e12
 _SCIENTIFIC_THRESHOLD_LOW = 1e-6
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def format_number(value: int | float, significant_digits: int = 5) -> str:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
@@ -2656,7 +3759,7 @@ def format_dict(
     return f"{{{joined}}}" if style == "dict" else joined
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def calculate_min_extrema(
     length: int, fit_live_predictions_candles: int, min_extrema: int = 2
 ) -> int:
@@ -2781,7 +3884,7 @@ def calculate_zero_lag(series: pd.Series, period: int) -> pd.Series:
     return 2 * series - series.shift(int(lag))
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_ma_fn(
     mamode: str,
 ) -> Callable[
@@ -2805,7 +3908,7 @@ def get_ma_fn(
     return mamodes.get(mamode, mamodes["sma"])
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_zl_ma_fn(
     mamode: str,
 ) -> Callable[
@@ -2922,7 +4025,7 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
     return smma
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_price_fn(pricemode: str) -> Callable[[pd.DataFrame], pd.Series]:
     pricemodes = {
         "average": ta.AVGPRICE,
@@ -3298,7 +4401,9 @@ def _zigzag(
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
-        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / duration
+        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / (
+            end_pos - start_pos
+        )
         median_volume = np.nanmedian(volumes[start_pos:end_pos])
         if (
             np.isfinite(avg_volume_per_candle)
@@ -3379,7 +4484,7 @@ def _zigzag(
         # orientation (scan restarts at initial_pivot_pos+1, before the
         # orientation confirmation candle i) must not claim availability earlier
         # than i, since its label depends on that orientation. Fold the latest
-        # confirmation seen so far so known_at never understates it.
+        # confirmation seen so far so ``known_at`` never understates it.
         confirmed_at_pos = max(
             confirmed_at_pos,
             resolve_through_pos,
@@ -3395,9 +4500,9 @@ def _zigzag(
             return
 
         # These swing metrics are backfilled onto the previous pivot from the
-        # adjacent closing pivot, confirmed at this pivot's known_at. The weight
+        # adjacent closing pivot, confirmed at this pivot's ``known_at``. The weight
         # is therefore causally available one pivot later than its label;
-        # compute_label_weight_known_at_lookahead derives that lag so the causal
+        # ``compute_label_weight_known_at_lookahead`` derives that lag so the causal
         # purge masks weights on max(label, weight) availability.
         if (
             pivots_values_log
@@ -3491,7 +4596,7 @@ def _zigzag(
         candidate_pivot_pos: int,
         direction: TrendDirection,
         min_slope: float = np.finfo(float).eps,
-        alpha: float = 0.05,
+        alpha: float = _ZIGZAG_CONFIRMATION_ALPHA,
     ) -> bool:
         start_pos = min(candidate_pivot_pos + 1, n)
         end_pos = min(pos + 1, n)
@@ -3800,7 +4905,7 @@ def get_ngboost_dist(dist_name: str) -> type:
 
     if dist_name not in dist_map:
         raise ValueError(
-            f"Invalid dist_name {dist_name!r}: supported values are {', '.join(dist_map.keys())}"
+            enum_error_message("dist_name", dist_name, tuple(dist_map.keys()))
         )
 
     return dist_map[dist_name]
@@ -3843,16 +4948,14 @@ def get_refit_model_training_parameters(
         fitted_iterations = int(model.tree_count_)
         initial_iterations = 0
     else:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: "
-            f"supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
     spec = _REGRESSOR_SPEC_BY_NAME[regressor]
-    # best_iteration is combined-indexed under current xgboost/lightgbm, so
-    # fitted >= initial + 1 always holds; clamp defensively so a degenerate
-    # non-improving continual-learning refit degrades gracefully instead of
-    # raising and killing the whole training window.
+    # The sole caller refits the cold-started selection model
+    # (``init_model=None``), so ``initial_iterations`` is 0 here; the
+    # ``init_model`` branches above remain for warm-start callers. Clamp to
+    # >= 1 so a degenerate fit (``fitted_iterations`` <= ``initial_iterations``)
+    # degrades gracefully instead of raising.
     refit_iterations = max(fitted_iterations - initial_iterations, 1)
     for alias in spec.iteration_aliases:
         refit_parameters.pop(alias, None)
@@ -3905,10 +5008,7 @@ def fit_regressor(
 
     spec = _REGRESSOR_SPEC_BY_NAME.get(regressor)
     if spec is None:
-        raise ValueError(
-            f"Invalid regressor value {regressor!r}: "
-            f"supported values are {', '.join(REGRESSORS)}"
-        )
+        raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
     model_training_parameters.setdefault(spec.seed_param, 1)
     if trial is not None and vary_model_seed_by_trial:
         model_training_parameters[spec.seed_param] = (
@@ -4099,6 +5199,9 @@ def fit_regressor(
             model_training_parameters.setdefault("max_ctr_complexity", 4)
             if loss_function not in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
                 model_training_parameters.pop("rsm", None)
+            # CatBoost init_model is CPU-only and raises on GPU; drop it so
+            # continual_learning cold-starts there instead.
+            init_model = None
         else:
             n_jobs = model_training_parameters.pop("n_jobs", None)
             if n_jobs is not None:
@@ -4136,6 +5239,7 @@ def fit_regressor(
             if early_stopping_rounds is not None and has_eval_set
             else False,
             callbacks=fit_callbacks if fit_callbacks else None,
+            init_model=init_model,
         )
 
         if pruning_callback is not None:
@@ -4197,10 +5301,51 @@ class _OptunaNamespaces(NamedTuple):
 # Exported for cross-module use; consumers may import despite the leading
 # underscore on the instance (the class ``_OptunaNamespaces`` stays private).
 _OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
+_OPTUNA_BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
+_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
+
+
+def _optuna_best_params_path(
+    base_path: Path, pair: str, namespace: OptunaNamespace
+) -> Path:
+    return base_path / f"optuna-{namespace}-best-params-{pair_to_filename(pair)}.json"
+
+
+def _resolve_legacy_optuna_best_params(
+    base_path: Path,
+    pair: str,
+    namespace: OptunaNamespace,
+    best_params_path: Path,
+    pairs: Sequence[str] | None,
+    logger: Logger | None,
+) -> Path | None:
+    """Return a usable legacy base-only best-params file, or None.
+
+    The legacy filename encodes only the pair base; reusing it is safe only
+    when exactly one configured pair maps to that base. Otherwise it is
+    ambiguous and must be ignored (with a warning).
+    """
+    base = pair.split("/")[0]
+    legacy_best_params_path = base_path / f"optuna-{namespace}-best-params-{base}.json"
+    if (
+        legacy_best_params_path == best_params_path
+        or legacy_best_params_path.is_symlink()
+        or not legacy_best_params_path.is_file()
+    ):
+        return None
+    if pairs is not None and sum(1 for p in pairs if p.split("/")[0] == base) == 1:
+        return legacy_best_params_path
+    if logger is not None:
+        logger.warning(
+            f"[{pair}] Ignoring ambiguous legacy Optuna {namespace} best params "
+            f"at {legacy_best_params_path}: filename does not encode the complete "
+            f"pair identity"
+        )
+    return None
 
 
 _OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION: Final[int] = 2
-"""Wire format version of optuna-label-best-params-{pair}.json.
+"""Wire format version of pair-specific Optuna label best-params JSON files.
 
 Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
@@ -4346,29 +5491,170 @@ def _validate_optuna_label_best_params(
     return params
 
 
+def _optuna_quarantine_path(path: Path, now: datetime, *, tag: str, limit: int) -> Path:
+    """Quarantine target path for a corrupt Optuna artefact.
+
+    The tag and timestamp are appended after the complete filename
+    (extension included) so live-artefact globs never match quarantined
+    files. Collisions are bounded by ``limit``; exhausted candidates raise
+    instead of reusing a quarantine file.
+    """
+    stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
+    base_name = f"{path.name}.{tag}-{stamp}"
+    for index in range(limit + 1):
+        suffix = "" if index == 0 else f"-{index}"
+        candidate = path.with_name(f"{base_name}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(path)
+
+
+def _quarantine_corrupt_optuna_best_params(
+    best_params_path: Path,
+    pair: str,
+    namespace: OptunaNamespace,
+    cause: Exception,
+    logger: Logger | None,
+) -> Path | None:
+    """Atomically move corrupt persisted best params out of the live path."""
+    if not best_params_path.exists():
+        return None
+    quarantine_path = _optuna_quarantine_path(
+        best_params_path,
+        datetime.now(timezone.utc),
+        tag=_OPTUNA_BEST_PARAMS_QUARANTINE_TAG,
+        limit=_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT,
+    )
+    try:
+        best_params_path.rename(quarantine_path)
+    except OSError as quarantine_error:
+        if logger is not None:
+            logger.error(
+                f"[{pair}] Optuna {namespace} best params "
+                f"{best_params_path.name} quarantine failed: {quarantine_error!r}",
+                exc_info=True,
+            )
+        raise
+    if logger is not None:
+        logger.warning(
+            f"[{pair}] Optuna {namespace} best params {best_params_path.name} "
+            f"corrupt ({cause!r}); quarantined to {quarantine_path.name}; "
+            "no persisted best params recovered"
+        )
+    return quarantine_path
+
+
+@contextmanager
+def _locked_optuna_best_params(
+    best_params_path: Path,
+    *,
+    exclusive: bool,
+) -> Iterator[None]:
+    """Serialize best-params I/O using a stable lock file."""
+    lock_path = best_params_path.parent / ".optuna-best-params.lock"
+    # O_NONBLOCK so a pre-existing FIFO (unlike a symlink, not caught by
+    # O_NOFOLLOW) cannot hang this open before the S_ISREG guard rejects it.
+    # A shared reader omits O_CREAT: a read-only mount cannot create the lock,
+    # and os.replace atomicity keeps a lock-free read consistent.
+    open_flags = (
+        ((os.O_RDWR | os.O_CREAT) if exclusive else os.O_RDONLY)
+        | os.O_CLOEXEC
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+    )
+    try:
+        lock_fd = os.open(lock_path, open_flags, 0o666)
+    except FileNotFoundError:
+        if exclusive:
+            raise
+        yield
+        return
+    try:
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            raise OSError(f"Optuna best params lock {lock_path} must be a regular file")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(lock_fd)
+
+
+def _reject_optuna_best_params_symlink(best_params_path: Path) -> None:
+    """Fail closed when the live best-params path is a symlink."""
+    if best_params_path.is_symlink():
+        raise OSError(
+            f"Optuna best params path {best_params_path} must not be a symlink"
+        )
+
+
 def optuna_load_best_params(
     base_path: Path,
     pair: str,
     namespace: OptunaNamespace,
     logger: Logger | None = None,
     *,
+    pairs: Sequence[str] | None = None,
     expected_selection_metadata: dict[str, Any] | None = None,
+    expected_objective_identity: str | None = None,
 ) -> dict[str, Any] | None:
-    best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-    )
-    if best_params_path.is_file():
-        with best_params_path.open("r", encoding="utf-8") as read_file:
-            best_params = json.load(read_file)
-        if namespace == _OPTUNA_NAMESPACES.label:
-            return _validate_optuna_label_best_params(
-                best_params,
-                pair,
-                logger,
-                expected_selection_metadata=expected_selection_metadata,
+    best_params_path = _optuna_best_params_path(base_path, pair, namespace)
+    if not best_params_path.parent.is_dir():
+        return None
+    malformed = False
+    with _locked_optuna_best_params(best_params_path, exclusive=False):
+        _reject_optuna_best_params_symlink(best_params_path)
+        if not best_params_path.is_file():
+            legacy_best_params_path = _resolve_legacy_optuna_best_params(
+                base_path, pair, namespace, best_params_path, pairs, logger
             )
-        return best_params
-    return None
+            if legacy_best_params_path is None:
+                return None
+            best_params_path = legacy_best_params_path
+        try:
+            with best_params_path.open("r", encoding="utf-8") as read_file:
+                best_params = json.load(read_file)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            malformed = True
+    if malformed:
+        with _locked_optuna_best_params(best_params_path, exclusive=True):
+            _reject_optuna_best_params_symlink(best_params_path)
+            if not best_params_path.is_file():
+                return None
+            try:
+                with best_params_path.open("r", encoding="utf-8") as read_file:
+                    best_params = json.load(read_file)
+            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                quarantined = _quarantine_corrupt_optuna_best_params(
+                    best_params_path,
+                    pair,
+                    namespace,
+                    decode_error,
+                    logger,
+                )
+                if quarantined is None:
+                    raise
+                return None
+    if namespace == _OPTUNA_NAMESPACES.label:
+        return _validate_optuna_label_best_params(
+            best_params,
+            pair,
+            logger,
+            expected_selection_metadata=expected_selection_metadata,
+        )
+    if expected_objective_identity is not None:
+        if (
+            not isinstance(best_params, dict)
+            or best_params.get("objective_identity") != expected_objective_identity
+            or not isinstance(best_params.get("params"), dict)
+        ):
+            if logger is not None:
+                logger.warning(
+                    f"[{pair}] Ignoring Optuna {namespace} best params: "
+                    f"objective identity does not match "
+                    f"{expected_objective_identity!r}"
+                )
+            return None
+        return best_params["params"]
+    return best_params
 
 
 def optuna_save_best_params(
@@ -4378,10 +5664,10 @@ def optuna_save_best_params(
     params: dict[str, Any],
     logger: Logger,
     selection_metadata: dict[str, Any] | None = None,
+    objective_identity: str | None = None,
 ) -> None:
-    best_params_path = (
-        base_path / f"optuna-{namespace}-best-params-{pair.split('/')[0]}.json"
-    )
+    best_params_path = _optuna_best_params_path(base_path, pair, namespace)
+    temporary_path: Path | None = None
     try:
         if namespace == _OPTUNA_NAMESPACES.label:
             best_params: dict[str, Any] = {
@@ -4390,15 +5676,80 @@ def optuna_save_best_params(
             }
             if selection_metadata is not None:
                 best_params["selection_metadata"] = selection_metadata
+        elif objective_identity is not None:
+            best_params = {
+                "objective_identity": objective_identity,
+                "params": params,
+            }
         else:
             best_params = params
-        with best_params_path.open("w", encoding="utf-8") as write_file:
-            json.dump(best_params, write_file, indent=4)
-    except Exception as e:
-        logger.error(
-            f"[{pair}] Optuna {namespace} failed to save best params: {e!r}",
-            exc_info=True,
-        )
+        with _locked_optuna_best_params(best_params_path, exclusive=True):
+            _reject_optuna_best_params_symlink(best_params_path)
+            try:
+                existing_metadata = best_params_path.stat()
+            except FileNotFoundError:
+                existing_metadata = None
+            temporary_path = best_params_path.with_name(
+                f".{best_params_path.name}.{uuid4().hex}.tmp"
+            )
+            with os.fdopen(
+                os.open(
+                    temporary_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o666,
+                ),
+                mode="w",
+                encoding="utf-8",
+            ) as write_file:
+                if existing_metadata is not None:
+                    temporary_metadata = os.fstat(write_file.fileno())
+                    if (
+                        temporary_metadata.st_uid != existing_metadata.st_uid
+                        or temporary_metadata.st_gid != existing_metadata.st_gid
+                    ):
+                        # Best-effort: a non-root process on a cross-uid bind
+                        # mount lacks CAP_CHOWN; the previous in-place write
+                        # never chowned, so a failure must not abort the save.
+                        try:
+                            os.fchown(
+                                write_file.fileno(),
+                                existing_metadata.st_uid
+                                if temporary_metadata.st_uid != existing_metadata.st_uid
+                                else -1,
+                                existing_metadata.st_gid
+                                if temporary_metadata.st_gid != existing_metadata.st_gid
+                                else -1,
+                            )
+                        except PermissionError as chown_error:
+                            if logger is not None:
+                                logger.debug(
+                                    f"[{pair}] Optuna {namespace} best params "
+                                    f"ownership preservation skipped: {chown_error!r}"
+                                )
+                    os.fchmod(
+                        write_file.fileno(),
+                        stat.S_IMODE(existing_metadata.st_mode),
+                    )
+                json.dump(best_params, write_file, indent=4)
+                write_file.flush()
+                os.fsync(write_file.fileno())
+            os.replace(temporary_path, best_params_path)
+            temporary_path = None
+    except BaseException as error:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                logger.error(
+                    f"[{pair}] Optuna {namespace} best params temporary file "
+                    f"{temporary_path.name} cleanup failed: {cleanup_error!r}",
+                    exc_info=True,
+                )
+        if isinstance(error, Exception):
+            logger.error(
+                f"[{pair}] Optuna {namespace} failed to save best params: {error!r}",
+                exc_info=True,
+            )
         raise
 
 
@@ -5023,7 +6374,7 @@ def get_optuna_study_model_parameters(
         raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def largest_divisor_to_step(integer: int, step: int) -> int | None:
     if not isinstance(integer, int) or integer <= 0:
         raise ValueError(
@@ -5069,7 +6420,7 @@ def soft_extremum(series: pd.Series, alpha: float) -> float:
     return nan_average(values, weights=shifted_exponentials)
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_min_max_label_period_candles(
     fit_live_predictions_candles: int,
     candles_step: int,
@@ -5132,7 +6483,7 @@ def _validate_step_args(value: float | int, step: int) -> None:
         raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def round_to_step(value: float | int, step: int) -> int:
     """
     Round a value to the nearest multiple of a given step.
@@ -5155,107 +6506,28 @@ def round_to_step(value: float | int, step: int) -> int:
     return int(round(float(value) / step) * step)
 
 
-@lru_cache(maxsize=128)
+def _step_round(
+    value: float | int,
+    step: int,
+    int_op: Callable[[int, int], int],
+    float_op: Callable[[float], int],
+) -> int:
+    _validate_step_args(value, step)
+    if isinstance(value, (int, np.integer)):
+        return int(int_op(int(value), step) * step)
+    if not np.isfinite(value):
+        raise ValueError(f"Invalid value {value!r}: must be finite")
+    return int(float_op(float(value) / step) * step)
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def ceil_to_step(value: float | int, step: int) -> int:
-    _validate_step_args(value, step)
-    if isinstance(value, (int, np.integer)):
-        return int(-(-int(value) // step) * step)
-    if not np.isfinite(value):
-        raise ValueError(f"Invalid value {value!r}: must be finite")
-    return int(math.ceil(float(value) / step) * step)
+    return _step_round(value, step, lambda v, s: -(-v // s), math.ceil)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def floor_to_step(value: float | int, step: int) -> int:
-    _validate_step_args(value, step)
-    if isinstance(value, (int, np.integer)):
-        return int((int(value) // step) * step)
-    if not np.isfinite(value):
-        raise ValueError(f"Invalid value {value!r}: must be finite")
-    return int(math.floor(float(value) / step) * step)
-
-
-def validate_range(
-    min_val: float | int,
-    max_val: float | int,
-    logger: Logger,
-    *,
-    name: str,
-    default_min: float | int,
-    default_max: float | int,
-    allow_equal: bool = False,
-    non_negative: bool = True,
-    finite_only: bool = True,
-    max_value: float | int | None = None,
-) -> tuple[float | int, float | int]:
-    min_name = f"min_{name}"
-    max_name = f"max_{name}"
-
-    if not isinstance(default_min, (int, float)) or not isinstance(
-        default_max, (int, float)
-    ):
-        raise ValueError(
-            f"Invalid {name}: defaults must be numeric, "
-            f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
-        )
-    if default_min > default_max or (not allow_equal and default_min == default_max):
-        raise ValueError(
-            f"Invalid {name}: defaults ordering must have min < max, "
-            f"got min={default_min!r}, max={default_max!r}"
-        )
-    if max_value is not None and (default_min > max_value or default_max > max_value):
-        raise ValueError(
-            f"Invalid {name}: defaults must be <= {max_value!r}, "
-            f"got min={default_min!r}, max={default_max!r}"
-        )
-
-    def _validate_component(
-        value: float | int | None, name: str, default_value: float | int
-    ) -> float | int:
-        constraints = []
-        if finite_only:
-            constraints.append("finite")
-        if non_negative:
-            constraints.append("non-negative")
-        constraints.append("numeric")
-        if max_value is not None:
-            constraints.append(f"<= {max_value}")
-        constraint_str = " ".join(constraints)
-        if (
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or (finite_only and not _is_finite_value(value))
-            or (non_negative and value < 0)
-            or (max_value is not None and value > max_value)
-        ):
-            logger.warning(
-                f"Invalid {name} {value!r}: must be {constraint_str}, using default {default_value!r}"
-            )
-            return default_value
-        return value
-
-    sanitized_min = _validate_component(min_val, min_name, default_min)
-    sanitized_max = _validate_component(max_val, max_name, default_max)
-
-    ordering_ok = (
-        (sanitized_min < sanitized_max)
-        if not allow_equal
-        else (sanitized_min <= sanitized_max)
-    )
-    if not ordering_ok:
-        logger.warning(
-            f"Invalid {name} ordering: must have {min_name} < {max_name}, "
-            f"got {min_name}={sanitized_min!r}, {max_name}={sanitized_max!r}, "
-            f"using defaults {default_min!r}, {default_max!r}"
-        )
-        sanitized_min, sanitized_max = default_min, default_max
-
-    if sanitized_min != min_val or sanitized_max != max_val:
-        logger.warning(
-            f"Invalid {name} range ({min_name}={min_val!r}, {max_name}={max_val!r}), using ({sanitized_min!r}, {sanitized_max!r})"
-        )
-
-    return sanitized_min, sanitized_max
+    return _step_round(value, step, lambda v, s: v // s, math.floor)
 
 
 def get_label_defaults(

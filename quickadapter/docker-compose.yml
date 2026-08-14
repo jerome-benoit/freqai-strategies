@@ -28,10 +28,10 @@ services:
       - TZ=Europe/Paris
     volumes:
       - "./user_data:/freqtrade/user_data"
-    # Expose api on port 8081
+    # Expose the API on localhost port 8081
     # Please read the https://www.freqtrade.io/en/stable/rest-api/ documentation
     # for more information.
     ports:
-      - "0.0.0.0:8081:8080"
+      - "127.0.0.1:8081:8080"
     # Default command used when running `docker compose up`
     command: trade
