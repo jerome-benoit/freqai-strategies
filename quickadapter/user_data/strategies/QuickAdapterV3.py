@@ -171,7 +171,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.13.0-rc.3"
+        return "3.13.0-rc.6"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -2468,4 +2468,6 @@ class QuickAdapterV3(IStrategy):
         # tolerable here. The regressor's ``optuna_load_best_params``
         # passes ``expected_selection_metadata`` and rejects drift before
         # re-running HPO selection.
-        return optuna_load_best_params(self.models_full_path, pair, namespace, logger)
+        return optuna_load_best_params(
+            self.models_full_path, pair, namespace, logger, pairs=self.pairs
+        )

@@ -39,10 +39,10 @@ services:
       - REFORCEXY_RUNTIME_IMAGE_ID=${REFORCEXY_RUNTIME_IMAGE_ID:-}
     volumes:
       - "./user_data:/freqtrade/user_data"
-    # Expose api on port 8082
+    # Expose the API on localhost port 8082
     # Please read the https://www.freqtrade.io/en/stable/rest-api/ documentation
     # for more information.
     ports:
-      - "0.0.0.0:8082:8080"
+      - "127.0.0.1:8082:8080"
     # Default command used when running `docker compose up`
     command: trade
