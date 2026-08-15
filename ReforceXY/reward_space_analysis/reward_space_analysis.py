@@ -1980,21 +1980,18 @@ def _compute_summary_stats(df: pd.DataFrame) -> dict[str, Any]:
     action_summary = df.groupby("action")["reward"].agg(["count", "mean", "std", "min", "max"])
     component_share = df[
         [
+            "reward_economic",
             "reward_invalid",
-            "reward_idle",
-            "reward_hold",
             "reward_exit",
             "reward_shaping",
-            "reward_entry_additive",
-            "reward_exit_additive",
         ]
     ].apply(lambda col: (col != 0).mean())
 
     components = [
+        "reward_economic",
         "reward_invalid",
-        "reward_idle",
-        "reward_hold",
         "reward_exit",
+        "reward_shaping",
         "reward",
     ]
     component_bounds = (
@@ -2068,8 +2065,8 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         pnl_max = pnl_min + 1e-6
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
-    idle_stats = _binned_stats(df, "idle_duration", "reward_idle", idle_bins)
-    hold_stats = _binned_stats(df, "trade_duration", "reward_hold", trade_bins)
+    idle_stats = _binned_stats(df, "idle_duration", "reward_economic", idle_bins)
+    hold_stats = _binned_stats(df, "trade_duration", "reward_economic", trade_bins)
     exit_stats = _binned_stats(df, "pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
@@ -2078,9 +2075,8 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
 
     requested_fields = [
         "reward",
+        "reward_economic",
         "reward_invalid",
-        "reward_idle",
-        "reward_hold",
         "reward_exit",
         "pnl",
         "trade_duration",
@@ -2129,8 +2125,12 @@ def _compute_representativity_stats(
     pnl_extreme = float((df["pnl"].abs() >= 0.14).mean())
 
     duration_overage_share = float((df["duration_ratio"] > 1.0).mean())
-    idle_activated = float((df["reward_idle"] != 0).mean())
-    hold_activated = float((df["reward_hold"] != 0).mean())
+    idle_activated = float(
+        ((df["position"] == Positions.Neutral.value) & (df["reward_economic"] != 0)).mean()
+    )
+    hold_activated = float(
+        ((df["position"] != Positions.Neutral.value) & (df["reward_economic"] != 0)).mean()
+    )
     exit_activated = float((df["reward_exit"] != 0).mean())
 
     return {
@@ -2467,6 +2467,7 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
 
     # Keep optional list stable and explicit
     numeric_optional = {
+        "reward_economic",
         "reward_exit",
         "reward_idle",
         "reward_hold",
@@ -2480,6 +2481,15 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
         "reward_exit_additive",
         "prev_potential",
         "next_potential",
+        "previous_liquidation_value",
+        "reward_liquidation_value",
+        "next_liquidation_value",
+        "economic_log_return",
+        "cumulative_pair_log_return",
+        "synthetic_pair_equity",
+        "economic_ruin",
+        "terminated",
+        "truncated",
         "is_invalid",
     }
 
@@ -3790,7 +3800,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--unrealized_pnl",
         action="store_true",
-        help="Simulate unrealized PnL during holds to feed Φ(s) (optional; default: disabled).",
+        help=(
+            "Deprecated compatibility alias; emits a warning and is ignored because "
+            "analytical trajectories are always fee-aware marked-to-liquidation."
+        ),
     )
     return parser
 
@@ -3919,8 +3932,7 @@ def write_complete_statistical_analysis(
     hypothesis_tests = statistical_hypothesis_tests(df, adjust_method=adjust_method, seed=test_seed)
     metrics_for_ci = [
         "reward",
-        "reward_idle",
-        "reward_hold",
+        "reward_economic",
         "reward_exit",
         "pnl",
     ]
@@ -3946,6 +3958,8 @@ def write_complete_statistical_analysis(
     if real_df is not None:
         distribution_shift = compute_distribution_shift_metrics(df, real_df)
 
+    pbrs_footer_summary = "Algebraic conformance unverified (PBRS diagnostics unavailable)"
+
     # Write comprehensive report
     with report_path.open("w", encoding="utf-8") as f:
         # Header
@@ -3956,6 +3970,15 @@ def write_complete_statistical_analysis(
         f.write(f"| Generated | {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} |\n")
         f.write(f"| Total Samples | {len(df):,} |\n")
         f.write(f"| Random Seed | {seed} |\n")
+        f.write("| Reward Contract | pair-local net log liquidation return |\n")
+        f.write(f"| Unified Fee Rate | {_get_fee_rate(reward_params):.6f} |\n")
+        f.write(
+            "| Fee Source | analytical assumption; replace with effective runtime fee for exact parity |\n"
+        )
+        f.write("| Costs Excluded | spread, slippage, funding, latency, market impact |\n")
+        f.write("| True Termination | economic ruin only |\n")
+        f.write("| Sample-Limit End | truncation; PBRS potential preserved for bootstrap |\n")
+        f.write("| Drawdown Diagnostic | unavailable in analytical simulation |\n")
         # Blank separator to visually group core simulation vs PBRS parameters
         f.write("|  |  |\n")
         # Core PBRS parameters exposed in run configuration if present
@@ -4025,13 +4048,10 @@ def write_complete_statistical_analysis(
         ]
         # Enforce deterministic logical ordering of components if present
         preferred_order = [
+            "reward_economic",
             "reward_invalid",
-            "reward_idle",
-            "reward_hold",
             "reward_exit",
             "reward_shaping",
-            "reward_entry_additive",
-            "reward_exit_additive",
         ]
         for comp in preferred_order:
             if comp in comp_share.index:
@@ -4083,9 +4103,11 @@ def write_complete_statistical_analysis(
         f.write("### 2.4 Component Activation Rates\n\n")
         f.write("| Component | Activation Rate |\n")
         f.write("|-----------|----------------|\n")
-        f.write(f"| Idle penalty | {representativity_stats['idle_activated']:.1%} |\n")
-        f.write(f"| Hold penalty | {representativity_stats['hold_activated']:.1%} |\n")
-        f.write(f"| Exit reward | {representativity_stats['exit_activated']:.1%} |\n")
+        f.write(f"| Neutral economic return | {representativity_stats['idle_activated']:.1%} |\n")
+        f.write(
+            f"| In-position economic return | {representativity_stats['hold_activated']:.1%} |\n"
+        )
+        f.write(f"| Exit economic return | {representativity_stats['exit_activated']:.1%} |\n")
         f.write("\n")
 
         # Section 3: Reward Component Relationships
@@ -4093,7 +4115,7 @@ def write_complete_statistical_analysis(
         f.write("## 3. Reward Component Analysis\n\n")
         f.write("Analysis of how reward components behave under different conditions.\n\n")
 
-        f.write("### 3.1 Idle Penalty vs Duration\n\n")
+        f.write("### 3.1 Neutral Economic Return vs Idle Duration\n\n")
         if relationship_stats["idle_stats"].empty:
             f.write("_No idle samples present._\n\n")
         else:
@@ -4102,7 +4124,7 @@ def write_complete_statistical_analysis(
                 idle_df.index.name = "bin"
             f.write(_df_to_md(idle_df, index_name=idle_df.index.name, ndigits=6))
 
-        f.write("### 3.2 Hold Penalty vs Trade Duration\n\n")
+        f.write("### 3.2 Economic Return vs Trade Duration\n\n")
         if relationship_stats["hold_stats"].empty:
             f.write("_No hold samples present._\n\n")
         else:
@@ -4111,7 +4133,7 @@ def write_complete_statistical_analysis(
                 hold_df.index.name = "bin"
             f.write(_df_to_md(hold_df, index_name=hold_df.index.name, ndigits=6))
 
-        f.write("### 3.3 Exit Reward vs PnL\n\n")
+        f.write("### 3.3 Exit Economic Return vs PnL\n\n")
         if relationship_stats["exit_stats"].empty:
             f.write("_No exit samples present._\n\n")
         else:
@@ -4155,10 +4177,10 @@ def write_complete_statistical_analysis(
                 f"| Shaping (Φ) | {pbrs_activation['shaping']:.1%} | Potential-based reward shaping |\n"
             )
             f.write(
-                f"| Entry Additive | {pbrs_activation['entry_additive']:.1%} | Non-PBRS entry reward |\n"
+                f"| Entry Additive | {pbrs_activation['entry_additive']:.1%} | Deprecated compatibility field (always zero) |\n"
             )
             f.write(
-                f"| Exit Additive | {pbrs_activation['exit_additive']:.1%} | Non-PBRS exit reward |\n"
+                f"| Exit Additive | {pbrs_activation['exit_additive']:.1%} | Deprecated compatibility field (always zero) |\n"
             )
             f.write("\n")
 
@@ -4200,25 +4222,25 @@ def write_complete_statistical_analysis(
                 f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s') - Φ(s) |\n")
                 f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
                 f.write(
-                    f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"
+                    f"| Mean Algebraic Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"
                 )
                 f.write(
-                    f"| Std Invariance Correction | {std_inv_corr:.6f} | Variability of correction |\n"
+                    f"| Std Algebraic Correction | {std_inv_corr:.6f} | Variability of correction |\n"
                 )
                 f.write(
-                    f"| Max \\|Invariance Correction\\| | {max_inv_corr:.6e} | Peak deviation from pure PBRS |\n"
+                    f"| Max \\|Algebraic Correction\\| | {max_inv_corr:.6e} | Peak deviation from pure PBRS |\n"
                 )
                 f.write(
                     f"| Mean \\|PBRS\\| / \\|Base\\| Ratio | {pbrs_to_base_ratio:.4f} | Shaping magnitude vs base reward |\n"
                 )
                 f.write("\n")
 
-            # PBRS invariance check
+            # PBRS algebraic-conformance check
             total_shaping = df["reward_shaping"].sum()
             entry_add_total = df.get("reward_entry_additive", pd.Series([0])).sum()
             exit_add_total = df.get("reward_exit_additive", pd.Series([0])).sum()
 
-            # Get configuration for proper invariance assessment
+            # Get configuration for the algebraic assessment
             reward_params = df.attrs.get("reward_params", {}) if hasattr(df, "attrs") else {}
             exit_potential_mode = _get_str_param(reward_params, "exit_potential_mode", "canonical")
             entry_additive_enabled_raw = _get_bool_param(
@@ -4231,95 +4253,141 @@ def write_complete_statistical_analysis(
             (
                 entry_additive_effective,
                 exit_additive_effective,
-                additives_suppressed,
+                _additives_suppressed,
             ) = _resolve_additive_enablement(
                 exit_potential_mode,
                 entry_additive_enabled_raw,
                 exit_additive_enabled_raw,
             )
 
-            # True PBRS invariance classification:
-            # - Canonical requires canonical mode AND no effective additives.
-            # - When `reward_invariance_correction` is present, we use it as the primary
-            #   diagnostic (reward_shaping - reward_pbrs_delta).
-            # - Otherwise, we fall back to the weaker heuristic |Σ shaping| ≈ 0.
-            is_theoretically_invariant = exit_potential_mode == "canonical" and not (
-                entry_additive_effective or exit_additive_effective
+            # Canonical configuration is necessary. Numerical algebraic
+            # conformance then requires the term-by-term PBRS correction.
+            config_is_canonical = exit_potential_mode == "canonical" and not (
+                entry_additive_enabled_raw or exit_additive_enabled_raw
             )
 
-            has_inv_correction = "reward_invariance_correction" in df.columns
-            max_abs_inv_correction: float | None
-            if has_inv_correction:
-                max_abs_inv_correction = float(df["reward_invariance_correction"].abs().max())
-                correction_near_zero = max_abs_inv_correction < PBRS_INVARIANCE_TOL
-            else:
-                max_abs_inv_correction = None
-                correction_near_zero = None
-            shaping_near_zero = abs(total_shaping) < PBRS_INVARIANCE_TOL
+            correction_series = (
+                pd.to_numeric(df["reward_invariance_correction"], errors="coerce")
+                if "reward_invariance_correction" in df.columns
+                else None
+            )
+            correction_is_available = bool(
+                correction_series is not None
+                and len(correction_series) == len(df)
+                and correction_series.notna().all()
+            )
+            max_abs_inv_correction: float | None = None
+            if correction_is_available and correction_series is not None:
+                max_abs_inv_correction = float(correction_series.abs().max())
 
-            suppression_note = ""
-            if additives_suppressed:
-                suppression_note = (
-                    " Additives are suppressed in canonical mode"
-                    f" (requested entry_additive_enabled={bool(entry_additive_enabled_raw)},"
-                    f" exit_additive_enabled={bool(exit_additive_enabled_raw)})."
+            potential_gamma = _get_potential_gamma(reward_params)
+            shaping_values = pd.to_numeric(df["reward_shaping"], errors="coerce").to_numpy(
+                dtype=float
+            )
+            discounted_shaping_sum: float | None = None
+            pbrs_boundary_term: float | None = None
+            pbrs_telescoping_residual: float | None = None
+            if np.isfinite(shaping_values).all() and len(shaping_values) > 0:
+                discounts = np.power(potential_gamma, np.arange(len(shaping_values), dtype=float))
+                discounted_shaping_sum = float(np.dot(discounts, shaping_values))
+                if all(column in df.columns for column in ("prev_potential", "next_potential")):
+                    initial_potential = float(df["prev_potential"].iloc[0])
+                    final_potential = float(df["next_potential"].iloc[-1])
+                    if np.isfinite(initial_potential) and np.isfinite(final_potential):
+                        pbrs_boundary_term = float(
+                            -initial_potential
+                            + math.pow(potential_gamma, len(shaping_values)) * final_potential
+                        )
+                        pbrs_telescoping_residual = discounted_shaping_sum - pbrs_boundary_term
+
+            final_terminated = bool(df.get("terminated", pd.Series([False])).iloc[-1])
+            final_truncated = bool(df.get("truncated", pd.Series([False])).iloc[-1])
+            if final_terminated:
+                boundary_note = "True termination: Phi(final)=0 is required."
+            elif final_truncated:
+                boundary_note = (
+                    "Truncation: Phi(final) is preserved for value-function bootstrap; "
+                    "a non-zero boundary term is expected."
                 )
-
-            # Prepare invariance summary markdown block
-            if is_theoretically_invariant:
-                if correction_near_zero is True:
-                    invariance_status = "✅ Canonical"
-                    invariance_note = (
-                        "Theoretical invariance preserved (canonical mode, no additives, max|correction|≈0)."
-                        + suppression_note
-                    )
-                elif correction_near_zero is False:
-                    invariance_status = "⚠️ Canonical (with warning)"
-                    invariance_note = (
-                        "Canonical mode but invariance correction is non-zero"
-                        f" (max|correction|={max_abs_inv_correction:.6e})." + suppression_note
-                    )
-                else:
-                    # Fallback: without invariance correction, use Σ shaping as a heuristic.
-                    if shaping_near_zero:
-                        invariance_status = "✅ Canonical"
-                        invariance_note = (
-                            "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)."
-                            + suppression_note
-                        )
-                    else:
-                        invariance_status = "⚠️ Canonical (with warning)"
-                        invariance_note = (
-                            "Canonical mode but Σ shaping is non-zero"
-                            f" (Σ={total_shaping:.6f}; correction column unavailable)."
-                            + suppression_note
-                        )
             else:
-                invariance_status = "❌ Non-canonical"
+                boundary_note = "Episode boundary is unavailable in this dataset."
+
+            if not config_is_canonical:
+                invariance_status = "❌ Non-conformant configuration"
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
-                if entry_additive_effective or exit_additive_effective:
-                    additive_types = []
-                    if entry_additive_effective:
-                        additive_types.append("entry")
-                    if exit_additive_effective:
-                        additive_types.append("exit")
-                    reasons.append(f"additives={additive_types}")
-                invariance_note = f"Modified for flexibility: {', '.join(reasons)}"
-            # Summarize PBRS invariance
-            f.write("**PBRS Invariance Summary:**\n\n")
+                if entry_additive_enabled_raw:
+                    reasons.append("entry_additive_enabled=True")
+                if exit_additive_enabled_raw:
+                    reasons.append("exit_additive_enabled=True")
+                invariance_note = (
+                    "Canonical PBRS algebraic conformance is unavailable: " + ", ".join(reasons)
+                )
+            elif not correction_is_available:
+                invariance_status = "⚪ Algebraic conformance unverified"
+                invariance_note = (
+                    "Configuration is canonical with no additives, but the term-by-term "
+                    "algebraic correction is unavailable. The raw shaping sum is not a classifier."
+                )
+            elif (
+                max_abs_inv_correction is not None and max_abs_inv_correction < PBRS_INVARIANCE_TOL
+            ):
+                if _get_bool_param(reward_params, "hold_potential_enabled", False):
+                    invariance_status = "✅ Canonical algebraic conformance"
+                else:
+                    invariance_status = "✅ PBRS disabled"
+                invariance_note = (
+                    "Canonical configuration, no additives, and "
+                    "max|reward_shaping - reward_pbrs_delta| is within tolerance. "
+                    "This algebraic check does not prove policy invariance. " + boundary_note
+                )
+            else:
+                invariance_status = "❌ Algebraic contract violation"
+                invariance_note = (
+                    "Configuration is canonical, but the term-by-term algebraic correction "
+                    f"exceeds tolerance (max={max_abs_inv_correction:.6e}). " + boundary_note
+                )
+
+            pbrs_footer_summary = invariance_status
+            # Summarize PBRS algebraic conformance
+            f.write("**PBRS Algebraic Conformance Summary:**\n\n")
             f.write("| Field | Value |\n")
             f.write("|-------|-------|\n")
-            f.write(f"| Invariance Status | {invariance_status} |\n")
+            f.write(f"| Algebraic Status | {invariance_status} |\n")
             f.write(f"| Analysis Note | {invariance_note} |\n")
             f.write(f"| Exit Potential Mode | {exit_potential_mode} |\n")
             f.write(f"| Entry Additive Enabled | {bool(entry_additive_enabled_raw)} |\n")
             f.write(f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw)} |\n")
             f.write(f"| Entry Additive Effective | {bool(entry_additive_effective)} |\n")
             f.write(f"| Exit Additive Effective | {bool(exit_additive_effective)} |\n")
-            f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
-            f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
+            f.write(f"| Raw Σ Shaping Reward (descriptive only) | {total_shaping:.6f} |\n")
+            f.write(f"| Abs Raw Σ Shaping (not a classifier) | {abs(total_shaping):.6e} |\n")
+            f.write(f"| Discount Gamma | {potential_gamma:.8f} |\n")
+            f.write(
+                "| Discounted Σ gamma^t Shaping | "
+                + (
+                    f"{discounted_shaping_sum:.6f}"
+                    if discounted_shaping_sum is not None
+                    else "unavailable"
+                )
+                + " |\n"
+            )
+            f.write(
+                "| PBRS Boundary -Phi(0)+gamma^T Phi(T) | "
+                + (f"{pbrs_boundary_term:.6f}" if pbrs_boundary_term is not None else "unavailable")
+                + " |\n"
+            )
+            f.write(
+                "| Discounted Telescoping Residual | "
+                + (
+                    f"{pbrs_telescoping_residual:.6e}"
+                    if pbrs_telescoping_residual is not None
+                    else "unavailable"
+                )
+                + " |\n"
+            )
+            f.write(f"| Episode Boundary | {boundary_note} |\n")
             f.write(f"| Σ Entry Additive | {entry_add_total:.6f} |\n")
             f.write(f"| Σ Exit Additive | {exit_add_total:.6f} |\n\n")
 
@@ -4453,7 +4521,11 @@ def write_complete_statistical_analysis(
                         f.write(f"| Std Dev | {dist_diagnostics[f'{col}_std']:.4f} |\n")
                         f.write(f"| Skewness | {dist_diagnostics[f'{col}_skewness']:.4f} |\n")
                         f.write(f"| Kurtosis | {dist_diagnostics[f'{col}_kurtosis']:.4f} |\n")
-                        if f"{col}_shapiro_pval" in dist_diagnostics:
+                        if dist_diagnostics.get(f"{col}_shapiro_available") is False:
+                            reason = dist_diagnostics.get(f"{col}_shapiro_reason", "unavailable")
+                            reason_label = str(reason).replace("_", " ")
+                            f.write(f"| Normal? (Shapiro-Wilk) | N/A ({reason_label}) |\n")
+                        elif f"{col}_shapiro_pval" in dist_diagnostics:
                             is_normal = (
                                 "✅ Yes"
                                 if dist_diagnostics[f"{col}_is_normal_shapiro"]
@@ -4463,7 +4535,11 @@ def write_complete_statistical_analysis(
                                 f"| Normal? (Shapiro-Wilk) | {is_normal} (p={dist_diagnostics[f'{col}_shapiro_pval']:.4e}) |\n"
                             )
                         # Anderson-Darling diagnostics
-                        if f"{col}_anderson_stat" in dist_diagnostics:
+                        if dist_diagnostics.get(f"{col}_anderson_available") is False:
+                            reason = dist_diagnostics.get(f"{col}_anderson_reason", "unavailable")
+                            reason_label = str(reason).replace("_", " ")
+                            f.write(f"| Normal? (Anderson-Darling) | N/A ({reason_label}) |\n")
+                        elif f"{col}_anderson_stat" in dist_diagnostics:
                             f.write(
                                 f"| Anderson-Darling stat | {dist_diagnostics[f'{col}_anderson_stat']:.4f} |\n"
                             )
@@ -4535,24 +4611,7 @@ def write_complete_statistical_analysis(
         else:
             f.write("6. **Distribution Shift** - Not performed (no real episodes provided)\n")
         if "reward_shaping" in df.columns:
-            _total_shaping = float(df["reward_shaping"].sum())
-            if "reward_invariance_correction" in df.columns:
-                _max_abs_corr = float(df["reward_invariance_correction"].abs().max())
-                _canonical = _max_abs_corr < PBRS_INVARIANCE_TOL
-                _pbrs_summary = (
-                    "Canonical (max|correction| ≈ 0)"
-                    if _canonical
-                    else f"Canonical (with warning; max|correction|={_max_abs_corr:.6e})"
-                )
-            else:
-                _canonical = abs(_total_shaping) < PBRS_INVARIANCE_TOL
-                _pbrs_summary = (
-                    "Canonical (Σ shaping ≈ 0)"
-                    if _canonical
-                    else f"Canonical (with warning; Σ shaping={_total_shaping:.6f})"
-                )
-
-            f.write("7. **PBRS Invariance** - " + _pbrs_summary + "\n")
+            f.write("7. **PBRS Algebraic Conformance** - " + pbrs_footer_summary + "\n")
         f.write("\n")
         f.write("**Generated Files:**\n")
         f.write("- `reward_samples.csv` - Raw synthetic samples\n")
@@ -4601,6 +4660,25 @@ def main() -> None:
             params.pop("exit_fee_rate", None)
             params["fee_rate"] = max(supplied_legacy_fees)
 
+    # Deprecated tuning flag: accepted but ignored; analytical trajectories
+    # are always fee-aware marked-to-liquidation.
+    unrealized_pnl_requested = bool(getattr(args, "unrealized_pnl", False))
+    if "unrealized_pnl" in override_params:
+        unrealized_pnl_requested = True
+        override_params.pop("unrealized_pnl")
+        params.pop("unrealized_pnl", None)
+    if unrealized_pnl_requested:
+        warnings.warn(
+            "CLI: --unrealized_pnl / unrealized_pnl parameter is deprecated and "
+            "ignored; analytical trajectories are always fee-aware "
+            "marked-to-liquidation",
+            RewardDiagnosticsWarning,
+            stacklevel=2,
+        )
+    # Hybrid scalars are needed during conditional PBRS validation.
+    params.setdefault("profit_aim", float(args.profit_aim))
+    params.setdefault("risk_reward_ratio", float(args.risk_reward_ratio))
+
     params_validated, adjustments = validate_reward_parameters(
         params, strict=args.strict_validation
     )
@@ -4626,7 +4704,6 @@ def main() -> None:
         params["action_masking"] = _to_bool(params["action_masking"])
     else:
         params["action_masking"] = cli_action_masking
-    params["unrealized_pnl"] = bool(getattr(args, "unrealized_pnl", False))
     # Propagate strict flag into params for downstream runtime guards
     params["strict_validation"] = bool(getattr(args, "strict_validation", True))
 
@@ -4654,10 +4731,16 @@ def main() -> None:
         "position",
         "action",
         "reward",
+        "reward_economic",
         "reward_invalid",
-        "reward_idle",
-        "reward_hold",
         "reward_exit",
+        "previous_liquidation_value",
+        "reward_liquidation_value",
+        "next_liquidation_value",
+        "synthetic_pair_equity",
+        "economic_ruin",
+        "terminated",
+        "truncated",
     ]
     nan_issues = {
         c: int(df[c].isna().sum()) for c in critical_cols if c in df.columns and df[c].isna().any()
@@ -4695,7 +4778,6 @@ def main() -> None:
         "bootstrap_resamples",
         "pvalue_adjust",
         "real_episodes",
-        "unrealized_pnl",
         "action_masking",
     ]
 
@@ -4754,11 +4836,73 @@ def main() -> None:
         resolved_reward_params: dict[str, Any] = dict(
             params
         )  # already validated/normalized upstream
+        legacy_pbrs_fee_compatibility = _get_bool_param(
+            params,
+            "hold_potential_enabled",
+        )
         manifest: dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": len(df),
             "seed": int(args.seed),
-            "pnl_target": float(profit_aim * risk_reward_ratio),
+            "reward_contract": {
+                "name": "pair_local_net_log_liquidation_return",
+                "version": 2,
+                "formula": "base_factor * log(reward_liquidation_value / previous_liquidation_value)",
+                "pbrs_mode": "canonical"
+                if _get_bool_param(params, "hold_potential_enabled")
+                else "disabled",
+                "promotion_eligible": not any(
+                    _get_bool_param(params, key)
+                    for key in (
+                        "hold_potential_enabled",
+                        "entry_additive_enabled",
+                        "exit_additive_enabled",
+                    )
+                ),
+                "clock": {
+                    "state": "previous_close",
+                    "action_fill": "next_open",
+                    "retained_position_mark": "next_close",
+                    "exit_mark": "next_open",
+                },
+            },
+            "cost_accounting": {
+                "fee_rate": _get_fee_rate(params),
+                "fee_source": "analytical_assumption",
+                "default_basis": (
+                    "legacy BaseEnvironment analytical PBRS compatibility"
+                    if legacy_pbrs_fee_compatibility
+                    else "Freqtrade LocalTrade spot leverage=1"
+                ),
+                "exact_runtime_parity_requires_effective_fee": True,
+                "fee_application": (
+                    "legacy entry multiplication and exit division"
+                    if legacy_pbrs_fee_compatibility
+                    else "LocalTrade.calc_profit_ratio open/close values"
+                ),
+                "pnl_rounding_decimals": (None if legacy_pbrs_fee_compatibility else 8),
+                "runtime_object_lifetime": "one unregistered LocalTrade per open position",
+                "analytical_pbrs_compatibility": (
+                    "legacy BaseEnvironment division estimate"
+                    if legacy_pbrs_fee_compatibility
+                    else "disabled"
+                ),
+                "included": ["simulated_entry_fee", "simulated_exit_fee"],
+                "excluded": ["spread", "slippage", "funding", "latency", "market_impact"],
+            },
+            "episode_boundaries": {
+                "termination": "economic_ruin",
+                "truncation": "synthetic_sample_limit",
+                "pbrs_on_termination": "potential_released_to_zero",
+                "pbrs_on_truncation": "potential_preserved_for_bootstrap",
+                "drawdown_breached": "unavailable_in_analytical_simulation",
+            },
+            "compatibility_only": {
+                "pnl_target": float(profit_aim * risk_reward_ratio),
+                "deprecated_reward_parameters": sorted(
+                    key for key in DEPRECATED_REWARD_PARAMETERS if key in params
+                ),
+            },
             "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
