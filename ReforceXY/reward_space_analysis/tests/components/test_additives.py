@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Additive deterministic contribution tests moved from helpers/test_utilities.py.
 
-Owns invariant: report-additives-deterministic-092 (components category)
+Owns invariant: components-canonical-additives-092 (components category)
 """
 
 import unittest
 
 import pytest
 
-from reward_space_analysis import compute_pbrs_components
+from reward_space_analysis import compute_pbrs_components, validate_reward_parameters
 
 from ..constants import PARAMS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
@@ -17,38 +17,17 @@ pytestmark = pytest.mark.components
 
 
 class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
-    """Additives enabled increase total reward; shaping impact limited."""
+    """Canonical PBRS rejects or suppresses non-potential additives."""
 
-    def test_additive_activation_deterministic_contribution(self):
-        """Enabling additives increases total reward while limiting shaping impact.
-
-        **Invariant:** report-additives-deterministic-092
-
-        Validates that when entry/exit additives are enabled, the total reward
-        increases deterministically, but the shaping component remains bounded.
-        This ensures additives provide meaningful reward contribution without
-        destabilizing PBRS shaping dynamics.
-
-        **Setup:**
-        - Base configuration: hold_potential enabled, additives disabled
-        - Test configuration: entry_additive and exit_additive enabled
-        - Additive parameters: ratio=PARAMS.ADDITIVE_RATIO_DEFAULT, gain=PARAMS.ADDITIVE_GAIN_DEFAULT for both entry/exit
-        - Context: base_reward=0.05, pnl=0.01, duration_ratio=0.2
-
-        **Assertions:**
-        - Total reward with additives > total reward without additives
-        - Shaping difference remains bounded: |s1 - s0| < TOLERANCE.SHAPING_BOUND_TOLERANCE
-        - Both total and shaping rewards are finite
-
-        **Tolerance rationale:**
-        - Custom bound TOLERANCE.SHAPING_BOUND_TOLERANCE for shaping delta: Additives should not cause
-          large shifts in shaping component, which maintains PBRS properties
-        """
+    def test_canonical_additives_rejected_or_suppressed(self):
+        """Strict validation rejects additives and relaxed validation records suppression."""
         base = self.base_params(
             hold_potential_enabled=True,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
-            exit_potential_mode="non_canonical",
+            exit_potential_mode="canonical",
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
         )
         with_add = base.copy()
         with_add.update(
@@ -61,7 +40,19 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
                 "exit_additive_gain": PARAMS.ADDITIVE_GAIN_DEFAULT,
             }
         )
-        base_reward = 0.05
+        with self.assertRaisesRegex(ValueError, "canonical PBRS"):
+            validate_reward_parameters(with_add, strict=True)
+        sanitized, adjustments = validate_reward_parameters(with_add, strict=False)
+        self.assertFalse(sanitized["entry_additive_enabled"])
+        self.assertFalse(sanitized["exit_additive_enabled"])
+        self.assertEqual(
+            adjustments["entry_additive_enabled"]["reason"],
+            "canonical_pbrs_suppresses_additives",
+        )
+        self.assertEqual(
+            adjustments["exit_additive_enabled"]["reason"],
+            "canonical_pbrs_suppresses_additives",
+        )
         ctx = {
             "current_pnl": 0.01,
             "pnl_target": PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
@@ -72,24 +63,15 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "is_entry": True,
             "is_exit": False,
         }
-        s0, _n0, _pbrs0, _entry0, _exit0 = compute_pbrs_components(
-            params=base,
+        shaping, _next, pbrs_delta, entry_additive, exit_additive = compute_pbrs_components(
+            params=sanitized,
             base_factor=PARAMS.BASE_FACTOR,
             prev_potential=0.0,
             **ctx,
         )
-        t0 = base_reward + s0 + _entry0 + _exit0
-        s1, _n1, _pbrs1, _entry1, _exit1 = compute_pbrs_components(
-            params=with_add,
-            base_factor=PARAMS.BASE_FACTOR,
-            prev_potential=0.0,
-            **ctx,
-        )
-        t1 = base_reward + s1 + _entry1 + _exit1
-        self.assertFinite(t1)
-        self.assertFinite(s1)
-        self.assertLess(abs(s1 - s0), TOLERANCE.SHAPING_BOUND_TOLERANCE)
-        self.assertGreater(t1 - t0, 0.0, "Total reward should increase with additives present")
+        self.assertAlmostEqualFloat(shaping, pbrs_delta, tolerance=TOLERANCE.IDENTITY_STRICT)
+        self.assertEqual(entry_additive, 0.0)
+        self.assertEqual(exit_additive, 0.0)
 
 
 if __name__ == "__main__":
