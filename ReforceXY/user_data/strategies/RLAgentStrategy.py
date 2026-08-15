@@ -83,6 +83,15 @@ class RLAgentStrategy(IStrategy):
                 f"Expected one of: {list(RLAgentStrategy._EXECUTION_PROFILES)}."
             )
 
+        if getattr(self, "use_exit_signal", None) is not True:
+            return (
+                "Config: ReforceXY RL actions require Freqtrade use_exit_signal=true."
+            )
+        if getattr(self, "exit_profit_only", None) is not False:
+            return (
+                "Config: ReforceXY RL actions require Freqtrade exit_profit_only=false."
+            )
+
         runmode = self.config.get("runmode")
         if (
             runmode == RunMode.LIVE

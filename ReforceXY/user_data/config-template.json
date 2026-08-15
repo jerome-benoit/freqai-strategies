@@ -17,6 +17,8 @@
   // "leverage": 2.0,
   "trading_mode": "spot",
   "stoploss": -0.99,
+  "use_exit_signal": true,
+  "exit_profit_only": false,
   "unfilledtimeout": {
     "entry": 10,
     "exit": 10,
