@@ -13,6 +13,7 @@
   - [Runtime reward contract](#runtime-reward-contract)
   - [Validation protocol](#validation-protocol)
   - [Runtime reproducibility](#runtime-reproducibility)
+  - [ReforceXY execution profiles](#reforcexy-execution-profiles)
 - [Common workflows](#common-workflows)
 - [Note](#note)
 
@@ -671,6 +672,70 @@ longer need to be reproduced. After an upgrade:
    configuration, seeds and data;
 4. treat old- versus new-digest results as an upgrade comparison, not as repeat
    runs.
+
+### ReforceXY execution profiles
+
+The ReforceXY template is a research configuration. It uses `dry_run=true`, the
+`research` execution profile, and `stoploss=-0.99` as a sentinel. Changing only
+`dry_run` to `false` does not promote this configuration: the strategy stops
+startup before the trading loop and rejects entry callbacks unless the profile
+is explicitly `live`.
+
+Both profiles use RL exit actions through Freqtrade's native signal path. The
+resolved strategy attributes must therefore keep `use_exit_signal=true` and
+`exit_profit_only=false`. Otherwise ReforceXY stops startup and rejects new
+entries: disabling exit signals suppresses RL exits, while profit-only exits
+would suppress an RL exit from a losing trade.
+
+A live candidate must be defined in a separate, versioned configuration overlay.
+Before any final validation, preregister its Freqtrade `stoploss` and every
+protection method and parameter under
+`reforcexy_execution.protections`. Then set
+`reforcexy_execution.profile=live` and rehearse that exact merged configuration
+in dry-run. The `live` profile rejects the research stoploss sentinel in every
+run mode, including dry-run. Do not choose or revise stoploss, protection
+windows, trade limits, lock durations, or drawdown limits from final holdout
+results; the holdout only accepts or rejects the frozen candidate.
+
+`MaskablePPO` requires `freqai.rl_config.inference_masking=true`. Training,
+evaluation, and inference continue to use ReforceXY's shared action-mask
+mechanism. Other supported model types are not affected by this requirement.
+ReforceXY refuses `RecurrentPPO` in dry-run and live modes until complete
+causal observation history and episode state can be persisted across process
+restarts. The existing in-memory LSTM cache reuses state within one process
+but does not provide that guarantee.
+
+`reforcexy_execution.protections` is passed to Freqtrade's native
+`ProtectionManager`. An empty list is the only threshold-free default.
+`CooldownPeriod`, `StoplossGuard`, and `MaxDrawdown` can be configured there,
+using Freqtrade's documented parameter names. Their order in the list is their
+evaluation order. Historical validation must use `--enable-protections`;
+live and dry-run trading load them automatically.
+
+Protections create pair locks that prevent new entries after observed outcomes.
+They do not close an open position or cap its current loss and therefore never
+replace a real stoploss. Wallet allocation, stakes, exposure, order placement,
+fills, stoploss-on-exchange, forced exits, and emergency exits remain owned by
+Freqtrade. ReforceXY does not copy the wallet or order engine and does not pass
+wallet state into the model policy.
+
+The strategy emits only the diagnostics required by the startup guard, without
+applying an economic decision threshold:
+
+| Event                          | Meaning                                                                |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `ReforceXY execution contract` | Resolved profile, run mode, stoploss, and protection count at startup. |
+| `ReforceXY entry blocked`      | A fail-closed entry rejection when the execution contract is invalid.  |
+
+ReforceXY does not override Freqtrade's exit-confirmation or order-fill
+callbacks. This keeps stoploss, `force_exit`, `emergency_exit`, partial-exit,
+stoploss-on-exchange, and liquidation handling on the native execution path.
+Use the Trade database fields (`exit_reason`, order status, filled amount and
+prices), Freqtrade RPC messages and logs, and exchange order history as the
+authoritative execution diagnostics. The strategy adds
+`freqai_model_expired` as the exit tag when FreqAI returns `do_predict == 2`,
+so that this `EXIT_SIGNAL` remains attributable without changing its execution.
+It is not converted into a Freqtrade `force_exit`.
 
 ## Common workflows
 
