@@ -1363,6 +1363,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
+    _OPTUNAHUB_REGISTRY_REF: Final[str] = "a2b07129160c004da894c2ccbe1ff2fee05d6614"
     _VALIDATION_SEED_OFFSET: Final[int] = 10_000
     _HOLDOUT_SEED_OFFSET: Final[int] = 20_000
     _OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION: Final[int] = 2
@@ -4241,9 +4242,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Hyperopt [global]: using AutoSampler (seed=%d)",
                     seed,
                 )
-                return optunahub.load_module("samplers/auto_sampler").AutoSampler(
-                    seed=seed
-                )
+                return optunahub.load_module(
+                    "samplers/auto_sampler",
+                    ref=ReforceXY._OPTUNAHUB_REGISTRY_REF,
+                    force_reload=True,
+                ).AutoSampler(seed=seed)
             case _:
                 assert_never(sampler)
 
