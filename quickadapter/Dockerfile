@@ -1,6 +1,8 @@
 FROM freqtradeorg/freqtrade:stable_freqai
 
 ARG optuna_version=4.9.0
+ARG optuna_dashboard_version=0.20.0
+ARG optunahub_version=0.4.1
 ARG scikit_learn_extra_version=0.3.0
 ARG scikit_image_version=0.26.0
 ARG ngboost_version=0.5.11
@@ -15,8 +17,8 @@ RUN pip install --user --no-cache-dir \
     "pandas>=3.0" \
     optuna==${optuna_version} \
     optuna-integration==${optuna_version} \
-    optuna-dashboard \
-    optunahub \
+    optuna-dashboard==${optuna_dashboard_version} \
+    optunahub==${optunahub_version} \
     -r https://hub.optuna.org/samplers/auto_sampler/requirements.txt \
     scikit-learn-extra==${scikit_learn_extra_version} \
     scikit-image==${scikit_image_version} \
