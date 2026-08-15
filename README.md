@@ -11,6 +11,7 @@
   - [Supported models](#supported-models)
   - [Configuration tunables](#configuration-tunables-1)
   - [Runtime reward contract](#runtime-reward-contract)
+  - [Validation protocol](#validation-protocol)
 - [Common workflows](#common-workflows)
 - [Note](#note)
 
@@ -470,6 +471,124 @@ remain disabled for a promotable runtime contract. For `MaskablePPO`, omitted
 boolean `true` is rejected during model initialization. Other model types are
 not action-masked. Retrain models under the fresh
 `ReforceXY-PPO-causal-net-log-v1` identifier after applying this contract.
+
+### Validation protocol
+
+Model selection uses only the first chronological part of FreqAI's test block:
+Optuna pruning, hyperparameter choice, and best-checkpoint selection all share
+that validation partition. The remaining `validation_holdout_fraction` is
+evaluated once after the checkpoint is fixed and is never fed back into
+selection. Optuna studies are isolated by pair and retraining window, and every
+trial uses the same model seed. Robustness over multiple training seeds remains
+an external walk-forward acceptance gate; the holdout must not be reused to
+choose a seed. A validation or internal holdout result is eligible only when its
+single chronological episode reaches `end_of_data` with full horizon coverage.
+An economically terminated prefix is disqualifying: it is neither normalized
+nor extrapolated, and Optuna does not receive it as a comparable score.
+An incomplete internal holdout records its horizon diagnostics and then fails
+the fit so that the selected checkpoint cannot be returned or promoted.
+`internal_holdout_pass` is therefore an integrity and horizon-contract metric,
+not an economic acceptance score.
+
+The internal holdout is one-shot once per model fit. Repeating the fit evaluates
+that holdout again and is therefore an audit repeat, not another independent
+holdout observation. A successful internal full-horizon pass is only a
+diagnostic gate; external rolling-origin evaluation over multiple training seeds
+remains mandatory before promotion.
+
+Run that external evaluation pair-locally and pre-register it before inspecting
+candidate results. Evaluate training windows of 30, 60, and 90 days crossed with
+1, 5, 10, and 25 training cycles, using the same ten fixed seeds for every arm.
+Advance each rolling origin by the configured two-day prediction period. Use at
+least five complete folds; prefer at least twelve months of folds when the data
+history permits it. Keep dates, pairs, initial capital, fill rules, and retraining
+cadence identical across candidates.
+
+Score costs at 1x, 2x, and 3x the configured assumption, with 2x as the primary
+scenario. Compare against no-trade, risk-matched buy-and-hold, a simple
+non-ML rule, a masked-random policy, and a deterministic rule. The primary
+pair-local estimand is the net log-equity improvement over the corresponding
+baseline:
+
+```text
+DeltaL = log(E_T_model) - log(E_T_baseline)
+```
+
+Report every fold, pair, regime, and seed. Use a block bootstrap confidence
+interval and report the interquartile mean (IQM) with its confidence interval.
+Control repeated selection with the Deflated Sharpe Ratio (DSR) and Probability
+of Backtest Overfitting (PBO). Keep an append-only external ledger of every
+attempt, including failed and abandoned configurations. The terminal holdout
+must remain untouched while features, parameters, seeds, windows, or decision
+thresholds are chosen. No experiment runner or correction harness is part of
+this repository.
+
+Pre-register the hard gates. The recommended conservative gates are DSR >= 0.95,
+PBO <= 0.10, a positive lower bound for the 95% block-bootstrap interval of
+DeltaL at 2x costs, at least 8 of 10 positive seeds at 1x costs and 7 of 10 at
+2x costs, and a positive lower confidence bound for the IQM. Reject results
+concentrated in one pair or one market regime.
+
+Promotion requires the pre-registered statistical and cost gates to pass before
+a real Freqtrade dry-run. The dry-run must exercise Freqtrade's wallet, stake,
+order, fill, protection, and multi-pair behavior; the pair-local RL environment
+does not reproduce those global mechanics. Complete at least 90 days of forward
+dry-run observation before considering a limited live deployment. Neither an
+internal holdout pass nor a native backtest is a live-readiness result.
+
+With the template values (`train_period_days=90`, `test_size=0.333`, and
+`validation_holdout_fraction=0.5`), approximately 60 days feed model updates,
+15 days feed selection, and 15 days form the one-shot holdout. Therefore a
+nominal 90-day window is not 90 days of independent training observations, and
+`train_cycles` only repeats the same update block. The template disables feature
+noise so the fixed model seed is meaningful. A study's `n_trials` is a total
+per-window budget, including trials already stored for that same window. A
+single resumed orchestrator respects completed, waiting, and already visible
+running trials. Treat each ReforceXY model directory (`full_path`, normally
+`<user_data_dir>/models/<identifier>`) as a single-writer boundary. Do not run
+more than one ReforceXY training process against the same directory, even for
+different pairs, Optuna studies, or storage backends, because the directory
+contains shared retrain counters and other model artifacts that are updated
+without interprocess locking. Give every concurrent ReforceXY training process
+a distinct `identifier` within that user-data directory, or otherwise a
+distinct model directory. Concurrent processes starting against the same SQLite
+study are not supported because trial-capacity reservation is not atomic across
+processes.
+Queued trials within the remaining budget are consumed before new trials. A
+queue exceeding that capacity, or any waiting/running trial left after
+optimization, blocks selection and forces a fresh study generation on retry.
+
+Study resumption requires an exact, persisted SHA-256 contract over the
+objective and search-space sources, transformed train and validation features,
+their aligned raw OHLC inputs, model and reward-environment configuration,
+per-trial update and evaluation budgets, relevant runtime versions, and seed
+policy for training and validation. The resolved CPU/CUDA device is part of that
+identity when the model uses `device=auto`. Holdout data, results, and seed
+offset are deliberately excluded from this contract. A
+changed contract, legacy study without metadata, forced continuous run, purge
+event, or study left `running` starts a new suffixed identity; prior studies are
+preserved and never silently deleted. Changing `n_trials` also creates a new
+contract identity rather than extending the old budget. Exact resumption
+examines only the highest numeric generation and starts a new one if its
+metadata is missing or mismatched. Concurrent list/create operations against
+one study are unsupported.
+
+Optuna invocation states are persisted as `ready`, `running`, `completed`,
+`timeout`, `failed`, or `interrupted`. `KeyboardInterrupt` and unexpected
+exceptions are logged, classified, and re-raised; they cannot publish best
+parameters, construct the final selected model, or invoke the holdout. A normal
+short return is accepted as `timeout` only after the configured deadline and
+only when `timeout_min_completed_trials` finite completed trials exist;
+otherwise the fit fails closed. Warm start is explicit, uses only a previously
+successful parameter envelope whose full contract still matches and whose
+source study remains `completed` or `timeout`, and never acts as an inter-window
+error fallback. Best-parameter artifacts use the complete sanitized pair name;
+ambiguous legacy base-only filenames are not migrated automatically. Stale
+SQLite trials are handed to Optuna's heartbeat recovery. Any `WAITING` or
+`RUNNING` trial left after optimization, including in Journal storage, blocks
+selection and leaves the study `running` so the next invocation creates a fresh
+generation. Selected parameters are written atomically only after the final
+checkpoint is readable and the one-shot holdout integrity check passes.
 
 ## Common workflows
 
