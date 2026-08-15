@@ -1,6 +1,8 @@
 FROM freqtradeorg/freqtrade:stable_freqairl
 
 ARG optuna_version=4.9.0
+ARG optuna_dashboard_version=0.20.0
+ARG optunahub_version=0.4.1
 ARG matplotlib_version=3.11.1
 
 USER root
@@ -10,10 +12,10 @@ RUN apt-get update \
 USER ftuser
 RUN pip install --user --no-cache-dir \
     optuna==${optuna_version} \
-    optuna-dashboard \
-    optunahub \
-    matplotlib==${matplotlib_version} \
-    -r https://hub.optuna.org/samplers/auto_sampler/requirements.txt
+    optuna-dashboard==${optuna_dashboard_version} \
+    optunahub==${optunahub_version} \
+    -r https://hub.optuna.org/samplers/auto_sampler/requirements.txt \
+    matplotlib==${matplotlib_version}
 
 LABEL org.opencontainers.image.source="freqai-strategies" \
       org.opencontainers.image.title="freqtrade-reforcexy" \
