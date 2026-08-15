@@ -43,7 +43,11 @@ if [ -d "$LOCKDIR" ]; then
   rm -rf "$LOCKDIR" || true
 fi
 
-trap 'rm -rf "$LOCKDIR"' 0 HUP INT TERM QUIT
+trap 'rm -rf "$LOCKDIR"' 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 131' QUIT
 
 if ! create_lock "$LOCKDIR"; then
   echo_timestamped "Error: already running for ${LOCAL_DOCKER_IMAGE}"
