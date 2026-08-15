@@ -20,6 +20,11 @@ _GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST_PATTERN = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
 _IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MANIFEST_SCHEMA_VERSION = 3
+_POINTER_SCHEMA_VERSION = 1
+_LEDGER_SCHEMA_VERSION = 1
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted"})
+_CONSUMABLE_STATUS = "completed"
+_PREPARED_STATUS = "prepared"
 _PACKAGE_NAMES = (
     "cmaes",
     "contourpy",
@@ -194,6 +199,66 @@ def _durable_json_create(path: Path, value: Mapping[str, Any]) -> None:
             pass
         raise
     _fsync_directory(path.parent)
+
+
+def _durable_regular_file_create(source_path: Path, destination_path: Path) -> None:
+    """Create and sync one immutable regular-file artifact without replacement."""
+    source_fd = os.open(source_path, os.O_RDONLY | os.O_NOFOLLOW)
+    destination_fd: int | None = None
+    destination_created = False
+    try:
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise RuntimeError(
+                f"ReforceXY checkpoint is not a regular file: {source_path}"
+            )
+        destination_fd = os.open(
+            destination_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        destination_created = True
+        while chunk := os.read(source_fd, 1024 * 1024):
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                if written <= 0:
+                    raise OSError("ReforceXY checkpoint copy made no progress")
+                view = view[written:]
+        source_after_copy = os.fstat(source_fd)
+        if (
+            source_stat.st_dev,
+            source_stat.st_ino,
+            source_stat.st_size,
+            source_stat.st_mtime_ns,
+        ) != (
+            source_after_copy.st_dev,
+            source_after_copy.st_ino,
+            source_after_copy.st_size,
+            source_after_copy.st_mtime_ns,
+        ):
+            raise RuntimeError(
+                f"ReforceXY checkpoint changed while publishing: {source_path}"
+            )
+        os.fsync(destination_fd)
+        os.close(destination_fd)
+        destination_fd = None
+        _fsync_directory(destination_path.parent)
+    except BaseException:
+        if destination_fd is not None:
+            try:
+                os.close(destination_fd)
+            except OSError:
+                pass
+        if destination_created:
+            try:
+                destination_path.unlink(missing_ok=True)
+                _fsync_directory(destination_path.parent)
+            except OSError:
+                pass
+        raise
+    finally:
+        os.close(source_fd)
 
 
 def _read_regular_json_with_evidence(
@@ -650,6 +715,290 @@ def finalize_run_manifest(
         "resolved_model_parameters": _json_safe(resolved_model_parameters),
     }
     write_run_manifest(path, manifest)
+
+
+def _regular_artifact_evidence(path: Path) -> dict[str, Any]:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"ReforceXY artifact is not a regular file: {path}")
+        digest = hashlib.sha256()
+        while chunk := os.read(fd, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(fd)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise RuntimeError(f"ReforceXY artifact changed while hashing: {path}")
+        return {
+            "name": path.name,
+            "bytes": after.st_size,
+            "sha256": digest.hexdigest(),
+        }
+    finally:
+        os.close(fd)
+
+
+def complete_run_manifest(
+    path: Path,
+    manifest: dict[str, Any],
+    *,
+    duration_seconds: float,
+    optuna_status: str,
+    resolved_model_parameters: Mapping[str, Any],
+    checkpoint_path: Path,
+    holdout_result: Mapping[str, Any],
+    best_params: Mapping[str, Any] | None = None,
+) -> Path:
+    """Commit a completed run, immutable ledger record, then pair pointer."""
+    _require_manifest_integrity(manifest)
+    if manifest.get("status") in _TERMINAL_STATUSES:
+        raise RuntimeError("ReforceXY run manifest is already terminal")
+    if holdout_result.get("eligible") is not True:
+        raise RuntimeError("ReforceXY holdout is not eligible for publication")
+
+    run = manifest.get("run")
+    if not isinstance(run, Mapping):
+        raise RuntimeError("ReforceXY run manifest is missing run metadata")
+    pair = run.get("pair")
+    run_instance_id = run.get("run_instance_id")
+    if not isinstance(pair, str) or not pair:
+        raise RuntimeError("ReforceXY run manifest pair is missing")
+    if not isinstance(run_instance_id, str) or not run_instance_id:
+        raise RuntimeError("ReforceXY run manifest run_instance_id is missing")
+
+    data_path = path.parent.resolve(strict=True)
+    checkpoint_name = (
+        f"reforcexy-checkpoint-{_sanitize_pair(pair)}-{run_instance_id}.zip"
+    )
+    published_checkpoint_path = data_path / checkpoint_name
+    _durable_regular_file_create(checkpoint_path, published_checkpoint_path)
+    checkpoint = _regular_artifact_evidence(published_checkpoint_path)
+    artifacts: dict[str, Any] = {"checkpoint": checkpoint}
+    if best_params is not None:
+        best_params_path = data_path / (
+            f"reforcexy-best-params-{_sanitize_pair(pair)}-{run_instance_id}.json"
+        )
+        _durable_json_create(
+            best_params_path,
+            {
+                "schema_version": 1,
+                "pair": pair,
+                "run_instance_id": run_instance_id,
+                "params": _json_safe(best_params),
+            },
+        )
+        artifacts["best_params"] = _regular_artifact_evidence(best_params_path)
+
+    prepared_manifest = dict(manifest)
+    prepared_manifest["status"] = _PREPARED_STATUS
+    prepared_manifest["finished_at"] = _utc_now()
+    prepared_manifest["result"] = {
+        "duration_seconds": duration_seconds,
+        "optuna_status": optuna_status,
+        "resolved_model_parameters": _json_safe(resolved_model_parameters),
+        "holdout": _json_safe(holdout_result),
+        "artifacts": artifacts,
+    }
+    write_run_manifest(path, prepared_manifest)
+    manifest_evidence = _regular_artifact_evidence(path)
+
+    pair_key = _sanitize_pair(pair)
+    ledger_directory = data_path / "reforcexy-run-ledger"
+    ledger_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _fsync_directory(data_path)
+    ledger_name = f"{pair_key}-{run_instance_id}.json"
+    ledger_path = ledger_directory / ledger_name
+    ledger = {
+        "schema_version": _LEDGER_SCHEMA_VERSION,
+        "status": _PREPARED_STATUS,
+        "pair": pair,
+        "run_instance_id": run_instance_id,
+        "manifest": manifest_evidence,
+        "checkpoint": checkpoint,
+        "best_params": artifacts.get("best_params"),
+        "holdout_sha256": _sha256_bytes(_json_bytes(_json_safe(holdout_result))),
+        "committed_at": _utc_now(),
+    }
+    _durable_json_create(ledger_path, ledger)
+    ledger_evidence = _regular_artifact_evidence(ledger_path)
+
+    pointer_path = data_path / f"reforcexy-current-{pair_key}.json"
+    pointer = {
+        "schema_version": _POINTER_SCHEMA_VERSION,
+        "status": _CONSUMABLE_STATUS,
+        "pair": pair,
+        "run_instance_id": run_instance_id,
+        "manifest_name": path.name,
+        "manifest_sha256": manifest_evidence["sha256"],
+        "ledger_name": ledger_name,
+        "ledger_sha256": ledger_evidence["sha256"],
+        "published_at": _utc_now(),
+    }
+    try:
+        _durable_json_replace(pointer_path, pointer)
+    except _DurabilityIndeterminateError as error:
+        try:
+            visible_manifest = load_completed_run_manifest(pointer_path)
+            visible_run = visible_manifest.get("run")
+            if (
+                not isinstance(visible_run, Mapping)
+                or visible_run.get("pair") != pair
+                or visible_run.get("run_instance_id") != run_instance_id
+            ):
+                raise RuntimeError(
+                    "ReforceXY visible pointer does not address the publishing run"
+                )
+        except BaseException as validation_error:
+            manifest.clear()
+            manifest.update(prepared_manifest)
+            manifest["status"] = "failed"
+            error.add_note(
+                "The visible pointer could not be validated as this run; the "
+                "prepared generation was left immutable and non-consumable"
+            )
+            error.add_note(
+                f"Pointer validation failed with {type(validation_error).__name__}: "
+                f"{validation_error}"
+            )
+        else:
+            manifest.clear()
+            manifest.update(visible_manifest)
+            error.add_note(
+                "The replacement is currently visible and validates as this completed "
+                "run; publication durability remains indeterminate"
+            )
+        raise
+    manifest.clear()
+    manifest.update(prepared_manifest)
+    manifest["status"] = _CONSUMABLE_STATUS
+    return pointer_path
+
+
+def load_completed_run_manifest(pointer_path: Path) -> dict[str, Any]:
+    """Load only a durable completed run addressed by its pair pointer."""
+    pointer = _read_regular_json(pointer_path)
+    if (
+        pointer.get("schema_version") != _POINTER_SCHEMA_VERSION
+        or pointer.get("status") != _CONSUMABLE_STATUS
+    ):
+        raise RuntimeError("ReforceXY current pointer is missing or non-consumable")
+    pair = pointer.get("pair")
+    run_instance_id = pointer.get("run_instance_id")
+    if not isinstance(pair, str) or not isinstance(run_instance_id, str):
+        raise RuntimeError("ReforceXY current pointer identity is invalid")
+    pair_key = _sanitize_pair(pair)
+    if pointer_path.name != f"reforcexy-current-{pair_key}.json":
+        raise RuntimeError("ReforceXY current pointer filename does not match its pair")
+
+    manifest_name = _simple_relative_name(
+        pointer.get("manifest_name"),
+        "manifest_name",
+    )
+    ledger_name = _simple_relative_name(pointer.get("ledger_name"), "ledger_name")
+    data_path = pointer_path.parent.resolve(strict=True)
+    manifest_path = data_path / manifest_name
+    ledger_path = data_path / "reforcexy-run-ledger" / ledger_name
+    if manifest_name != f"reforcexy-run-manifest-{run_instance_id}.json":
+        raise RuntimeError("ReforceXY manifest filename does not match its run")
+    if ledger_name != f"{pair_key}-{run_instance_id}.json":
+        raise RuntimeError("ReforceXY ledger filename does not match its run")
+    manifest, manifest_evidence = _read_regular_json_with_evidence(manifest_path)
+    ledger, ledger_evidence = _read_regular_json_with_evidence(ledger_path)
+    if manifest_evidence["sha256"] != pointer.get("manifest_sha256"):
+        raise RuntimeError("ReforceXY manifest digest does not match the pointer")
+    if ledger_evidence["sha256"] != pointer.get("ledger_sha256"):
+        raise RuntimeError("ReforceXY ledger digest does not match the pointer")
+
+    _require_manifest_integrity(manifest)
+    if manifest.get("status") != _PREPARED_STATUS:
+        raise RuntimeError("ReforceXY run manifest is not publication-ready")
+    run = manifest.get("run")
+    if (
+        not isinstance(run, Mapping)
+        or run.get("pair") != pair
+        or run.get("run_instance_id") != run_instance_id
+    ):
+        raise RuntimeError("ReforceXY manifest identity does not match the pointer")
+    if (
+        ledger.get("schema_version") != _LEDGER_SCHEMA_VERSION
+        or ledger.get("status") != _PREPARED_STATUS
+        or ledger.get("pair") != pair
+        or ledger.get("run_instance_id") != run_instance_id
+    ):
+        raise RuntimeError("ReforceXY ledger identity is invalid")
+
+    result = manifest.get("result")
+    if not isinstance(result, Mapping):
+        raise RuntimeError("ReforceXY completed manifest result is missing")
+    holdout = result.get("holdout")
+    artifacts = result.get("artifacts")
+    if not isinstance(holdout, Mapping) or holdout.get("eligible") is not True:
+        raise RuntimeError("ReforceXY completed manifest holdout is not eligible")
+    if not isinstance(artifacts, Mapping):
+        raise RuntimeError("ReforceXY completed manifest artifacts are missing")
+    checkpoint = artifacts.get("checkpoint")
+    if not isinstance(checkpoint, Mapping):
+        raise RuntimeError("ReforceXY completed manifest checkpoint is missing")
+    checkpoint_name = _simple_relative_name(
+        checkpoint.get("name"),
+        "checkpoint.name",
+    )
+    checkpoint_path = data_path / checkpoint_name
+    checkpoint_evidence = _regular_artifact_evidence(checkpoint_path)
+    if checkpoint_evidence["sha256"] != checkpoint.get("sha256") or checkpoint_evidence[
+        "bytes"
+    ] != checkpoint.get("bytes"):
+        raise RuntimeError("ReforceXY checkpoint evidence is stale or corrupted")
+    if ledger.get("checkpoint") != checkpoint:
+        raise RuntimeError("ReforceXY ledger checkpoint does not match the manifest")
+    best_params = artifacts.get("best_params")
+    optuna_best_trial_params: Any = None
+    if best_params is not None:
+        if not isinstance(best_params, Mapping):
+            raise RuntimeError("ReforceXY best-params evidence is invalid")
+        best_params_name = _simple_relative_name(
+            best_params.get("name"),
+            "best_params.name",
+        )
+        best_params_path = data_path / best_params_name
+        best_params_payload, best_params_evidence = _read_regular_json_with_evidence(
+            best_params_path
+        )
+        if (
+            best_params_evidence["sha256"] != best_params.get("sha256")
+            or best_params_evidence["bytes"] != best_params.get("bytes")
+            or ledger.get("best_params") != best_params
+        ):
+            raise RuntimeError("ReforceXY best-params evidence is stale or corrupted")
+        if (
+            best_params_payload.get("schema_version") != 1
+            or best_params_payload.get("pair") != pair
+            or best_params_payload.get("run_instance_id") != run_instance_id
+            or not isinstance(best_params_payload.get("params"), Mapping)
+        ):
+            raise RuntimeError("ReforceXY best-params payload identity is invalid")
+        optuna_best_trial_params = best_params_payload["params"]
+    if ledger.get("manifest", {}).get("sha256") != pointer.get("manifest_sha256"):
+        raise RuntimeError("ReforceXY ledger manifest digest does not match")
+    if ledger.get("holdout_sha256") != _sha256_bytes(_json_bytes(_json_safe(holdout))):
+        raise RuntimeError("ReforceXY ledger holdout digest does not match")
+    completed_manifest = dict(manifest)
+    completed_manifest["status"] = _CONSUMABLE_STATUS
+    completed_result = dict(result)
+    if optuna_best_trial_params is not None:
+        completed_result["optuna_best_trial_params"] = optuna_best_trial_params
+    completed_manifest["result"] = completed_result
+    return completed_manifest
 
 
 def set_resolved_run_inputs(
