@@ -17,12 +17,26 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        cmaes_version: 0.13.0
+        freqtrade_image: ${REFORCEXY_FREQTRADE_IMAGE:-freqtradeorg/freqtrade@sha256:e808ec0d6c14cf5a2ea8406093b05e8b9230ac363ebdac573101988cd1450410}
+        reforcexy_git_commit: ${REFORCEXY_GIT_COMMIT:-}
+        scipy_version: 1.18.0
         optuna_version: 4.9.0
-        matplotlib_version: 3.11.1
+        optuna_dashboard_version: 0.20.0
+        optunahub_version: 0.4.0
+        gymnasium_version: 1.3.0
+        matplotlib_version: 3.11.0
+        runtime_requirements_sha256: ${REFORCEXY_RUNTIME_REQUIREMENTS_SHA256:-}
+        sb3_contrib_version: 2.9.0
+        stable_baselines3_version: 2.9.0
     restart: unless-stopped
     container_name: freqtrade-ReforceXY
     environment:
       - TZ=Europe/Paris
+      - REFORCEXY_GIT_COMMIT=${REFORCEXY_GIT_COMMIT:-}
+      - REFORCEXY_MANIFEST_SOURCE_SHA256=${REFORCEXY_MANIFEST_SOURCE_SHA256:-}
+      - REFORCEXY_MODEL_SOURCE_SHA256=${REFORCEXY_MODEL_SOURCE_SHA256:-}
+      - REFORCEXY_RUNTIME_IMAGE_ID=${REFORCEXY_RUNTIME_IMAGE_ID:-}
     volumes:
       - "./user_data:/freqtrade/user_data"
     # Expose the API on localhost port 8082
