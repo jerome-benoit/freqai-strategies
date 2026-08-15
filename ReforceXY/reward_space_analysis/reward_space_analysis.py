@@ -2943,7 +2943,9 @@ def distribution_diagnostics(
 ) -> dict[str, Any]:
     """Return mapping col-> diagnostics (tests, moments, entropy, divergences).
 
-    Skips missing columns; selects Shapiro-Wilk when n<=5000 else K2; ignores non-finite intermediates.
+    Skips missing columns and selects Shapiro-Wilk when n<5000. Constant
+    distributions have no defined normality test and omit those results in
+    relaxed mode.
     """
     diagnostics = {}
     _ = seed  # placeholder to keep signature for future reproducibility extensions
@@ -2958,6 +2960,33 @@ def distribution_diagnostics(
 
         diagnostics[f"{col}_mean"] = float(np.mean(data))
         diagnostics[f"{col}_std"] = float(np.std(data, ddof=1))
+        if np.ptp(data) == 0:
+            message = (
+                f"Stats: Shapiro-Wilk and Anderson-Darling normality tests for {col} are undefined "
+                "(constant distribution); result unavailable"
+            )
+            if strict_diagnostics:
+                raise AssertionError(message)
+            diagnostics[f"{col}_skewness"] = INTERNAL_GUARDS.get(
+                "distribution_constant_fallback_moment", 0.0
+            )
+            diagnostics[f"{col}_kurtosis"] = INTERNAL_GUARDS.get(
+                "distribution_constant_fallback_moment", 0.0
+            )
+            diagnostics[f"{col}_shapiro_available"] = False
+            diagnostics[f"{col}_shapiro_reason"] = "constant_distribution"
+            diagnostics[f"{col}_anderson_available"] = False
+            diagnostics[f"{col}_anderson_reason"] = "constant_distribution"
+            diagnostics[f"{col}_qq_r_squared"] = INTERNAL_GUARDS.get(
+                "distribution_constant_fallback_qq_r2", 1.0
+            )
+            warnings.warn(
+                message,
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            continue
+
         skew_v = float(stats.skew(data))
         kurt_v = float(stats.kurtosis(data, fisher=True))
         diagnostics[f"{col}_skewness"] = skew_v
@@ -2971,6 +3000,7 @@ def distribution_diagnostics(
 
         if len(data) < 5000:
             sw_stat, sw_pval = stats.shapiro(data)
+            diagnostics[f"{col}_shapiro_available"] = True
             diagnostics[f"{col}_shapiro_stat"] = float(sw_stat)
             diagnostics[f"{col}_shapiro_pval"] = float(sw_pval)
             diagnostics[f"{col}_is_normal_shapiro"] = bool(sw_pval > 0.05)
@@ -3728,7 +3758,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Enable fail-fast mode for statistical diagnostics: raise on zero-width bootstrap CIs or undefined "
-            "skewness/kurtosis/Anderson/Q-Q metrics produced by constant distributions instead of applying graceful replacements."
+            "Shapiro-Wilk/skewness/kurtosis/Anderson/Q-Q metrics produced by constant distributions instead of applying graceful replacements."
         ),
     )
     parser.add_argument(
