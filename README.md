@@ -12,6 +12,7 @@
   - [Configuration tunables](#configuration-tunables-1)
   - [Runtime reward contract](#runtime-reward-contract)
   - [Validation protocol](#validation-protocol)
+  - [Runtime reproducibility](#runtime-reproducibility)
 - [Development](#development)
 - [Common workflows](#common-workflows)
 - [Note](#note)
@@ -591,6 +592,87 @@ SQLite trials are handed to Optuna's heartbeat recovery. Any `WAITING` or
 selection and leaves the study `running` so the next invocation creates a fresh
 generation. Selected parameters are written atomically only after the final
 checkpoint is readable and the one-shot holdout integrity check passes.
+
+### Runtime reproducibility
+
+Each ReforceXY fit writes a schema-v3
+`reforcexy-run-manifest-<run-instance-id>.json` beside the trained model. Its
+matching inputs are stored below
+`reproducibility-inputs/<run-instance-id>/`. A retry never overwrites evidence
+from a previous attempt. The manifest is written before Optuna or model training
+starts and finalized after the fit, so a failed or interrupted fit remains
+identifiable.
+
+The manifest records:
+
+- the immutable Freqtrade base image digest, exact derived ReforceXY image ID,
+  OptunaHub registry commit, Python version and relevant distribution metadata,
+  including SB3, sb3-contrib, Optuna, DataSieve and scikit-learn; imported SciPy
+  version and path are recorded separately with an explicit metadata-mismatch
+  flag;
+- the Git commit and SHA-256 checksums of the loaded and bind-mounted ReforceXY
+  model and manifest code;
+- a secret-free allowlist of training configuration, effective environment
+  parameters (including fee and reward gamma), resolved model parameters,
+  compute device/CUDA evidence and all seed formulas;
+- SHA-256 evidence for the exact prepared training/evaluation features and OHLC
+  prices, plus preserved snapshots of the pre-run Optuna state files;
+- a `reproduction_id` over all inputs above. Timestamps, run status and results
+  are excluded from this identifier.
+
+Inspect the evidence after a run:
+
+```shell
+find user_data/models -name 'reforcexy-run-manifest-*.json' -print
+jq '{status, reproduction_id, runtime: .reproducibility_inputs.runtime}' \
+  user_data/models/<identifier>/<run>/reforcexy-run-manifest-<run-instance-id>.json
+```
+
+Keep the manifest with its model directory, configuration and data artifacts.
+Equal `reproduction_id` values prove equal recorded inputs; they do not promise
+bit-identical floating-point results on every CPU/GPU.
+
+Schema v3 includes the schema version itself in the `reproduction_id` domain.
+Schema-v1 and schema-v2 evidence remains historical and immutable: it is not
+rewritten or compared as equivalent to schema-v3 evidence. The manifest records
+metadata and deterministic fingerprints of the full inputs; preserve the source
+configuration and input data separately because only configured Optuna state is
+snapshotted.
+
+`KeyboardInterrupt` finalizes the manifest as `interrupted`, attempts every
+owned cleanup, and then propagates the original interruption. Cleanup failures
+are retained as secondary exception notes and cannot turn an interrupted fit
+into a model or checkpoint return. An interrupted Optuna run does not select or
+persist fallback parameters.
+
+Reproducible runs require `continual_learning=false`; implicit model weights are
+rejected. They also require `randomize_starting_position=false`, because that
+Freqtrade path uses an unscoped Python random generator, and an explicit
+`data_split_parameters.random_state` when the train/test split is shuffled.
+`feature_parameters.shuffle_after_split` is rejected because that Freqtrade
+path also uses an unscoped Python random generator. Likewise,
+`feature_parameters.noise_standard_deviation` must remain `0`, because the
+DataSieve noise transform uses an unscoped NumPy random generator before the
+manifest hook. A shuffled SVM outlier extractor must provide
+`feature_parameters.svm_params.random_state`. If Optuna resumes existing
+storage, the manifest directory contains the immutable pre-run files needed to
+restore that state.
+
+When `docker-upgrade.sh` detects a new `stable_freqairl` digest, it rebuilds
+through `docker-compose.sh`, so subsequent manifests contain the new immutable
+digest without changing the tracked default pin. Before rebuilding, it preserves
+the previous derived image under
+`reforcexy-freqtrade-archive:<sha256-image-id>`. Results used in one comparison
+must share a digest. Remove an archived image only after its dependent runs no
+longer need to be reproduced. After an upgrade:
+
+1. preserve the previous model directories and manifests;
+2. use a new `freqai.identifier`, with continual learning and Optuna warm start
+   disabled;
+3. rerun every compared training/evaluation arm with the same commit,
+   configuration, seeds and data;
+4. treat old- versus new-digest results as an upgrade comparison, not as repeat
+   runs.
 
 ## Development
 
