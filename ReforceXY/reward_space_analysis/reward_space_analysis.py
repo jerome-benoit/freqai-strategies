@@ -45,9 +45,7 @@ except Exception:
 
 AttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "asinh"]
-ExitPotentialMode = Literal[
-    "canonical", "non_canonical", "progressive_release", "spike_cancel", "retain_previous"
-]
+ExitPotentialMode = Literal["canonical"]
 
 
 class Actions(IntEnum):
@@ -114,13 +112,41 @@ ALLOWED_TRANSFORMS = {
     "asinh",
     "clip",
 }
-ALLOWED_EXIT_POTENTIAL_MODES = {
-    "canonical",
-    "non_canonical",
-    "progressive_release",
-    "spike_cancel",
-    "retain_previous",
-}
+ALLOWED_EXIT_POTENTIAL_MODES = {"canonical"}
+
+# Accepted during the migration window but ignored by the economic reward.
+DEPRECATED_REWARD_PARAMETERS: frozenset[str] = frozenset(
+    {
+        "idle_penalty_ratio",
+        "idle_penalty_power",
+        "hold_penalty_ratio",
+        "hold_penalty_power",
+        "exit_attenuation_mode",
+        "exit_plateau",
+        "exit_plateau_grace",
+        "exit_linear_slope",
+        "exit_power_tau",
+        "exit_half_life",
+        "efficiency_weight",
+        "efficiency_center",
+        "win_reward_factor",
+        "pnl_amplification_sensitivity",
+        "exit_factor_threshold",
+        "exit_potential_decay",
+        "entry_additive_enabled",
+        "entry_additive_ratio",
+        "entry_additive_gain",
+        "entry_additive_transform_pnl",
+        "entry_additive_transform_duration",
+        "exit_additive_enabled",
+        "exit_additive_ratio",
+        "exit_additive_gain",
+        "exit_additive_transform_pnl",
+        "exit_additive_transform_duration",
+        "entry_fee_rate",
+        "exit_fee_rate",
+    }
+)
 
 # Supported trading modes
 TRADING_MODES: tuple[str, ...] = ("spot", "margin", "futures")
@@ -165,7 +191,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     # Potential-based reward shaping core parameters
     # Discount factor γ for potential term (0 ≤ γ ≤ 1)  # noqa: RUF003
     "potential_gamma": POTENTIAL_GAMMA_DEFAULT,
-    # Exit potential modes: canonical | non_canonical | progressive_release | spike_cancel | retain_previous
+    # Only canonical PBRS is supported by the economic reward contract.
     "exit_potential_mode": "canonical",
     "exit_potential_decay": 0.5,
     # Hold potential (PBRS function Φ)
@@ -214,8 +240,8 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "exit_factor_threshold": "Warn if |exit_factor| exceeds",
     # PBRS parameters
     "potential_gamma": "PBRS discount γ (0-1)",  # noqa: RUF001
-    "exit_potential_mode": "Exit potential mode (canonical|non_canonical|progressive_release|spike_cancel|retain_previous)",
-    "exit_potential_decay": "Decay for progressive_release (0-1)",
+    "exit_potential_mode": "Exit potential mode (canonical only)",
+    "exit_potential_decay": "Deprecated legacy exit-potential decay (no-op)",
     "hold_potential_enabled": "Enable hold potential Φ",
     "hold_potential_ratio": "Hold potential ratio",
     "hold_potential_gain": "Hold potential gain",
@@ -592,6 +618,21 @@ def validate_reward_parameters(
     sanitized = dict(params)
     adjustments: dict[str, dict[str, Any]] = {}
 
+    exit_mode = _get_str_param(sanitized, "exit_potential_mode", "canonical")
+    if exit_mode != "canonical":
+        if strict:
+            raise ValueError(
+                "Param: exit_potential_mode must be 'canonical' for the economic reward, "
+                f"got {exit_mode!r}"
+            )
+        sanitized["exit_potential_mode"] = "canonical"
+        adjustments["exit_potential_mode"] = {
+            "original": exit_mode,
+            "adjusted": "canonical",
+            "reason": "canonical_only",
+            "validation_mode": "strict" if strict else "relaxed",
+        }
+
     # Boolean parameter coercion
     _bool_keys = [
         "check_invariants",
@@ -613,6 +654,46 @@ def validate_reward_parameters(
                     "reason": "bool_coerce",
                     "validation_mode": "strict" if strict else "relaxed",
                 },
+            )
+
+    for additive_key in ("entry_additive_enabled", "exit_additive_enabled"):
+        if not _get_bool_param(sanitized, additive_key, False):
+            continue
+        if strict:
+            raise ValueError(
+                f"Param: {additive_key} is incompatible with canonical PBRS and must be false"
+            )
+        original_val = sanitized[additive_key]
+        sanitized[additive_key] = False
+        adjustments[additive_key] = {
+            "original": original_val,
+            "adjusted": False,
+            "reason": "canonical_pbrs_suppresses_additives",
+            "validation_mode": "relaxed",
+        }
+
+    if _get_bool_param(sanitized, "hold_potential_enabled", False):
+        gamma = _get_float_param(
+            sanitized,
+            "potential_gamma",
+            POTENTIAL_GAMMA_DEFAULT,
+        )
+        if not np.isfinite(gamma) or not (0.0 < gamma <= 1.0):
+            raise ValueError(
+                "Param: potential_gamma must be finite and in (0, 1] when "
+                "hold_potential_enabled=True"
+            )
+        profit_aim = _get_float_param(sanitized, "profit_aim", np.nan)
+        risk_reward_ratio = _get_float_param(
+            sanitized,
+            "risk_reward_ratio",
+            _get_float_param(sanitized, "rr", np.nan),
+        )
+        pnl_target = profit_aim * risk_reward_ratio
+        if not np.isfinite(pnl_target) or pnl_target <= 0.0:
+            raise ValueError(
+                "Param: profit_aim * risk_reward_ratio must be finite and positive "
+                "when hold_potential_enabled=True"
             )
 
     # Coerce and clamp numeric-bounded parameters
@@ -3224,49 +3305,18 @@ def _compute_exit_additive(
 
 
 def _compute_exit_potential(prev_potential: float, params: RewardParams) -> float:
-    """Exit potential per mode (canonical/non_canonical -> 0; others transform Φ(prev))."""
+    """Release all potential at exit as required by canonical PBRS."""
     mode = _get_str_param(params, "exit_potential_mode")
-    if mode == "canonical" or mode == "non_canonical":
-        return _fail_safely("canonical_exit_potential")
-
-    if mode == "progressive_release":
-        decay = _get_float_param(params, "exit_potential_decay")
-        if not np.isfinite(decay) or decay < 0.0:
-            warnings.warn(
-                f"PBRS: exit_potential_decay={decay} invalid or < 0; falling back to 0.0",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
-            )
-            decay = 0.0
-        if decay > 1.0:
-            warnings.warn(
-                f"PBRS: exit_potential_decay={decay} > 1; falling back to 1.0",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
-            )
-            decay = 1.0
-        next_potential = prev_potential * (1.0 - decay)
-    elif mode == "spike_cancel":
-        gamma = _get_potential_gamma(params)
-        if gamma <= 0.0 or not np.isfinite(gamma):
-            next_potential = prev_potential
-        else:
-            next_potential = prev_potential / gamma
-    elif mode == "retain_previous":
-        next_potential = prev_potential
-    else:
+    if mode != "canonical":
         _warn_unknown_mode(
             "exit_potential_mode",
             mode,
             sorted(ALLOWED_EXIT_POTENTIAL_MODES),
-            "canonical (via _fail_safely)",
+            "canonical",
             stacklevel=2,
         )
-        next_potential = _fail_safely("invalid_exit_potential_mode")
-
-    if not np.isfinite(next_potential):
-        next_potential = _fail_safely("non_finite_next_exit_potential")
-    return float(next_potential)
+    _ = prev_potential
+    return 0.0
 
 
 def compute_pbrs_components(
@@ -3296,7 +3346,7 @@ def compute_pbrs_components(
     R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
 
     where:
-        Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
+        Delta(s,a,s') = gamma * Phi(s') - Phi(s)  (PBRS shaping term)
 
     Hold Potential Formula
     ----------------------
@@ -3316,8 +3366,8 @@ def compute_pbrs_components(
     tuple[float, float, float, float, float]
         (reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive)
 
-        - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
-        - next_potential: Φ(s'), the potential function value for next state
+        - reward_shaping: Delta(s,a,s') = gamma * Phi(s') - Phi(s), the PBRS shaping term
+        - next_potential: Phi(s'), the potential function value for next state
         - pbrs_delta: Same as reward_shaping (kept for backward compatibility)
         - entry_additive: Optional non-PBRS entry bonus (0.0 if disabled or not entry)
         - exit_additive: Optional non-PBRS exit bonus (0.0 if disabled or not exit)
@@ -3325,7 +3375,7 @@ def compute_pbrs_components(
     Notes
     -----
     In canonical mode (exit_potential_mode='canonical'), entry_additive and exit_additive
-    are forced to 0.0 to preserve PBRS policy invariance.
+    are forced to 0.0 to satisfy the canonical PBRS algebraic configuration.
     """
     gamma = _get_potential_gamma(params)
 
