@@ -1513,6 +1513,7 @@ _SAMPLE_DURATION_HAZARD_OVERTIME_MULTIPLIER = 4.0
 _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY = 0.9
 _SAMPLE_EXIT_PROBABILITY_MIN = 0.002
 _SAMPLE_EXIT_PROBABILITY_MAX = 0.2
+_SAMPLE_INVALID_ACTION_PROBABILITY = 0.05
 
 
 def _sampling_probabilities(
@@ -1563,6 +1564,7 @@ def _sample_action(
     max_trade_duration_candles: int,
     idle_duration: int,
     max_idle_duration_candles: int,
+    action_masking: bool = True,
 ) -> tuple[Actions, float, float, float]:
     entry_prob, exit_prob, neutral_prob = _sampling_probabilities(
         position,
@@ -1572,6 +1574,15 @@ def _sample_action(
         idle_duration=idle_duration,
         max_idle_duration_candles=max_idle_duration_candles,
     )
+
+    if not action_masking and rng.random() < _SAMPLE_INVALID_ACTION_PROBABILITY:
+        invalid_actions = [
+            action
+            for action in Actions
+            if not _is_valid_action(position, action, short_allowed=short_allowed)
+        ]
+        if invalid_actions:
+            return rng.choice(invalid_actions), entry_prob, exit_prob, neutral_prob
 
     if position == Positions.Neutral:
         if short_allowed:
@@ -1621,31 +1632,26 @@ def simulate_samples(
     """Simulate synthetic samples for reward analysis.
 
     The synthetic generator produces a *coherent trajectory* (state carried across samples)
-    so PJRS/PBRS stored-potential mechanics can be exercised realistically.
+    so liquidation-value and PBRS state can be exercised realistically.
 
-    Notes
-    -----
-    - PnL is a state variable while in position (may be non-zero on holds).
-    - Neutral states always have pnl=0.
-    - Realized PnL appears on the exit step (position still Long/Short).
+    Each row is one causal transition. The row state is marked at the previous
+    close, its action fills at the next open, and a position that remains open
+    is marked at that candle's close. An exit is liquidated at its fill open.
     """
 
     rng = random.Random(seed)
+    resolved_base_factor = _get_float_param(params, "base_factor", base_factor)
     max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
-
-    # Theoretical PBRS invariance flag
-    exit_mode = _get_str_param(params, "exit_potential_mode")
-    entry_enabled_raw = _get_bool_param(params, "entry_additive_enabled")
-    exit_enabled_raw = _get_bool_param(params, "exit_additive_enabled")
-
-    entry_enabled, exit_enabled, _additives_suppressed = _resolve_additive_enablement(
-        exit_mode,
-        entry_enabled_raw,
-        exit_enabled_raw,
+    pnl_estimator = (
+        _compute_unrealized_pnl_estimate
+        if _get_bool_param(params, "hold_potential_enabled")
+        else _compute_spot_local_trade_pnl_estimate
     )
-    pbrs_invariant = bool(exit_mode == "canonical" and not (entry_enabled or exit_enabled))
+
+    # The implemented shaping contract is canonical-only; additives are no-ops.
+    pbrs_invariant = True
 
     max_idle_duration_candles = get_max_idle_duration_candles(
         params, max_trade_duration_candles=max_trade_duration_candles
@@ -1654,6 +1660,8 @@ def simulate_samples(
 
     samples: list[dict[str, float]] = []
     prev_potential: float = 0.0
+    previous_liquidation_value: float = 1.0
+    cumulative_pair_log_return: float = 0.0
 
     # Stateful trajectory variables
     position = Positions.Neutral
@@ -1664,47 +1672,32 @@ def simulate_samples(
     min_unrealized_profit = 0.0
 
     # Synthetic market state
-    current_open = 1.0
-    entry_open = current_open
+    previous_close = 1.0
+    entry_open = previous_close
 
-    for _ in range(num_samples):
-        # Simulate synthetic open-price movement.
+    for sample_index in range(num_samples):
         duration_ratio = (
             _compute_duration_ratio(trade_duration, max_trade_duration_candles)
             if position in (Positions.Long, Positions.Short)
             else 0.0
         )
         open_return_std = pnl_base_std * (1.0 + pnl_duration_vol_scale * duration_ratio)
-        step_return = rng.gauss(0.0, open_return_std)
+        gap_return = rng.gauss(0.0, open_return_std * 0.5)
+        intrabar_return = rng.gauss(0.0, open_return_std * math.sqrt(0.75))
 
-        # Small directional drift so long/short trajectories are not perfectly symmetric
+        # Small directional drift so long/short trajectories are not perfectly symmetric.
         drift = 0.001 * duration_ratio
         if position == Positions.Long:
-            step_return += drift
+            intrabar_return += drift
         elif position == Positions.Short:
-            step_return -= drift
+            intrabar_return -= drift
 
-        if not np.isfinite(step_return):
-            step_return = 0.0
-        step_return = float(np.clip(step_return, -0.95, 0.95))
-
-        current_open = float(max(1e-6, current_open * (1.0 + step_return)))
-
-        # Compute fee-aware unrealized PnL from (entry_open, current_open)
-        if position in (Positions.Long, Positions.Short):
-            pnl = _compute_unrealized_pnl_estimate(
-                position,
-                entry_open=entry_open,
-                current_open=current_open,
-                params=params,
-            )
-            pnl = float(np.clip(pnl, -0.15, 0.15))
-            max_unrealized_profit = max(max_unrealized_profit, pnl)
-            min_unrealized_profit = min(min_unrealized_profit, pnl)
-        else:
-            pnl = 0.0
-            max_unrealized_profit = 0.0
-            min_unrealized_profit = 0.0
+        gap_return = float(np.clip(gap_return, -0.95, 0.95)) if np.isfinite(gap_return) else 0.0
+        intrabar_return = (
+            float(np.clip(intrabar_return, -0.95, 0.95)) if np.isfinite(intrabar_return) else 0.0
+        )
+        fill_open = float(max(1e-6, previous_close * (1.0 + gap_return)))
+        mark_close = float(max(1e-6, fill_open * (1.0 + intrabar_return)))
 
         action, sample_entry_prob, sample_exit_prob, sample_neutral_prob = _sample_action(
             position,
@@ -1714,7 +1707,46 @@ def simulate_samples(
             max_trade_duration_candles=max_trade_duration_candles,
             idle_duration=idle_duration,
             max_idle_duration_candles=max_idle_duration_candles,
+            action_masking=action_masking,
         )
+
+        next_position = _get_next_position(
+            position,
+            action,
+            short_allowed=short_allowed,
+        )
+        is_entry = position == Positions.Neutral and next_position in (
+            Positions.Long,
+            Positions.Short,
+        )
+        is_exit = position in (Positions.Long, Positions.Short) and (
+            next_position == Positions.Neutral
+        )
+        transition_entry_open = fill_open if is_entry else entry_open
+        if is_exit:
+            transition_pnl = pnl_estimator(
+                position,
+                entry_open=entry_open,
+                current_open=fill_open,
+                params=params,
+            )
+        elif next_position in (Positions.Long, Positions.Short):
+            transition_pnl = pnl_estimator(
+                next_position,
+                entry_open=transition_entry_open,
+                current_open=mark_close,
+                params=params,
+            )
+        else:
+            transition_pnl = 0.0
+        transition_pnl = float(transition_pnl)
+
+        if is_entry:
+            next_trade_duration = 1
+        elif next_position in (Positions.Long, Positions.Short):
+            next_trade_duration = min(trade_duration + 1, max_trade_duration_cap)
+        else:
+            next_trade_duration = 0
 
         context = RewardContext(
             current_pnl=pnl,
@@ -1724,6 +1756,9 @@ def simulate_samples(
             min_unrealized_profit=min_unrealized_profit,
             position=position,
             action=action,
+            previous_liquidation_value=previous_liquidation_value,
+            next_pnl=transition_pnl,
+            next_trade_duration=next_trade_duration,
         )
 
         breakdown = calculate_reward(
@@ -1737,11 +1772,19 @@ def simulate_samples(
             prev_potential=prev_potential,
         )
         prev_potential = breakdown.next_potential
+        previous_liquidation_value = breakdown.next_liquidation_value
+        if resolved_base_factor > 0.0:
+            cumulative_pair_log_return += breakdown.economic_component / resolved_base_factor
 
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
+        breakdown.truncated = bool(sample_index == num_samples - 1 and not breakdown.terminated)
         samples.append(
             {
                 "pnl": context.current_pnl,
+                "next_pnl": transition_pnl,
+                "previous_close": previous_close,
+                "fill_open": fill_open,
+                "mark_close": mark_close,
                 "trade_duration": context.trade_duration,
                 "idle_duration": context.idle_duration,
                 "duration_ratio": _compute_duration_ratio(
@@ -1755,6 +1798,7 @@ def simulate_samples(
                 "sample_exit_prob": sample_exit_prob,
                 "sample_neutral_prob": sample_neutral_prob,
                 "reward": breakdown.total,
+                "reward_economic": breakdown.economic_component,
                 "reward_invalid": breakdown.invalid_penalty,
                 "reward_idle": breakdown.idle_penalty,
                 "reward_hold": breakdown.hold_penalty,
@@ -1769,53 +1813,53 @@ def simulate_samples(
                 "reward_base": breakdown.base_reward,
                 "reward_pbrs_delta": breakdown.pbrs_delta,
                 "reward_invariance_correction": breakdown.invariance_correction,
-                "is_invalid": float(breakdown.invalid_penalty != 0.0),
+                "previous_liquidation_value": breakdown.previous_liquidation_value,
+                "reward_liquidation_value": breakdown.reward_liquidation_value,
+                "next_liquidation_value": breakdown.next_liquidation_value,
+                "economic_log_return": (
+                    breakdown.economic_component / resolved_base_factor
+                    if resolved_base_factor > 0.0
+                    else 0.0
+                ),
+                "cumulative_pair_log_return": cumulative_pair_log_return,
+                "synthetic_pair_equity": math.exp(cumulative_pair_log_return),
+                "economic_ruin": bool(breakdown.economic_ruin),
+                "terminated": bool(breakdown.terminated),
+                "truncated": bool(breakdown.truncated),
+                "drawdown_breached": np.nan,
+                "drawdown_breached_available": False,
+                "is_invalid": float(breakdown.invalid_action),
                 "pbrs_invariant": bool(pbrs_invariant),
             }
         )
 
-        # Transition state
-        if position == Positions.Neutral:
-            if action == Actions.Neutral:
-                idle_duration = min(idle_duration + 1, max_idle_duration_candles)
-            elif action == Actions.Long_enter:
-                position = Positions.Long
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Long,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
-            elif action == Actions.Short_enter and short_allowed:
-                position = Positions.Short
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Short,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
+        if breakdown.terminated:
+            break
+
+        # Carry the close-marked post-action state into the next observation.
+        previous_close = mark_close
+        if is_entry:
+            entry_open = fill_open
+            max_unrealized_profit = transition_pnl
+            min_unrealized_profit = transition_pnl
+        elif next_position in (Positions.Long, Positions.Short):
+            max_unrealized_profit = max(max_unrealized_profit, transition_pnl)
+            min_unrealized_profit = min(min_unrealized_profit, transition_pnl)
+        else:
+            max_unrealized_profit = 0.0
+            min_unrealized_profit = 0.0
+
+        if next_position == Positions.Neutral:
+            idle_duration = 0 if is_exit else min(idle_duration + 1, max_idle_duration_candles)
+            pnl = 0.0
         else:
             idle_duration = 0
-            if action == Actions.Neutral:
-                trade_duration = min(trade_duration + 1, max_trade_duration_cap)
-            elif action in (Actions.Long_exit, Actions.Short_exit):
-                position = Positions.Neutral
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
+            pnl = transition_pnl
+        position = next_position
+        trade_duration = next_trade_duration
 
     df = pd.DataFrame(samples)
-    df.attrs["reward_params"] = dict(params)
+    df.attrs["reward_params"] = {**params, "base_factor": resolved_base_factor}
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
