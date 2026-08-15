@@ -1,5 +1,6 @@
 import datetime
 import logging
+import math
 from collections.abc import Mapping
 from functools import reduce
 from typing import Any, Final, Literal, Optional
@@ -8,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 # import talib.abstract as ta
+from freqtrade.enums import RunMode
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
 from pandas import DataFrame
@@ -59,10 +61,54 @@ class RLAgentStrategy(IStrategy):
     _ACTION_EXIT_LONG: Final[int] = 2
     _ACTION_ENTER_SHORT: Final[int] = 3
     _ACTION_EXIT_SHORT: Final[int] = 4
+    _EXECUTION_PROFILES: Final[tuple[str, ...]] = ("research", "live")
+    _DEFAULT_EXECUTION_PROFILE: Final[str] = "research"
+    _RESEARCH_STOPLOSS_SENTINEL: Final[float] = -0.99
 
     @property
     def can_short(self) -> bool:
         return self.is_short_allowed()
+
+    def _execution_contract_error(self) -> Optional[str]:
+        execution_config = self.config.get("reforcexy_execution", {})
+        if not isinstance(execution_config, Mapping):
+            return "Config: 'reforcexy_execution' must be an object."
+
+        profile = execution_config.get(
+            "profile", RLAgentStrategy._DEFAULT_EXECUTION_PROFILE
+        )
+        if profile not in RLAgentStrategy._EXECUTION_PROFILES:
+            return (
+                f"Config: invalid ReforceXY execution profile {profile!r}. "
+                f"Expected one of: {list(RLAgentStrategy._EXECUTION_PROFILES)}."
+            )
+
+        runmode = self.config.get("runmode")
+        if (
+            runmode == RunMode.LIVE
+            and profile != RLAgentStrategy._EXECUTION_PROFILES[1]
+        ):
+            return (
+                "Config: ReforceXY refuses live trading under the 'research' "
+                "execution profile. Set profile='live' only after preregistering "
+                "and dry-running the live risk controls."
+            )
+
+        if profile == RLAgentStrategy._EXECUTION_PROFILES[1]:
+            try:
+                stoploss = float(self.stoploss)
+            except (TypeError, ValueError):
+                return "Config: the ReforceXY live stoploss must be a finite number."
+            if (
+                not math.isfinite(stoploss)
+                or stoploss <= RLAgentStrategy._RESEARCH_STOPLOSS_SENTINEL
+            ):
+                return (
+                    "Config: the ReforceXY 'live' execution profile requires a "
+                    "finite Freqtrade stoploss above the research sentinel -0.99."
+                )
+
+        return None
 
     @property
     def protections(self) -> list[dict[str, Any]]:
@@ -75,6 +121,55 @@ class RLAgentStrategy(IStrategy):
                 "Config: 'reforcexy_execution.protections' must be a list."
             )
         return protections
+
+    def bot_start(self, **kwargs: Any) -> None:
+        contract_error = self._execution_contract_error()
+        if contract_error is not None:
+            raise ValueError(contract_error)
+
+        runmode = self.config.get("runmode")
+        logger.info(
+            "ReforceXY execution contract: profile=%s runmode=%s stoploss=%s "
+            "protections=%d",
+            self.config.get("reforcexy_execution", {}).get(
+                "profile", RLAgentStrategy._DEFAULT_EXECUTION_PROFILE
+            ),
+            getattr(runmode, "value", runmode),
+            self.stoploss,
+            len(self.protections),
+        )
+
+    def confirm_trade_entry(
+        self,
+        pair: str,
+        order_type: str,
+        amount: float,
+        rate: float,
+        time_in_force: str,
+        current_time: datetime.datetime,
+        entry_tag: Optional[str],
+        side: str,
+        **kwargs: Any,
+    ) -> bool:
+        try:
+            contract_error = self._execution_contract_error()
+        except Exception as error:
+            logger.critical(
+                "ReforceXY entry blocked: pair=%s side=%s contract_check_error=%r",
+                pair,
+                side,
+                error,
+            )
+            return False
+        if contract_error is not None:
+            logger.critical(
+                "ReforceXY entry blocked: pair=%s side=%s reason=%s",
+                pair,
+                side,
+                contract_error,
+            )
+            return False
+        return True
 
     # def feature_engineering_expand_all(
     #     self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs

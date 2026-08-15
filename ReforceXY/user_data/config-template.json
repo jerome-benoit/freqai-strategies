@@ -90,6 +90,7 @@
     }
   ],
   "reforcexy_execution": {
+    "profile": "research",
     "protections": []
   },
   "telegram": {
