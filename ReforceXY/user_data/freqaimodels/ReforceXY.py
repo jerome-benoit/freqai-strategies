@@ -104,6 +104,13 @@ from freqtrade.persistence import LocalTrade
 from gymnasium import Env
 from gymnasium.spaces import Discrete
 from stable_baselines3.common.vec_env import VecEnvWrapper
+import uuid
+from reproducibility import (
+    create_run_manifest,
+    finalize_run_manifest,
+    set_resolved_run_inputs,
+    write_run_manifest,
+)
 
 _MAX_EXCEPTION_ENVELOPE_BYTES: Final[int] = 400
 _MAX_WORKER_STATUS_BYTES: Final[int] = 1024
@@ -884,6 +891,7 @@ class _ExceptionAwareSubprocVecEnv(VecEnvWrapper):
         return observations, rewards, dones, infos
 
 
+_LOADED_MODEL_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 _DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
 
 
@@ -1513,6 +1521,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._pending_optuna_best_trial_metadata: Optional[Dict[str, str]] = None
         self._model_params_cache: Optional[Dict[str, Any]] = None
         self.optuna_run_status: str = "pending" if self.hyperopt else "disabled"
+        self._run_manifest: Optional[Dict[str, Any]] = None
+        self._run_manifest_key: Optional[str] = None
+        self._run_manifest_path: Optional[Path] = None
         self._training_splits: Dict[str, _TrainingSplit] = {}
         self._lstm_states_cache: Dict[
             str,
@@ -1524,6 +1535,99 @@ class ReforceXY(BaseReinforcementLearningModel):
         ] = {}
         self.unset_unsupported()
         self._configure_gpu_memory()
+
+    @staticmethod
+    def _run_lifecycle_actions(
+        primary_error: Optional[BaseException],
+        actions: Sequence[Tuple[str, Callable[[], None]]],
+    ) -> Optional[BaseException]:
+        for label, action in actions:
+            try:
+                action()
+            except BaseException as error:
+                if primary_error is None:
+                    primary_error = error
+                else:
+                    try:
+                        error_detail = repr(error)
+                    except BaseException:
+                        error_detail = "<unrepresentable BaseException>"
+                    try:
+                        primary_error.add_note(f"{label} failed: {error_detail}")
+                    except BaseException:
+                        pass
+        return primary_error
+
+    @staticmethod
+    def _close_owned_environments(
+        primary_error: Optional[BaseException],
+        owners: Sequence[Tuple[str, Callable[[], Any], Callable[[Any], None]]],
+    ) -> Optional[BaseException]:
+        """Close each environment identity once and detach every owner."""
+        closed_environment_ids: set[int] = set()
+
+        for label, get_environment, detach_environment in owners:
+            resolved_environments: List[Any] = []
+            primary_error = ReforceXY._run_lifecycle_actions(
+                primary_error,
+                [
+                    (
+                        f"{label} resolution",
+                        lambda: resolved_environments.append(get_environment()),
+                    )
+                ],
+            )
+            if not resolved_environments:
+                continue
+            environment = resolved_environments[0]
+            if environment is None:
+                continue
+            environment_id = id(environment)
+            if environment_id not in closed_environment_ids:
+                closed_environment_ids.add(environment_id)
+                primary_error = ReforceXY._run_lifecycle_actions(
+                    primary_error,
+                    [(f"{label} close", lambda: environment.close())],
+                )
+            primary_error = ReforceXY._run_lifecycle_actions(
+                primary_error,
+                [
+                    (
+                        f"{label} detach",
+                        lambda: detach_environment(environment),
+                    )
+                ],
+            )
+
+        return primary_error
+
+    def _detach_environment_attribute(self, attribute: str, environment: Any) -> None:
+        if getattr(self, attribute, None) is environment:
+            setattr(self, attribute, None)
+
+    def _finalize_progress_callback(self) -> None:
+        callback = getattr(self, "progressbar_callback", None)
+        if callback is not None:
+            callback.on_training_end()
+
+    @staticmethod
+    def _detach_model_environment(model: Any, environment: Any) -> None:
+        if getattr(model, "env", None) is environment:
+            model.env = None
+
+    @staticmethod
+    def _check_environment(environment: Any, label: str) -> None:
+        primary_error: Optional[BaseException] = None
+        try:
+            check_env(environment)
+        except BaseException as error:
+            primary_error = error
+        primary_error = ReforceXY._close_owned_environments(
+            primary_error,
+            [(label, lambda: environment, lambda _environment: None)],
+        )
+        if primary_error is not None:
+            raise primary_error
 
     def _configure_gpu_memory(self) -> None:
         """
@@ -2186,12 +2290,32 @@ class ReforceXY(BaseReinforcementLearningModel):
                 except BaseException:
                     pass
 
+    def _manifest_environment_parameters(
+        self,
+        env_dict: Dict[str, Any],
+        pair: str,
+        effective_fee: Any,
+    ) -> Dict[str, Any]:
+        return {
+            "can_short": env_dict.get("can_short", False),
+            "compound_trades": self.config.get("stake_amount") == "unlimited",
+            "fee": effective_fee,
+            "live": env_dict.get("live", False),
+            "pair": pair,
+            "reward_parameters": env_dict.get("config", {})
+            .get("freqai", {})
+            .get("rl_config", {})
+            .get("model_reward_parameters", {}),
+            "window_size": env_dict.get("window_size"),
+        }
+
     def set_train_and_eval_environments(
         self,
         data_dictionary: Dict[str, DataFrame],
         prices_train: DataFrame,
         prices_test: DataFrame,
         dk: FreqaiDataKitchen,
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Set training and evaluation environments
@@ -2219,8 +2343,65 @@ class ReforceXY(BaseReinforcementLearningModel):
             prices_validation=prices_validation,
             prices_holdout=prices_holdout,
         )
-        env_dict = self.pack_env_dict(dk.pair)
-        seed = self.get_model_params().get("seed", 42)
+        env_dict = self.pack_env_dict(dk.pair, model_params)
+        configured_model_parameters = self.get_model_params()
+        seed = (model_params or configured_model_parameters).get("seed", 42)
+
+        run_manifest_key = f"{dk.pair}:{dk.data_path}"
+        previous_run_finished = (
+            self._run_manifest is not None
+            and self._run_manifest.get("status")
+            in {"completed", "failed", "interrupted"}
+        )
+        if self._run_manifest_key != run_manifest_key or previous_run_finished:
+            manifest_dataframes = {
+                "evaluation_features": test_df,
+                "evaluation_prices": prices_test,
+                "training_features": train_df,
+                "training_prices": prices_train,
+            }
+            raw_training_features = getattr(self, "df_raw", None)
+            if isinstance(raw_training_features, DataFrame):
+                manifest_dataframes["raw_training_features"] = raw_training_features
+            configured_fee = self.config.get("fee")
+            effective_fee = (
+                configured_fee
+                if configured_fee is not None
+                else env_dict.get("fee", 0.0015)
+            )
+            environment_parameters = self._manifest_environment_parameters(
+                env_dict, dk.pair, effective_fee
+            )
+            run_instance_id = uuid.uuid4().hex
+            self._run_manifest_path = Path(
+                dk.data_path / f"reforcexy-run-manifest-{run_instance_id}.json"
+            )
+            self._run_manifest = create_run_manifest(
+                config=self.config,
+                dataframes=manifest_dataframes,
+                data_path=Path(dk.data_path),
+                environment_parameters=environment_parameters,
+                model_parameters=configured_model_parameters,
+                model_source_path=Path(__file__),
+                pair=dk.pair,
+                run_instance_id=run_instance_id,
+                full_path=Path(self.full_path),
+                hyperopt_enabled=self.hyperopt,
+                loaded_model_source_sha256=_LOADED_MODEL_SOURCE_SHA256,
+                optuna_seed=int(self.rl_config_optuna.get("seed", 42)),
+                model_seed=int(configured_model_parameters.get("seed", 42)),
+                n_envs=self.n_envs,
+                n_eval_envs=self.n_eval_envs,
+                optunahub_registry_ref=ReforceXY._OPTUNAHUB_REGISTRY_REF,
+            )
+            self._run_manifest_key = run_manifest_key
+            write_run_manifest(self._run_manifest_path, self._run_manifest)
+            logger.info(
+                "Reproducibility [%s]: wrote run manifest %s (%s)",
+                dk.pair,
+                self._run_manifest_path,
+                self._run_manifest["reproduction_id"],
+            )
 
         if self.check_envs:
             logger.info("Env [%s]: checking environments", dk.pair)
@@ -2632,6 +2813,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._pending_optuna_best_trial_metadata = None
 
         start_time = time.time()
+        if self._run_manifest is not None and self._run_manifest_path is not None:
+            self._run_manifest["status"] = (
+                "optimizing" if self.hyperopt else "preparing_training"
+            )
+            write_run_manifest(self._run_manifest_path, self._run_manifest)
         if self.hyperopt:
             best_params = self.optimize(
                 dk,
@@ -2645,6 +2831,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             model_params = self.get_model_params()
         logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
+        if self._run_manifest is not None and self._run_manifest_path is not None:
+            self._run_manifest["status"] = "preparing_training"
+            write_run_manifest(self._run_manifest_path, self._run_manifest)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -2684,6 +2873,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.close_envs()
         model: Optional[Any] = None
         primary_error: Optional[BaseException] = None
+        training_status = "failed"
         try:
             env_info = self.pack_env_dict(dk.pair, model_params)
             self.train_env, self.eval_env = self._get_train_and_eval_environments(
@@ -2711,6 +2901,37 @@ class ReforceXY(BaseReinforcementLearningModel):
                     **model_params,
                 )
 
+            if self._run_manifest is not None and self._run_manifest_path is not None:
+                configured_fee = self.config.get("fee")
+                effective_fee = (
+                    configured_fee
+                    if configured_fee is not None
+                    else env_info.get("fee", 0.0015)
+                )
+                execution_environment = {
+                    "cpu_machine": platform.machine(),
+                    "cpu_processor": platform.processor(),
+                    "cuda_available": th.cuda.is_available(),
+                    "model_device": str(getattr(model, "device", "")),
+                    "torch_num_threads": th.get_num_threads(),
+                }
+                set_resolved_run_inputs(
+                    self._run_manifest_path,
+                    self._run_manifest,
+                    dataframes={
+                        "evaluation_features": validation_df,
+                        "evaluation_prices": prices_validation,
+                        "training_features": train_df,
+                        "training_prices": prices_train,
+                    },
+                    environment_parameters=self._manifest_environment_parameters(
+                        env_info, dk.pair, effective_fee
+                    ),
+                    execution_environment=execution_environment,
+                    resolved_model_parameters=model_params,
+                )
+                self._run_manifest["status"] = "training"
+                write_run_manifest(self._run_manifest_path, self._run_manifest)
             eval_freq = self.get_eval_freq(
                 total_timesteps,
                 hyperopt=self.hyperopt,
@@ -2725,8 +2946,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
             logger.debug("Training [%s]: model.learn completed", dk.pair)
+            training_status = "completed"
         except BaseException as error:
             primary_error = error
+            training_status = (
+                "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+            )
             try:
                 best_checkpoint_path.unlink(missing_ok=True)
             except BaseException as cleanup_error:
@@ -2765,6 +2990,22 @@ class ReforceXY(BaseReinforcementLearningModel):
                         "Additionally failed to close the model environment",
                         lambda: ReforceXY._close_distinct_model_environment(
                             model, train_env, eval_env
+                        ),
+                    ),
+                    (
+                        "Additionally failed to finalize the run manifest",
+                        lambda: (
+                            finalize_run_manifest(
+                                self._run_manifest_path,
+                                self._run_manifest,
+                                status=training_status,
+                                duration_seconds=time.time() - start_time,
+                                optuna_status=self.optuna_run_status,
+                                resolved_model_parameters=model_params,
+                            )
+                            if self._run_manifest is not None
+                            and self._run_manifest_path is not None
+                            else None
                         ),
                     ),
                 ),
