@@ -312,6 +312,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON: Final[float] = 1e-6
     DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION: Final[float] = 0.01
+    DEFAULT_INFERENCE_MASKING: Final[bool] = True
 
     _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
         "PPO",
@@ -407,11 +408,33 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
-        self.action_masking: bool = (
+        inference_masking = self.rl_config.get(
+            "inference_masking", ReforceXY.DEFAULT_INFERENCE_MASKING
+        )
+        if (
             self.model_type == ReforceXY._MODEL_TYPES[2]
-        )  # "MaskablePPO"
-        self.rl_config.setdefault("action_masking", self.action_masking)
-        self.inference_masking: bool = self.rl_config.get("inference_masking", True)
+            and inference_masking is not True
+        ):
+            raise ValueError(
+                "Config [global]: MaskablePPO requires inference_masking=true "
+                "so inference uses the same ReforceXY action-mask mechanism as "
+                "training and evaluation."
+            )
+
+        action_masking = self.model_type == ReforceXY._MODEL_TYPES[2]
+        configured_action_masking = self.rl_config.get("action_masking")
+        if (
+            "action_masking" in self.rl_config
+            and configured_action_masking is not action_masking
+        ):
+            raise ValueError(
+                "Config [global]: action_masking="
+                f"{configured_action_masking!r} conflicts with "
+                f"model_type={self.model_type!r}; expected {action_masking!r}."
+            )
+        self.action_masking: bool = action_masking
+        self.rl_config["action_masking"] = action_masking
+        self.inference_masking: bool = inference_masking
         self.recurrent: bool = (
             self.model_type == ReforceXY._MODEL_TYPES[1]
         )  # "RecurrentPPO"
@@ -987,7 +1010,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.progressbar_callback = ProgressBarCallback()
             callbacks.append(self.progressbar_callback)
 
-        use_masking = self.action_masking and is_masking_supported(eval_env)
+        if self.action_masking and not is_masking_supported(eval_env):
+            raise ValueError(
+                "Evaluation [global]: action masking is required for MaskablePPO, "
+                "but the evaluation environment does not expose action masks"
+            )
+        use_masking = self.action_masking
         if not trial:
             self.eval_callback = MaskableEvalCallback(
                 eval_env,

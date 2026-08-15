@@ -173,6 +173,7 @@
       "n_envs": 8, // Number of DummyVecEnv or SubProcVecEnv training environments
       "multiprocessing": true, // Use SubprocVecEnv if n_envs>1 (otherwise DummyVecEnv)
       "frame_stacking": 2, // Number of VecFrameStack stacks (set > 1 to use)
+      "inference_masking": true, // Required for MaskablePPO inference
       "lr_schedule": false, // Enable learning rate linear schedule
       "cr_schedule": false, // Enable clip range linear schedule
       "max_no_improvement_evals": 0, // Maximum consecutive evaluations without a new best model
