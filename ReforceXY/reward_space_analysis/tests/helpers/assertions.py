@@ -1184,28 +1184,28 @@ def assert_relaxed_multi_reason_aggregation(
 def assert_pbrs_invariance_report_classification(
     test_case, content: str, expected_status: str, expect_additives: bool
 ):
-    """Validate PBRS invariance report classification and additive reporting.
+    """Validate PBRS algebraic report classification and additive reporting.
 
-    Checks that the invariance report correctly classifies PBRS behavior
+    Checks that the report correctly classifies PBRS algebraic conformance
     and appropriately reports additive component involvement.
 
     Args:
         test_case: Test case instance with assertion methods
         content: Report content string to validate
-        expected_status: Expected classification: "Canonical",
-                        "Canonical (with warning)", or "Non-canonical"
+        expected_status: Expected classification such as "Canonical algebraic conformance",
+                        "Algebraic contract violation", or "Non-conformant configuration"
         expect_additives: Whether additive components should be mentioned
 
     Example:
         assert_pbrs_invariance_report_classification(
-            self, report_content, "Canonical", expect_additives=False
+            self, report_content, "Canonical algebraic conformance", expect_additives=False
         )
         assert_pbrs_invariance_report_classification(
-            self, report_content, "Non-canonical", expect_additives=True
+            self, report_content, "Non-conformant configuration", expect_additives=True
         )
     """
     test_case.assertIn(
-        expected_status, content, f"Expected invariance status '{expected_status}' not found"
+        expected_status, content, f"Expected algebraic status '{expected_status}' not found"
     )
     if expect_additives:
         test_case.assertRegex(
