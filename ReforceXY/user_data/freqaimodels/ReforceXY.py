@@ -601,6 +601,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         env_info = super().pack_env_dict(pair)
 
         config = env_info.setdefault("config", {})
+        if config.get("fee", None) is not None:
+            env_info.pop("fee", None)
+        elif self.data_provider:
+            env_info["fee"] = self.data_provider._exchange.get_fee(  # type: ignore
+                symbol=pair
+            )
         freqai_cfg = config.setdefault("freqai", {})
         rl_cfg = freqai_cfg.setdefault("rl_config", {})
         model_reward_parameters = rl_cfg.setdefault("model_reward_parameters", {})
