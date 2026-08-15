@@ -1,0 +1,6 @@
+---
+services:
+  freqtrade:
+    image: ${REFORCEXY_RUNTIME_IMAGE_ID:?}
+    pull_policy: never
+    build: !reset null
