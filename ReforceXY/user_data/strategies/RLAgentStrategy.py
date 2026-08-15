@@ -1,5 +1,6 @@
 import datetime
 import logging
+from collections.abc import Mapping
 from functools import reduce
 from typing import Any, Final, Literal, Optional
 
@@ -62,6 +63,18 @@ class RLAgentStrategy(IStrategy):
     @property
     def can_short(self) -> bool:
         return self.is_short_allowed()
+
+    @property
+    def protections(self) -> list[dict[str, Any]]:
+        execution_config = self.config.get("reforcexy_execution", {})
+        if not isinstance(execution_config, Mapping):
+            raise ValueError("Config: 'reforcexy_execution' must be an object.")
+        protections = execution_config.get("protections", [])
+        if not isinstance(protections, list):
+            raise ValueError(
+                "Config: 'reforcexy_execution.protections' must be a list."
+            )
+        return protections
 
     # def feature_engineering_expand_all(
     #     self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs

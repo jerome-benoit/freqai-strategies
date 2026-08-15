@@ -89,6 +89,9 @@
       "method": "StaticPairList"
     }
   ],
+  "reforcexy_execution": {
+    "protections": []
+  },
   "telegram": {
     "enabled": false,
     "token": "",
