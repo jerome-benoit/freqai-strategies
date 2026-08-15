@@ -248,6 +248,28 @@ if [ "$rebuild_local_image" = true ]; then
     echo_timestamped "Error: docker compose down failed"
     exit 1
   fi
+  previous_image_id=$(
+    command docker image inspect --format='{{.Id}}' "$LOCAL_DOCKER_IMAGE" 2>/dev/null ||
+      printf '%s\n' 'none'
+  )
+  if [ "$previous_image_id" != none ]; then
+    image_name_part=${LOCAL_DOCKER_IMAGE##*/}
+    image_repo="${LOCAL_DOCKER_IMAGE%"$image_name_part"}${image_name_part%%:*}"
+    archive_repo="${image_repo}-archive"
+    archive_tag="${archive_repo}:${previous_image_id#sha256:}"
+    if command docker image tag "$previous_image_id" "$archive_tag" >/dev/null 2>&1; then
+      echo_timestamped "Info: archived previous image as ${archive_tag}"
+      command docker image ls "$archive_repo" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null |
+        while IFS= read -r existing_archive; do
+          if [ -z "$existing_archive" ] || [ "$existing_archive" = "$archive_tag" ]; then
+            continue
+          fi
+          command docker image rm "$existing_archive" >/dev/null 2>&1 || true
+        done
+    else
+      echo_timestamped "Warning: failed to archive previous image ${previous_image_id}"
+    fi
+  fi
   if ! command docker image rm "$LOCAL_DOCKER_IMAGE" >/dev/null 2>&1; then
     echo_timestamped "Warning: docker image rm failed for ${LOCAL_DOCKER_IMAGE}"
   fi
