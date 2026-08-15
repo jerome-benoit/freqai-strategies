@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Synthetic reward space analysis utilities for ReforceXY.
+"""Synthetic analysis of ReforceXY's pair-local economic reward.
 
-Implements sample generation, reward computation with PBRS, statistical analysis,
-and feature importance calculation with reproducible parameter hashing.
+The reference reward is the scaled log change in a fee-aware liquidation value.
+Optional shaping is restricted to canonical potential-based reward shaping (PBRS).
 """
 
 from __future__ import annotations
@@ -850,7 +850,10 @@ class RewardContext:
     Attributes
     ----------
     current_pnl : float
-        Unrealized PnL at the current tick (state s').
+        Fee-aware liquidation PnL observable in state s.
+    next_pnl : float | None
+        Fee-aware transition PnL at the causal fill/mark for s'. ``None`` keeps
+        the compatibility fallback used by direct analytical API callers.
     """
 
     current_pnl: float
@@ -860,11 +863,15 @@ class RewardContext:
     min_unrealized_profit: float
     position: Positions
     action: Actions
+    previous_liquidation_value: float = 1.0
+    next_pnl: float | None = None
+    next_trade_duration: int | None = None
 
 
 @dataclasses.dataclass
 class RewardBreakdown:
     total: float = 0.0
+    economic_component: float = 0.0
     invalid_penalty: float = 0.0
     idle_penalty: float = 0.0
     hold_penalty: float = 0.0
@@ -879,6 +886,13 @@ class RewardBreakdown:
     base_reward: float = 0.0
     pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') - Φ(s)  # noqa: RUF003
     invariance_correction: float = 0.0
+    previous_liquidation_value: float = 1.0
+    reward_liquidation_value: float = 1.0
+    next_liquidation_value: float = 1.0
+    economic_ruin: bool = False
+    terminated: bool = False
+    truncated: bool = False
+    invalid_action: bool = False
 
 
 def _compute_time_attenuation_coefficient(
@@ -1268,240 +1282,200 @@ def calculate_reward(
     action_masking: bool,
     prev_potential: float = np.nan,
 ) -> RewardBreakdown:
-    """Calculate complete reward with base reward and PBRS shaping.
+    """Return the economic reward and optional canonical PBRS diagnostics.
 
-    This function computes the full reward pipeline including base reward calculation,
-    PBRS (Potential-Based Reward Shaping), and optional additives.
+    The economic component is ``base_factor * log(L_reward / L_previous)``.
+    ``L`` is the pair-local, fee-aware liquidation value. Entry therefore pays
+    the complete simulated round-trip fee immediately, holds recognize the
+    incremental marked-to-liquidation return, exits recognize the final mark,
+    and a neutral self-loop has zero economic reward.
 
-    Reward Formula
-    --------------
-    R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-    where:
-        - R(s,a,s'): Base reward (invalid/idle/hold penalty or exit reward)
-        - Δ(s,a,s'): PBRS delta term = γ·Φ(s') - Φ(s)
-        - entry_additive: Optional entry bonus (disabled in canonical mode)
-        - exit_additive: Optional exit bonus (disabled in canonical mode)
-
-    Parameters
-    ----------
-    context : RewardContext
-        Current reward context (position, action, PnL, duration, etc.)
-    params : RewardParams
-        Reward parameter dictionary with configuration
-    base_factor : float
-        Base scaling factor for reward components
-    profit_aim : float
-        Target profit for normalization
-    risk_reward_ratio : float
-        Risk/reward ratio for trade evaluation
-    short_allowed : bool
-        Whether short positions are permitted
-    action_masking : bool
-        Whether to apply action masking (affects invalid action penalty)
-    prev_potential : float, optional
-        Previous state potential Φ(s), by default np.nan
-
-    Returns
-    -------
-    RewardBreakdown
-        Complete breakdown of reward components including:
-        - total: Final shaped reward R'(s,a,s')
-        - base_reward: R(s,a,s')
-        - reward_shaping: Δ(s,a,s')
-        - entry_additive: Entry bonus
-        - exit_additive: Exit bonus
-        - prev_potential: Φ(s)
-        - next_potential: Φ(s')
-        - pbrs_delta: Same as reward_shaping
-        - And component-specific values (invalid_penalty, idle_penalty, etc.)
-
-    Notes
-    -----
-    This is the reference implementation for the reward calculation used in testing
-    and analysis. It mirrors the logic in ReforceXY.calculate_reward() but returns
-    a detailed breakdown for diagnostic purposes.
+    ``profit_aim`` and ``risk_reward_ratio`` are retained only because FreqAI's
+    base environment and the optional potential function require them. They do
+    not alter the economic component.
     """
     breakdown = RewardBreakdown()
-
     is_valid = _is_valid_action(
         context.position,
         context.action,
         short_allowed=short_allowed,
     )
-
-    base_reward: float | None = None
-    if not is_valid and not action_masking:
-        breakdown.invalid_penalty = _get_float_param(params, "invalid_action")
-        base_reward = breakdown.invalid_penalty
-
-    base_factor = _get_float_param(params, "base_factor", base_factor)
-
-    if "profit_aim" in params:
-        profit_aim = _get_float_param(params, "profit_aim", float(profit_aim))
-
-    if "risk_reward_ratio" in params:
-        risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(risk_reward_ratio))
-    elif "rr" in params:
-        risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
-
-    pnl_target = float(profit_aim * risk_reward_ratio)
-
-    idle_factor = base_factor * (profit_aim / risk_reward_ratio)
-    hold_factor = idle_factor
-
-    max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
-    current_duration_ratio = _compute_duration_ratio(
-        context.trade_duration, max_trade_duration_candles
-    )
-
-    # Base reward calculation
-    if base_reward is None:
-        if context.action == Actions.Neutral:
-            if context.position == Positions.Neutral:
-                base_reward = _idle_penalty(context, idle_factor, params)
-                breakdown.idle_penalty = base_reward
-            elif context.position in (Positions.Long, Positions.Short):
-                base_reward = _hold_penalty(context, hold_factor, params)
-                breakdown.hold_penalty = base_reward
-            else:
-                base_reward = 0.0
-        else:
-            is_exit_action = (
-                context.action == Actions.Long_exit and context.position == Positions.Long
-            ) or (context.action == Actions.Short_exit and context.position == Positions.Short)
-            if is_exit_action:
-                base_reward = _compute_exit_reward(
-                    base_factor,
-                    pnl_target,
-                    current_duration_ratio,
-                    context,
-                    params,
-                    risk_reward_ratio,
-                )
-                breakdown.exit_component = base_reward
-            else:
-                base_reward = 0.0
-
-    breakdown.base_reward = float(base_reward)
-
-    # === PBRS INTEGRATION ===
-    current_pnl = context.current_pnl if context.position != Positions.Neutral else 0.0
-
+    breakdown.invalid_action = not is_valid
     next_position = _get_next_position(
-        context.position, context.action, short_allowed=short_allowed
+        context.position,
+        context.action,
+        short_allowed=short_allowed,
     )
     is_entry = context.position == Positions.Neutral and next_position in (
         Positions.Long,
         Positions.Short,
     )
-    is_exit = (
-        context.position
-        in (
-            Positions.Long,
-            Positions.Short,
-        )
-        and next_position == Positions.Neutral
+    is_exit = context.position in (Positions.Long, Positions.Short) and (
+        next_position == Positions.Neutral
     )
-    is_hold = context.position in (
-        Positions.Long,
-        Positions.Short,
-    ) and next_position in (Positions.Long, Positions.Short)
     is_neutral = context.position == Positions.Neutral and next_position == Positions.Neutral
+    base_factor = _get_float_param(params, "base_factor", base_factor)
+    if not np.isfinite(base_factor) or base_factor <= 0.0:
+        raise ValueError(f"Reward: invalid base_factor={base_factor!r}")
 
-    if is_entry:
-        next_duration_ratio = 0.0
-        if context.action == Actions.Long_enter:
-            next_pnl = _compute_unrealized_pnl_estimate(
-                Positions.Long,
-                entry_open=1.0,
-                current_open=1.0,
-                params=params,
-            )
-        elif context.action == Actions.Short_enter:
-            next_pnl = _compute_unrealized_pnl_estimate(
-                Positions.Short,
-                entry_open=1.0,
-                current_open=1.0,
-                params=params,
-            )
-        else:
-            next_pnl = current_pnl
-    elif is_hold:
-        next_duration_ratio = _compute_duration_ratio(
-            context.trade_duration, max_trade_duration_candles
+    previous_liquidation_value = float(context.previous_liquidation_value)
+    if not np.isfinite(previous_liquidation_value) or previous_liquidation_value <= 0.0:
+        raise ValueError(
+            "Reward: previous_liquidation_value must be finite and strictly positive, "
+            f"got {previous_liquidation_value!r}"
         )
-        # Optionally simulate unrealized PnL during holds to feed Φ(s)
-        if _get_bool_param(params, "unrealized_pnl", False):
-            center_unrealized = 0.5 * (
-                context.max_unrealized_profit + context.min_unrealized_profit
+    if context.next_pnl is not None:
+        observable_liquidation_value = (
+            1.0 + float(context.current_pnl)
+            if context.position in (Positions.Long, Positions.Short)
+            else 1.0
+        )
+        if (
+            not np.isfinite(observable_liquidation_value)
+            or observable_liquidation_value <= 0.0
+            or not np.isclose(
+                previous_liquidation_value,
+                observable_liquidation_value,
+                rtol=1e-10,
+                atol=1e-12,
             )
-            beta = _get_float_param(params, "pnl_amplification_sensitivity")
-            next_pnl = float(center_unrealized * math.tanh(beta * next_duration_ratio))
-        else:
-            next_pnl = current_pnl
-    elif is_exit:
-        next_pnl = 0.0
-        next_duration_ratio = 0.0
+        ):
+            raise ValueError(
+                "Reward: previous_liquidation_value must match the liquidation "
+                f"value observable in state s, got carry={previous_liquidation_value!r}, "
+                f"observable={observable_liquidation_value!r}"
+            )
+
+    if context.next_pnl is not None:
+        next_pnl = float(context.next_pnl)
+    elif is_entry:
+        pnl_estimator = (
+            _compute_unrealized_pnl_estimate
+            if _get_bool_param(params, "hold_potential_enabled")
+            else _compute_spot_local_trade_pnl_estimate
+        )
+        next_pnl = pnl_estimator(
+            next_position,
+            entry_open=1.0,
+            current_open=1.0,
+            params=params,
+        )
+    elif context.position in (Positions.Long, Positions.Short):
+        next_pnl = float(context.current_pnl)
     else:
-        next_pnl = current_pnl
-        next_duration_ratio = current_duration_ratio
+        next_pnl = 0.0
 
-    # Apply PBRS only if enabled and not neutral self-loop
-    exit_mode = _get_str_param(params, "exit_potential_mode")
+    if is_entry or context.position in (Positions.Long, Positions.Short):
+        reward_liquidation_value = 1.0 + next_pnl
+        next_liquidation_value = 1.0 if is_exit else reward_liquidation_value
+    else:
+        reward_liquidation_value = 1.0
+        next_liquidation_value = 1.0
 
-    hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
-    entry_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "entry_additive_enabled")
-    )
-    exit_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "exit_additive_enabled")
-    )
-
-    pbrs_enabled = bool(hold_potential_enabled or entry_additive_enabled or exit_additive_enabled)
-
-    if pbrs_enabled:
-        # Stored potential carried across steps.
-        prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
-
-        if is_neutral:
-            # Neutral self-loop keeps stored potential unchanged.
-            breakdown.prev_potential = prev_potential
-            breakdown.next_potential = prev_potential
-            breakdown.total = base_reward
-            return breakdown
-
-        reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive = (
-            compute_pbrs_components(
-                current_pnl=current_pnl,
-                pnl_target=pnl_target,
-                current_duration_ratio=current_duration_ratio,
-                next_pnl=next_pnl,
-                next_duration_ratio=next_duration_ratio,
-                is_exit=is_exit,
-                is_entry=is_entry,
-                prev_potential=prev_potential,
-                params=params,
-                risk_reward_ratio=risk_reward_ratio,
-                base_factor=base_factor,
-            )
+    if not np.isfinite(reward_liquidation_value):
+        raise ValueError(
+            f"Reward: reward_liquidation_value must be finite, got {reward_liquidation_value!r}"
         )
+    if reward_liquidation_value <= 0.0:
+        breakdown.economic_ruin = True
+        breakdown.terminated = True
+        reward_liquidation_value = MIN_LIQUIDATION_VALUE
+        if not is_exit:
+            next_liquidation_value = reward_liquidation_value
 
-        breakdown.reward_shaping = reward_shaping
-        breakdown.prev_potential = prev_potential
-        breakdown.next_potential = next_potential
-        breakdown.entry_additive = entry_additive
-        breakdown.exit_additive = exit_additive
-        breakdown.pbrs_delta = pbrs_delta
-        breakdown.invariance_correction = reward_shaping - pbrs_delta
-        breakdown.total = base_reward + reward_shaping + entry_additive + exit_additive
-        return breakdown
+    economic_component = base_factor * (
+        math.log(reward_liquidation_value) - math.log(previous_liquidation_value)
+    )
+    if not np.isfinite(economic_component):
+        raise RuntimeError("Reward: economic reward is not finite")
+    breakdown.economic_component = float(economic_component)
+    breakdown.previous_liquidation_value = previous_liquidation_value
+    breakdown.reward_liquidation_value = float(reward_liquidation_value)
+    breakdown.next_liquidation_value = float(next_liquidation_value)
+    if is_exit:
+        # Compatibility diagnostic: this is no longer a sparse exit reward.
+        breakdown.exit_component = float(economic_component)
+
+    if not is_valid and not action_masking:
+        breakdown.invalid_penalty = _get_float_param(params, "invalid_action")
+        if not np.isfinite(breakdown.invalid_penalty):
+            raise ValueError("Reward: invalid_action reward must be finite")
+
+    breakdown.base_reward = float(economic_component + breakdown.invalid_penalty)
+
+    if "profit_aim" in params:
+        profit_aim = _get_float_param(params, "profit_aim", float(profit_aim))
+    if "risk_reward_ratio" in params:
+        risk_reward_ratio = _get_float_param(
+            params,
+            "risk_reward_ratio",
+            float(risk_reward_ratio),
+        )
+    elif "rr" in params:
+        risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
 
     prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
     breakdown.prev_potential = prev_potential
     breakdown.next_potential = prev_potential
-    breakdown.total = base_reward
 
+    hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
+    if hold_potential_enabled:
+        gamma = _get_float_param(params, "potential_gamma", POTENTIAL_GAMMA_DEFAULT)
+        if not np.isfinite(gamma) or not (0.0 < gamma <= 1.0):
+            raise ValueError(
+                "Reward: potential_gamma must be finite and in (0, 1] when PBRS is active"
+            )
+        max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
+        current_duration_ratio = _compute_duration_ratio(
+            context.trade_duration,
+            max_trade_duration_candles,
+        )
+        next_trade_duration = (
+            context.next_trade_duration
+            if context.next_trade_duration is not None
+            else (0 if is_entry or is_exit else context.trade_duration)
+        )
+        next_duration_ratio = (
+            0.0
+            if is_exit
+            else _compute_duration_ratio(
+                next_trade_duration,
+                max_trade_duration_candles,
+            )
+        )
+        pnl_target = float(profit_aim * risk_reward_ratio)
+        if not np.isfinite(pnl_target) or pnl_target <= 0.0:
+            raise ValueError(
+                "Reward: profit_aim * risk_reward_ratio must be finite and positive "
+                "when PBRS is active"
+            )
+        if not is_neutral:
+            reward_shaping, next_potential, pbrs_delta, _, _ = compute_pbrs_components(
+                current_pnl=float(context.current_pnl),
+                pnl_target=pnl_target,
+                current_duration_ratio=current_duration_ratio,
+                next_pnl=0.0 if is_exit else next_pnl,
+                next_duration_ratio=next_duration_ratio,
+                is_exit=is_exit,
+                is_entry=is_entry,
+                prev_potential=prev_potential,
+                params={**params, "exit_potential_mode": "canonical"},
+                risk_reward_ratio=risk_reward_ratio,
+                base_factor=base_factor,
+            )
+            breakdown.reward_shaping = reward_shaping
+            breakdown.next_potential = next_potential
+            breakdown.pbrs_delta = pbrs_delta
+            breakdown.invariance_correction = reward_shaping - pbrs_delta
+
+    if breakdown.terminated:
+        terminal_reward_shaping = -prev_potential if hold_potential_enabled else 0.0
+        breakdown.reward_shaping = terminal_reward_shaping
+        breakdown.next_potential = 0.0
+        breakdown.pbrs_delta = terminal_reward_shaping
+        breakdown.invariance_correction = 0.0
+
+    breakdown.total = breakdown.base_reward + breakdown.reward_shaping
     return breakdown
 
 
