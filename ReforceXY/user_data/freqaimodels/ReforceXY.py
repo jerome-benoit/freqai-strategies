@@ -624,6 +624,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: frame_stacking=1 equivalent to no stacking; defaulting to 0"
             )
             self.frame_stacking = 0
+        if self.frame_stacking > 1:
+            raise ValueError(
+                "Config [global]: frame_stacking>1 is not supported because training "
+                "VecFrameStack persists successive frames while dry/live prediction "
+                "rebuilds non-persistent frame state on every call; set frame_stacking=0 "
+                "to avoid a train/dry/live frame-history mismatch"
+            )
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
                 "Config [global]: n_eval_steps=%r invalid; defaulting to 10000",
@@ -654,9 +661,41 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             self.optuna_purge_period = 0
         add_state_info = self.rl_config.get("add_state_info", False)
-        if not add_state_info:
-            logger.warning(
-                "Config [global]: add_state_info=False may lead to desynchronized trade states after restart"
+        if add_state_info is not True:
+            raise ValueError(
+                "Config [global]: add_state_info=True is required by the pair-local "
+                "economic reward contract"
+            )
+        if self.config.get("trading_mode") != "spot":
+            raise ValueError(
+                "Config [global]: trading_mode='spot' is required until the RL "
+                "environment models leveraged PnL with Freqtrade parity"
+            )
+        if self.config.get("stake_amount") != "unlimited":
+            raise ValueError(
+                "Config [global]: stake_amount='unlimited' is required by the "
+                "compounded net liquidation reward contract"
+            )
+        model_reward_parameters: Mapping[str, Any] = self.rl_config.get(
+            "model_reward_parameters", {}
+        )
+        exit_potential_mode = str(
+            model_reward_parameters.get(
+                "exit_potential_mode", ReforceXY._EXIT_POTENTIAL_MODES[0]
+            )
+        )
+        if exit_potential_mode != ReforceXY._EXIT_POTENTIAL_MODES[0]:
+            raise ValueError(
+                "Config [global]: only exit_potential_mode='canonical' is supported"
+            )
+        if (
+            model_reward_parameters.get("hold_potential_enabled", False)
+            or model_reward_parameters.get("entry_additive_enabled", False)
+            or model_reward_parameters.get("exit_additive_enabled", False)
+        ):
+            raise ValueError(
+                "Config [global]: reward shaping must remain disabled for the "
+                "promotable pair-local economic reward contract"
             )
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
