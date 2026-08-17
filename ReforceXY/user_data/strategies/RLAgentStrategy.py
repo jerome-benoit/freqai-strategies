@@ -63,6 +63,19 @@ class RLAgentStrategy(IStrategy):
     def can_short(self) -> bool:
         return self.is_short_allowed()
 
+    @property
+    def protections(self) -> list[dict[str, Any]]:
+        custom_protections = self.config.get("custom_protections", [])
+        if not isinstance(custom_protections, list) or not all(
+            isinstance(protection, dict) and isinstance(protection.get("method"), str)
+            for protection in custom_protections
+        ):
+            raise ValueError(
+                "Config: 'custom_protections' must be a list of protection objects, "
+                "each with a 'method' string."
+            )
+        return custom_protections
+
     # def feature_engineering_expand_all(
     #     self, dataframe: DataFrame, period: int, metadata: dict[str, Any], **kwargs
     # ) -> DataFrame:
