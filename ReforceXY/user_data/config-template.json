@@ -89,6 +89,7 @@
       "method": "StaticPairList"
     }
   ],
+  "custom_protections": [],
   "telegram": {
     "enabled": false,
     "token": "",
