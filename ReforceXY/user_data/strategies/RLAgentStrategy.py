@@ -52,6 +52,8 @@ class RLAgentStrategy(IStrategy):
 
     INTERFACE_VERSION = 3
 
+    use_exit_signal = True
+
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("margin", "futures", "spot")
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
     _ACTION_ENTER_LONG: Final[int] = 1
@@ -162,12 +164,14 @@ class RLAgentStrategy(IStrategy):
         last_candle = dataframe.iloc[-1]
         if last_candle.get("do_predict") == 2:
             trades = Trade.get_trades_proxy(pair=metadata.get("pair"), is_open=True)
-            for trade in trades:
+            if trades:
                 last_index = dataframe.index[-1]
-                if trade.is_short:
-                    dataframe.at[last_index, "exit_short"] = 1
-                else:
-                    dataframe.at[last_index, "exit_long"] = 1
+                for trade in trades:
+                    if trade.is_short:
+                        dataframe.at[last_index, "exit_short"] = 1
+                    else:
+                        dataframe.at[last_index, "exit_long"] = 1
+                dataframe.at[last_index, "exit_tag"] = "model_expired"
 
         return dataframe
 
