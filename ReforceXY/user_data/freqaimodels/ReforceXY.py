@@ -38,7 +38,7 @@ import numpy as np
 import optunahub
 import pandas as pd
 import torch as th
-from freqtrade.enums import TradingMode
+from freqtrade.enums import RunMode, TradingMode
 from freqtrade.persistence import LocalTrade
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -408,6 +408,17 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
+        runmode = self.config.get("runmode")
+        if self.model_type == ReforceXY._MODEL_TYPES[1] and runmode in (
+            RunMode.DRY_RUN,
+            RunMode.LIVE,
+        ):
+            raise ValueError(
+                "Config [global]: RecurrentPPO is disabled in dry-run and live "
+                "because ReforceXY does not maintain complete causal observation "
+                "history or durable episode state across process restarts."
+            )
+
         inference_masking = self.rl_config.get(
             "inference_masking", ReforceXY.DEFAULT_INFERENCE_MASKING
         )
