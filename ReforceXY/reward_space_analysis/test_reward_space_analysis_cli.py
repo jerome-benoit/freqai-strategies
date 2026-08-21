@@ -334,7 +334,7 @@ def main():
     parser.add_argument(
         "--unrealized_pnl",
         action="store_true",
-        help="Forward --unrealized_pnl to child process to exercise hold Φ(s) path.",
+        help="Forward the deprecated --unrealized_pnl compatibility alias.",
     )
     parser.add_argument(
         "--params",

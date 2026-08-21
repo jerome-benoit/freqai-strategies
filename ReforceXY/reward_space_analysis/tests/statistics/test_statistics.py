@@ -2,6 +2,7 @@
 """Statistical tests, distribution metrics, and bootstrap validation."""
 
 import unittest
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -72,15 +73,15 @@ class TestStatistics(RewardSpaceTestBase):
 
         df = self.make_stats_df(n=90, seed=SEEDS.BASE)
         # Force some columns constant
-        df.loc[:, "reward_hold"] = 0.0
+        df.loc[:, "reward_economic"] = 0.0
         df.loc[:, "idle_duration"] = 5.0
         stats_rel = _compute_relationship_stats(df)
         dropped = stats_rel["correlation_dropped"]
-        self.assertIn("reward_hold", dropped)
+        self.assertIn("reward_economic", dropped)
         self.assertIn("idle_duration", dropped)
         corr = stats_rel["correlation"]
         self.assertIsInstance(corr, pd.DataFrame)
-        self.assertNotIn("reward_hold", corr.columns)
+        self.assertNotIn("reward_economic", corr.columns)
         self.assertNotIn("idle_duration", corr.columns)
 
     def test_statistics_distribution_shift_metrics_degenerate_zero(self):
@@ -200,7 +201,21 @@ class TestStatistics(RewardSpaceTestBase):
                 "pnl_raw": np.zeros(n),
             }
         )
-        diagnostics = distribution_diagnostics(df_const)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            diagnostics = distribution_diagnostics(df_const)
+        scipy_runtime_warnings = [
+            warning for warning in caught if warning.category is RuntimeWarning
+        ]
+        self.assertEqual(scipy_runtime_warnings, [])
+        for col in ("reward", "pnl"):
+            self.assertIs(diagnostics[f"{col}_shapiro_available"], False)
+            self.assertEqual(diagnostics[f"{col}_shapiro_reason"], "constant_distribution")
+            self.assertIs(diagnostics[f"{col}_anderson_available"], False)
+            self.assertEqual(diagnostics[f"{col}_anderson_reason"], "constant_distribution")
+            self.assertNotIn(f"{col}_shapiro_stat", diagnostics)
+            self.assertNotIn(f"{col}_shapiro_pval", diagnostics)
+            self.assertNotIn(f"{col}_is_normal_shapiro", diagnostics)
         # Mean and std for constant arrays
         for key in ["reward_mean", "reward_std", "pnl_mean", "pnl_std"]:
             if key in diagnostics:
@@ -221,7 +236,10 @@ class TestStatistics(RewardSpaceTestBase):
             )
         # All diagnostic values finite
         for k, v in diagnostics.items():
-            self.assertFinite(v, name=k)
+            if not k.endswith("_reason"):
+                self.assertFinite(v, name=k)
+        with self.assertRaisesRegex(AssertionError, "Shapiro-Wilk.*undefined"):
+            distribution_diagnostics(df_const, strict_diagnostics=True)
 
     def test_stats_distribution_diagnostics(self):
         """Distribution diagnostics."""
@@ -236,6 +254,12 @@ class TestStatistics(RewardSpaceTestBase):
                 key = f"{prefix}{suffix}"
                 if key in diagnostics:
                     self.assertFinite(diagnostics[key], name=key)
+
+        threshold_diagnostics = distribution_diagnostics(
+            pd.DataFrame({"reward": np.linspace(-1.0, 1.0, 5000)})
+        )
+        self.assertNotIn("reward_shapiro_available", threshold_diagnostics)
+        self.assertNotIn("reward_shapiro_pval", threshold_diagnostics)
 
     def test_statistical_hypothesis_tests_api_integration(self):
         """Test statistical_hypothesis_tests API integration with synthetic data."""
@@ -289,7 +313,7 @@ class TestStatistics(RewardSpaceTestBase):
                     f"Expected near-zero divergence after equal scaling (k={k}, v={v})",
                 )
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
+    # Non-owning smoke; ownership: robustness/test_robustness.py:44 (robustness-economic-decomposition-101)
     @pytest.mark.smoke
     def test_stats_mean_decomposition_consistency(self):
         """Batch mean additivity."""
