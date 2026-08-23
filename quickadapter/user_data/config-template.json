@@ -120,9 +120,19 @@
       //   }
       // }
     },
+    // Alternative example configuration with label_weighting (amplitude strategy, Gaussian fill):
+    // "label_weighting": {
+    //   "strategy": "amplitude",
+    //   "fill_method": "epsilon_gaussian",
+    //   "fill_sigma_candles": 25.0,
+    //   "fill_bandwidth": "knn",
+    //   "fill_bandwidth_neighbors": 1,
+    //   "fill_bandwidth_alpha": 0.5,
+    //   "fill_sigma_min_candles": 0.5
+    // },
     "label_smoothing": {
-      "method": "kaiser",
-      "window_candles": 5,
+      "method": "kaiser_bessel_derived",
+      "window_candles": 6,
       "beta": 10.0
       // Alternative per-label format: remove the sibling keys above, then uncomment:
       // "default": {
@@ -132,7 +142,7 @@
       //   "&s-extrema": {
       //     "method": "kaiser",
       //     "window_candles": 5,
-      //     "beta": 12.0
+      //     "beta": 8.0
       //   }
       // }
     },
