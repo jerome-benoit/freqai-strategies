@@ -2592,7 +2592,6 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         return self._get_liquidation_pnl(close_price)
 
-    @staticmethod
     def is_pbrs_invariant_mode(self) -> bool:
         """Return whether the configuration meets necessary canonical PBRS conditions.
 
@@ -2614,7 +2613,6 @@ class MyRLEnv(Base5ActionRLEnv):
             self._entry_additive_enabled or self._exit_additive_enabled
         )  # "canonical"
 
-    @staticmethod
     def _set_observation_space(self) -> None:
         """
         Set the observation space
