@@ -2267,6 +2267,23 @@ class ReforceXY(BaseReinforcementLearningModel):
         return digest.hexdigest()
 
     @staticmethod
+    def _sampler_provenance_contract(sampler: Any) -> dict[str, Any]:
+        """Return sampler provenance for the study source contract.
+
+        The OptunaHub registry ref is recorded only when the resolved sampler
+        actually comes from OptunaHub: pinning the ref into every contract
+        would invalidate TPE studies on unrelated registry bumps.
+        """
+        provenance: dict[str, Any] = {
+            "sampler": ReforceXY._source_contract_digest("sampler", (type(sampler),)),
+        }
+        sampler_type = type(sampler)
+        module = getattr(sampler_type, "__module__", "").lower()
+        if "optunahub" in module or sampler_type.__name__ == "AutoSampler":
+            provenance["optunahub_registry_ref"] = ReforceXY._OPTUNAHUB_REGISTRY_REF
+        return provenance
+
+    @staticmethod
     def _material_environment_constants() -> dict[str, Any]:
         try:
             environment_source = inspect.getsource(MyRLEnv)
@@ -2391,8 +2408,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     type(self)._normalize_position,
                 ),
             ),
-            "sampler": ReforceXY._source_contract_digest("sampler", (type(sampler),)),
-            "optunahub_registry_ref": ReforceXY._OPTUNAHUB_REGISTRY_REF,
+            **ReforceXY._sampler_provenance_contract(sampler),
             "pruner": ReforceXY._source_contract_digest("pruner", (type(pruner),)),
         }
         model_params = self.get_model_params()
@@ -2518,6 +2534,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         compatibility_source = {key: value for key, value in contract.items() if key != "data"}
         compatibility_source["context"] = {
             key: value for key, value in contract["context"].items() if key != "training_window"
+        }
+        # An OptunaHub registry pin bump must not invalidate cross-window
+        # best-params warm start: provenance stays in the full study contract
+        # while the compatibility identity stays pin-independent.
+        compatibility_source["source"] = {
+            key: value
+            for key, value in contract["source"].items()
+            if key != "optunahub_registry_ref"
         }
         compatibility_hash = hashlib.sha256(
             ReforceXY._canonical_optuna_contract_json(
