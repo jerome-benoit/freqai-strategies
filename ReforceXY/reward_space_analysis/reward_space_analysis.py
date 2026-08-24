@@ -4420,14 +4420,41 @@ def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
 
-    params = dict(DEFAULT_MODEL_REWARD_PARAMETERS)
-    # Merge CLI tunables first (only those explicitly provided)
     _tunable_keys = set(DEFAULT_MODEL_REWARD_PARAMETERS.keys())
-    for key, value in vars(args).items():
-        if key in _tunable_keys and value is not None:
-            params[key] = value
-    # Then apply --params KEY=VALUE overrides (highest precedence)
-    params.update(parse_overrides(args.params))
+    cli_params = {
+        key: value
+        for key, value in vars(args).items()
+        if key in _tunable_keys and value is not None
+    }
+    override_params = parse_overrides(args.params)
+    params = {
+        **DEFAULT_MODEL_REWARD_PARAMETERS,
+        **cli_params,
+        **override_params,
+    }
+    # Translate explicitly supplied legacy fee aliases into the unified
+    # ``fee_rate`` before they are masked by the canonical default:
+    # ``params`` always carries ``fee_rate``, so ``_get_fee_rate()`` alone
+    # cannot distinguish a default from user intent.
+    if "fee_rate" not in cli_params and "fee_rate" not in override_params:
+        supplied_legacy_fees = [
+            float(params[key])
+            for key in ("entry_fee_rate", "exit_fee_rate")
+            if key in cli_params or key in override_params
+        ]
+        if supplied_legacy_fees:
+            if len(supplied_legacy_fees) > 1 and not np.isclose(
+                supplied_legacy_fees[0], supplied_legacy_fees[1]
+            ):
+                warnings.warn(
+                    "CLI: asymmetric legacy fee rates cannot mirror Freqtrade; "
+                    f"using conservative fee_rate={max(supplied_legacy_fees):.6g}",
+                    RewardDiagnosticsWarning,
+                    stacklevel=2,
+                )
+            params.pop("entry_fee_rate", None)
+            params.pop("exit_fee_rate", None)
+            params["fee_rate"] = max(supplied_legacy_fees)
 
     params_validated, adjustments = validate_reward_parameters(
         params, strict=args.strict_validation
