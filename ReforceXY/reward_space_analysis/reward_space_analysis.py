@@ -3220,7 +3220,13 @@ def _get_fee_rate(params: RewardParams) -> float:
     accepted only as migration aliases. When asymmetric legacy values are
     supplied, the larger value is used conservatively and a warning is emitted.
     """
-
+    if not params:
+        warnings.warn(
+            "Param: empty reward parameters; falling back to the canonical "
+            f"default fee_rate={DEFAULT_MODEL_REWARD_PARAMETERS.get('fee_rate')}",
+            RewardDiagnosticsWarning,
+            stacklevel=2,
+        )
     if "fee_rate" in params:
         raw_fee_rate = _get_float_param(params, "fee_rate")
     else:
