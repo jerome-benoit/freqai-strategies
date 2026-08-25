@@ -2065,8 +2065,17 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         pnl_max = pnl_min + 1e-6
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
-    idle_stats = _binned_stats(df, "idle_duration", "reward_economic", idle_bins)
-    hold_stats = _binned_stats(df, "trade_duration", "reward_economic", trade_bins)
+    # Bin each duration metric against rows where it is economically
+    # meaningful: idle_duration only exists for flat states, trade_duration
+    # only for open positions. Binning the full frame mixed states and
+    # produced contaminated means.
+    neutral_rows = df["position"] == Positions.Neutral.value
+    idle_stats = _binned_stats(
+        df.loc[neutral_rows], "idle_duration", "reward_economic", idle_bins
+    )
+    hold_stats = _binned_stats(
+        df.loc[~neutral_rows], "trade_duration", "reward_economic", trade_bins
+    )
     exit_stats = _binned_stats(df, "pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
