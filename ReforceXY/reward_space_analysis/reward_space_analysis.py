@@ -98,7 +98,6 @@ INTERNAL_GUARDS: dict[str, float] = {
     "sim_pnl_conservation_tol": 1e-10,
     "sim_zero_pnl_epsilon": 1e-12,
     "sim_zero_reward_epsilon": 1e-12,
-    "sim_extreme_pnl_threshold": 0.2,
     "histogram_epsilon": 1e-10,
     "distribution_identity_epsilon": 1e-12,
     "efficiency_min_range_epsilon": 1e-6,
@@ -271,7 +270,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
 _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     # key: {min: ..., max: ...}  (bounds are inclusive where it makes sense)
     "invalid_action": {"max": 0.0},  # penalty should be <= 0
-    "base_factor": {"min": 0.0},
+    "base_factor": {"min": 1e-12},
     "fee_rate": {"min": 0.0, "max": 0.1},
     "idle_penalty_power": {"min": 0.0},
     "idle_penalty_ratio": {"min": 0.0},
@@ -1874,18 +1873,22 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
 
     eps_pnl = float(INTERNAL_GUARDS.get("sim_zero_pnl_epsilon", 1e-12))
     eps_reward = float(INTERNAL_GUARDS.get("sim_zero_reward_epsilon", 1e-12))
-    thr_extreme = float(INTERNAL_GUARDS.get("sim_extreme_pnl_threshold", 0.2))
+
+    for column in ("pnl", "next_pnl"):
+        if not np.isfinite(df[column].to_numpy(dtype=float)).all():
+            raise AssertionError(f"Sim: {column} contains a non-finite value")
 
     # INVARIANT 1: Action-position compatibility
-    long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
-    short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
+    valid_rows = df["is_invalid"] == 0.0
+    long_exits = df[valid_rows & (df["action"] == 2.0) & (df["position"] != 1.0)]
+    short_exits = df[valid_rows & (df["action"] == 4.0) & (df["position"] != 0.0)]
     if len(long_exits) > 0:
         raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
     if len(short_exits) > 0:
         raise AssertionError(f"Sim: {len(short_exits)} Short_exit actions without Short position")
 
-    long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
-    short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
+    long_entries = df[valid_rows & (df["action"] == 1.0) & (df["position"] != 0.5)]
+    short_entries = df[valid_rows & (df["action"] == 3.0) & (df["position"] != 0.5)]
     if len(long_entries) > 0:
         raise AssertionError(
             f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
@@ -1922,13 +1925,54 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
             f"Sim: {len(non_exit_with_exit_reward)} non-exit actions have non-zero exit reward"
         )
 
-    # INVARIANT 5: Bounded values
-    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]
-    if len(extreme_pnl) > 0:
-        max_abs_pnl = float(df["pnl"].abs().max())
+    # INVARIANT 5: liquidation values are positive and carried step-to-step.
+    liquidation_columns = [
+        "previous_liquidation_value",
+        "reward_liquidation_value",
+        "next_liquidation_value",
+    ]
+    for column in liquidation_columns:
+        values = df[column].to_numpy(dtype=float)
+        if not np.isfinite(values).all() or (values <= 0.0).any():
+            raise AssertionError(f"Sim: {column} contains a non-positive or non-finite value")
+    if len(df) > 1 and not np.allclose(
+        df["next_liquidation_value"].to_numpy(dtype=float)[:-1],
+        df["previous_liquidation_value"].to_numpy(dtype=float)[1:],
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise AssertionError("Sim: liquidation value was not carried across transitions")
+
+    # INVARIANT 6: economic reward is exactly the scaled log-liquidation delta.
+    reward_params = df.attrs.get("reward_params", {})
+    base_factor = _get_float_param(reward_params, "base_factor", 100.0)
+    expected_economic = base_factor * (
+        np.log(df["reward_liquidation_value"]) - np.log(df["previous_liquidation_value"])
+    )
+    if not np.allclose(
+        df["reward_economic"],
+        expected_economic,
+        rtol=1e-12,
+        atol=1e-12,
+    ):
+        raise AssertionError("Sim: economic reward does not match the log-liquidation formula")
+    expected_total = df["reward_economic"] + df["reward_invalid"] + df["reward_shaping"]
+    if not np.allclose(df["reward"], expected_total, rtol=1e-12, atol=1e-12):
+        raise AssertionError("Sim: total reward decomposition is inconsistent")
+
+    # INVARIANT 7: only economic ruin terminates; finite sample exhaustion truncates.
+    if not (df["terminated"] == df["economic_ruin"]).all():
+        raise AssertionError("Sim: termination must correspond exactly to economic ruin")
+    if len(df) > 1 and bool(df["terminated"].iloc[:-1].any()):
         raise AssertionError(
-            f"Sim: {len(extreme_pnl)} samples with extreme PnL, max |PnL| = {max_abs_pnl:.6f}"
+            "Sim: intermediate rows cannot be terminal; only the last row may terminate"
         )
+    if bool(df["terminated"].any()) and not bool(df["terminated"].iloc[-1]):
+        raise AssertionError("Sim: trajectory continued after economic termination")
+    if bool(df["terminated"].iloc[-1]) and bool(df["truncated"].iloc[-1]):
+        raise AssertionError("Sim: terminal ruin cannot also be a truncation")
+    if not bool(df["terminated"].iloc[-1]) and not bool(df["truncated"].iloc[-1]):
+        raise AssertionError("Sim: non-terminal trajectory must end with truncation")
 
 
 def _compute_summary_stats(df: pd.DataFrame) -> dict[str, Any]:
