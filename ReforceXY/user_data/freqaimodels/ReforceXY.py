@@ -2261,10 +2261,12 @@ class MyRLEnv(Base5ActionRLEnv):
 
     def __init__(self, *args, **kwargs):
         config = kwargs.get("config", {})
-        if kwargs.get("live", False) is not True:
+        live = bool(kwargs.get("live", False))
+        rl_config = config.get("freqai", {}).get("rl_config", {})
+        if not rl_config.get("add_state_info", False):
             raise ValueError(
-                "Env: the stateful pair-local economic reward contract is not "
-                "supported in FreqAI backtesting; live=True is required"
+                "Env: add_state_info=True is required by the pair-local "
+                "economic reward contract"
             )
         if config.get("trading_mode") != "spot":
             raise ValueError(
@@ -2276,12 +2278,22 @@ class MyRLEnv(Base5ActionRLEnv):
                 "Env: stake_amount='unlimited' is required by the compounded "
                 "net liquidation reward contract"
             )
+        # Upstream BaseEnvironment refuses add_state_info outside dry/live
+        # because its inference path reads Freqtrade runtime state. This env
+        # computes state info from env-internal simulated values only (no
+        # wallet/order authority), so in backtesting construct the base with
+        # the flag disabled and restore it before the observation space is
+        # built. The reward equation itself is mode-independent.
+        backtest_state_info = not live
+        if backtest_state_info:
+            base_config = copy.deepcopy(config)
+            base_config["freqai"]["rl_config"]["add_state_info"] = False
+            kwargs = {**kwargs, "config": base_config}
         super().__init__(*args, **kwargs)
-        if getattr(self, "add_state_info", False) is not True:
-            raise ValueError(
-                f"Env [{self.id}]: add_state_info=True is required by the "
-                "pair-local economic reward contract"
-            )
+        if backtest_state_info:
+            self.config = config
+            self.rl_config = rl_config
+        self.add_state_info = True
         self._set_observation_space()
         self.action_masking: bool = self.rl_config.get("action_masking", False)
 
