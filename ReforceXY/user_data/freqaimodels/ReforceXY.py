@@ -32,7 +32,6 @@ import optunahub
 import pandas as pd
 import torch as th
 from freqtrade.enums import TradingMode
-from freqtrade.persistence import LocalTrade
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
@@ -41,6 +40,7 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
     BaseReinforcementLearningModel,
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
+from freqtrade.persistence import LocalTrade
 from freqtrade.strategy import timeframe_to_minutes
 from gymnasium.spaces import Box
 from matplotlib.lines import Line2D
@@ -283,10 +283,6 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EFFICIENCY_CENTER: Final[float] = 0.5
 
     DEFAULT_INVALID_ACTION: Final[float] = -2.0
-    DEFAULT_IDLE_PENALTY_RATIO: Final[float] = 1.0
-    DEFAULT_IDLE_PENALTY_POWER: Final[float] = 1.025
-    DEFAULT_HOLD_PENALTY_RATIO: Final[float] = 1.0
-    DEFAULT_HOLD_PENALTY_POWER: Final[float] = 1.025
 
     DEFAULT_CHECK_INVARIANTS: Final[bool] = True
     DEFAULT_EXIT_FACTOR_THRESHOLD: Final[float] = 1_000.0
@@ -2265,13 +2261,11 @@ class MyRLEnv(Base5ActionRLEnv):
         rl_config = config.get("freqai", {}).get("rl_config", {})
         if not rl_config.get("add_state_info", False):
             raise ValueError(
-                "Env: add_state_info=True is required by the pair-local "
-                "economic reward contract"
+                "Env: add_state_info=True is required by the pair-local economic reward contract"
             )
         if config.get("trading_mode") != "spot":
             raise ValueError(
-                "Env: trading_mode='spot' is required until leveraged PnL has "
-                "Freqtrade parity"
+                "Env: trading_mode='spot' is required until leveraged PnL has Freqtrade parity"
             )
         if config.get("stake_amount") != "unlimited":
             raise ValueError(
@@ -2298,7 +2292,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self.action_masking: bool = self.rl_config.get("action_masking", False)
 
         # === INTERNAL STATE ===
-        self._last_closed_position: Optional[Positions] = None
+        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
         self._min_unrealized_profit: float = np.inf
@@ -2346,14 +2340,11 @@ class MyRLEnv(Base5ActionRLEnv):
         self.max_idle_duration_candles: int = int(
             model_reward_parameters.get(
                 "max_idle_duration_candles",
-                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER
-                * self.max_trade_duration_candles,
+                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * self.max_trade_duration_candles,
             )
         )
         # === PBRS COMMON PARAMETERS ===
-        self._potential_gamma = float(
-            model_reward_parameters.get("potential_gamma", 0.95)
-        )
+        self._potential_gamma = float(model_reward_parameters.get("potential_gamma", 0.95))
 
         # === EXIT POTENTIAL MODE ===
         # exit_potential_mode options:
@@ -2368,9 +2359,7 @@ class MyRLEnv(Base5ActionRLEnv):
             )  # "canonical"
         )
         if self._exit_potential_mode != ReforceXY._EXIT_POTENTIAL_MODES[0]:
-            raise ValueError(
-                f"PBRS [{self.id}]: only exit_potential_mode='canonical' is supported"
-            )
+            raise ValueError(f"PBRS [{self.id}]: only exit_potential_mode='canonical' is supported")
         self._exit_potential_decay: float = float(
             model_reward_parameters.get(
                 "exit_potential_decay", ReforceXY.DEFAULT_EXIT_POTENTIAL_DECAY
@@ -2393,13 +2382,13 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._entry_additive_transform_pnl: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "entry_additive_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._entry_additive_transform_duration: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "entry_additive_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
@@ -2421,24 +2410,21 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._hold_potential_transform_pnl: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "hold_potential_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._hold_potential_transform_duration: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "hold_potential_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         if self._hold_potential_enabled and (
-            not np.isfinite(self._potential_gamma)
-            or not (0.0 < self._potential_gamma <= 1.0)
+            not np.isfinite(self._potential_gamma) or not (0.0 < self._potential_gamma <= 1.0)
         ):
-            raise ValueError(
-                f"PBRS [{self.id}]: potential_gamma must be finite and in (0, 1]"
-            )
+            raise ValueError(f"PBRS [{self.id}]: potential_gamma must be finite and in (0, 1]")
         # === EXIT ADDITIVE (non-PBRS additive term) ===
         self._exit_additive_enabled: bool = bool(
             model_reward_parameters.get(
@@ -2451,18 +2437,16 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._exit_additive_gain: float = float(
-            model_reward_parameters.get(
-                "exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN
-            )
+            model_reward_parameters.get("exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN)
         )
         self._exit_additive_transform_pnl: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "exit_additive_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._exit_additive_transform_duration: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "exit_additive_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
@@ -2482,9 +2466,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if self._hold_potential_enabled and (
             not np.isfinite(self._pnl_target) or self._pnl_target <= 0
         ):
-            raise ValueError(
-                f"PBRS [{self.id}]: profit_aim * rr must be finite and positive"
-            )
+            raise ValueError(f"PBRS [{self.id}]: profit_aim * rr must be finite and positive")
 
     def _get_next_position(self, action: int) -> Positions:
         if action == Actions.Long_enter.value and self._position == Positions.Neutral:
@@ -2533,13 +2515,9 @@ class MyRLEnv(Base5ActionRLEnv):
     def _assert_local_trade_synchronized(self) -> LocalTrade:
         """Return the active native trade after checking environment alignment."""
         if self._position not in (Positions.Long, Positions.Short):
-            raise RuntimeError(
-                f"Env [{self.id}]: LocalTrade requested while position is neutral"
-            )
+            raise RuntimeError(f"Env [{self.id}]: LocalTrade requested while position is neutral")
         if self._last_trade_tick is None or self._local_trade is None:
-            raise RuntimeError(
-                f"Env [{self.id}]: open position has no synchronized LocalTrade"
-            )
+            raise RuntimeError(f"Env [{self.id}]: open position has no synchronized LocalTrade")
         if not (0 <= self._last_trade_tick <= self._current_tick < len(self.prices)):
             raise RuntimeError(
                 f"Env [{self.id}]: LocalTrade entry/current ticks are out of bounds "
@@ -2639,9 +2617,7 @@ class MyRLEnv(Base5ActionRLEnv):
             self.total_features = signal_features
 
         self.shape = (self.window_size, self.total_features)
-        self.observation_space = Box(
-            low=-np.inf, high=np.inf, shape=self.shape, dtype=np.float32
-        )
+        self.observation_space = Box(low=-np.inf, high=np.inf, shape=self.shape, dtype=np.float32)
 
     def _is_valid(self, action: int) -> bool:
         return ReforceXY.get_action_masks(self.can_short, self._position)[action]
@@ -2651,17 +2627,17 @@ class MyRLEnv(Base5ActionRLEnv):
         df: DataFrame,
         prices: DataFrame,
         window_size: int,
-        reward_kwargs: Dict[str, Any],
+        reward_kwargs: dict[str, Any],
         starting_point=True,
     ) -> None:
         """
         Resets the environment when the agent fails
         """
-        self._local_trade: Optional[LocalTrade] = None
+        self._local_trade: LocalTrade | None = None
         super().reset_env(df, prices, window_size, reward_kwargs, starting_point)
         self._set_observation_space()
 
-    def reset(self, seed=None, **kwargs) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
+    def reset(self, seed=None, **kwargs) -> tuple[NDArray[np.float32], dict[str, Any]]:
         """Reset one tick before the first executable open.
 
         A feature window ending at ``start_tick - 1`` produces the signal that
@@ -2671,7 +2647,7 @@ class MyRLEnv(Base5ActionRLEnv):
         _, history = super().reset(seed, **kwargs)
         self._current_tick = self._start_tick - 1
         self._position_history = (self._current_tick * [None]) + [self._position]
-        self._last_closed_position: Optional[Positions] = None
+        self._last_closed_position: Positions | None = None
         self._local_trade = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit = -np.inf
@@ -2698,7 +2674,16 @@ class MyRLEnv(Base5ActionRLEnv):
         self._last_exit_reward = 0.0
         return self._get_observation(), history
 
-    def calculate_reward(
+    def calculate_reward(self, action: int) -> float:
+        """Compute the reward from the environment's current observable state."""
+        return self._calculate_economic_reward(
+            action,
+            previous_position=self._position,
+            transition_pnl=float(self.get_unrealized_profit()),
+            action_valid=self._is_valid(action),
+        )
+
+    def _calculate_economic_reward(
         self,
         action: int,
         *,
@@ -2730,23 +2715,17 @@ class MyRLEnv(Base5ActionRLEnv):
         if not self.action_masking and not action_valid:
             self.tensorboard_log("invalid", category="actions")
             invalid_penalty = float(
-                model_reward_parameters.get(
-                    "invalid_action", ReforceXY.DEFAULT_INVALID_ACTION
-                )
+                model_reward_parameters.get("invalid_action", ReforceXY.DEFAULT_INVALID_ACTION)
             )
             if not np.isfinite(invalid_penalty):
-                raise ValueError(
-                    f"Env [{self.id}]: invalid_action reward must be finite"
-                )
+                raise ValueError(f"Env [{self.id}]: invalid_action reward must be finite")
             self._last_invalid_penalty = invalid_penalty
 
         base_factor = float(
             model_reward_parameters.get("base_factor", ReforceXY.DEFAULT_BASE_FACTOR)
         )
         if not np.isfinite(base_factor) or base_factor <= 0.0:
-            raise ValueError(
-                f"Env [{self.id}]: base_factor must be finite and positive"
-            )
+            raise ValueError(f"Env [{self.id}]: base_factor must be finite and positive")
         self._reward_scale = base_factor
 
         position_was_open = previous_position in (Positions.Long, Positions.Short)
@@ -2755,18 +2734,13 @@ class MyRLEnv(Base5ActionRLEnv):
             reward_liquidation_value = self._liquidation_value_from_pnl(
                 transition_pnl, context="transition liquidation"
             )
-            next_liquidation_value = (
-                reward_liquidation_value if position_is_open else 1.0
-            )
+            next_liquidation_value = reward_liquidation_value if position_is_open else 1.0
         else:
             reward_liquidation_value = 1.0
             next_liquidation_value = 1.0
 
         previous_liquidation_value = self._previous_liquidation_value
-        if (
-            not np.isfinite(previous_liquidation_value)
-            or previous_liquidation_value <= 0.0
-        ):
+        if not np.isfinite(previous_liquidation_value) or previous_liquidation_value <= 0.0:
             raise RuntimeError(
                 f"Env [{self.id}]: previous liquidation value is invalid at "
                 f"tick={self._current_tick}: {previous_liquidation_value!r}"
@@ -2796,12 +2770,8 @@ class MyRLEnv(Base5ActionRLEnv):
         features_window_array = features_window.to_numpy(dtype=np.float32, copy=False)
         if features_window_array.shape[0] < self.window_size:
             pad_size = self.window_size - features_window_array.shape[0]
-            pad_array = np.zeros(
-                (pad_size, features_window_array.shape[1]), dtype=np.float32
-            )
-            features_window_array = np.concatenate(
-                [pad_array, features_window_array], axis=0
-            )
+            pad_array = np.zeros((pad_size, features_window_array.shape[1]), dtype=np.float32)
+            features_window_array = np.concatenate([pad_array, features_window_array], axis=0)
         if self.add_state_info:
             observations = np.concatenate(
                 [
@@ -2872,7 +2842,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
 
-    def execute_trade(self, action: int, *, exit_pnl: float = 0.0) -> Optional[str]:
+    def execute_trade(self, action: int, *, exit_pnl: float = 0.0) -> str | None:
         """
         Execute trade based on the given action
         """
@@ -2891,17 +2861,13 @@ class MyRLEnv(Base5ActionRLEnv):
 
         return None
 
-    def step(
-        self, action: int
-    ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
+    def step(self, action: int) -> tuple[NDArray[np.float32], float, bool, bool, dict[str, Any]]:
         """Fill at the next open, mark at its close, then expose the next state."""
         previous_position = self._position
         pre_pnl = float(self.get_unrealized_profit())
         previous_liquidation_value = self._previous_liquidation_value
         observable_liquidation_value = (
-            1.0 + pre_pnl
-            if previous_position in (Positions.Long, Positions.Short)
-            else 1.0
+            1.0 + pre_pnl if previous_position in (Positions.Long, Positions.Short) else 1.0
         )
         if (
             not np.isfinite(observable_liquidation_value)
@@ -2949,7 +2915,7 @@ class MyRLEnv(Base5ActionRLEnv):
             if self._position in (Positions.Long, Positions.Short)
             else exit_pnl
         )
-        reward = self.calculate_reward(
+        reward = self._calculate_economic_reward(
             action,
             previous_position=previous_position,
             transition_pnl=transition_pnl,
@@ -3000,9 +2966,7 @@ class MyRLEnv(Base5ActionRLEnv):
             "delta_pnl": round(delta_pnl, 5),
             "max_pnl": round(self.get_max_unrealized_profit(), 5),
             "min_pnl": round(self.get_min_unrealized_profit(), 5),
-            "most_recent_return": round(
-                self._last_economic_reward / self._reward_scale, 5
-            ),
+            "most_recent_return": round(self._last_economic_reward / self._reward_scale, 5),
             "most_recent_profit": round(self.get_most_recent_profit(), 5),
             "total_profit": round(self._total_profit, 5),
             "total_unrealized_profit": round(self._total_unrealized_profit, 5),
@@ -3028,9 +2992,7 @@ class MyRLEnv(Base5ActionRLEnv):
             "idle_duration": idle_duration,
             "idle_ratio": (idle_duration / max_idle_duration),
             "trade_duration": trade_duration,
-            "duration_ratio": (
-                trade_duration / max(1, self.max_trade_duration_candles)
-            ),
+            "duration_ratio": (trade_duration / max(1, self.max_trade_duration_candles)),
             "trade_count": len(self.trade_history) // 2,
         }
         self._update_history(info)
@@ -3042,9 +3004,7 @@ class MyRLEnv(Base5ActionRLEnv):
             info,
         )
 
-    def append_trade_history(
-        self, trade_type: str, price: float, profit: float
-    ) -> None:
+    def append_trade_history(self, trade_type: str, price: float, profit: float) -> None:
         self.trade_history.append(
             {
                 "tick": self._current_tick,
@@ -3135,9 +3095,11 @@ class MyRLEnv(Base5ActionRLEnv):
         return self._max_unrealized_profit
 
     def _update_max_unrealized_profit(self, pnl: float) -> None:
-        if self._position in (Positions.Long, Positions.Short):
-            if pnl > self._max_unrealized_profit:
-                self._max_unrealized_profit = pnl
+        if (
+            self._position in (Positions.Long, Positions.Short)
+            and pnl > self._max_unrealized_profit
+        ):
+            self._max_unrealized_profit = pnl
 
     def get_min_unrealized_profit(self) -> float:
         """
@@ -3152,9 +3114,11 @@ class MyRLEnv(Base5ActionRLEnv):
         return self._min_unrealized_profit
 
     def _update_min_unrealized_profit(self, pnl: float) -> None:
-        if self._position in (Positions.Long, Positions.Short):
-            if pnl < self._min_unrealized_profit:
-                self._min_unrealized_profit = pnl
+        if (
+            self._position in (Positions.Long, Positions.Short)
+            and pnl < self._min_unrealized_profit
+        ):
+            self._min_unrealized_profit = pnl
 
     def _update_portfolio_log_returns(self):
         self.portfolio_log_returns[self._current_tick] = (
@@ -3234,9 +3198,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if self.trade_history:
             _trade_history_df = DataFrame(self.trade_history)
             if "tick" in _trade_history_df.columns:
-                _rollout_history = merge(
-                    _rollout_history, _trade_history_df, on="tick", how="left"
-                )
+                _rollout_history = merge(_rollout_history, _trade_history_df, on="tick", how="left")
 
         try:
             history = merge(
@@ -3295,12 +3257,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
             ticks = history.get("tick")
             history_open = history.get("open")
-            if (
-                ticks is None
-                or len(ticks) == 0
-                or history_open is None
-                or len(history_open) == 0
-            ):
+            if ticks is None or len(ticks) == 0 or history_open is None or len(history_open) == 0:
                 return fig
 
             axs[0].plot(ticks, history_open, linewidth=1, color="orchid", zorder=1)
