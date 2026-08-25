@@ -245,7 +245,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
 _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     # key: {min: ..., max: ...}  (bounds are inclusive where it makes sense)
     "invalid_action": {"max": 0.0},  # penalty should be <= 0
-    "base_factor": {"min": 1e-12},
+    "base_factor": {"min": 0.0},
     "fee_rate": {"min": 0.0, "max": 0.1},
     "idle_penalty_power": {"min": 0.0},
     "idle_penalty_ratio": {"min": 0.0},
@@ -3044,8 +3044,12 @@ def _get_fee_rate(params: RewardParams) -> float:
             )
 
     fee_rate = float(raw_fee_rate)
-    if not np.isfinite(fee_rate) or fee_rate < 0.0:
-        raise ValueError(f"Reward: fee_rate must be finite and non-negative, got {fee_rate!r}")
+    max_fee_rate = float(_PARAMETER_BOUNDS["fee_rate"]["max"])
+    if not np.isfinite(fee_rate) or not 0.0 <= fee_rate <= max_fee_rate:
+        raise ValueError(
+            f"Reward: fee_rate must be finite within [0, {max_fee_rate}], "
+            f"got {fee_rate!r}"
+        )
     return fee_rate
 
 
