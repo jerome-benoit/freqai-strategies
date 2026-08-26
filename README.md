@@ -595,7 +595,14 @@ checkpoint is readable and the one-shot holdout integrity check passes.
 
 ### Runtime reproducibility
 
-Each ReforceXY fit writes a schema-v3
+> **Status — specification, not implementation.** The in-repo wiring for this
+> manifest lifecycle was abandoned: the prototype imported a
+> `reproducibility` module this repository does not ship. Nothing in the
+> current code writes `reforcexy-run-manifest-*.json`. The subsection below is
+> the target contract an external harness or a future integration must
+> satisfy; do not expect these artifacts from current runs.
+
+The target contract requires each ReforceXY fit to write a schema-v3
 `reforcexy-run-manifest-<run-instance-id>.json` beside the trained model. Its
 matching inputs are stored below
 `reproducibility-inputs/<run-instance-id>/`. A retry never overwrites evidence
