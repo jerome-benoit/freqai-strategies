@@ -684,6 +684,16 @@ longer need to be reproduced. After an upgrade:
 
 ### ReforceXY execution profiles
 
+
+> **Status — specification, not implementation.** The `research`/`live`
+> execution-profile contract below (`reforcexy_execution.profile`, the
+> startup guard, the entry-callback rejection and
+> `reforcexy_execution.protections`) is not implemented in this repository
+> yet. Today only the underlying Freqtrade-native requirements apply:
+> `use_exit_signal=true`, `exit_profit_only=false`, and native protections.
+> Everything else in this subsection is the target contract a future
+> integration must satisfy.
+
 The ReforceXY template is a research configuration. It uses `dry_run=true`, the
 `research` execution profile, and `stoploss=-0.99` as a sentinel. Changing only
 `dry_run` to `false` does not promote this configuration: the strategy stops
