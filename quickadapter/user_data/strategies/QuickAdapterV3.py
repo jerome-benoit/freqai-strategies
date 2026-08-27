@@ -1649,7 +1649,7 @@ class QuickAdapterV3(IStrategy):
         trade_direction: TradeDirection,
         timeframe: str,
     ) -> bool:
-        return bool(
+        if not (
             isinstance(state, dict)
             and type(state.get("version")) is int
             and state.get("version")
@@ -1666,7 +1666,10 @@ class QuickAdapterV3(IStrategy):
             and isinstance(state.get("last_candle_date"), str)
             and QuickAdapterV3.is_isoformat(state.get("last_candle_date"))
             and state.get("timeframe") == timeframe
-        )
+        ):
+            return False
+        boundary = QuickAdapterV3._final_take_profit_boundary(state)
+        return math.isfinite(boundary) and boundary > 0
 
     @staticmethod
     def _final_take_profit_boundary(state: _FinalTakeProfitState) -> float:
