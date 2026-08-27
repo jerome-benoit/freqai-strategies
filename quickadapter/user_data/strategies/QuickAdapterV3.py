@@ -113,6 +113,7 @@ class _FinalTakeProfitState(TypedDict):
     trade_direction: TradeDirection
     best_rate: float
     retracement_distance: float
+    boundary_candle_date: str
     last_candle_date: str
     timeframe: str
 
@@ -202,7 +203,7 @@ class QuickAdapterV3(IStrategy):
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _FINAL_TAKE_PROFIT_STATE_KEY: Final[str] = "final_take_profit_state"
-    _FINAL_TAKE_PROFIT_STATE_VERSION: Final[int] = 1
+    _FINAL_TAKE_PROFIT_STATE_VERSION: Final[int] = 2
 
     # Rounding margin so the sized partial-exit remainder clears freqtrade's
     # strict ``remaining < min_exit_stake`` guard.
@@ -1603,6 +1604,22 @@ class QuickAdapterV3(IStrategy):
         return trade_take_profit_price_history
 
     @staticmethod
+    def _as_utc_candle_date(value: Any) -> datetime.datetime | None:
+        if isinstance(value, str):
+            try:
+                value = datetime.datetime.fromisoformat(value)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(value, datetime.datetime):
+            return None
+        try:
+            if value.tzinfo is None or value.utcoffset() is None:
+                return None
+            return value.astimezone(datetime.UTC)
+        except (OverflowError, ValueError):
+            return None
+
+    @staticmethod
     def _build_final_take_profit_state(
         *,
         exit_stage: int,
@@ -1613,9 +1630,11 @@ class QuickAdapterV3(IStrategy):
         candle_date: datetime.datetime | None,
         timeframe: str,
     ) -> _FinalTakeProfitState | None:
+        normalized_candle_date = QuickAdapterV3._as_utc_candle_date(candle_date)
         if (
             type(exit_stage) is not int
             or exit_stage < 0
+            or not isinstance(trade_direction, str)
             or trade_direction not in QuickAdapterV3._TRADE_DIRECTIONS_SET
             or not is_finite_number(current_rate)
             or current_rate <= 0
@@ -1623,7 +1642,7 @@ class QuickAdapterV3(IStrategy):
             or take_profit_distance <= 0
             or not is_finite_number(retracement_fraction)
             or not 0 < retracement_fraction <= 1
-            or not isinstance(candle_date, datetime.datetime)
+            or normalized_candle_date is None
             or not isinstance(timeframe, str)
             or not timeframe
         ):
@@ -1631,29 +1650,36 @@ class QuickAdapterV3(IStrategy):
         retracement_distance = take_profit_distance * retracement_fraction
         if not math.isfinite(retracement_distance) or retracement_distance <= 0:
             return None
+        candle_date_isoformat = normalized_candle_date.isoformat()
         return {
             "version": QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION,
             "exit_stage": exit_stage,
             "trade_direction": trade_direction,
             "best_rate": float(current_rate),
             "retracement_distance": float(retracement_distance),
-            "last_candle_date": candle_date.isoformat(),
+            "boundary_candle_date": candle_date_isoformat,
+            "last_candle_date": candle_date_isoformat,
             "timeframe": timeframe,
         }
 
     @staticmethod
-    def _is_valid_final_take_profit_state(
+    def _normalize_final_take_profit_state(
         state: Any,
         *,
         exit_stage: int,
         trade_direction: TradeDirection,
         timeframe: str,
-    ) -> bool:
-        if not (
+        current_candle_date: datetime.datetime,
+    ) -> tuple[_FinalTakeProfitState | None, bool]:
+        if state is None:
+            return None, False
+        current_candle_date_utc = QuickAdapterV3._as_utc_candle_date(
+            current_candle_date
+        )
+        if current_candle_date_utc is None or not (
             isinstance(state, dict)
             and type(state.get("version")) is int
-            and state.get("version")
-            == QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION
+            and state.get("version") in (1, QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION)
             and type(state.get("exit_stage")) is int
             and state.get("exit_stage") == exit_stage
             and isinstance(state.get("trade_direction"), str)
@@ -1663,13 +1689,42 @@ class QuickAdapterV3(IStrategy):
             and state.get("best_rate") > 0
             and is_finite_number(state.get("retracement_distance"))
             and state.get("retracement_distance") > 0
-            and isinstance(state.get("last_candle_date"), str)
-            and QuickAdapterV3.is_isoformat(state.get("last_candle_date"))
             and state.get("timeframe") == timeframe
         ):
-            return False
-        boundary = QuickAdapterV3._final_take_profit_boundary(state)
-        return math.isfinite(boundary) and boundary > 0
+            return None, True
+
+        last_candle_date = QuickAdapterV3._as_utc_candle_date(
+            state.get("last_candle_date")
+        )
+        boundary_candle_date = (
+            last_candle_date
+            if state["version"] == 1
+            else QuickAdapterV3._as_utc_candle_date(
+                state.get("boundary_candle_date")
+            )
+        )
+        if (
+            last_candle_date is None
+            or boundary_candle_date is None
+            or boundary_candle_date > last_candle_date
+            or last_candle_date > current_candle_date_utc
+        ):
+            return None, True
+
+        normalized_state: _FinalTakeProfitState = {
+            "version": QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION,
+            "exit_stage": exit_stage,
+            "trade_direction": trade_direction,
+            "best_rate": float(state["best_rate"]),
+            "retracement_distance": float(state["retracement_distance"]),
+            "boundary_candle_date": boundary_candle_date.isoformat(),
+            "last_candle_date": last_candle_date.isoformat(),
+            "timeframe": timeframe,
+        }
+        boundary = QuickAdapterV3._final_take_profit_boundary(normalized_state)
+        if not math.isfinite(boundary) or boundary <= 0:
+            return None, True
+        return normalized_state, normalized_state != state
 
     @staticmethod
     def _final_take_profit_boundary(state: _FinalTakeProfitState) -> float:
@@ -1686,32 +1741,35 @@ class QuickAdapterV3(IStrategy):
         current_rate: float,
         candle_date: datetime.datetime | None,
     ) -> tuple[float, bool, bool]:
-        is_short = state["trade_direction"] == QuickAdapterV3._TRADE_SHORT
         boundary = QuickAdapterV3._final_take_profit_boundary(state)
+        current_candle_date = QuickAdapterV3._as_utc_candle_date(candle_date)
+        previous_candle_date = QuickAdapterV3._as_utc_candle_date(
+            state["last_candle_date"]
+        )
         if (
             not is_finite_number(current_rate)
             or current_rate <= 0
-            or not isinstance(candle_date, datetime.datetime)
+            or current_candle_date is None
+            or previous_candle_date is None
+            or current_candle_date <= previous_candle_date
         ):
             return boundary, False, False
-        try:
-            previous_candle_date = datetime.datetime.fromisoformat(
-                state["last_candle_date"]
-            )
-            if candle_date <= previous_candle_date:
-                return boundary, False, False
-        except (TypeError, ValueError):
-            return boundary, False, False
 
-        if is_short:
-            state["best_rate"] = min(state["best_rate"], current_rate)
-            boundary = state["best_rate"] + state["retracement_distance"]
-            should_exit = current_rate >= boundary
+        previous_best_rate = state["best_rate"]
+        if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT:
+            state["best_rate"] = min(previous_best_rate, current_rate)
         else:
-            state["best_rate"] = max(state["best_rate"], current_rate)
-            boundary = state["best_rate"] - state["retracement_distance"]
-            should_exit = current_rate <= boundary
-        state["last_candle_date"] = candle_date.isoformat()
+            state["best_rate"] = max(previous_best_rate, current_rate)
+        if state["best_rate"] != previous_best_rate:
+            state["boundary_candle_date"] = current_candle_date.isoformat()
+        state["last_candle_date"] = current_candle_date.isoformat()
+
+        boundary = QuickAdapterV3._final_take_profit_boundary(state)
+        should_exit = (
+            current_rate >= boundary
+            if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT
+            else current_rate <= boundary
+        )
         return boundary, should_exit, True
 
     def adjust_trade_position(
@@ -2138,10 +2196,10 @@ class QuickAdapterV3(IStrategy):
             return None
 
         last_candle = df.iloc[-1]
-        last_candle_date = last_candle.get("date")
-        has_valid_candle_date = isinstance(
-            last_candle_date, datetime.datetime
-        ) and not isna(last_candle_date)
+        last_candle_date = QuickAdapterV3._as_utc_candle_date(
+            last_candle.get("date")
+        )
+        has_valid_candle_date = last_candle_date is not None
         if last_candle.get("do_predict") == 2:
             return "model_expired"
         if last_candle.get("DI_catch") == 0:
@@ -2204,33 +2262,52 @@ class QuickAdapterV3(IStrategy):
         if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
             return None
 
-        final_take_profit_state = trade.get_custom_data(
+        if not has_valid_candle_date:
+            return None
+
+        raw_final_take_profit_state = trade.get_custom_data(
             QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY
         )
-        if QuickAdapterV3._is_valid_final_take_profit_state(
-            final_take_profit_state,
-            exit_stage=trade_exit_stage,
-            trade_direction=trade.trade_direction,
-            timeframe=self.timeframe,
-        ):
+        final_take_profit_state, state_normalized = (
+            QuickAdapterV3._normalize_final_take_profit_state(
+                raw_final_take_profit_state,
+                exit_stage=trade_exit_stage,
+                trade_direction=trade.trade_direction,
+                timeframe=self.timeframe,
+                current_candle_date=last_candle_date,
+            )
+        )
+        if raw_final_take_profit_state is not None and final_take_profit_state is None:
+            trade.set_custom_data(QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY, None)
+            self.throttle_callback(
+                pair=pair,
+                current_time=current_time,
+                callback=lambda: logger.warning(
+                    f"[{pair}] Ignoring invalid final take-profit state for trade {trade.id}; "
+                    "the final exit will re-arm after its target is reached"
+                ),
+            )
+
+        if final_take_profit_state is not None:
             boundary, trade_exit, state_changed = (
                 QuickAdapterV3._advance_final_take_profit_state(
                     final_take_profit_state,
                     current_rate=current_rate,
-                    candle_date=(last_candle_date if has_valid_candle_date else None),
+                    candle_date=last_candle_date,
                 )
             )
-            if state_changed:
+            if state_normalized or state_changed:
                 trade.set_custom_data(
                     QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY,
                     final_take_profit_state,
                 )
+            if state_changed:
                 self.throttle_callback(
                     pair=pair,
                     current_time=current_time,
                     callback=lambda: logger.info(
                         f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
-                        "Final take-profit armed: "
+                        "Final take-profit trail: "
                         f"best={format_number(final_take_profit_state['best_rate'])}, "
                         f"boundary={format_number(boundary)}, rate={format_number(current_rate)}"
                     ),
@@ -2240,16 +2317,6 @@ class QuickAdapterV3(IStrategy):
                     trade.trade_direction, trade_exit_stage
                 )
             return None
-
-        if final_take_profit_state is not None:
-            self.throttle_callback(
-                pair=pair,
-                current_time=current_time,
-                callback=lambda: logger.warning(
-                    f"[{pair}] Ignoring invalid final take-profit state for trade {trade.id}; "
-                    "the final exit will re-arm after its target is reached"
-                ),
-            )
 
         trade_take_profit_price = self.get_take_profit_price(
             df, trade, trade_exit_stage
@@ -2420,6 +2487,12 @@ class QuickAdapterV3(IStrategy):
 
         open_trades = Trade.get_trades_proxy(pair=pair, is_open=True)
 
+        annotation_candle_date = (
+            QuickAdapterV3._as_utc_candle_date(dataframe.iloc[-1].get("date"))
+            if not dataframe.empty
+            else None
+        )
+
         for trade in open_trades:
             if trade.open_date_utc > end_date:
                 continue
@@ -2456,41 +2529,67 @@ class QuickAdapterV3(IStrategy):
                 annotations.append(take_profit_line_annotation)
 
             final_stage = QuickAdapterV3._FINAL_EXIT_STAGE_INDEX
-            final_take_profit_state = trade.get_custom_data(
+            raw_final_take_profit_state = trade.get_custom_data(
                 QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY
             )
-            if QuickAdapterV3._is_valid_final_take_profit_state(
-                final_take_profit_state,
-                exit_stage=final_stage,
-                trade_direction=trade.trade_direction,
-                timeframe=self.timeframe,
-            ):
-                final_take_profit_price = (
-                    QuickAdapterV3._final_take_profit_boundary(
-                        final_take_profit_state
+            final_take_profit_state = None
+            if annotation_candle_date is not None:
+                final_take_profit_state, _ = (
+                    QuickAdapterV3._normalize_final_take_profit_state(
+                        raw_final_take_profit_state,
+                        exit_stage=final_stage,
+                        trade_direction=trade.trade_direction,
+                        timeframe=self.timeframe,
+                        current_candle_date=annotation_candle_date,
                     )
                 )
-                final_take_profit_label = f"Take Profit {final_stage} Trail"
-            else:
-                final_take_profit_price = self.get_take_profit_price(
-                    dataframe, trade, final_stage
-                )
-                final_take_profit_label = f"Take Profit {final_stage} Arm"
 
+            if final_take_profit_state is not None:
+                boundary_candle_date = QuickAdapterV3._as_utc_candle_date(
+                    final_take_profit_state["boundary_candle_date"]
+                )
+                if boundary_candle_date is not None:
+                    trail_start = max(boundary_candle_date, start_date)
+                    if trail_start <= end_date:
+                        final_take_profit_price = (
+                            QuickAdapterV3._final_take_profit_boundary(
+                                final_take_profit_state
+                            )
+                        )
+                        annotations.append(
+                            {
+                                "type": "line",
+                                "start": trail_start,
+                                "end": end_date,
+                                "y_start": final_take_profit_price,
+                                "y_end": final_take_profit_price,
+                                "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
+                                "line_style": "solid",
+                                "width": 1,
+                                "label": f"Take Profit {final_stage} Trail (current)",
+                                "z_level": 10 + final_stage,
+                            }
+                        )
+                continue
+
+            final_take_profit_price = self.get_take_profit_price(
+                dataframe, trade, final_stage
+            )
             if not isna(final_take_profit_price):
-                take_profit_line_annotation: AnnotationType = {
-                    "type": "line",
-                    "start": max(trade_annotation_line_start_date, start_date),
-                    "end": end_date,
-                    "y_start": final_take_profit_price,
-                    "y_end": final_take_profit_price,
-                    "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
-                    "line_style": "solid",
-                    "width": 1,
-                    "label": final_take_profit_label,
-                    "z_level": 10 + final_stage,
-                }
-                annotations.append(take_profit_line_annotation)
+                annotations.append(
+                    {
+                        "type": "line",
+                        "start": max(trade_annotation_line_start_date, start_date),
+                        "end": end_date,
+                        "y_start": final_take_profit_price,
+                        "y_end": final_take_profit_price,
+                        "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
+                        "line_style": "solid",
+                        "width": 1,
+                        "label": f"Take Profit {final_stage} Arm",
+                        "z_level": 10 + final_stage,
+                    }
+                )
 
         return annotations
 
