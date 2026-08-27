@@ -1582,15 +1582,25 @@ class QuickAdapterV3(IStrategy):
             candidate_exit_stage, candidate_take_profit_price = (
                 previous_take_profit_entry
             )
+            if isinstance(candidate_take_profit_price, bool):
+                candidate_take_profit_price = None
+            else:
+                try:
+                    candidate_take_profit_price = float(candidate_take_profit_price)
+                except (OverflowError, TypeError, ValueError):
+                    candidate_take_profit_price = None
             if (
                 isinstance(candidate_exit_stage, int)
                 and not isinstance(candidate_exit_stage, bool)
-                and isinstance(candidate_take_profit_price, (int, float))
-                and not isinstance(candidate_take_profit_price, bool)
+                and candidate_take_profit_price is not None
+                and math.isfinite(candidate_take_profit_price)
+                and candidate_take_profit_price > 0
             ):
                 previous_exit_stage = candidate_exit_stage
                 previous_take_profit_price = candidate_take_profit_price
-        elif isinstance(previous_take_profit_entry, float):
+        elif isinstance(previous_take_profit_entry, float) and math.isfinite(
+            previous_take_profit_entry
+        ):
             previous_exit_stage = -1
             previous_take_profit_price = previous_take_profit_entry
         if (
@@ -1620,6 +1630,21 @@ class QuickAdapterV3(IStrategy):
             return None
 
     @staticmethod
+    def _is_candle_date_aligned(
+        candle_date: datetime.datetime | None, timeframe: str
+    ) -> bool:
+        normalized_candle_date = QuickAdapterV3._as_utc_candle_date(candle_date)
+        if normalized_candle_date is None or not isinstance(timeframe, str) or not timeframe:
+            return False
+        try:
+            return (
+                timeframe_to_prev_date(timeframe, normalized_candle_date)
+                == normalized_candle_date
+            )
+        except (OverflowError, TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _build_final_take_profit_state(
         *,
         exit_stage: int,
@@ -1642,7 +1667,9 @@ class QuickAdapterV3(IStrategy):
             or take_profit_distance <= 0
             or not is_finite_number(retracement_fraction)
             or not 0 < retracement_fraction <= 1
-            or normalized_candle_date is None
+            or not QuickAdapterV3._is_candle_date_aligned(
+                normalized_candle_date, timeframe
+            )
             or not isinstance(timeframe, str)
             or not timeframe
         ):
@@ -1651,7 +1678,7 @@ class QuickAdapterV3(IStrategy):
         if not math.isfinite(retracement_distance) or retracement_distance <= 0:
             return None
         candle_date_isoformat = normalized_candle_date.isoformat()
-        return {
+        state: _FinalTakeProfitState = {
             "version": QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION,
             "exit_stage": exit_stage,
             "trade_direction": trade_direction,
@@ -1661,6 +1688,11 @@ class QuickAdapterV3(IStrategy):
             "last_candle_date": candle_date_isoformat,
             "timeframe": timeframe,
         }
+        return (
+            state
+            if QuickAdapterV3._is_valid_final_take_profit_boundary(state)
+            else None
+        )
 
     @staticmethod
     def _normalize_final_take_profit_state(
@@ -1669,27 +1701,41 @@ class QuickAdapterV3(IStrategy):
         exit_stage: int,
         trade_direction: TradeDirection,
         timeframe: str,
+        minimum_candle_date: datetime.datetime,
         current_candle_date: datetime.datetime,
     ) -> tuple[_FinalTakeProfitState | None, bool]:
         if state is None:
             return None, False
+        minimum_candle_date_utc = QuickAdapterV3._as_utc_candle_date(
+            minimum_candle_date
+        )
         current_candle_date_utc = QuickAdapterV3._as_utc_candle_date(
             current_candle_date
         )
-        if current_candle_date_utc is None or not (
-            isinstance(state, dict)
-            and type(state.get("version")) is int
-            and state.get("version") in (1, QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION)
-            and type(state.get("exit_stage")) is int
-            and state.get("exit_stage") == exit_stage
-            and isinstance(state.get("trade_direction"), str)
-            and state.get("trade_direction") == trade_direction
-            and state.get("trade_direction") in QuickAdapterV3._TRADE_DIRECTIONS_SET
-            and is_finite_number(state.get("best_rate"))
-            and state.get("best_rate") > 0
-            and is_finite_number(state.get("retracement_distance"))
-            and state.get("retracement_distance") > 0
-            and state.get("timeframe") == timeframe
+        if (
+            minimum_candle_date_utc is None
+            or current_candle_date_utc is None
+            or minimum_candle_date_utc > current_candle_date_utc
+            or not QuickAdapterV3._is_candle_date_aligned(
+                minimum_candle_date_utc, timeframe
+            )
+            or not QuickAdapterV3._is_candle_date_aligned(
+                current_candle_date_utc, timeframe
+            )
+            or not isinstance(state, dict)
+            or type(state.get("version")) is not int
+            or state.get("version")
+            not in (1, QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION)
+            or type(state.get("exit_stage")) is not int
+            or state.get("exit_stage") != exit_stage
+            or not isinstance(state.get("trade_direction"), str)
+            or state.get("trade_direction") != trade_direction
+            or state.get("trade_direction") not in QuickAdapterV3._TRADE_DIRECTIONS_SET
+            or not is_finite_number(state.get("best_rate"))
+            or state.get("best_rate") <= 0
+            or not is_finite_number(state.get("retracement_distance"))
+            or state.get("retracement_distance") <= 0
+            or state.get("timeframe") != timeframe
         ):
             return None, True
 
@@ -1706,6 +1752,13 @@ class QuickAdapterV3(IStrategy):
         if (
             last_candle_date is None
             or boundary_candle_date is None
+            or not QuickAdapterV3._is_candle_date_aligned(
+                boundary_candle_date, timeframe
+            )
+            or not QuickAdapterV3._is_candle_date_aligned(
+                last_candle_date, timeframe
+            )
+            or boundary_candle_date < minimum_candle_date_utc
             or boundary_candle_date > last_candle_date
             or last_candle_date > current_candle_date_utc
         ):
@@ -1734,8 +1787,9 @@ class QuickAdapterV3(IStrategy):
             "last_candle_date": last_candle_date.isoformat(),
             "timeframe": timeframe,
         }
-        boundary = QuickAdapterV3._final_take_profit_boundary(normalized_state)
-        if not math.isfinite(boundary) or boundary <= 0:
+        if not QuickAdapterV3._is_valid_final_take_profit_boundary(
+            normalized_state
+        ):
             return None, True
         return normalized_state, normalized_state != state
 
@@ -1745,6 +1799,20 @@ class QuickAdapterV3(IStrategy):
             state["retracement_distance"]
             if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT
             else -state["retracement_distance"]
+        )
+
+    @staticmethod
+    def _is_valid_final_take_profit_boundary(
+        state: _FinalTakeProfitState,
+    ) -> bool:
+        best_rate = state["best_rate"]
+        boundary = QuickAdapterV3._final_take_profit_boundary(state)
+        if not math.isfinite(best_rate) or not math.isfinite(boundary):
+            return False
+        return (
+            boundary > best_rate
+            if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT
+            else 0 < boundary < best_rate
         )
 
     @staticmethod
@@ -1769,12 +1837,17 @@ class QuickAdapterV3(IStrategy):
             return boundary, False, False
 
         previous_best_rate = state["best_rate"]
-        if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT:
-            state["best_rate"] = min(previous_best_rate, current_rate)
-        else:
-            state["best_rate"] = max(previous_best_rate, current_rate)
-        if state["best_rate"] != previous_best_rate:
-            state["boundary_candle_date"] = current_candle_date.isoformat()
+        candidate_best_rate = (
+            min(previous_best_rate, current_rate)
+            if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT
+            else max(previous_best_rate, current_rate)
+        )
+        if candidate_best_rate != previous_best_rate:
+            state["best_rate"] = candidate_best_rate
+            if QuickAdapterV3._is_valid_final_take_profit_boundary(state):
+                state["boundary_candle_date"] = current_candle_date.isoformat()
+            else:
+                state["best_rate"] = previous_best_rate
         state["last_candle_date"] = current_candle_date.isoformat()
 
         boundary = QuickAdapterV3._final_take_profit_boundary(state)
@@ -2212,7 +2285,9 @@ class QuickAdapterV3(IStrategy):
         last_candle_date = QuickAdapterV3._as_utc_candle_date(
             last_candle.get("date")
         )
-        has_valid_candle_date = last_candle_date is not None
+        has_valid_candle_date = QuickAdapterV3._is_candle_date_aligned(
+            last_candle_date, self.timeframe
+        )
         if last_candle.get("do_predict") == 2:
             return "model_expired"
         if last_candle.get("DI_catch") == 0:
@@ -2287,6 +2362,7 @@ class QuickAdapterV3(IStrategy):
                 exit_stage=trade_exit_stage,
                 trade_direction=trade.trade_direction,
                 timeframe=self.timeframe,
+                minimum_candle_date=self.get_trade_entry_date(trade),
                 current_candle_date=last_candle_date,
             )
         )
@@ -2553,6 +2629,7 @@ class QuickAdapterV3(IStrategy):
                         exit_stage=final_stage,
                         trade_direction=trade.trade_direction,
                         timeframe=self.timeframe,
+                        minimum_candle_date=self.get_trade_entry_date(trade),
                         current_candle_date=annotation_candle_date,
                     )
                 )
