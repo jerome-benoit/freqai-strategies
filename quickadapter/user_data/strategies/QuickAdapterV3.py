@@ -1711,12 +1711,25 @@ class QuickAdapterV3(IStrategy):
         ):
             return None, True
 
+        try:
+            best_rate = float(state["best_rate"])
+            retracement_distance = float(state["retracement_distance"])
+        except (OverflowError, TypeError, ValueError):
+            return None, True
+        if (
+            not math.isfinite(best_rate)
+            or best_rate <= 0
+            or not math.isfinite(retracement_distance)
+            or retracement_distance <= 0
+        ):
+            return None, True
+
         normalized_state: _FinalTakeProfitState = {
             "version": QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION,
             "exit_stage": exit_stage,
             "trade_direction": trade_direction,
-            "best_rate": float(state["best_rate"]),
-            "retracement_distance": float(state["retracement_distance"]),
+            "best_rate": best_rate,
+            "retracement_distance": retracement_distance,
             "boundary_candle_date": boundary_candle_date.isoformat(),
             "last_candle_date": last_candle_date.isoformat(),
             "timeframe": timeframe,
