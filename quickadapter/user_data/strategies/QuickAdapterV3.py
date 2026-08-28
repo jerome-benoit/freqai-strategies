@@ -1717,6 +1717,7 @@ class QuickAdapterV3(IStrategy):
         *,
         exit_stage: int,
         trade_direction: TradeDirection,
+        open_rate: float,
         timeframe: str,
         minimum_candle_date: datetime.datetime,
         current_candle_date: datetime.datetime,
@@ -1752,6 +1753,8 @@ class QuickAdapterV3(IStrategy):
             or not isinstance(state.get("trade_direction"), str)
             or state.get("trade_direction") != trade_direction
             or state.get("trade_direction") not in QuickAdapterV3._TRADE_DIRECTIONS_SET
+            or not is_finite_number(open_rate)
+            or open_rate <= 0
             or not is_finite_number(state.get("best_rate"))
             or state.get("best_rate") <= 0
             or not is_finite_number(state.get("retracement_distance"))
@@ -1810,6 +1813,11 @@ class QuickAdapterV3(IStrategy):
         if (
             not np.isfinite(best_rate)
             or best_rate <= 0
+            or (
+                best_rate >= open_rate
+                if trade_direction == QuickAdapterV3._TRADE_SHORT
+                else best_rate <= open_rate
+            )
             or not np.isfinite(retracement_distance)
             or retracement_distance <= 0
         ):
@@ -2423,6 +2431,7 @@ class QuickAdapterV3(IStrategy):
                 raw_final_take_profit_state,
                 exit_stage=trade_exit_stage,
                 trade_direction=trade.trade_direction,
+                open_rate=trade.open_rate,
                 timeframe=self.timeframe,
                 minimum_candle_date=self.get_trade_entry_date(trade),
                 current_candle_date=last_candle_date,
@@ -2691,6 +2700,7 @@ class QuickAdapterV3(IStrategy):
                         raw_final_take_profit_state,
                         exit_stage=final_exit_stage,
                         trade_direction=trade.trade_direction,
+                        open_rate=trade.open_rate,
                         timeframe=self.timeframe,
                         minimum_candle_date=self.get_trade_entry_date(trade),
                         current_candle_date=annotation_candle_date,
