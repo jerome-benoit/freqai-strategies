@@ -1371,13 +1371,6 @@ class QuickAdapterV3(IStrategy):
         return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE)
 
     @staticmethod
-    def _take_profit_order_tag(trade_direction: str, exit_stage: int) -> str:
-        return (
-            f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
-            f"{trade_direction}_{exit_stage}"
-        )
-
-    @staticmethod
     @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
     def get_stoploss_factor(trade_duration_candles: int) -> float:
         return 2.75 / (1.2675 + math.atan(0.25 * trade_duration_candles))
@@ -2017,8 +2010,9 @@ class QuickAdapterV3(IStrategy):
                     )
             return (
                 -trade_partial_stake_amount,
-                QuickAdapterV3._take_profit_order_tag(
-                    trade.trade_direction, trade_exit_stage
+                (
+                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+                    f"{trade.trade_direction}_{trade_exit_stage}"
                 ),
             )
 
@@ -2470,8 +2464,9 @@ class QuickAdapterV3(IStrategy):
                     ),
                 )
             if trade_exit:
-                return QuickAdapterV3._take_profit_order_tag(
-                    trade.trade_direction, trade_exit_stage
+                return (
+                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+                    f"{trade.trade_direction}_final"
                 )
             return None
 
