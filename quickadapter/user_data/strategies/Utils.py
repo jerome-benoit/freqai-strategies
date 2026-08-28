@@ -1262,7 +1262,7 @@ CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
         "exit_pricing.thresholds_calibration",
         None,
         None,
-        "the PnL momentum gate now uses the direction of mean per-candle PnL velocity",
+        "the final take-profit now uses an armed volatility-scaled retracement",
     ),
     (
         "freqai.feature_parameters.causal_mode",
@@ -1486,16 +1486,21 @@ def get_label_prediction_config(
 
 DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
     "trade_price_target_method": TRADE_PRICE_TARGETS[0],  # "moving_average"
+    "final_take_profit_retracement_fraction": 0.25,
 }
 
 _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
     "trade_price_target_method": _ParamSpec(
         _EnumValidator(TRADE_PRICE_TARGETS), output_type=str
     ),
+    "final_take_profit_retracement_fraction": _ParamSpec(
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
+        output_type=float,
+    ),
 }
 
 
-def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str]:
+def get_exit_pricing_config(config: Any, logger: Logger) -> dict[str, str | float]:
     return _validate_params(
         as_config_section(config, "exit_pricing", logger),
         logger,
