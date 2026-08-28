@@ -1597,12 +1597,12 @@ class QuickAdapterV3(IStrategy):
                 isinstance(candidate_exit_stage, int)
                 and not isinstance(candidate_exit_stage, bool)
                 and candidate_take_profit_price is not None
-                and math.isfinite(candidate_take_profit_price)
+                and np.isfinite(candidate_take_profit_price)
                 and candidate_take_profit_price > 0
             ):
                 previous_exit_stage = candidate_exit_stage
                 previous_take_profit_price = candidate_take_profit_price
-        elif isinstance(previous_take_profit_entry, float) and math.isfinite(
+        elif isinstance(previous_take_profit_entry, float) and np.isfinite(
             previous_take_profit_entry
         ):
             previous_exit_stage = -1
@@ -1656,9 +1656,9 @@ class QuickAdapterV3(IStrategy):
         trade_direction: TradeDirection,
     ) -> float | None:
         if (
-            not math.isfinite(best_rate)
+            not np.isfinite(best_rate)
             or best_rate <= 0
-            or not math.isfinite(retracement_distance)
+            or not np.isfinite(retracement_distance)
             or retracement_distance < 0
             or trade_direction not in QuickAdapterV3._TRADE_DIRECTIONS_SET
         ):
@@ -1678,7 +1678,7 @@ class QuickAdapterV3(IStrategy):
             )
             retracement_distance = abs(boundary - best_rate)
         if (
-            not math.isfinite(boundary)
+            not np.isfinite(boundary)
             or (
                 boundary <= best_rate
                 if trade_direction == QuickAdapterV3._TRADE_SHORT
@@ -1719,7 +1719,7 @@ class QuickAdapterV3(IStrategy):
         ):
             return None
         retracement_distance = take_profit_distance * retracement_fraction
-        if not math.isfinite(retracement_distance) or retracement_distance < 0:
+        if not np.isfinite(retracement_distance) or retracement_distance < 0:
             return None
         retracement_distance = (
             QuickAdapterV3._normalize_final_take_profit_retracement_distance(
@@ -1853,9 +1853,9 @@ class QuickAdapterV3(IStrategy):
         except (OverflowError, TypeError, ValueError):
             return None, True
         if (
-            not math.isfinite(best_rate)
+            not np.isfinite(best_rate)
             or best_rate <= 0
-            or not math.isfinite(retracement_distance)
+            or not np.isfinite(retracement_distance)
             or retracement_distance <= 0
         ):
             return None, True
@@ -1904,7 +1904,7 @@ class QuickAdapterV3(IStrategy):
     ) -> bool:
         best_rate = state["best_rate"]
         boundary = QuickAdapterV3._final_take_profit_boundary(state)
-        if not math.isfinite(best_rate) or not math.isfinite(boundary):
+        if not np.isfinite(best_rate) or not np.isfinite(boundary):
             return False
         return (
             boundary > best_rate
