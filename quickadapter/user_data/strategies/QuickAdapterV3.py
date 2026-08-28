@@ -1508,9 +1508,9 @@ class QuickAdapterV3(IStrategy):
             not trade.is_short and current_rate >= take_profit_price
         )
 
-    def get_take_profit_price(
+    def get_take_profit_target(
         self, df: DataFrame, trade: Trade, exit_stage: int
-    ) -> Optional[float]:
+    ) -> Optional[tuple[float, float]]:
         natr_multiplier_fraction = (
             QuickAdapterV3.partial_exit_stages[exit_stage][0]
             if exit_stage in QuickAdapterV3.partial_exit_stages
@@ -1519,14 +1519,19 @@ class QuickAdapterV3(IStrategy):
         take_profit_distance = self.get_take_profit_distance(
             df, trade, natr_multiplier_fraction
         )
-        if isna(take_profit_distance) or take_profit_distance <= 0:
+        if not is_finite_number(take_profit_distance) or take_profit_distance <= 0:
             return None
 
-        take_profit_price = (
-            trade.open_rate + (-1 if trade.is_short else 1) * take_profit_distance
+        take_profit_price = trade.open_rate + (
+            -take_profit_distance if trade.is_short else take_profit_distance
         )
-
-        return take_profit_price
+        if take_profit_price == trade.open_rate:
+            take_profit_price = math.nextafter(
+                trade.open_rate, 0.0 if trade.is_short else math.inf
+            )
+        if not np.isfinite(take_profit_price) or take_profit_price <= 0:
+            return None
+        return float(take_profit_price), float(take_profit_distance)
 
     def safe_append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
@@ -1950,11 +1955,12 @@ class QuickAdapterV3(IStrategy):
         if df.empty:
             return None
 
-        trade_take_profit_price = self.get_take_profit_price(
+        trade_take_profit_target = self.get_take_profit_target(
             df, trade, trade_exit_stage
         )
-        if isna(trade_take_profit_price):
+        if trade_take_profit_target is None:
             return None
+        trade_take_profit_price, _ = trade_take_profit_target
 
         self.safe_append_trade_take_profit_price(
             trade, trade_take_profit_price, trade_exit_stage
@@ -2469,11 +2475,12 @@ class QuickAdapterV3(IStrategy):
                 )
             return None
 
-        trade_take_profit_price = self.get_take_profit_price(
+        trade_take_profit_target = self.get_take_profit_target(
             df, trade, trade_exit_stage
         )
-        if isna(trade_take_profit_price):
+        if trade_take_profit_target is None:
             return None
+        trade_take_profit_price, trade_take_profit_distance = trade_take_profit_target
 
         self.safe_append_trade_take_profit_price(
             trade, trade_take_profit_price, trade_exit_stage
@@ -2495,7 +2502,7 @@ class QuickAdapterV3(IStrategy):
             exit_stage=trade_exit_stage,
             trade_direction=trade.trade_direction,
             current_rate=current_rate,
-            take_profit_distance=abs(trade_take_profit_price - trade.open_rate),
+            take_profit_distance=trade_take_profit_distance,
             retracement_fraction=self.final_take_profit_retracement_fraction,
             candle_date=(last_candle_date if has_valid_candle_date else None),
             timeframe=self.timeframe,
@@ -2658,13 +2665,12 @@ class QuickAdapterV3(IStrategy):
                 if take_profit_stage < trade_exit_stage:
                     continue
 
-                partial_take_profit_price = self.get_take_profit_price(
+                partial_take_profit_target = self.get_take_profit_target(
                     dataframe, trade, take_profit_stage
                 )
-
-                if isna(partial_take_profit_price):
+                if partial_take_profit_target is None:
                     continue
-
+                partial_take_profit_price, _ = partial_take_profit_target
                 take_profit_line_annotation: AnnotationType = {
                     "type": "line",
                     "start": max(trade_annotation_line_start_date, start_date),
@@ -2724,10 +2730,11 @@ class QuickAdapterV3(IStrategy):
                         )
                 continue
 
-            final_take_profit_price = self.get_take_profit_price(
+            final_take_profit_target = self.get_take_profit_target(
                 dataframe, trade, final_exit_stage
             )
-            if not isna(final_take_profit_price):
+            if final_take_profit_target is not None:
+                final_take_profit_price, _ = final_take_profit_target
                 annotations.append(
                     {
                         "type": "line",
