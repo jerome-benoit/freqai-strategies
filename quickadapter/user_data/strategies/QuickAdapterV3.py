@@ -115,6 +115,7 @@ class _FinalTakeProfitState(TypedDict):
     retracement_distance: float
     boundary_candle_date: str
     last_candle_date: str
+    trigger_candle_date: str | None
     timeframe: str
 
 
@@ -203,7 +204,10 @@ class QuickAdapterV3(IStrategy):
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _FINAL_TAKE_PROFIT_STATE_KEY: Final[str] = "final_take_profit_state"
-    _FINAL_TAKE_PROFIT_STATE_VERSION: Final[int] = 2
+    _FINAL_TAKE_PROFIT_STATE_VERSION: Final[int] = 3
+    _FINAL_TAKE_PROFIT_SUPPORTED_STATE_VERSIONS: Final[range] = range(
+        1, _FINAL_TAKE_PROFIT_STATE_VERSION + 1
+    )
 
     # Rounding margin so the sized partial-exit remainder clears freqtrade's
     # strict ``remaining < min_exit_stake`` guard.
@@ -1735,6 +1739,7 @@ class QuickAdapterV3(IStrategy):
             "retracement_distance": float(retracement_distance),
             "boundary_candle_date": candle_date_isoformat,
             "last_candle_date": candle_date_isoformat,
+            "trigger_candle_date": None,
             "timeframe": timeframe,
         }
         return (
@@ -1774,7 +1779,12 @@ class QuickAdapterV3(IStrategy):
             or not isinstance(state, dict)
             or type(state.get("version")) is not int
             or state.get("version")
-            not in (1, QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION)
+            not in QuickAdapterV3._FINAL_TAKE_PROFIT_SUPPORTED_STATE_VERSIONS
+            or (
+                state.get("version")
+                == QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION
+                and "trigger_candle_date" not in state
+            )
             or type(state.get("exit_stage")) is not int
             or state.get("exit_stage") != exit_stage
             or not isinstance(state.get("trade_direction"), str)
@@ -1787,16 +1797,26 @@ class QuickAdapterV3(IStrategy):
             or state.get("timeframe") != timeframe
         ):
             return None, True
-
+        state_version = state["version"]
         last_candle_date = QuickAdapterV3._as_utc_candle_date(
             state.get("last_candle_date")
         )
         boundary_candle_date = (
             last_candle_date
-            if state["version"] == 1
+            if state_version == 1
             else QuickAdapterV3._as_utc_candle_date(
                 state.get("boundary_candle_date")
             )
+        )
+        raw_trigger_candle_date = (
+            state.get("trigger_candle_date")
+            if state_version == QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION
+            else None
+        )
+        trigger_candle_date = (
+            QuickAdapterV3._as_utc_candle_date(raw_trigger_candle_date)
+            if raw_trigger_candle_date is not None
+            else None
         )
         if (
             last_candle_date is None
@@ -1810,6 +1830,20 @@ class QuickAdapterV3(IStrategy):
             or boundary_candle_date < minimum_candle_date_utc
             or boundary_candle_date > last_candle_date
             or last_candle_date > current_candle_date_utc
+            or (
+                raw_trigger_candle_date is not None
+                and trigger_candle_date is None
+            )
+            or (
+                trigger_candle_date is not None
+                and (
+                    not QuickAdapterV3._is_candle_date_aligned(
+                        trigger_candle_date, timeframe
+                    )
+                    or trigger_candle_date <= boundary_candle_date
+                    or trigger_candle_date != last_candle_date
+                )
+            )
         ):
             return None, True
 
@@ -1843,6 +1877,11 @@ class QuickAdapterV3(IStrategy):
             "retracement_distance": retracement_distance,
             "boundary_candle_date": boundary_candle_date.isoformat(),
             "last_candle_date": last_candle_date.isoformat(),
+            "trigger_candle_date": (
+                trigger_candle_date.isoformat()
+                if trigger_candle_date is not None
+                else None
+            ),
             "timeframe": timeframe,
         }
         if not QuickAdapterV3._is_valid_final_take_profit_boundary(
@@ -1890,8 +1929,12 @@ class QuickAdapterV3(IStrategy):
             or current_rate <= 0
             or current_candle_date is None
             or previous_candle_date is None
-            or current_candle_date <= previous_candle_date
+            or current_candle_date < previous_candle_date
         ):
+            return boundary, False, False
+        if state["trigger_candle_date"] is not None:
+            return boundary, True, False
+        if current_candle_date == previous_candle_date:
             return boundary, False, False
 
         previous_best_rate = state["best_rate"]
@@ -1920,6 +1963,8 @@ class QuickAdapterV3(IStrategy):
             if state["trade_direction"] == QuickAdapterV3._TRADE_SHORT
             else current_rate <= boundary
         )
+        if should_exit:
+            state["trigger_candle_date"] = current_candle_date.isoformat()
         return boundary, should_exit, True
 
     def adjust_trade_position(
