@@ -1,7 +1,6 @@
 import copy
 import json
 import logging
-import math
 import random
 import time
 import warnings
@@ -1418,12 +1417,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_weights = self.ft_params.get("label_weights")
         label_p_order = self.ft_params.get("label_p_order")
         if label_weights is not None and not all(
-            math.isfinite(float(w)) for w in label_weights
+            np.isfinite(float(w)) for w in label_weights
         ):
             raise ValueError(
                 f"label_weights contains non-finite values: {label_weights!r}"
             )
-        if label_p_order is not None and not math.isfinite(float(label_p_order)):
+        if label_p_order is not None and not np.isfinite(float(label_p_order)):
             raise ValueError(f"label_p_order is non-finite: {label_p_order!r}")
         return {
             "schema_version": _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
