@@ -1607,7 +1607,11 @@ class QuickAdapterV3(IStrategy):
         candle_date: datetime.datetime | None, timeframe: str
     ) -> bool:
         normalized_candle_date = QuickAdapterV3._as_utc_candle_date(candle_date)
-        if normalized_candle_date is None or not isinstance(timeframe, str) or not timeframe:
+        if (
+            normalized_candle_date is None
+            or not isinstance(timeframe, str)
+            or not timeframe
+        ):
             return False
         try:
             return (
@@ -1641,18 +1645,13 @@ class QuickAdapterV3(IStrategy):
         if boundary == best_rate:
             boundary = math.nextafter(
                 best_rate,
-                math.inf
-                if trade_direction == QuickAdapterV3._TRADE_SHORT
-                else 0.0,
+                math.inf if trade_direction == QuickAdapterV3._TRADE_SHORT else 0.0,
             )
             retracement_distance = abs(boundary - best_rate)
-        if (
-            not np.isfinite(boundary)
-            or (
-                boundary <= best_rate
-                if trade_direction == QuickAdapterV3._TRADE_SHORT
-                else not 0 < boundary < best_rate
-            )
+        if not np.isfinite(boundary) or (
+            boundary <= best_rate
+            if trade_direction == QuickAdapterV3._TRADE_SHORT
+            else not 0 < boundary < best_rate
         ):
             return None
         return float(retracement_distance)
@@ -1750,8 +1749,7 @@ class QuickAdapterV3(IStrategy):
             or state.get("version")
             not in QuickAdapterV3._FINAL_TAKE_PROFIT_SUPPORTED_STATE_VERSIONS
             or (
-                state.get("version")
-                == QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION
+                state.get("version") == QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION
                 and "trigger_candle_date" not in state
             )
             or type(state.get("exit_stage")) is not int
@@ -1773,9 +1771,7 @@ class QuickAdapterV3(IStrategy):
         boundary_candle_date = (
             last_candle_date
             if state_version == 1
-            else QuickAdapterV3._as_utc_candle_date(
-                state.get("boundary_candle_date")
-            )
+            else QuickAdapterV3._as_utc_candle_date(state.get("boundary_candle_date"))
         )
         raw_trigger_candle_date = (
             state.get("trigger_candle_date")
@@ -1793,16 +1789,11 @@ class QuickAdapterV3(IStrategy):
             or not QuickAdapterV3._is_candle_date_aligned(
                 boundary_candle_date, timeframe
             )
-            or not QuickAdapterV3._is_candle_date_aligned(
-                last_candle_date, timeframe
-            )
+            or not QuickAdapterV3._is_candle_date_aligned(last_candle_date, timeframe)
             or boundary_candle_date < minimum_candle_date_utc
             or boundary_candle_date > last_candle_date
             or last_candle_date > current_candle_date_utc
-            or (
-                raw_trigger_candle_date is not None
-                and trigger_candle_date is None
-            )
+            or (raw_trigger_candle_date is not None and trigger_candle_date is None)
             or (
                 trigger_candle_date is not None
                 and (
@@ -1853,9 +1844,7 @@ class QuickAdapterV3(IStrategy):
             ),
             "timeframe": timeframe,
         }
-        if not QuickAdapterV3._is_valid_final_take_profit_boundary(
-            normalized_state
-        ):
+        if not QuickAdapterV3._is_valid_final_take_profit_boundary(normalized_state):
             return None, True
         return normalized_state, normalized_state != state
 
@@ -2360,9 +2349,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
         last_candle = df.iloc[-1]
-        last_candle_date = QuickAdapterV3._as_utc_candle_date(
-            last_candle.get("date")
-        )
+        last_candle_date = QuickAdapterV3._as_utc_candle_date(last_candle.get("date"))
         has_valid_candle_date = QuickAdapterV3._is_candle_date_aligned(
             last_candle_date, self.timeframe
         )
