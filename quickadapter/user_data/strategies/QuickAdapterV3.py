@@ -100,11 +100,6 @@ CandleDeviationCacheKey = tuple[
     str, DfSignature, float, float, int, InterpolationDirection, float
 ]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
-_TakeProfitHistoryEntry = float | tuple[int, float] | list[int | float]
-
-
-class _TradeHistory(TypedDict):
-    take_profit_price: list[_TakeProfitHistoryEntry]
 
 
 class _FinalTakeProfitState(TypedDict):
@@ -1536,47 +1531,17 @@ class QuickAdapterV3(IStrategy):
 
         return take_profit_price
 
-    @staticmethod
-    def _get_trade_history(trade: Trade) -> _TradeHistory:
-        history = trade.get_custom_data("history", {})
-        if not isinstance(history, dict):
-            return {"take_profit_price": []}
-        price_history = history.get("take_profit_price", [])
-        return {
-            "take_profit_price": price_history
-            if isinstance(price_history, list)
-            else []
-        }
-
-    @staticmethod
-    def get_trade_take_profit_price_history(
-        trade: Trade,
-    ) -> list[_TakeProfitHistoryEntry]:
-        return QuickAdapterV3._get_trade_history(trade)["take_profit_price"]
-
-    def append_trade_take_profit_price(
-        self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[_TakeProfitHistoryEntry]:
-        history = QuickAdapterV3._get_trade_history(trade)
-        price_history = history["take_profit_price"]
-        price_history.append((exit_stage, take_profit_price))
-        if len(price_history) > self._max_take_profit_history_size:
-            price_history = price_history[-self._max_take_profit_history_size :]
-            history["take_profit_price"] = price_history
-        trade.set_custom_data("history", history)
-        return price_history
-
     def safe_append_trade_take_profit_price(
         self, trade: Trade, take_profit_price: float, exit_stage: int
-    ) -> list[_TakeProfitHistoryEntry]:
-        trade_take_profit_price_history = (
-            QuickAdapterV3.get_trade_take_profit_price_history(trade)
-        )
-        previous_take_profit_entry = (
-            trade_take_profit_price_history[-1]
-            if trade_take_profit_price_history
-            else None
-        )
+    ) -> None:
+        history = trade.get_custom_data("history", {})
+        if not isinstance(history, dict):
+            history = {}
+        price_history = history.get("take_profit_price", [])
+        if not isinstance(price_history, list):
+            price_history = []
+        history = {"take_profit_price": price_history}
+        previous_take_profit_entry = price_history[-1] if price_history else None
         previous_exit_stage = None
         previous_take_profit_price = None
         if (
@@ -1608,14 +1573,18 @@ class QuickAdapterV3(IStrategy):
             previous_exit_stage = -1
             previous_take_profit_price = previous_take_profit_entry
         if (
-            previous_take_profit_price is None
-            or (previous_exit_stage is not None and previous_exit_stage != exit_stage)
-            or not np.isclose(previous_take_profit_price, take_profit_price)
+            previous_take_profit_price is not None
+            and (previous_exit_stage is None or previous_exit_stage == exit_stage)
+            and np.isclose(previous_take_profit_price, take_profit_price)
         ):
-            trade_take_profit_price_history = self.append_trade_take_profit_price(
-                trade, take_profit_price, exit_stage
-            )
-        return trade_take_profit_price_history
+            return
+
+        price_history.append((exit_stage, take_profit_price))
+        if len(price_history) > self._max_take_profit_history_size:
+            history["take_profit_price"] = price_history[
+                -self._max_take_profit_history_size :
+            ]
+        trade.set_custom_data("history", history)
 
     @staticmethod
     def _as_utc_candle_date(value: Any) -> datetime.datetime | None:
