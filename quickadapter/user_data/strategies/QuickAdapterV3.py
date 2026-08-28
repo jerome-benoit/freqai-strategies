@@ -1645,6 +1645,46 @@ class QuickAdapterV3(IStrategy):
             return False
 
     @staticmethod
+    def _normalize_final_take_profit_retracement_distance(
+        *,
+        best_rate: float,
+        retracement_distance: float,
+        trade_direction: TradeDirection,
+    ) -> float | None:
+        if (
+            not math.isfinite(best_rate)
+            or best_rate <= 0
+            or not math.isfinite(retracement_distance)
+            or retracement_distance < 0
+            or trade_direction not in QuickAdapterV3._TRADE_DIRECTIONS_SET
+        ):
+            return None
+
+        boundary = best_rate + (
+            retracement_distance
+            if trade_direction == QuickAdapterV3._TRADE_SHORT
+            else -retracement_distance
+        )
+        if boundary == best_rate:
+            boundary = math.nextafter(
+                best_rate,
+                math.inf
+                if trade_direction == QuickAdapterV3._TRADE_SHORT
+                else 0.0,
+            )
+            retracement_distance = abs(boundary - best_rate)
+        if (
+            not math.isfinite(boundary)
+            or (
+                boundary <= best_rate
+                if trade_direction == QuickAdapterV3._TRADE_SHORT
+                else not 0 < boundary < best_rate
+            )
+        ):
+            return None
+        return float(retracement_distance)
+
+    @staticmethod
     def _build_final_take_profit_state(
         *,
         exit_stage: int,
@@ -1675,7 +1715,16 @@ class QuickAdapterV3(IStrategy):
         ):
             return None
         retracement_distance = take_profit_distance * retracement_fraction
-        if not math.isfinite(retracement_distance) or retracement_distance <= 0:
+        if not math.isfinite(retracement_distance) or retracement_distance < 0:
+            return None
+        retracement_distance = (
+            QuickAdapterV3._normalize_final_take_profit_retracement_distance(
+                best_rate=float(current_rate),
+                retracement_distance=float(retracement_distance),
+                trade_direction=trade_direction,
+            )
+        )
+        if retracement_distance is None:
             return None
         candle_date_isoformat = normalized_candle_date.isoformat()
         state: _FinalTakeProfitState = {
@@ -1776,6 +1825,15 @@ class QuickAdapterV3(IStrategy):
             or retracement_distance <= 0
         ):
             return None, True
+        retracement_distance = (
+            QuickAdapterV3._normalize_final_take_profit_retracement_distance(
+                best_rate=best_rate,
+                retracement_distance=retracement_distance,
+                trade_direction=trade_direction,
+            )
+        )
+        if retracement_distance is None:
+            return None, True
 
         normalized_state: _FinalTakeProfitState = {
             "version": QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_VERSION,
@@ -1843,11 +1901,17 @@ class QuickAdapterV3(IStrategy):
             else max(previous_best_rate, current_rate)
         )
         if candidate_best_rate != previous_best_rate:
-            state["best_rate"] = candidate_best_rate
-            if QuickAdapterV3._is_valid_final_take_profit_boundary(state):
+            candidate_retracement_distance = (
+                QuickAdapterV3._normalize_final_take_profit_retracement_distance(
+                    best_rate=candidate_best_rate,
+                    retracement_distance=state["retracement_distance"],
+                    trade_direction=state["trade_direction"],
+                )
+            )
+            if candidate_retracement_distance is not None:
+                state["best_rate"] = candidate_best_rate
+                state["retracement_distance"] = candidate_retracement_distance
                 state["boundary_candle_date"] = current_candle_date.isoformat()
-            else:
-                state["best_rate"] = previous_best_rate
         state["last_candle_date"] = current_candle_date.isoformat()
 
         boundary = QuickAdapterV3._final_take_profit_boundary(state)
