@@ -595,7 +595,7 @@ class QuickAdapterV3(IStrategy):
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
-        logger.info("Partial Exit Stages:")
+        logger.info("Partial Take-Profit Stages:")
         for stage, (
             natr_multiplier_fraction,
             stake_percent,
@@ -606,7 +606,7 @@ class QuickAdapterV3(IStrategy):
             )
 
         logger.info(
-            f"Final Exit Stage: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}"
+            f"Final Exit: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}"
         )
 
         logger.info("Protections:")
@@ -1967,8 +1967,8 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"[{pair}] Trade {trade.trade_direction} stage {trade_exit_stage} | "
-                    f"Take Profit: {format_number(trade_take_profit_price)}, Rate: {format_number(current_exit_rate)}"
+                    f"[{pair}] {trade.trade_direction} partial exit stage {trade_exit_stage} | "
+                    f"Take-profit target: {format_number(trade_take_profit_price)}, rate: {format_number(current_exit_rate)}"
                 ),
             )
         if trade_partial_exit:
@@ -2002,8 +2002,8 @@ class QuickAdapterV3(IStrategy):
                         1 - min_remaining_position_value / current_position_value
                     )
                     logger.info(
-                        f"[{pair}] Trade {trade.trade_direction} stage "
-                        f"{trade_exit_stage} | partial stake "
+                        f"[{pair}] {trade.trade_direction} partial exit stage "
+                        f"{trade_exit_stage} | stake "
                         f"{format_number(initial_trade_partial_stake_amount)} -> "
                         f"{format_number(trade_partial_stake_amount)} to preserve "
                         f"min_remaining_position_value {format_number(min_remaining_position_value)}"
@@ -2457,7 +2457,7 @@ class QuickAdapterV3(IStrategy):
                     pair=pair,
                     current_time=current_time,
                     callback=lambda: logger.info(
-                        f"[{pair}] Trade {trade.trade_direction} final exit | "
+                        f"[{pair}] {trade.trade_direction} final exit | "
                         "Take-profit trail: "
                         f"best={format_number(final_take_profit_state['best_rate'])}, "
                         f"boundary={format_number(boundary)}, rate={format_number(current_rate)}"
@@ -2487,8 +2487,8 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.info(
-                    f"[{pair}] Trade {trade.trade_direction} final exit | "
-                    f"Take-profit target: {format_number(trade_take_profit_price)}, Rate: {format_number(current_rate)}"
+                    f"[{pair}] {trade.trade_direction} final exit | "
+                    f"Take-profit target: {format_number(trade_take_profit_price)}, rate: {format_number(current_rate)}"
                 ),
             )
             return None
@@ -2507,7 +2507,7 @@ class QuickAdapterV3(IStrategy):
                 pair=pair,
                 current_time=current_time,
                 callback=lambda: logger.warning(
-                    f"[{pair}] Trade {trade.trade_direction} final exit | "
+                    f"[{pair}] {trade.trade_direction} final exit | "
                     "Take-profit target reached but the trailing state is unmeasurable; "
                     "exit not armed"
                 ),
@@ -2516,7 +2516,7 @@ class QuickAdapterV3(IStrategy):
 
         trade.set_custom_data(QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY, state)
         logger.info(
-            f"[{pair}] Trade {trade.trade_direction} final exit | "
+            f"[{pair}] {trade.trade_direction} final exit | "
             f"Take-profit armed at rate={format_number(current_rate)}, "
             f"retracement_distance={format_number(state['retracement_distance'])}"
         )
@@ -2675,7 +2675,7 @@ class QuickAdapterV3(IStrategy):
                     "color": QuickAdapterV3.partial_exit_stages[take_profit_stage][2],
                     "line_style": "solid",
                     "width": 1,
-                    "label": f"Take Profit {take_profit_stage}",
+                    "label": f"Partial Take-Profit Stage {take_profit_stage}",
                     "z_level": 10 + take_profit_stage,
                 }
                 annotations.append(take_profit_line_annotation)
@@ -2719,7 +2719,7 @@ class QuickAdapterV3(IStrategy):
                                 "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
                                 "line_style": "solid",
                                 "width": 1,
-                                "label": "Final Take Profit Trail (current)",
+                                "label": "Final Take-Profit Trail (current)",
                                 "z_level": 10 + final_exit_stage,
                             }
                         )
@@ -2740,7 +2740,7 @@ class QuickAdapterV3(IStrategy):
                         "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
                         "line_style": "solid",
                         "width": 1,
-                        "label": "Final Take Profit Arm",
+                        "label": "Final Take-Profit Arming Target",
                         "z_level": 10 + final_exit_stage,
                     }
                 )
