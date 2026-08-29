@@ -1,5 +1,4 @@
 pandas-stubs
 scipy-stubs
 uv
--r ../../requirements-lint.txt
 pyright
