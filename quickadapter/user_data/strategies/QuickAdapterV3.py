@@ -45,7 +45,7 @@ from Utils import (
     EXTREMA_WEIGHT_COLUMN,
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
-    TRADE_PRICE_TARGETS,
+    TRADE_NATR_METHODS,
     OptunaNamespace,
     alligator,
     bottom_log_return,
@@ -386,8 +386,8 @@ class QuickAdapterV3(IStrategy):
         return get_exit_pricing_config(self.config.get("exit_pricing"), logger)
 
     @property
-    def trade_price_target_method(self) -> str:
-        return str(self.exit_pricing["trade_price_target_method"])
+    def trade_natr_method(self) -> str:
+        return str(self.exit_pricing["trade_natr_method"])
 
     @property
     def final_take_profit_retracement_fraction(self) -> float:
@@ -584,7 +584,7 @@ class QuickAdapterV3(IStrategy):
         )
 
         logger.info("Exit Pricing:")
-        logger.info(f"  trade_price_target_method: {self.trade_price_target_method}")
+        logger.info(f"  trade_natr_method: {self.trade_natr_method}")
         logger.info(
             "  final_take_profit_retracement_fraction: "
             f"{format_number(self.final_take_profit_retracement_fraction)}"
@@ -1332,32 +1332,30 @@ class QuickAdapterV3(IStrategy):
     def get_trade_natr(
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
     ) -> Optional[float]:
-        trade_price_target_methods: dict[str, Callable[[], Optional[float]]] = {
+        trade_natr_methods: dict[str, Callable[[], Optional[float]]] = {
             # 0 - "moving_average"
-            TRADE_PRICE_TARGETS[0]: lambda: self.get_trade_moving_average_natr(
+            TRADE_NATR_METHODS[0]: lambda: self.get_trade_moving_average_natr(
                 df, trade.pair, trade_duration_candles
             ),
             # 1 - "quantile_interpolation"
-            TRADE_PRICE_TARGETS[1]: lambda: self.get_trade_quantile_interpolation_natr(
+            TRADE_NATR_METHODS[1]: lambda: self.get_trade_quantile_interpolation_natr(
                 df, trade
             ),
             # 2 - "weighted_average"
-            TRADE_PRICE_TARGETS[2]: lambda: self.get_trade_weighted_average_natr(
+            TRADE_NATR_METHODS[2]: lambda: self.get_trade_weighted_average_natr(
                 df, trade
             ),
         }
-        trade_price_target_method_fn = trade_price_target_methods.get(
-            self.trade_price_target_method
-        )
-        if trade_price_target_method_fn is None:
+        trade_natr_method_fn = trade_natr_methods.get(self.trade_natr_method)
+        if trade_natr_method_fn is None:
             raise ValueError(
                 enum_error_message(
-                    "trade_price_target_method",
-                    self.trade_price_target_method,
-                    TRADE_PRICE_TARGETS,
+                    "trade_natr_method",
+                    self.trade_natr_method,
+                    TRADE_NATR_METHODS,
                 )
             )
-        return trade_price_target_method_fn()
+        return trade_natr_method_fn()
 
     @staticmethod
     def get_trade_exit_stage(trade: Trade) -> int:
