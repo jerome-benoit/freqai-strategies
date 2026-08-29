@@ -435,6 +435,20 @@ The rewarding logic and tunables are documented in the
 
 ## Common workflows
 
+### Python quality checks
+
+Run Ruff from the repository root so every Python subproject uses the shared
+configuration and its local overrides:
+
+```shell
+python -m pip install --requirement requirements-lint.txt
+ruff check .
+ruff format --check .
+```
+
+The root `ruff.toml` is the canonical configuration. Standalone Python projects
+extend it from their local `pyproject.toml` instead of duplicating shared rules.
+
 **List running compose services and the containers they created:**
 
 ```shell

@@ -1,0 +1,35 @@
+name: Ruff
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ruff-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Check and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-lint.txt
+      - name: Install Ruff
+        run: python -m pip install --disable-pip-version-check --requirement requirements-lint.txt
+      - name: Check repository
+        run: ruff check .
+      - name: Check repository formatting
+        run: ruff format --check .

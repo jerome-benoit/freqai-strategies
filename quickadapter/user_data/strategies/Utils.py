@@ -8,7 +8,7 @@ import math
 import os
 import re
 import stat
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,7 +20,6 @@ from threading import Lock
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Final,
     Literal,
     NamedTuple,
@@ -36,8 +35,8 @@ import optuna
 import pandas as pd
 import scipy as sp
 import talib.abstract as ta
-from freqtrade.misc import pair_to_filename
 from EnumErrors import enum_error_message
+from freqtrade.misc import pair_to_filename
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     COMBINED_METRICS,
@@ -249,9 +248,7 @@ def safe_divide(
     numerator_arr = np.asarray(numerator, dtype=float)
     denominator_arr = np.asarray(denominator, dtype=float)
     valid_mask = (
-        np.isfinite(numerator_arr)
-        & np.isfinite(denominator_arr)
-        & (denominator_arr != 0.0)
+        np.isfinite(numerator_arr) & np.isfinite(denominator_arr) & (denominator_arr != 0.0)
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         result = np.divide(
@@ -414,9 +411,7 @@ class _RangeValidator:
             return False
         if self.min_bound is not None and value[0] < self.min_bound:
             return False
-        if self.max_bound is not None and value[1] > self.max_bound:
-            return False
-        return True
+        return not (self.max_bound is not None and value[1] > self.max_bound)
 
     def message(self, param: str) -> str:
         if self.min_bound is not None and self.max_bound is not None:
@@ -444,13 +439,7 @@ class _BoolValidator:
         return "must be a boolean"
 
 
-_Validator = (
-    _EnumValidator
-    | _NumericValidator
-    | _RangeValidator
-    | _DictValidator
-    | _BoolValidator
-)
+_Validator = _EnumValidator | _NumericValidator | _RangeValidator | _DictValidator | _BoolValidator
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,9 +471,7 @@ def _validate_params(
                     f"Invalid {config_name} {param} keys {sorted(invalid_keys)!r}, "
                     f"valid keys: {', '.join(spec.validator.valid_keys)}"
                 )
-                value = {
-                    k: v for k, v in value.items() if k in spec.validator.valid_keys
-                }
+                value = {k: v for k, v in value.items() if k in spec.validator.valid_keys}
         if spec.output_type is not None:
             if spec.output_type is tuple and isinstance(value, (list, tuple)):
                 value = (value[0], value[1])
@@ -515,41 +502,35 @@ def require_numeric(
     )
     accepted_types = (int,) if require_int else (int, float)
     if type(value) not in accepted_types or not validator(value):
-        raise ValueError(
-            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
-        )
+        raise ValueError(f"Invalid {context}.{name} value {value!r}: {validator.message(name)}")
     return value
 
 
 def require_bool(value: Any, name: str, *, context: str) -> bool:
     validator = _BoolValidator()
     if not validator(value):
-        raise ValueError(
-            f"Invalid {context}.{name} value {value!r}: {validator.message(name)}"
-        )
+        raise ValueError(f"Invalid {context}.{name} value {value!r}: {validator.message(name)}")
     return value
 
 
 def validate_range(
-    min_val: float | int,
-    max_val: float | int,
+    min_val: float,
+    max_val: float,
     logger: Logger,
     *,
     name: str,
-    default_min: float | int,
-    default_max: float | int,
+    default_min: float,
+    default_max: float,
     allow_equal: bool = False,
     non_negative: bool = True,
     finite_only: bool = True,
-    max_value: float | int | None = None,
+    max_value: float | None = None,
 ) -> tuple[float | int, float | int]:
     min_name = f"min_{name}"
     max_name = f"max_{name}"
 
-    if not isinstance(default_min, (int, float)) or not isinstance(
-        default_max, (int, float)
-    ):
-        raise ValueError(
+    if not isinstance(default_min, (int, float)) or not isinstance(default_max, (int, float)):
+        raise TypeError(
             f"Invalid {name}: defaults must be numeric, "
             f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
         )
@@ -564,9 +545,7 @@ def validate_range(
             f"got min={default_min!r}, max={default_max!r}"
         )
 
-    def _validate_component(
-        value: float | int | None, name: str, default_value: float | int
-    ) -> float | int:
+    def _validate_component(value: float | None, name: str, default_value: float) -> float | int:
         constraints = []
         if finite_only:
             constraints.append("finite")
@@ -593,9 +572,7 @@ def validate_range(
     sanitized_max = _validate_component(max_val, max_name, default_max)
 
     ordering_ok = (
-        (sanitized_min < sanitized_max)
-        if not allow_equal
-        else (sanitized_min <= sanitized_max)
+        (sanitized_min < sanitized_max) if not allow_equal else (sanitized_min <= sanitized_max)
     )
     if not ordering_ok:
         logger.warning(
@@ -617,20 +594,12 @@ _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     "strategy": _ParamSpec(_EnumValidator(WEIGHT_STRATEGIES)),
     "metric_coefficients": _ParamSpec(_DictValidator(COMBINED_METRICS)),
     "aggregation": _ParamSpec(_EnumValidator(COMBINED_AGGREGATIONS)),
-    "softmax_temperature": _ParamSpec(
-        _NumericValidator(min_value=0, min_exclusive=True)
-    ),
+    "softmax_temperature": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True)),
     "fill_method": _ParamSpec(_EnumValidator(FILL_METHODS)),
-    "fill_epsilon": _ParamSpec(
-        _NumericValidator(min_value=0.0, max_value=1.0), output_type=float
-    ),
+    "fill_epsilon": _ParamSpec(_NumericValidator(min_value=0.0, max_value=1.0), output_type=float),
     "fill_epsilon_baseline": _ParamSpec(_EnumValidator(FILL_EPSILON_BASELINES)),
-    "fill_sigma_candles": _ParamSpec(
-        _NumericValidator(min_value=0.5), output_type=float
-    ),
-    "fill_sigma_min_candles": _ParamSpec(
-        _NumericValidator(min_value=0.5), output_type=float
-    ),
+    "fill_sigma_candles": _ParamSpec(_NumericValidator(min_value=0.5), output_type=float),
+    "fill_sigma_min_candles": _ParamSpec(_NumericValidator(min_value=0.5), output_type=float),
     "fill_bandwidth": _ParamSpec(_EnumValidator(FILL_BANDWIDTHS)),
     "fill_bandwidth_neighbors": _ParamSpec(
         _NumericValidator(min_value=1, require_int=True), output_type=int
@@ -645,42 +614,26 @@ _WEIGHTING_SPECS: Final[dict[str, _ParamSpec]] = {
     "min_positive_label_weight_fraction": _ParamSpec(
         _NumericValidator(min_value=0.0, max_value=1.0), output_type=float
     ),
-    "min_effective_sample_size": _ParamSpec(
-        _NumericValidator(min_value=1), output_type=float
-    ),
+    "min_effective_sample_size": _ParamSpec(_NumericValidator(min_value=1), output_type=float),
 }
 
 _PIPELINE_SPECS: Final[dict[str, _ParamSpec]] = {
     "standardization": _ParamSpec(_EnumValidator(STANDARDIZATION_TYPES)),
-    "robust_quantiles": _ParamSpec(
-        _RangeValidator(min_bound=0, max_bound=1), output_type=tuple
-    ),
-    "mmad_scaling_factor": _ParamSpec(
-        _NumericValidator(min_value=0, min_exclusive=True)
-    ),
+    "robust_quantiles": _ParamSpec(_RangeValidator(min_bound=0, max_bound=1), output_type=tuple),
+    "mmad_scaling_factor": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True)),
     "normalization": _ParamSpec(_EnumValidator(NORMALIZATION_TYPES)),
     "minmax_range": _ParamSpec(_RangeValidator(), output_type=tuple),
     "sigmoid_scale": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True)),
-    "gamma": _ParamSpec(
-        _NumericValidator(min_value=0, max_value=10, min_exclusive=True)
-    ),
+    "gamma": _ParamSpec(_NumericValidator(min_value=0, max_value=10, min_exclusive=True)),
 }
 
 _SMOOTHING_SPECS: Final[dict[str, _ParamSpec]] = {
     "method": _ParamSpec(_EnumValidator(SMOOTHING_METHODS)),
-    "window_candles": _ParamSpec(
-        _NumericValidator(min_value=1, require_int=True), output_type=int
-    ),
-    "beta": _ParamSpec(
-        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
-    ),
-    "polyorder": _ParamSpec(
-        _NumericValidator(min_value=0, require_int=True), output_type=int
-    ),
+    "window_candles": _ParamSpec(_NumericValidator(min_value=1, require_int=True), output_type=int),
+    "beta": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True), output_type=float),
+    "polyorder": _ParamSpec(_NumericValidator(min_value=0, require_int=True), output_type=int),
     "mode": _ParamSpec(_EnumValidator(SMOOTHING_MODES)),
-    "sigma": _ParamSpec(
-        _NumericValidator(min_value=0, min_exclusive=True), output_type=float
-    ),
+    "sigma": _ParamSpec(_NumericValidator(min_value=0, min_exclusive=True), output_type=float),
 }
 
 _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -688,14 +641,10 @@ _PREDICTION_SPECS: Final[dict[str, _ParamSpec]] = {
     "selection_method": _ParamSpec(_EnumValidator(EXTREMA_SELECTION_METHODS)),
     "threshold_method": _ParamSpec(_EnumValidator(THRESHOLD_METHODS)),
     "outlier_quantile": _ParamSpec(
-        _NumericValidator(
-            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
-        ),
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True, max_exclusive=True),
         output_type=float,
     ),
-    "soft_extremum_alpha": _ParamSpec(
-        _NumericValidator(min_value=0), output_type=float
-    ),
+    "soft_extremum_alpha": _ParamSpec(_NumericValidator(min_value=0), output_type=float),
     "keep_fraction": _ParamSpec(
         _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
         output_type=float,
@@ -824,9 +773,7 @@ def _adapt_label_generator(
             f"supported; declare an explicit (dataframe, params) or "
             f"(dataframe, params, logger) signature"
         )
-    if any(
-        p.kind == inspect.Parameter.KEYWORD_ONLY and p.name == "logger" for p in params
-    ):
+    if any(p.kind == inspect.Parameter.KEYWORD_ONLY and p.name == "logger" for p in params):
         raise ValueError(
             f"Invalid label generator {generator!r}: keyword-only "
             f"``logger`` is not supported; declare ``logger`` as the "
@@ -862,7 +809,7 @@ def _adapt_label_generator(
                 f"parameter is named {positional[2].name!r}, expected "
                 f"``logger``"
             )
-        return cast(LabelGenerator, generator)
+        return cast("LabelGenerator", generator)
 
     @functools.wraps(generator)
     def adapted(
@@ -999,9 +946,7 @@ def get_smoothing_kernel_half_width(
         sigma = max(float(config.get("sigma", DEFAULTS_LABEL_SMOOTHING["sigma"])), 0.0)
         return int(4.0 * sigma + 0.5)
     if method == SMOOTHING_METHODS[7]:  # "savgol"
-        polyorder = max(
-            int(config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])), 0
-        )
+        polyorder = max(int(config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])), 0)
         effective_window, _, _ = get_savgol_params(raw_window, polyorder, "mirror")
     elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
         effective_window = get_even_window(raw_window)
@@ -1046,9 +991,7 @@ def compose_label_lookahead(
     if known_at_lookahead.empty:
         return known_at_lookahead.copy()
     n = len(known_at_lookahead)
-    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
-        known_at_lookahead
-    )
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(known_at_lookahead)
     if kernel_half_width <= 0:
         return pd.Series(
             known_at_lookahead_values,
@@ -1073,9 +1016,7 @@ def compose_label_lookahead(
     )
 
 
-TradeNatrMethod = Literal[
-    "moving_average", "quantile_interpolation", "weighted_average"
-]
+TradeNatrMethod = Literal["moving_average", "quantile_interpolation", "weighted_average"]
 TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
     "moving_average",
     "quantile_interpolation",
@@ -1099,9 +1040,7 @@ def as_dict(value: Any) -> dict[str, Any]:
 
 def as_config_section(value: Any, name: str, logger: Logger) -> dict[str, Any]:
     if value is not None and not isinstance(value, dict):
-        logger.warning(
-            f"Invalid {name} value {value!r}: must be a mapping, using defaults"
-        )
+        logger.warning(f"Invalid {name} value {value!r}: must be a mapping, using defaults")
     return as_dict(value)
 
 
@@ -1272,9 +1211,11 @@ CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
         "freqai.feature_parameters.causal_mode",
         None,
         lambda value: value is False,
-        "feature_parameters.causal_mode=false is deprecated: "
-        "causal split guards disabled; label lookahead leakage possible. "
-        "Default causal_mode=true; causal_mode=false for acausal baselines only.",
+        (
+            "feature_parameters.causal_mode=false is deprecated: "
+            "causal split guards disabled; label lookahead leakage possible. "
+            "Default causal_mode=true; causal_mode=false for acausal baselines only."
+        ),
     ),
 )
 
@@ -1352,9 +1293,7 @@ def _get_label_config(
             )
             default_config = {}
 
-        validated_default = validate_fn(
-            default_config, logger, f"{config_name}.default"
-        )
+        validated_default = validate_fn(default_config, logger, f"{config_name}.default")
 
         columns_config = config.get("columns", {})
         if not isinstance(columns_config, dict):
@@ -1374,9 +1313,7 @@ def _get_label_config(
             for key, value in col_config.items():
                 if key in defaults_dict:
                     temp = {key: value}
-                    validated = validate_fn(
-                        temp, logger, f"{config_name}.columns[{col_pattern!r}]"
-                    )
+                    validated = validate_fn(temp, logger, f"{config_name}.columns[{col_pattern!r}]")
                     validated_col[key] = validated[key]
                 else:
                     logger.warning(
@@ -1441,20 +1378,15 @@ def get_label_kind_config(
 ) -> dict[str, Any]:
     if kind not in _LABEL_KIND_REGISTRY:
         raise ValueError(
-            f"Unknown label kind {kind!r}: supported values are "
-            f"{', '.join(_LABEL_KIND_REGISTRY)}"
+            f"Unknown label kind {kind!r}: supported values are {', '.join(_LABEL_KIND_REGISTRY)}"
         )
     config = as_config_section(config, kind, logger)
     _, defaults, cross_field_validator = _LABEL_KIND_REGISTRY[kind]
-    validated = _get_label_config(
-        config, logger, kind, _label_kind_validator(kind), defaults
-    )
+    validated = _get_label_config(config, logger, kind, _label_kind_validator(kind), defaults)
     if cross_field_validator is not None:
         for label_col in LABEL_COLUMNS:
             cross_field_validator(
-                get_label_column_config(
-                    label_col, validated["default"], validated["columns"]
-                ),
+                get_label_column_config(label_col, validated["default"], validated["columns"]),
                 f"{kind} for label {label_col!r}",
             )
     return validated
@@ -1494,9 +1426,7 @@ DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
 }
 
 _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
-    "trade_natr_method": _ParamSpec(
-        _EnumValidator(TRADE_NATR_METHODS), output_type=str
-    ),
+    "trade_natr_method": _ParamSpec(_EnumValidator(TRADE_NATR_METHODS), output_type=str),
     "final_take_profit_retracement_fraction": _ParamSpec(
         _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
         output_type=float,
@@ -1553,9 +1483,7 @@ _COOLDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
 _DRAWDOWN_PROTECTION_SPECS: Final[dict[str, _ParamSpec]] = {
     "enabled": _ParamSpec(_BoolValidator()),
     "max_allowed_drawdown": _ParamSpec(
-        _NumericValidator(
-            min_value=0, max_value=1, min_exclusive=True, max_exclusive=True
-        ),
+        _NumericValidator(min_value=0, max_value=1, min_exclusive=True, max_exclusive=True),
         output_type=float,
     ),
 }
@@ -1575,27 +1503,21 @@ def get_custom_protections_config(config: Any, logger: Logger) -> dict[str, Any]
         DEFAULTS_CUSTOM_PROTECTIONS,
     )
     validated["cooldown"] = _validate_params(
-        as_config_section(
-            config.get("cooldown"), "custom_protections.cooldown", logger
-        ),
+        as_config_section(config.get("cooldown"), "custom_protections.cooldown", logger),
         logger,
         "custom_protections.cooldown",
         _COOLDOWN_PROTECTION_SPECS,
         DEFAULTS_COOLDOWN_PROTECTION,
     )
     validated["drawdown"] = _validate_params(
-        as_config_section(
-            config.get("drawdown"), "custom_protections.drawdown", logger
-        ),
+        as_config_section(config.get("drawdown"), "custom_protections.drawdown", logger),
         logger,
         "custom_protections.drawdown",
         _DRAWDOWN_PROTECTION_SPECS,
         DEFAULTS_DRAWDOWN_PROTECTION,
     )
     validated["stoploss"] = _validate_params(
-        as_config_section(
-            config.get("stoploss"), "custom_protections.stoploss", logger
-        ),
+        as_config_section(config.get("stoploss"), "custom_protections.stoploss", logger),
         logger,
         "custom_protections.stoploss",
         _STOPLOSS_PROTECTION_SPECS,
@@ -1642,19 +1564,14 @@ _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_reversal_confirmation_config(
-    config: Any, logger: Logger
-) -> dict[str, int | float]:
+def get_reversal_confirmation_config(config: Any, logger: Logger) -> dict[str, int | float]:
     config = as_config_section(config, "reversal_confirmation", logger)
     validated = _validate_params(
         config,
         logger,
         "reversal_confirmation",
         _REVERSAL_CONFIRMATION_SCALAR_SPECS,
-        {
-            key: DEFAULTS_REVERSAL_CONFIRMATION[key]
-            for key in _REVERSAL_CONFIRMATION_SCALAR_SPECS
-        },
+        {key: DEFAULTS_REVERSAL_CONFIRMATION[key] for key in _REVERSAL_CONFIRMATION_SCALAR_SPECS},
     )
 
     min_natr_multiplier_fraction, max_natr_multiplier_fraction = validate_range(
@@ -1687,20 +1604,14 @@ def get_reversal_confirmation_config(
 def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
     causal_mode = config.get("causal_mode", True)
     if not isinstance(causal_mode, bool):
-        logger.warning(
-            f"Invalid causal_mode value {causal_mode!r}: must be bool, using True"
-        )
+        logger.warning(f"Invalid causal_mode value {causal_mode!r}: must be bool, using True")
         return True
     return causal_mode
 
 
 def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
     def _is_positive_int(value: Any) -> bool:
-        return (
-            not isinstance(value, bool)
-            and isinstance(value, (int, np.integer))
-            and value >= 1
-        )
+        return not isinstance(value, bool) and isinstance(value, (int, np.integer)) and value >= 1
 
     fallback = config.get("label_period_candles", 1)
     if not _is_positive_int(fallback):
@@ -1779,9 +1690,7 @@ def sanitize_and_renormalize(
                 f"{context}: drop_mask shape {drop_mask.shape} != arr shape {arr.shape}"
             )
         if not np.issubdtype(drop_mask.dtype, np.bool_):
-            raise ValueError(
-                f"{context}: drop_mask dtype {drop_mask.dtype} is not boolean"
-            )
+            raise ValueError(f"{context}: drop_mask dtype {drop_mask.dtype} is not boolean")
         safe = np.where(drop_mask, 0.0, safe)
     total = safe.sum()
     rescale_overflow = False
@@ -1793,16 +1702,14 @@ def sanitize_and_renormalize(
     if logger is not None:
         if rescale_overflow:
             logger.warning(
-                "%s: rescale factor non-finite (n=%d, total=%r); "
-                "falling back to uniform weights",
+                "%s: rescale factor non-finite (n=%d, total=%r); falling back to uniform weights",
                 context,
                 n,
                 total,
             )
         else:
             logger.warning(
-                "%s: weights collapsed (total=%r, n=%d); falling back "
-                "to uniform weights",
+                "%s: weights collapsed (total=%r, n=%d); falling back to uniform weights",
                 context,
                 total,
                 n,
@@ -1815,8 +1722,7 @@ def sanitize_and_renormalize(
             return masked * (n / total)
         if logger is not None:
             logger.warning(
-                "%s: drop_mask covers all rows in fallback; ignoring "
-                "mask to preserve mean=1",
+                "%s: drop_mask covers all rows in fallback; ignoring mask to preserve mean=1",
                 context,
             )
     return fallback
@@ -1952,9 +1858,7 @@ def compose_sample_weights(
     """
     base_weights = np.asarray(base_weights, dtype=float)
     if label_weights is None:
-        return sanitize_and_renormalize(
-            base_weights, logger=logger, context=f"{context}:base_only"
-        )
+        return sanitize_and_renormalize(base_weights, logger=logger, context=f"{context}:base_only")
     n = base_weights.shape[0]
     arr = np.asarray(label_weights, dtype=float)
     if arr.shape != (n,):
@@ -2087,9 +1991,7 @@ def get_gaussian_std(window: int) -> float:
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
-def get_savgol_params(
-    window: int, polyorder: int, mode: SmoothingMode
-) -> tuple[int, int, str]:
+def get_savgol_params(window: int, polyorder: int, mode: SmoothingMode) -> tuple[int, int, str]:
     if window <= polyorder:
         window = polyorder + 1
     window = get_odd_window(window)
@@ -2171,8 +2073,7 @@ def smooth(
     if n == 0:
         return series
 
-    if window_candles < 3:
-        window_candles = 3
+    window_candles = max(window_candles, 3)
     if n < window_candles:
         return series
     if beta <= 0 or not np.isfinite(beta):
@@ -2302,9 +2203,7 @@ _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
 _ZIGZAG_CONFIRMATION_ALPHA: Final[float] = 0.05
 # With all slopes successful, the one-sided Binomial(0.5) p-value is 2**-m.
-_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = math.ceil(
-    -math.log2(_ZIGZAG_CONFIRMATION_ALPHA)
-)
+_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = math.ceil(-math.log2(_ZIGZAG_CONFIRMATION_ALPHA))
 
 
 def _compute_pivot_kth_neighbor_distances(
@@ -2329,12 +2228,8 @@ def _compute_pivot_kth_neighbor_distances(
         while left < right:
             left_count = (left + right) // 2
             right_count = k - left_count
-            left_distance = (
-                position - sorted_positions[i - left_count] if left_count else 0.0
-            )
-            right_distance = (
-                sorted_positions[i + right_count] - position if right_count else 0.0
-            )
+            left_distance = position - sorted_positions[i - left_count] if left_count else 0.0
+            right_distance = sorted_positions[i + right_count] - position if right_count else 0.0
             if left_distance < right_distance:
                 left = left_count + 1
             else:
@@ -2342,11 +2237,7 @@ def _compute_pivot_kth_neighbor_distances(
         distances[i] = min(
             max(
                 (position - sorted_positions[i - left_count] if left_count else 0.0),
-                (
-                    sorted_positions[i + k - left_count] - position
-                    if k - left_count
-                    else 0.0
-                ),
+                (sorted_positions[i + k - left_count] - position if k - left_count else 0.0),
             )
             for left_count in (left - 1, left)
             if min_left <= left_count <= max_left
@@ -2380,16 +2271,13 @@ def _compute_pivot_sigmas(
     if bandwidth == FILL_BANDWIDTHS[0] or M <= 1:  # "fixed" or trivial
         return np.full(M, float(sigma_candles), dtype=float)
     if bandwidth != FILL_BANDWIDTHS[1]:  # "knn"
-        raise ValueError(
-            enum_error_message("fill_bandwidth", bandwidth, FILL_BANDWIDTHS)
-        )
+        raise ValueError(enum_error_message("fill_bandwidth", bandwidth, FILL_BANDWIDTHS))
 
     d_k = _compute_pivot_kth_neighbor_distances(pivot_indices, neighbors)
     sigmas = float(alpha) * d_k
     sigma_max = float(sigma_candles)
     sigma_min = float(sigma_min_candles)
-    if sigma_min > sigma_max:
-        sigma_min = sigma_max
+    sigma_min = min(sigma_min, sigma_max)
     return np.clip(sigmas, sigma_min, sigma_max)
 
 
@@ -2424,15 +2312,11 @@ def _gaussian_fill_weights(
     while preserving the upper bound ``Out[i] <= max_p w_p``.
     """
     if sigma_candles < 0.5:
-        raise ValueError(
-            f"Invalid sigma_candles value {sigma_candles!r}: must be >= 0.5"
-        )
+        raise ValueError(f"Invalid sigma_candles value {sigma_candles!r}: must be >= 0.5")
     if pivot_indices.size == 0:
         return np.zeros(n_values, dtype=float)
     if np.any(pivot_weights < 0.0):
-        raise ValueError(
-            f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0"
-        )
+        raise ValueError(f"Invalid pivot_weights min={float(pivot_weights.min())!r}: must be >= 0")
     pivot_indices_array = pivot_indices.astype(float)
     pivot_weights_array = pivot_weights.astype(float)
     pivot_sigmas = _compute_pivot_sigmas(
@@ -2444,11 +2328,7 @@ def _gaussian_fill_weights(
         sigma_min_candles=sigma_min_candles,
     )
     M = pivot_indices_array.size
-    if (
-        logger is not None
-        and n_values > 0
-        and M / n_values > _GAUSSIAN_FILL_DENSITY_WARN
-    ):
+    if logger is not None and n_values > 0 and M / n_values > _GAUSSIAN_FILL_DENSITY_WARN:
         logger.warning(
             "gaussian_fill: pivot density M/N=%.3f > %.2f (M=%d, N=%d); "
             "consider tightening zigzag detection",
@@ -2486,13 +2366,12 @@ def _gaussian_fill_weights(
         return out
 
     out = np.zeros(n_values, dtype=float)
-    support_radius = math.ceil(
-        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(sigma_candles)
-    )
+    support_radius = math.ceil(_WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(sigma_candles))
     for pivot, pivot_weight, pivot_sigma in zip(
         pivot_indices_array,
         pivot_weights_array,
         pivot_sigmas,
+        strict=False,
     ):
         if pivot_weight == 0.0:
             continue
@@ -2567,21 +2446,13 @@ def _aggregate_metrics(
     softmax_temperature: float,
 ) -> NDArray[np.floating]:
     if aggregation == COMBINED_AGGREGATIONS[0]:  # "arithmetic_mean"
-        return np.asarray(
-            sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1)
-        )
+        return np.asarray(sp.stats.pmean(stacked_metrics.T, p=1.0, weights=coefficients, axis=1))
     elif aggregation == COMBINED_AGGREGATIONS[1]:  # "geometric_mean"
-        return np.asarray(
-            sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1)
-        )
+        return np.asarray(sp.stats.pmean(stacked_metrics.T, p=0.0, weights=coefficients, axis=1))
     elif aggregation == COMBINED_AGGREGATIONS[2]:  # "harmonic_mean"
-        return np.asarray(
-            sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1)
-        )
+        return np.asarray(sp.stats.pmean(stacked_metrics.T, p=-1.0, weights=coefficients, axis=1))
     elif aggregation == COMBINED_AGGREGATIONS[3]:  # "quadratic_mean"
-        return np.asarray(
-            sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1)
-        )
+        return np.asarray(sp.stats.pmean(stacked_metrics.T, p=2.0, weights=coefficients, axis=1))
     elif aggregation == COMBINED_AGGREGATIONS[4]:  # "weighted_median"
         return np.array(
             [
@@ -2600,19 +2471,13 @@ def _aggregate_metrics(
         scaled_metrics = stacked_metrics / softmax_temperature
         softmax_weights = sp.special.softmax(scaled_metrics, axis=0)
         combined_weights = softmax_weights * coefficients[:, np.newaxis]
-        combined_weights = combined_weights / np.sum(
-            combined_weights, axis=0, keepdims=True
-        )
+        combined_weights = combined_weights / np.sum(combined_weights, axis=0, keepdims=True)
         return np.sum(stacked_metrics * combined_weights, axis=0)
     else:
-        raise ValueError(
-            enum_error_message("aggregation", aggregation, COMBINED_AGGREGATIONS)
-        )
+        raise ValueError(enum_error_message("aggregation", aggregation, COMBINED_AGGREGATIONS))
 
 
-def _invalid_weight_strategy_message(
-    strategy: str, metrics: dict[str, list[float]]
-) -> str:
+def _invalid_weight_strategy_message(strategy: str, metrics: dict[str, list[float]]) -> str:
     return (
         f"Invalid weighting strategy value {strategy!r}: "
         f"supported values are {', '.join(WEIGHT_STRATEGIES)} or metric names {', '.join(metrics.keys())}"
@@ -2632,7 +2497,7 @@ def _select_combined_metrics(
     """
     coefficients = _parse_metric_coefficients(metric_coefficients)
     if len(coefficients) == 0:
-        coefficients = {k: 1.0 for k in metrics.keys()}
+        coefficients = dict.fromkeys(metrics, 1.0)
 
     selected: list[tuple[str, NDArray[np.floating], float]] = []
     for metric_name, metric_values in metrics.items():
@@ -2716,8 +2581,7 @@ def _compute_combined_label_weight_pipeline(
     )
     if expected_length is not None and combined_weights.shape != (expected_length,):
         raise ValueError(
-            f"Invalid combined weights shape {combined_weights.shape}: "
-            f"must be ({expected_length},)"
+            f"Invalid combined weights shape {combined_weights.shape}: must be ({expected_length},)"
         )
     return _CombinedWeightPipeline(selected, combined_weights)
 
@@ -2826,8 +2690,7 @@ def compute_label_weight_imputation_dependency_mask(
             return _empty_masks()
         if values.shape != (n_indices,):
             raise ValueError(
-                f"Invalid metric {strategy!r} shape {values.shape}: "
-                f"must be ({n_indices},)"
+                f"Invalid metric {strategy!r} shape {values.shape}: must be ({n_indices},)"
             )
         dependency = _nonfinite_imputation_dependency_mask(values)
         leading_stable = np.zeros(n_indices, dtype=bool)
@@ -2874,11 +2737,7 @@ def compute_label_weight_imputation_dependency_mask(
 
     leading_stable = np.zeros(n_indices, dtype=bool)
     release_index = -1
-    if (
-        every_component_has_finite
-        and first_finite_indices
-        and min(first_finite_indices) >= 1
-    ):
+    if every_component_has_finite and first_finite_indices and min(first_finite_indices) >= 1:
         stable_length = min(first_finite_indices)
         if bool(np.all(combined_weights[:stable_length] == 0.0)):
             leading_stable[:stable_length] = True
@@ -2907,9 +2766,7 @@ def _compute_epsilon_floor(
         b = float(np.nanmedian(pivot_values))
     else:
         raise ValueError(
-            enum_error_message(
-                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
-            )
+            enum_error_message("fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES)
         )
     if not np.isfinite(b):
         b = 0.0
@@ -2952,12 +2809,9 @@ def _compute_causal_epsilon_fill(
     """Per-row epsilon floor from pivot weights fixed at their availability."""
     if len(known_at_lookahead) != n_values:
         raise ValueError(
-            "Invalid known_at_lookahead length "
-            f"{len(known_at_lookahead)}: must be {n_values}"
+            f"Invalid known_at_lookahead length {len(known_at_lookahead)}: must be {n_values}"
         )
-    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
-        known_at_lookahead
-    )
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(known_at_lookahead)
     if not valid_mask.any():
         return np.zeros(n_values, dtype=float)
 
@@ -2999,32 +2853,22 @@ def _compute_causal_epsilon_fill(
 
     baseline = label_weighting["fill_epsilon_baseline"]
     if baseline == FILL_EPSILON_BASELINES[0]:  # "mean"
-        running_baseline = (
-            pd.Series(pivot_values).expanding().mean().to_numpy(dtype=float)
-        )
+        running_baseline = pd.Series(pivot_values).expanding().mean().to_numpy(dtype=float)
     elif baseline == FILL_EPSILON_BASELINES[1]:  # "median"
-        running_baseline = (
-            pd.Series(pivot_values).expanding().median().to_numpy(dtype=float)
-        )
+        running_baseline = pd.Series(pivot_values).expanding().median().to_numpy(dtype=float)
     else:
         raise ValueError(
-            enum_error_message(
-                "fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES
-            )
+            enum_error_message("fill_epsilon_baseline", baseline, FILL_EPSILON_BASELINES)
         )
 
     event_ends = _segment_ends(pivot_available_at)
     availability_events = pivot_available_at[event_ends]
     event_floors = float(label_weighting["fill_epsilon"]) * running_baseline[event_ends]
 
-    available_count = np.searchsorted(
-        availability_events, known_at_positions, side="right"
-    )
+    available_count = np.searchsorted(availability_events, known_at_positions, side="right")
     fill_weights = np.zeros(n_values, dtype=float)
     has_available_pivot = available_count > 0
-    fill_weights[has_available_pivot] = event_floors[
-        available_count[has_available_pivot] - 1
-    ]
+    fill_weights[has_available_pivot] = event_floors[available_count[has_available_pivot] - 1]
     return fill_weights
 
 
@@ -3214,8 +3058,7 @@ def weight_fill_radius(weighting_config: dict[str, Any]) -> int:
     ):
         return 0
     return math.ceil(
-        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER
-        * float(label_weighting["fill_sigma_candles"])
+        _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER * float(label_weighting["fill_sigma_candles"])
     )
 
 
@@ -3259,7 +3102,7 @@ def _compute_knn_pivot_sigma_availability(
     sigma_max = float(sigma_candles)
     alpha_value = float(alpha)
     for i, (pivot_position, kth_distance) in enumerate(
-        zip(pivot_positions, kth_distances)
+        zip(pivot_positions, kth_distances, strict=False)
     ):
         raw_sigma = alpha_value * kth_distance
         if raw_sigma >= sigma_max:
@@ -3331,33 +3174,24 @@ def _compute_knn_pivot_sigma_availability(
                 # atomically. The last replayed pivot's internal confirmation
                 # is hidden by that watermark, but its successor must still be
                 # at least ``pivot_spacing`` candles later.
-                first_future_pivot_position = (
-                    int(pivot_positions[bound]) + pivot_spacing
-                )
+                first_future_pivot_position = int(pivot_positions[bound]) + pivot_spacing
             else:
                 first_future_pivot_position = int(pivot_confirmations[bound]) + 1
             has_future = first_future_pivot_position <= last_future_pivot_position
             confirmed_rank = min(neighbors, confirmed_neighbors)
             confirmed_closer = max(0, min(prefix_end, closer_right) - closer_left - 1)
             confirmed_within = max(0, min(prefix_end, within_right) - within_left - 1)
-            last_future_closer_position = min(
-                last_future_pivot_position, future_closer_end
-            )
+            last_future_closer_position = min(last_future_pivot_position, future_closer_end)
             future_closer = (
                 0
                 if last_future_closer_position < first_future_pivot_position
-                else (last_future_closer_position - first_future_pivot_position)
-                // pivot_spacing
+                else (last_future_closer_position - first_future_pivot_position) // pivot_spacing
                 + 1
             )
-            all_future_within = (
-                not has_future or last_future_pivot_position <= future_within_end
-            )
+            all_future_within = not has_future or last_future_pivot_position <= future_within_end
 
             if raw_sigma >= sigma_max:
-                prefix_matches = (
-                    confirmed_neighbors == 0 or confirmed_closer < confirmed_rank
-                )
+                prefix_matches = confirmed_neighbors == 0 or confirmed_closer < confirmed_rank
                 suffix_matches = (
                     future_closer == 0
                     if confirmed_neighbors == 0
@@ -3433,9 +3267,7 @@ def compute_label_weight_known_at_lookahead(
     dropped pivot) where the run is a contiguous prefix.
     """
     n = len(known_at_lookahead)
-    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(
-        known_at_lookahead
-    )
+    positions, known_at_lookahead_values = _sanitize_known_at_lookahead(known_at_lookahead)
     if n == 0:
         return pd.Series(positions, index=known_at_lookahead.index, dtype=np.int64)
     known_at_positions = positions + known_at_lookahead_values
@@ -3448,9 +3280,7 @@ def compute_label_weight_known_at_lookahead(
             return np.zeros(raw_idx.size, dtype=bool)
         arr = np.asarray(mask)
         if arr.shape != raw_idx.shape:
-            raise ValueError(
-                f"Invalid {name} shape {arr.shape}: must be {raw_idx.shape}"
-            )
+            raise ValueError(f"Invalid {name} shape {arr.shape}: must be {raw_idx.shape}")
         if arr.dtype != np.bool_:
             raise ValueError(f"Invalid {name} dtype {arr.dtype}: must be bool")
         return arr
@@ -3511,9 +3341,7 @@ def compute_label_weight_known_at_lookahead(
             # Prefix max (not weight_availability[stable_release_index]) stays
             # leak-free if availability is non-monotone, at worst deferring
             # later; guarded to identity order (contiguous prefix run).
-            release = int(
-                np.max(weight_availability[: imputation_stable_release_index + 1])
-            )
+            release = int(np.max(weight_availability[: imputation_stable_release_index + 1]))
             avail_pivot[leading_stable_mask] = release
         base[idx] = np.maximum(base[idx], avail_pivot)
         if fill_radius > 0:
@@ -3529,6 +3357,7 @@ def compute_label_weight_known_at_lookahead(
                 band_weight_availability.tolist(),
                 dependency_mask.tolist(),
                 leading_stable_mask.tolist(),
+                strict=False,
             ):
                 # A leading-run pivot imputes to 0.0 (zero bump): its own row is
                 # released above; it spreads no band.
@@ -3554,7 +3383,7 @@ def compute_label_weight_known_at_lookahead(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise ValueError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
+        raise TypeError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -3563,7 +3392,7 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
             code = getattr(fn.__func__, "__code__", None)
     if code is None and hasattr(fn, "__func__"):
         code = getattr(fn.__func__, "__code__", None)
-    if code is None and hasattr(fn, "__call__"):
+    if code is None and callable(fn):
         code = getattr(fn.__call__, "__code__", None)
     if code is None:
         raise ValueError(
@@ -3577,7 +3406,7 @@ _SCIENTIFIC_THRESHOLD_LOW = 1e-6
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-def format_number(value: int | float, significant_digits: int = 5) -> str:
+def format_number(value: float, significant_digits: int = 5) -> str:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
     if isinstance(value, (np.integer, np.floating)):
@@ -3592,9 +3421,7 @@ def format_number(value: int | float, significant_digits: int = 5) -> str:
 
     abs_value = abs(value)
 
-    if abs_value >= _SCIENTIFIC_THRESHOLD_HIGH or (
-        0 < abs_value <= _SCIENTIFIC_THRESHOLD_LOW
-    ):
+    if abs_value >= _SCIENTIFIC_THRESHOLD_HIGH or (0 < abs_value <= _SCIENTIFIC_THRESHOLD_LOW):
         return f"{value:.{significant_digits - 1}e}"
 
     if abs_value == 0:
@@ -3620,7 +3447,7 @@ _MAX_DEPTH = 2
 
 
 class _FormatContext:
-    __slots__ = ("quote_strings", "sig_digits", "seen")
+    __slots__ = ("quote_strings", "seen", "sig_digits")
 
     def __init__(self, quote_strings: bool, sig_digits: int):
         self.quote_strings = quote_strings
@@ -3671,10 +3498,7 @@ def _(value: np.bool_, ctx: _FormatContext, depth: int) -> str:
 @_format_value.register(str)
 def _(value: str, ctx: _FormatContext, depth: int) -> str:
     escaped = (
-        value.replace("\\", "\\\\")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
+        value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     )
     if len(escaped) > _MAX_STR_LEN:
         escaped = escaped[:_MAX_STR_LEN] + "..."
@@ -3711,8 +3535,7 @@ def _(value: dict, ctx: _FormatContext, depth: int) -> str:
     ctx.seen.add(obj_id)
     sep = ": " if ctx.quote_strings else "="
     items = [
-        f"{k}{sep}{_format_value(v, ctx, depth + 1)}"
-        for k, v in list(value.items())[:_MAX_ITEMS]
+        f"{k}{sep}{_format_value(v, ctx, depth + 1)}" for k, v in list(value.items())[:_MAX_ITEMS]
     ]
     if len(value) > _MAX_ITEMS:
         items.append(f"...+{len(value) - _MAX_ITEMS}")
@@ -3793,9 +3616,7 @@ def top_log_return(
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
 
-    previous_close_top = (
-        dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
-    )
+    previous_close_top = dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
 
     return safe_log_ratio(
         dataframe.get("close"),
@@ -3846,12 +3667,8 @@ def price_retracement_percent(
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
 
-    previous_close_low = (
-        dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
-    )
-    previous_close_high = (
-        dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
-    )
+    previous_close_low = dataframe.get("close").rolling(period, min_periods=period).min().shift(1)
+    previous_close_high = dataframe.get("close").rolling(period, min_periods=period).max().shift(1)
     denominator = safe_log_ratio(
         previous_close_high,
         previous_close_low,
@@ -3896,14 +3713,10 @@ def calculate_zero_lag(series: pd.Series, period: int) -> pd.Series:
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_ma_fn(
     mamode: str,
-) -> Callable[
-    [pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]
-]:
+) -> Callable[[pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]]:
     mamodes: dict[
         str,
-        Callable[
-            [pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]
-        ],
+        Callable[[pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]],
     ] = {
         "sma": ta.SMA,
         "ema": ta.EMA,
@@ -3920,9 +3733,7 @@ def get_ma_fn(
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_zl_ma_fn(
     mamode: str,
-) -> Callable[
-    [pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]
-]:
+) -> Callable[[pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]]:
     ma_fn = get_ma_fn(mamode)
     return lambda series, timeperiod: ma_fn(
         calculate_zero_lag(series, timeperiod), timeperiod=timeperiod
@@ -3988,9 +3799,7 @@ def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Seri
     for i in range(period, n):
         window_highs = highs.iloc[i - period : i]
         window_lows = lows.iloc[i - period : i]
-        fd.iloc[i] = _fractal_dimension(
-            window_highs.to_numpy(), window_lows.to_numpy(), period
-        )
+        fd.iloc[i] = _fractal_dimension(window_highs.to_numpy(), window_lows.to_numpy(), period)
 
     alpha = np.exp(-4.6 * (fd - 1)).clip(0.01, 1)
 
@@ -3999,9 +3808,7 @@ def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Seri
     for i in range(period, n):
         if pd.isna(frama.iloc[i - 1]) or pd.isna(alpha.iloc[i]):
             continue
-        frama.iloc[i] = (
-            alpha.iloc[i] * closes.iloc[i] + (1 - alpha.iloc[i]) * frama.iloc[i - 1]
-        )
+        frama.iloc[i] = alpha.iloc[i] * closes.iloc[i] + (1 - alpha.iloc[i]) * frama.iloc[i - 1]
 
     return frama
 
@@ -4126,12 +3933,10 @@ def find_fractals(df: pd.DataFrame, period: int = 2) -> tuple[list[int], list[in
 
     for i in range(period, n - period):
         is_high_fractal = all(
-            highs[i] > highs[i - j] and highs[i] > highs[i + j]
-            for j in range(1, period + 1)
+            highs[i] > highs[i - j] and highs[i] > highs[i + j] for j in range(1, period + 1)
         )
         is_low_fractal = all(
-            lows[i] < lows[i - j] and lows[i] < lows[i + j]
-            for j in range(1, period + 1)
+            lows[i] < lows[i - j] and lows[i] < lows[i + j] for j in range(1, period + 1)
         )
 
         if is_high_fractal:
@@ -4226,9 +4031,7 @@ def _zigzag(
 
     natr = ta.NATR(df, timeperiod=natr_period) / 100.0
     finite_natr_positions = np.flatnonzero(np.isfinite(natr.to_numpy(dtype=float)))
-    natr_warmup_end_pos = (
-        int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
-    )
+    natr_warmup_end_pos = int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
     natr_values = natr.bfill().to_numpy()
 
     indices: list[int] = df.index.tolist()
@@ -4252,9 +4055,7 @@ def _zigzag(
             invalid_price_count,
         )
     with np.errstate(divide="ignore", invalid="ignore"):
-        closes_log = np.where(
-            np.isfinite(closes) & (closes > 0.0), np.log(closes), np.nan
-        )
+        closes_log = np.where(np.isfinite(closes) & (closes > 0.0), np.log(closes), np.nan)
         highs_log = np.where(np.isfinite(highs) & (highs > 0.0), np.log(highs), np.nan)
         lows_log = np.where(np.isfinite(lows) & (lows > 0.0), np.log(lows), np.nan)
     volumes = df.get("volume").to_numpy()
@@ -4368,10 +4169,7 @@ def _zigzag(
             current_pos=current_pos,
         )
 
-        if np.isfinite(duration) and duration > 0:
-            speed = amplitude / duration
-        else:
-            speed = np.nan
+        speed = amplitude / duration if np.isfinite(duration) and duration > 0 else np.nan
 
         return (
             amplitude,
@@ -4410,9 +4208,7 @@ def _zigzag(
 
         start_pos = min(previous_pos, current_pos)
         end_pos = max(previous_pos, current_pos) + 1
-        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / (
-            end_pos - start_pos
-        )
+        avg_volume_per_candle = np.nansum(volumes[start_pos:end_pos]) / (end_pos - start_pos)
         median_volume = np.nanmedian(volumes[start_pos:end_pos])
         if (
             np.isfinite(avg_volume_per_candle)
@@ -4468,9 +4264,7 @@ def _zigzag(
         if not np.isfinite(total_volume) or np.isclose(total_volume, 0.0):
             return np.nan
 
-        vw_close_diffs = np.diff(closes_log[start_pos:end_pos]) * (
-            volumes_slice / total_volume
-        )
+        vw_close_diffs = np.diff(closes_log[start_pos:end_pos]) * (volumes_slice / total_volume)
         vw_path_length = np.nansum(np.abs(vw_close_diffs))
         vw_net_move = abs(np.nansum(vw_close_diffs))
 
@@ -4501,9 +4295,7 @@ def _zigzag(
             latest_confirmation_pos,
         )
         latest_confirmation_pos = confirmed_at_pos
-        known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = (
-            confirmed_at_pos
-        )
+        known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = confirmed_at_pos
         last_resolved_pos = max(last_resolved_pos, resolve_through_pos)
         if pivots_indices and indices[pos] == pivots_indices[-1]:
             return
@@ -4532,11 +4324,9 @@ def _zigzag(
                 previous_pos=last_pivot_pos,
                 current_pos=pos,
             )
-            volume_weighted_efficiency_ratio = (
-                calculate_pivot_volume_weighted_efficiency_ratio(
-                    previous_pos=last_pivot_pos,
-                    current_pos=pos,
-                )
+            volume_weighted_efficiency_ratio = calculate_pivot_volume_weighted_efficiency_ratio(
+                previous_pos=last_pivot_pos,
+                current_pos=pos,
             )
 
             pivots_amplitudes[-1] = amplitude
@@ -4544,9 +4334,7 @@ def _zigzag(
             pivots_volume_rates[-1] = volume_rate
             pivots_speeds[-1] = speed
             pivots_efficiency_ratios[-1] = efficiency_ratio
-            pivots_volume_weighted_efficiency_ratios[-1] = (
-                volume_weighted_efficiency_ratio
-            )
+            pivots_volume_weighted_efficiency_ratios[-1] = volume_weighted_efficiency_ratio
 
         pivots_indices.append(indices[pos])
         pivots_values_log.append(value_log)
@@ -4627,14 +4415,9 @@ def _zigzag(
 
         slopes_ok_threshold = calculate_slopes_ok_threshold(candidate_pivot_pos)
         n_slopes_ok = sum(slopes_ok)
-        binomtest = sp.stats.binomtest(
-            k=n_slopes_ok, n=n_slopes, p=0.5, alternative="greater"
-        )
+        binomtest = sp.stats.binomtest(k=n_slopes_ok, n=n_slopes, p=0.5, alternative="greater")
 
-        return (
-            binomtest.pvalue <= alpha
-            and (n_slopes_ok / n_slopes) >= slopes_ok_threshold
-        )
+        return binomtest.pvalue <= alpha and (n_slopes_ok / n_slopes) >= slopes_ok_threshold
 
     start_pos = 0
     initial_high_pos = start_pos
@@ -4713,15 +4496,12 @@ def _zigzag(
 
     for i in range(last_pivot_pos + 1, n):
         if state == TrendDirection.UP:
-            if (
-                np.isnan(candidate_pivot_value_log)
-                or highs_log[i] > highs_log[candidate_pivot_pos]
-            ):
+            if np.isnan(candidate_pivot_value_log) or highs_log[i] > highs_log[candidate_pivot_pos]:
                 update_candidate_pivot(i, highs_log[i])
             move_down = abs(lows_log[i] - candidate_pivot_value_log)
-            if move_down >= np.log1p(
-                thresholds[candidate_pivot_pos]
-            ) and is_pivot_confirmed(i, candidate_pivot_pos, TrendDirection.DOWN):
+            if move_down >= np.log1p(thresholds[candidate_pivot_pos]) and is_pivot_confirmed(
+                i, candidate_pivot_pos, TrendDirection.DOWN
+            ):
                 add_pivot(
                     candidate_pivot_pos,
                     highs_log[candidate_pivot_pos],
@@ -4732,15 +4512,12 @@ def _zigzag(
                 state = TrendDirection.DOWN
 
         elif state == TrendDirection.DOWN:
-            if (
-                np.isnan(candidate_pivot_value_log)
-                or lows_log[i] < lows_log[candidate_pivot_pos]
-            ):
+            if np.isnan(candidate_pivot_value_log) or lows_log[i] < lows_log[candidate_pivot_pos]:
                 update_candidate_pivot(i, lows_log[i])
             move_up = abs(highs_log[i] - candidate_pivot_value_log)
-            if move_up >= np.log1p(
-                thresholds[candidate_pivot_pos]
-            ) and is_pivot_confirmed(i, candidate_pivot_pos, TrendDirection.UP):
+            if move_up >= np.log1p(thresholds[candidate_pivot_pos]) and is_pivot_confirmed(
+                i, candidate_pivot_pos, TrendDirection.UP
+            ):
                 add_pivot(
                     candidate_pivot_pos,
                     lows_log[candidate_pivot_pos],
@@ -4754,17 +4531,13 @@ def _zigzag(
         indices=pivots_indices,
         values_log=pivots_values_log,
         directions=pivots_directions,
-        amplitudes=(
-            minmax_scale(pivots_amplitudes) if normalize else pivots_amplitudes
-        ),
+        amplitudes=(minmax_scale(pivots_amplitudes) if normalize else pivots_amplitudes),
         amplitude_threshold_ratios=(
             minmax_scale(pivots_amplitude_threshold_ratios)
             if normalize
             else pivots_amplitude_threshold_ratios
         ),
-        volume_rates=(
-            minmax_scale(pivots_volume_rates) if normalize else pivots_volume_rates
-        ),
+        volume_rates=(minmax_scale(pivots_volume_rates) if normalize else pivots_volume_rates),
         speeds=minmax_scale(pivots_speeds) if normalize else pivots_speeds,
         efficiency_ratios=pivots_efficiency_ratios,
         volume_weighted_efficiency_ratios=pivots_volume_weighted_efficiency_ratios,
@@ -4790,9 +4563,7 @@ def zigzag(
     ).as_tuple()
 
 
-Regressor = Literal[
-    "xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"
-]
+Regressor = Literal["xgboost", "lightgbm", "histgradientboostingregressor", "ngboost", "catboost"]
 
 
 class RegressorSpec(NamedTuple):
@@ -4860,13 +4631,9 @@ REGRESSORS: Final[tuple[Regressor, ...]] = tuple(spec.name for spec in _REGRESSO
 DEFAULT_REGRESSOR: Final[Regressor] = _REGRESSOR_SPECS.xgboost.name
 
 if set(_REGRESSOR_SPEC_BY_NAME) != set(get_args(Regressor)):
-    raise RuntimeError(
-        "_REGRESSOR_SPECS must define a spec for every Regressor literal member"
-    )
+    raise RuntimeError("_REGRESSOR_SPECS must define a spec for every Regressor literal member")
 if any(spec.iteration_param not in spec.iteration_aliases for spec in _REGRESSOR_SPECS):
-    raise RuntimeError(
-        "each RegressorSpec.iteration_param must be listed in its iteration_aliases"
-    )
+    raise RuntimeError("each RegressorSpec.iteration_param must be listed in its iteration_aliases")
 
 RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
@@ -4913,9 +4680,7 @@ def get_ngboost_dist(dist_name: str) -> type:
     }
 
     if dist_name not in dist_map:
-        raise ValueError(
-            enum_error_message("dist_name", dist_name, tuple(dist_map.keys()))
-        )
+        raise ValueError(enum_error_message("dist_name", dist_name, tuple(dist_map.keys())))
 
     return dist_map[dist_name]
 
@@ -4932,19 +4697,13 @@ def get_refit_model_training_parameters(
     if regressor == _REGRESSOR_SPECS.xgboost.name:
         fitted_iterations = int(model.get_booster().num_boosted_rounds())
         initial_iterations = (
-            int(init_model.get_booster().num_boosted_rounds())
-            if init_model is not None
-            else 0
+            int(init_model.get_booster().num_boosted_rounds()) if init_model is not None else 0
         )
     elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         best_iteration = getattr(model, "best_iteration_", 0) or 0
-        fitted_iterations = int(
-            best_iteration if best_iteration > 0 else model.n_estimators_
-        )
+        fitted_iterations = int(best_iteration if best_iteration > 0 else model.n_estimators_)
         initial_iterations = (
-            int(init_model.booster_.current_iteration())
-            if init_model is not None
-            else 0
+            int(init_model.booster_.current_iteration()) if init_model is not None else 0
         )
     elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name:
         fitted_iterations = int(model.n_iter_)
@@ -5028,9 +4787,7 @@ def fit_regressor(
         from xgboost import XGBRegressor
         from xgboost.callback import EarlyStopping
 
-        early_stopping_rounds = _pop_early_stopping_rounds(
-            model_training_parameters, has_eval_set
-        )
+        early_stopping_rounds = _pop_early_stopping_rounds(model_training_parameters, has_eval_set)
 
         if early_stopping_rounds is not None:
             fit_callbacks.append(
@@ -5064,9 +4821,7 @@ def fit_regressor(
     elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         from lightgbm import LGBMRegressor, early_stopping
 
-        early_stopping_rounds = _pop_early_stopping_rounds(
-            model_training_parameters, has_eval_set
-        )
+        early_stopping_rounds = _pop_early_stopping_rounds(model_training_parameters, has_eval_set)
 
         if early_stopping_rounds is not None:
             fit_callbacks.append(
@@ -5079,9 +4834,7 @@ def fit_regressor(
 
         if trial is not None and has_eval_set:
             fit_callbacks.append(
-                optuna.integration.LightGBMPruningCallback(
-                    trial, "rmse", valid_name="valid_0"
-                )
+                optuna.integration.LightGBMPruningCallback(trial, "rmse", valid_name="valid_0")
             )
 
         model = LGBMRegressor(objective="regression", **model_training_parameters)
@@ -5103,16 +4856,12 @@ def fit_regressor(
         model_training_parameters.pop("n_jobs", None)
         model_training_parameters.pop("l2_regularization_zero", None)
 
-        early_stopping_rounds = model_training_parameters.pop(
-            "early_stopping_rounds", None
-        )
+        early_stopping_rounds = model_training_parameters.pop("early_stopping_rounds", None)
         if "n_iter_no_change" not in model_training_parameters:
             if early_stopping_rounds is not None:
                 model_training_parameters["n_iter_no_change"] = early_stopping_rounds
             else:
-                model_training_parameters["n_iter_no_change"] = (
-                    _EARLY_STOPPING_ROUNDS_DEFAULT
-                )
+                model_training_parameters["n_iter_no_change"] = _EARLY_STOPPING_ROUNDS_DEFAULT
 
         _apply_verbosity_alias(model_training_parameters)
 
@@ -5147,9 +4896,7 @@ def fit_regressor(
 
         model_training_parameters.pop("n_jobs", None)
 
-        early_stopping_rounds = _pop_early_stopping_rounds(
-            model_training_parameters, has_eval_set
-        )
+        early_stopping_rounds = _pop_early_stopping_rounds(model_training_parameters, has_eval_set)
 
         dist = model_training_parameters.pop("dist", "lognormal")
 
@@ -5192,13 +4939,9 @@ def fit_regressor(
             if trial is not None:
                 trial_path = model_path / f"hp_trial_{trial.number}"
                 trial_path.mkdir(parents=True, exist_ok=True)
-                model_training_parameters["train_dir"] = str(
-                    trial_path / "catboost_info"
-                )
+                model_training_parameters["train_dir"] = str(trial_path / "catboost_info")
             else:
-                model_training_parameters["train_dir"] = str(
-                    model_path / "catboost_info"
-                )
+                model_training_parameters["train_dir"] = str(model_path / "catboost_info")
 
         task_type = model_training_parameters.get("task_type", "CPU")
         loss_function = model_training_parameters.get("loss_function", "RMSE")
@@ -5217,9 +4960,7 @@ def fit_regressor(
                 model_training_parameters.setdefault("thread_count", n_jobs)
             model_training_parameters.setdefault("max_ctr_complexity", 2)
 
-        early_stopping_rounds = _pop_early_stopping_rounds(
-            model_training_parameters, has_eval_set
-        )
+        early_stopping_rounds = _pop_early_stopping_rounds(model_training_parameters, has_eval_set)
 
         _apply_verbosity_alias(model_training_parameters)
 
@@ -5244,9 +4985,7 @@ def fit_regressor(
             early_stopping_rounds=early_stopping_rounds
             if early_stopping_rounds is not None and has_eval_set
             else None,
-            use_best_model=True
-            if early_stopping_rounds is not None and has_eval_set
-            else False,
+            use_best_model=bool(early_stopping_rounds is not None and has_eval_set),
             callbacks=fit_callbacks if fit_callbacks else None,
             init_model=init_model,
         )
@@ -5283,7 +5022,7 @@ def _build_int_range(
 ) -> tuple[int, int]:
     lo, hi = math.ceil(frange[0]), math.floor(frange[1])
     if lo > hi:
-        lo = hi = max(min_val, int(round((frange[0] + frange[1]) / 2)))
+        lo = hi = max(min_val, round((frange[0] + frange[1]) / 2))
     return max(min_val, lo), max(min_val, hi)
 
 
@@ -5314,9 +5053,7 @@ _OPTUNA_BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
 _OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
 
 
-def _optuna_best_params_path(
-    base_path: Path, pair: str, namespace: OptunaNamespace
-) -> Path:
+def _optuna_best_params_path(base_path: Path, pair: str, namespace: OptunaNamespace) -> Path:
     return base_path / f"optuna-{namespace}-best-params-{pair_to_filename(pair)}.json"
 
 
@@ -5398,13 +5135,9 @@ def _validate_optuna_label_best_params(
     schema_version = best_params.get("schema_version")
     if schema_version is None:
         if logger is not None:
-            logger.warning(
-                f"[{pair}] Ignoring Optuna label best params: missing schema_version"
-            )
+            logger.warning(f"[{pair}] Ignoring Optuna label best params: missing schema_version")
         return None
-    if isinstance(schema_version, bool) or not isinstance(
-        schema_version, (int, np.integer)
-    ):
+    if isinstance(schema_version, bool) or not isinstance(schema_version, (int, np.integer)):
         if logger is not None:
             logger.warning(
                 f"[{pair}] Ignoring Optuna label best params: invalid "
@@ -5424,8 +5157,7 @@ def _validate_optuna_label_best_params(
     if not isinstance(selection_metadata, dict):
         if logger is not None:
             logger.warning(
-                f"[{pair}] Ignoring Optuna label best params: missing or invalid "
-                f"selection_metadata"
+                f"[{pair}] Ignoring Optuna label best params: missing or invalid selection_metadata"
             )
         return None
     selection_schema_version = selection_metadata.get("schema_version")
@@ -5536,12 +5268,10 @@ def _quarantine_corrupt_optuna_best_params(
     )
     try:
         best_params_path.rename(quarantine_path)
-    except OSError as quarantine_error:
+    except OSError:
         if logger is not None:
-            logger.error(
-                f"[{pair}] Optuna {namespace} best params "
-                f"{best_params_path.name} quarantine failed: {quarantine_error!r}",
-                exc_info=True,
+            logger.exception(
+                f"[{pair}] Optuna {namespace} best params {best_params_path.name} quarantine failed"
             )
         raise
     if logger is not None:
@@ -5590,9 +5320,7 @@ def _locked_optuna_best_params(
 def _reject_optuna_best_params_symlink(best_params_path: Path) -> None:
     """Fail closed when the live best-params path is a symlink."""
     if best_params_path.is_symlink():
-        raise OSError(
-            f"Optuna best params path {best_params_path} must not be a symlink"
-        )
+        raise OSError(f"Optuna best params path {best_params_path} must not be a symlink")
 
 
 def optuna_load_best_params(
@@ -5742,23 +5470,18 @@ def optuna_save_best_params(
                 json.dump(best_params, write_file, indent=4)
                 write_file.flush()
                 os.fsync(write_file.fileno())
-            os.replace(temporary_path, best_params_path)
+            temporary_path.replace(best_params_path)
             temporary_path = None
     except BaseException as error:
         if temporary_path is not None:
             try:
                 temporary_path.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                logger.error(
-                    f"[{pair}] Optuna {namespace} best params temporary file "
-                    f"{temporary_path.name} cleanup failed: {cleanup_error!r}",
-                    exc_info=True,
+            except OSError:
+                logger.exception(
+                    f"[{pair}] Optuna {namespace} best params temporary file {temporary_path.name} cleanup failed"
                 )
         if isinstance(error, Exception):
-            logger.error(
-                f"[{pair}] Optuna {namespace} failed to save best params: {error!r}",
-                exc_info=True,
-            )
+            logger.exception(f"[{pair}] Optuna {namespace} failed to save best params")
         raise
 
 
@@ -5772,12 +5495,8 @@ def get_optuna_study_model_parameters(
 ) -> dict[str, Any]:
     if regressor not in set(REGRESSORS):
         raise ValueError(enum_error_message("regressor", regressor, REGRESSORS))
-    if not isinstance(space_fraction, (int, float)) or not (
-        0.0 <= space_fraction <= 1.0
-    ):
-        raise ValueError(
-            f"Invalid space_fraction: must be in range [0, 1], got {space_fraction!r}"
-        )
+    if not isinstance(space_fraction, (int, float)) or not (0.0 <= space_fraction <= 1.0):
+        raise ValueError(f"Invalid space_fraction: must be in range [0, 1], got {space_fraction!r}")
 
     def _build_ranges(
         default_ranges: dict[str, tuple[float, float]],
@@ -5789,17 +5508,11 @@ def get_optuna_study_model_parameters(
                 center_value = model_training_best_parameters.get(param)
                 if center_value is None:
                     # Use geometric mean for log-scaled params
-                    if (
-                        param in log_scaled_params
-                        and default_min > 0
-                        and default_max > 0
-                    ):
+                    if param in log_scaled_params and default_min > 0 and default_max > 0:
                         center_value = math.sqrt(default_min * default_max)
                     else:
                         center_value = midpoint(default_min, default_max)
-                if not isinstance(center_value, (int, float)) or not np.isfinite(
-                    center_value
-                ):
+                if not isinstance(center_value, (int, float)) or not np.isfinite(center_value):
                     continue
                 if param in log_scaled_params:
                     if center_value <= 0:
@@ -5855,9 +5568,7 @@ def get_optuna_study_model_parameters(
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
         booster = trial.suggest_categorical("booster", ["gbtree", "dart"])
-        grow_policy = trial.suggest_categorical(
-            "grow_policy", ["depthwise", "lossguide"]
-        )
+        grow_policy = trial.suggest_categorical("grow_policy", ["depthwise", "lossguide"])
 
         params: dict[str, Any] = {
             # Boosting/Training
@@ -5920,9 +5631,7 @@ def get_optuna_study_model_parameters(
             "reg_lambda": trial.suggest_float(
                 "reg_lambda", ranges["reg_lambda"][0], ranges["reg_lambda"][1], log=True
             ),
-            "gamma": trial.suggest_float(
-                "gamma", ranges["gamma"][0], ranges["gamma"][1], log=True
-            ),
+            "gamma": trial.suggest_float("gamma", ranges["gamma"][0], ranges["gamma"][1], log=True),
             # Binning
             "max_bin": _optuna_suggest_int_from_range(
                 trial, "max_bin", ranges["max_bin"], min_val=2
@@ -6043,9 +5752,7 @@ def get_optuna_study_model_parameters(
             params["drop_rate"] = trial.suggest_float("drop_rate", 0.0, 0.5)
             params["skip_drop"] = trial.suggest_float("skip_drop", 0.0, 0.7)
             params["max_drop"] = trial.suggest_int("max_drop", 10, 100)
-            params["uniform_drop"] = trial.suggest_categorical(
-                "uniform_drop", [False, True]
-            )
+            params["uniform_drop"] = trial.suggest_categorical("uniform_drop", [False, True])
 
         return params
 
@@ -6081,9 +5788,7 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        l2_regularization_zero = trial.suggest_categorical(
-            "l2_regularization_zero", [False, True]
-        )
+        l2_regularization_zero = trial.suggest_categorical("l2_regularization_zero", [False, True])
         if l2_regularization_zero:
             l2_regularization = 0.0
         else:
@@ -6094,9 +5799,7 @@ def get_optuna_study_model_parameters(
                 log=True,
             )
 
-        max_depth = trial.suggest_categorical(
-            "max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15]
-        )
+        max_depth = trial.suggest_categorical("max_depth", [None, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15])
 
         max_leaf_nodes_range = ranges["max_leaf_nodes"]
         if isinstance(max_depth, int) and max_depth > 0:
@@ -6226,9 +5929,7 @@ def get_optuna_study_model_parameters(
         loss_function = model_training_parameters.get("loss_function", "RMSE")
 
         if task_type == "GPU":
-            gpu_vram_gb = model_training_parameters.get(
-                "gpu_vram_gb", _CATBOOST_GPU_VRAM_DEFAULT
-            )
+            gpu_vram_gb = model_training_parameters.get("gpu_vram_gb", _CATBOOST_GPU_VRAM_DEFAULT)
             matched_vram_gb = max(
                 (v for v in _CATBOOST_GPU_VRAM_PARAM_RANGES if v <= gpu_vram_gb),
                 default=min(_CATBOOST_GPU_VRAM_PARAM_RANGES.keys()),
@@ -6289,17 +5990,13 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        boosting_type = trial.suggest_categorical(
-            "boosting_type", boosting_type_options
-        )
+        boosting_type = trial.suggest_categorical("boosting_type", boosting_type_options)
         bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
         grow_policy = trial.suggest_categorical(
             "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
         )
         if boosting_type == "Ordered" and grow_policy != "SymmetricTree":
-            raise optuna.TrialPruned(
-                "Ordered boosting is not supported for nonsymmetric trees"
-            )
+            raise optuna.TrialPruned("Ordered boosting is not supported for nonsymmetric trees")
 
         params: dict[str, Any] = {
             # Boosting/Training
@@ -6314,9 +6011,7 @@ def get_optuna_study_model_parameters(
                 log=True,
             ),
             # Tree structure
-            "depth": _optuna_suggest_int_from_range(
-                trial, "depth", ranges["depth"], min_val=1
-            ),
+            "depth": _optuna_suggest_int_from_range(trial, "depth", ranges["depth"], min_val=1),
             "min_data_in_leaf": _optuna_suggest_int_from_range(
                 trial, "min_data_in_leaf", ranges["min_data_in_leaf"], min_val=1
             ),
@@ -6386,9 +6081,7 @@ def get_optuna_study_model_parameters(
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
 def largest_divisor_to_step(integer: int, step: int) -> int | None:
     if not isinstance(integer, int) or integer <= 0:
-        raise ValueError(
-            f"Invalid integer value {integer!r}: must be a positive integer"
-        )
+        raise ValueError(f"Invalid integer value {integer!r}: must be a positive integer")
     if not isinstance(step, int) or step <= 0:
         raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
@@ -6396,7 +6089,7 @@ def largest_divisor_to_step(integer: int, step: int) -> int | None:
         return integer
 
     best_divisor: int | None = None
-    max_divisor = int(math.isqrt(integer))
+    max_divisor = math.isqrt(integer)
     for i in range(1, max_divisor + 1):
         if integer % i != 0:
             continue
@@ -6485,15 +6178,17 @@ def get_min_max_label_period_candles(
     return low, high, candles_step
 
 
-def _validate_step_args(value: float | int, step: int) -> None:
+def _validate_step_args(value: float, step: int) -> None:
     if not isinstance(value, (int, float)):
-        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int) or step <= 0:
+        raise TypeError(f"Invalid value {value!r}: must be an integer or float")
+    if not isinstance(step, int):
+        raise TypeError(f"Invalid step value {step!r}: must be an integer")
+    if step <= 0:
         raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-def round_to_step(value: float | int, step: int) -> int:
+def round_to_step(value: float, step: int) -> int:
     """
     Round a value to the nearest multiple of a given step.
     :param value: The value to round.
@@ -6516,7 +6211,7 @@ def round_to_step(value: float | int, step: int) -> int:
 
 
 def _step_round(
-    value: float | int,
+    value: float,
     step: int,
     int_op: Callable[[int, int], int],
     float_op: Callable[[float], int],
@@ -6530,12 +6225,12 @@ def _step_round(
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-def ceil_to_step(value: float | int, step: int) -> int:
+def ceil_to_step(value: float, step: int) -> int:
     return _step_round(value, step, lambda v, s: -(-v // s), math.ceil)
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-def floor_to_step(value: float | int, step: int) -> int:
+def floor_to_step(value: float, step: int) -> int:
     return _step_round(value, step, lambda v, s: v // s, math.floor)
 
 
@@ -6568,9 +6263,7 @@ def get_label_defaults(
     default_label_natr_multiplier = float(
         midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
     )
-    feature_parameters.setdefault(
-        "label_natr_multiplier", default_label_natr_multiplier
-    )
+    feature_parameters.setdefault("label_natr_multiplier", default_label_natr_multiplier)
 
     min_label_period_candles = feature_parameters.get(
         "min_label_period_candles", default_min_label_period_candles
@@ -6589,8 +6282,8 @@ def get_label_defaults(
         non_negative=True,
         finite_only=True,
     )
-    default_label_period_candles = int(
-        round(midpoint(min_label_period_candles, max_label_period_candles))
+    default_label_period_candles = round(
+        midpoint(min_label_period_candles, max_label_period_candles)
     )
 
     return default_label_period_candles, default_label_natr_multiplier

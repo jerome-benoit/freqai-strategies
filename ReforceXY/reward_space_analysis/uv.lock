@@ -483,7 +483,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.3" },
     { name = "scikit-learn" },
     { name = "scipy", specifier = ">=1.11" },
 ]

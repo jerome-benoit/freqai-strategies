@@ -35,7 +35,7 @@ class TestTransforms(RewardSpaceTestBase):
             ("asinh", [0.0], [0.0]),  # More complex calculations tested separately
             # arctan transform: (2/π) · arctan(x) in (-1, 1)
             ("arctan", [0.0, 1.0], [0.0, 2.0 / math.pi * math.atan(1.0)]),
-            # sigmoid transform: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)  # noqa: RUF003
+            # sigmoid transform: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)
             ("sigmoid", [0.0], [0.0]),  # More complex calculations tested separately
             # clip transform: clip(x, -1, 1) in [-1, 1]
             ("clip", [0.0, 0.5, 2.0, -2.0], [0.0, 0.5, 1.0, -1.0]),

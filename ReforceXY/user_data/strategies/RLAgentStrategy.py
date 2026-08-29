@@ -1,7 +1,7 @@
 import datetime
 import logging
 from functools import reduce
-from typing import Any, Final, Literal, Optional
+from typing import Any, Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -112,16 +112,12 @@ class RLAgentStrategy(IStrategy):
 
         return dataframe
 
-    def populate_indicators(
-        self, dataframe: DataFrame, metadata: dict[str, Any]
-    ) -> DataFrame:
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         dataframe = self.freqai.start(dataframe, metadata, self)
 
         return dataframe
 
-    def populate_entry_trend(
-        self, dataframe: DataFrame, metadata: dict[str, Any]
-    ) -> DataFrame:
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         enter_long_conditions = [
             dataframe.get("do_predict") == 1,
             dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_ENTER_LONG,  # 1,
@@ -142,9 +138,7 @@ class RLAgentStrategy(IStrategy):
 
         return dataframe
 
-    def populate_exit_trend(
-        self, dataframe: DataFrame, metadata: dict[str, Any]
-    ) -> DataFrame:
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         exit_long_conditions = [
             dataframe.get("do_predict") == 1,
             dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_EXIT_LONG,  # 2,
@@ -155,9 +149,7 @@ class RLAgentStrategy(IStrategy):
             dataframe.get("do_predict") == 1,
             dataframe.get(ACTION_COLUMN) == RLAgentStrategy._ACTION_EXIT_SHORT,  # 4,
         ]
-        dataframe.loc[
-            reduce(lambda x, y: x & y, exit_short_conditions), "exit_short"
-        ] = 1
+        dataframe.loc[reduce(lambda x, y: x & y, exit_short_conditions), "exit_short"] = 1
 
         last_candle = dataframe.iloc[-1]
         if last_candle.get("do_predict") == 2:
@@ -178,7 +170,7 @@ class RLAgentStrategy(IStrategy):
         current_rate: float,
         proposed_leverage: float,
         max_leverage: float,
-        entry_tag: Optional[str],
+        entry_tag: str | None,
         side: str,
         **kwargs: Any,
     ) -> float:
