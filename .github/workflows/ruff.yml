@@ -9,9 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  RUFF_VERSION: "0.16.5"
-
 concurrency:
   group: ruff-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -27,10 +24,9 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.12.7"
           enable-cache: true
           cache-dependency-glob: .github/workflows/ruff.yml
       - name: Check repository
-        run: uvx "ruff@${RUFF_VERSION}" check .
+        run: uvx ruff@latest check .
       - name: Check repository formatting
-        run: uvx "ruff@${RUFF_VERSION}" format --check .
+        run: uvx ruff@latest format --check .
