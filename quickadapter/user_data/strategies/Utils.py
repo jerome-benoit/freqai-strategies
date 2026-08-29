@@ -1073,10 +1073,10 @@ def compose_label_lookahead(
     )
 
 
-TradePriceTarget = Literal[
+TradeNatrMethod = Literal[
     "moving_average", "quantile_interpolation", "weighted_average"
 ]
-TRADE_PRICE_TARGETS: Final[tuple[TradePriceTarget, ...]] = (
+TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
     "moving_average",
     "quantile_interpolation",
     "weighted_average",
@@ -1197,6 +1197,10 @@ CONFIG_DEPRECATIONS: Final[tuple[ConfigDeprecation, ...]] = (
     _renamed_config_key(
         "exit_pricing.trade_price_target",
         "exit_pricing.trade_price_target_method",
+    ),
+    _renamed_config_key(
+        "exit_pricing.trade_price_target_method",
+        "exit_pricing.trade_natr_method",
     ),
     _renamed_config_key(
         "reversal_confirmation.lookback_period",
@@ -1485,13 +1489,13 @@ def get_label_prediction_config(
 
 
 DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
-    "trade_price_target_method": TRADE_PRICE_TARGETS[0],  # "moving_average"
+    "trade_natr_method": TRADE_NATR_METHODS[0],  # "moving_average"
     "final_take_profit_retracement_fraction": 0.25,
 }
 
 _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
-    "trade_price_target_method": _ParamSpec(
-        _EnumValidator(TRADE_PRICE_TARGETS), output_type=str
+    "trade_natr_method": _ParamSpec(
+        _EnumValidator(TRADE_NATR_METHODS), output_type=str
     ),
     "final_take_profit_retracement_fraction": _ParamSpec(
         _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
