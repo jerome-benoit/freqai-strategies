@@ -1,4 +1,4 @@
-FROM freqtradeorg/freqtrade:stable_freqai
+FROM freqtradeorg/freqtrade:stable_freqai AS runtime
 
 ARG optuna_version=4.9.0
 ARG optuna_dashboard_version=0.20.0
@@ -28,3 +28,12 @@ RUN pip install --user --no-cache-dir \
 LABEL org.opencontainers.image.source="freqai-strategies" \
       org.opencontainers.image.title="freqtrade-quickadapter" \
       maintainer="auto-generated"
+
+FROM runtime AS qa
+
+COPY --chown=ftuser:ftuser .devcontainer/requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --user --no-cache-dir -r /tmp/requirements-dev.txt \
+ && python -m basedpyright --version \
+ && rm /tmp/requirements-dev.txt
+
+FROM runtime AS production

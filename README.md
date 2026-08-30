@@ -435,6 +435,50 @@ The rewarding logic and tunables are documented in the
 
 ## Common workflows
 
+**Run repository quality checks from the repository root:**
+
+Ruff does not need the Freqtrade runtime or project dependencies:
+
+```shell
+uvx ruff@latest check .
+uvx ruff@latest format --check .
+```
+
+BasedPyright must run inside the matching Freqtrade image. Build the QA target
+and mount the checkout read-only:
+
+```shell
+# QuickAdapter
+docker build --pull --target qa --tag freqai-strategies-quickadapter-qa quickadapter
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
+  --entrypoint python \
+  freqai-strategies-quickadapter-qa \
+  -m basedpyright --baselinemode=lock --warnings \
+  --pythonpath /usr/local/bin/python \
+  --project /workspace/quickadapter/pyrightconfig.json
+
+# ReforceXY
+docker build --pull --target qa --tag freqai-strategies-reforcexy-qa ReforceXY
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
+  --entrypoint python \
+  freqai-strategies-reforcexy-qa \
+  -m basedpyright --baselinemode=lock --warnings \
+  --pythonpath /usr/local/bin/python \
+  --project /workspace/ReforceXY/pyrightconfig.json
+```
+
+Lock mode fails on new diagnostics and on obsolete baseline entries. To update a
+baseline deliberately, rerun the matching container with a writable checkout
+mount and replace `--baselinemode=lock --warnings` with `--writebaseline`,
+then review the generated `.basedpyright/baseline.json` diff.
+
+The QA dependency versions are pinned in each project's
+`.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally
+follow their rolling `stable_freqai` and `stable_freqairl` tags, so record the
+resolved image digests when a reproducible audit is required.
+
 **List running compose services and the containers they created:**
 
 ```shell

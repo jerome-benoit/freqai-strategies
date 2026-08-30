@@ -1,4 +1,4 @@
-FROM freqtradeorg/freqtrade:stable_freqairl
+FROM freqtradeorg/freqtrade:stable_freqairl AS runtime
 
 ARG optuna_version=4.9.0
 ARG optuna_dashboard_version=0.20.0
@@ -20,3 +20,17 @@ RUN pip install --user --no-cache-dir \
 LABEL org.opencontainers.image.source="freqai-strategies" \
       org.opencontainers.image.title="freqtrade-reforcexy" \
       maintainer="auto-generated"
+
+FROM runtime AS qa
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libatomic1 \
+ && rm -rf /var/lib/apt/lists/*
+USER ftuser
+COPY --chown=ftuser:ftuser .devcontainer/requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --user --no-cache-dir -r /tmp/requirements-dev.txt \
+ && python -m basedpyright --version \
+ && rm /tmp/requirements-dev.txt
+
+FROM runtime AS production

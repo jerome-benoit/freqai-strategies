@@ -1,5 +1,7 @@
 services:
   freqtrade:
+    build:
+      target: qa
     container_name: freqtrade-quickadapter-dev
     env_file:
       - .env
