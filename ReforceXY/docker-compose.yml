@@ -16,11 +16,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: production
       args:
         cmaes_version: 0.13.0
         freqtrade_image: ${REFORCEXY_FREQTRADE_IMAGE:-freqtradeorg/freqtrade@sha256:e808ec0d6c14cf5a2ea8406093b05e8b9230ac363ebdac573101988cd1450410}
         reforcexy_git_commit: ${REFORCEXY_GIT_COMMIT:-}
-        scipy_version: 1.18.0
+        scipy_version: 1.17.1
         optuna_version: 4.9.0
         optuna_dashboard_version: 0.20.0
         optunahub_version: 0.4.1

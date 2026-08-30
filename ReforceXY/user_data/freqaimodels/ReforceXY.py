@@ -6,17 +6,16 @@ import json
 import logging
 import math
 import os
-import stat
 import platform
 import re
+import stat
 import sys
 import time
 import uuid
 import warnings
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -63,6 +62,12 @@ from optuna.storages.journal import JournalFileBackend
 from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
+from reproducibility import (
+    create_run_manifest,
+    finalize_run_manifest,
+    set_resolved_run_inputs,
+    write_run_manifest,
+)
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.maskable.utils import is_masking_supported
 from stable_baselines3.common.callbacks import (
@@ -80,13 +85,6 @@ from stable_baselines3.common.vec_env import (
     VecEnv,
     VecFrameStack,
     VecMonitor,
-)
-
-from reproducibility import (
-    create_run_manifest,
-    finalize_run_manifest,
-    set_resolved_run_inputs,
-    write_run_manifest,
 )
 
 _LOADED_MODEL_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -432,19 +430,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.optuna_timeout_hours: float = self.rl_config_optuna.get("timeout_hours", 0)
         self.optuna_n_trials: int = self.rl_config_optuna.get("n_trials", 100)
-        self.optuna_n_startup_trials: int = self.rl_config_optuna.get(
-            "n_startup_trials", 15
-        )
-        self.optuna_purge_period: int = int(
-            self.rl_config_optuna.get("purge_period", 0)
-        )
-        self.optuna_eval_callback: Optional[MaskableTrialEvalCallback] = None
+        self.optuna_n_startup_trials: int = self.rl_config_optuna.get("n_startup_trials", 15)
+        self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
+        self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
         self.optuna_run_status: str = "pending" if self.hyperopt else "disabled"
-        self._model_params_cache: Optional[Dict[str, Any]] = None
-        self._run_manifest: Optional[Dict[str, Any]] = None
-        self._run_manifest_key: Optional[str] = None
-        self._run_manifest_path: Optional[Path] = None
-        self._lstm_states_cache: Dict[
+        self._model_params_cache: dict[str, Any] | None = None
+        self._run_manifest: dict[str, Any] | None = None
+        self._run_manifest_key: str | None = None
+        self._run_manifest_path: Path | None = None
+        self._lstm_states_cache: dict[
             str,
             tuple[
                 int,
@@ -457,9 +451,9 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     @staticmethod
     def _run_lifecycle_actions(
-        primary_error: Optional[BaseException],
-        actions: Sequence[Tuple[str, Callable[[], None]]],
-    ) -> Optional[BaseException]:
+        primary_error: BaseException | None,
+        actions: Sequence[tuple[str, Callable[[], None]]],
+    ) -> BaseException | None:
         for label, action in actions:
             try:
                 action()
@@ -471,28 +465,28 @@ class ReforceXY(BaseReinforcementLearningModel):
                         error_detail = repr(error)
                     except BaseException:
                         error_detail = "<unrepresentable BaseException>"
-                    try:
+                    with suppress(BaseException):
                         primary_error.add_note(f"{label} failed: {error_detail}")
-                    except BaseException:
-                        pass
         return primary_error
 
     @staticmethod
     def _close_owned_environments(
-        primary_error: Optional[BaseException],
-        owners: Sequence[Tuple[str, Callable[[], Any], Callable[[Any], None]]],
-    ) -> Optional[BaseException]:
+        primary_error: BaseException | None,
+        owners: Sequence[tuple[str, Callable[[], Any], Callable[[Any], None]]],
+    ) -> BaseException | None:
         """Close each environment identity once and detach every owner."""
         closed_environment_ids: set[int] = set()
 
         for label, get_environment, detach_environment in owners:
-            resolved_environments: List[Any] = []
+            resolved_environments: list[Any] = []
             primary_error = ReforceXY._run_lifecycle_actions(
                 primary_error,
                 [
                     (
                         f"{label} resolution",
-                        lambda: resolved_environments.append(get_environment()),
+                        lambda resolved_environments=resolved_environments, get_environment=get_environment: (
+                            resolved_environments.append(get_environment())
+                        ),
                     )
                 ],
             )
@@ -506,14 +500,16 @@ class ReforceXY(BaseReinforcementLearningModel):
                 closed_environment_ids.add(environment_id)
                 primary_error = ReforceXY._run_lifecycle_actions(
                     primary_error,
-                    [(f"{label} close", lambda: environment.close())],
+                    [(f"{label} close", lambda environment=environment: environment.close())],
                 )
             primary_error = ReforceXY._run_lifecycle_actions(
                 primary_error,
                 [
                     (
                         f"{label} detach",
-                        lambda: detach_environment(environment),
+                        lambda detach_environment=detach_environment, environment=environment: (
+                            detach_environment(environment)
+                        ),
                     )
                 ],
             )
@@ -536,7 +532,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     @staticmethod
     def _check_environment(environment: Any, label: str) -> None:
-        primary_error: Optional[BaseException] = None
+        primary_error: BaseException | None = None
         try:
             check_env(environment)
         except BaseException as error:
@@ -768,10 +764,10 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def _manifest_environment_parameters(
         self,
-        env_dict: Dict[str, Any],
+        env_dict: dict[str, Any],
         pair: str,
         effective_fee: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return {
             "can_short": env_dict.get("can_short", False),
             "compound_trades": self.config.get("stake_amount") == "unlimited",
@@ -791,8 +787,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         prices_train: DataFrame,
         prices_test: DataFrame,
         dk: FreqaiDataKitchen,
-        model_params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        model_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Set training and evaluation environments
         """
@@ -807,11 +803,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         seed = (model_params or configured_model_parameters).get("seed", 42)
 
         run_manifest_key = f"{dk.pair}:{dk.data_path}"
-        previous_run_finished = (
-            self._run_manifest is not None
-            and self._run_manifest.get("status")
-            in {"completed", "failed", "interrupted"}
-        )
+        previous_run_finished = self._run_manifest is not None and self._run_manifest.get(
+            "status"
+        ) in {"completed", "failed", "interrupted"}
         if self._run_manifest_key != run_manifest_key or previous_run_finished:
             manifest_dataframes = {
                 "evaluation_features": test_df,
@@ -824,9 +818,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 manifest_dataframes["raw_training_features"] = raw_training_features
             configured_fee = self.config.get("fee")
             effective_fee = (
-                configured_fee
-                if configured_fee is not None
-                else env_dict.get("fee", 0.0015)
+                configured_fee if configured_fee is not None else env_dict.get("fee", 0.0015)
             )
             environment_parameters = self._manifest_environment_parameters(
                 env_dict,
@@ -875,7 +867,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 env_dict,
             )
         except KeyboardInterrupt as error:
-            actions: List[Tuple[str, Callable[[], None]]] = []
+            actions: list[tuple[str, Callable[[], None]]] = []
             if self._run_manifest is not None and self._run_manifest_path is not None:
                 actions.append(
                     (
@@ -886,14 +878,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                             status="interrupted",
                             duration_seconds=0.0,
                             optuna_status=self.optuna_run_status,
-                            resolved_model_parameters=model_params
-                            or configured_model_parameters,
+                            resolved_model_parameters=model_params or configured_model_parameters,
                         ),
                     )
                 )
             primary_error = self._run_lifecycle_actions(error, actions)
             assert primary_error is not None
-            raise primary_error
+            raise primary_error from error
         except Exception as error:
             actions = []
             if self._run_manifest is not None and self._run_manifest_path is not None:
@@ -906,14 +897,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                             status="failed",
                             duration_seconds=0.0,
                             optuna_status=self.optuna_run_status,
-                            resolved_model_parameters=model_params
-                            or configured_model_parameters,
+                            resolved_model_parameters=model_params or configured_model_parameters,
                         ),
                     )
                 )
             primary_error = self._run_lifecycle_actions(error, actions)
             assert primary_error is not None
-            raise primary_error
+            raise primary_error from error
         return env_dict
 
     def _prepare_train_and_eval_environments(
@@ -924,7 +914,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         prices_train: DataFrame,
         prices_test: DataFrame,
         seed: int,
-        env_dict: Dict[str, Any],
+        env_dict: dict[str, Any],
     ) -> None:
         if self.check_envs:
             logger.info("Env [%s]: checking environments", dk.pair)
@@ -1277,15 +1267,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         start_time = time.time()
         configured_model_parameters = self.get_model_params()
         if self._run_manifest is None or self._run_manifest_path is None:
-            raise RuntimeError(
-                f"Reproducibility [{dk.pair}]: run manifest was not prepared"
-            )
+            raise RuntimeError(f"Reproducibility [{dk.pair}]: run manifest was not prepared")
         run_manifest = self._run_manifest
         run_manifest_path = self._run_manifest_path
         model = None
         model_params = configured_model_parameters
         training_status = "failed"
-        primary_error: Optional[BaseException] = None
+        primary_error: BaseException | None = None
         try:
             if self.continual_learning:
                 raise RuntimeError(
@@ -1293,9 +1281,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "model state is not implicit"
                 )
 
-            run_manifest["status"] = (
-                "optimizing" if self.hyperopt else "preparing_training"
-            )
+            run_manifest["status"] = "optimizing" if self.hyperopt else "preparing_training"
             write_run_manifest(run_manifest_path, run_manifest)
             if self.hyperopt:
                 best_params = self.optimize(dk, total_timesteps)
@@ -1309,9 +1295,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params = self.get_model_params()
             run_manifest["status"] = "preparing_training"
             write_run_manifest(run_manifest_path, run_manifest)
-            logger.info(
-                "Model [%s]: %s params: %s", dk.pair, self.model_type, model_params
-            )
+            logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
 
             # "PPO"
             if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -1327,18 +1311,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 if n_steps > 0:
                     rollout = n_steps * self.n_envs
-                    aligned_total_timesteps = ReforceXY._ceil_to_multiple(
-                        total_timesteps, rollout
-                    )
+                    aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
                     if aligned_total_timesteps != total_timesteps:
                         total_timesteps = aligned_total_timesteps
                         logger.info(
                             "Training [%s]: aligned total %s steps (%s days) for model %s",
                             dk.pair,
                             total_timesteps,
-                            steps_to_days(
-                                total_timesteps, self.config.get("timeframe")
-                            ),
+                            steps_to_days(total_timesteps, self.config.get("timeframe")),
                             self.model_type,
                         )
 
@@ -1393,9 +1373,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                             index
                         ).multi_processor_count,
                         "name": th.cuda.get_device_name(index),
-                        "total_memory": th.cuda.get_device_properties(
-                            index
-                        ).total_memory,
+                        "total_memory": th.cuda.get_device_properties(index).total_memory,
                     }
                     for index in range(th.cuda.device_count())
                 ],
@@ -1448,22 +1426,16 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
             ],
         )
-        environment_owners: List[
-            Tuple[str, Callable[[], Any], Callable[[Any], None]]
-        ] = [
+        environment_owners: list[tuple[str, Callable[[], Any], Callable[[Any], None]]] = [
             (
                 "training environment cleanup",
                 lambda: getattr(self, "train_env", None),
-                lambda environment: self._detach_environment_attribute(
-                    "train_env", environment
-                ),
+                lambda environment: self._detach_environment_attribute("train_env", environment),
             ),
             (
                 "evaluation environment cleanup",
                 lambda: getattr(self, "eval_env", None),
-                lambda environment: self._detach_environment_attribute(
-                    "eval_env", environment
-                ),
+                lambda environment: self._detach_environment_attribute("eval_env", environment),
             ),
         ]
         if model is not None:
@@ -1471,9 +1443,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 (
                     "model environment cleanup",
                     lambda: getattr(model, "env", None),
-                    lambda environment: ReforceXY._detach_model_environment(
-                        model, environment
-                    ),
+                    lambda environment: ReforceXY._detach_model_environment(model, environment),
                 )
             )
         primary_error = self._close_owned_environments(
@@ -1505,9 +1475,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if error_before_finalization is None and primary_error is not None:
             training_status = (
-                "interrupted"
-                if isinstance(primary_error, KeyboardInterrupt)
-                else "failed"
+                "interrupted" if isinstance(primary_error, KeyboardInterrupt) else "failed"
             )
             primary_error = self._run_lifecycle_actions(
                 primary_error,
@@ -2021,9 +1989,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             max(min_resource, ReforceXY._ceil_to_multiple(total_timesteps, rollout)),
         )
 
-    def optimize(
-        self, dk: FreqaiDataKitchen, total_timesteps: int
-    ) -> Optional[Dict[str, Any]]:
+    def optimize(self, dk: FreqaiDataKitchen, total_timesteps: int) -> dict[str, Any] | None:
         """Run Optuna and classify every setup or execution interruption."""
         self.optuna_run_status = "running"
         start_time = time.time()
@@ -2048,14 +2014,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                 ],
             )
             assert primary_error is not None
-            raise primary_error
+            raise primary_error from error
         except Exception:
             self.optuna_run_status = "failed"
             raise
 
-    def _optimize(
-        self, dk: FreqaiDataKitchen, total_timesteps: int
-    ) -> Optional[Dict[str, Any]]:
+    def _optimize(self, dk: FreqaiDataKitchen, total_timesteps: int) -> dict[str, Any] | None:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
         """
@@ -2132,7 +2096,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Hyperopt [%s]: warm start found no previous best params",
                     study_name,
                 )
-        current_trials: Dict[int, Any] = {}
+        current_trials: dict[int, Any] = {}
 
         def record_current_trial(_study: Study, trial: Any) -> None:
             current_trials[trial.number] = trial
@@ -2165,15 +2129,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             raise
         time_spent = time.time() - start_time
-        n_completed = len(
-            [t for t in current_trials.values() if t.state == TrialState.COMPLETE]
-        )
-        n_pruned = len(
-            [t for t in current_trials.values() if t.state == TrialState.PRUNED]
-        )
-        n_failed = len(
-            [t for t in current_trials.values() if t.state == TrialState.FAIL]
-        )
+        n_completed = len([t for t in current_trials.values() if t.state == TrialState.COMPLETE])
+        n_pruned = len([t for t in current_trials.values() if t.state == TrialState.PRUNED])
+        n_failed = len([t for t in current_trials.values() if t.state == TrialState.FAIL])
         logger.info(
             "Hyperopt [%s]: %s completed, %s pruned, %s failed trials",
             study_name,
@@ -2201,8 +2159,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 time_spent,
             )
             raise RuntimeError(
-                f"Hyperopt [{study_name}]: optimization produced no completed "
-                "best trial"
+                f"Hyperopt [{study_name}]: optimization produced no completed best trial"
             )
         best_trial = study.best_trial
         best_trial_params = best_trial.params
@@ -2540,7 +2497,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
             primary_error = self._run_lifecycle_actions(error, cleanup_actions)
             assert primary_error is not None
-            raise primary_error
+            raise primary_error from error
 
     def get_optuna_params(self, trial: Trial) -> dict[str, Any]:
         # "RecurrentPPO"
@@ -2641,12 +2598,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 tensorboard_log=tensorboard_log_path,
                 **params,
             )
-            eval_freq = self.get_eval_freq(
-                total_timesteps, hyperopt=True, model_params=params
-            )
-            callbacks = self.get_callbacks(
-                eval_env, eval_freq, str(dk.data_path), trial
-            )
+            eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
+            callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
             try:
                 model.learn(total_timesteps=total_timesteps, callback=callbacks)
             except (
@@ -2677,9 +2630,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 ],
             )
-            environment_owners: List[
-                Tuple[str, Callable[[], Any], Callable[[Any], None]]
-            ] = []
+            environment_owners: list[tuple[str, Callable[[], Any], Callable[[Any], None]]] = []
             if train_env is not None:
                 environment_owners.append(
                     (
@@ -2702,9 +2653,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                         "Optuna model environment cleanup",
                         lambda trained_model=model: getattr(trained_model, "env", None),
                         lambda environment, trained_model=model: (
-                            ReforceXY._detach_model_environment(
-                                trained_model, environment
-                            )
+                            ReforceXY._detach_model_environment(trained_model, environment)
                         ),
                     )
                 )
@@ -2741,9 +2690,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 (
                     "evaluation environment cleanup",
                     lambda: getattr(self, "eval_env", None),
-                    lambda environment: self._detach_environment_attribute(
-                        "eval_env", environment
-                    ),
+                    lambda environment: self._detach_environment_attribute("eval_env", environment),
                 ),
             ],
         )

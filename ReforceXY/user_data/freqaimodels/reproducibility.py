@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import os
@@ -7,11 +8,12 @@ import secrets
 import shutil
 import sqlite3
 import stat
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import pandas as pd
 from pandas import DataFrame
@@ -139,9 +141,7 @@ def _durable_json_replace(path: Path, value: Mapping[str, Any]) -> None:
         ).encode("utf-8")
         + b"\n"
     )
-    temporary_path = path.with_name(
-        f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-    )
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
     try:
         fd = os.open(
             temporary_path,
@@ -154,21 +154,17 @@ def _durable_json_replace(path: Path, value: Mapping[str, Any]) -> None:
                 destination.flush()
                 os.fsync(destination.fileno())
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
             raise
-        os.replace(temporary_path, path)
+        temporary_path.replace(path)
         try:
             _fsync_directory(path.parent)
         except BaseException as error:
             raise _DurabilityIndeterminateError(path) from error
     finally:
-        try:
+        with contextlib.suppress(OSError):
             temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _durable_json_create(path: Path, value: Mapping[str, Any]) -> None:
@@ -193,10 +189,8 @@ def _durable_json_create(path: Path, value: Mapping[str, Any]) -> None:
             destination.flush()
             os.fsync(destination.fileno())
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.close(fd)
-        except OSError:
-            pass
         raise
     _fsync_directory(path.parent)
 
@@ -209,9 +203,7 @@ def _durable_regular_file_create(source_path: Path, destination_path: Path) -> N
     try:
         source_stat = os.fstat(source_fd)
         if not stat.S_ISREG(source_stat.st_mode):
-            raise RuntimeError(
-                f"ReforceXY checkpoint is not a regular file: {source_path}"
-            )
+            raise RuntimeError(f"ReforceXY checkpoint is not a regular file: {source_path}")
         destination_fd = os.open(
             destination_path,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -237,19 +229,15 @@ def _durable_regular_file_create(source_path: Path, destination_path: Path) -> N
             source_after_copy.st_size,
             source_after_copy.st_mtime_ns,
         ):
-            raise RuntimeError(
-                f"ReforceXY checkpoint changed while publishing: {source_path}"
-            )
+            raise RuntimeError(f"ReforceXY checkpoint changed while publishing: {source_path}")
         os.fsync(destination_fd)
         os.close(destination_fd)
         destination_fd = None
         _fsync_directory(destination_path.parent)
     except BaseException:
         if destination_fd is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(destination_fd)
-            except OSError:
-                pass
         if destination_created:
             try:
                 destination_path.unlink(missing_ok=True)
@@ -320,9 +308,7 @@ def _reproduction_id(manifest: Mapping[str, Any]) -> str:
     _require_manifest_schema(manifest)
     reproducibility_inputs = manifest.get("reproducibility_inputs")
     if not isinstance(reproducibility_inputs, Mapping):
-        raise RuntimeError(
-            "ReforceXY run manifest reproducibility_inputs must be a mapping"
-        )
+        raise RuntimeError("ReforceXY run manifest reproducibility_inputs must be a mapping")
     return _sha256_bytes(
         _json_bytes(
             {
@@ -336,9 +322,7 @@ def _reproduction_id(manifest: Mapping[str, Any]) -> str:
 def _require_manifest_integrity(manifest: Mapping[str, Any]) -> None:
     expected = _reproduction_id(manifest)
     if manifest.get("reproduction_id") != expected:
-        raise RuntimeError(
-            "ReforceXY run manifest reproduction_id does not match its inputs"
-        )
+        raise RuntimeError("ReforceXY run manifest reproduction_id does not match its inputs")
 
 
 def _imported_module_evidence(
@@ -354,9 +338,7 @@ def _imported_module_evidence(
             f"Imported module {module_name!r} does not expose a non-empty __version__"
         )
     if not isinstance(imported_path, str) or not imported_path:
-        raise RuntimeError(
-            f"Imported module {module_name!r} does not expose a non-empty __file__"
-        )
+        raise RuntimeError(f"Imported module {module_name!r} does not expose a non-empty __file__")
     return {
         "distribution": distribution_name,
         "metadata_version": metadata_version,
@@ -378,11 +360,7 @@ def _json_safe(value: Any) -> Any:
         return [_json_safe(item) for item in value]
     if isinstance(value, type):
         return f"{value.__module__}.{value.__qualname__}"
-    if (
-        callable(value)
-        and hasattr(value, "__module__")
-        and hasattr(value, "__qualname__")
-    ):
+    if callable(value) and hasattr(value, "__module__") and hasattr(value, "__qualname__"):
         return f"{value.__module__}.{value.__qualname__}"
     return repr(value)
 
@@ -410,18 +388,14 @@ def _required_environment(
             "REFORCEXY_RUNTIME_IMAGE_ID must contain the exact local ReforceXY image ID. "
             "Start ReforceXY through ./docker-compose.sh."
         )
-    expected_model_source_sha256 = os.environ.get(
-        "REFORCEXY_MODEL_SOURCE_SHA256", ""
-    ).lower()
-    expected_manifest_source_sha256 = os.environ.get(
-        "REFORCEXY_MANIFEST_SOURCE_SHA256", ""
-    ).lower()
+    expected_model_source_sha256 = os.environ.get("REFORCEXY_MODEL_SOURCE_SHA256", "").lower()
+    expected_manifest_source_sha256 = os.environ.get("REFORCEXY_MANIFEST_SOURCE_SHA256", "").lower()
     current_model_source_sha256 = _sha256_file(model_source_path)
     current_manifest_source_sha256 = _sha256_file(Path(__file__))
     if (
         loaded_model_source_sha256 != expected_model_source_sha256
         or current_model_source_sha256 != expected_model_source_sha256
-        or _LOADED_SOURCE_SHA256 != expected_manifest_source_sha256
+        or expected_manifest_source_sha256 != _LOADED_SOURCE_SHA256
         or current_manifest_source_sha256 != expected_manifest_source_sha256
     ):
         raise RuntimeError(
@@ -435,9 +409,7 @@ def _dataframe_evidence(dataframe: DataFrame) -> dict[str, Any]:
     metadata = {
         "columns": [str(column) for column in dataframe.columns],
         "dtypes": [str(dtype) for dtype in dataframe.dtypes],
-        "index_names": [
-            str(name) if name is not None else None for name in dataframe.index.names
-        ],
+        "index_names": [str(name) if name is not None else None for name in dataframe.index.names],
         "shape": list(dataframe.shape),
     }
     digest = hashlib.sha256(_json_bytes(metadata))
@@ -454,9 +426,7 @@ def _dataframe_evidence(dataframe: DataFrame) -> dict[str, Any]:
     }
 
 
-def _state_file_evidence(
-    paths: Sequence[Path], snapshot_directory: Path
-) -> list[dict[str, Any]]:
+def _state_file_evidence(paths: Sequence[Path], snapshot_directory: Path) -> list[dict[str, Any]]:
     evidence = []
     for path in sorted(set(paths), key=str):
         item: dict[str, Any] = {
@@ -473,13 +443,10 @@ def _state_file_evidence(
                     sqlite3.connect(snapshot_path) as destination,
                 ):
                     source.backup(destination)
-                    integrity_result = destination.execute(
-                        "PRAGMA quick_check"
-                    ).fetchone()
+                    integrity_result = destination.execute("PRAGMA quick_check").fetchone()
                     if integrity_result != ("ok",):
                         raise RuntimeError(
-                            f"Optuna SQLite snapshot failed integrity check: "
-                            f"{integrity_result!r}"
+                            f"Optuna SQLite snapshot failed integrity check: {integrity_result!r}"
                         )
             else:
                 shutil.copy2(path, snapshot_path)
@@ -580,11 +547,7 @@ def create_run_manifest(
             "freqai.feature_parameters.shuffle_after_split=false because Freqtrade "
             "uses an unscoped Python random generator for this operation"
         )
-    if (
-        config.get("freqai", {})
-        .get("rl_config", {})
-        .get("randomize_starting_position", False)
-    ):
+    if config.get("freqai", {}).get("rl_config", {}).get("randomize_starting_position", False):
         raise RuntimeError(
             "Reproducibility requires "
             "freqai.rl_config.randomize_starting_position=false because the "
@@ -606,9 +569,7 @@ def create_run_manifest(
                 distribution_name,
                 package_metadata[distribution_name],
             )
-            for module_name, distribution_name in sorted(
-                _IMPORTED_MODULE_DISTRIBUTIONS.items()
-            )
+            for module_name, distribution_name in sorted(_IMPORTED_MODULE_DISTRIBUTIONS.items())
         },
         "optunahub_registry_ref": optunahub_registry_ref,
         "packages": package_metadata,
@@ -652,10 +613,7 @@ def create_run_manifest(
             "rank_count": n_eval_envs,
         },
     }
-    data = {
-        name: _dataframe_evidence(dataframe)
-        for name, dataframe in sorted(dataframes.items())
-    }
+    data = {name: _dataframe_evidence(dataframe) for name, dataframe in sorted(dataframes.items())}
     reproducibility_inputs = {
         "configuration": configuration,
         "data": data,
@@ -663,10 +621,7 @@ def create_run_manifest(
         "configured_model_parameters": _json_safe(model_parameters),
         "optuna_state_before_run": _state_file_evidence(
             optuna_state_paths,
-            data_path
-            / "reproducibility-inputs"
-            / run_instance_id
-            / "optuna-state-before-run",
+            data_path / "reproducibility-inputs" / run_instance_id / "optuna-state-before-run",
         ),
         "runtime": runtime,
         "source": source,
@@ -704,9 +659,7 @@ def finalize_run_manifest(
 ) -> None:
     _require_manifest_schema(manifest)
     if status not in {"failed", "interrupted"}:
-        raise ValueError(
-            "Non-consumable finalization accepts only failed or interrupted status"
-        )
+        raise ValueError("Non-consumable finalization accepts only failed or interrupted status")
     manifest["status"] = status
     manifest["finished_at"] = _utc_now()
     manifest["result"] = {
@@ -777,9 +730,7 @@ def complete_run_manifest(
         raise RuntimeError("ReforceXY run manifest run_instance_id is missing")
 
     data_path = path.parent.resolve(strict=True)
-    checkpoint_name = (
-        f"reforcexy-checkpoint-{_sanitize_pair(pair)}-{run_instance_id}.zip"
-    )
+    checkpoint_name = f"reforcexy-checkpoint-{_sanitize_pair(pair)}-{run_instance_id}.zip"
     published_checkpoint_path = data_path / checkpoint_name
     _durable_regular_file_create(checkpoint_path, published_checkpoint_path)
     checkpoint = _regular_artifact_evidence(published_checkpoint_path)
@@ -855,9 +806,7 @@ def complete_run_manifest(
                 or visible_run.get("pair") != pair
                 or visible_run.get("run_instance_id") != run_instance_id
             ):
-                raise RuntimeError(
-                    "ReforceXY visible pointer does not address the publishing run"
-                )
+                raise RuntimeError("ReforceXY visible pointer does not address the publishing run")
         except BaseException as validation_error:
             manifest.clear()
             manifest.update(prepared_manifest)
@@ -1012,22 +961,15 @@ def set_resolved_run_inputs(
 ) -> None:
     _require_manifest_integrity(manifest)
     manifest["reproducibility_inputs"]["data"].update(
-        {
-            name: _dataframe_evidence(dataframe)
-            for name, dataframe in sorted(dataframes.items())
-        }
+        {name: _dataframe_evidence(dataframe) for name, dataframe in sorted(dataframes.items())}
     )
     manifest["reproducibility_inputs"]["environment_parameters"] = _json_safe(
         environment_parameters
     )
-    manifest["reproducibility_inputs"]["execution_environment"] = _json_safe(
-        execution_environment
-    )
-    manifest["reproducibility_inputs"]["seeds"]["final_model_seed"] = (
-        resolved_model_parameters.get(
-            "seed",
-            manifest["reproducibility_inputs"]["seeds"]["configured_model_seed"],
-        )
+    manifest["reproducibility_inputs"]["execution_environment"] = _json_safe(execution_environment)
+    manifest["reproducibility_inputs"]["seeds"]["final_model_seed"] = resolved_model_parameters.get(
+        "seed",
+        manifest["reproducibility_inputs"]["seeds"]["configured_model_seed"],
     )
     manifest["reproducibility_inputs"]["resolved_model_parameters"] = _json_safe(
         resolved_model_parameters
