@@ -14,7 +14,7 @@ import stat
 import time
 import warnings
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from enum import Enum
@@ -26,11 +26,6 @@ from typing import (
     Final,
     Literal,
     NamedTuple,
-    Optional,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
     assert_never,
     cast,
 )
@@ -41,9 +36,11 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
 import optunahub
-import scipy
 import pandas as pd
+import scipy
+import stable_baselines3
 import torch as th
+from freqtrade.enums import RunMode, TradingMode
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
@@ -95,29 +92,6 @@ from stable_baselines3.common.vec_env import (
     VecFrameStack,
     VecMonitor,
 )
-import stable_baselines3
-from freqtrade.enums import RunMode, TradingMode
-from freqtrade.persistence import LocalTrade
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _zero_box_observation(space: Any) -> NDArray[np.float32]:
@@ -127,10 +101,6 @@ def _zero_box_observation(space: Any) -> NDArray[np.float32]:
     if shape is None:
         return np.zeros((1,), dtype=np.float32)
     return np.zeros(shape, dtype=dtype)
-
-
-
-
 
 
 _DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
@@ -262,7 +232,7 @@ class _EvaluationHorizon(NamedTuple):
     observed_steps: int
     coverage_fraction: float
     horizon_complete: bool
-    reason: Optional[str]
+    reason: str | None
     eligible: bool
 
 
@@ -272,8 +242,7 @@ class _EvaluationHorizonTracker:
     def __init__(self, eval_env: VecEnv, n_eval_episodes: int) -> None:
         if eval_env.num_envs != 1 or n_eval_episodes != 1:
             raise ValueError(
-                "Horizon tracking requires exactly one evaluation environment "
-                "and one episode"
+                "Horizon tracking requires exactly one evaluation environment and one episode"
             )
         self.eval_env = eval_env
         self.reset()
@@ -281,14 +250,10 @@ class _EvaluationHorizonTracker:
     @staticmethod
     def _strict_int(value: Any, name: str) -> int:
         if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
-            raise RuntimeError(
-                f"Evaluation horizon contract: {name} must be a finite integer"
-            )
+            raise RuntimeError(f"Evaluation horizon contract: {name} must be a finite integer")
         result = int(value)
         if not np.isfinite(result):
-            raise RuntimeError(
-                f"Evaluation horizon contract: {name} must be a finite integer"
-            )
+            raise RuntimeError(f"Evaluation horizon contract: {name} must be a finite integer")
         return result
 
     def reset(self) -> None:
@@ -299,21 +264,17 @@ class _EvaluationHorizonTracker:
                 "Evaluation horizon contract: VecEnv does not expose _end_tick"
             ) from e
         if len(end_ticks) != 1:
-            raise RuntimeError(
-                "Evaluation horizon contract: VecEnv must expose one _end_tick"
-            )
+            raise RuntimeError("Evaluation horizon contract: VecEnv must expose one _end_tick")
         self.end_tick = self._strict_int(end_ticks[0], "_end_tick")
-        self.first_tick: Optional[int] = None
-        self.terminal_tick: Optional[int] = None
-        self.terminal_info: Optional[Mapping[str, Any]] = None
+        self.first_tick: int | None = None
+        self.terminal_tick: int | None = None
+        self.terminal_info: Mapping[str, Any] | None = None
 
-    def capture(self, locals_: Dict[str, Any], globals_: Dict[str, Any]) -> None:
+    def capture(self, locals_: dict[str, Any], globals_: dict[str, Any]) -> None:
         del globals_
         info = locals_.get("info")
         if not isinstance(info, Mapping):
-            raise RuntimeError(
-                "Evaluation horizon contract: callback info must be a mapping"
-            )
+            raise RuntimeError("Evaluation horizon contract: callback info must be a mapping")
         tick = self._strict_int(info.get("tick"), "info['tick']")
         if self.first_tick is None:
             self.first_tick = tick
@@ -321,24 +282,17 @@ class _EvaluationHorizonTracker:
         if bool(locals_.get("done", False)):
             if self.terminal_info is not None:
                 raise RuntimeError(
-                    "Evaluation horizon contract: received more than one terminal "
-                    "episode"
+                    "Evaluation horizon contract: received more than one terminal episode"
                 )
             episode = info.get("episode")
             if not isinstance(episode, Mapping):
-                raise RuntimeError(
-                    "Evaluation horizon contract: terminal info lacks episode data"
-                )
+                raise RuntimeError("Evaluation horizon contract: terminal info lacks episode data")
             self._strict_int(episode.get("l"), "info['episode']['l']")
             self.terminal_tick = tick
             self.terminal_info = info
 
     def result(self) -> _EvaluationHorizon:
-        if (
-            self.first_tick is None
-            or self.terminal_tick is None
-            or self.terminal_info is None
-        ):
+        if self.first_tick is None or self.terminal_tick is None or self.terminal_info is None:
             raise RuntimeError(
                 "Evaluation horizon contract: evaluation did not complete one episode"
             )
@@ -348,8 +302,7 @@ class _EvaluationHorizonTracker:
         tick_span = self.terminal_tick - self.first_tick + 1
         if expected_steps <= 0 or observed_steps <= 0:
             raise RuntimeError(
-                "Evaluation horizon contract: expected and observed steps must be "
-                "positive"
+                "Evaluation horizon contract: expected and observed steps must be positive"
             )
         if tick_span != observed_steps:
             raise RuntimeError(
@@ -357,13 +310,9 @@ class _EvaluationHorizonTracker:
                 "info['episode']['l']"
             )
         if self.terminal_tick > self.end_tick or observed_steps > expected_steps:
-            raise RuntimeError(
-                "Evaluation horizon contract: episode exceeded _end_tick"
-            )
+            raise RuntimeError("Evaluation horizon contract: episode exceeded _end_tick")
 
-        horizon_complete = (
-            self.terminal_tick == self.end_tick and observed_steps == expected_steps
-        )
+        horizon_complete = self.terminal_tick == self.end_tick and observed_steps == expected_steps
         has_time_limit_truncated = "TimeLimit.truncated" in self.terminal_info
         has_economic_ruin = "economic_ruin" in self.terminal_info
         time_limit_truncated = self.terminal_info.get("TimeLimit.truncated")
@@ -386,20 +335,14 @@ class _EvaluationHorizonTracker:
             reason = "early_termination"
         coverage_fraction = observed_steps / expected_steps
         if not np.isfinite(coverage_fraction):
-            raise RuntimeError(
-                "Evaluation horizon contract: coverage_fraction is not finite"
-            )
+            raise RuntimeError("Evaluation horizon contract: coverage_fraction is not finite")
         return _EvaluationHorizon(
             expected_steps=expected_steps,
             observed_steps=observed_steps,
             coverage_fraction=coverage_fraction,
             horizon_complete=horizon_complete,
             reason=reason,
-            eligible=(
-                horizon_complete
-                and time_limit_truncated is True
-                and economic_ruin is False
-            ),
+            eligible=(horizon_complete and time_limit_truncated is True and economic_ruin is False),
         )
 
 
@@ -591,7 +534,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     _RETRAIN_COUNTERS_LOCK_FILENAME: Final[str] = ".optuna-retrain-counters.lock"
-    _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
+    _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
     _VALIDATION_SEED_OFFSET: Final[int] = 10_000
@@ -601,7 +544,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _OPTUNA_STUDY_CONTRACT_ATTR: Final[str] = "reforcexy_study_contract"
     _OPTUNA_STUDY_STATUS_ATTR: Final[str] = "reforcexy_study_status"
     _OPTUNA_TIMEOUT_MIN_COMPLETED_TRIALS_DEFAULT: Final[int] = 15
-    _OPTUNA_RUNTIME_DISTRIBUTIONS: Final[Tuple[str, ...]] = (
+    _OPTUNA_RUNTIME_DISTRIBUTIONS: Final[tuple[str, ...]] = (
         "freqtrade",
         "gymnasium",
         "numpy",
@@ -693,18 +636,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.validation_holdout_fraction: float = self.rl_config.get(
             "validation_holdout_fraction", ReforceXY.DEFAULT_VALIDATION_HOLDOUT_FRACTION
         )
-        self.max_no_improvement_evals: int = self.rl_config.get(
-            "max_no_improvement_evals", 0
-        )
+        self.max_no_improvement_evals: int = self.rl_config.get("max_no_improvement_evals", 0)
         self.min_evals: int = self.rl_config.get("min_evals", 0)
         self.rl_config.setdefault("tensorboard_throttle", 1)
         self.plot_new_best: bool = self.rl_config.get("plot_new_best", False)
         self.check_envs: bool = self.rl_config.get("check_envs", True)
         self.progressbar_callback: ProgressBarCallback | None = None
         # Optuna hyperopt
-        self.rl_config_optuna: Dict[str, Any] = self.freqai_info.get(
-            "rl_config_optuna", {}
-        )
+        self.rl_config_optuna: dict[str, Any] = self.freqai_info.get("rl_config_optuna", {})
         test_size = self.data_split_parameters.get("test_size", 0.1)
         self.hyperopt: bool = (
             self.freqai_info.get("enabled", False)
@@ -715,9 +654,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.optuna_timeout_hours: float = self.rl_config_optuna.get("timeout_hours", 0)
         self.optuna_n_trials: int = self.rl_config_optuna.get("n_trials", 100)
-        self.optuna_n_startup_trials: int = self.rl_config_optuna.get(
-            "n_startup_trials", 15
-        )
+        self.optuna_n_startup_trials: int = self.rl_config_optuna.get("n_startup_trials", 15)
         self.optuna_timeout_min_completed_trials: int = self.rl_config_optuna.get(
             "timeout_min_completed_trials",
             min(
@@ -725,15 +662,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.optuna_n_trials,
             ),
         )
-        self.optuna_purge_period: int = int(
-            self.rl_config_optuna.get("purge_period", 0)
-        )
-        self.optuna_eval_callback: Optional[MaskableTrialEvalCallback] = None
-        self._pending_optuna_best_trial_params: Optional[Dict[str, Any]] = None
-        self._pending_optuna_best_trial_metadata: Optional[Dict[str, str]] = None
-        self._model_params_cache: Optional[Dict[str, Any]] = None
-        self._training_splits: Dict[str, _TrainingSplit] = {}
-        self._lstm_states_cache: Dict[
+        self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
+        self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
+        self._pending_optuna_best_trial_params: dict[str, Any] | None = None
+        self._pending_optuna_best_trial_metadata: dict[str, str] | None = None
+        self._model_params_cache: dict[str, Any] | None = None
+        self._training_splits: dict[str, _TrainingSplit] = {}
+        self._lstm_states_cache: dict[
             str,
             tuple[
                 int,
@@ -897,11 +832,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         self.validation_holdout_fraction = float(self.validation_holdout_fraction)
         test_size = self.data_split_parameters.get("test_size", 0.1)
-        if (
-            isinstance(test_size, bool)
-            or not isinstance(test_size, (int, float))
-            or test_size <= 0
-        ):
+        if isinstance(test_size, bool) or not isinstance(test_size, (int, float)) or test_size <= 0:
             raise ValueError(
                 "Config [global]: data_split_parameters.test_size must be positive "
                 "to create chronological validation and holdout blocks"
@@ -937,17 +868,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             or not isinstance(self.optuna_n_trials, int)
             or self.optuna_n_trials < 1
         ):
-            raise ValueError(
-                "Config [global]: rl_config_optuna.n_trials must be an integer >= 1"
-            )
+            raise ValueError("Config [global]: rl_config_optuna.n_trials must be an integer >= 1")
         if (
             isinstance(self.optuna_n_startup_trials, bool)
             or not isinstance(self.optuna_n_startup_trials, int)
             or self.optuna_n_startup_trials < 0
         ):
             raise ValueError(
-                "Config [global]: rl_config_optuna.n_startup_trials must be an "
-                "integer >= 0"
+                "Config [global]: rl_config_optuna.n_startup_trials must be an integer >= 0"
             )
         if (
             isinstance(self.optuna_timeout_hours, bool)
@@ -956,8 +884,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or self.optuna_timeout_hours < 0
         ):
             raise ValueError(
-                "Config [global]: rl_config_optuna.timeout_hours must be a finite "
-                "number >= 0"
+                "Config [global]: rl_config_optuna.timeout_hours must be a finite number >= 0"
             )
         self.optuna_timeout_hours = float(self.optuna_timeout_hours)
         if (
@@ -971,18 +898,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "between 1 and n_trials"
             )
         optuna_seed = self.rl_config_optuna.get("seed", 42)
-        if (
-            isinstance(optuna_seed, bool)
-            or not isinstance(optuna_seed, int)
-            or optuna_seed < 0
-        ):
-            raise ValueError(
-                "Config [global]: rl_config_optuna.seed must be an integer >= 0"
-            )
-        if (
-            not isinstance(self.optuna_purge_period, int)
-            or self.optuna_purge_period < 0
-        ):
+        if isinstance(optuna_seed, bool) or not isinstance(optuna_seed, int) or optuna_seed < 0:
+            raise ValueError("Config [global]: rl_config_optuna.seed must be an integer >= 0")
+        if not isinstance(self.optuna_purge_period, int) or self.optuna_purge_period < 0:
             logger.warning(
                 "Config [global]: purge_period=%r invalid; defaulting to 0",
                 self.optuna_purge_period,
@@ -1082,9 +1000,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"({len(features)} != {len(prices)})"
             )
         if not features.index.equals(prices.index):
-            raise ValueError(
-                f"{partition} [{pair}]: feature/price indexes are not aligned"
-            )
+            raise ValueError(f"{partition} [{pair}]: feature/price indexes are not aligned")
         if not features.index.is_unique:
             raise ValueError(f"{partition} [{pair}]: temporal index is not unique")
         if not features.index.is_monotonic_increasing:
@@ -1121,7 +1037,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     @staticmethod
     def _check_environment_and_close(environment: BaseEnvironment) -> None:
-        primary_error: Optional[BaseException] = None
+        primary_error: BaseException | None = None
         try:
             check_env(environment)
         except BaseException as error:
@@ -1143,7 +1059,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         test_df: DataFrame,
         prices_test: DataFrame,
         pair: str,
-    ) -> Tuple[DataFrame, DataFrame, DataFrame, DataFrame]:
+    ) -> tuple[DataFrame, DataFrame, DataFrame, DataFrame]:
         """Split FreqAI's chronological test block into selection and holdout blocks."""
         ReforceXY._validate_temporal_data_pair(test_df, prices_test, pair, "Validation")
 
@@ -1151,7 +1067,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         total_rows = len(test_df)
         holdout_rows = max(
             minimum_rows,
-            int(math.ceil(total_rows * self.validation_holdout_fraction)),
+            math.ceil(total_rows * self.validation_holdout_fraction),
         )
         validation_rows = total_rows - holdout_rows
         if validation_rows < minimum_rows:
@@ -1168,9 +1084,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         prices_validation = prices_test.iloc[:validation_rows].copy()
         prices_holdout = prices_test.iloc[validation_rows:].copy()
         try:
-            validation_precedes_holdout = bool(
-                validation_df.index[-1] < holdout_df.index[0]
-            )
+            validation_precedes_holdout = bool(validation_df.index[-1] < holdout_df.index[0])
         except (TypeError, ValueError) as e:
             raise ValueError(
                 f"Validation [{pair}]: temporal index does not support a strict "
@@ -1178,8 +1092,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             ) from e
         if not validation_precedes_holdout:
             raise ValueError(
-                f"Validation [{pair}]: selection index must strictly precede "
-                "the holdout index"
+                f"Validation [{pair}]: selection index must strictly precede the holdout index"
             )
         logger.info(
             "Validation [%s]: chronological split test=%d into selection=%d and untouched holdout=%d rows",
@@ -1197,18 +1110,16 @@ class ReforceXY(BaseReinforcementLearningModel):
     @staticmethod
     def _track_environment_factories(
         environment_factories: Sequence[Callable[[], BaseEnvironment]],
-        acquired_environments: List[BaseEnvironment],
-    ) -> List[Callable[[], BaseEnvironment]]:
-        tracked_factories: List[Callable[[], BaseEnvironment]] = []
+        acquired_environments: list[BaseEnvironment],
+    ) -> list[Callable[[], BaseEnvironment]]:
+        tracked_factories: list[Callable[[], BaseEnvironment]] = []
         for environment_factory in environment_factories:
 
             def tracked_factory(
                 factory: Callable[[], BaseEnvironment] = environment_factory,
             ) -> BaseEnvironment:
                 environment = factory()
-                if not any(
-                    environment is acquired for acquired in acquired_environments
-                ):
+                if not any(environment is acquired for acquired in acquired_environments):
                     acquired_environments.append(environment)
                 return environment
 
@@ -1220,7 +1131,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         eval_df: DataFrame,
         prices_eval: DataFrame,
         seed: int,
-        env_info: Dict[str, Any],
+        env_info: dict[str, Any],
         env_prefix: str,
     ) -> VecEnv:
         eval_fns = [
@@ -1235,8 +1146,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             for i in range(self.n_eval_envs)
         ]
-        eval_env: Optional[VecEnv] = None
-        acquired_environments: List[BaseEnvironment] = []
+        eval_env: VecEnv | None = None
+        acquired_environments: list[BaseEnvironment] = []
         try:
             if self.eval_multiprocessing and self.n_eval_envs > 1:
                 sb3_version = getattr(stable_baselines3, "__version__", None)
@@ -1250,9 +1161,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
             else:
                 eval_env = DummyVecEnv(
-                    ReforceXY._track_environment_factories(
-                        eval_fns, acquired_environments
-                    )
+                    ReforceXY._track_environment_factories(eval_fns, acquired_environments)
                 )
                 acquired_environments.clear()
             if bool(self.frame_stacking) and self.frame_stacking > 1:
@@ -1264,8 +1173,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 error,
                 (
                     (
-                        "Additionally failed to close partially initialized "
-                        "evaluation environment",
+                        "Additionally failed to close partially initialized evaluation environment",
                         lambda: eval_env.close() if eval_env is not None else None,
                     ),
                     *tuple(
@@ -1286,7 +1194,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         holdout_df: DataFrame,
         prices_holdout: DataFrame,
         dk: FreqaiDataKitchen,
-        model_params: Dict[str, Any],
+        model_params: dict[str, Any],
     ) -> None:
         """Evaluate the selected checkpoint without feeding holdout results back."""
         base_seed = int(model_params.get("seed", 42))
@@ -1298,14 +1206,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             env_info,
             "holdout_",
         )
-        primary_error: Optional[BaseException] = None
+        primary_error: BaseException | None = None
         try:
-            evaluator = (
-                evaluate_maskable_policy if self.action_masking else evaluate_policy
-            )
-            horizon_tracker = _EvaluationHorizonTracker(
-                holdout_env, self.n_eval_episodes
-            )
+            evaluator = evaluate_maskable_policy if self.action_masking else evaluate_policy
+            horizon_tracker = _EvaluationHorizonTracker(holdout_env, self.n_eval_episodes)
             holdout_seed = base_seed + ReforceXY._HOLDOUT_SEED_OFFSET
             checkpoint_path = Path(dk.data_path / "best_model.zip")
             episode_rewards, episode_lengths = evaluator(
@@ -1421,6 +1325,8 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         train_df = data_dictionary.get("train_features")
         test_df = data_dictionary.get("test_features")
+        if train_df is None or test_df is None:
+            raise ValueError("Training data must contain train_features and test_features")
         train_df = ReforceXY._align_pipeline_features_with_prices(
             train_df, prices_train, dk.pair, "Training"
         )
@@ -1643,7 +1549,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            eval_freq: Optional[int] = None
+            eval_freq: int | None = None
             if hyperopt:
                 eval_freq = max(1, min(ReforceXY._PPO_N_STEPS_MAX, max_n_calls))
             elif model_params:
@@ -1667,13 +1573,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             and ReforceXY._MODEL_TYPES[0] not in self.model_type
             and hyperopt_reduction_factor > 1.0
         ):
-            eval_freq = max(1, int(round(eval_freq / hyperopt_reduction_factor)))
+            eval_freq = max(1, round(eval_freq / hyperopt_reduction_factor))
 
         return min(eval_freq, max_n_calls)
 
     def get_callbacks(
         self,
-        eval_env: BaseEnvironment,
+        eval_env: VecEnv,
         eval_freq: int,
         data_path: str,
         trial: Trial | None = None,
@@ -1759,9 +1665,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             self._pending_optuna_best_trial_params = None
             self._pending_optuna_best_trial_metadata = None
 
-    def _fit(
-        self, data_dictionary: Dict[str, Any], dk: FreqaiDataKitchen, **kwargs
-    ) -> Any:
+    def _fit(self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs) -> Any:
         split_key = ReforceXY._training_split_key(dk)
         split = self._training_splits.pop(split_key, None)
         if split is None:
@@ -1772,9 +1676,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         train_df = split.train_df
         train_timesteps = len(train_df)
         if train_timesteps <= 0:
-            raise ValueError(
-                f"Training [{dk.pair}]: train_features dataframe has zero length"
-            )
+            raise ValueError(f"Training [{dk.pair}]: train_features dataframe has zero length")
         validation_df = split.validation_df
         holdout_df = split.holdout_df
         prices_train = split.prices_train
@@ -1783,9 +1685,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         eval_timesteps = len(validation_df)
         holdout_timesteps = len(holdout_df)
         train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
-        total_timesteps = ReforceXY._ceil_to_multiple(
-            train_timesteps * train_cycles, self.n_envs
-        )
+        total_timesteps = ReforceXY._ceil_to_multiple(train_timesteps * train_cycles, self.n_envs)
         if self.hyperopt and ReforceXY._MODEL_TYPES[0] in self.model_type:
             total_timesteps = ReforceXY._ceil_to_multiple(
                 total_timesteps,
@@ -1885,8 +1785,8 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # Rebuild from FreqAI's cached raw OHLC to sync selected model parameters.
         self.close_envs()
-        model: Optional[Any] = None
-        primary_error: Optional[BaseException] = None
+        model: Any | None = None
+        primary_error: BaseException | None = None
         try:
             env_info = self.pack_env_dict(dk.pair, model_params)
             self.train_env, self.eval_env = self._get_train_and_eval_environments(
@@ -1919,6 +1819,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 hyperopt=self.hyperopt,
                 model_params=model_params,
             )
+            if not isinstance(self.eval_env, VecEnv):
+                raise RuntimeError("Validation environment was not initialized as a VecEnv")
             callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
             logger.debug(
                 "Training [%s]: starting model.learn with total_timesteps=%d, eval_freq=%d",
@@ -1926,6 +1828,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 total_timesteps,
                 eval_freq,
             )
+            if model is None:
+                raise RuntimeError("Model construction returned no model")
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
             logger.debug("Training [%s]: model.learn completed", dk.pair)
         except BaseException as error:
@@ -1935,8 +1839,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             except BaseException as cleanup_error:
                 ReforceXY._add_safe_exception_note(
                     error,
-                    "Additionally failed to remove validation checkpoint after "
-                    "training failure",
+                    "Additionally failed to remove validation checkpoint after training failure",
                     cleanup_error,
                 )
             raise
@@ -1989,8 +1892,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 outward_error: BaseException
                 if isinstance(error, Exception):
                     outward_error = RuntimeError(
-                        f"Model [{dk.pair}]: validation-selected checkpoint is "
-                        "unreadable"
+                        f"Model [{dk.pair}]: validation-selected checkpoint is unreadable"
                     )
                 else:
                     outward_error = error
@@ -1999,8 +1901,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 except BaseException as cleanup_error:
                     ReforceXY._add_safe_exception_note(
                         outward_error,
-                        "Additionally failed to remove unreadable validation "
-                        "checkpoint",
+                        "Additionally failed to remove unreadable validation checkpoint",
                         cleanup_error,
                     )
                 if outward_error is error:
@@ -2265,20 +2166,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             return value
         if isinstance(value, Enum):
             enum_type = type(value)
-            return {
-                "__enum__": (
-                    f"{enum_type.__module__}.{enum_type.__qualname__}.{value.name}"
-                )
-            }
+            return {"__enum__": (f"{enum_type.__module__}.{enum_type.__qualname__}.{value.name}")}
         if isinstance(value, type):
             return {"__type__": f"{value.__module__}.{value.__qualname__}"}
         if isinstance(value, Mapping):
-            canonical_mapping: Dict[str, Any] = {}
+            canonical_mapping: dict[str, Any] = {}
             if not all(isinstance(key, str) for key in value):
-                raise TypeError(
-                    f"Hyperopt contract [{path}]: mapping keys must be strings"
-                )
-            for key in sorted(cast(Mapping[str, Any], value)):
+                raise TypeError(f"Hyperopt contract [{path}]: mapping keys must be strings")
+            for key in sorted(cast("Mapping[str, Any]", value)):
                 canonical_mapping[key] = ReforceXY._canonicalize_optuna_contract_value(
                     value[key], f"{path}.{key}"
                 )
@@ -2290,8 +2185,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             ]
         if isinstance(value, (set, frozenset)):
             canonical_items = [
-                ReforceXY._canonicalize_optuna_contract_value(item, f"{path}[]")
-                for item in value
+                ReforceXY._canonicalize_optuna_contract_value(item, f"{path}[]") for item in value
             ]
             return sorted(
                 canonical_items,
@@ -2324,36 +2218,29 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
 
     @staticmethod
-    def _dataframe_contract_digest(role: str, dataframe: DataFrame) -> Dict[str, Any]:
+    def _dataframe_contract_digest(role: str, dataframe: DataFrame) -> dict[str, Any]:
         try:
-            row_hashes = hash_pandas_object(
-                dataframe, index=True, categorize=True
-            ).to_numpy(dtype="<u8", copy=False)
+            row_hashes = hash_pandas_object(dataframe, index=True, categorize=True).to_numpy(
+                dtype="<u8", copy=False
+            )
         except Exception as e:
-            raise RuntimeError(
-                f"Hyperopt contract [{role}]: dataframe hashing failed"
-            ) from e
+            raise RuntimeError(f"Hyperopt contract [{role}]: dataframe hashing failed") from e
         dataframe_metadata = {
             "role": role,
             "shape": list(dataframe.shape),
             "columns": list(dataframe.columns),
             "dtypes": [str(dtype) for dtype in dataframe.dtypes],
             "index_type": (
-                f"{type(dataframe.index).__module__}."
-                f"{type(dataframe.index).__qualname__}"
+                f"{type(dataframe.index).__module__}.{type(dataframe.index).__qualname__}"
             ),
             "index_names": list(dataframe.index.names),
             "index_dtype": str(getattr(dataframe.index, "dtype", "")),
         }
         digest = hashlib.sha256()
-        digest.update(
-            ReforceXY._canonical_optuna_contract_json(dataframe_metadata).encode()
-        )
+        digest.update(ReforceXY._canonical_optuna_contract_json(dataframe_metadata).encode())
         digest.update(row_hashes.tobytes(order="C"))
         return {
-            "metadata": ReforceXY._canonicalize_optuna_contract_value(
-                dataframe_metadata
-            ),
+            "metadata": ReforceXY._canonicalize_optuna_contract_value(dataframe_metadata),
             "sha256": digest.hexdigest(),
         }
 
@@ -2372,21 +2259,18 @@ class ReforceXY(BaseReinforcementLearningModel):
                 source = inspect.getsource(source_object)
             except (OSError, TypeError) as e:
                 raise RuntimeError(
-                    f"Hyperopt contract [{label}]: source unavailable for "
-                    f"{module}.{qualname}"
+                    f"Hyperopt contract [{label}]: source unavailable for {module}.{qualname}"
                 ) from e
             digest.update(f"\n{module}.{qualname}\n".encode())
             digest.update(source.encode())
         return digest.hexdigest()
 
     @staticmethod
-    def _material_environment_constants() -> Dict[str, Any]:
+    def _material_environment_constants() -> dict[str, Any]:
         try:
             environment_source = inspect.getsource(MyRLEnv)
         except (OSError, TypeError) as e:
-            raise RuntimeError(
-                "Hyperopt contract [environment]: MyRLEnv source unavailable"
-            ) from e
+            raise RuntimeError("Hyperopt contract [environment]: MyRLEnv source unavailable") from e
         constant_names = sorted(
             set(
                 re.findall(
@@ -2401,9 +2285,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"material constants, found {len(constant_names)}"
             )
         class_attributes = vars(ReforceXY)
-        missing_constants = [
-            name for name in constant_names if name not in class_attributes
-        ]
+        missing_constants = [name for name in constant_names if name not in class_attributes]
         if missing_constants:
             raise RuntimeError(
                 "Hyperopt contract [environment]: material constants unavailable: "
@@ -2412,7 +2294,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         return {name: class_attributes[name] for name in constant_names}
 
     @staticmethod
-    def _runtime_contract() -> Dict[str, str]:
+    def _runtime_contract() -> dict[str, str]:
         runtime = {
             "python": platform.python_version(),
             "torch_cuda_available": str(th.cuda.is_available()),
@@ -2423,26 +2305,18 @@ class ReforceXY(BaseReinforcementLearningModel):
                 runtime[distribution] = version(distribution)
             except Exception as e:
                 raise RuntimeError(
-                    f"Hyperopt contract: runtime distribution '{distribution}' "
-                    "is unavailable"
+                    f"Hyperopt contract: runtime distribution '{distribution}' is unavailable"
                 ) from e
         scipy_effective_version = getattr(scipy, "__version__", None)
         scipy_module_file = getattr(scipy, "__file__", None)
-        if (
-            not isinstance(scipy_effective_version, str)
-            or not scipy_effective_version.strip()
-        ):
-            raise RuntimeError(
-                "Hyperopt contract: effective SciPy version is unavailable"
-            )
+        if not isinstance(scipy_effective_version, str) or not scipy_effective_version.strip():
+            raise RuntimeError("Hyperopt contract: effective SciPy version is unavailable")
         if not isinstance(scipy_module_file, str) or not scipy_module_file:
             raise RuntimeError("Hyperopt contract: SciPy module path is unavailable")
         try:
             scipy_module_path = Path(scipy_module_file).resolve(strict=True)
         except (OSError, RuntimeError) as e:
-            raise RuntimeError(
-                "Hyperopt contract: SciPy module path cannot be resolved"
-            ) from e
+            raise RuntimeError("Hyperopt contract: SciPy module path cannot be resolved") from e
         runtime["scipy_effective_version"] = scipy_effective_version.strip()
         runtime["scipy_module_path"] = str(scipy_module_path)
         return runtime
@@ -2460,7 +2334,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         min_resource: int,
         max_resource: int,
         reduction_factor: int,
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str, str]:
         source_contract = {
             "objective": ReforceXY._source_contract_digest(
                 "objective",
@@ -2527,9 +2401,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or not isinstance(policy_gamma, (int, float))
             or not np.isfinite(policy_gamma)
         ):
-            raise RuntimeError(
-                "Hyperopt contract: resolved policy gamma must be a finite number"
-            )
+            raise RuntimeError("Hyperopt contract: resolved policy gamma must be a finite number")
         policy_gamma = float(policy_gamma)
         effective_env_info = self.pack_env_dict(dk.pair, model_params)
         configured_fee = self.config.get("fee")
@@ -2540,9 +2412,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             effective_fee = effective_env_info.get("fee")
             effective_fee_source = "environment"
         eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True)
-        evaluation_runs_per_trial_upper_bound = total_timesteps // (
-            self.n_envs * eval_freq
-        )
+        evaluation_runs_per_trial_upper_bound = total_timesteps // (self.n_envs * eval_freq)
         contract = {
             "schema_version": ReforceXY._OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION,
             "context": {
@@ -2568,12 +2438,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                         "flags": int(ReforceXY._NONFINITE_ERROR_PATTERN.flags),
                     },
                     "invariant_pattern": {
-                        "pattern": (
-                            ReforceXY._NONFINITE_ERROR_INVARIANT_PATTERN.pattern
-                        ),
-                        "flags": int(
-                            ReforceXY._NONFINITE_ERROR_INVARIANT_PATTERN.flags
-                        ),
+                        "pattern": (ReforceXY._NONFINITE_ERROR_INVARIANT_PATTERN.pattern),
+                        "flags": int(ReforceXY._NONFINITE_ERROR_INVARIANT_PATTERN.flags),
                     },
                 },
             },
@@ -2591,15 +2457,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                 },
             },
             "data": {
-                "train_features": ReforceXY._dataframe_contract_digest(
-                    "train_features", train_df
-                ),
+                "train_features": ReforceXY._dataframe_contract_digest("train_features", train_df),
                 "validation_features": ReforceXY._dataframe_contract_digest(
                     "validation_features", validation_df
                 ),
-                "train_ohlc": ReforceXY._dataframe_contract_digest(
-                    "train_ohlc", prices_train
-                ),
+                "train_ohlc": ReforceXY._dataframe_contract_digest("train_ohlc", prices_train),
                 "validation_ohlc": ReforceXY._dataframe_contract_digest(
                     "validation_ohlc", prices_validation
                 ),
@@ -2626,18 +2488,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "selected_model_fit_timesteps": total_timesteps,
                 "n_envs": self.n_envs,
                 "eval_freq": eval_freq,
-                "evaluation_runs_per_trial_upper_bound": (
-                    evaluation_runs_per_trial_upper_bound
-                ),
+                "evaluation_runs_per_trial_upper_bound": (evaluation_runs_per_trial_upper_bound),
                 "n_eval_envs": self.n_eval_envs,
                 "n_eval_episodes": self.n_eval_episodes,
                 "min_resource": min_resource,
                 "max_resource": max_resource,
                 "reduction_factor": reduction_factor,
                 "timeout_hours": self.optuna_timeout_hours,
-                "timeout_min_completed_trials": (
-                    self.optuna_timeout_min_completed_trials
-                ),
+                "timeout_min_completed_trials": (self.optuna_timeout_min_completed_trials),
             },
             "seed_policy": {
                 "model_seed": model_seed,
@@ -2650,20 +2508,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             "source": source_contract,
         }
         canonical_contract = ReforceXY._canonicalize_optuna_contract_value(contract)
-        encoded_contract = ReforceXY._canonical_optuna_contract_json(
-            canonical_contract
-        ).encode()
+        encoded_contract = ReforceXY._canonical_optuna_contract_json(canonical_contract).encode()
         contract_hash = hashlib.sha256(encoded_contract).hexdigest()
         # Window-independent identity for cross-window best-params warm start:
         # exclude per-window data digests and the training-window name so an
         # otherwise-identical search space / environment / budget can reuse params.
-        compatibility_source = {
-            key: value for key, value in contract.items() if key != "data"
-        }
+        compatibility_source = {key: value for key, value in contract.items() if key != "data"}
         compatibility_source["context"] = {
-            key: value
-            for key, value in contract["context"].items()
-            if key != "training_window"
+            key: value for key, value in contract["context"].items() if key != "training_window"
         }
         compatibility_hash = hashlib.sha256(
             ReforceXY._canonical_optuna_contract_json(
@@ -2673,14 +2525,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         return canonical_contract, contract_hash, compatibility_hash
 
     @staticmethod
-    def _study_generation(study_name: str, prefix: str) -> Optional[int]:
+    def _study_generation(study_name: str, prefix: str) -> int | None:
         if study_name == prefix:
             return 0
         match = re.fullmatch(rf"{re.escape(prefix)}-run-([1-9][0-9]*)", study_name)
         return int(match.group(1)) if match else None
 
     @staticmethod
-    def _optuna_trial_counts(study: Study) -> Dict[str, int]:
+    def _optuna_trial_counts(study: Study) -> dict[str, int]:
         return {
             state.name.lower(): sum(trial.state == state for trial in study.trials)
             for state in (
@@ -2696,17 +2548,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         self,
         study: Study,
         state: str,
-        error: Optional[BaseException] = None,
+        error: BaseException | None = None,
     ) -> None:
-        status: Dict[str, Any] = {
+        status: dict[str, Any] = {
             "state": state,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "trial_counts": ReforceXY._optuna_trial_counts(study),
         }
         if error is not None:
-            status["error_type"] = (
-                f"{type(error).__module__}.{type(error).__qualname__}"
-            )
+            status["error_type"] = f"{type(error).__module__}.{type(error).__qualname__}"
             error_message = ReforceXY._safe_exception_message(error)
             status["error_message"] = (
                 error_message[:1000]
@@ -2716,20 +2566,16 @@ class ReforceXY(BaseReinforcementLearningModel):
         study.set_user_attr(ReforceXY._OPTUNA_STUDY_STATUS_ATTR, status)
         persisted_status = study.user_attrs.get(ReforceXY._OPTUNA_STUDY_STATUS_ATTR)
         if persisted_status != status:
-            raise RuntimeError(
-                f"Hyperopt [{study.study_name}]: study status persistence mismatch"
-            )
+            raise RuntimeError(f"Hyperopt [{study.study_name}]: study status persistence mismatch")
 
-    def _record_optuna_failure_status(
-        self, study: Study, state: str, error: BaseException
-    ) -> None:
+    def _record_optuna_failure_status(self, study: Study, state: str, error: BaseException) -> None:
         try:
             self._set_optuna_study_status(study, state, error)
         except BaseException as status_error:
             status_error_type, status_error_message = ReforceXY._safe_exception_details(
                 status_error
             )
-            try:
+            with suppress(BaseException):
                 logger.critical(
                     "Hyperopt [%s]: failed to persist %s status while propagating "
                     "%s; secondary=%s: %s",
@@ -2739,15 +2585,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     status_error_type,
                     status_error_message,
                 )
-            except BaseException:
-                pass
-            try:
+            with suppress(BaseException):
                 error.add_note(
                     "Additionally failed to persist Optuna status "
                     f"({status_error_type}): {status_error_message}"
                 )
-            except BaseException:
-                pass
 
     def _resolve_optuna_study(
         self,
@@ -2755,11 +2597,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         storage: BaseStorage,
         sampler: BaseSampler,
         pruner: BasePruner,
-        contract_payload: Dict[str, Any],
+        contract_payload: dict[str, Any],
         contract_hash: str,
         compatibility_hash: str,
         force_fresh: bool,
-        fresh_reason: Optional[str],
+        fresh_reason: str | None,
     ) -> Study:
         contract_prefix = (
             f"{base_study_name}-contract-v"
@@ -2773,33 +2615,27 @@ class ReforceXY(BaseReinforcementLearningModel):
             "payload": contract_payload,
         }
         summaries = get_all_study_summaries(storage=storage, include_best_trial=False)
-        generations: Dict[int, Any] = {}
+        generations: dict[int, Any] = {}
         legacy_or_mismatch = False
         for summary in summaries:
             if summary.study_name == base_study_name:
                 legacy_or_mismatch = True
             if summary.study_name.startswith(f"{base_study_name}-contract-v"):
-                generation = ReforceXY._study_generation(
-                    summary.study_name, contract_prefix
-                )
+                generation = ReforceXY._study_generation(summary.study_name, contract_prefix)
                 if generation is None:
                     legacy_or_mismatch = True
                     continue
                 if generation in generations:
                     raise RuntimeError(
-                        f"Hyperopt [{base_study_name}]: duplicate study generation "
-                        f"{generation}"
+                        f"Hyperopt [{base_study_name}]: duplicate study generation {generation}"
                     )
                 generations[generation] = summary
 
-        resume_generation: Optional[int] = None
+        resume_generation: int | None = None
         if generations and not force_fresh:
             generation = max(generations)
             summary = generations[generation]
-            if (
-                summary.user_attrs.get(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR)
-                != contract_envelope
-            ):
+            if summary.user_attrs.get(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR) != contract_envelope:
                 legacy_or_mismatch = True
                 force_fresh = True
                 fresh_reason = (
@@ -2808,14 +2644,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
             else:
                 status = summary.user_attrs.get(ReforceXY._OPTUNA_STUDY_STATUS_ATTR)
-                status_state = (
-                    status.get("state") if isinstance(status, Mapping) else None
-                )
+                status_state = status.get("state") if isinstance(status, Mapping) else None
                 if status_state == "running":
                     force_fresh = True
-                    fresh_reason = (
-                        f"latest compatible generation {generation} remained running"
-                    )
+                    fresh_reason = f"latest compatible generation {generation} remained running"
                 elif status_state in {
                     "ready",
                     "completed",
@@ -2827,9 +2659,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 else:
                     legacy_or_mismatch = True
                     force_fresh = True
-                    fresh_reason = (
-                        f"latest generation {generation} has invalid status metadata"
-                    )
+                    fresh_reason = f"latest generation {generation} has invalid status metadata"
 
         if resume_generation is not None and not force_fresh:
             study_name = generations[resume_generation].study_name
@@ -2841,10 +2671,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 storage=storage,
                 load_if_exists=True,
             )
-            if (
-                study.user_attrs.get(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR)
-                != contract_envelope
-            ):
+            if study.user_attrs.get(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR) != contract_envelope:
                 raise RuntimeError(
                     f"Hyperopt [{study_name}]: contract changed while reopening study"
                 )
@@ -2869,11 +2696,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
 
         generation = 0 if not generations else max(generations) + 1
-        study_name = (
-            contract_prefix
-            if generation == 0
-            else f"{contract_prefix}-run-{generation}"
-        )
+        study_name = contract_prefix if generation == 0 else f"{contract_prefix}-run-{generation}"
         study = create_study(
             study_name=study_name,
             sampler=sampler,
@@ -2884,13 +2707,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         study.set_user_attr(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR, contract_envelope)
         self._set_optuna_study_status(study, "ready")
-        if (
-            study.user_attrs.get(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR)
-            != contract_envelope
-        ):
-            raise RuntimeError(
-                f"Hyperopt [{study_name}]: contract persistence mismatch"
-            )
+        if study.user_attrs.get(ReforceXY._OPTUNA_STUDY_CONTRACT_ATTR) != contract_envelope:
+            raise RuntimeError(f"Hyperopt [{study_name}]: contract persistence mismatch")
         logger.info(
             "Hyperopt [%s]: created immutable contract identity %s",
             study_name,
@@ -2905,47 +2723,39 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _add_safe_exception_note(
         primary_error: BaseException,
         message: str,
-        secondary_error: Optional[BaseException] = None,
+        secondary_error: BaseException | None = None,
     ) -> None:
         if secondary_error is not None:
-            secondary_type, secondary_message = ReforceXY._safe_exception_details(
-                secondary_error
-            )
+            secondary_type, secondary_message = ReforceXY._safe_exception_details(secondary_error)
             message = f"{message} ({secondary_type}): {secondary_message}"
-        try:
+        with suppress(BaseException):
             primary_error.add_note(message)
-        except BaseException:
-            pass
 
     @staticmethod
     def _run_cleanup_actions(
-        primary_error: Optional[BaseException],
-        actions: Sequence[Tuple[str, Callable[[], Any]]],
+        primary_error: BaseException | None,
+        actions: Sequence[tuple[str, Callable[[], Any]]],
     ) -> None:
         """Run every cleanup while preserving the authoritative exception."""
-        first_cleanup_error: Optional[BaseException] = None
+        first_cleanup_error: BaseException | None = None
         for message, action in actions:
             try:
                 action()
             except BaseException as cleanup_error:
                 if primary_error is not None:
-                    ReforceXY._add_safe_exception_note(
-                        primary_error, message, cleanup_error
-                    )
+                    ReforceXY._add_safe_exception_note(primary_error, message, cleanup_error)
                 elif first_cleanup_error is None:
                     first_cleanup_error = cleanup_error
                 else:
-                    ReforceXY._add_safe_exception_note(
-                        first_cleanup_error, message, cleanup_error
-                    )
+                    ReforceXY._add_safe_exception_note(first_cleanup_error, message, cleanup_error)
         if primary_error is None and first_cleanup_error is not None:
             raise first_cleanup_error
 
     @staticmethod
     def _close_distinct_model_environment(
-        model: Optional[Any],
-        train_env: Optional[VecEnv],
-        eval_env: Optional[VecEnv],
+        model: Any | None,
+        train_env: Any | None,
+        eval_env: Any | None,
     ) -> None:
         if model is None:
             return
@@ -2956,7 +2766,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     @staticmethod
     def _sync_parent_directory(document_path: Path) -> None:
-        directory_fd: Optional[int] = None
+        directory_fd: int | None = None
         try:
             directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             directory_fd = os.open(document_path.parent, directory_flags)
@@ -2979,7 +2789,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     @staticmethod
     def _load_json_document_if_present(
         document_path: Path,
-    ) -> Tuple[bool, Any]:
+    ) -> tuple[bool, Any]:
         for attempt in range(2):
             try:
                 read_file = document_path.open("r", encoding="utf-8")
@@ -3009,7 +2819,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     @staticmethod
     def _open_unique_json_temporary_file(
         destination_path: Path,
-    ) -> Tuple[Path, Any]:
+    ) -> tuple[Path, Any]:
         for _ in range(64):
             temporary_path = destination_path.with_name(
                 f".{destination_path.name}.{secrets.token_hex(16)}.tmp"
@@ -3034,9 +2844,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         except FileNotFoundError:
             destination_mode = None
 
-        temporary_path: Optional[Path] = None
+        temporary_path: Path | None = None
         write_file: Any = None
-        directory_fd: Optional[int] = None
+        directory_fd: int | None = None
         replacement_completed = False
         directory_sync_completed = False
         phase = "temporary-file creation"
@@ -3064,7 +2874,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             file_to_close.close()
 
             phase = "atomic replacement"
-            os.replace(temporary_path, destination_path)
+            temporary_path.replace(destination_path)
             replacement_completed = True
             temporary_path = None
 
@@ -3119,7 +2929,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 ReforceXY._add_safe_exception_note(error, state_message)
                 error_type, error_message = ReforceXY._safe_exception_details(error)
-                try:
+                with suppress(BaseException):
                     logger.error(
                         "Atomic JSON persistence failed during %s for %s; %s (%s): %s",
                         phase,
@@ -3128,11 +2938,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                         error_type,
                         error_message,
                     )
-                except BaseException:
-                    pass
             raise
 
-    def _load_optuna_retrain_counters(self, pair: str) -> Dict[str, Dict[str, Any]]:
+    def _load_optuna_retrain_counters(self, pair: str) -> dict[str, dict[str, Any]]:
         counters_path = self._optuna_retrain_counters_path()
         try:
             found, data = ReforceXY._load_json_document_if_present(counters_path)
@@ -3140,11 +2948,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 return {}
             if not isinstance(data, dict):
                 raise ValueError(
-                    f"Hyperopt [{pair}]: invalid retrain counter document at "
-                    f"{counters_path}"
+                    f"Hyperopt [{pair}]: invalid retrain counter document at {counters_path}"
                 )
             if "schema_version" not in data and "pairs" not in data:
-                legacy_result: Dict[str, Dict[str, Any]] = {}
+                legacy_result: dict[str, dict[str, Any]] = {}
                 for key, value in data.items():
                     if not isinstance(key, str) or type(value) is not int or value < 0:
                         raise ValueError(
@@ -3162,10 +2969,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 data.get("pairs"), dict
             ):
                 raise ValueError(
-                    f"Hyperopt [{pair}]: invalid retrain counter document at "
-                    f"{counters_path}"
+                    f"Hyperopt [{pair}]: invalid retrain counter document at {counters_path}"
                 )
-            result: Dict[str, Dict[str, Any]] = {}
+            result: dict[str, dict[str, Any]] = {}
             for key, entry in data["pairs"].items():
                 if (
                     not isinstance(key, str)
@@ -3185,8 +2991,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 ):
                     raise ValueError(
-                        f"Hyperopt [{pair}]: invalid retrain counter entry at "
-                        f"{counters_path}"
+                        f"Hyperopt [{pair}]: invalid retrain counter entry at {counters_path}"
                     )
                 result[key] = {
                     "count": entry["count"],
@@ -3195,7 +3000,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return result
         except BaseException as error:
             error_type, error_message = ReforceXY._safe_exception_details(error)
-            try:
+            with suppress(BaseException):
                 logger.error(
                     "Hyperopt [%s]: failed to load retrain counters from %s (%s): %s",
                     pair,
@@ -3203,27 +3008,21 @@ class ReforceXY(BaseReinforcementLearningModel):
                     error_type,
                     error_message,
                 )
-            except BaseException:
-                pass
             raise
 
-    def _save_optuna_retrain_counters(
-        self, counters: Dict[str, Dict[str, Any]], pair: str
-    ) -> None:
+    def _save_optuna_retrain_counters(self, counters: dict[str, dict[str, Any]], pair: str) -> None:
         counters_path = self._optuna_retrain_counters_path()
         try:
             ReforceXY._write_json_atomically(
                 counters_path,
                 {
-                    "schema_version": (
-                        ReforceXY._OPTUNA_RETRAIN_COUNTER_SCHEMA_VERSION
-                    ),
+                    "schema_version": (ReforceXY._OPTUNA_RETRAIN_COUNTER_SCHEMA_VERSION),
                     "pairs": counters,
                 },
             )
         except BaseException as error:
             error_type, error_message = ReforceXY._safe_exception_details(error)
-            try:
+            with suppress(BaseException):
                 logger.error(
                     "Hyperopt [%s]: failed to save retrain counters to %s (%s): %s",
                     pair,
@@ -3231,16 +3030,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                     error_type,
                     error_message,
                 )
-            except BaseException:
-                pass
             raise
 
     def _increment_optuna_retrain_counter(self, pair: str, transaction_id: str) -> int:
         sanitized_pair = ReforceXY._sanitize_pair(pair)
         counters_path = self._optuna_retrain_counters_path()
-        lock_path = (
-            counters_path.parent / ReforceXY._RETRAIN_COUNTERS_LOCK_FILENAME
-        )
+        lock_path = counters_path.parent / ReforceXY._RETRAIN_COUNTERS_LOCK_FILENAME
         # Serialize the load-modify-save across concurrent same-directory retrains.
         with ReforceXY._locked_path(lock_path, exclusive=True):
             counters = self._load_optuna_retrain_counters(pair)
@@ -3329,7 +3124,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         quarantine_path = ReforceXY._quarantine_path(journal_path, datetime.now(timezone.utc))
         journal_path.rename(quarantine_path)
         cause_type, cause_message = ReforceXY._safe_exception_details(cause)
-        try:
+        with suppress(BaseException):
             logger.warning(
                 "Optuna journal %s corrupt (%s): %s; quarantined to %s; "
                 "resuming with fresh journal",
@@ -3338,8 +3133,6 @@ class ReforceXY(BaseReinforcementLearningModel):
                 cause_message,
                 quarantine_path.name,
             )
-        except BaseException:
-            pass
         return quarantine_path
 
     @staticmethod
@@ -3399,7 +3192,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return False
 
     @staticmethod
-    def _safe_exception_message(error: BaseException) -> Optional[str]:
+    def _safe_exception_message(error: BaseException) -> str | None:
         try:
             message = str(error)
             return message if type(message) is str else str.__str__(message)
@@ -3407,7 +3200,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return None
 
     @staticmethod
-    def _safe_exception_details(error: BaseException) -> Tuple[str, str]:
+    def _safe_exception_details(error: BaseException) -> tuple[str, str]:
         try:
             error_type = f"{type(error).__module__}.{type(error).__qualname__}"
         except BaseException:
@@ -3483,9 +3276,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         return ((value + multiple - 1) // multiple) * multiple
 
     @staticmethod
-    def _ppo_resources(
-        total_timesteps: int, n_envs: int, reduction_factor: int
-    ) -> Tuple[int, int]:
+    def _ppo_resources(total_timesteps: int, n_envs: int, reduction_factor: int) -> tuple[int, int]:
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
         min_resource = max(
             2 * reduction_factor,
@@ -3505,7 +3296,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         validation_df: DataFrame,
         prices_train: DataFrame,
         prices_validation: DataFrame,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
         """
@@ -3521,9 +3312,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         n_envs = self.n_envs
         if ReforceXY._MODEL_TYPES[0] in self.model_type:  # "PPO"
             common_rollout = ReforceXY._PPO_N_STEPS_MAX * n_envs
-            common_total_timesteps = ReforceXY._ceil_to_multiple(
-                total_timesteps, common_rollout
-            )
+            common_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, common_rollout)
             if common_total_timesteps != total_timesteps:
                 logger.info(
                     "Hyperopt [%s]: aligning every trial to common budget %d "
@@ -3571,8 +3360,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             counter_transaction_id,
         )
         pair_purge_triggered = (
-            self.optuna_purge_period > 0
-            and pair_purge_count % self.optuna_purge_period == 0
+            self.optuna_purge_period > 0 and pair_purge_count % self.optuna_purge_period == 0
         )
 
         force_fresh = continuous or pair_purge_triggered
@@ -3581,8 +3369,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             fresh_reason = "continuous mode"
         if pair_purge_triggered:
             fresh_reason = (
-                f"purge period {self.optuna_purge_period} reached on retrain "
-                f"{pair_purge_count}"
+                f"purge period {self.optuna_purge_period} reached on retrain {pair_purge_count}"
             )
         study = self._resolve_optuna_study(
             base_study_name,
@@ -3598,12 +3385,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         study_name = study.study_name
         if study.direction != StudyDirection.MAXIMIZE:
             raise RuntimeError(
-                f"Hyperopt [{study_name}]: expected MAXIMIZE direction, got "
-                f"{study.direction.name}"
+                f"Hyperopt [{study_name}]: expected MAXIMIZE direction, got {study.direction.name}"
             )
         logger.info(
-            "Hyperopt [%s]: contract=%s direction=%s n_trials=%s timeout=%s "
-            "continuous=%s",
+            "Hyperopt [%s]: contract=%s direction=%s n_trials=%s timeout=%s continuous=%s",
             study_name,
             contract_hash,
             study.direction.name,
@@ -3627,20 +3412,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             if isinstance(storage, RDBStorage):
                 fail_stale_trials(study)
             finished_trials = sum(trial.state.is_finished() for trial in study.trials)
-            waiting_trials = sum(
-                trial.state == TrialState.WAITING for trial in study.trials
-            )
-            running_trials = sum(
-                trial.state == TrialState.RUNNING for trial in study.trials
-            )
+            waiting_trials = sum(trial.state == TrialState.WAITING for trial in study.trials)
+            running_trials = sum(trial.state == TrialState.RUNNING for trial in study.trials)
             if running_trials:
                 raise _OptunaRunningTrialsError(
                     f"Hyperopt [{study_name}]: refusing selection while "
                     f"{running_trials} trial(s) remain RUNNING"
                 )
-            remaining_trials = max(
-                0, self.optuna_n_trials - finished_trials - running_trials
-            )
+            remaining_trials = max(0, self.optuna_n_trials - finished_trials - running_trials)
             if waiting_trials > remaining_trials:
                 raise _OptunaWaitingTrialsError(
                     f"Hyperopt [{study_name}]: {waiting_trials} WAITING trial(s) "
@@ -3666,8 +3445,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
                 else:
                     logger.info(
-                        "Hyperopt [%s]: warm start found no contract-valid prior "
-                        "best params",
+                        "Hyperopt [%s]: warm start found no contract-valid prior best params",
                         study_name,
                     )
 
@@ -3682,14 +3460,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 remaining_trials,
             )
             timeout_seconds = (
-                hours_to_seconds(self.optuna_timeout_hours)
-                if self.optuna_timeout_hours
-                else None
+                hours_to_seconds(self.optuna_timeout_hours) if self.optuna_timeout_hours else None
             )
             eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True)
-            evaluation_runs_per_trial_upper_bound = total_timesteps // (
-                self.n_envs * eval_freq
-            )
+            evaluation_runs_per_trial_upper_bound = total_timesteps // (self.n_envs * eval_freq)
             logger.info(
                 "Hyperopt [%s]: planned upper budget remaining_trials=%d "
                 "hpo_timesteps=%d selected_model_fit_timesteps=%d "
@@ -3699,9 +3473,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 remaining_trials * total_timesteps,
                 total_timesteps,
                 remaining_trials * evaluation_runs_per_trial_upper_bound,
-                remaining_trials
-                * evaluation_runs_per_trial_upper_bound
-                * self.n_eval_episodes,
+                remaining_trials * evaluation_runs_per_trial_upper_bound * self.n_eval_episodes,
             )
             if timeout_seconds is None and remaining_trials > 0:
                 logger.warning(
@@ -3710,7 +3482,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     study_name,
                     remaining_trials,
                 )
-            executed_trials: List[int] = []
+            executed_trials: list[int] = []
             started_at = time.monotonic()
             if remaining_trials > 0:
                 study.optimize(
@@ -3730,9 +3502,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     # SB3 is not fully thread safe
                     n_jobs=1,
                     callbacks=[
-                        lambda _study, frozen_trial: executed_trials.append(
-                            frozen_trial.number
-                        )
+                        lambda _study, frozen_trial: executed_trials.append(frozen_trial.number)
                     ],
                 )
             elapsed = time.monotonic() - started_at
@@ -3776,15 +3546,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     f"Hyperopt [{study_name}]: best trial score is not finite"
                 ) from e
             if not np.isfinite(best_value):
-                raise RuntimeError(
-                    f"Hyperopt [{study_name}]: best trial score is not finite"
-                )
+                raise RuntimeError(f"Hyperopt [{study_name}]: best trial score is not finite")
             best_trial_params = dict(best_trial.params)
             selected_params = deepmerge(
                 self.get_model_params(),
-                convert_optuna_params_to_model_params(
-                    self.model_type, best_trial_params
-                ),
+                convert_optuna_params_to_model_params(self.model_type, best_trial_params),
             )
             self._set_optuna_study_status(study, outcome)
             self._pending_optuna_best_trial_params = best_trial_params
@@ -3817,42 +3583,35 @@ class ReforceXY(BaseReinforcementLearningModel):
             self._pending_optuna_best_trial_metadata = None
             self._discard_best_trial_params(dk.pair, e)
             self._record_optuna_failure_status(study, "running", e)
-            try:
+            with suppress(BaseException):
                 logger.error(
                     "Hyperopt [%s]: waiting trials prevent selection; preserving "
                     "running status so the next invocation starts a fresh generation",
                     study_name,
                 )
-            except BaseException:
-                pass
             raise
         except _OptunaRunningTrialsError as e:
             self._pending_optuna_best_trial_params = None
             self._pending_optuna_best_trial_metadata = None
             self._discard_best_trial_params(dk.pair, e)
             self._record_optuna_failure_status(study, "running", e)
-            try:
+            with suppress(BaseException):
                 logger.error(
                     "Hyperopt [%s]: running trials prevent selection; preserving "
                     "running status so the next invocation starts a fresh generation",
                     study_name,
                 )
-            except BaseException:
-                pass
             raise
         except KeyboardInterrupt as e:
             self._pending_optuna_best_trial_params = None
             self._pending_optuna_best_trial_metadata = None
             self._discard_best_trial_params(dk.pair, e)
             self._record_optuna_failure_status(study, "interrupted", e)
-            try:
+            with suppress(BaseException):
                 logger.warning(
-                    "Hyperopt [%s]: interrupted; status recorded and "
-                    "exception propagated",
+                    "Hyperopt [%s]: interrupted; status recorded and exception propagated",
                     study_name,
                 )
-            except BaseException:
-                pass
             raise
         except Exception as e:
             self._pending_optuna_best_trial_params = None
@@ -3860,36 +3619,31 @@ class ReforceXY(BaseReinforcementLearningModel):
             self._discard_best_trial_params(dk.pair, e)
             self._record_optuna_failure_status(study, "failed", e)
             failure_type, failure_message = ReforceXY._safe_exception_details(e)
-            try:
+            with suppress(BaseException):
                 logger.error(
-                    "Hyperopt [%s]: failed; status recorded and exception propagated "
-                    "(%s): %s",
+                    "Hyperopt [%s]: failed; status recorded and exception propagated (%s): %s",
                     study_name,
                     failure_type,
                     failure_message,
                 )
-            except BaseException:
-                pass
             raise
 
     def _best_trial_params_path(self, pair: str) -> Path:
-        best_trial_params_filename = (
-            f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}"
-        )
+        best_trial_params_filename = f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}"
         return Path(self.full_path / f"{best_trial_params_filename}.json")
 
     def _discard_best_trial_params(
-        self, pair: str, original_error: Optional[BaseException] = None
+        self, pair: str, original_error: BaseException | None = None
     ) -> None:
         artifact_path = self._best_trial_params_path(pair)
         try:
             artifact_path.unlink(missing_ok=True)
             ReforceXY._sync_parent_directory(artifact_path)
         except BaseException as artifact_error:
-            artifact_error_type, artifact_error_message = (
-                ReforceXY._safe_exception_details(artifact_error)
+            artifact_error_type, artifact_error_message = ReforceXY._safe_exception_details(
+                artifact_error
             )
-            try:
+            with suppress(BaseException):
                 logger.critical(
                     "Hyperopt [%s]: failed to remove best-params artifact %s (%s): %s",
                     pair,
@@ -3897,17 +3651,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                     artifact_error_type,
                     artifact_error_message,
                 )
-            except BaseException:
-                pass
             if original_error is None:
                 raise
-            try:
+            with suppress(BaseException):
                 original_error.add_note(
                     "Additionally failed to remove best-params artifact "
                     f"({artifact_error_type}): {artifact_error_message}"
                 )
-            except BaseException:
-                pass
 
     def _resolve_legacy_best_trial_params(
         self, pair: str, best_trial_params_path: Path
@@ -4007,9 +3757,9 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def save_best_trial_params(
         self,
-        best_trial_params: Dict[str, Any],
+        best_trial_params: dict[str, Any],
         pair: str,
-        metadata: Dict[str, str],
+        metadata: dict[str, str],
     ) -> None:
         """
         Save the best trial hyperparameters found during hyperparameter optimization
@@ -4020,10 +3770,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             "metadata": metadata,
             "params": best_trial_params,
         }
-        logger.info(
-            "Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path
-        )
-        temporary_path: Optional[Path] = None
+        logger.info("Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path)
+        temporary_path: Path | None = None
         try:
             with self._locked_best_trial_params(best_trial_params_path, exclusive=True):
                 self._reject_best_trial_params_symlink(best_trial_params_path)
@@ -4090,7 +3838,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                         exc_info=True,
                     )
             error_type, error_message = ReforceXY._safe_exception_details(error)
-            try:
+            with suppress(BaseException):
                 logger.error(
                     "Hyperopt [%s]: failed to save best params to %s (%s): %s",
                     pair,
@@ -4098,8 +3846,6 @@ class ReforceXY(BaseReinforcementLearningModel):
                     error_type,
                     error_message,
                 )
-            except BaseException:
-                pass
             raise
 
     def load_best_trial_params(
@@ -4107,14 +3853,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         pair: str,
         expected_compatibility_hash: str,
         storage: BaseStorage,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Load the best trial hyperparameters found and saved during hyperparameter optimization
         """
         best_trial_params_path = self._best_trial_params_path(pair)
         if not best_trial_params_path.parent.is_dir():
             return None
-        envelope: Optional[Any] = None
+        envelope: Any | None = None
         malformed = False
         with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
             self._reject_best_trial_params_symlink(best_trial_params_path)
@@ -4139,9 +3885,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if not best_trial_params_path.is_file():
                     return None
                 try:
-                    with best_trial_params_path.open(
-                        "r", encoding="utf-8"
-                    ) as read_file:
+                    with best_trial_params_path.open("r", encoding="utf-8") as read_file:
                         envelope = json.load(read_file)
                 except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
                     quarantined = self._quarantine_corrupt_best_trial_params(
@@ -4152,13 +3896,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     return None
         if (
             not isinstance(envelope, Mapping)
-            or envelope.get("schema_version")
-            != ReforceXY._OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION
+            or envelope.get("schema_version") != ReforceXY._OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION
             or not isinstance(envelope.get("metadata"), Mapping)
             or envelope["metadata"].get("status") not in {"completed", "timeout"}
             or not isinstance(envelope["metadata"].get("study_name"), str)
-            or envelope["metadata"].get("compatibility_hash")
-            != expected_compatibility_hash
+            or envelope["metadata"].get("compatibility_hash") != expected_compatibility_hash
             or not isinstance(envelope.get("params"), Mapping)
         ):
             logger.warning(
@@ -4189,13 +3931,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             if source_summary is not None
             else None
         )
-        source_state = (
-            source_status.get("state") if isinstance(source_status, Mapping) else None
-        )
+        source_state = source_status.get("state") if isinstance(source_status, Mapping) else None
         if (
             not isinstance(source_contract, Mapping)
-            or source_contract.get("compatibility_hash")
-            != expected_compatibility_hash
+            or source_contract.get("compatibility_hash") != expected_compatibility_hash
             or source_state not in {"completed", "timeout"}
             or source_state != envelope["metadata"]["status"]
         ):
@@ -4211,21 +3950,16 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _get_train_and_eval_environments(
         self,
         dk: FreqaiDataKitchen,
-        train_df: Optional[DataFrame] = None,
-        test_df: Optional[DataFrame] = None,
-        prices_train: Optional[DataFrame] = None,
-        prices_test: Optional[DataFrame] = None,
-        seed: Optional[int] = None,
-        env_info: Optional[Dict[str, Any]] = None,
-        trial: Optional[Trial] = None,
-        model_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[VecEnv, VecEnv]:
-        if (
-            train_df is None
-            or test_df is None
-            or prices_train is None
-            or prices_test is None
-        ):
+        train_df: DataFrame | None = None,
+        test_df: DataFrame | None = None,
+        prices_train: DataFrame | None = None,
+        prices_test: DataFrame | None = None,
+        seed: int | None = None,
+        env_info: dict[str, Any] | None = None,
+        trial: Trial | None = None,
+        model_params: dict[str, Any] | None = None,
+    ) -> tuple[VecEnv, VecEnv]:
+        if train_df is None or test_df is None or prices_train is None or prices_test is None:
             raise ValueError(
                 f"Env [{dk.pair}]: transformed features and raw OHLC must be "
                 "passed explicitly from FreqAI's environment hook"
@@ -4249,8 +3983,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             for i in range(self.n_envs)
         ]
-        train_env: Optional[VecEnv] = None
-        acquired_environments: List[BaseEnvironment] = []
+        train_env: VecEnv | None = None
+        acquired_environments: list[BaseEnvironment] = []
         try:
             if self.multiprocessing and self.n_envs > 1:
                 sb3_version = getattr(stable_baselines3, "__version__", None)
@@ -4264,9 +3998,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 train_env = SubprocVecEnv(train_fns, start_method="spawn")
             else:
                 train_env = DummyVecEnv(
-                    ReforceXY._track_environment_factories(
-                        train_fns, acquired_environments
-                    )
+                    ReforceXY._track_environment_factories(train_fns, acquired_environments)
                 )
                 acquired_environments.clear()
 
@@ -4287,8 +4019,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 error,
                 (
                     (
-                        "Additionally failed to close partially initialized "
-                        "training environment",
+                        "Additionally failed to close partially initialized training environment",
                         lambda: train_env.close() if train_env is not None else None,
                     ),
                     *tuple(
@@ -4373,9 +4104,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
-        logger.info(
-            "Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params
-        )
+        logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -4397,10 +4126,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        train_env: Optional[VecEnv] = None
-        eval_env: Optional[VecEnv] = None
-        model: Optional[Any] = None
-        primary_error: Optional[BaseException] = None
+        train_env: VecEnv | None = None
+        eval_env: VecEnv | None = None
+        model: Any | None = None
+        primary_error: BaseException | None = None
         try:
             train_env, eval_env = self._get_train_and_eval_environments(
                 dk,
@@ -4418,17 +4147,18 @@ class ReforceXY(BaseReinforcementLearningModel):
                 tensorboard_log=tensorboard_log_path,
                 **params,
             )
-            eval_freq = self.get_eval_freq(
-                total_timesteps, hyperopt=True, model_params=params
-            )
-            callbacks = self.get_callbacks(
-                eval_env, eval_freq, str(dk.data_path), trial
-            )
+            eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
+            callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
+            optuna_eval_callback = self.optuna_eval_callback
+            if optuna_eval_callback is None:
+                raise RuntimeError("Hyperopt evaluation callback was not initialized")
             try:
+                if model is None:
+                    raise RuntimeError("Model construction returned no model")
                 model.learn(total_timesteps=total_timesteps, callback=callbacks)
             except (AssertionError, FloatingPointError, RuntimeError, ValueError) as e:
                 if not ReforceXY._is_nonfinite_error(e):
-                    try:
+                    with suppress(BaseException):
                         logger.error(
                             "Hyperopt [%s]: trial #%d unexpected %s; propagating",
                             study_name,
@@ -4436,15 +4166,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                             type(e).__name__,
                             exc_info=True,
                         )
-                    except BaseException:
-                        pass
                     raise
                 error_message = (
                     None
                     if isinstance(e, FloatingPointError)
                     else ReforceXY._safe_exception_message(e)
                 )
-                try:
+                with suppress(BaseException):
                     logger.warning(
                         "Hyperopt [%s]: trial #%d encountered a non-finite numeric "
                         "failure (%s): %s",
@@ -4455,8 +4183,6 @@ class ReforceXY(BaseReinforcementLearningModel):
                         if error_message is not None
                         else "<exception message unavailable>",
                     )
-                except BaseException:
-                    pass
                 raise TrialPruned(
                     f"Hyperopt [{study_name}]: non-finite numeric error during training"
                 ) from e
@@ -4492,11 +4218,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                 ),
             )
 
-        if self.optuna_eval_callback.is_pruned:
+        if optuna_eval_callback.is_pruned:
             raise TrialPruned(f"Hyperopt [{study_name}]: pruned by eval callback")
-        self.optuna_eval_callback.require_eligible_evaluation(study_name)
+        optuna_eval_callback.require_eligible_evaluation(study_name)
 
-        return self.optuna_eval_callback.best_mean_reward
+        return optuna_eval_callback.best_mean_reward
 
     def close_envs(self) -> None:
         """
@@ -6129,28 +5855,23 @@ class HorizonAwareMaskableEvalCallback(MaskableEvalCallback):
             n_eval_episodes=n_eval_episodes,
             **kwargs,
         )
-        self._horizon_tracker = _EvaluationHorizonTracker(
-            self.eval_env, self.n_eval_episodes
-        )
-        self.latest_horizon: Optional[_EvaluationHorizon] = None
-        self.latest_reward_valid: Optional[bool] = None
+        self._horizon_tracker = _EvaluationHorizonTracker(self.eval_env, self.n_eval_episodes)
+        self.latest_horizon: _EvaluationHorizon | None = None
+        self.latest_reward_valid: bool | None = None
         self.has_eligible_evaluation = False
 
-    def _log_success_callback(
-        self, locals_: Dict[str, Any], globals_: Dict[str, Any]
-    ) -> None:
+    def _log_success_callback(self, locals_: dict[str, Any], globals_: dict[str, Any]) -> None:
         self._horizon_tracker.capture(locals_, globals_)
         if bool(locals_.get("done", False)):
             self.latest_horizon = self._horizon_tracker.result()
             info = locals_.get("info")
             episode = info.get("episode") if isinstance(info, Mapping) else None
             episode_reward = episode.get("r") if isinstance(episode, Mapping) else None
-            try:
+            if isinstance(episode_reward, (int, float)) and not isinstance(episode_reward, bool):
                 reward_value = float(episode_reward)
-            except (OverflowError, TypeError, ValueError):
-                self.latest_reward_valid = False
-            else:
                 self.latest_reward_valid = bool(np.isfinite(reward_value))
+            else:
+                self.latest_reward_valid = False
             if not self.latest_horizon.eligible or not self.latest_reward_valid:
                 # Preserve the real reward in SB3 logs while preventing this
                 # evaluation from becoming a best checkpoint.
@@ -6221,7 +5942,7 @@ class MaskableTrialEvalCallback(HorizonAwareMaskableEvalCallback):
 
     def __init__(
         self,
-        eval_env: BaseEnvironment,
+        eval_env: VecEnv,
         trial: Trial,
         n_eval_episodes: int = 10,
         eval_freq: int = 2048,
@@ -6254,8 +5975,7 @@ class MaskableTrialEvalCallback(HorizonAwareMaskableEvalCallback):
     def require_eligible_evaluation(self, study_name: str) -> None:
         if not self.has_eligible_evaluation:
             raise TrialPruned(
-                f"Hyperopt [{study_name}]: no full-horizon end_of_data "
-                "evaluation completed"
+                f"Hyperopt [{study_name}]: no full-horizon end_of_data evaluation completed"
             )
 
     def _on_step(self) -> bool:
@@ -6266,8 +5986,7 @@ class MaskableTrialEvalCallback(HorizonAwareMaskableEvalCallback):
             _super_on_step = super()._on_step()
         except _InvalidEvaluationRewardError as e:
             logger.warning(
-                "Hyperopt [%s]: trial #%d rejected invalid evaluation reward "
-                "(timesteps=%s): %s",
+                "Hyperopt [%s]: trial #%d rejected invalid evaluation reward (timesteps=%s): %s",
                 self.trial.study.study_name,
                 self.trial.number,
                 self.num_timesteps,
@@ -6288,11 +6007,7 @@ class MaskableTrialEvalCallback(HorizonAwareMaskableEvalCallback):
                     self.trial.number,
                     self.eval_idx,
                     self.num_timesteps,
-                    (
-                        self.latest_horizon.reason
-                        if self.latest_horizon is not None
-                        else None
-                    ),
+                    (self.latest_horizon.reason if self.latest_horizon is not None else None),
                 )
                 return True
 
@@ -6317,13 +6032,11 @@ class MaskableTrialEvalCallback(HorizonAwareMaskableEvalCallback):
                 best_mean_reward = float(getattr(self, "best_mean_reward", np.nan))
             except Exception as e:
                 raise _InvalidEvaluationRewardError(
-                    "Evaluation reward contract: best_mean_reward must be a "
-                    "finite float"
+                    "Evaluation reward contract: best_mean_reward must be a finite float"
                 ) from e
             if not np.isfinite(best_mean_reward):
                 raise _InvalidEvaluationRewardError(
-                    "Evaluation reward contract: best_mean_reward must be a "
-                    "finite float"
+                    "Evaluation reward contract: best_mean_reward must be a finite float"
                 )
 
             try:
