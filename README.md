@@ -482,9 +482,10 @@ docker run --rm \
 
 Review the generated `.basedpyright/diagnostics.json` diff. Use the ReforceXY image
 and `--project reforcexy` for its snapshot. The writer preserves existing file
-permissions and uses mode `0644` when creating a missing snapshot. The wrapper
-rejects direct host and wrong-image execution so Freqtrade imports and dependency
-versions remain exact.
+permissions and uses mode `0644` when creating a missing snapshot. Snapshot targets
+must be regular files; symbolic links and other special files are rejected. The
+wrapper rejects direct host and wrong-image execution so Freqtrade imports and
+dependency versions remain exact.
 
 The BasedPyright and type-stub versions are pinned in each project's
 `.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally

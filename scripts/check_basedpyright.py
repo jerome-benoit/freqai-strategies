@@ -164,6 +164,38 @@ def _resolve_repo_path(path: str, *, must_exist: bool) -> Path:
     return resolved
 
 
+def _resolve_snapshot_path(path: str) -> Path:
+    candidate = Path(path)
+    absolute = candidate if candidate.is_absolute() else REPO_ROOT / candidate
+    if not absolute.name or absolute.name in {".", ".."}:
+        raise QualityCheckError(f"Snapshot path must name a file: {path}")
+
+    parent = absolute.parent.resolve()
+    try:
+        parent.relative_to(REPO_ROOT)
+    except ValueError as error:
+        raise QualityCheckError(f"Path escapes repository: {path}") from error
+    if not parent.is_dir():
+        raise QualityCheckError(
+            f"Snapshot directory does not exist: {parent.relative_to(REPO_ROOT)}"
+        )
+
+    snapshot = parent / absolute.name
+    try:
+        snapshot_stat = snapshot.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return snapshot
+    except OSError as error:
+        raise QualityCheckError(
+            f"Cannot inspect snapshot {snapshot.relative_to(REPO_ROOT)}: {error}"
+        ) from error
+    if not stat.S_ISREG(snapshot_stat.st_mode):
+        raise QualityCheckError(
+            f"Snapshot target must be a regular file: {snapshot.relative_to(REPO_ROOT)}"
+        )
+    return snapshot
+
+
 def _normalize_file(path: object, label: str) -> str:
     raw_path = _require_scalar_string(path, label, nonempty=True)
     return _resolve_repo_path(raw_path, must_exist=True).relative_to(REPO_ROOT).as_posix()
@@ -420,14 +452,28 @@ def _run_basedpyright(config: Path, executable: Path) -> object:
 
 
 def _read_snapshot(path: Path) -> dict[str, object]:
-    if not path.is_file():
-        raise QualityCheckError(f"Snapshot does not exist: {path.relative_to(REPO_ROOT)}")
+    relative_path = path.relative_to(REPO_ROOT)
+    descriptor: int | None = None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        text = path.read_bytes().decode("utf-8", errors="strict")
-    except (OSError, UnicodeDecodeError) as error:
-        raise QualityCheckError(
-            f"Cannot read snapshot {path.relative_to(REPO_ROOT)}: {error}"
-        ) from error
+        descriptor = os.open(path, flags)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise QualityCheckError(f"Snapshot target must be a regular file: {relative_path}")
+        snapshot_file = os.fdopen(descriptor, "rb")
+        descriptor = None
+        with snapshot_file:
+            content = snapshot_file.read()
+    except FileNotFoundError as error:
+        raise QualityCheckError(f"Snapshot does not exist: {relative_path}") from error
+    except OSError as error:
+        raise QualityCheckError(f"Cannot read snapshot {relative_path}: {error}") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        text = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise QualityCheckError(f"Cannot read snapshot {relative_path}: {error}") from error
     return _validate_snapshot(_strict_json_loads(text))
 
 
@@ -476,11 +522,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
 def _check_project(project_name: str, *, write: bool) -> int:
     project = PROJECTS[project_name]
     config = _resolve_repo_path(project.config, must_exist=True)
-    baseline = _resolve_repo_path(project.baseline, must_exist=False)
-    if not baseline.parent.is_dir():
-        raise QualityCheckError(
-            f"Snapshot directory does not exist: {baseline.parent.relative_to(REPO_ROOT)}"
-        )
+    baseline = _resolve_snapshot_path(project.baseline)
     executable = _validate_environment(project)
     current_snapshot = _snapshot_from_child(_run_basedpyright(config, executable))
     current_bytes = _canonical_bytes(current_snapshot)
