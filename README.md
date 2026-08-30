@@ -446,9 +446,9 @@ uvx ruff@latest format --check .
 ```
 
 BasedPyright must run inside the matching Freqtrade QA image. The repository
-wrapper compares complete diagnostics—including source lines and messages—and the
-number of files analyzed against the project's exact snapshot. Build each QA
-target and mount the checkout read-only:
+wrapper compares every emitted diagnostic field—including an optional rule and
+source range when present—and the number of files analyzed against the project's
+exact snapshot. Build each QA target and mount the checkout read-only:
 
 ```shell
 # QuickAdapter
@@ -481,8 +481,10 @@ docker run --rm \
 ```
 
 Review the generated `.basedpyright/diagnostics.json` diff. Use the ReforceXY image
-and `--project reforcexy` for its snapshot. The wrapper rejects direct host and
-wrong-image execution so Freqtrade imports and dependency versions remain exact.
+and `--project reforcexy` for its snapshot. The writer preserves existing file
+permissions and uses mode `0644` when creating a missing snapshot. The wrapper
+rejects direct host and wrong-image execution so Freqtrade imports and dependency
+versions remain exact.
 
 The BasedPyright and type-stub versions are pinned in each project's
 `.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally

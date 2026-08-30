@@ -30,7 +30,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from sklearn.ensemble import RandomForestRegressor as RandomForestRegressorType
-
+else:
+    RandomForestRegressorType = Any
 try:
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.inspection import partial_dependence, permutation_importance
@@ -42,7 +43,6 @@ except Exception:
     permutation_importance = None
     r2_score = None
     train_test_split = None
-
 
 AttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "asinh"]
