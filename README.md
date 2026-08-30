@@ -10,6 +10,7 @@
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
   - [Configuration tunables](#configuration-tunables-1)
+- [Development](#development)
 - [Common workflows](#common-workflows)
 - [Note](#note)
 
@@ -433,7 +434,7 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
-## Common workflows
+## Development
 
 **Run repository quality checks from the repository root:**
 
@@ -486,6 +487,8 @@ The QA dependency versions are pinned in each project's
 `.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally
 follow their rolling `stable_freqai` and `stable_freqairl` tags, so record the
 resolved image digests when a reproducible audit is required.
+
+## Common workflows
 
 **List running compose services and the containers they created:**
 
