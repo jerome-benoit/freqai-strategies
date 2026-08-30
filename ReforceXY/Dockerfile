@@ -7,7 +7,7 @@ ARG matplotlib_version=3.11.1
 
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git \
+ && apt-get install -y --no-install-recommends git libatomic1 \
  && rm -rf /var/lib/apt/lists/*
 USER ftuser
 RUN pip install --user --no-cache-dir \
@@ -23,11 +23,6 @@ LABEL org.opencontainers.image.source="freqai-strategies" \
 
 FROM runtime AS qa
 ENV FREQAI_QUALITY_PROJECT=reforcexy
-USER root
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libatomic1 \
- && rm -rf /var/lib/apt/lists/*
-USER ftuser
 COPY --chown=ftuser:ftuser .devcontainer/requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install --user --no-cache-dir -r /tmp/requirements-dev.txt \
  && python -m basedpyright --version \
