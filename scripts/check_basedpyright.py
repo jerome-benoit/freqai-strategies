@@ -19,12 +19,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CHECK_TIMEOUT_SECONDS = 300
 QA_PROJECT_ENV = "FREQAI_QUALITY_PROJECT"
 DEFAULT_SNAPSHOT_MODE = 0o644
 ALLOWED_SEVERITIES = frozenset({"error", "warning", "information"})
-SNAPSHOT_KEYS = frozenset({"schemaVersion", "basedpyrightVersion", "filesAnalyzed", "diagnostics"})
+SOURCE_SUFFIXES = frozenset({".py", ".pyi"})
+INCLUDE_GLOB_CHARACTERS = frozenset("*?[]")
+SNAPSHOT_KEYS = frozenset(
+    {"schemaVersion", "basedpyrightVersion", "filesAnalyzed", "sourceFiles", "diagnostics"}
+)
 BASEDPYRIGHT_OUTPUT_KEYS = frozenset({"version", "time", "generalDiagnostics", "summary"})
 BASEDPYRIGHT_SUMMARY_KEYS = frozenset(
     {"filesAnalyzed", "errorCount", "warningCount", "informationCount", "timeInSec"}
@@ -196,6 +200,105 @@ def _resolve_snapshot_path(path: str) -> Path:
     return snapshot
 
 
+def _read_utf8_file(path: Path, label: str) -> str:
+    try:
+        return path.read_bytes().decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as error:
+        raise QualityCheckError(
+            f"Cannot read {label} {path.relative_to(REPO_ROOT)}: {error}"
+        ) from error
+
+
+def _reject_symlink_components(path: Path, anchor: Path, label: str) -> None:
+    current = anchor
+    for part in path.relative_to(anchor).parts:
+        current /= part
+        try:
+            mode = current.stat(follow_symlinks=False).st_mode
+        except OSError as error:
+            raise QualityCheckError(f"Cannot inspect {label} {current}: {error}") from error
+        if stat.S_ISLNK(mode):
+            raise QualityCheckError(f"{label} must not contain symbolic links: {current}")
+
+
+def _collect_source_files(directory: Path) -> list[Path]:
+    source_files: list[Path] = []
+    for root, directory_names, file_names in os.walk(directory, followlinks=False):
+        root_path = Path(root)
+        for name in directory_names:
+            child = root_path / name
+            if child.is_symlink():
+                raise QualityCheckError(f"Source scope must not contain symbolic links: {child}")
+        for name in file_names:
+            child = root_path / name
+            if child.suffix not in SOURCE_SUFFIXES:
+                continue
+            try:
+                mode = child.stat(follow_symlinks=False).st_mode
+            except OSError as error:
+                raise QualityCheckError(f"Cannot inspect source file {child}: {error}") from error
+            if not stat.S_ISREG(mode):
+                raise QualityCheckError(f"Source file must be a regular file: {child}")
+            source_files.append(child)
+    return source_files
+
+
+def _source_files_from_config(config: Path) -> list[str]:
+    config_data = _require_mapping(
+        _strict_json_loads(_read_utf8_file(config, "BasedPyright config")),
+        "BasedPyright config",
+    )
+    raw_includes = config_data.get("include")
+    if not isinstance(raw_includes, list) or not raw_includes:
+        raise QualityCheckError("BasedPyright config include must be a nonempty array")
+
+    scopes: list[tuple[Path, bool]] = []
+    for index, value in enumerate(raw_includes):
+        label = f"BasedPyright config include[{index}]"
+        include = _require_scalar_string(value, label, nonempty=True)
+        if any(character in include for character in INCLUDE_GLOB_CHARACTERS):
+            raise QualityCheckError(f"{label} must not use glob syntax")
+        pure_path = PurePosixPath(include)
+        if pure_path.is_absolute() or ".." in pure_path.parts or pure_path.as_posix() != include:
+            raise QualityCheckError(f"{label} must be a normalized relative POSIX path")
+
+        candidate = config.parent.joinpath(*pure_path.parts)
+        try:
+            candidate.relative_to(REPO_ROOT)
+        except ValueError as error:
+            raise QualityCheckError(f"{label} escapes the repository") from error
+        _reject_symlink_components(candidate, config.parent, label)
+        try:
+            mode = candidate.stat(follow_symlinks=False).st_mode
+        except OSError as error:
+            raise QualityCheckError(f"Cannot inspect {label} {include}: {error}") from error
+        is_directory = stat.S_ISDIR(mode)
+        if not is_directory and not stat.S_ISREG(mode):
+            raise QualityCheckError(f"{label} must identify a regular file or directory")
+        if not is_directory and candidate.suffix not in SOURCE_SUFFIXES:
+            raise QualityCheckError(f"{label} file must end in .py or .pyi")
+
+        for previous, previous_is_directory in scopes:
+            overlaps = candidate == previous
+            if previous_is_directory:
+                overlaps = overlaps or candidate.is_relative_to(previous)
+            if is_directory:
+                overlaps = overlaps or previous.is_relative_to(candidate)
+            if overlaps:
+                raise QualityCheckError(f"{label} overlaps another include scope")
+        scopes.append((candidate, is_directory))
+
+    source_paths: list[Path] = []
+    for scope, is_directory in scopes:
+        source_paths.extend(_collect_source_files(scope) if is_directory else [scope])
+    source_files = sorted(path.relative_to(REPO_ROOT).as_posix() for path in source_paths)
+    if not source_files:
+        raise QualityCheckError("BasedPyright config include contains no Python source files")
+    if len(source_files) != len(set(source_files)):
+        raise QualityCheckError("BasedPyright config include produces duplicate source files")
+    return source_files
+
+
 def _normalize_file(path: object, label: str) -> str:
     raw_path = _require_scalar_string(path, label, nonempty=True)
     return _resolve_repo_path(raw_path, must_exist=True).relative_to(REPO_ROOT).as_posix()
@@ -289,7 +392,7 @@ def _files_analyzed_from_summary(value: object, diagnostics: Sequence[Mapping[st
     return files_analyzed
 
 
-def _snapshot_from_child(value: object) -> dict[str, object]:
+def _snapshot_from_child(value: object, source_files: Sequence[str]) -> dict[str, object]:
     result = _require_mapping(value, "BasedPyright output")
     _require_exact_keys(result, BASEDPYRIGHT_OUTPUT_KEYS, "BasedPyright output")
     version = _require_scalar_string(result["version"], "BasedPyright version", nonempty=True)
@@ -301,11 +404,16 @@ def _snapshot_from_child(value: object) -> dict[str, object]:
         _normalize_child_diagnostic(item, index) for index, item in enumerate(raw_diagnostics)
     ]
     files_analyzed = _files_analyzed_from_summary(result["summary"], diagnostics)
+    if files_analyzed != len(source_files):
+        raise QualityCheckError(
+            f"BasedPyright analyzed {files_analyzed} files, expected {len(source_files)} configured sources"
+        )
     diagnostics.sort(key=_diagnostic_sort_key)
     snapshot = {
         "schemaVersion": SCHEMA_VERSION,
         "basedpyrightVersion": version,
         "filesAnalyzed": files_analyzed,
+        "sourceFiles": list(source_files),
         "diagnostics": diagnostics,
     }
     return _validate_snapshot(snapshot)
@@ -375,6 +483,33 @@ def _validate_snapshot(value: object) -> dict[str, object]:
     files_analyzed = _require_nonnegative_integer(
         snapshot["filesAnalyzed"], "Snapshot filesAnalyzed"
     )
+
+    raw_source_files = snapshot["sourceFiles"]
+    if not isinstance(raw_source_files, list) or not raw_source_files:
+        raise QualityCheckError("Snapshot sourceFiles must be a nonempty array")
+    source_files: list[str] = []
+    for index, raw_source_file in enumerate(raw_source_files):
+        label = f"sourceFiles[{index}]"
+        source_file = _require_scalar_string(raw_source_file, label, nonempty=True)
+        pure_path = PurePosixPath(source_file)
+        if (
+            pure_path.is_absolute()
+            or ".." in pure_path.parts
+            or pure_path.as_posix() != source_file
+            or pure_path.suffix not in SOURCE_SUFFIXES
+        ):
+            raise QualityCheckError(f"{label} must be a normalized repository-relative Python path")
+        resolved = _resolve_repo_path(source_file, must_exist=True)
+        if resolved.relative_to(REPO_ROOT).as_posix() != source_file:
+            raise QualityCheckError(f"{label} must not contain symbolic links")
+        if source_files and source_file <= source_files[-1]:
+            raise QualityCheckError("Snapshot sourceFiles must be strictly sorted and unique")
+        source_files.append(source_file)
+    if files_analyzed != len(source_files):
+        raise QualityCheckError(
+            f"Snapshot filesAnalyzed is {files_analyzed}, expected {len(source_files)} sourceFiles"
+        )
+
     raw_diagnostics = snapshot["diagnostics"]
     if not isinstance(raw_diagnostics, list):
         raise QualityCheckError("Snapshot diagnostics must be an array")
@@ -386,6 +521,7 @@ def _validate_snapshot(value: object) -> dict[str, object]:
         "schemaVersion": SCHEMA_VERSION,
         "basedpyrightVersion": version,
         "filesAnalyzed": files_analyzed,
+        "sourceFiles": source_files,
         "diagnostics": diagnostics,
     }
 
@@ -524,7 +660,8 @@ def _check_project(project_name: str, *, write: bool) -> int:
     config = _resolve_repo_path(project.config, must_exist=True)
     baseline = _resolve_snapshot_path(project.baseline)
     executable = _validate_environment(project)
-    current_snapshot = _snapshot_from_child(_run_basedpyright(config, executable))
+    source_files = _source_files_from_config(config)
+    current_snapshot = _snapshot_from_child(_run_basedpyright(config, executable), source_files)
     current_bytes = _canonical_bytes(current_snapshot)
 
     if write:

@@ -1563,5 +1563,10 @@
     }
   ],
   "filesAnalyzed": 3,
-  "schemaVersion": 3
+  "schemaVersion": 4,
+  "sourceFiles": [
+    "ReforceXY/reward_space_analysis/reward_space_analysis.py",
+    "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+    "ReforceXY/user_data/strategies/RLAgentStrategy.py"
+  ]
 }

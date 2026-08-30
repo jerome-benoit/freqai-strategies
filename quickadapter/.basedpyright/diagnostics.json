@@ -2503,5 +2503,12 @@
     }
   ],
   "filesAnalyzed": 5,
-  "schemaVersion": 3
+  "schemaVersion": 4,
+  "sourceFiles": [
+    "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+    "quickadapter/user_data/strategies/EnumErrors.py",
+    "quickadapter/user_data/strategies/LabelTransformer.py",
+    "quickadapter/user_data/strategies/QuickAdapterV3.py",
+    "quickadapter/user_data/strategies/Utils.py"
+  ]
 }

@@ -446,9 +446,11 @@ uvx ruff@latest format --check .
 ```
 
 BasedPyright must run inside the matching Freqtrade QA image. The repository
-wrapper compares every emitted diagnostic field—including an optional rule and
-source range when present—and the number of files analyzed against the project's
-exact snapshot. Build each QA target and mount the checkout read-only:
+wrapper records the sorted repository-relative identities of every configured
+Python source, requires that inventory to match BasedPyright's analyzed-file
+count, and compares it with every emitted diagnostic field—including an optional
+rule and source range—against the project's exact snapshot. Build each QA target
+and mount the checkout read-only:
 
 ```shell
 # QuickAdapter
@@ -468,9 +470,12 @@ docker run --rm \
   /workspace/scripts/check_basedpyright.py --project reforcexy
 ```
 
-The check fails when a diagnostic is added, removed, moved, or changed, or when
-the number of analyzed files changes. Snapshot updates are deliberate writable
-operations in the matching QA image. For example:
+The check fails when a configured source identity or diagnostic is added, removed,
+moved, or changed, or when the analyzed-file count differs from the source
+inventory. Each project's direct `include` entries must be normalized,
+non-overlapping relative file or directory paths; glob syntax and symbolic links
+are rejected. Snapshot updates are deliberate writable operations in the matching
+QA image. For example:
 
 ```shell
 docker run --rm \
