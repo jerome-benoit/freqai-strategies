@@ -30,7 +30,7 @@ LABEL org.opencontainers.image.source="freqai-strategies" \
       maintainer="auto-generated"
 
 FROM runtime AS qa
-
+ENV FREQAI_QUALITY_PROJECT=quickadapter
 COPY --chown=ftuser:ftuser .devcontainer/requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install --user --no-cache-dir -r /tmp/requirements-dev.txt \
  && python -m basedpyright --version \

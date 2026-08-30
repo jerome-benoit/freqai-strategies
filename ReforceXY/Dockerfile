@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.source="freqai-strategies" \
       maintainer="auto-generated"
 
 FROM runtime AS qa
-
+ENV FREQAI_QUALITY_PROJECT=reforcexy
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libatomic1 \

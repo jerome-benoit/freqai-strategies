@@ -41,11 +41,11 @@ jobs:
         include:
           - name: QuickAdapter
             context: quickadapter
-            config: quickadapter/pyrightconfig.json
+            project: quickadapter
             image: freqai-strategies-quickadapter-qa:ci
           - name: ReforceXY
             context: ReforceXY
-            config: ReforceXY/pyrightconfig.json
+            project: reforcexy
             image: freqai-strategies-reforcexy-qa:ci
     steps:
       - name: Check out repository
@@ -61,7 +61,6 @@ jobs:
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
             --entrypoint python \
             "${{ matrix.image }}" \
-            -m basedpyright --baselinemode=lock --warnings \
-            --pythonpath /usr/local/bin/python \
-            --project "/workspace/${{ matrix.config }}"
+            /workspace/scripts/check_basedpyright.py \
+            --project "${{ matrix.project }}"
 

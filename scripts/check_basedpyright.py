@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Check BasedPyright diagnostics against exact, project-specific snapshots."""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+SCHEMA_VERSION = 1
+CHECK_TIMEOUT_SECONDS = 300
+QA_PROJECT_ENV = "FREQAI_QUALITY_PROJECT"
+ALLOWED_SEVERITIES = frozenset({"error", "warning", "information"})
+SNAPSHOT_KEYS = frozenset({"schemaVersion", "basedpyrightVersion", "diagnostics"})
+DIAGNOSTIC_SORT_KEYS = (
+    "file",
+    "startLine",
+    "startCharacter",
+    "endLine",
+    "endCharacter",
+    "severity",
+    "rule",
+    "message",
+)
+DIAGNOSTIC_KEYS = frozenset(DIAGNOSTIC_SORT_KEYS)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class QualityCheckError(RuntimeError):
+    """A fail-closed quality check error."""
+
+
+@dataclass(frozen=True)
+class Project:
+    config: str
+    baseline: str
+    qa_marker: str
+
+
+PROJECTS = {
+    "quickadapter": Project(
+        config="quickadapter/pyrightconfig.json",
+        baseline="quickadapter/.basedpyright/diagnostics.json",
+        qa_marker="quickadapter",
+    ),
+    "reforcexy": Project(
+        config="ReforceXY/pyrightconfig.json",
+        baseline="ReforceXY/.basedpyright/diagnostics.json",
+        qa_marker="reforcexy",
+    ),
+}
+
+
+def _is_unicode_scalar_string(value: object, *, nonempty: bool = False) -> bool:
+    return (
+        isinstance(value, str)
+        and (not nonempty or bool(value))
+        and not any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    )
+
+
+def _strict_json_loads(text: str) -> object:
+    def reject_constant(value: str) -> None:
+        raise QualityCheckError(f"Non-standard JSON constant: {value}")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise QualityCheckError(f"Duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(
+            text, parse_constant=reject_constant, object_pairs_hook=reject_duplicate_keys
+        )
+    except QualityCheckError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise QualityCheckError(f"Invalid JSON: {error}") from error
+
+
+def _require_mapping(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        raise QualityCheckError(f"{label} must be a JSON object")
+    return value
+
+
+def _require_scalar_string(value: object, label: str, *, nonempty: bool = False) -> str:
+    if not _is_unicode_scalar_string(value, nonempty=nonempty):
+        qualifier = "nonempty " if nonempty else ""
+        raise QualityCheckError(f"{label} must be a {qualifier}Unicode scalar string")
+    return value
+
+
+def _require_coordinate(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise QualityCheckError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _validate_range(
+    start_line: int, start_character: int, end_line: int, end_character: int, label: str
+) -> None:
+    if (start_line, start_character) > (end_line, end_character):
+        raise QualityCheckError(f"{label} start must not follow its end")
+
+
+def _resolve_repo_path(path: str, *, must_exist: bool) -> Path:
+    candidate = Path(path)
+    resolved = (candidate if candidate.is_absolute() else REPO_ROOT / candidate).resolve()
+    try:
+        resolved.relative_to(REPO_ROOT)
+    except ValueError as error:
+        raise QualityCheckError(f"Path is outside the repository: {path}") from error
+    if must_exist and not resolved.exists():
+        raise QualityCheckError(f"Repository path does not exist: {path}")
+    return resolved
+
+
+def _normalize_file(path: object, label: str) -> str:
+    raw_path = _require_scalar_string(path, label, nonempty=True)
+    return _resolve_repo_path(raw_path, must_exist=True).relative_to(REPO_ROOT).as_posix()
+
+
+def _normalize_child_diagnostic(value: object, index: int) -> dict[str, object]:
+    label = f"generalDiagnostics[{index}]"
+    diagnostic = _require_mapping(value, label)
+    severity = _require_scalar_string(
+        diagnostic.get("severity"), f"{label}.severity", nonempty=True
+    )
+    if severity not in ALLOWED_SEVERITIES:
+        raise QualityCheckError(f"{label}.severity is unsupported: {severity}")
+
+    source_range = _require_mapping(diagnostic.get("range"), f"{label}.range")
+    start = _require_mapping(source_range.get("start"), f"{label}.range.start")
+    end = _require_mapping(source_range.get("end"), f"{label}.range.end")
+    start_line = _require_coordinate(start.get("line"), f"{label}.range.start.line")
+    start_character = _require_coordinate(start.get("character"), f"{label}.range.start.character")
+    end_line = _require_coordinate(end.get("line"), f"{label}.range.end.line")
+    end_character = _require_coordinate(end.get("character"), f"{label}.range.end.character")
+    _validate_range(start_line, start_character, end_line, end_character, f"{label}.range")
+
+    return {
+        "file": _normalize_file(diagnostic.get("file"), f"{label}.file"),
+        "severity": severity,
+        "rule": _require_scalar_string(diagnostic.get("rule"), f"{label}.rule", nonempty=True),
+        "message": _require_scalar_string(
+            diagnostic.get("message"), f"{label}.message", nonempty=True
+        ),
+        "startLine": start_line,
+        "startCharacter": start_character,
+        "endLine": end_line,
+        "endCharacter": end_character,
+    }
+
+
+def _diagnostic_sort_key(diagnostic: Mapping[str, object]) -> tuple[object, ...]:
+    return tuple(diagnostic[key] for key in DIAGNOSTIC_SORT_KEYS)
+
+
+def _snapshot_from_child(value: object) -> dict[str, object]:
+    result = _require_mapping(value, "BasedPyright output")
+    version = _require_scalar_string(result.get("version"), "BasedPyright version", nonempty=True)
+    raw_diagnostics = result.get("generalDiagnostics")
+    if not isinstance(raw_diagnostics, list):
+        raise QualityCheckError("BasedPyright generalDiagnostics must be an array")
+    diagnostics = [
+        _normalize_child_diagnostic(item, index) for index, item in enumerate(raw_diagnostics)
+    ]
+    diagnostics.sort(key=_diagnostic_sort_key)
+    snapshot = {
+        "schemaVersion": SCHEMA_VERSION,
+        "basedpyrightVersion": version,
+        "diagnostics": diagnostics,
+    }
+    return _validate_snapshot(snapshot)
+
+
+def _validate_snapshot_diagnostic(value: object, index: int) -> dict[str, object]:
+    label = f"diagnostics[{index}]"
+    diagnostic = _require_mapping(value, label)
+    if frozenset(diagnostic) != DIAGNOSTIC_KEYS:
+        raise QualityCheckError(f"{label} has missing or unknown keys")
+
+    file_name = _require_scalar_string(diagnostic["file"], f"{label}.file", nonempty=True)
+    pure_path = PurePosixPath(file_name)
+    if pure_path.is_absolute() or ".." in pure_path.parts or pure_path.as_posix() != file_name:
+        raise QualityCheckError(f"{label}.file must be a normalized repository-relative POSIX path")
+    _resolve_repo_path(file_name, must_exist=True)
+
+    severity = _require_scalar_string(diagnostic["severity"], f"{label}.severity", nonempty=True)
+    if severity not in ALLOWED_SEVERITIES:
+        raise QualityCheckError(f"{label}.severity is unsupported: {severity}")
+    rule = _require_scalar_string(diagnostic["rule"], f"{label}.rule", nonempty=True)
+    message = _require_scalar_string(diagnostic["message"], f"{label}.message", nonempty=True)
+    start_line = _require_coordinate(diagnostic["startLine"], f"{label}.startLine")
+    start_character = _require_coordinate(diagnostic["startCharacter"], f"{label}.startCharacter")
+    end_line = _require_coordinate(diagnostic["endLine"], f"{label}.endLine")
+    end_character = _require_coordinate(diagnostic["endCharacter"], f"{label}.endCharacter")
+    _validate_range(start_line, start_character, end_line, end_character, label)
+
+    return {
+        "file": file_name,
+        "severity": severity,
+        "rule": rule,
+        "message": message,
+        "startLine": start_line,
+        "startCharacter": start_character,
+        "endLine": end_line,
+        "endCharacter": end_character,
+    }
+
+
+def _validate_snapshot(value: object) -> dict[str, object]:
+    snapshot = _require_mapping(value, "Snapshot")
+    if frozenset(snapshot) != SNAPSHOT_KEYS:
+        raise QualityCheckError("Snapshot has missing or unknown keys")
+    schema_version = snapshot["schemaVersion"]
+    if isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
+        raise QualityCheckError(f"Snapshot schemaVersion must be {SCHEMA_VERSION}")
+    version = _require_scalar_string(
+        snapshot["basedpyrightVersion"], "Snapshot basedpyrightVersion", nonempty=True
+    )
+    raw_diagnostics = snapshot["diagnostics"]
+    if not isinstance(raw_diagnostics, list):
+        raise QualityCheckError("Snapshot diagnostics must be an array")
+    diagnostics = [
+        _validate_snapshot_diagnostic(item, index) for index, item in enumerate(raw_diagnostics)
+    ]
+    diagnostics.sort(key=_diagnostic_sort_key)
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "basedpyrightVersion": version,
+        "diagnostics": diagnostics,
+    }
+
+
+def _canonical_bytes(snapshot: Mapping[str, object]) -> bytes:
+    try:
+        return (json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+    except (TypeError, UnicodeEncodeError, ValueError) as error:
+        raise QualityCheckError(f"Snapshot cannot be serialized: {error}") from error
+
+
+def _validate_environment(project: Project) -> Path:
+    marker = os.environ.get(QA_PROJECT_ENV)
+    if marker != project.qa_marker:
+        raise QualityCheckError(
+            f"This check requires the {project.qa_marker} QA image ({QA_PROJECT_ENV}={project.qa_marker})"
+        )
+    freqtrade_root = Path("/freqtrade").resolve()
+    if not freqtrade_root.is_dir():
+        raise QualityCheckError("The QA image must provide /freqtrade")
+    executable = Path(sys.executable).resolve()
+    try:
+        executable.relative_to(Path("/usr/local/bin").resolve())
+    except ValueError as error:
+        raise QualityCheckError(
+            "The QA image Python interpreter must be under /usr/local/bin"
+        ) from error
+    return executable
+
+
+def _run_basedpyright(config: Path, executable: Path) -> object:
+    command = [
+        str(executable),
+        "-m",
+        "basedpyright",
+        "--outputjson",
+        "--warnings",
+        "--pythonpath",
+        str(executable),
+        "--project",
+        str(config),
+    ]
+    try:
+        completed = subprocess.run(
+            command, cwd=REPO_ROOT, capture_output=True, check=False, timeout=CHECK_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as error:
+        raise QualityCheckError(f"BasedPyright exceeded {CHECK_TIMEOUT_SECONDS} seconds") from error
+    except OSError as error:
+        raise QualityCheckError(f"Could not execute BasedPyright: {error}") from error
+
+    try:
+        stderr = completed.stderr.decode("utf-8", errors="strict")
+        stdout = completed.stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise QualityCheckError(f"BasedPyright output is not valid UTF-8: {error}") from error
+    if stderr:
+        raise QualityCheckError(f"BasedPyright wrote to stderr:\n{stderr}")
+    if completed.returncode not in (0, 1):
+        raise QualityCheckError(f"BasedPyright exited with code {completed.returncode}")
+    return _strict_json_loads(stdout)
+
+
+def _read_snapshot(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise QualityCheckError(f"Snapshot does not exist: {path.relative_to(REPO_ROOT)}")
+    try:
+        text = path.read_bytes().decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as error:
+        raise QualityCheckError(
+            f"Cannot read snapshot {path.relative_to(REPO_ROOT)}: {error}"
+        ) from error
+    return _validate_snapshot(_strict_json_loads(text))
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            dir=path.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        temporary_path.replace(path)
+        temporary_path = None
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_fd = os.open(path.parent, directory_flags)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as error:
+        raise QualityCheckError(
+            f"Cannot atomically update {path.relative_to(REPO_ROOT)}: {error}"
+        ) from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _check_project(project_name: str, *, write: bool) -> int:
+    project = PROJECTS[project_name]
+    config = _resolve_repo_path(project.config, must_exist=True)
+    baseline = _resolve_repo_path(project.baseline, must_exist=False)
+    if not baseline.parent.is_dir():
+        raise QualityCheckError(
+            f"Snapshot directory does not exist: {baseline.parent.relative_to(REPO_ROOT)}"
+        )
+    executable = _validate_environment(project)
+    current_snapshot = _snapshot_from_child(_run_basedpyright(config, executable))
+    current_bytes = _canonical_bytes(current_snapshot)
+
+    if write:
+        _atomic_write(baseline, current_bytes)
+        print(
+            f"Updated {baseline.relative_to(REPO_ROOT)} "
+            f"with {len(current_snapshot['diagnostics'])} accepted diagnostics"
+        )
+        return 0
+
+    stored_snapshot = _read_snapshot(baseline)
+    stored_bytes = _canonical_bytes(stored_snapshot)
+    if stored_bytes == current_bytes:
+        print(
+            f"BasedPyright snapshot matches for {project_name}: {len(current_snapshot['diagnostics'])} diagnostics"
+        )
+        return 0
+
+    diff = difflib.unified_diff(
+        stored_bytes.decode("utf-8").splitlines(),
+        current_bytes.decode("utf-8").splitlines(),
+        fromfile=str(baseline.relative_to(REPO_ROOT)),
+        tofile=f"current:{project_name}",
+        lineterm="",
+    )
+    print("BasedPyright diagnostics differ from the accepted snapshot:", file=sys.stderr)
+    print("\n".join(diff), file=sys.stderr)
+    return 1
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", choices=sorted(PROJECTS), required=True)
+    parser.add_argument(
+        "--write", action="store_true", help="Atomically replace the selected project's snapshot"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    try:
+        return _check_project(args.project, write=args.write)
+    except QualityCheckError as error:
+        print(f"BasedPyright snapshot check failed: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

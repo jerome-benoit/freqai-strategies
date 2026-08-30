@@ -444,8 +444,10 @@ uvx ruff@latest check .
 uvx ruff@latest format --check .
 ```
 
-BasedPyright must run inside the matching Freqtrade image. Build the QA target
-and mount the checkout read-only:
+BasedPyright must run inside the matching Freqtrade QA image. The repository
+wrapper compares complete diagnostics—including source lines and messages—against
+the project's exact snapshot. Build each QA target and mount the checkout
+read-only:
 
 ```shell
 # QuickAdapter
@@ -454,9 +456,7 @@ docker run --rm \
   --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
   --entrypoint python \
   freqai-strategies-quickadapter-qa \
-  -m basedpyright --baselinemode=lock --warnings \
-  --pythonpath /usr/local/bin/python \
-  --project /workspace/quickadapter/pyrightconfig.json
+  /workspace/scripts/check_basedpyright.py --project quickadapter
 
 # ReforceXY
 docker build --pull --target qa --tag freqai-strategies-reforcexy-qa ReforceXY
@@ -464,15 +464,23 @@ docker run --rm \
   --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
   --entrypoint python \
   freqai-strategies-reforcexy-qa \
-  -m basedpyright --baselinemode=lock --warnings \
-  --pythonpath /usr/local/bin/python \
-  --project /workspace/ReforceXY/pyrightconfig.json
+  /workspace/scripts/check_basedpyright.py --project reforcexy
 ```
 
-Lock mode fails on new diagnostics and on obsolete baseline entries. To update a
-baseline deliberately, rerun the matching container with a writable checkout
-mount and replace `--baselinemode=lock --warnings` with `--writebaseline`,
-then review the generated `.basedpyright/baseline.json` diff.
+The check fails when a diagnostic is added, removed, moved, or changed. Snapshot
+updates are deliberate writable operations in the matching QA image. For example:
+
+```shell
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace" \
+  --entrypoint python \
+  freqai-strategies-quickadapter-qa \
+  /workspace/scripts/check_basedpyright.py --project quickadapter --write
+```
+
+Review the generated `.basedpyright/diagnostics.json` diff. Use the ReforceXY image
+and `--project reforcexy` for its snapshot. The wrapper rejects direct host and
+wrong-image execution so Freqtrade imports and dependency versions remain exact.
 
 The QA dependency versions are pinned in each project's
 `.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally

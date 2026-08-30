@@ -1,6 +1,5 @@
 {
   "extends": "../pyrightconfig.json",
   "include": ["user_data/freqaimodels", "user_data/strategies"],
-  "extraPaths": ["/freqtrade", "user_data/strategies"],
-  "baselineFile": ".basedpyright/baseline.json"
+  "extraPaths": ["/freqtrade", "user_data/strategies"]
 }
