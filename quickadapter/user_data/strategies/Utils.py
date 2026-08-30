@@ -530,7 +530,7 @@ def validate_range(
     max_name = f"max_{name}"
 
     if not isinstance(default_min, (int, float)) or not isinstance(default_max, (int, float)):
-        raise TypeError(
+        raise ValueError(
             f"Invalid {name}: defaults must be numeric, "
             f"got min={type(default_min).__name__!r}, max={type(default_max).__name__!r}"
         )
@@ -3383,7 +3383,7 @@ def compute_label_weight_known_at_lookahead(
 
 def get_callable_sha256(fn: Callable[..., Any]) -> str:
     if not callable(fn):
-        raise TypeError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
+        raise ValueError(f"Invalid fn value {type(fn).__name__!r}: must be callable")
     code = getattr(fn, "__code__", None)
     if code is None and isinstance(fn, functools.partial):
         fn = fn.func
@@ -3392,7 +3392,7 @@ def get_callable_sha256(fn: Callable[..., Any]) -> str:
             code = getattr(fn.__func__, "__code__", None)
     if code is None and hasattr(fn, "__func__"):
         code = getattr(fn.__func__, "__code__", None)
-    if code is None and callable(fn):
+    if code is None and hasattr(fn, "__call__"):  # noqa: B004 - Check attribute visibility.
         code = getattr(fn.__call__, "__code__", None)
     if code is None:
         raise ValueError(
@@ -6180,10 +6180,8 @@ def get_min_max_label_period_candles(
 
 def _validate_step_args(value: float, step: int) -> None:
     if not isinstance(value, (int, float)):
-        raise TypeError(f"Invalid value {value!r}: must be an integer or float")
-    if not isinstance(step, int):
-        raise TypeError(f"Invalid step value {step!r}: must be an integer")
-    if step <= 0:
+        raise ValueError(f"Invalid value {value!r}: must be an integer or float")
+    if not isinstance(step, int) or step <= 0:
         raise ValueError(f"Invalid step value {step!r}: must be a positive integer")
 
 

@@ -2011,7 +2011,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }
         test_size = dsp["test_size"]
         if isinstance(test_size, bool) or not isinstance(test_size, (int, float)):
-            raise TypeError(
+            raise ValueError(
                 f"Invalid data_split_parameters.test_size value {test_size!r}: must be int or float"
             )
         if test_size == 0 and feat_dict.get("reverse_train_test_order", False):
@@ -3011,7 +3011,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 enum_error_message("namespace", namespace, (_OPTUNA_NAMESPACES.label,))
             )
         if not callable(callback):
-            raise TypeError(f"Invalid callback value {type(callback).__name__!r}: must be callable")
+            raise ValueError(
+                f"Invalid callback value {type(callback).__name__!r}: must be callable"
+            )
         self._optuna_label_candles[pair] += 1
         if pair not in self._optuna_label_incremented_pairs:
             self._optuna_label_incremented_pairs.append(pair)
