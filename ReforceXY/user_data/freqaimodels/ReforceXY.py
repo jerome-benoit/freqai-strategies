@@ -31,8 +31,8 @@ import numpy as np
 import optunahub
 import pandas as pd
 import torch as th
-from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.enums import RunMode
+from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
 from freqtrade.freqai.RL.BaseEnvironment import BaseEnvironment
@@ -392,10 +392,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         inference_masking = self.rl_config.get(
             "inference_masking", ReforceXY.DEFAULT_INFERENCE_MASKING
         )
-        if (
-            self.model_type == ReforceXY._MODEL_TYPES[2]
-            and inference_masking is not True
-        ):
+        if self.model_type == ReforceXY._MODEL_TYPES[2] and inference_masking is not True:
             raise ValueError(
                 "Config [global]: MaskablePPO requires inference_masking=true "
                 "so inference uses the same ReforceXY action-mask mechanism as "
@@ -404,10 +401,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         action_masking = self.model_type == ReforceXY._MODEL_TYPES[2]
         configured_action_masking = self.rl_config.get("action_masking")
-        if (
-            "action_masking" in self.rl_config
-            and configured_action_masking is not action_masking
-        ):
+        if "action_masking" in self.rl_config and configured_action_masking is not action_masking:
             raise ValueError(
                 "Config [global]: action_masking="
                 f"{configured_action_masking!r} conflicts with "
@@ -424,9 +418,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
 
         self.inference_masking: bool = inference_masking
-        self.recurrent: bool = (
-            self.model_type == ReforceXY._MODEL_TYPES[1]
-        )  # "RecurrentPPO"
+        self.recurrent: bool = self.model_type == ReforceXY._MODEL_TYPES[1]  # "RecurrentPPO"
         self.lr_schedule: bool = self.rl_config.get("lr_schedule", False)
         self.cr_schedule: bool = self.rl_config.get("cr_schedule", False)
         self.n_envs: int = self.rl_config.get("n_envs", 1)

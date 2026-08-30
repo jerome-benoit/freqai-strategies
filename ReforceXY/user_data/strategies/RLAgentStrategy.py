@@ -69,14 +69,12 @@ class RLAgentStrategy(IStrategy):
     def can_short(self) -> bool:
         return self.is_short_allowed()
 
-    def _execution_contract_error(self) -> Optional[str]:
+    def _execution_contract_error(self) -> str | None:
         execution_config = self.config.get("reforcexy_execution", {})
         if not isinstance(execution_config, Mapping):
             return "Config: 'reforcexy_execution' must be an object."
 
-        profile = execution_config.get(
-            "profile", RLAgentStrategy._DEFAULT_EXECUTION_PROFILE
-        )
+        profile = execution_config.get("profile", RLAgentStrategy._DEFAULT_EXECUTION_PROFILE)
         if profile not in RLAgentStrategy._EXECUTION_PROFILES:
             return (
                 f"Config: invalid ReforceXY execution profile {profile!r}. "
@@ -84,19 +82,12 @@ class RLAgentStrategy(IStrategy):
             )
 
         if getattr(self, "use_exit_signal", None) is not True:
-            return (
-                "Config: ReforceXY RL actions require Freqtrade use_exit_signal=true."
-            )
+            return "Config: ReforceXY RL actions require Freqtrade use_exit_signal=true."
         if getattr(self, "exit_profit_only", None) is not False:
-            return (
-                "Config: ReforceXY RL actions require Freqtrade exit_profit_only=false."
-            )
+            return "Config: ReforceXY RL actions require Freqtrade exit_profit_only=false."
 
         runmode = self.config.get("runmode")
-        if (
-            runmode == RunMode.LIVE
-            and profile != RLAgentStrategy._EXECUTION_PROFILES[1]
-        ):
+        if runmode == RunMode.LIVE and profile != RLAgentStrategy._EXECUTION_PROFILES[1]:
             return (
                 "Config: ReforceXY refuses live trading under the 'research' "
                 "execution profile. Set profile='live' only after preregistering "
@@ -119,18 +110,6 @@ class RLAgentStrategy(IStrategy):
 
         return None
 
-    @property
-    def protections(self) -> list[dict[str, Any]]:
-        execution_config = self.config.get("reforcexy_execution", {})
-        if not isinstance(execution_config, Mapping):
-            raise ValueError("Config: 'reforcexy_execution' must be an object.")
-        protections = execution_config.get("protections", [])
-        if not isinstance(protections, list):
-            raise ValueError(
-                "Config: 'reforcexy_execution.protections' must be a list."
-            )
-        return protections
-
     def bot_start(self, **kwargs: Any) -> None:
         contract_error = self._execution_contract_error()
         if contract_error is not None:
@@ -138,8 +117,7 @@ class RLAgentStrategy(IStrategy):
 
         runmode = self.config.get("runmode")
         logger.info(
-            "ReforceXY execution contract: profile=%s runmode=%s stoploss=%s "
-            "protections=%d",
+            "ReforceXY execution contract: profile=%s runmode=%s stoploss=%s protections=%d",
             self.config.get("reforcexy_execution", {}).get(
                 "profile", RLAgentStrategy._DEFAULT_EXECUTION_PROFILE
             ),
@@ -156,7 +134,7 @@ class RLAgentStrategy(IStrategy):
         rate: float,
         time_in_force: str,
         current_time: datetime.datetime,
-        entry_tag: Optional[str],
+        entry_tag: str | None,
         side: str,
         **kwargs: Any,
     ) -> bool:
