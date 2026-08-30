@@ -2502,5 +2502,6 @@
       "startLine": 5943
     }
   ],
-  "schemaVersion": 1
+  "filesAnalyzed": 5,
+  "schemaVersion": 2
 }

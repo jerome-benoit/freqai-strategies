@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -17,11 +18,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CHECK_TIMEOUT_SECONDS = 300
 QA_PROJECT_ENV = "FREQAI_QUALITY_PROJECT"
 ALLOWED_SEVERITIES = frozenset({"error", "warning", "information"})
-SNAPSHOT_KEYS = frozenset({"schemaVersion", "basedpyrightVersion", "diagnostics"})
+SNAPSHOT_KEYS = frozenset({"schemaVersion", "basedpyrightVersion", "filesAnalyzed", "diagnostics"})
+BASEDPYRIGHT_OUTPUT_KEYS = frozenset({"version", "time", "generalDiagnostics", "summary"})
+BASEDPYRIGHT_SUMMARY_KEYS = frozenset(
+    {"filesAnalyzed", "errorCount", "warningCount", "informationCount", "timeInSec"}
+)
+BASEDPYRIGHT_DIAGNOSTIC_KEYS = frozenset({"file", "severity", "message", "range", "rule"})
+BASEDPYRIGHT_RANGE_KEYS = frozenset({"start", "end"})
+BASEDPYRIGHT_POSITION_KEYS = frozenset({"line", "character"})
 DIAGNOSTIC_SORT_KEYS = (
     "file",
     "startLine",
@@ -104,9 +112,25 @@ def _require_scalar_string(value: object, label: str, *, nonempty: bool = False)
     return value
 
 
-def _require_coordinate(value: object, label: str) -> int:
+def _require_exact_keys(value: Mapping[str, object], expected: frozenset[str], label: str) -> None:
+    if frozenset(value) != expected:
+        raise QualityCheckError(f"{label} has missing or unknown keys")
+
+
+def _require_nonnegative_integer(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise QualityCheckError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _require_nonnegative_number(value: object, label: str) -> int | float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or value < 0
+        or (isinstance(value, float) and not math.isfinite(value))
+    ):
+        raise QualityCheckError(f"{label} must be a finite non-negative number")
     return value
 
 
@@ -137,28 +161,30 @@ def _normalize_file(path: object, label: str) -> str:
 def _normalize_child_diagnostic(value: object, index: int) -> dict[str, object]:
     label = f"generalDiagnostics[{index}]"
     diagnostic = _require_mapping(value, label)
-    severity = _require_scalar_string(
-        diagnostic.get("severity"), f"{label}.severity", nonempty=True
-    )
+    _require_exact_keys(diagnostic, BASEDPYRIGHT_DIAGNOSTIC_KEYS, label)
+    severity = _require_scalar_string(diagnostic["severity"], f"{label}.severity", nonempty=True)
     if severity not in ALLOWED_SEVERITIES:
         raise QualityCheckError(f"{label}.severity is unsupported: {severity}")
 
-    source_range = _require_mapping(diagnostic.get("range"), f"{label}.range")
-    start = _require_mapping(source_range.get("start"), f"{label}.range.start")
-    end = _require_mapping(source_range.get("end"), f"{label}.range.end")
-    start_line = _require_coordinate(start.get("line"), f"{label}.range.start.line")
-    start_character = _require_coordinate(start.get("character"), f"{label}.range.start.character")
-    end_line = _require_coordinate(end.get("line"), f"{label}.range.end.line")
-    end_character = _require_coordinate(end.get("character"), f"{label}.range.end.character")
+    source_range = _require_mapping(diagnostic["range"], f"{label}.range")
+    _require_exact_keys(source_range, BASEDPYRIGHT_RANGE_KEYS, f"{label}.range")
+    start = _require_mapping(source_range["start"], f"{label}.range.start")
+    _require_exact_keys(start, BASEDPYRIGHT_POSITION_KEYS, f"{label}.range.start")
+    end = _require_mapping(source_range["end"], f"{label}.range.end")
+    _require_exact_keys(end, BASEDPYRIGHT_POSITION_KEYS, f"{label}.range.end")
+    start_line = _require_nonnegative_integer(start["line"], f"{label}.range.start.line")
+    start_character = _require_nonnegative_integer(
+        start["character"], f"{label}.range.start.character"
+    )
+    end_line = _require_nonnegative_integer(end["line"], f"{label}.range.end.line")
+    end_character = _require_nonnegative_integer(end["character"], f"{label}.range.end.character")
     _validate_range(start_line, start_character, end_line, end_character, f"{label}.range")
 
     return {
-        "file": _normalize_file(diagnostic.get("file"), f"{label}.file"),
+        "file": _normalize_file(diagnostic["file"], f"{label}.file"),
         "severity": severity,
-        "rule": _require_scalar_string(diagnostic.get("rule"), f"{label}.rule", nonempty=True),
-        "message": _require_scalar_string(
-            diagnostic.get("message"), f"{label}.message", nonempty=True
-        ),
+        "rule": _require_scalar_string(diagnostic["rule"], f"{label}.rule", nonempty=True),
+        "message": _require_scalar_string(diagnostic["message"], f"{label}.message", nonempty=True),
         "startLine": start_line,
         "startCharacter": start_character,
         "endLine": end_line,
@@ -170,19 +196,47 @@ def _diagnostic_sort_key(diagnostic: Mapping[str, object]) -> tuple[object, ...]
     return tuple(diagnostic[key] for key in DIAGNOSTIC_SORT_KEYS)
 
 
+def _files_analyzed_from_summary(value: object, diagnostics: Sequence[Mapping[str, object]]) -> int:
+    summary = _require_mapping(value, "BasedPyright summary")
+    _require_exact_keys(summary, BASEDPYRIGHT_SUMMARY_KEYS, "BasedPyright summary")
+    files_analyzed = _require_nonnegative_integer(
+        summary["filesAnalyzed"], "BasedPyright summary.filesAnalyzed"
+    )
+    _require_nonnegative_number(summary["timeInSec"], "BasedPyright summary.timeInSec")
+
+    counts = dict.fromkeys(ALLOWED_SEVERITIES, 0)
+    for diagnostic in diagnostics:
+        counts[diagnostic["severity"]] += 1
+    for severity, key in (
+        ("error", "errorCount"),
+        ("warning", "warningCount"),
+        ("information", "informationCount"),
+    ):
+        reported = _require_nonnegative_integer(summary[key], f"BasedPyright summary.{key}")
+        if reported != counts[severity]:
+            raise QualityCheckError(
+                f"BasedPyright summary.{key} is {reported}, expected {counts[severity]}"
+            )
+    return files_analyzed
+
+
 def _snapshot_from_child(value: object) -> dict[str, object]:
     result = _require_mapping(value, "BasedPyright output")
-    version = _require_scalar_string(result.get("version"), "BasedPyright version", nonempty=True)
-    raw_diagnostics = result.get("generalDiagnostics")
+    _require_exact_keys(result, BASEDPYRIGHT_OUTPUT_KEYS, "BasedPyright output")
+    version = _require_scalar_string(result["version"], "BasedPyright version", nonempty=True)
+    _require_scalar_string(result["time"], "BasedPyright time", nonempty=True)
+    raw_diagnostics = result["generalDiagnostics"]
     if not isinstance(raw_diagnostics, list):
         raise QualityCheckError("BasedPyright generalDiagnostics must be an array")
     diagnostics = [
         _normalize_child_diagnostic(item, index) for index, item in enumerate(raw_diagnostics)
     ]
+    files_analyzed = _files_analyzed_from_summary(result["summary"], diagnostics)
     diagnostics.sort(key=_diagnostic_sort_key)
     snapshot = {
         "schemaVersion": SCHEMA_VERSION,
         "basedpyrightVersion": version,
+        "filesAnalyzed": files_analyzed,
         "diagnostics": diagnostics,
     }
     return _validate_snapshot(snapshot)
@@ -205,10 +259,14 @@ def _validate_snapshot_diagnostic(value: object, index: int) -> dict[str, object
         raise QualityCheckError(f"{label}.severity is unsupported: {severity}")
     rule = _require_scalar_string(diagnostic["rule"], f"{label}.rule", nonempty=True)
     message = _require_scalar_string(diagnostic["message"], f"{label}.message", nonempty=True)
-    start_line = _require_coordinate(diagnostic["startLine"], f"{label}.startLine")
-    start_character = _require_coordinate(diagnostic["startCharacter"], f"{label}.startCharacter")
-    end_line = _require_coordinate(diagnostic["endLine"], f"{label}.endLine")
-    end_character = _require_coordinate(diagnostic["endCharacter"], f"{label}.endCharacter")
+    start_line = _require_nonnegative_integer(diagnostic["startLine"], f"{label}.startLine")
+    start_character = _require_nonnegative_integer(
+        diagnostic["startCharacter"], f"{label}.startCharacter"
+    )
+    end_line = _require_nonnegative_integer(diagnostic["endLine"], f"{label}.endLine")
+    end_character = _require_nonnegative_integer(
+        diagnostic["endCharacter"], f"{label}.endCharacter"
+    )
     _validate_range(start_line, start_character, end_line, end_character, label)
 
     return {
@@ -237,6 +295,9 @@ def _validate_snapshot(value: object) -> dict[str, object]:
     version = _require_scalar_string(
         snapshot["basedpyrightVersion"], "Snapshot basedpyrightVersion", nonempty=True
     )
+    files_analyzed = _require_nonnegative_integer(
+        snapshot["filesAnalyzed"], "Snapshot filesAnalyzed"
+    )
     raw_diagnostics = snapshot["diagnostics"]
     if not isinstance(raw_diagnostics, list):
         raise QualityCheckError("Snapshot diagnostics must be an array")
@@ -247,6 +308,7 @@ def _validate_snapshot(value: object) -> dict[str, object]:
     return {
         "schemaVersion": SCHEMA_VERSION,
         "basedpyrightVersion": version,
+        "filesAnalyzed": files_analyzed,
         "diagnostics": diagnostics,
     }
 
@@ -369,8 +431,9 @@ def _check_project(project_name: str, *, write: bool) -> int:
     if write:
         _atomic_write(baseline, current_bytes)
         print(
-            f"Updated {baseline.relative_to(REPO_ROOT)} "
-            f"with {len(current_snapshot['diagnostics'])} accepted diagnostics"
+            f"Updated {baseline.relative_to(REPO_ROOT)} with "
+            f"{len(current_snapshot['diagnostics'])} accepted diagnostics across "
+            f"{current_snapshot['filesAnalyzed']} analyzed files"
         )
         return 0
 
@@ -378,7 +441,9 @@ def _check_project(project_name: str, *, write: bool) -> int:
     stored_bytes = _canonical_bytes(stored_snapshot)
     if stored_bytes == current_bytes:
         print(
-            f"BasedPyright snapshot matches for {project_name}: {len(current_snapshot['diagnostics'])} diagnostics"
+            f"BasedPyright snapshot matches for {project_name}: "
+            f"{len(current_snapshot['diagnostics'])} diagnostics across "
+            f"{current_snapshot['filesAnalyzed']} analyzed files"
         )
         return 0
 

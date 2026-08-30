@@ -63,4 +63,3 @@ jobs:
             "${{ matrix.image }}" \
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
-
