@@ -14,8 +14,8 @@
 - [ ] 1.4 Add `compute_multi_rmse()` function in `Utils.py` (aligned with CatBoost formula)
 - [ ] 1.5 Define `WRAPPER_REGRESSORS` constant listing regressors that use `FreqaiMultiOutputRegressor`
       Value: `("lightgbm", "histgradientboostingregressor", "ngboost")`
-- [ ] 1.6 Add `get_label_columns()` function that dynamically builds label columns tuple
-      Combines `EXTREMA_COLUMN` with enabled prediction targets from config
+- [ ] 1.6 Add `get_label_columns()` function that dynamically builds the one ordered label-columns tuple
+      It begins with `EXTREMA_COLUMN` (`&s-extrema`) and is shared by target generation, model label handling, weighting, smoothing, pipeline processing, and prediction reconstruction
 
 ## 2. Label Computation (Strategy)
 
@@ -44,8 +44,8 @@ See design.md Decision 4 for architecture and Decision 11 for mathematical justi
 - [ ] 2.5 Add `_generate_natr_label()` label generator in `Utils.py`
       Formula: `NATR(timeperiod=label_period_candles).shift(-label_period_candles)`
       Register with `register_label_generator("&-natr", _generate_natr_label)`
-- [ ] 2.6 Update `LABEL_COLUMNS` to be computed dynamically from config
-      Replace static tuple with call to `get_label_columns(prediction_targets)`
+- [ ] 2.6 Replace static `LABEL_COLUMNS` with the configuration-derived ordered tuple
+      Use `get_label_columns(prediction_targets)` consistently across every label consumer
 
 ## 3. Multi-Output Regressor Support
 
@@ -57,7 +57,7 @@ See design.md Decision 4 for architecture and Decision 11 for mathematical justi
 ### 3.2 XGBoost (Native Multi-Output - Experimental)
 - [ ] 3.2.1 Configure `multi_strategy='one_output_per_tree'` when multi-target enabled
 - [ ] 3.2.2 Test native multi-output behavior
-- [ ] 3.2.3 Fallback to `FreqaiMultiOutputRegressor` wrapper if native fails
+- [ ] 3.2.3 Use `FreqaiMultiOutputRegressor` as a compatibility-gated fallback when native XGBoost multi-output is unavailable or fails; log the fallback, preserve target-column order, and test the observable fallback behavior
 
 ### 3.3 LightGBM (FreqaiMultiOutputRegressor Wrapper)
 - [ ] 3.3.1 Wrap with `FreqaiMultiOutputRegressor` when multi-target enabled

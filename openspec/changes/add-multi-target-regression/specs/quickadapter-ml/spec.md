@@ -180,7 +180,7 @@ is enabled (i.e., when `prediction_targets` is non-empty).
 
 The multi-output strategy SHALL vary by regressor type:
 - CatBoost: Use native `loss_function="MultiRMSE"` with `eval_metric="MultiRMSE"`
-- XGBoost: Use native `multi_strategy="one_output_per_tree"` parameter
+- XGBoost: Use native `multi_strategy="one_output_per_tree"` when the installed version supports and successfully fits it; otherwise use `FreqaiMultiOutputRegressor` with one XGBoost sub-model per target
 - LightGBM: Use `FreqaiMultiOutputRegressor` wrapper with per-target `fit_params`
 - HistGradientBoostingRegressor: Use `FreqaiMultiOutputRegressor` wrapper
 - NGBoost: Use `FreqaiMultiOutputRegressor` wrapper with per-target validation data
@@ -204,6 +204,14 @@ is absent or empty.
 - **WHEN** `fit()` is called
 - **THEN** the system SHALL configure XGBRegressor with `multi_strategy="one_output_per_tree"`
 - **AND** train a single model that outputs predictions for all three targets
+
+#### Scenario: XGBoost compatibility fallback
+
+- **GIVEN** multi-target XGBoost native `one_output_per_tree` is unavailable or fails to fit
+- **WHEN** `fit()` is called
+- **THEN** the system SHALL use `FreqaiMultiOutputRegressor` with one XGBoost sub-model per target
+- **AND** log that the compatibility fallback was selected
+- **AND** preserve the resolved target-column order in prediction output
 
 #### Scenario: LightGBM multi-target training
 
@@ -331,7 +339,8 @@ across targets with different scales.
 
 The `LabelTransformer` supports multiple standardization methods (zscore, robust,
 mmad, power_yj) and normalization methods (maxabs, minmax, sigmoid), configured
-via `label_config`. All targets are processed uniformly through the same pipeline.
+via `label_pipeline`. Every enabled target uses `label_pipeline.default` unless it
+has its own permitted `label_pipeline.columns` override.
 
 The transformer state SHALL be stored and used to inverse-transform predictions
 back to original scale.
@@ -340,8 +349,9 @@ back to original scale.
 
 - **GIVEN** `prediction_targets` is `["amplitude", "time_to_pivot"]`
 - **WHEN** the label pipeline is applied during training
-- **THEN** the system SHALL apply `LabelTransformer` to all target columns uniformly
-- **AND** the same standardization/normalization config applies to all targets
+- **THEN** the system SHALL apply `LabelTransformer` to every target column
+- **AND** every target without a permitted per-column override SHALL use `label_pipeline.default`
+- **AND** a target with a permitted `label_pipeline.columns` override SHALL use that override
 - **AND** `&s-extrema`, `&-amplitude`, and `&-time_to_pivot` are all transformed
 
 #### Scenario: Prediction inverse transform

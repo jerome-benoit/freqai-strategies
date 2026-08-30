@@ -16,7 +16,7 @@ enables:
 
 - **Configuration**: Add `prediction_targets` list in freqai config section
 - **Labeling**: Register additional label generators for each prediction target
-- **Training**: Use native multi-output for CatBoost (MultiRMSE) and XGBoost (one_output_per_tree), wrap others with `FreqaiMultiOutputRegressor`
+- **Training**: Use native multi-output for CatBoost (MultiRMSE) and, where supported by the installed XGBoost, `one_output_per_tree`; use `FreqaiMultiOutputRegressor` for the remaining regressors and for XGBoost compatibility fallback.
 - **Prediction**: Handle multi-column predictions and route to strategy via `&` column convention
 - **HPO**: Single-objective optimization using `compute_multi_rmse()` aligned with CatBoost formula
 - **Backward compatibility**: Empty `prediction_targets` = single-target mode
@@ -80,7 +80,7 @@ Or simply omit `prediction_targets` entirely.
 | Regressor | Multi-Output Support | Loss/Eval |
 |-----------|---------------------|-----------|
 | CatBoost | Native | `MultiRMSE` loss + eval_metric |
-| XGBoost | Native | `multi_strategy="one_output_per_tree"` |
+| XGBoost | Native when compatible; otherwise wrapper | `multi_strategy="one_output_per_tree"` when native multi-output is supported |
 | LightGBM | `FreqaiMultiOutputRegressor` wrapper | Per-submodel with eval_set |
 | HistGradientBoosting | `FreqaiMultiOutputRegressor` wrapper | Per-submodel |
 | NGBoost | `FreqaiMultiOutputRegressor` wrapper | Per-submodel |
@@ -92,10 +92,11 @@ that accepts `fit_params` as a list of dicts (one per target), enabling per-subm
 ### Target Normalization
 
 Prediction targets have different scales (e.g., `time_to_pivot` ~1-500 vs `efficiency` ~0-1).
-To ensure balanced MultiRMSE optimization, all targets are normalized via `LabelTransformer`
-which supports multiple standardization methods (zscore, robust, mmad, power_yj) and
-normalization methods (maxabs, minmax, sigmoid). Predictions are inverse-transformed to
-original scale.
+To ensure balanced MultiRMSE optimization, `LabelTransformer` applies the configured
+`label_pipeline.default` policy to every enabled target unless a target has its own
+permitted `label_pipeline.columns` override. It supports standardization (zscore,
+robust, mmad, power_yj) and normalization (maxabs, minmax, sigmoid); predictions are
+inverse-transformed to original scale.
 
 ## Impact
 
@@ -113,7 +114,7 @@ This proposal extends the existing `LabelGenerator` infrastructure by:
 
 1. Adding `PREDICTION_TARGETS` mapping and config parsing
 2. Registering additional generators for each prediction target
-3. Making `LABEL_COLUMNS` dynamic based on config
+3. Replacing static `LABEL_COLUMNS` with one configuration-derived ordered tuple that begins with `&s-extrema` and is used by target generation, model labels, weighting, smoothing, pipeline processing, and prediction reconstruction
 4. Implementing `FreqaiMultiOutputRegressor` wrapper
 5. Adding multi-output support per regressor backend in `fit_regressor()`
 6. Implementing `compute_multi_rmse()` metric

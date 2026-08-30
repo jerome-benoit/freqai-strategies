@@ -66,7 +66,7 @@ targets to predict. The target `extrema` is always included implicitly.
 | Regressor | Multi-Output Strategy | Native Loss/Metric |
 |-----------|----------------------|-------------------|
 | CatBoost | Native: `loss_function="MultiRMSE"` | MultiRMSE |
-| XGBoost | Native: `multi_strategy="one_output_per_tree"` | MSE (per target) |
+| XGBoost | Native `multi_strategy="one_output_per_tree"` when compatible; otherwise `FreqaiMultiOutputRegressor` | MSE (per target) |
 | LightGBM | `FreqaiMultiOutputRegressor` wrapper | RMSE (per sub-model with eval_set) |
 | HistGradientBoostingRegressor | `FreqaiMultiOutputRegressor` wrapper | squared_error (per sub-model) |
 | NGBoost | `FreqaiMultiOutputRegressor` wrapper | NLL (per sub-model) |
@@ -84,6 +84,13 @@ model = XGBRegressor(
 )
 model.fit(X, y)  # y shape: (n_samples, n_targets)
 ```
+
+**XGBoost compatibility fallback**: Multi-target XGBoost SHALL use native
+`one_output_per_tree` only when the installed XGBoost accepts and successfully fits
+that strategy. If that capability is unavailable or the native multi-output fit fails,
+the system SHALL use `FreqaiMultiOutputRegressor` with one XGBoost sub-model per
+target, log the fallback, and return the same ordered prediction columns. Tests SHALL
+cover both the native path and the compatibility fallback.
 
 **CatBoost Native Multi-Output**:
 ```python
@@ -119,17 +126,17 @@ Where:
 **Implementation**:
 ```python
 def compute_multi_rmse(
-    y_true: np.ndarray,      # (n_samples, n_targets)
-    y_pred: np.ndarray,      # (n_samples, n_targets)
+    y_true: np.ndarray,  # (n_samples, n_targets)
+    y_pred: np.ndarray,  # (n_samples, n_targets)
     sample_weights: Optional[np.ndarray] = None,
 ) -> float:
     """Compute MultiRMSE aligned with CatBoost's formula."""
     if sample_weights is None:
         sample_weights = np.ones(y_true.shape[0])
-    
+
     squared_errors = (y_true - y_pred) ** 2  # (n_samples, n_targets)
     weighted_sum = np.sum(sample_weights[:, None] * squared_errors)
-    
+
     return np.sqrt(weighted_sum / sample_weights.sum())
 ```
 
@@ -161,18 +168,22 @@ def compute_multi_rmse(
 # Already in Utils.py:
 @dataclass
 class LabelData:
-    series: pd.Series      # Label values for all candles
-    indices: list[int]     # Pivot/key indices
+    series: pd.Series  # Label values for all candles
+    indices: list[int]  # Pivot/key indices
     metrics: dict[str, list[float]]  # Per-pivot metrics for weighting
+
 
 LabelGenerator = Callable[[pd.DataFrame, dict[str, Any]], LabelData]
 _LABEL_GENERATORS: dict[str, LabelGenerator] = {}
 
+
 def register_label_generator(label_column: str, generator: LabelGenerator) -> None:
     _LABEL_GENERATORS[label_column] = generator
 
+
 def generate_label_data(df, label_column, params) -> LabelData:
     return _LABEL_GENERATORS[label_column](df, params)
+
 
 # Extrema generator registered
 register_label_generator(EXTREMA_COLUMN, _generate_extrema_label)
@@ -195,7 +206,8 @@ register_label_generator("&-time_to_pivot", _generate_time_to_pivot_label)
 register_label_generator("&-efficiency", _generate_efficiency_label)
 register_label_generator("&-natr", _generate_natr_label)
 
-# Dynamic label columns based on config
+
+# One resolved target order for all consumers
 def get_label_columns(prediction_targets: list[str]) -> tuple[str, ...]:
     columns = [EXTREMA_COLUMN]  # Always included
     for target in prediction_targets:
@@ -223,29 +235,31 @@ def _generate_amplitude_label(
     # Get pivot information from extrema generator or params
     pivots_indices = params.get("pivots_indices", [])
     pivots_values_log = params.get("pivots_values_log", [])
-    
+
     # Build pivot lookup for O(1) access
     pivot_lookup = _build_pivot_lookup(len(dataframe), pivots_indices)
-    
+
     # Compute per-candle remaining amplitude
     closes_log = np.log(dataframe["close"].to_numpy())
     amplitudes = _compute_remaining_amplitude(
         closes_log, pivots_indices, pivots_values_log, pivot_lookup
     )
-    
+
     return LabelData(
         series=pd.Series(amplitudes, index=dataframe.index),
         indices=pivots_indices,
         metrics={},  # No weighting metrics for auxiliary targets
     )
 
+
 register_label_generator("&-amplitude", _generate_amplitude_label)
 ```
 
 **In set_freqai_targets()** (existing loop handles multi-target naturally):
 ```python
-# LABEL_COLUMNS includes prediction targets based on config
-for label_col in LABEL_COLUMNS:
+# The resolved order begins with &s-extrema and is shared by target generation,
+# model label handling, weighting, smoothing, pipeline processing, and prediction reconstruction.
+for label_col in get_label_columns(prediction_targets):
     label_params = self.get_label_params(pair, label_col)
     label_data = generate_label_data(dataframe, label_col, label_params)
     # ... weighting, smoothing applied per-column
@@ -349,9 +363,10 @@ backtesting results. Default config has no prediction targets.
 acceptable as each sub-model learns its target well.
 
 ### Risk 5: XGBoost Multi-Output Experimental
-**Risk**: XGBoost multi-output is marked experimental, API may change.
-**Mitigation**: Use `one_output_per_tree` strategy which is more stable.
-Monitor XGBoost releases for breaking changes.
+**Risk**: XGBoost multi-output is marked experimental, and the native API may change.
+**Mitigation**: Prefer `one_output_per_tree` when the installed version supports it;
+otherwise use the tested `FreqaiMultiOutputRegressor` compatibility fallback while
+preserving the resolved target-column order. Monitor XGBoost releases for breaking changes.
 
 ## Migration Plan
 
@@ -374,8 +389,9 @@ Monitor XGBoost releases for breaking changes.
 (zscore, robust, mmad, power_yj) and normalization methods (maxabs, minmax, sigmoid).
 
 **Status**: ✅ **IMPLEMENTED** - `LabelTransformer` exists in `LabelTransformer.py`
-(renamed from `ExtremaWeightingTransformer` in PR #45). The transformer handles all
-label columns uniformly and will automatically process new prediction target columns.
+(renamed from `ExtremaWeightingTransformer` in PR #45). Its active public
+configuration key is `label_pipeline`; its default policy applies to every label
+column and permitted `label_pipeline.columns` entries may override individual columns.
 
 **Why**: MultiRMSE sums squared errors across all targets without weighting.
 Targets have vastly different scales:
@@ -396,18 +412,21 @@ larger than `efficiency`).
 - **Normalization**: maxabs, minmax, sigmoid
 - **Post-processing**: gamma correction
 
-The `define_label_pipeline()` applies the transformer to all label columns
-uniformly. Datasieve pipelines process all columns, so multi-target is handled
-naturally.
+The `define_label_pipeline()` applies the transformer to every enabled label column.
+Each column receives `label_pipeline.default` unless it has its own permitted
+`label_pipeline.columns` override, so multi-target processing preserves the existing
+per-column configuration contract.
 
 ```python
 # In define_label_pipeline():
-return Pipeline([
-    (
-        "label_transformer",
-        LabelTransformer(label_config=label_config),
-    ),
-])
+return Pipeline(
+    [
+        (
+            "label_transformer",
+            LabelTransformer(label_transformer=self.label_pipeline),
+        ),
+    ]
+)
 ```
 
 **Alternatives considered**:
@@ -449,11 +468,13 @@ they require direct access to training internals during iteration.
 # Prepare fit_params as list of dicts (one per target)
 fit_params = []
 for i in range(n_targets):
-    fit_params.append({
-        "eval_set": [(X_test, y_test.iloc[:, i])],
-        "eval_sample_weight": [test_weights],
-        "init_model": init_models[i] if init_models else None,
-    })
+    fit_params.append(
+        {
+            "eval_set": [(X_test, y_test.iloc[:, i])],
+            "eval_sample_weight": [test_weights],
+            "init_model": init_models[i] if init_models else None,
+        }
+    )
 
 model = FreqaiMultiOutputRegressor(estimator=lgb, n_jobs=n_targets)
 model.fit(X=X, y=y, sample_weight=sample_weight, fit_params=fit_params)
