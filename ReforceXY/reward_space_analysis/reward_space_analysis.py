@@ -2070,9 +2070,7 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
     # only for open positions. Binning the full frame mixed states and
     # produced contaminated means.
     neutral_rows = df["position"] == Positions.Neutral.value
-    idle_stats = _binned_stats(
-        df.loc[neutral_rows], "idle_duration", "reward_economic", idle_bins
-    )
+    idle_stats = _binned_stats(df.loc[neutral_rows], "idle_duration", "reward_economic", idle_bins)
     hold_stats = _binned_stats(
         df.loc[~neutral_rows], "trade_duration", "reward_economic", trade_bins
     )
@@ -3227,7 +3225,8 @@ def _get_fee_rate(params: RewardParams) -> float:
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
-    if "fee_rate" in params:
+        raw_fee_rate = _get_float_param(DEFAULT_MODEL_REWARD_PARAMETERS, "fee_rate")
+    elif "fee_rate" in params:
         raw_fee_rate = _get_float_param(params, "fee_rate")
     else:
         entry_fee_rate = _get_float_param(params, "entry_fee_rate", 0.0)
