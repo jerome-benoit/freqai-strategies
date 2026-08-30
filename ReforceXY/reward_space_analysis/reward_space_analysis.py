@@ -76,7 +76,7 @@ DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 # When that diagnostic column is not available (e.g., reporting from partial datasets),
 # we fall back to the weaker heuristic |Σ shaping| < PBRS_INVARIANCE_TOL.
 PBRS_INVARIANCE_TOL: float = 1e-6
-# Default discount factor γ for potential-based reward shaping  # noqa: RUF003
+# Default discount factor γ for potential-based reward shaping
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
 
 # Default risk/reward ratio (RR)
@@ -159,7 +159,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "exit_factor_threshold": 1000.0,
     # === PBRS PARAMETERS ===
     # Potential-based reward shaping core parameters
-    # Discount factor γ for potential term (0 ≤ γ ≤ 1)  # noqa: RUF003
+    # Discount factor γ for potential term (0 ≤ γ ≤ 1)
     "potential_gamma": POTENTIAL_GAMMA_DEFAULT,
     # Exit potential modes: canonical | non_canonical | progressive_release | spike_cancel | retain_previous
     "exit_potential_mode": "canonical",
@@ -208,7 +208,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "check_invariants": "Enable runtime invariant checks",
     "exit_factor_threshold": "Warn if |exit_factor| exceeds",
     # PBRS parameters
-    "potential_gamma": "PBRS discount γ (0-1)",  # noqa: RUF001
+    "potential_gamma": "PBRS discount γ (0-1)",
     "exit_potential_mode": "Exit potential mode (canonical|non_canonical|progressive_release|spike_cancel|retain_previous)",
     "exit_potential_decay": "Decay for progressive_release (0-1)",
     "hold_potential_enabled": "Enable hold potential Φ",
@@ -790,7 +790,7 @@ class RewardBreakdown:
     next_potential: float = 0.0
     # PBRS helpers
     base_reward: float = 0.0
-    pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') - Φ(s)  # noqa: RUF003
+    pbrs_delta: float = 0.0  # Δ(s,a,s') = γ·Φ(s') - Φ(s)
     invariance_correction: float = 0.0
 
 
@@ -2931,7 +2931,7 @@ def _apply_transform_arctan(value: float) -> float:
 
 
 def _apply_transform_sigmoid(value: float) -> float:
-    """sigmoid: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)."""  # noqa: RUF002
+    """sigmoid: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)."""
     x = value
     try:
         if x >= 0:
@@ -4017,7 +4017,7 @@ def write_complete_statistical_analysis(
                 f.write("|--------|-------|-------------|\n")
                 f.write(f"| Mean Base Reward | {mean_base:.6f} | Average reward before PBRS |\n")
                 f.write(f"| Std Base Reward | {std_base:.6f} | Variability of base reward |\n")
-                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s') - Φ(s) |\n")  # noqa: RUF001
+                f.write(f"| Mean PBRS Delta | {mean_pbrs:.6f} | Average γ·Φ(s') - Φ(s) |\n")
                 f.write(f"| Std PBRS Delta | {std_pbrs:.6f} | Variability of PBRS delta |\n")
                 f.write(
                     f"| Mean Invariance Correction | {mean_inv_corr:.6f} | Average reward_shaping - pbrs_delta |\n"

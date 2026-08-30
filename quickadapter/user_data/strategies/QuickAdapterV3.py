@@ -2,15 +2,14 @@ import datetime
 import hashlib
 import logging
 import math
+from collections.abc import Callable
 from functools import cached_property, lru_cache, reduce
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     ClassVar,
     Final,
     Literal,
-    Optional,
     TypedDict,
 )
 
@@ -28,8 +27,8 @@ from freqtrade.strategy.interface import IStrategy
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
-    SMOOTHING_METHODS,
     SMOOTHING_METHOD_MODES,
+    SMOOTHING_METHODS,
     SMOOTHING_MODES,
     WEIGHT_STRATEGIES,
     get_label_column_config,
@@ -62,8 +61,8 @@ from Utils import (
     generate_label_data,
     get_callable_sha256,
     get_causal_mode,
-    get_distance,
     get_custom_protections_config,
+    get_distance,
     get_exit_pricing_config,
     get_fit_live_predictions_candles,
     get_label_defaults,
@@ -95,10 +94,8 @@ InterpolationDirection = Literal["direct", "inverse"]
 OrderType = Literal["entry", "exit"]
 TradingMode = Literal["spot", "margin", "futures"]
 
-DfSignature = tuple[int, Optional[datetime.datetime]]
-CandleDeviationCacheKey = tuple[
-    str, DfSignature, float, float, int, InterpolationDirection, float
-]
+DfSignature = tuple[int, datetime.datetime | None]
+CandleDeviationCacheKey = tuple[str, DfSignature, float, float, int, InterpolationDirection, float]
 CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 
 
@@ -139,9 +136,7 @@ class QuickAdapterV3(IStrategy):
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
     _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
     _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
-    _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(
-        _TRADE_DIRECTIONS
-    )
+    _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(_TRADE_DIRECTIONS)
     _INTERPOLATION_DIRECTIONS: Final[tuple[InterpolationDirection, ...]] = (
         "direct",
         "inverse",
@@ -207,7 +202,7 @@ class QuickAdapterV3(IStrategy):
     _PARTIAL_EXIT_MIN_STAKE_MARGIN: Final[float] = 1e-3
 
     # FreqAI is crashing if ``minimal_roi`` is a property
-    minimal_roi = {str(timeframe_minutes * 864): -1}
+    minimal_roi: ClassVar[dict[str, int]] = {str(timeframe_minutes * 864): -1}
 
     process_only_new_candles = True
 
@@ -270,38 +265,32 @@ class QuickAdapterV3(IStrategy):
         return get_fit_live_predictions_candles(self.config.get("freqai"), logger)
 
     @staticmethod
-    def _is_unlimited_max_open_trades(max_open_trades: int | float) -> bool:
+    def _is_unlimited_max_open_trades(max_open_trades: float) -> bool:
         return max_open_trades == -1 or max_open_trades == math.inf
 
     @cached_property
     def protections(self) -> list[dict[str, Any]]:
         fit_live_predictions_candles = self._fit_live_predictions_candles
-        protections = get_custom_protections_config(
-            self.config.get("custom_protections"), logger
-        )
+        protections = get_custom_protections_config(self.config.get("custom_protections"), logger)
         trade_duration_candles = protections["trade_duration_candles"]
         lookback_period_fraction = protections["lookback_period_fraction"]
 
         lookback_period_candles = max(
-            1, int(round(fit_live_predictions_candles * lookback_period_fraction))
+            1, round(fit_live_predictions_candles * lookback_period_fraction)
         )
 
         cooldown = protections["cooldown"]
         cooldown_stop_duration_candles = cooldown["stop_duration_candles"]
-        stoploss_stop_duration_candles = max(
-            cooldown_stop_duration_candles, trade_duration_candles
-        )
+        stoploss_stop_duration_candles = max(cooldown_stop_duration_candles, trade_duration_candles)
         drawdown_stop_duration_candles = max(
             stoploss_stop_duration_candles,
             fit_live_predictions_candles,
         )
         max_open_trades = self.config.get("max_open_trades", 0)
-        unlimited_max_open_trades = QuickAdapterV3._is_unlimited_max_open_trades(
-            max_open_trades
-        )
+        unlimited_max_open_trades = QuickAdapterV3._is_unlimited_max_open_trades(max_open_trades)
         estimated_trade_limit = max(
             2,
-            int(round(lookback_period_candles / max(1, trade_duration_candles))),
+            round(lookback_period_candles / max(1, trade_duration_candles)),
         )
         if unlimited_max_open_trades:
             stoploss_trade_limit = estimated_trade_limit
@@ -310,7 +299,7 @@ class QuickAdapterV3(IStrategy):
             max_open_trades = int(max_open_trades)
             stoploss_trade_limit = min(
                 estimated_trade_limit,
-                max(2, int(round(max_open_trades * 0.75))),
+                max(2, round(max_open_trades * 0.75)),
             )
             drawdown_trade_limit = 2 * max_open_trades
 
@@ -371,15 +360,11 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def label_weighting(self) -> dict[str, Any]:
-        return get_label_weighting_config(
-            self.freqai_info.get("label_weighting"), logger
-        )
+        return get_label_weighting_config(self.freqai_info.get("label_weighting"), logger)
 
     @cached_property
     def label_smoothing(self) -> dict[str, Any]:
-        return get_label_smoothing_config(
-            self.freqai_info.get("label_smoothing"), logger
-        )
+        return get_label_smoothing_config(self.freqai_info.get("label_smoothing"), logger)
 
     @cached_property
     def exit_pricing(self) -> dict[str, str | float]:
@@ -395,9 +380,7 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
-        return get_reversal_confirmation_config(
-            self.config.get("reversal_confirmation"), logger
-        )
+        return get_reversal_confirmation_config(self.config.get("reversal_confirmation"), logger)
 
     @cached_property
     def _label_defaults(self) -> tuple[int, float]:
@@ -418,9 +401,7 @@ class QuickAdapterV3(IStrategy):
                 "Invalid freqai configuration: 'identifier' must be defined in freqai section"
             )
         self.models_full_path = Path(
-            self.config.get("user_data_dir")
-            / "models"
-            / self.freqai_info.get("identifier")
+            self.config.get("user_data_dir") / "models" / self.freqai_info.get("identifier")
         )
         feature_parameters = self.freqai_info.get("feature_parameters", {})
         if get_causal_mode(feature_parameters, logger):
@@ -437,9 +418,7 @@ class QuickAdapterV3(IStrategy):
                         "label_smoothing.mode='wrap' is incompatible with "
                         "feature_parameters.causal_mode=true"
                     )
-        default_label_period_candles, default_label_natr_multiplier = (
-            self._label_defaults
-        )
+        default_label_period_candles, default_label_natr_multiplier = self._label_defaults
         self._label_params: dict[str, dict[str, Any]] = {}
         load_persisted_label_params = self.is_trade_runmode
         for pair in self.pairs:
@@ -465,10 +444,8 @@ class QuickAdapterV3(IStrategy):
                 }
             )
         self._candle_duration_secs = int(self.timeframe_minutes * 60)
-        self.last_candle_start_secs: dict[str, Optional[int]] = {}
-        self._max_take_profit_history_size = max(
-            1, int(12 * 60 / self.timeframe_minutes)
-        )
+        self.last_candle_start_secs: dict[str, int | None] = {}
+        self._max_take_profit_history_size = max(1, int(12 * 60 / self.timeframe_minutes))
         self._candle_deviation_cache: dict[CandleDeviationCacheKey, float] = {}
         self._candle_threshold_cache: dict[CandleThresholdCacheKey, float] = {}
         self._cached_df_signature: dict[str, DfSignature] = {}
@@ -504,12 +481,8 @@ class QuickAdapterV3(IStrategy):
                 QuickAdapterV3._FILL_EPSILON,
                 QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
             ):
-                logger.info(
-                    f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}"
-                )
-                logger.info(
-                    f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
-                )
+                logger.info(f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}")
+                logger.info(f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}")
             if fill_method in (
                 QuickAdapterV3._FILL_GAUSSIAN,
                 QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
@@ -552,10 +525,7 @@ class QuickAdapterV3(IStrategy):
             method = col_smoothing["method"]
             if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE and (
                 method == QuickAdapterV3._SMOOTHING_SMM
-                or (
-                    method == QuickAdapterV3._SMOOTHING_SAVGOL
-                    and col_smoothing["polyorder"] >= 2
-                )
+                or (method == QuickAdapterV3._SMOOTHING_SAVGOL and col_smoothing["polyorder"] >= 2)
             ):
                 logger.warning(
                     f"  Label [{label_col}]: smoothing method {method!r} can "
@@ -613,12 +583,8 @@ class QuickAdapterV3(IStrategy):
         if self.protections:
             for protection in self.protections:
                 method = protection.get("method", "Unknown")
-                protection_params = {
-                    k: v for k, v in protection.items() if k != "method"
-                }
-                logger.info(
-                    f"  {method}: {format_dict(protection_params, style='dict')}"
-                )
+                protection_params = {k: v for k, v in protection.items() if k != "method"}
+                logger.info(f"  {method}: {format_dict(protection_params, style='dict')}")
         else:
             logger.info("  No protections enabled")
 
@@ -674,9 +640,7 @@ class QuickAdapterV3(IStrategy):
             closes,
             length=period,
         )
-        dataframe["%-linearreg_angle-period"] = ta.LINEARREG_ANGLE(
-            dataframe, timeperiod=period
-        )
+        dataframe["%-linearreg_angle-period"] = ta.LINEARREG_ANGLE(dataframe, timeperiod=period)
         dataframe["%-atr-period"] = ta.ATR(dataframe, timeperiod=period)
         dataframe["%-natr-period"] = ta.NATR(dataframe, timeperiod=period)
         return dataframe
@@ -711,9 +675,7 @@ class QuickAdapterV3(IStrategy):
         dataframe["%-raw_volume"] = volumes
         dataframe["%-obv"] = ta.OBV(dataframe)
         label_period_candles = self.get_label_period_candles(str(metadata.get("pair")))
-        dataframe["%-atr_label_period_candles"] = ta.ATR(
-            dataframe, timeperiod=label_period_candles
-        )
+        dataframe["%-atr_label_period_candles"] = ta.ATR(dataframe, timeperiod=label_period_candles)
         dataframe["%-natr_label_period_candles"] = ta.NATR(
             dataframe, timeperiod=label_period_candles
         )
@@ -725,9 +687,7 @@ class QuickAdapterV3(IStrategy):
             normalize=True,
             logger=logger,
         )
-        dataframe["%-diff_to_psar"] = closes - ta.SAR(
-            dataframe, acceleration=0.02, maximum=0.2
-        )
+        dataframe["%-diff_to_psar"] = closes - ta.SAR(dataframe, acceleration=0.02, maximum=0.2)
         kc = pta.kc(
             highs,
             lows,
@@ -795,15 +755,9 @@ class QuickAdapterV3(IStrategy):
             context="feature_engineering_expand_basic:vwap_width",
             logger=logger,
         )
-        dataframe["%-dist_to_vwap_upperband"] = get_distance(
-            closes, dataframe["vwap_upperband"]
-        )
-        dataframe["%-dist_to_vwap_middleband"] = get_distance(
-            closes, dataframe["vwap_middleband"]
-        )
-        dataframe["%-dist_to_vwap_lowerband"] = get_distance(
-            closes, dataframe["vwap_lowerband"]
-        )
+        dataframe["%-dist_to_vwap_upperband"] = get_distance(closes, dataframe["vwap_upperband"])
+        dataframe["%-dist_to_vwap_middleband"] = get_distance(closes, dataframe["vwap_middleband"])
+        dataframe["%-dist_to_vwap_lowerband"] = get_distance(closes, dataframe["vwap_lowerband"])
         dataframe["%-body"] = closes - opens
         dataframe["%-tail"] = (np.minimum(opens, closes) - lows).clip(lower=0)
         dataframe["%-wick"] = (highs - np.maximum(opens, closes)).clip(lower=0)
@@ -838,7 +792,7 @@ class QuickAdapterV3(IStrategy):
     def get_label_period_candles(
         self,
         pair: str,
-        dataframe: Optional[DataFrame] = None,
+        dataframe: DataFrame | None = None,
         candle_idx: int = -1,
     ) -> int:
         if dataframe is not None:
@@ -860,10 +814,7 @@ class QuickAdapterV3(IStrategy):
     def set_label_period_candles(self, pair: str, label_period_candles: Any) -> None:
         if is_finite_number(label_period_candles) and int(label_period_candles) > 0:
             label_period_candles = int(label_period_candles)
-            if (
-                self._label_params[pair].get("label_period_candles")
-                != label_period_candles
-            ):
+            if self._label_params[pair].get("label_period_candles") != label_period_candles:
                 self._label_params[pair]["label_period_candles"] = label_period_candles
                 self._invalidate_pair_caches(pair)
 
@@ -879,7 +830,7 @@ class QuickAdapterV3(IStrategy):
     def get_label_natr_multiplier(
         self,
         pair: str,
-        dataframe: Optional[DataFrame] = None,
+        dataframe: DataFrame | None = None,
         candle_idx: int = -1,
     ) -> float:
         if dataframe is not None:
@@ -898,25 +849,17 @@ class QuickAdapterV3(IStrategy):
         )
 
     def set_label_natr_multiplier(self, pair: str, label_natr_multiplier: Any) -> None:
-        if (
-            is_finite_number(label_natr_multiplier)
-            and float(label_natr_multiplier) > 0.0
-        ):
+        if is_finite_number(label_natr_multiplier) and float(label_natr_multiplier) > 0.0:
             label_natr_multiplier = float(label_natr_multiplier)
-            if (
-                self._label_params[pair].get("label_natr_multiplier")
-                != label_natr_multiplier
-            ):
-                self._label_params[pair]["label_natr_multiplier"] = (
-                    label_natr_multiplier
-                )
+            if self._label_params[pair].get("label_natr_multiplier") != label_natr_multiplier:
+                self._label_params[pair]["label_natr_multiplier"] = label_natr_multiplier
                 self._invalidate_pair_caches(pair)
 
     def get_label_natr_multiplier_fraction(
         self,
         pair: str,
         fraction: float,
-        dataframe: Optional[DataFrame] = None,
+        dataframe: DataFrame | None = None,
         candle_idx: int = -1,
     ) -> float:
         if not isinstance(fraction, float) or not (0.0 <= fraction <= 1.0):
@@ -951,22 +894,18 @@ class QuickAdapterV3(IStrategy):
         except (KeyError, ValueError) as e:
             raise ValueError(
                 f"Invalid pattern value {pattern!r}: failed to format with {e!r}"
-            )
+            ) from e
 
     def set_freqai_targets(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
         pair = str(metadata.get("pair"))
-        series_duration = datetime.timedelta(
-            minutes=len(dataframe) * self.timeframe_minutes
-        )
+        series_duration = datetime.timedelta(minutes=len(dataframe) * self.timeframe_minutes)
 
         label_weighting = self.label_weighting
         label_smoothing = self.label_smoothing
         series_length = len(dataframe)
-        causal_mode = get_causal_mode(
-            self.freqai_info.get("feature_parameters", {}), logger
-        )
+        causal_mode = get_causal_mode(self.freqai_info.get("feature_parameters", {}), logger)
         finite_gaussian_support = causal_mode
 
         for label_col in LABEL_COLUMNS:
@@ -1008,40 +947,32 @@ class QuickAdapterV3(IStrategy):
                     weighting_config=col_weighting_config,
                     finite_gaussian_support=finite_gaussian_support,
                     logger=logger,
-                    known_at_lookahead=(
-                        label_data.known_at_lookahead if causal_mode else None
-                    ),
+                    known_at_lookahead=(label_data.known_at_lookahead if causal_mode else None),
                 )
                 if label_data.known_at_lookahead is not None:
                     if causal_mode:
-                        imputation_masks = (
-                            compute_label_weight_imputation_dependency_mask(
-                                len(label_data.indices),
-                                label_data.metrics,
-                                col_weighting_config,
-                            )
+                        imputation_masks = compute_label_weight_imputation_dependency_mask(
+                            len(label_data.indices),
+                            label_data.metrics,
+                            col_weighting_config,
                         )
                         imputation_dependency_mask = imputation_masks.dependency_mask
-                        imputation_leading_stable_mask = (
-                            imputation_masks.leading_stable_mask
-                        )
-                        imputation_stable_release_index = (
-                            imputation_masks.stable_release_index
-                        )
+                        imputation_leading_stable_mask = imputation_masks.leading_stable_mask
+                        imputation_stable_release_index = imputation_masks.stable_release_index
                     else:
                         imputation_dependency_mask = None
                         imputation_leading_stable_mask = None
                         imputation_stable_release_index = -1
-                    dataframe[
-                        label_weight_known_at_lookahead_column_name(label_col)
-                    ] = compute_label_weight_known_at_lookahead(
-                        known_at_lookahead=label_data.known_at_lookahead,
-                        indices=label_data.indices,
-                        fill_radius=weight_fill_radius(col_weighting_config),
-                        weighting_config=col_weighting_config,
-                        imputation_dependency_mask=imputation_dependency_mask,
-                        imputation_leading_stable_mask=imputation_leading_stable_mask,
-                        imputation_stable_release_index=imputation_stable_release_index,
+                    dataframe[label_weight_known_at_lookahead_column_name(label_col)] = (
+                        compute_label_weight_known_at_lookahead(
+                            known_at_lookahead=label_data.known_at_lookahead,
+                            indices=label_data.indices,
+                            fill_radius=weight_fill_radius(col_weighting_config),
+                            weighting_config=col_weighting_config,
+                            imputation_dependency_mask=imputation_dependency_mask,
+                            imputation_leading_stable_mask=imputation_leading_stable_mask,
+                            imputation_stable_release_index=imputation_stable_release_index,
+                        )
                     )
 
             if label_col == EXTREMA_COLUMN:
@@ -1055,9 +986,7 @@ class QuickAdapterV3(IStrategy):
 
             dataframe[label_col] = smooth(dataframe[label_col], **col_smoothing_config)
             if is_weighting_active:
-                smoothed_label_weights = smooth(
-                    dataframe[label_weight_col], **col_smoothing_config
-                )
+                smoothed_label_weights = smooth(dataframe[label_weight_col], **col_smoothing_config)
                 dataframe[label_weight_col] = smoothed_label_weights.where(
                     np.isfinite(smoothed_label_weights) & smoothed_label_weights.gt(0),
                     0.0,
@@ -1081,15 +1010,11 @@ class QuickAdapterV3(IStrategy):
             if label_col == EXTREMA_COLUMN:
                 dataframe[EXTREMA_DIRECTION_SMOOTHED_COLUMN] = dataframe[label_col]
                 if is_weighting_active:
-                    dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[
-                        label_weight_col
-                    ]
+                    dataframe[EXTREMA_WEIGHT_SMOOTHED_COLUMN] = dataframe[label_weight_col]
 
         return dataframe
 
-    def populate_indicators(
-        self, dataframe: DataFrame, metadata: dict[str, Any]
-    ) -> DataFrame:
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         dataframe = self.freqai.start(dataframe, metadata, self)
 
         di_values = dataframe.get("DI_values")
@@ -1105,13 +1030,9 @@ class QuickAdapterV3(IStrategy):
         label_natr_multiplier_series = dataframe.get("label_natr_multiplier")
         if self.is_trade_runmode:
             if label_period_candles_series is not None:
-                self.set_label_period_candles(
-                    pair, label_period_candles_series.iloc[-1]
-                )
+                self.set_label_period_candles(pair, label_period_candles_series.iloc[-1])
             if label_natr_multiplier_series is not None:
-                self.set_label_natr_multiplier(
-                    pair, label_natr_multiplier_series.iloc[-1]
-                )
+                self.set_label_natr_multiplier(pair, label_natr_multiplier_series.iloc[-1])
 
         if label_period_candles_series is None:
             dataframe["natr_label_period_candles"] = ta.NATR(
@@ -1129,22 +1050,16 @@ class QuickAdapterV3(IStrategy):
             for period in periods.unique():
                 period_rows = periods == period
                 period_natr = ta.NATR(dataframe, timeperiod=int(period))
-                dataframe.loc[period_rows, "natr_label_period_candles"] = (
-                    period_natr.loc[period_rows]
-                )
+                dataframe.loc[period_rows, "natr_label_period_candles"] = period_natr.loc[
+                    period_rows
+                ]
 
-        dataframe["minima_threshold"] = dataframe.get(
-            f"{EXTREMA_COLUMN}_minima_threshold", np.nan
-        )
-        dataframe["maxima_threshold"] = dataframe.get(
-            f"{EXTREMA_COLUMN}_maxima_threshold", np.nan
-        )
+        dataframe["minima_threshold"] = dataframe.get(f"{EXTREMA_COLUMN}_minima_threshold", np.nan)
+        dataframe["maxima_threshold"] = dataframe.get(f"{EXTREMA_COLUMN}_maxima_threshold", np.nan)
 
         return dataframe
 
-    def populate_entry_trend(
-        self, dataframe: DataFrame, metadata: dict[str, Any]
-    ) -> DataFrame:
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         enter_long_conditions = [
             dataframe.get("do_predict") == 1,
             dataframe.get("DI_catch") == 1,
@@ -1167,15 +1082,13 @@ class QuickAdapterV3(IStrategy):
 
         return dataframe
 
-    def populate_exit_trend(
-        self, dataframe: DataFrame, metadata: dict[str, Any]
-    ) -> DataFrame:
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         return dataframe
 
     def get_trade_entry_date(self, trade: Trade) -> datetime.datetime:
         return timeframe_to_prev_date(self.config.get("timeframe"), trade.open_date_utc)
 
-    def get_trade_duration_candles(self, df: DataFrame, trade: Trade) -> Optional[int]:
+    def get_trade_duration_candles(self, df: DataFrame, trade: Trade) -> int | None:
         entry_date = self.get_trade_entry_date(trade)
         dates = df.get("date")
         if dates is None or dates.empty:
@@ -1183,13 +1096,10 @@ class QuickAdapterV3(IStrategy):
         current_date = dates.iloc[-1]
         if isna(current_date):
             return None
-        return int(
-            ((current_date - entry_date).total_seconds() / 60.0)
-            / self.timeframe_minutes
-        )
+        return int(((current_date - entry_date).total_seconds() / 60.0) / self.timeframe_minutes)
 
     def get_trade_annotation_line_start_date(
-        self, dataframe: DataFrame, trade: Trade, offset_candles: Optional[int] = None
+        self, dataframe: DataFrame, trade: Trade, offset_candles: int | None = None
     ) -> datetime.datetime:
         if offset_candles is None:
             offset_candles = QuickAdapterV3._ANNOTATION_LINE_OFFSET_CANDLES
@@ -1198,8 +1108,7 @@ class QuickAdapterV3(IStrategy):
 
         offset_candles_remaining = max(
             0,
-            offset_candles
-            - (trade_duration_candles if trade_duration_candles is not None else 0),
+            offset_candles - (trade_duration_candles if trade_duration_candles is not None else 0),
         )
 
         offset_timedelta = datetime.timedelta(
@@ -1210,14 +1119,14 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
-    def is_trade_duration_valid(trade_duration: Optional[int | float]) -> bool:
+    def is_trade_duration_valid(trade_duration: float | None) -> bool:
         return isinstance(trade_duration, (int, float)) and not (
             isna(trade_duration) or trade_duration <= 0
         )
 
     def _trade_natr_window(
         self, df: DataFrame, trade: Trade
-    ) -> Optional[tuple[Any, float, Optional[float]]]:
+    ) -> tuple[Any, float, float | None] | None:
         label_natr = df.get("natr_label_period_candles")
         if label_natr is None or label_natr.empty:
             return None
@@ -1239,9 +1148,7 @@ class QuickAdapterV3(IStrategy):
                 return None
         return trade_label_natr, entry_natr, current_natr
 
-    def get_trade_weighted_average_natr(
-        self, df: DataFrame, trade: Trade
-    ) -> Optional[float]:
+    def get_trade_weighted_average_natr(self, df: DataFrame, trade: Trade) -> float | None:
         window = self._trade_natr_window(df, trade)
         if window is None:
             return None
@@ -1266,8 +1173,7 @@ class QuickAdapterV3(IStrategy):
         ) -> float:
             return (
                 min_weight
-                + (max_weight - min_weight)
-                * (abs(quantile - 0.5) * 2.0) ** weighting_exponent
+                + (max_weight - min_weight) * (abs(quantile - 0.5) * 2.0) ** weighting_exponent
             )
 
         entry_weight = calculate_weight(entry_quantile)
@@ -1283,18 +1189,14 @@ class QuickAdapterV3(IStrategy):
             logger=logger,
         )
 
-    def get_trade_quantile_interpolation_natr(
-        self, df: DataFrame, trade: Trade
-    ) -> Optional[float]:
+    def get_trade_quantile_interpolation_natr(self, df: DataFrame, trade: Trade) -> float | None:
         window = self._trade_natr_window(df, trade)
         if window is None:
             return None
         trade_label_natr, entry_natr, current_natr = window
         if current_natr is None:
             return entry_natr
-        trade_volatility_quantile = calculate_quantile(
-            trade_label_natr.to_numpy(), entry_natr
-        )
+        trade_volatility_quantile = calculate_quantile(trade_label_natr.to_numpy(), entry_natr)
         if isna(trade_volatility_quantile):
             trade_volatility_quantile = 0.5
         return np.interp(
@@ -1305,7 +1207,7 @@ class QuickAdapterV3(IStrategy):
 
     def get_trade_moving_average_natr(
         self, df: DataFrame, pair: str, trade_duration_candles: int
-    ) -> Optional[float]:
+    ) -> float | None:
         if not QuickAdapterV3.is_trade_duration_valid(trade_duration_candles):
             return None
         label_natr = df.get("natr_label_period_candles")
@@ -1317,9 +1219,7 @@ class QuickAdapterV3(IStrategy):
                 trade_kama_natr_values = np.asarray(
                     zl_kama(label_natr, timeperiod=trade_duration_candles), dtype=float
                 )
-                trade_kama_natr_values = trade_kama_natr_values[
-                    np.isfinite(trade_kama_natr_values)
-                ]
+                trade_kama_natr_values = trade_kama_natr_values[np.isfinite(trade_kama_natr_values)]
                 if trade_kama_natr_values.size > 0:
                     return trade_kama_natr_values[-1]
             except Exception as e:
@@ -1331,20 +1231,16 @@ class QuickAdapterV3(IStrategy):
 
     def get_trade_natr(
         self, df: DataFrame, trade: Trade, trade_duration_candles: int
-    ) -> Optional[float]:
-        trade_natr_methods: dict[str, Callable[[], Optional[float]]] = {
+    ) -> float | None:
+        trade_natr_methods: dict[str, Callable[[], float | None]] = {
             # 0 - "moving_average"
             TRADE_NATR_METHODS[0]: lambda: self.get_trade_moving_average_natr(
                 df, trade.pair, trade_duration_candles
             ),
             # 1 - "quantile_interpolation"
-            TRADE_NATR_METHODS[1]: lambda: self.get_trade_quantile_interpolation_natr(
-                df, trade
-            ),
+            TRADE_NATR_METHODS[1]: lambda: self.get_trade_quantile_interpolation_natr(df, trade),
             # 2 - "weighted_average"
-            TRADE_NATR_METHODS[2]: lambda: self.get_trade_weighted_average_natr(
-                df, trade
-            ),
+            TRADE_NATR_METHODS[2]: lambda: self.get_trade_weighted_average_natr(df, trade),
         }
         trade_natr_method_fn = trade_natr_methods.get(self.trade_natr_method)
         if trade_natr_method_fn is None:
@@ -1362,9 +1258,7 @@ class QuickAdapterV3(IStrategy):
         n_filled_take_profit_exits = sum(
             1
             for order in trade.select_filled_orders(trade.exit_side)
-            if (order.ft_order_tag or "").startswith(
-                QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX
-            )
+            if (order.ft_order_tag or "").startswith(QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX)
         )
         return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE)
 
@@ -1379,7 +1273,7 @@ class QuickAdapterV3(IStrategy):
         trade: Trade,
         current_rate: float,
         natr_multiplier_fraction: float,
-    ) -> Optional[float]:
+    ) -> float | None:
         if not (0.0 <= natr_multiplier_fraction <= 1.0):
             raise ValueError(
                 f"Invalid natr_multiplier_fraction value {natr_multiplier_fraction!r}: must be in range [0, 1]"
@@ -1393,11 +1287,9 @@ class QuickAdapterV3(IStrategy):
         return (
             current_rate
             * (trade_natr / 100.0)
-            * self.get_label_natr_multiplier_fraction(
-                trade.pair, natr_multiplier_fraction, df
-            )
+            * self.get_label_natr_multiplier_fraction(trade.pair, natr_multiplier_fraction, df)
             * QuickAdapterV3.get_stoploss_factor(
-                trade_duration_candles + int(round(trade.nr_of_successful_exits**1.5))
+                trade_duration_candles + round(trade.nr_of_successful_exits**1.5)
             )
         )
 
@@ -1408,7 +1300,7 @@ class QuickAdapterV3(IStrategy):
 
     def get_take_profit_distance(
         self, df: DataFrame, trade: Trade, natr_multiplier_fraction: float
-    ) -> Optional[float]:
+    ) -> float | None:
         if not (0.0 <= natr_multiplier_fraction <= 1.0):
             raise ValueError(
                 f"Invalid natr_multiplier_fraction value {natr_multiplier_fraction!r}: must be in range [0, 1]"
@@ -1422,9 +1314,7 @@ class QuickAdapterV3(IStrategy):
         return (
             trade.open_rate
             * (trade_natr / 100.0)
-            * self.get_label_natr_multiplier_fraction(
-                trade.pair, natr_multiplier_fraction, df
-            )
+            * self.get_label_natr_multiplier_fraction(trade.pair, natr_multiplier_fraction, df)
             * QuickAdapterV3.get_take_profit_factor(trade_duration_candles)
         )
 
@@ -1439,17 +1329,13 @@ class QuickAdapterV3(IStrategy):
         timestamp = int(current_time.timestamp())
         candle_duration_secs = max(1, int(self._candle_duration_secs))
         candle_start_secs = (timestamp // candle_duration_secs) * candle_duration_secs
-        key = hashlib.sha256(
-            f"{pair}\x00{get_callable_sha256(callback)}".encode()
-        ).hexdigest()
+        key = hashlib.sha256(f"{pair}\x00{get_callable_sha256(callback)}".encode()).hexdigest()
         if candle_start_secs != self.last_candle_start_secs.get(key):
             self.last_candle_start_secs[key] = candle_start_secs
             try:
                 callback()
-            except Exception as e:
-                logger.error(
-                    f"[{pair}] Callback execution failed: {e!r}", exc_info=True
-                )
+            except Exception:
+                logger.exception(f"[{pair}] Callback execution failed")
 
             threshold_secs = 10 * candle_duration_secs
             keys_to_remove = [
@@ -1469,10 +1355,8 @@ class QuickAdapterV3(IStrategy):
         current_profit: float,
         after_fill: bool,
         **kwargs,
-    ) -> Optional[float]:
-        df, _ = self.dp.get_analyzed_dataframe(
-            pair=pair, timeframe=self.config.get("timeframe")
-        )
+    ) -> float | None:
+        df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
         if df.empty:
             return None
 
@@ -1492,24 +1376,20 @@ class QuickAdapterV3(IStrategy):
         )
 
     @staticmethod
-    def can_take_profit(
-        trade: Trade, current_rate: float, take_profit_price: float
-    ) -> bool:
+    def can_take_profit(trade: Trade, current_rate: float, take_profit_price: float) -> bool:
         return (trade.is_short and current_rate <= take_profit_price) or (
             not trade.is_short and current_rate >= take_profit_price
         )
 
     def get_take_profit_target(
         self, df: DataFrame, trade: Trade, exit_stage: int
-    ) -> Optional[tuple[float, float]]:
+    ) -> tuple[float, float] | None:
         natr_multiplier_fraction = (
             QuickAdapterV3.partial_exit_stages[exit_stage][0]
             if exit_stage in QuickAdapterV3.partial_exit_stages
             else QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0]
         )
-        take_profit_distance = self.get_take_profit_distance(
-            df, trade, natr_multiplier_fraction
-        )
+        take_profit_distance = self.get_take_profit_distance(df, trade, natr_multiplier_fraction)
         if not is_finite_number(take_profit_distance) or take_profit_distance <= 0:
             return None
 
@@ -1517,9 +1397,7 @@ class QuickAdapterV3(IStrategy):
             -take_profit_distance if trade.is_short else take_profit_distance
         )
         if take_profit_price == trade.open_rate:
-            take_profit_price = math.nextafter(
-                trade.open_rate, 0.0 if trade.is_short else math.inf
-            )
+            take_profit_price = math.nextafter(trade.open_rate, 0.0 if trade.is_short else math.inf)
         if not np.isfinite(take_profit_price) or take_profit_price <= 0:
             return None
         return float(take_profit_price), float(take_profit_distance)
@@ -1541,9 +1419,7 @@ class QuickAdapterV3(IStrategy):
             isinstance(previous_take_profit_entry, (tuple, list))
             and len(previous_take_profit_entry) == 2
         ):
-            candidate_exit_stage, candidate_take_profit_price = (
-                previous_take_profit_entry
-            )
+            candidate_exit_stage, candidate_take_profit_price = previous_take_profit_entry
             if isinstance(candidate_take_profit_price, bool):
                 candidate_take_profit_price = None
             else:
@@ -1574,9 +1450,7 @@ class QuickAdapterV3(IStrategy):
 
         price_history.append((exit_stage, take_profit_price))
         if len(price_history) > self._max_take_profit_history_size:
-            history["take_profit_price"] = price_history[
-                -self._max_take_profit_history_size :
-            ]
+            history["take_profit_price"] = price_history[-self._max_take_profit_history_size :]
         trade.set_custom_data("history", history)
 
     @staticmethod
@@ -1596,20 +1470,13 @@ class QuickAdapterV3(IStrategy):
             return None
 
     @staticmethod
-    def _is_candle_date_aligned(
-        candle_date: datetime.datetime | None, timeframe: str
-    ) -> bool:
+    def _is_candle_date_aligned(candle_date: datetime.datetime | None, timeframe: str) -> bool:
         normalized_candle_date = QuickAdapterV3._as_utc_candle_date(candle_date)
-        if (
-            normalized_candle_date is None
-            or not isinstance(timeframe, str)
-            or not timeframe
-        ):
+        if normalized_candle_date is None or not isinstance(timeframe, str) or not timeframe:
             return False
         try:
             return (
-                timeframe_to_prev_date(timeframe, normalized_candle_date)
-                == normalized_candle_date
+                timeframe_to_prev_date(timeframe, normalized_candle_date) == normalized_candle_date
             )
         except (OverflowError, TypeError, ValueError):
             return False
@@ -1672,9 +1539,7 @@ class QuickAdapterV3(IStrategy):
             or take_profit_distance <= 0
             or not is_finite_number(retracement_fraction)
             or not 0 < retracement_fraction <= 1
-            or not QuickAdapterV3._is_candle_date_aligned(
-                normalized_candle_date, timeframe
-            )
+            or not QuickAdapterV3._is_candle_date_aligned(normalized_candle_date, timeframe)
             or not isinstance(timeframe, str)
             or not timeframe
         ):
@@ -1682,12 +1547,10 @@ class QuickAdapterV3(IStrategy):
         retracement_distance = take_profit_distance * retracement_fraction
         if not np.isfinite(retracement_distance) or retracement_distance < 0:
             return None
-        retracement_distance = (
-            QuickAdapterV3._normalize_final_take_profit_retracement_distance(
-                best_rate=float(current_rate),
-                retracement_distance=float(retracement_distance),
-                trade_direction=trade_direction,
-            )
+        retracement_distance = QuickAdapterV3._normalize_final_take_profit_retracement_distance(
+            best_rate=float(current_rate),
+            retracement_distance=float(retracement_distance),
+            trade_direction=trade_direction,
         )
         if retracement_distance is None:
             return None
@@ -1703,11 +1566,7 @@ class QuickAdapterV3(IStrategy):
             "trigger_candle_date": None,
             "timeframe": timeframe,
         }
-        return (
-            state
-            if QuickAdapterV3._is_valid_final_take_profit_boundary(state)
-            else None
-        )
+        return state if QuickAdapterV3._is_valid_final_take_profit_boundary(state) else None
 
     @staticmethod
     def _normalize_final_take_profit_state(
@@ -1722,22 +1581,14 @@ class QuickAdapterV3(IStrategy):
     ) -> tuple[_FinalTakeProfitState | None, bool]:
         if state is None:
             return None, False
-        minimum_candle_date_utc = QuickAdapterV3._as_utc_candle_date(
-            minimum_candle_date
-        )
-        current_candle_date_utc = QuickAdapterV3._as_utc_candle_date(
-            current_candle_date
-        )
+        minimum_candle_date_utc = QuickAdapterV3._as_utc_candle_date(minimum_candle_date)
+        current_candle_date_utc = QuickAdapterV3._as_utc_candle_date(current_candle_date)
         if (
             minimum_candle_date_utc is None
             or current_candle_date_utc is None
             or minimum_candle_date_utc > current_candle_date_utc
-            or not QuickAdapterV3._is_candle_date_aligned(
-                minimum_candle_date_utc, timeframe
-            )
-            or not QuickAdapterV3._is_candle_date_aligned(
-                current_candle_date_utc, timeframe
-            )
+            or not QuickAdapterV3._is_candle_date_aligned(minimum_candle_date_utc, timeframe)
+            or not QuickAdapterV3._is_candle_date_aligned(current_candle_date_utc, timeframe)
             or not isinstance(state, dict)
             or type(state.get("version")) is not int
             or state.get("version")
@@ -1761,9 +1612,7 @@ class QuickAdapterV3(IStrategy):
         ):
             return None, True
         state_version = state["version"]
-        last_candle_date = QuickAdapterV3._as_utc_candle_date(
-            state.get("last_candle_date")
-        )
+        last_candle_date = QuickAdapterV3._as_utc_candle_date(state.get("last_candle_date"))
         boundary_candle_date = (
             last_candle_date
             if state_version == 1
@@ -1782,9 +1631,7 @@ class QuickAdapterV3(IStrategy):
         if (
             last_candle_date is None
             or boundary_candle_date is None
-            or not QuickAdapterV3._is_candle_date_aligned(
-                boundary_candle_date, timeframe
-            )
+            or not QuickAdapterV3._is_candle_date_aligned(boundary_candle_date, timeframe)
             or not QuickAdapterV3._is_candle_date_aligned(last_candle_date, timeframe)
             or boundary_candle_date < minimum_candle_date_utc
             or boundary_candle_date > last_candle_date
@@ -1793,9 +1640,7 @@ class QuickAdapterV3(IStrategy):
             or (
                 trigger_candle_date is not None
                 and (
-                    not QuickAdapterV3._is_candle_date_aligned(
-                        trigger_candle_date, timeframe
-                    )
+                    not QuickAdapterV3._is_candle_date_aligned(trigger_candle_date, timeframe)
                     or trigger_candle_date <= boundary_candle_date
                     or trigger_candle_date != last_candle_date
                 )
@@ -1820,12 +1665,10 @@ class QuickAdapterV3(IStrategy):
             or retracement_distance <= 0
         ):
             return None, True
-        retracement_distance = (
-            QuickAdapterV3._normalize_final_take_profit_retracement_distance(
-                best_rate=best_rate,
-                retracement_distance=retracement_distance,
-                trade_direction=trade_direction,
-            )
+        retracement_distance = QuickAdapterV3._normalize_final_take_profit_retracement_distance(
+            best_rate=best_rate,
+            retracement_distance=retracement_distance,
+            trade_direction=trade_direction,
         )
         if retracement_distance is None:
             return None, True
@@ -1839,9 +1682,7 @@ class QuickAdapterV3(IStrategy):
             "boundary_candle_date": boundary_candle_date.isoformat(),
             "last_candle_date": last_candle_date.isoformat(),
             "trigger_candle_date": (
-                trigger_candle_date.isoformat()
-                if trigger_candle_date is not None
-                else None
+                trigger_candle_date.isoformat() if trigger_candle_date is not None else None
             ),
             "timeframe": timeframe,
         }
@@ -1880,9 +1721,7 @@ class QuickAdapterV3(IStrategy):
     ) -> tuple[float, bool, bool]:
         boundary = QuickAdapterV3._final_take_profit_boundary(state)
         current_candle_date = QuickAdapterV3._as_utc_candle_date(candle_date)
-        previous_candle_date = QuickAdapterV3._as_utc_candle_date(
-            state["last_candle_date"]
-        )
+        previous_candle_date = QuickAdapterV3._as_utc_candle_date(state["last_candle_date"])
         if (
             not is_finite_number(current_rate)
             or current_rate <= 0
@@ -1932,14 +1771,14 @@ class QuickAdapterV3(IStrategy):
         current_time: datetime.datetime,
         current_rate: float,
         current_profit: float,
-        min_stake: Optional[float],
+        min_stake: float | None,
         max_stake: float,
         current_entry_rate: float,
         current_exit_rate: float,
         current_entry_profit: float,
         current_exit_profit: float,
         **kwargs,
-    ) -> Optional[float] | tuple[Optional[float], Optional[str]]:
+    ) -> float | tuple[float | None, str | None] | None:
         pair = trade.pair
         if trade.has_open_orders:
             return None
@@ -1948,22 +1787,16 @@ class QuickAdapterV3(IStrategy):
         if trade_exit_stage not in QuickAdapterV3.partial_exit_stages:
             return None
 
-        df, _ = self.dp.get_analyzed_dataframe(
-            pair=pair, timeframe=self.config.get("timeframe")
-        )
+        df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
         if df.empty:
             return None
 
-        trade_take_profit_target = self.get_take_profit_target(
-            df, trade, trade_exit_stage
-        )
+        trade_take_profit_target = self.get_take_profit_target(df, trade, trade_exit_stage)
         if trade_take_profit_target is None:
             return None
         trade_take_profit_price, _ = trade_take_profit_target
 
-        self.safe_append_trade_take_profit_price(
-            trade, trade_take_profit_price, trade_exit_stage
-        )
+        self.safe_append_trade_take_profit_price(trade, trade_take_profit_price, trade_exit_stage)
 
         trade_partial_exit = QuickAdapterV3.can_take_profit(
             trade, current_exit_rate, trade_take_profit_price
@@ -1978,9 +1811,7 @@ class QuickAdapterV3(IStrategy):
                 ),
             )
         if trade_partial_exit:
-            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][
-                1
-            ]
+            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][1]
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             if min_stake is not None and min_stake > 0:
                 current_position_value = trade.amount * current_exit_rate
@@ -1994,14 +1825,10 @@ class QuickAdapterV3(IStrategy):
                         current_exit_rate / current_entry_rate,
                         1.0 / (1.0 - abs(self.stoploss)),
                     )
-                min_remaining_position_value *= (
-                    1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
-                )
+                min_remaining_position_value *= 1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
                 if current_position_value <= min_remaining_position_value:
                     return None
-                remaining_position_value = current_position_value * (
-                    1 - trade_stake_percent
-                )
+                remaining_position_value = current_position_value * (1 - trade_stake_percent)
                 if remaining_position_value < min_remaining_position_value:
                     initial_trade_partial_stake_amount = trade_partial_stake_amount
                     trade_partial_stake_amount = trade.stake_amount * (
@@ -2026,9 +1853,9 @@ class QuickAdapterV3(IStrategy):
 
     @staticmethod
     def weighted_close(series: Series, weight: float = 2.0) -> float:
-        return float(
-            series.get("high") + series.get("low") + weight * series.get("close")
-        ) / (2.0 + weight)
+        return float(series.get("high") + series.get("low") + weight * series.get("close")) / (
+            2.0 + weight
+        )
 
     @staticmethod
     def _normalize_candle_idx(length: int, idx: int) -> int:
@@ -2043,9 +1870,7 @@ class QuickAdapterV3(IStrategy):
             idx = length + idx
         return min(max(0, idx), length - 1)
 
-    def _invalidate_pair_caches(
-        self, pair: str, df_signature: Optional[DfSignature] = None
-    ) -> None:
+    def _invalidate_pair_caches(self, pair: str, df_signature: DfSignature | None = None) -> None:
         if df_signature is None or self._cached_df_signature.get(pair) != df_signature:
             self._candle_deviation_cache = {
                 k: v for k, v in self._candle_deviation_cache.items() if k[0] != pair
@@ -2085,9 +1910,7 @@ class QuickAdapterV3(IStrategy):
         if label_natr_series is None or label_natr_series.empty:
             return np.nan
 
-        candle_idx = QuickAdapterV3._normalize_candle_idx(
-            len(label_natr_series), candle_idx
-        )
+        candle_idx = QuickAdapterV3._normalize_candle_idx(len(label_natr_series), candle_idx)
 
         label_natr_values = label_natr_series.iloc[: candle_idx + 1].to_numpy()
         if label_natr_values.size == 0:
@@ -2124,9 +1947,7 @@ class QuickAdapterV3(IStrategy):
             )
         candle_deviation = (
             candle_label_natr_value / 100.0
-        ) * self.get_label_natr_multiplier_fraction(
-            pair, natr_multiplier_fraction, df, candle_idx
-        )
+        ) * self.get_label_natr_multiplier_fraction(pair, natr_multiplier_fraction, df, candle_idx)
         self._candle_deviation_cache[cache_key] = candle_deviation
         return self._candle_deviation_cache[cache_key]
 
@@ -2157,9 +1978,7 @@ class QuickAdapterV3(IStrategy):
             min_natr_multiplier_fraction=min_natr_multiplier_fraction,
             max_natr_multiplier_fraction=max_natr_multiplier_fraction,
             candle_idx=candle_idx,
-            interpolation_direction=QuickAdapterV3._INTERPOLATION_DIRECTIONS[
-                0
-            ],  # "direct"
+            interpolation_direction=QuickAdapterV3._INTERPOLATION_DIRECTIONS[0],  # "direct"
         )
         if isna(current_deviation) or current_deviation <= 0:
             return np.nan
@@ -2176,22 +1995,16 @@ class QuickAdapterV3(IStrategy):
 
         if side == QuickAdapterV3._TRADE_LONG:
             base_price = (
-                QuickAdapterV3.weighted_close(candle)
-                if is_candle_bearish
-                else candle_close
+                QuickAdapterV3.weighted_close(candle) if is_candle_bearish else candle_close
             )
             candle_threshold = base_price * (1 + current_deviation)
         elif side == QuickAdapterV3._TRADE_SHORT:
             base_price = (
-                QuickAdapterV3.weighted_close(candle)
-                if is_candle_bullish
-                else candle_close
+                QuickAdapterV3.weighted_close(candle) if is_candle_bullish else candle_close
             )
             candle_threshold = base_price * (1 - current_deviation)
         else:
-            raise ValueError(
-                enum_error_message("side", side, QuickAdapterV3._TRADE_DIRECTIONS)
-            )
+            raise ValueError(enum_error_message("side", side, QuickAdapterV3._TRADE_DIRECTIONS))
         self._candle_threshold_cache[cache_key] = candle_threshold
         return self._candle_threshold_cache[cache_key]
 
@@ -2244,13 +2057,9 @@ class QuickAdapterV3(IStrategy):
         trade_direction = side
 
         max_lookback_period_candles = max(0, len(df) - 1)
-        lookback_period_candles = min(
-            lookback_period_candles, max_lookback_period_candles
-        )
+        lookback_period_candles = min(lookback_period_candles, max_lookback_period_candles)
         if not isinstance(decay_fraction, (int, float)):
-            logger.debug(
-                f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction type"
-            )
+            logger.debug(f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction type")
             return False
         if not (0.0 < decay_fraction <= 1.0):
             logger.debug(
@@ -2307,9 +2116,7 @@ class QuickAdapterV3(IStrategy):
                 max_natr_multiplier_fraction=decayed_max_natr_multiplier_fraction,
                 candle_idx=-(k + 1),
             )
-            if not isinstance(threshold_k, (int, float)) or not np.isfinite(
-                threshold_k
-            ):
+            if not isinstance(threshold_k, (int, float)) or not np.isfinite(threshold_k):
                 return unmeasurable_history_ok
 
             if (side == QuickAdapterV3._TRADE_LONG and not (close_k > threshold_k)) or (
@@ -2344,10 +2151,8 @@ class QuickAdapterV3(IStrategy):
         current_rate: float,
         current_profit: float,
         **kwargs,
-    ) -> Optional[str]:
-        df, _ = self.dp.get_analyzed_dataframe(
-            pair=pair, timeframe=self.config.get("timeframe")
-        )
+    ) -> str | None:
+        df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
         if df.empty:
             return None
 
@@ -2447,12 +2252,10 @@ class QuickAdapterV3(IStrategy):
             )
 
         if final_take_profit_state is not None:
-            boundary, trade_exit, state_changed = (
-                QuickAdapterV3._advance_final_take_profit_state(
-                    final_take_profit_state,
-                    current_rate=current_rate,
-                    candle_date=last_candle_date,
-                )
+            boundary, trade_exit, state_changed = QuickAdapterV3._advance_final_take_profit_state(
+                final_take_profit_state,
+                current_rate=current_rate,
+                candle_date=last_candle_date,
             )
             if state_normalized or state_changed:
                 trade.set_custom_data(
@@ -2472,24 +2275,17 @@ class QuickAdapterV3(IStrategy):
                 )
             if trade_exit:
                 return (
-                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
-                    f"{trade.trade_direction}_final"
+                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}{trade.trade_direction}_final"
                 )
             return None
 
-        trade_take_profit_target = self.get_take_profit_target(
-            df, trade, trade_exit_stage
-        )
+        trade_take_profit_target = self.get_take_profit_target(df, trade, trade_exit_stage)
         if trade_take_profit_target is None:
             return None
         trade_take_profit_price, trade_take_profit_distance = trade_take_profit_target
 
-        self.safe_append_trade_take_profit_price(
-            trade, trade_take_profit_price, trade_exit_stage
-        )
-        if not QuickAdapterV3.can_take_profit(
-            trade, current_rate, trade_take_profit_price
-        ):
+        self.safe_append_trade_take_profit_price(trade, trade_take_profit_price, trade_exit_stage)
+        if not QuickAdapterV3.can_take_profit(trade, current_rate, trade_take_profit_price):
             self.throttle_callback(
                 pair=pair,
                 current_time=current_time,
@@ -2537,7 +2333,7 @@ class QuickAdapterV3(IStrategy):
         rate: float,
         time_in_force: str,
         current_time: datetime.datetime,
-        entry_tag: Optional[str],
+        entry_tag: str | None,
         side: str,
         **kwargs,
     ) -> bool:
@@ -2557,33 +2353,27 @@ class QuickAdapterV3(IStrategy):
         max_open_trades_per_side = self.max_open_trades_per_side
         if max_open_trades_per_side >= 0:
             open_trades = Trade.get_open_trades()
-            trades_per_side = sum(
-                1 for trade in open_trades if trade.trade_direction == side
-            )
+            trades_per_side = sum(1 for trade in open_trades if trade.trade_direction == side)
             if trades_per_side >= max_open_trades_per_side:
                 return False
 
-        df, _ = self.dp.get_analyzed_dataframe(
-            pair=pair, timeframe=self.config.get("timeframe")
-        )
+        df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
         if df.empty:
-            logger.info(
-                f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_ENTRY}: dataframe is empty"
-            )
+            logger.info(f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_ENTRY}: dataframe is empty")
             return False
-        if self.reversal_confirmed(
-            df,
-            pair,
-            side,
-            QuickAdapterV3._ORDER_ENTRY,
-            rate,
-            self.reversal_confirmation["lookback_period_candles"],
-            self.reversal_confirmation["decay_fraction"],
-            self.reversal_confirmation["min_natr_multiplier_fraction"],
-            self.reversal_confirmation["max_natr_multiplier_fraction"],
-        ):
-            return True
-        return False
+        return bool(
+            self.reversal_confirmed(
+                df,
+                pair,
+                side,
+                QuickAdapterV3._ORDER_ENTRY,
+                rate,
+                self.reversal_confirmation["lookback_period_candles"],
+                self.reversal_confirmation["decay_fraction"],
+                self.reversal_confirmation["min_natr_multiplier_fraction"],
+                self.reversal_confirmation["max_natr_multiplier_fraction"],
+            )
+        )
 
     def is_short_allowed(self) -> bool:
         trading_mode = self.config.get("trading_mode")
@@ -2596,13 +2386,11 @@ class QuickAdapterV3(IStrategy):
             return False
         else:
             raise ValueError(
-                enum_error_message(
-                    "trading_mode", trading_mode, QuickAdapterV3._TRADING_MODES
-                )
+                enum_error_message("trading_mode", trading_mode, QuickAdapterV3._TRADING_MODES)
             )
 
     @cached_property
-    def _configured_leverage(self) -> Optional[float]:
+    def _configured_leverage(self) -> float | None:
         leverage = self.config.get("leverage")
         if leverage is None:
             return None
@@ -2614,9 +2402,7 @@ class QuickAdapterV3(IStrategy):
             return None
         leverage = float(leverage)
         if leverage < 1.0:
-            logger.warning(
-                f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0"
-            )
+            logger.warning(f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0")
         return leverage
 
     def leverage(
@@ -2626,7 +2412,7 @@ class QuickAdapterV3(IStrategy):
         current_rate: float,
         proposed_leverage: float,
         max_leverage: float,
-        entry_tag: Optional[str],
+        entry_tag: str | None,
         side: str,
         **kwargs: Any,
     ) -> float:
@@ -2657,8 +2443,8 @@ class QuickAdapterV3(IStrategy):
             if trade.open_date_utc > end_date:
                 continue
 
-            trade_annotation_line_start_date = (
-                self.get_trade_annotation_line_start_date(dataframe, trade)
+            trade_annotation_line_start_date = self.get_trade_annotation_line_start_date(
+                dataframe, trade
             )
 
             trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
@@ -2693,16 +2479,14 @@ class QuickAdapterV3(IStrategy):
             )
             final_take_profit_state = None
             if annotation_candle_date is not None:
-                final_take_profit_state, _ = (
-                    QuickAdapterV3._normalize_final_take_profit_state(
-                        raw_final_take_profit_state,
-                        exit_stage=final_exit_stage,
-                        trade_direction=trade.trade_direction,
-                        open_rate=trade.open_rate,
-                        timeframe=self.timeframe,
-                        minimum_candle_date=self.get_trade_entry_date(trade),
-                        current_candle_date=annotation_candle_date,
-                    )
+                final_take_profit_state, _ = QuickAdapterV3._normalize_final_take_profit_state(
+                    raw_final_take_profit_state,
+                    exit_stage=final_exit_stage,
+                    trade_direction=trade.trade_direction,
+                    open_rate=trade.open_rate,
+                    timeframe=self.timeframe,
+                    minimum_candle_date=self.get_trade_entry_date(trade),
+                    current_candle_date=annotation_candle_date,
                 )
 
             if final_take_profit_state is not None:
@@ -2712,10 +2496,8 @@ class QuickAdapterV3(IStrategy):
                 if boundary_candle_date is not None:
                     trail_start = max(boundary_candle_date, start_date)
                     if trail_start <= end_date:
-                        final_take_profit_price = (
-                            QuickAdapterV3._final_take_profit_boundary(
-                                final_take_profit_state
-                            )
+                        final_take_profit_price = QuickAdapterV3._final_take_profit_boundary(
+                            final_take_profit_state
                         )
                         annotations.append(
                             {
@@ -2757,7 +2539,7 @@ class QuickAdapterV3(IStrategy):
 
     def optuna_load_best_params(
         self, pair: str, namespace: OptunaNamespace
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         # Strategy consumes only output tunables (``label_period_candles``,
         # ``label_horizon_candles``, ``label_natr_multiplier``);
         # selection-metadata drift on cached label ``best_params`` is

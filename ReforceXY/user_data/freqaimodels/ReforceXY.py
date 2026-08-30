@@ -9,23 +9,16 @@ import stat
 import time
 import warnings
 from collections import defaultdict, deque
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Dict,
     Final,
-    List,
     Literal,
     NamedTuple,
-    Optional,
-    Tuple,
-    Type,
-    Union,
     assert_never,
     cast,
 )
@@ -103,9 +96,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     block = work[content]
     numeric = block.apply(pd.to_numeric, errors="coerce")
     is_numeric = numeric.notna()
-    informative = (block.notna() & is_numeric & numeric.ne(0)) | (
-        block.notna() & ~is_numeric
-    )
+    informative = (block.notna() & is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
     work = work.assign(
         _dp=date_pred.to_numpy(),
         _score=informative.sum(axis=1).to_numpy(),
@@ -116,9 +107,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         ["_dp", "_score", "_nonnull", "_order"], kind="stable"
     )
     kept = contested.drop_duplicates("_dp", keep="last")
-    return kept.drop(columns=["_dp", "_score", "_nonnull", "_order"]).reset_index(
-        drop=True
-    )
+    return kept.drop(columns=["_dp", "_score", "_nonnull", "_order"]).reset_index(drop=True)
 
 
 def _install_date_pred_dedup_patch() -> None:
@@ -141,13 +130,9 @@ def _install_date_pred_dedup_patch() -> None:
         self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
     ) -> None:
         original_set_initial(self, pair, pred_df, dataframe)
-        frame = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
-        )
+        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
         self.historic_predictions[pair] = frame
-        self.model_return_values[pair] = frame.tail(len(dataframe.index)).reset_index(
-            drop=True
-        )
+        self.model_return_values[pair] = frame.tail(len(dataframe.index)).reset_index(drop=True)
 
     def append_model_predictions(
         self,
@@ -158,13 +143,9 @@ def _install_date_pred_dedup_patch() -> None:
         strat_df: pd.DataFrame,
     ) -> None:
         original_append(self, pair, predictions, do_preds, dk, strat_df)
-        frame = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
-        )
+        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
         self.historic_predictions[pair] = frame
-        self.model_return_values[pair] = frame.tail(len(strat_df.index)).reset_index(
-            drop=True
-        )
+        self.model_return_values[pair] = frame.tail(len(strat_df.index)).reset_index(drop=True)
 
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
@@ -186,7 +167,7 @@ _install_date_pred_dedup_patch()
 
 ModelType = Literal["PPO", "RecurrentPPO", "MaskablePPO", "DQN", "QRDQN"]
 ScheduleTypeKnown = Literal["linear", "constant"]
-ScheduleType = Union[ScheduleTypeKnown, Literal["unknown"]]
+ScheduleType = ScheduleTypeKnown | Literal["unknown"]
 ExitPotentialMode = Literal[
     "canonical",
     "non_canonical",
@@ -198,7 +179,7 @@ TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "asinh", "c
 ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
 ActivationFunction = Literal["relu", "tanh", "elu", "leaky_relu"]
 OptimizerClassOptuna = Literal["adamw", "rmsprop"]
-OptimizerClass = Union[OptimizerClassOptuna, Literal["adam"]]
+OptimizerClass = OptimizerClassOptuna | Literal["adam"]
 NetArchSize = Literal["small", "medium", "large", "extra_large"]
 StorageBackend = Literal["sqlite", "file"]
 SamplerType = Literal["tpe", "auto"]
@@ -311,7 +292,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     DEFAULT_EFFICIENCY_MIN_RANGE_EPSILON: Final[float] = 1e-6
     DEFAULT_EFFICIENCY_MIN_RANGE_FRACTION: Final[float] = 0.01
 
-    _MODEL_TYPES: Final[Tuple[ModelType, ...]] = (
+    _MODEL_TYPES: Final[tuple[ModelType, ...]] = (
         "PPO",
         "RecurrentPPO",
         "MaskablePPO",
@@ -319,12 +300,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         "QRDQN",
     )
     _MODEL_TYPES_SET: Final[frozenset[ModelType]] = frozenset(_MODEL_TYPES)
-    _SCHEDULE_TYPES_KNOWN: Final[Tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
-    _SCHEDULE_TYPES: Final[Tuple[ScheduleType, ...]] = (
+    _SCHEDULE_TYPES_KNOWN: Final[tuple[ScheduleTypeKnown, ...]] = ("linear", "constant")
+    _SCHEDULE_TYPES: Final[tuple[ScheduleType, ...]] = (
         *_SCHEDULE_TYPES_KNOWN,
         "unknown",
     )
-    _EXIT_POTENTIAL_MODES: Final[Tuple[ExitPotentialMode, ...]] = (
+    _EXIT_POTENTIAL_MODES: Final[tuple[ExitPotentialMode, ...]] = (
         "canonical",
         "non_canonical",
         "progressive_release",
@@ -334,7 +315,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _EXIT_POTENTIAL_MODES_SET: Final[frozenset[ExitPotentialMode]] = frozenset(
         _EXIT_POTENTIAL_MODES
     )
-    _TRANSFORM_FUNCTIONS: Final[Tuple[TransformFunction, ...]] = (
+    _TRANSFORM_FUNCTIONS: Final[tuple[TransformFunction, ...]] = (
         "tanh",
         "softsign",
         "arctan",
@@ -342,44 +323,40 @@ class ReforceXY(BaseReinforcementLearningModel):
         "asinh",
         "clip",
     )
-    _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(
-        _TRANSFORM_FUNCTIONS
-    )
-    _EXIT_ATTENUATION_MODES: Final[Tuple[ExitAttenuationMode, ...]] = (
+    _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(_TRANSFORM_FUNCTIONS)
+    _EXIT_ATTENUATION_MODES: Final[tuple[ExitAttenuationMode, ...]] = (
         "legacy",
         "sqrt",
         "linear",
         "power",
         "half_life",
     )
-    _ACTIVATION_FUNCTIONS: Final[Tuple[ActivationFunction, ...]] = (
+    _ACTIVATION_FUNCTIONS: Final[tuple[ActivationFunction, ...]] = (
         "relu",
         "tanh",
         "elu",
         "leaky_relu",
     )
-    _OPTIMIZER_CLASSES_OPTUNA: Final[Tuple[OptimizerClassOptuna, ...]] = (
+    _OPTIMIZER_CLASSES_OPTUNA: Final[tuple[OptimizerClassOptuna, ...]] = (
         "adamw",
         "rmsprop",
     )
-    _OPTIMIZER_CLASSES: Final[Tuple[OptimizerClass, ...]] = (
+    _OPTIMIZER_CLASSES: Final[tuple[OptimizerClass, ...]] = (
         *_OPTIMIZER_CLASSES_OPTUNA,
         "adam",
     )
-    _NET_ARCH_SIZES: Final[Tuple[NetArchSize, ...]] = (
+    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
         "small",
         "medium",
         "large",
         "extra_large",
     )
-    _STORAGE_BACKENDS: Final[Tuple[StorageBackend, ...]] = ("sqlite", "file")
+    _STORAGE_BACKENDS: Final[tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLERS: Final[_Samplers] = _Samplers()
     _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
     _JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
     _JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
-    _JOURNAL_RECOVERABLE_ERRORS: Final[
-        type[Exception] | tuple[type[Exception], ...]
-    ] = (
+    _JOURNAL_RECOVERABLE_ERRORS: Final[type[Exception] | tuple[type[Exception], ...]] = (
         KeyError,
         AssertionError,
         TypeError,
@@ -389,53 +366,43 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TAG: Final[str] = "corrupt"
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
-    _PPO_N_STEPS: Final[Tuple[int, ...]] = (512, 1024, 2048, 4096)
+    _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
 
-    _action_masks_cache: ClassVar[Dict[Tuple[bool, float], NDArray[np.bool_]]] = {}
+    _action_masks_cache: ClassVar[dict[tuple[bool, float], NDArray[np.bool_]]] = {}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.pairs: List[str] = self.config.get("exchange", {}).get("pair_whitelist")
+        self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:
             raise ValueError(
                 "Config [global]: missing 'pair_whitelist' in exchange section "
                 "or StaticPairList method not defined in pairlists configuration"
             )
-        self.action_masking: bool = (
-            self.model_type == ReforceXY._MODEL_TYPES[2]
-        )  # "MaskablePPO"
+        self.action_masking: bool = self.model_type == ReforceXY._MODEL_TYPES[2]  # "MaskablePPO"
         self.rl_config.setdefault("action_masking", self.action_masking)
         self.inference_masking: bool = self.rl_config.get("inference_masking", True)
-        self.recurrent: bool = (
-            self.model_type == ReforceXY._MODEL_TYPES[1]
-        )  # "RecurrentPPO"
+        self.recurrent: bool = self.model_type == ReforceXY._MODEL_TYPES[1]  # "RecurrentPPO"
         self.lr_schedule: bool = self.rl_config.get("lr_schedule", False)
         self.cr_schedule: bool = self.rl_config.get("cr_schedule", False)
         self.n_envs: int = self.rl_config.get("n_envs", 1)
         self.n_eval_envs: int = self.rl_config.get("n_eval_envs", 1)
         self.multiprocessing: bool = self.rl_config.get("multiprocessing", False)
-        self.eval_multiprocessing: bool = self.rl_config.get(
-            "eval_multiprocessing", False
-        )
+        self.eval_multiprocessing: bool = self.rl_config.get("eval_multiprocessing", False)
         self.frame_stacking: int = self.rl_config.get("frame_stacking", 0)
         self.n_eval_steps: int = self.rl_config.get("n_eval_steps", 10_000)
         self.n_eval_episodes: int = self.rl_config.get("n_eval_episodes", 5)
-        self.max_no_improvement_evals: int = self.rl_config.get(
-            "max_no_improvement_evals", 0
-        )
+        self.max_no_improvement_evals: int = self.rl_config.get("max_no_improvement_evals", 0)
         self.min_evals: int = self.rl_config.get("min_evals", 0)
         self.rl_config.setdefault("tensorboard_throttle", 1)
         self.plot_new_best: bool = self.rl_config.get("plot_new_best", False)
         self.check_envs: bool = self.rl_config.get("check_envs", True)
-        self.progressbar_callback: Optional[ProgressBarCallback] = None
+        self.progressbar_callback: ProgressBarCallback | None = None
         # Optuna hyperopt
-        self.rl_config_optuna: Dict[str, Any] = self.freqai_info.get(
-            "rl_config_optuna", {}
-        )
+        self.rl_config_optuna: dict[str, Any] = self.freqai_info.get("rl_config_optuna", {})
         self.hyperopt: bool = (
             self.freqai_info.get("enabled", False)
             and self.rl_config_optuna.get("enabled", False)
@@ -443,19 +410,15 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         self.optuna_timeout_hours: float = self.rl_config_optuna.get("timeout_hours", 0)
         self.optuna_n_trials: int = self.rl_config_optuna.get("n_trials", 100)
-        self.optuna_n_startup_trials: int = self.rl_config_optuna.get(
-            "n_startup_trials", 15
-        )
-        self.optuna_purge_period: int = int(
-            self.rl_config_optuna.get("purge_period", 0)
-        )
-        self.optuna_eval_callback: Optional[MaskableTrialEvalCallback] = None
-        self._model_params_cache: Optional[Dict[str, Any]] = None
-        self._lstm_states_cache: Dict[
+        self.optuna_n_startup_trials: int = self.rl_config_optuna.get("n_startup_trials", 15)
+        self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
+        self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
+        self._model_params_cache: dict[str, Any] | None = None
+        self._lstm_states_cache: dict[
             str,
-            Tuple[
+            tuple[
                 int,
-                Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]],
+                tuple[NDArray[np.float32], NDArray[np.float32]] | None,
                 NDArray[np.bool_],
             ],
         ] = {}
@@ -467,7 +430,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         Configure GPU memory fraction limit from model_training_parameters.
         Called after config validation, before any CUDA operations.
         """
-        gpu_memory_fraction: Optional[float] = self.model_training_parameters.get(
+        gpu_memory_fraction: float | None = self.model_training_parameters.get(
             "gpu_memory_fraction"
         )
         if gpu_memory_fraction is None:
@@ -550,9 +513,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning(
-                "Config [global]: n_envs=%r invalid; defaulting to 1", self.n_envs
-            )
+            logger.warning("Config [global]: n_envs=%r invalid; defaulting to 1", self.n_envs)
             self.n_envs = 1
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
@@ -600,19 +561,13 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.n_eval_episodes,
             )
             self.n_eval_episodes = 5
-        if (
-            not isinstance(self.optuna_purge_period, int)
-            or self.optuna_purge_period < 0
-        ):
+        if not isinstance(self.optuna_purge_period, int) or self.optuna_purge_period < 0:
             logger.warning(
                 "Config [global]: purge_period=%r invalid; defaulting to 0",
                 self.optuna_purge_period,
             )
             self.optuna_purge_period = 0
-        if (
-            self.rl_config_optuna.get("continuous", False)
-            and self.optuna_purge_period > 0
-        ):
+        if self.rl_config_optuna.get("continuous", False) and self.optuna_purge_period > 0:
             logger.warning(
                 "Config [global]: purge_period has no effect when continuous=True; defaulting to 0"
             )
@@ -643,8 +598,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
 
     def pack_env_dict(
-        self, pair: str, model_params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, pair: str, model_params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         env_info = super().pack_env_dict(pair)
 
         config = env_info.setdefault("config", {})
@@ -652,15 +607,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         rl_cfg = freqai_cfg.setdefault("rl_config", {})
         model_reward_parameters = rl_cfg.setdefault("model_reward_parameters", {})
 
-        gamma: Optional[float] = None
+        gamma: float | None = None
 
         if model_params and isinstance(model_params.get("gamma"), (int, float)):
             gamma = float(model_params.get("gamma"))
         elif self.hyperopt:
             best_trial_params = self.load_best_trial_params(pair)
-            if best_trial_params and isinstance(
-                best_trial_params.get("gamma"), (int, float)
-            ):
+            if best_trial_params and isinstance(best_trial_params.get("gamma"), (int, float)):
                 gamma = float(best_trial_params.get("gamma"))
 
         if (
@@ -678,15 +631,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         if gamma is not None:
             model_reward_parameters["potential_gamma"] = gamma
         else:
-            logger.warning(
-                "Env [%s]: no valid discount gamma resolved for environment", pair
-            )
+            logger.warning("Env [%s]: no valid discount gamma resolved for environment", pair)
 
         return env_info
 
     def set_train_and_eval_environments(
         self,
-        data_dictionary: Dict[str, DataFrame],
+        data_dictionary: dict[str, DataFrame],
         prices_train: DataFrame,
         prices_test: DataFrame,
         dk: FreqaiDataKitchen,
@@ -744,14 +695,14 @@ class ReforceXY(BaseReinforcementLearningModel):
             env_info=env_dict,
         )
 
-    def get_model_params(self) -> Dict[str, Any]:
+    def get_model_params(self) -> dict[str, Any]:
         """
         Get model parameters
         """
         if self._model_params_cache is not None:
             return copy.deepcopy(self._model_params_cache)
 
-        model_params: Dict[str, Any] = copy.deepcopy(self.model_training_parameters)
+        model_params: dict[str, Any] = copy.deepcopy(self.model_training_parameters)
 
         model_params.setdefault("seed", 42)
         model_params.setdefault("gamma", 0.95)
@@ -761,7 +712,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             if isinstance(lr, (int, float)):
                 lr = float(lr)
                 model_params["learning_rate"] = get_schedule(
-                    cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), lr
+                    cast("ScheduleTypeKnown", ReforceXY._SCHEDULE_TYPES[0]), lr
                 )
                 logger.info(
                     "Config [global]: learning rate linear schedule enabled, initial=%.6f",
@@ -769,16 +720,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
 
         # "PPO"
-        if (
-            not self.hyperopt
-            and ReforceXY._MODEL_TYPES[0] in self.model_type
-            and self.cr_schedule
-        ):
+        if not self.hyperopt and ReforceXY._MODEL_TYPES[0] in self.model_type and self.cr_schedule:
             cr = model_params.get("clip_range", 0.2)
             if isinstance(cr, (int, float)):
                 cr = float(cr)
                 model_params["clip_range"] = get_schedule(
-                    cast(ScheduleTypeKnown, ReforceXY._SCHEDULE_TYPES[0]), cr
+                    cast("ScheduleTypeKnown", ReforceXY._SCHEDULE_TYPES[0]), cr
                 )
                 logger.info(
                     "Config [global]: clip range linear schedule enabled, initial=%.2f",
@@ -797,12 +744,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         if not model_params.get("policy_kwargs"):
             model_params["policy_kwargs"] = {}
 
-        default_net_arch: List[int] = [128, 128]
-        net_arch: Union[
-            List[int],
-            Dict[str, List[int]],
-            NetArchSize,
-        ] = model_params.get("policy_kwargs", {}).get("net_arch", default_net_arch)
+        default_net_arch: list[int] = [128, 128]
+        net_arch: list[int] | dict[str, list[int]] | NetArchSize = model_params.get(
+            "policy_kwargs", {}
+        ).get("net_arch", default_net_arch)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
@@ -810,7 +755,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if net_arch in ReforceXY._NET_ARCH_SIZES:
                     model_params["policy_kwargs"]["net_arch"] = get_net_arch(
                         self.model_type,
-                        cast(NetArchSize, net_arch),
+                        cast("NetArchSize", net_arch),
                     )
                 else:
                     logger.warning(
@@ -830,14 +775,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 }
             elif isinstance(net_arch, dict):
                 pi = (
-                    net_arch.get("pi")
-                    if isinstance(net_arch.get("pi"), list)
-                    else default_net_arch
+                    net_arch.get("pi") if isinstance(net_arch.get("pi"), list) else default_net_arch
                 )
                 vf = (
-                    net_arch.get("vf")
-                    if isinstance(net_arch.get("vf"), list)
-                    else default_net_arch
+                    net_arch.get("vf") if isinstance(net_arch.get("vf"), list) else default_net_arch
                 )
                 model_params["policy_kwargs"]["net_arch"] = {"pi": pi, "vf": vf}
             else:
@@ -856,7 +797,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if net_arch in ReforceXY._NET_ARCH_SIZES:
                     model_params["policy_kwargs"]["net_arch"] = get_net_arch(
                         self.model_type,
-                        cast(NetArchSize, net_arch),
+                        cast("NetArchSize", net_arch),
                     )
                 else:
                     logger.warning(
@@ -898,7 +839,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         total_timesteps: int,
         hyperopt: bool = False,
         hyperopt_reduction_factor: float = _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR,
-        model_params: Optional[Dict[str, Any]] = None,
+        model_params: dict[str, Any] | None = None,
     ) -> int:
         """Calculate evaluation frequency.
 
@@ -921,7 +862,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            eval_freq: Optional[int] = None
+            eval_freq: int | None = None
             if model_params:
                 n_steps = model_params.get("n_steps")
                 if isinstance(n_steps, int) and n_steps > 0:
@@ -939,7 +880,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             eval_freq = max(1, (self.n_eval_steps + n_envs - 1) // n_envs)
 
         if hyperopt and hyperopt_reduction_factor > 1.0:
-            eval_freq = max(1, int(round(eval_freq / hyperopt_reduction_factor)))
+            eval_freq = max(1, round(eval_freq / hyperopt_reduction_factor))
 
         return min(eval_freq, max_n_calls)
 
@@ -948,12 +889,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         eval_env: BaseEnvironment,
         eval_freq: int,
         data_path: str,
-        trial: Optional[Trial] = None,
-    ) -> List[BaseCallback]:
+        trial: Trial | None = None,
+    ) -> list[BaseCallback]:
         """
         Get the model specific callbacks
         """
-        callbacks: List[BaseCallback] = []
+        callbacks: list[BaseCallback] = []
         no_improvement_callback = None
         rollout_plot_callback = None
         verbose = self.get_model_params().get("verbose", 0)
@@ -1010,9 +951,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             callbacks.append(self.optuna_eval_callback)
         return callbacks
 
-    def fit(
-        self, data_dictionary: Dict[str, Any], dk: FreqaiDataKitchen, **kwargs
-    ) -> Any:
+    def fit(self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs) -> Any:
         """
         Model fitting method
         :param data_dictionary: dict = common data dictionary containing all train/test features/labels/weights.
@@ -1023,15 +962,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         train_df = data_dictionary.get("train_features")
         train_timesteps = len(train_df)
         if train_timesteps <= 0:
-            raise ValueError(
-                f"Training [{dk.pair}]: train_features dataframe has zero length"
-            )
+            raise ValueError(f"Training [{dk.pair}]: train_features dataframe has zero length")
         test_df = data_dictionary.get("test_features")
         eval_timesteps = len(test_df)
         train_cycles = max(1, int(self.rl_config.get("train_cycles", 25)))
-        total_timesteps = ReforceXY._ceil_to_multiple(
-            train_timesteps * train_cycles, self.n_envs
-        )
+        total_timesteps = ReforceXY._ceil_to_multiple(train_timesteps * train_cycles, self.n_envs)
         train_days = steps_to_days(train_timesteps, self.config.get("timeframe"))
         eval_days = steps_to_days(eval_timesteps, self.config.get("timeframe"))
         total_days = steps_to_days(total_timesteps, self.config.get("timeframe"))
@@ -1095,9 +1030,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
             if n_steps > 0:
                 rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(
-                    total_timesteps, rollout
-                )
+                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
                 if aligned_total_timesteps != total_timesteps:
                     total_timesteps = aligned_total_timesteps
                     logger.info(
@@ -1109,9 +1042,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     )
 
         if self.activate_tensorboard:
-            tensorboard_log_path = Path(
-                self.full_path / "tensorboard" / Path(dk.data_path).name
-            )
+            tensorboard_log_path = Path(self.full_path / "tensorboard" / Path(dk.data_path).name)
         else:
             tensorboard_log_path = None
 
@@ -1119,9 +1050,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         prices_train, prices_test = self.build_ohlc_price_dataframes(
             dk.data_dictionary, dk.pair, dk
         )
-        self.set_train_and_eval_environments(
-            dk.data_dictionary, prices_train, prices_test, dk
-        )
+        self.set_train_and_eval_environments(dk.data_dictionary, prices_train, prices_test, dk)
 
         model = self.get_init_model(dk.pair)
         if model is not None:
@@ -1165,9 +1094,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if model_filepath.is_file():
             logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
-                best_model = self.MODELCLASS.load(
-                    dk.data_path / f"{model_filename}_model"
-                )
+                best_model = self.MODELCLASS.load(dk.data_path / f"{model_filename}_model")
                 return best_model
             except Exception as e:
                 logger.error(
@@ -1201,9 +1128,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             position, _, trade_duration = self.get_state_info(dk.pair)
             virtual_position = ReforceXY._normalize_position(position)
             virtual_trade_duration = trade_duration
-        np_dataframe: NDArray[np.float32] = dataframe.to_numpy(
-            dtype=np.float32, copy=False
-        )
+        np_dataframe: NDArray[np.float32] = dataframe.to_numpy(dtype=np.float32, copy=False)
         n = np_dataframe.shape[0]
         window_size: int = self.CONV_WIDTH
         frame_stacking: int = self.frame_stacking
@@ -1241,7 +1166,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         frame_buffer: deque[np.float32] = deque(
             maxlen=frame_stacking if frame_stacking_enabled else None
         )
-        zero_frame: Optional[NDArray[np.float32]] = None
+        zero_frame: NDArray[np.float32] | None = None
         model_id = id(model)
         lstm_states_cache_valid = (
             self.live
@@ -1265,16 +1190,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.live,
                 self.recurrent,
             )
-            lstm_states: Optional[Tuple[NDArray[np.float32], NDArray[np.float32]]] = (
-                None
-            )
+            lstm_states: tuple[NDArray[np.float32], NDArray[np.float32]] | None = None
             episode_start = np.array([True], dtype=bool)
 
         def _predict(start_idx: int) -> int:
             nonlocal zero_frame, lstm_states, episode_start
             end_idx: int = start_idx + window_size
             np_observation = np_dataframe[start_idx:end_idx, :]
-            action_masks_param: Dict[str, Any] = {}
+            action_masks_param: dict[str, Any] = {}
 
             if add_state_info:
                 if self.live:
@@ -1356,9 +1279,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     dk.pair,
                     observations.shape,
                 )
-                action, _ = model.predict(
-                    observations, deterministic=True, **action_masks_param
-                )
+                action, _ = model.predict(observations, deterministic=True, **action_masks_param)
                 action = int(action.item())
                 logger.debug(
                     "Predict [%s]: predicted action=%s (%d)",
@@ -1369,7 +1290,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
             return action
 
-        predicted_actions: List[int] = []
+        predicted_actions: list[int] = []
         for start_idx in range(0, n - window_size + 1):
             action = _predict(start_idx)
             predicted_actions.append(action)
@@ -1388,7 +1309,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if self.live and self.recurrent:
             self._lstm_states_cache[dk.pair] = (model_id, lstm_states, episode_start)
 
-        return DataFrame({label: actions_df["action"] for label in dk.label_list})
+        return DataFrame(dict.fromkeys(dk.label_list, actions_df["action"]))
 
     @staticmethod
     def delete_study(study_name: str, storage: BaseStorage) -> None:
@@ -1411,15 +1332,15 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _optuna_retrain_counters_path(self) -> Path:
         return Path(self.full_path / "optuna-retrain-counters.json")
 
-    def _load_optuna_retrain_counters(self, pair: str) -> Dict[str, int]:
+    def _load_optuna_retrain_counters(self, pair: str) -> dict[str, int]:
         counters_path = self._optuna_retrain_counters_path()
         if not counters_path.is_file():
             return {}
         try:
             with counters_path.open("r", encoding="utf-8") as read_file:
-                data: Dict[str, int] = json.load(read_file)
+                data: dict[str, int] = json.load(read_file)
             if isinstance(data, dict):
-                result: Dict[str, int] = {}
+                result: dict[str, int] = {}
                 for key, value in data.items():
                     if isinstance(key, str) and isinstance(value, int):
                         result[key] = value
@@ -1434,9 +1355,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         return {}
 
-    def _save_optuna_retrain_counters(
-        self, counters: Dict[str, int], pair: str
-    ) -> None:
+    def _save_optuna_retrain_counters(self, counters: dict[str, int], pair: str) -> None:
         counters_path = self._optuna_retrain_counters_path()
         try:
             with counters_path.open("w", encoding="utf-8") as write_file:
@@ -1498,10 +1417,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         op_code = record.get(ReforceXY._JOURNAL_OP_CODE_KEY)
         if op_code is None and fail_open_missing_op_code:
             return False
-        return (
-            type(op_code) is not int
-            or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
-        )
+        return type(op_code) is not int or op_code not in ReforceXY._JOURNAL_OPERATION_CODES
 
     @staticmethod
     def _create_recovered_journal_storage(
@@ -1532,9 +1448,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _quarantine_journal(journal_path: Path, cause: Exception) -> Path | None:
         if not journal_path.exists():
             return None
-        quarantine_path = ReforceXY._quarantine_path(
-            journal_path, datetime.now(timezone.utc)
-        )
+        quarantine_path = ReforceXY._quarantine_path(journal_path, datetime.now(timezone.utc))
         journal_path.rename(quarantine_path)
         logger.warning(
             "Optuna journal %s corrupt (%r); quarantined to %s; resuming with fresh journal",
@@ -1591,7 +1505,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         return storage
 
     @staticmethod
-    def study_has_best_trial(study: Optional[Study]) -> bool:
+    def study_has_best_trial(study: Study | None) -> bool:
         if study is None:
             return False
         try:
@@ -1607,7 +1521,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Hyperopt [global]: unsupported sampler '{sampler_value}'. "
                 f"Valid: {', '.join(ReforceXY._SAMPLERS)}"
             )
-        sampler = cast(SamplerType, sampler_value)
+        sampler = cast("SamplerType", sampler_value)
         seed = self.rl_config_optuna.get("seed", 42)
         match sampler:
             case ReforceXY._SAMPLERS.tpe:
@@ -1627,16 +1541,12 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Hyperopt [global]: using AutoSampler (seed=%d)",
                     seed,
                 )
-                return optunahub.load_module("samplers/auto_sampler").AutoSampler(
-                    seed=seed
-                )
+                return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
             case _:
                 assert_never(sampler)
 
     @staticmethod
-    def create_pruner(
-        min_resource: int, max_resource: int, reduction_factor: int
-    ) -> BasePruner:
+    def create_pruner(min_resource: int, max_resource: int, reduction_factor: int) -> BasePruner:
         logger.info(
             "Hyperopt [global]: using HyperbandPruner (min_resource=%d, max_resource=%d, reduction_factor=%d)",
             min_resource,
@@ -1654,15 +1564,12 @@ class ReforceXY(BaseReinforcementLearningModel):
         return ((value + multiple - 1) // multiple) * multiple
 
     @staticmethod
-    def _ppo_resources(
-        total_timesteps: int, n_envs: int, reduction_factor: int
-    ) -> Tuple[int, int]:
+    def _ppo_resources(total_timesteps: int, n_envs: int, reduction_factor: int) -> tuple[int, int]:
         min_n_steps = ReforceXY._PPO_N_STEPS_MIN
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
         min_resource = max(
             2 * reduction_factor,
-            round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR)
-            * n_envs,
+            round(min_n_steps / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR) * n_envs,
         )
         rollout = max_n_steps * n_envs
         return (
@@ -1670,9 +1577,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             max(min_resource, ReforceXY._ceil_to_multiple(total_timesteps, rollout)),
         )
 
-    def optimize(
-        self, dk: FreqaiDataKitchen, total_timesteps: int
-    ) -> Optional[Dict[str, Any]]:
+    def optimize(self, dk: FreqaiDataKitchen, total_timesteps: int) -> dict[str, Any] | None:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
         """
@@ -1683,8 +1588,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         pair_purge_count = self._increment_optuna_retrain_counter(dk.pair)
         pair_purge_triggered = (
-            self.optuna_purge_period > 0
-            and pair_purge_count % self.optuna_purge_period == 0
+            self.optuna_purge_period > 0 and pair_purge_count % self.optuna_purge_period == 0
         )
 
         if continuous or pair_purge_triggered:
@@ -1721,9 +1625,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         study: Study = create_study(
             study_name=study_name,
             sampler=self.create_sampler(),
-            pruner=ReforceXY.create_pruner(
-                min_resource, max_resource, reduction_factor
-            ),
+            pruner=ReforceXY.create_pruner(min_resource, max_resource, reduction_factor),
             direction=direction,
             storage=storage,
             load_if_exists=load_if_exists,
@@ -1838,14 +1740,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
 
     def _best_trial_params_path(self, pair: str) -> Path:
-        return (
-            self.full_path
-            / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
-        )
+        return self.full_path / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
 
     def _resolve_legacy_best_trial_params(
         self, pair: str, best_trial_params_path: Path
-    ) -> Optional[Path]:
+    ) -> Path | None:
         base = pair.split("/")[0]
         legacy_path = self.full_path / f"hyperopt-best-params-{base}.json"
         if (
@@ -1854,9 +1753,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or not legacy_path.is_file()
         ):
             return None
-        base_pair_count = sum(
-            1 for configured in self.pairs if configured.split("/")[0] == base
-        )
+        base_pair_count = sum(1 for configured in self.pairs if configured.split("/")[0] == base)
         if base_pair_count == 1:
             return legacy_path
         logger.warning(
@@ -1892,9 +1789,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return
         try:
             if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
-                raise OSError(
-                    f"Hyperopt best params lock {lock_path} must be a regular file"
-                )
+                raise OSError(f"Hyperopt best params lock {lock_path} must be a regular file")
             fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
             yield
         finally:
@@ -1904,14 +1799,13 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _reject_best_trial_params_symlink(best_trial_params_path: Path) -> None:
         if best_trial_params_path.is_symlink():
             raise OSError(
-                f"Hyperopt best params path {best_trial_params_path} "
-                "must not be a symlink"
+                f"Hyperopt best params path {best_trial_params_path} must not be a symlink"
             )
 
     @staticmethod
     def _quarantine_corrupt_best_trial_params(
         best_trial_params_path: Path, pair: str, cause: Exception
-    ) -> Optional[Path]:
+    ) -> Path | None:
         if not best_trial_params_path.exists():
             return None
         quarantine_path = ReforceXY._quarantine_path(
@@ -1938,17 +1832,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         return quarantine_path
 
-    def save_best_trial_params(
-        self, best_trial_params: Dict[str, Any], pair: str
-    ) -> None:
+    def save_best_trial_params(self, best_trial_params: dict[str, Any], pair: str) -> None:
         """
         Save the best trial hyperparameters found during hyperparameter optimization
         """
         best_trial_params_path = self._best_trial_params_path(pair)
-        logger.info(
-            "Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path
-        )
-        temporary_path: Optional[Path] = None
+        logger.info("Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path)
+        temporary_path: Path | None = None
         try:
             with self._locked_best_trial_params(best_trial_params_path, exclusive=True):
                 self._reject_best_trial_params_symlink(best_trial_params_path)
@@ -1981,18 +1871,15 @@ class ReforceXY(BaseReinforcementLearningModel):
                                 os.fchown(
                                     write_file.fileno(),
                                     existing_metadata.st_uid
-                                    if temporary_metadata.st_uid
-                                    != existing_metadata.st_uid
+                                    if temporary_metadata.st_uid != existing_metadata.st_uid
                                     else -1,
                                     existing_metadata.st_gid
-                                    if temporary_metadata.st_gid
-                                    != existing_metadata.st_gid
+                                    if temporary_metadata.st_gid != existing_metadata.st_gid
                                     else -1,
                                 )
                             except PermissionError as chown_error:
                                 logger.debug(
-                                    "Hyperopt [%s]: best params ownership "
-                                    "preservation skipped: %r",
+                                    "Hyperopt [%s]: best params ownership preservation skipped: %r",
                                     pair,
                                     chown_error,
                                 )
@@ -2003,7 +1890,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     json.dump(best_trial_params, write_file, indent=4)
                     write_file.flush()
                     os.fsync(write_file.fileno())
-                os.replace(temporary_path, best_trial_params_path)
+                temporary_path.replace(best_trial_params_path)
                 temporary_path = None
         except BaseException as error:
             if temporary_path is not None:
@@ -2011,8 +1898,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     temporary_path.unlink(missing_ok=True)
                 except OSError as cleanup_error:
                     logger.error(
-                        "Hyperopt [%s]: best params temporary file %s cleanup "
-                        "failed: %r",
+                        "Hyperopt [%s]: best params temporary file %s cleanup failed: %r",
                         pair,
                         temporary_path.name,
                         cleanup_error,
@@ -2028,7 +1914,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
             raise
 
-    def load_best_trial_params(self, pair: str) -> Optional[Dict[str, Any]]:
+    def load_best_trial_params(self, pair: str) -> dict[str, Any] | None:
         """
         Load the best trial hyperparameters found and saved during hyperparameter optimization
         """
@@ -2039,9 +1925,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
             self._reject_best_trial_params_symlink(best_trial_params_path)
             if not best_trial_params_path.is_file():
-                legacy_path = self._resolve_legacy_best_trial_params(
-                    pair, best_trial_params_path
-                )
+                legacy_path = self._resolve_legacy_best_trial_params(pair, best_trial_params_path)
                 if legacy_path is None:
                     return None
                 best_trial_params_path = legacy_path
@@ -2061,9 +1945,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if not best_trial_params_path.is_file():
                     return None
                 try:
-                    with best_trial_params_path.open(
-                        "r", encoding="utf-8"
-                    ) as read_file:
+                    with best_trial_params_path.open("r", encoding="utf-8") as read_file:
                         best_trial_params = json.load(read_file)
                 except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
                     quarantined = self._quarantine_corrupt_best_trial_params(
@@ -2077,21 +1959,16 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _get_train_and_eval_environments(
         self,
         dk: FreqaiDataKitchen,
-        train_df: Optional[DataFrame] = None,
-        test_df: Optional[DataFrame] = None,
-        prices_train: Optional[DataFrame] = None,
-        prices_test: Optional[DataFrame] = None,
-        seed: Optional[int] = None,
-        env_info: Optional[Dict[str, Any]] = None,
-        trial: Optional[Trial] = None,
-        model_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[VecEnv, VecEnv]:
-        if (
-            train_df is None
-            or test_df is None
-            or prices_train is None
-            or prices_test is None
-        ):
+        train_df: DataFrame | None = None,
+        test_df: DataFrame | None = None,
+        prices_train: DataFrame | None = None,
+        prices_test: DataFrame | None = None,
+        seed: int | None = None,
+        env_info: dict[str, Any] | None = None,
+        trial: Trial | None = None,
+        model_params: dict[str, Any] | None = None,
+    ) -> tuple[VecEnv, VecEnv]:
+        if train_df is None or test_df is None or prices_train is None or prices_test is None:
             train_df = dk.data_dictionary["train_features"]
             test_df = dk.data_dictionary["test_features"]
             prices_train, prices_test = self.build_ohlc_price_dataframes(
@@ -2101,7 +1978,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         if trial is not None:
             seed += trial.number
         set_random_seed(seed)
-        env_info: Dict[str, Any] = (
+        env_info: dict[str, Any] = (
             self.pack_env_dict(dk.pair, model_params) if env_info is None else env_info
         )
         env_prefix = f"trial_{trial.number}_" if trial is not None else ""
@@ -2149,7 +2026,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         return train_env, eval_env
 
-    def get_optuna_params(self, trial: Trial) -> Dict[str, Any]:
+    def get_optuna_params(self, trial: Trial) -> dict[str, Any]:
         # "RecurrentPPO"
         if ReforceXY._MODEL_TYPES[1] in self.model_type:
             return sample_params_recurrentppo(trial)
@@ -2167,9 +2044,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Hyperopt [{trial.study.study_name}]: model type '{self.model_type}' not supported"
             )
 
-    def objective(
-        self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int
-    ) -> float:
+    def objective(self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int) -> float:
         """
         Objective function for Optuna trials hyperparameter optimization
         """
@@ -2213,18 +2088,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
         params["seed"] = params.get("seed", 42) + trial.number
-        logger.info(
-            "Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params
-        )
+        logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
 
         # "PPO"
         if ReforceXY._MODEL_TYPES[0] in self.model_type:
             n_steps = params.get("n_steps", 0)
             if n_steps > 0:
                 rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(
-                    total_timesteps, rollout
-                )
+                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
                 if aligned_total_timesteps != total_timesteps:
                     total_timesteps = aligned_total_timesteps
 
@@ -2252,9 +2123,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             **params,
         )
 
-        eval_freq = self.get_eval_freq(
-            total_timesteps, hyperopt=True, model_params=params
-        )
+        eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
         callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
         try:
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
@@ -2310,9 +2179,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             del model, train_env, eval_env
 
         if nan_encountered:
-            raise TrialPruned(
-                f"Hyperopt [{study_name}]: NaN encountered during training"
-            )
+            raise TrialPruned(f"Hyperopt [{study_name}]: NaN encountered during training")
 
         if self.optuna_eval_callback.is_pruned:
             raise TrialPruned(f"Hyperopt [{study_name}]: pruned by eval callback")
@@ -2336,13 +2203,13 @@ class ReforceXY(BaseReinforcementLearningModel):
 
 
 def make_env(
-    MyRLEnv: Type[BaseEnvironment],
+    MyRLEnv: type[BaseEnvironment],
     env_id: str,
     rank: int,
     seed: int,
     df: DataFrame,
     price: DataFrame,
-    env_info: Dict[str, Any],
+    env_info: dict[str, Any],
 ) -> Callable[[], BaseEnvironment]:
     """
     Utility function for multiprocessed env.
@@ -2364,7 +2231,7 @@ def make_env(
     return _init
 
 
-MyRLEnv: Type[BaseEnvironment]
+MyRLEnv: type[BaseEnvironment]
 
 
 class MyRLEnv(Base5ActionRLEnv):
@@ -2376,7 +2243,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self.action_masking: bool = self.rl_config.get("action_masking", False)
 
         # === INTERNAL STATE ===
-        self._last_closed_position: Optional[Positions] = None
+        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
         self._min_unrealized_profit: float = np.inf
@@ -2406,14 +2273,11 @@ class MyRLEnv(Base5ActionRLEnv):
         self.max_idle_duration_candles: int = int(
             model_reward_parameters.get(
                 "max_idle_duration_candles",
-                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER
-                * self.max_trade_duration_candles,
+                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * self.max_trade_duration_candles,
             )
         )
         # === PBRS COMMON PARAMETERS ===
-        self._potential_gamma = float(
-            model_reward_parameters.get("potential_gamma", 0.95)
-        )
+        self._potential_gamma = float(model_reward_parameters.get("potential_gamma", 0.95))
         if np.isclose(self._potential_gamma, 0.0):
             logger.warning(
                 "PBRS [%s]: potential_gamma=0 detected; PBRS delta will be -Φ(s) "
@@ -2441,9 +2305,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 ReforceXY._EXIT_POTENTIAL_MODES[0],
                 ", ".join(ReforceXY._EXIT_POTENTIAL_MODES),
             )
-            self._exit_potential_mode = ReforceXY._EXIT_POTENTIAL_MODES[
-                0
-            ]  # "canonical"
+            self._exit_potential_mode = ReforceXY._EXIT_POTENTIAL_MODES[0]  # "canonical"
         self._exit_potential_decay: float = float(
             model_reward_parameters.get(
                 "exit_potential_decay", ReforceXY.DEFAULT_EXIT_POTENTIAL_DECAY
@@ -2466,13 +2328,13 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._entry_additive_transform_pnl: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "entry_additive_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._entry_additive_transform_duration: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "entry_additive_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
@@ -2494,13 +2356,13 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._hold_potential_transform_pnl: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "hold_potential_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._hold_potential_transform_duration: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "hold_potential_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
@@ -2517,18 +2379,16 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         self._exit_additive_gain: float = float(
-            model_reward_parameters.get(
-                "exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN
-            )
+            model_reward_parameters.get("exit_additive_gain", ReforceXY.DEFAULT_EXIT_ADDITIVE_GAIN)
         )
         self._exit_additive_transform_pnl: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "exit_additive_transform_pnl", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
         )
         self._exit_additive_transform_duration: TransformFunction = cast(
-            TransformFunction,
+            "TransformFunction",
             model_reward_parameters.get(
                 "exit_additive_transform_duration", ReforceXY._TRANSFORM_FUNCTIONS[0]
             ),  # "tanh"
@@ -2545,11 +2405,10 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._entry_additive_enabled = False
                 self._exit_additive_enabled = False
         # "non_canonical"
-        elif self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]:
-            if self._entry_additive_enabled or self._exit_additive_enabled:
-                logger.warning(
-                    "PBRS [%s]: non-canonical mode, additive enabled", self.id
-                )
+        elif self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1] and (
+            self._entry_additive_enabled or self._exit_additive_enabled
+        ):
+            logger.warning("PBRS [%s]: non-canonical mode, additive enabled", self.id)
 
         if MyRLEnv.is_unsupported_pbrs_config(
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
@@ -2591,9 +2450,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
     def _get_entry_unrealized_profit(self, next_position: Positions) -> float:
         current_open = self.prices.iloc[self._current_tick].open
-        if not isinstance(current_open, (int, float, np.floating)) or not np.isfinite(
-            current_open
-        ):
+        if not isinstance(current_open, (int, float, np.floating)) or not np.isfinite(current_open):
             return 0.0
 
         next_pnl = 0.0
@@ -2617,7 +2474,7 @@ class MyRLEnv(Base5ActionRLEnv):
         action: int,
         trade_duration: float,
         current_pnl: float,
-    ) -> Tuple[Positions, int, float]:
+    ) -> tuple[Positions, int, float]:
         """Compute next transition state tuple (next_position, next_duration, next_pnl).
 
         Parameters
@@ -2681,7 +2538,7 @@ class MyRLEnv(Base5ActionRLEnv):
         gain: float,
         transform_pnl: TransformFunction,
         transform_duration: TransformFunction,
-        risk_reward_ratio: Optional[float] = None,
+        risk_reward_ratio: float | None = None,
     ) -> float:
         """Generic bounded bi-component signal combining PnL and duration."""
         if not enabled:
@@ -2848,10 +2705,7 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         mode = self._exit_potential_mode
         # "canonical" or "non_canonical"
-        if (
-            mode == ReforceXY._EXIT_POTENTIAL_MODES[0]
-            or mode == ReforceXY._EXIT_POTENTIAL_MODES[1]
-        ):
+        if mode == ReforceXY._EXIT_POTENTIAL_MODES[0] or mode == ReforceXY._EXIT_POTENTIAL_MODES[1]:
             return 0.0
         # "progressive_release"
         if mode == ReforceXY._EXIT_POTENTIAL_MODES[2]:
@@ -2896,9 +2750,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )  # "canonical"
 
     @staticmethod
-    def is_unsupported_pbrs_config(
-        hold_potential_enabled: bool, add_state_info: bool
-    ) -> bool:
+    def is_unsupported_pbrs_config(hold_potential_enabled: bool, add_state_info: bool) -> bool:
         """Return True if PBRS potential relies on hidden state.
 
         Case: hold_potential enabled while auxiliary state info (pnl, trade_duration) is excluded
@@ -3102,9 +2954,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
-            logger.debug(
-                "PBRS [%s]: all PBRS features disabled, returning zeros", self.id
-            )
+            logger.debug("PBRS [%s]: all PBRS features disabled, returning zeros", self.id)
             self._last_prev_potential = float(prev_potential)
             self._last_next_potential = float(prev_potential)
             self._last_entry_additive = 0.0
@@ -3154,11 +3004,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 next_potential = 0.0
                 reward_shaping = 0.0
 
-            if (
-                is_entry
-                and self._entry_additive_enabled
-                and not self.is_pbrs_invariant_mode()
-            ):
+            if is_entry and self._entry_additive_enabled and not self.is_pbrs_invariant_mode():
                 entry_additive = self._compute_entry_additive(
                     next_pnl,
                     pnl_target,
@@ -3169,11 +3015,9 @@ class MyRLEnv(Base5ActionRLEnv):
 
         elif is_exit:
             if (
-                self._exit_potential_mode
-                == ReforceXY._EXIT_POTENTIAL_MODES[0]  # "canonical"
+                self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]  # "canonical"
             ) or (
-                self._exit_potential_mode
-                == ReforceXY._EXIT_POTENTIAL_MODES[1]  # "non_canonical"
+                self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]  # "non_canonical"
             ):
                 next_potential = 0.0
                 reward_shaping = -prev_potential
@@ -3217,9 +3061,7 @@ class MyRLEnv(Base5ActionRLEnv):
             self.total_features = signal_features
 
         self.shape = (self.window_size, self.total_features)
-        self.observation_space = Box(
-            low=-np.inf, high=np.inf, shape=self.shape, dtype=np.float32
-        )
+        self.observation_space = Box(low=-np.inf, high=np.inf, shape=self.shape, dtype=np.float32)
 
     def _is_valid(self, action: int) -> bool:
         return ReforceXY.get_action_masks(self.can_short, self._position)[action]
@@ -3229,7 +3071,7 @@ class MyRLEnv(Base5ActionRLEnv):
         df: DataFrame,
         prices: DataFrame,
         window_size: int,
-        reward_kwargs: Dict[str, Any],
+        reward_kwargs: dict[str, Any],
         starting_point=True,
     ) -> None:
         """
@@ -3238,12 +3080,12 @@ class MyRLEnv(Base5ActionRLEnv):
         super().reset_env(df, prices, window_size, reward_kwargs, starting_point)
         self._set_observation_space()
 
-    def reset(self, seed=None, **kwargs) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
+    def reset(self, seed=None, **kwargs) -> tuple[NDArray[np.float32], dict[str, Any]]:
         """
         Reset is called at the beginning of every episode
         """
         observation, history = super().reset(seed, **kwargs)
-        self._last_closed_position: Optional[Positions] = None
+        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
@@ -3283,9 +3125,7 @@ class MyRLEnv(Base5ActionRLEnv):
             model_reward_parameters.get("exit_plateau", ReforceXY.DEFAULT_EXIT_PLATEAU)
         )
         exit_plateau_grace = float(
-            model_reward_parameters.get(
-                "exit_plateau_grace", ReforceXY.DEFAULT_EXIT_PLATEAU_GRACE
-            )
+            model_reward_parameters.get("exit_plateau_grace", ReforceXY.DEFAULT_EXIT_PLATEAU_GRACE)
         )
         if exit_plateau_grace < 0.0:
             logger.warning(
@@ -3302,9 +3142,7 @@ class MyRLEnv(Base5ActionRLEnv):
             return 1.0 / math.sqrt(1.0 + dr)
 
         def _linear(dr: float, p: Mapping[str, Any]) -> float:
-            slope = float(
-                p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE)
-            )
+            slope = float(p.get("exit_linear_slope", ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE))
             if slope < 0.0:
                 logger.warning(
                     "PBRS [%s]: exit_linear_slope=%.2f invalid; defaulting to 1.0",
@@ -3318,10 +3156,7 @@ class MyRLEnv(Base5ActionRLEnv):
             tau = p.get("exit_power_tau")
             if isinstance(tau, (int, float)):
                 tau = float(tau)
-                if 0.0 < tau <= 1.0:
-                    alpha = -math.log(tau) / ReforceXY._LOG_2
-                else:
-                    alpha = 1.0
+                alpha = -math.log(tau) / ReforceXY._LOG_2 if 0.0 < tau <= 1.0 else 1.0
             else:
                 alpha = 1.0
             return 1.0 / math.pow(1.0 + dr, alpha)
@@ -3332,7 +3167,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 return 1.0
             return math.pow(2.0, -dr / hl)
 
-        strategies: Dict[str, Callable[[float, Mapping[str, Any]], float]] = {
+        strategies: dict[str, Callable[[float, Mapping[str, Any]], float]] = {
             ReforceXY._EXIT_ATTENUATION_MODES[0]: _legacy,
             ReforceXY._EXIT_ATTENUATION_MODES[1]: _sqrt,
             ReforceXY._EXIT_ATTENUATION_MODES[2]: _linear,
@@ -3348,7 +3183,7 @@ class MyRLEnv(Base5ActionRLEnv):
         else:
             effective_dr = duration_ratio
 
-        strategy_fn = strategies.get(exit_attenuation_mode, None)
+        strategy_fn = strategies.get(exit_attenuation_mode)
         if strategy_fn is None:
             logger.warning(
                 "PBRS [%s]: exit_attenuation_mode=%r invalid; defaulting to %r. Valid: %s",
@@ -3360,9 +3195,7 @@ class MyRLEnv(Base5ActionRLEnv):
             strategy_fn = _linear
 
         try:
-            time_attenuation_coefficient = strategy_fn(
-                effective_dr, model_reward_parameters
-            )
+            time_attenuation_coefficient = strategy_fn(effective_dr, model_reward_parameters)
         except Exception as e:
             logger.warning(
                 "PBRS [%s]: exit_attenuation_mode=%r failed (%r); defaulting to %r (effective_dr=%.5f)",
@@ -3373,9 +3206,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 effective_dr,
                 exc_info=True,
             )
-            time_attenuation_coefficient = _linear(
-                effective_dr, model_reward_parameters
-            )
+            time_attenuation_coefficient = _linear(effective_dr, model_reward_parameters)
 
         return time_attenuation_coefficient
 
@@ -3389,11 +3220,7 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         Compute exit factor: base_factor · time_attenuation_coefficient · pnl_target_coefficient · efficiency_coefficient.
         """
-        if not (
-            np.isfinite(base_factor)
-            and np.isfinite(pnl)
-            and np.isfinite(duration_ratio)
-        ):
+        if not (np.isfinite(base_factor) and np.isfinite(pnl) and np.isfinite(duration_ratio)):
             return 0.0
 
         time_attenuation_coefficient = self._compute_time_attenuation_coefficient(
@@ -3403,9 +3230,7 @@ class MyRLEnv(Base5ActionRLEnv):
         pnl_target_coefficient = self._compute_pnl_target_coefficient(
             pnl, self._pnl_target, model_reward_parameters
         )
-        efficiency_coefficient = self._compute_efficiency_coefficient(
-            pnl, model_reward_parameters
-        )
+        efficiency_coefficient = self._compute_efficiency_coefficient(pnl, model_reward_parameters)
 
         exit_factor = (
             base_factor
@@ -3417,9 +3242,7 @@ class MyRLEnv(Base5ActionRLEnv):
         check_invariants = model_reward_parameters.get(
             "check_invariants", ReforceXY.DEFAULT_CHECK_INVARIANTS
         )
-        check_invariants = (
-            check_invariants if isinstance(check_invariants, bool) else True
-        )
+        check_invariants = check_invariants if isinstance(check_invariants, bool) else True
         if check_invariants:
             if not np.isfinite(exit_factor):
                 logger.warning(
@@ -3485,14 +3308,10 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
 
                 if pnl_ratio > 1.0:
-                    pnl_target_coefficient = (
-                        1.0 + win_reward_factor * base_pnl_target_coefficient
-                    )
+                    pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
                 elif pnl_ratio < -(1.0 / self.rr):
                     loss_penalty_factor = win_reward_factor * self.rr
-                    pnl_target_coefficient = (
-                        1.0 + loss_penalty_factor * base_pnl_target_coefficient
-                    )
+                    pnl_target_coefficient = 1.0 + loss_penalty_factor * base_pnl_target_coefficient
 
         return pnl_target_coefficient
 
@@ -3503,14 +3322,10 @@ class MyRLEnv(Base5ActionRLEnv):
         Compute exit efficiency coefficient (typically 0.5-1.5) based on exit timing quality.
         """
         efficiency_weight = float(
-            model_reward_parameters.get(
-                "efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT
-            )
+            model_reward_parameters.get("efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT)
         )
         efficiency_center = float(
-            model_reward_parameters.get(
-                "efficiency_center", ReforceXY.DEFAULT_EFFICIENCY_CENTER
-            )
+            model_reward_parameters.get("efficiency_center", ReforceXY.DEFAULT_EFFICIENCY_CENTER)
         )
 
         efficiency_coefficient = 1.0
@@ -3570,7 +3385,7 @@ class MyRLEnv(Base5ActionRLEnv):
             - exit_additive: Optional exit bonus (breaks PBRS invariance)
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
-        base_reward: Optional[float] = None
+        base_reward: float | None = None
 
         self._last_invalid_penalty = 0.0
         self._last_idle_penalty = 0.0
@@ -3581,9 +3396,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if not self.action_masking and not self._is_valid(action):
             self.tensorboard_log("invalid", category="actions")
             base_reward = float(
-                model_reward_parameters.get(
-                    "invalid_action", ReforceXY.DEFAULT_INVALID_ACTION
-                )
+                model_reward_parameters.get("invalid_action", ReforceXY.DEFAULT_INVALID_ACTION)
             )
             self._last_invalid_penalty = float(base_reward)
 
@@ -3616,9 +3429,7 @@ class MyRLEnv(Base5ActionRLEnv):
             idle_duration = self.get_idle_duration()
             idle_duration_ratio = idle_duration / max(1, max_idle_duration)
             base_reward = (
-                -idle_factor
-                * idle_penalty_ratio
-                * idle_duration_ratio**idle_penalty_power
+                -idle_factor * idle_penalty_ratio * idle_duration_ratio**idle_penalty_power
             )
             self._last_idle_penalty = float(base_reward)
 
@@ -3642,9 +3453,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 base_reward = 0.0
             else:
                 base_reward = (
-                    -hold_factor
-                    * hold_penalty_ratio
-                    * (duration_ratio - 1.0) ** hold_penalty_power
+                    -hold_factor * hold_penalty_ratio * (duration_ratio - 1.0) ** hold_penalty_power
                 )
                 self._last_hold_penalty = float(base_reward)
 
@@ -3698,12 +3507,8 @@ class MyRLEnv(Base5ActionRLEnv):
         features_window_array = features_window.to_numpy(dtype=np.float32, copy=False)
         if features_window_array.shape[0] < self.window_size:
             pad_size = self.window_size - features_window_array.shape[0]
-            pad_array = np.zeros(
-                (pad_size, features_window_array.shape[1]), dtype=np.float32
-            )
-            features_window_array = np.concatenate(
-                [pad_array, features_window_array], axis=0
-            )
+            pad_array = np.zeros((pad_size, features_window_array.shape[1]), dtype=np.float32)
+            features_window_array = np.concatenate([pad_array, features_window_array], axis=0)
         if self.add_state_info:
             observations = np.concatenate(
                 [
@@ -3748,7 +3553,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
 
-    def execute_trade(self, action: int) -> Optional[str]:
+    def execute_trade(self, action: int) -> str | None:
         """
         Execute trade based on the given action
         """
@@ -3797,9 +3602,7 @@ class MyRLEnv(Base5ActionRLEnv):
         self._total_reward_shaping += reward_shaping_delta
         return reward + reward_shaping_delta
 
-    def step(
-        self, action: int
-    ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
+    def step(self, action: int) -> tuple[NDArray[np.float32], float, bool, bool, dict[str, Any]]:
         """
         Take a step in the environment based on the provided action
         """
@@ -3861,9 +3664,7 @@ class MyRLEnv(Base5ActionRLEnv):
             "idle_duration": idle_duration,
             "idle_ratio": (idle_duration / max_idle_duration),
             "trade_duration": trade_duration,
-            "duration_ratio": (
-                trade_duration / max(1, self.max_trade_duration_candles)
-            ),
+            "duration_ratio": (trade_duration / max(1, self.max_trade_duration_candles)),
             "trade_count": len(self.trade_history) // 2,
         }
         self._update_history(info)
@@ -3875,9 +3676,7 @@ class MyRLEnv(Base5ActionRLEnv):
             info,
         )
 
-    def append_trade_history(
-        self, trade_type: str, price: float, profit: float
-    ) -> None:
+    def append_trade_history(self, trade_type: str, price: float, profit: float) -> None:
         self.trade_history.append(
             {
                 "tick": self._current_tick,
@@ -3966,9 +3765,11 @@ class MyRLEnv(Base5ActionRLEnv):
         return self._max_unrealized_profit
 
     def _update_max_unrealized_profit(self, pnl: float) -> None:
-        if self._position in (Positions.Long, Positions.Short):
-            if pnl > self._max_unrealized_profit:
-                self._max_unrealized_profit = pnl
+        if (
+            self._position in (Positions.Long, Positions.Short)
+            and pnl > self._max_unrealized_profit
+        ):
+            self._max_unrealized_profit = pnl
 
     def get_min_unrealized_profit(self) -> float:
         """
@@ -3983,9 +3784,11 @@ class MyRLEnv(Base5ActionRLEnv):
         return self._min_unrealized_profit
 
     def _update_min_unrealized_profit(self, pnl: float) -> None:
-        if self._position in (Positions.Long, Positions.Short):
-            if pnl < self._min_unrealized_profit:
-                self._min_unrealized_profit = pnl
+        if (
+            self._position in (Positions.Long, Positions.Short)
+            and pnl < self._min_unrealized_profit
+        ):
+            self._min_unrealized_profit = pnl
 
     def get_most_recent_return(self) -> float:
         """
@@ -4124,9 +3927,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if self.trade_history:
             _trade_history_df = DataFrame(self.trade_history)
             if "tick" in _trade_history_df.columns:
-                _rollout_history = merge(
-                    _rollout_history, _trade_history_df, on="tick", how="left"
-                )
+                _rollout_history = merge(_rollout_history, _trade_history_df, on="tick", how="left")
 
         try:
             history = merge(
@@ -4185,12 +3986,7 @@ class MyRLEnv(Base5ActionRLEnv):
 
             ticks = history.get("tick")
             history_open = history.get("open")
-            if (
-                ticks is None
-                or len(ticks) == 0
-                or history_open is None
-                or len(history_open) == 0
-            ):
+            if ticks is None or len(ticks) == 0 or history_open is None or len(history_open) == 0:
                 return fig
 
             axs[0].plot(ticks, history_open, linewidth=1, color="orchid", zorder=1)
@@ -4312,7 +4108,7 @@ class InfoMetricsCallback(TensorboardCallback):
         self.throttle = 1 if throttle < 1 else throttle
 
     def _safe_logger_record(
-        self, key: str, value: Any, exclude: Optional[Tuple[str, ...]] = None
+        self, key: str, value: Any, exclude: tuple[str, ...] | None = None
     ) -> None:
         try:
             self.logger.record(key, value, exclude=exclude)
@@ -4343,9 +4139,9 @@ class InfoMetricsCallback(TensorboardCallback):
 
     @staticmethod
     def _build_train_freq(
-        train_freq: Optional[Union[TrainFreq, int, Tuple[int, ...], List[int]]],
-    ) -> Optional[int]:
-        train_freq_val: Optional[int] = None
+        train_freq: TrainFreq | int | tuple[int, ...] | list[int] | None,
+    ) -> int | None:
+        train_freq_val: int | None = None
         if isinstance(train_freq, TrainFreq) and hasattr(train_freq, "frequency"):
             if isinstance(train_freq.frequency, int):
                 train_freq_val = train_freq.frequency
@@ -4364,13 +4160,11 @@ class InfoMetricsCallback(TensorboardCallback):
         env = getattr(self, "training_env", None)
         while env is not None:
             if hasattr(env, "n_stack"):
-                try:
-                    n_stack = int(getattr(env, "n_stack"))
-                except Exception:
-                    pass
+                with suppress(Exception):
+                    n_stack = int(env.n_stack)
                 break
             env = getattr(env, "venv", None)
-        hparam_dict: Dict[str, Any] = {
+        hparam_dict: dict[str, Any] = {
             "algorithm": self.model.__class__.__name__,
             "n_envs": int(self.model.n_envs),
             "n_stack": n_stack,
@@ -4406,9 +4200,7 @@ class InfoMetricsCallback(TensorboardCallback):
             )
             if getattr(self.model, "target_kl", None) is not None:
                 hparam_dict["target_kl"] = float(self.model.target_kl)
-            if (
-                ReforceXY._MODEL_TYPES[1] in self.model.__class__.__name__
-            ):  # "RecurrentPPO"
+            if ReforceXY._MODEL_TYPES[1] in self.model.__class__.__name__:  # "RecurrentPPO"
                 policy = getattr(self.model, "policy", None)
                 if policy is not None:
                     lstm_actor = getattr(policy, "lstm_actor", None)
@@ -4426,9 +4218,7 @@ class InfoMetricsCallback(TensorboardCallback):
                     "gradient_steps": int(self.model.gradient_steps),
                     "learning_starts": int(self.model.learning_starts),
                     "target_update_interval": int(self.model.target_update_interval),
-                    "exploration_initial_eps": float(
-                        self.model.exploration_initial_eps
-                    ),
+                    "exploration_initial_eps": float(self.model.exploration_initial_eps),
                     "exploration_final_eps": float(self.model.exploration_final_eps),
                     "exploration_fraction": float(self.model.exploration_fraction),
                     "exploration_rate": float(self.model.exploration_rate),
@@ -4441,7 +4231,7 @@ class InfoMetricsCallback(TensorboardCallback):
                 hparam_dict.update({"train_freq": train_freq})
             if ReforceXY._MODEL_TYPES[4] in self.model.__class__.__name__:  # "QRDQN"
                 hparam_dict.update({"n_quantiles": int(self.model.n_quantiles)})
-        metric_dict: Dict[str, float | int] = {
+        metric_dict: dict[str, float | int] = {
             "eval/mean_reward": 0.0,
             "eval/mean_reward_std": 0.0,
             "rollout/ep_rew_mean": 0.0,
@@ -4487,9 +4277,7 @@ class InfoMetricsCallback(TensorboardCallback):
         logger_exclude = ("stdout", "log", "json", "csv")
 
         def _is_number(x: Any) -> bool:
-            return isinstance(
-                x, (int, float, np.integer, np.floating)
-            ) and not isinstance(x, bool)
+            return isinstance(x, (int, float, np.integer, np.floating)) and not isinstance(x, bool)
 
         def _is_finite_number(x: Any) -> bool:
             if not _is_number(x):
@@ -4499,14 +4287,12 @@ class InfoMetricsCallback(TensorboardCallback):
             except Exception:
                 return False
 
-        infos_list: List[Dict[str, Any]] | None = self.locals.get("infos")
-        aggregated_info: Dict[str, Any] = {}
+        infos_list: list[dict[str, Any]] | None = self.locals.get("infos")
+        aggregated_info: dict[str, Any] = {}
 
         if isinstance(infos_list, list) and infos_list:
-            numeric_acc: Dict[str, List[float]] = defaultdict(list)
-            non_numeric_counts: Dict[str, Dict[Any, int]] = defaultdict(
-                lambda: defaultdict(int)
-            )
+            numeric_acc: dict[str, list[float]] = defaultdict(list)
+            non_numeric_counts: dict[str, dict[Any, int]] = defaultdict(lambda: defaultdict(int))
             filtered_values: int = 0
 
             for info_dict in infos_list:
@@ -4527,10 +4313,8 @@ class InfoMetricsCallback(TensorboardCallback):
                     continue
                 aggregated_info[k] = np.mean(values)
                 if len(values) > 1:
-                    try:
+                    with suppress(Exception):
                         aggregated_info[f"{k}_std"] = np.std(values, ddof=1)
-                    except Exception:
-                        pass
 
             for key in ("reward", "pnl"):
                 values = numeric_acc.get(key)
@@ -4554,16 +4338,12 @@ class InfoMetricsCallback(TensorboardCallback):
                 if not counts:
                     continue
                 if len(counts) == 1:
-                    try:
+                    with suppress(Exception):
                         aggregated_info[f"{k}_mode"] = next(iter(counts.keys()))
-                    except Exception:
-                        pass
                 else:
                     aggregated_info[f"{k}_mode"] = "mixed"
 
-            self._safe_logger_record(
-                "info/n_envs", len(infos_list), exclude=logger_exclude
-            )
+            self._safe_logger_record("info/n_envs", len(infos_list), exclude=logger_exclude)
 
             if filtered_values > 0:
                 self._safe_logger_record(
@@ -4578,10 +4358,8 @@ class InfoMetricsCallback(TensorboardCallback):
         except Exception:
             tensorboard_metrics_list = []
 
-        aggregated_tensorboard_metrics: Dict[str, Dict[str, Any]] = defaultdict(dict)
-        aggregated_tensorboard_metric_counts: Dict[str, Dict[str, int]] = defaultdict(
-            dict
-        )
+        aggregated_tensorboard_metrics: dict[str, dict[str, Any]] = defaultdict(dict)
+        aggregated_tensorboard_metric_counts: dict[str, dict[str, int]] = defaultdict(dict)
         for env_metrics in tensorboard_metrics_list or []:
             if not isinstance(env_metrics, dict):
                 continue
@@ -4608,10 +4386,8 @@ class InfoMetricsCallback(TensorboardCallback):
 
         if isinstance(infos_list, list) and infos_list:
             cat_keys = ("action", "position")
-            cat_counts: Dict[str, Dict[Any, int]] = {
-                k: defaultdict(int) for k in cat_keys
-            }
-            cat_totals: Dict[str, int] = {k: 0 for k in cat_keys}
+            cat_counts: dict[str, dict[Any, int]] = {k: defaultdict(int) for k in cat_keys}
+            cat_totals: dict[str, int] = dict.fromkeys(cat_keys, 0)
             for info_dict in infos_list:
                 if not isinstance(info_dict, dict):
                     continue
@@ -4640,14 +4416,8 @@ class InfoMetricsCallback(TensorboardCallback):
                     self._safe_logger_record(
                         f"{category}/{metric}_sum", value, exclude=logger_exclude
                     )
-                    count = aggregated_tensorboard_metric_counts.get(category, {}).get(
-                        metric
-                    )
-                    if (
-                        _is_finite_number(value)
-                        and isinstance(count, int)
-                        and count > 0
-                    ):
+                    count = aggregated_tensorboard_metric_counts.get(category, {}).get(metric)
+                    if _is_finite_number(value) and isinstance(count, int) and count > 0:
                         self._safe_logger_record(
                             f"{category}/{metric}_mean",
                             float(value) / float(count),
@@ -4662,9 +4432,7 @@ class InfoMetricsCallback(TensorboardCallback):
             else:
                 progress_done = 0.0
             progress_remaining = 1.0 - progress_done
-            self._safe_logger_record(
-                "train/progress_done", progress_done, exclude=logger_exclude
-            )
+            self._safe_logger_record("train/progress_done", progress_done, exclude=logger_exclude)
             self._safe_logger_record(
                 "train/progress_remaining", progress_remaining, exclude=logger_exclude
             )
@@ -4700,9 +4468,7 @@ class InfoMetricsCallback(TensorboardCallback):
             lr = getattr(self.model, "learning_rate", None)
             lr = _eval_schedule(lr)
             if _is_finite_number(lr):
-                self._safe_logger_record(
-                    "train/learning_rate", float(lr), exclude=logger_exclude
-                )
+                self._safe_logger_record("train/learning_rate", float(lr), exclude=logger_exclude)
         except Exception:
             pass
 
@@ -4711,9 +4477,7 @@ class InfoMetricsCallback(TensorboardCallback):
                 cr = getattr(self.model, "clip_range", None)
                 cr = _eval_schedule(cr)
                 if _is_finite_number(cr):
-                    self._safe_logger_record(
-                        "train/clip_range", float(cr), exclude=logger_exclude
-                    )
+                    self._safe_logger_record("train/clip_range", float(cr), exclude=logger_exclude)
             except Exception:
                 pass
 
@@ -4773,9 +4537,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
         deterministic: bool = True,
         render: bool = False,
         use_masking: bool = True,
-        best_model_save_path: Optional[str] = None,
-        callback_on_new_best: Optional[BaseCallback] = None,
-        callback_after_eval: Optional[BaseCallback] = None,
+        best_model_save_path: str | None = None,
+        callback_on_new_best: BaseCallback | None = None,
+        callback_after_eval: BaseCallback | None = None,
         verbose: int = 0,
         **kwargs,
     ):
@@ -4865,9 +4629,7 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
             try:
                 logger_exclude = ("stdout", "log", "json", "csv")
                 self.logger.record("eval/idx", self.eval_idx, exclude=logger_exclude)
-                self.logger.record(
-                    "eval/num_timesteps", self.num_timesteps, exclude=logger_exclude
-                )
+                self.logger.record("eval/num_timesteps", self.num_timesteps, exclude=logger_exclude)
                 self.logger.record(
                     "eval/last_mean_reward", last_mean_reward, exclude=logger_exclude
                 )
@@ -4932,7 +4694,7 @@ class SimpleLinearSchedule:
     :param initial_value: (float or str) The initial value for the schedule
     """
 
-    def __init__(self, initial_value: Union[float, str]) -> None:
+    def __init__(self, initial_value: float | str) -> None:
         # Force conversion to float
         self.initial_value = float(initial_value)
 
@@ -4943,15 +4705,11 @@ class SimpleLinearSchedule:
         return f"SimpleLinearSchedule(initial_value={self.initial_value})"
 
 
-def deepmerge(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
+def deepmerge(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge two dicts without mutating inputs"""
     dst_copy = copy.deepcopy(dst)
     for k, v in src.items():
-        if (
-            k in dst_copy
-            and isinstance(dst_copy[k], Mapping)
-            and isinstance(v, Mapping)
-        ):
+        if k in dst_copy and isinstance(dst_copy[k], Mapping) and isinstance(v, Mapping):
             dst_copy[k] = deepmerge(dst_copy[k], v)
         else:
             dst_copy[k] = v
@@ -4965,7 +4723,7 @@ def _compute_gradient_steps(tf: int, ss: int) -> int:
 
 
 def compute_gradient_steps(train_freq: Any, subsample_steps: Any) -> int:
-    tf: Optional[int] = None
+    tf: int | None = None
     if isinstance(train_freq, TrainFreq):
         tf = train_freq.frequency if isinstance(train_freq.frequency, int) else None
     if isinstance(train_freq, (tuple, list)) and train_freq:
@@ -4973,7 +4731,7 @@ def compute_gradient_steps(train_freq: Any, subsample_steps: Any) -> int:
     elif isinstance(train_freq, int):
         tf = train_freq
 
-    ss: Optional[int] = subsample_steps if isinstance(subsample_steps, int) else None
+    ss: int | None = subsample_steps if isinstance(subsample_steps, int) else None
 
     if isinstance(tf, int) and isinstance(ss, int):
         return _compute_gradient_steps(tf, ss)
@@ -4999,7 +4757,7 @@ def steps_to_days(steps: int, timeframe: str) -> float:
 
 def get_schedule_type(
     schedule: Any,
-) -> Tuple[ScheduleType, float, float]:
+) -> tuple[ScheduleType, float, float]:
     if isinstance(schedule, (int, float)):
         try:
             schedule = float(schedule)
@@ -5040,9 +4798,7 @@ def get_schedule(
         return ConstantSchedule(initial_value)
 
 
-def get_net_arch(
-    model_type: str, net_arch_type: NetArchSize
-) -> Union[List[int], Dict[str, List[int]]]:
+def get_net_arch(model_type: str, net_arch_type: NetArchSize) -> list[int] | dict[str, list[int]]:
     """
     Get network architecture
     """
@@ -5075,7 +4831,7 @@ def get_net_arch(
 
 def get_activation_fn(
     activation_fn_name: ActivationFunction,
-) -> Type[th.nn.Module]:
+) -> type[th.nn.Module]:
     """
     Get activation function
     """
@@ -5089,7 +4845,7 @@ def get_activation_fn(
 
 def get_optimizer_class(
     optimizer_class_name: OptimizerClass,
-) -> Type[th.optim.Optimizer]:
+) -> type[th.optim.Optimizer]:
     """
     Get optimizer class
     """
@@ -5101,10 +4857,10 @@ def get_optimizer_class(
 
 
 def convert_optuna_params_to_model_params(
-    model_type: str, optuna_params: Dict[str, Any]
-) -> Dict[str, Any]:
-    model_params: Dict[str, Any] = {}
-    policy_kwargs: Dict[str, Any] = {}
+    model_type: str, optuna_params: dict[str, Any]
+) -> dict[str, Any]:
+    model_params: dict[str, Any] = {}
+    policy_kwargs: dict[str, Any] = {}
 
     lr = optuna_params.get("learning_rate")
     if lr is None:
@@ -5127,9 +4883,7 @@ def convert_optuna_params_to_model_params(
         ]
         for param in required_ppo_params:
             if optuna_params.get(param) is None:
-                raise ValueError(
-                    f"Hyperopt [{model_type}]: missing '{param}' in params"
-                )
+                raise ValueError(f"Hyperopt [{model_type}]: missing '{param}' in params")
         cr = optuna_params.get("clip_range")
         cr = get_schedule(
             optuna_params.get("cr_schedule", ReforceXY._SCHEDULE_TYPES[1]),
@@ -5153,14 +4907,10 @@ def convert_optuna_params_to_model_params(
         if optuna_params.get("target_kl") is not None:
             model_params["target_kl"] = float(optuna_params.get("target_kl"))
         if ReforceXY._MODEL_TYPES[1] in model_type:  # "RecurrentPPO"
-            policy_kwargs["lstm_hidden_size"] = int(
-                optuna_params.get("lstm_hidden_size")
-            )
+            policy_kwargs["lstm_hidden_size"] = int(optuna_params.get("lstm_hidden_size"))
             policy_kwargs["n_lstm_layers"] = int(optuna_params.get("n_lstm_layers"))
             if optuna_params.get("enable_critic_lstm") is not None:
-                policy_kwargs["enable_critic_lstm"] = bool(
-                    optuna_params.get("enable_critic_lstm")
-                )
+                policy_kwargs["enable_critic_lstm"] = bool(optuna_params.get("enable_critic_lstm"))
     elif ReforceXY._MODEL_TYPES[3] in model_type:  # "DQN"
         required_dqn_params = [
             "gamma",
@@ -5176,9 +4926,7 @@ def convert_optuna_params_to_model_params(
         ]
         for param in required_dqn_params:
             if optuna_params.get(param) is None:
-                raise ValueError(
-                    f"Hyperopt [{model_type}]: missing '{param}' in params"
-                )
+                raise ValueError(f"Hyperopt [{model_type}]: missing '{param}' in params")
         train_freq = optuna_params.get("train_freq")
         subsample_steps = optuna_params.get("subsample_steps")
         gradient_steps = compute_gradient_steps(train_freq, subsample_steps)
@@ -5191,24 +4939,15 @@ def convert_optuna_params_to_model_params(
                 "buffer_size": int(optuna_params.get("buffer_size")),
                 "train_freq": train_freq,
                 "gradient_steps": gradient_steps,
-                "exploration_fraction": float(
-                    optuna_params.get("exploration_fraction")
-                ),
-                "exploration_initial_eps": float(
-                    optuna_params.get("exploration_initial_eps")
-                ),
-                "exploration_final_eps": float(
-                    optuna_params.get("exploration_final_eps")
-                ),
-                "target_update_interval": int(
-                    optuna_params.get("target_update_interval")
-                ),
+                "exploration_fraction": float(optuna_params.get("exploration_fraction")),
+                "exploration_initial_eps": float(optuna_params.get("exploration_initial_eps")),
+                "exploration_final_eps": float(optuna_params.get("exploration_final_eps")),
+                "target_update_interval": int(optuna_params.get("target_update_interval")),
                 "learning_starts": int(optuna_params.get("learning_starts")),
             }
         )
         if (
-            ReforceXY._MODEL_TYPES[4] in model_type
-            and optuna_params.get("n_quantiles") is not None
+            ReforceXY._MODEL_TYPES[4] in model_type and optuna_params.get("n_quantiles") is not None
         ):  # "QRDQN"
             policy_kwargs["n_quantiles"] = int(optuna_params["n_quantiles"])
     else:
@@ -5219,19 +4958,19 @@ def convert_optuna_params_to_model_params(
         if net_arch_value in ReforceXY._NET_ARCH_SIZES:
             policy_kwargs["net_arch"] = get_net_arch(
                 model_type,
-                cast(NetArchSize, net_arch_value),
+                cast("NetArchSize", net_arch_value),
             )
     if optuna_params.get("activation_fn"):
         activation_fn_value = str(optuna_params["activation_fn"])
         if activation_fn_value in ReforceXY._ACTIVATION_FUNCTIONS:
             policy_kwargs["activation_fn"] = get_activation_fn(
-                cast(ActivationFunction, activation_fn_value)
+                cast("ActivationFunction", activation_fn_value)
             )
     if optuna_params.get("optimizer_class"):
         optimizer_value = str(optuna_params["optimizer_class"])
         if optimizer_value in ReforceXY._OPTIMIZER_CLASSES:
             policy_kwargs["optimizer_class"] = get_optimizer_class(
-                cast(OptimizerClass, optimizer_value)
+                cast("OptimizerClass", optimizer_value)
             )
     if optuna_params.get("ortho_init") is not None:
         policy_kwargs["ortho_init"] = bool(optuna_params["ortho_init"])
@@ -5240,12 +4979,10 @@ def convert_optuna_params_to_model_params(
     return model_params
 
 
-def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
+def get_common_ppo_optuna_params(trial: Trial) -> dict[str, Any]:
     return {
         "n_steps": trial.suggest_categorical("n_steps", list(ReforceXY._PPO_N_STEPS)),
-        "batch_size": trial.suggest_categorical(
-            "batch_size", [64, 128, 256, 512, 1024]
-        ),
+        "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256, 512, 1024]),
         "gamma": trial.suggest_categorical(
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]
         ),
@@ -5266,9 +5003,7 @@ def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
             "target_kl", [None, 0.003, 0.01, 0.015, 0.02, 0.03, 0.04, 0.1]
         ),
         "ortho_init": trial.suggest_categorical("ortho_init", [True, False]),
-        "net_arch": trial.suggest_categorical(
-            "net_arch", list(ReforceXY._NET_ARCH_SIZES)
-        ),
+        "net_arch": trial.suggest_categorical("net_arch", list(ReforceXY._NET_ARCH_SIZES)),
         "activation_fn": trial.suggest_categorical(
             "activation_fn", list(ReforceXY._ACTIVATION_FUNCTIONS)
         ),
@@ -5278,7 +5013,7 @@ def get_common_ppo_optuna_params(trial: Trial) -> Dict[str, Any]:
     }
 
 
-def sample_params_ppo(trial: Trial) -> Dict[str, Any]:
+def sample_params_ppo(trial: Trial) -> dict[str, Any]:
     """
     Sampler for PPO hyperparams
     """
@@ -5287,7 +5022,7 @@ def sample_params_ppo(trial: Trial) -> Dict[str, Any]:
     )
 
 
-def sample_params_recurrentppo(trial: Trial) -> Dict[str, Any]:
+def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
     """
     Sampler for RecurrentPPO hyperparams
     """
@@ -5295,21 +5030,15 @@ def sample_params_recurrentppo(trial: Trial) -> Dict[str, Any]:
     ppo_optuna_params.update(
         {
             "n_lstm_layers": trial.suggest_int("n_lstm_layers", 1, 2),
-            "lstm_hidden_size": trial.suggest_categorical(
-                "lstm_hidden_size", [64, 128, 256, 512]
-            ),
-            "enable_critic_lstm": trial.suggest_categorical(
-                "enable_critic_lstm", [True, False]
-            ),
+            "lstm_hidden_size": trial.suggest_categorical("lstm_hidden_size", [64, 128, 256, 512]),
+            "enable_critic_lstm": trial.suggest_categorical("enable_critic_lstm", [True, False]),
         }
     )
     return convert_optuna_params_to_model_params("RecurrentPPO", ppo_optuna_params)
 
 
-def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
-    exploration_final_eps = trial.suggest_float(
-        "exploration_final_eps", 0.01, 0.2, step=0.01
-    )
+def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
+    exploration_final_eps = trial.suggest_float("exploration_final_eps", 0.01, 0.2, step=0.01)
     exploration_initial_eps = trial.suggest_float(
         "exploration_initial_eps", exploration_final_eps, 1.0
     )
@@ -5327,9 +5056,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
         "gamma": trial.suggest_categorical(
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]
         ),
-        "batch_size": trial.suggest_categorical(
-            "batch_size", [64, 128, 256, 512, 1024]
-        ),
+        "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256, 512, 1024]),
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
         "lr_schedule": trial.suggest_categorical(
             "lr_schedule", list(ReforceXY._SCHEDULE_TYPES_KNOWN)
@@ -5348,9 +5075,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
         "learning_starts": trial.suggest_categorical(
             "learning_starts", [500, 1000, 2000, 5000, 10000, 25000, 50000]
         ),
-        "net_arch": trial.suggest_categorical(
-            "net_arch", list(ReforceXY._NET_ARCH_SIZES)
-        ),
+        "net_arch": trial.suggest_categorical("net_arch", list(ReforceXY._NET_ARCH_SIZES)),
         "activation_fn": trial.suggest_categorical(
             "activation_fn", list(ReforceXY._ACTIVATION_FUNCTIONS)
         ),
@@ -5360,7 +5085,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> Dict[str, Any]:
     }
 
 
-def sample_params_dqn(trial: Trial) -> Dict[str, Any]:
+def sample_params_dqn(trial: Trial) -> dict[str, Any]:
     """
     Sampler for DQN hyperparams
     """
@@ -5369,12 +5094,10 @@ def sample_params_dqn(trial: Trial) -> Dict[str, Any]:
     )
 
 
-def sample_params_qrdqn(trial: Trial) -> Dict[str, Any]:
+def sample_params_qrdqn(trial: Trial) -> dict[str, Any]:
     """
     Sampler for QRDQN hyperparams
     """
     dqn_optuna_params = get_common_dqn_optuna_params(trial)
     dqn_optuna_params.update({"n_quantiles": trial.suggest_int("n_quantiles", 10, 250)})
-    return convert_optuna_params_to_model_params(
-        ReforceXY._MODEL_TYPES[4], dqn_optuna_params
-    )
+    return convert_optuna_params_to_model_params(ReforceXY._MODEL_TYPES[4], dqn_optuna_params)

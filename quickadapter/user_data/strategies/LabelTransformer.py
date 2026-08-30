@@ -12,6 +12,7 @@ from datasieve.transforms.base_transform import (
     BaseTransform,
     ListOrNone,
 )
+from EnumErrors import enum_error_message
 from numpy.typing import ArrayLike, NDArray
 from sklearn.preprocessing import (
     MaxAbsScaler,
@@ -20,7 +21,6 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-from EnumErrors import enum_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -209,9 +209,7 @@ EXTREMA_SELECTION_METHODS: Final[tuple[ExtremaSelectionMethod, ...]] = (
     "partition",
 )
 
-SkimageThresholdMethod = Literal[
-    "mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"
-]
+SkimageThresholdMethod = Literal["mean", "isodata", "li", "minimum", "otsu", "triangle", "yen"]
 SKIMAGE_THRESHOLD_METHODS: Final[tuple[SkimageThresholdMethod, ...]] = (
     "mean",
     "isodata",
@@ -286,9 +284,7 @@ class _ColumnState:
 
 @dataclass
 class _LabelTransformerConfig:
-    default: dict[str, Any] = field(
-        default_factory=lambda: DEFAULTS_LABEL_PIPELINE.copy()
-    )
+    default: dict[str, Any] = field(default_factory=lambda: DEFAULTS_LABEL_PIPELINE.copy())
     columns: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
@@ -482,9 +478,7 @@ class LabelTransformer(BaseTransform):
             inverse=inverse,
         )
 
-    def _fit_standardization(
-        self, values: NDArray[np.floating], state: _ColumnState
-    ) -> None:
+    def _fit_standardization(self, values: NDArray[np.floating], state: _ColumnState) -> None:
         method = state.config["standardization"]
         if method == STANDARDIZATION_TYPES[0]:  # none
             return
@@ -500,45 +494,31 @@ class LabelTransformer(BaseTransform):
         if method == STANDARDIZATION_TYPES[3]:  # mmad
             state.median = float(np.median(values))
             mad = np.median(np.abs(values - state.median))
-            state.mad = (
-                float(mad) if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
-            )
+            state.mad = float(mad) if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
             return
         if method == STANDARDIZATION_TYPES[4]:  # power_yj
-            state.power_transformer = PowerTransformer(
-                method="yeo-johnson", standardize=True
-            )
+            state.power_transformer = PowerTransformer(method="yeo-johnson", standardize=True)
             state.power_transformer.fit(values.reshape(-1, 1))
             return
 
-        raise ValueError(
-            enum_error_message("standardization", method, STANDARDIZATION_TYPES)
-        )
+        raise ValueError(enum_error_message("standardization", method, STANDARDIZATION_TYPES))
 
-    def _fit_normalization(
-        self, values: NDArray[np.floating], state: _ColumnState
-    ) -> None:
+    def _fit_normalization(self, values: NDArray[np.floating], state: _ColumnState) -> None:
         method = state.config["normalization"]
         if method == NORMALIZATION_TYPES[0]:  # maxabs
             state.maxabs_scaler = MaxAbsScaler()
             state.maxabs_scaler.fit(values.reshape(-1, 1))
             return
         if method == NORMALIZATION_TYPES[1]:  # minmax
-            state.minmax_scaler = MinMaxScaler(
-                feature_range=state.config["minmax_range"]
-            )
+            state.minmax_scaler = MinMaxScaler(feature_range=state.config["minmax_range"])
             state.minmax_scaler.fit(values.reshape(-1, 1))
             return
         if method in (NORMALIZATION_TYPES[2], NORMALIZATION_TYPES[3]):  # sigmoid, none
             return
 
-        raise ValueError(
-            enum_error_message("normalization", method, NORMALIZATION_TYPES)
-        )
+        raise ValueError(enum_error_message("normalization", method, NORMALIZATION_TYPES))
 
-    def _fit_column(
-        self, column_name: str, values: NDArray[np.floating]
-    ) -> _ColumnState:
+    def _fit_column(self, column_name: str, values: NDArray[np.floating]) -> _ColumnState:
         config = self._config.get_column_config(column_name)
         state = _ColumnState(config=config)
 

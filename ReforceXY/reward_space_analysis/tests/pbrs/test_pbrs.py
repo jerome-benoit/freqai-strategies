@@ -1117,7 +1117,7 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertLessEqual(abs(shap), PBRS.MAX_ABS_SHAPING)
 
             # With bounded transforms and hold_potential_ratio=1:
-            # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor  # noqa: RUF003
+            # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor
             self.assertLessEqual(abs(float(shap)), (1.0 + gamma) * PARAMS.BASE_FACTOR)
 
     def test_report_cumulative_invariance_aggregation(self):
