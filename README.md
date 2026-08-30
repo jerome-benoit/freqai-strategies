@@ -10,6 +10,7 @@
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
   - [Configuration tunables](#configuration-tunables-1)
+- [Development](#development)
 - [Common workflows](#common-workflows)
 - [Note](#note)
 
@@ -432,6 +433,69 @@ The documented list of model tunables is at the top of the
 
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
+
+## Development
+
+**Run repository quality checks from the repository root:**
+
+Ruff does not need the Freqtrade runtime or project dependencies:
+
+```shell
+uvx ruff@latest check .
+uvx ruff@latest format --check .
+```
+
+BasedPyright must run inside the matching Freqtrade QA image. The repository
+wrapper records the sorted repository-relative identities of every configured
+Python source, requires that inventory to match BasedPyright's analyzed-file
+count, and compares it with every emitted diagnostic field—including an optional
+rule and source range—against the project's exact snapshot. Build each QA target
+and mount the checkout read-only:
+
+```shell
+# QuickAdapter
+docker build --pull --target qa --tag freqai-strategies-quickadapter-qa quickadapter
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
+  --entrypoint python \
+  freqai-strategies-quickadapter-qa \
+  /workspace/scripts/check_basedpyright.py --project quickadapter
+
+# ReforceXY
+docker build --pull --target qa --tag freqai-strategies-reforcexy-qa ReforceXY
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
+  --entrypoint python \
+  freqai-strategies-reforcexy-qa \
+  /workspace/scripts/check_basedpyright.py --project reforcexy
+```
+
+The check fails when a configured source identity or diagnostic is added, removed,
+moved, or changed, or when the analyzed-file count differs from the source
+inventory. Each project's direct `include` entries must be normalized,
+non-overlapping relative file or directory paths; glob syntax and symbolic links
+are rejected. Snapshot updates are deliberate writable operations in the matching
+QA image. For example:
+
+```shell
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace" \
+  --entrypoint python \
+  freqai-strategies-quickadapter-qa \
+  /workspace/scripts/check_basedpyright.py --project quickadapter --write
+```
+
+Review the generated `.basedpyright/diagnostics.json` diff. Use the ReforceXY image
+and `--project reforcexy` for its snapshot. The writer preserves existing file
+permissions and uses mode `0644` when creating a missing snapshot. Snapshot targets
+must be regular files; symbolic links and other special files are rejected. The
+wrapper rejects direct host and wrong-image execution so Freqtrade imports and
+dependency versions remain exact.
+
+The BasedPyright and type-stub versions are pinned in each project's
+`.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally
+follow their rolling `stable_freqai` and `stable_freqairl` tags, so record the
+resolved image digests when a reproducible audit is required.
 
 ## Common workflows
 

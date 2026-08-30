@@ -1,0 +1,8 @@
+{
+  "extends": "../pyrightconfig.json",
+  "include": [
+    "reward_space_analysis/reward_space_analysis.py",
+    "user_data/freqaimodels",
+    "user_data/strategies"
+  ]
+}

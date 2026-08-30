@@ -1,5 +1,5 @@
-pandas-stubs
-scipy-stubs
+pandas-stubs==3.0.5.260730
+scipy-stubs==1.17.1.1
 uv
 ruff
-pyright
+basedpyright==1.39.10

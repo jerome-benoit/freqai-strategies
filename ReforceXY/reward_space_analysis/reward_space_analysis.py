@@ -29,6 +29,9 @@ from scipy.stats import entropy, probplot
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from sklearn.ensemble import RandomForestRegressor as RandomForestRegressorType
+else:
+    RandomForestRegressorType = Any
 try:
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.inspection import partial_dependence, permutation_importance
@@ -40,7 +43,6 @@ except Exception:
     permutation_importance = None
     r2_score = None
     train_test_split = None
-
 
 AttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "asinh"]
@@ -2003,7 +2005,7 @@ def _perform_feature_analysis(
     skip_partial_dependence: bool = False,
     rf_n_jobs: int = 1,
     perm_n_jobs: int = 1,
-) -> tuple[pd.DataFrame, dict[str, Any], dict[str, pd.DataFrame], RandomForestRegressor | None]:
+) -> tuple[pd.DataFrame, dict[str, Any], dict[str, pd.DataFrame], RandomForestRegressorType | None]:
     """Compute feature importances using RandomForestRegressor.
 
     Parameters
@@ -2125,7 +2127,7 @@ def _perform_feature_analysis(
             n_test=0,
         )
 
-    model: RandomForestRegressor | None = RandomForestRegressor(
+    model: RandomForestRegressorType | None = RandomForestRegressor(
         n_estimators=400,
         max_depth=None,
         random_state=seed,

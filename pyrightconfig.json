@@ -1,0 +1,18 @@
+{
+  "include": [
+    "quickadapter/user_data/freqaimodels",
+    "quickadapter/user_data/strategies",
+    "ReforceXY/reward_space_analysis/reward_space_analysis.py",
+    "ReforceXY/user_data/freqaimodels",
+    "ReforceXY/user_data/strategies"
+  ],
+  "extraPaths": ["/freqtrade"],
+  "executionEnvironments": [
+    {
+      "root": "quickadapter",
+      "extraPaths": ["/freqtrade", "quickadapter/user_data/strategies"]
+    }
+  ],
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "standard"
+}
