@@ -7,6 +7,12 @@
     "ReforceXY/user_data/strategies"
   ],
   "extraPaths": ["/freqtrade"],
+  "executionEnvironments": [
+    {
+      "root": "quickadapter",
+      "extraPaths": ["/freqtrade", "quickadapter/user_data/strategies"]
+    }
+  ],
   "pythonPlatform": "Linux",
   "typeCheckingMode": "standard"
 }
