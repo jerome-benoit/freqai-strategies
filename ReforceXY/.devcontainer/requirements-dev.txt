@@ -1,4 +1,5 @@
 pandas-stubs==3.0.5.260730
 scipy-stubs==1.17.1.1
-uv==0.12.7
+uv
+ruff
 basedpyright==1.39.10

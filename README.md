@@ -483,7 +483,7 @@ Review the generated `.basedpyright/diagnostics.json` diff. Use the ReforceXY im
 and `--project reforcexy` for its snapshot. The wrapper rejects direct host and
 wrong-image execution so Freqtrade imports and dependency versions remain exact.
 
-The QA dependency versions are pinned in each project's
+The BasedPyright and type-stub versions are pinned in each project's
 `.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally
 follow their rolling `stable_freqai` and `stable_freqairl` tags, so record the
 resolved image digests when a reproducible audit is required.
