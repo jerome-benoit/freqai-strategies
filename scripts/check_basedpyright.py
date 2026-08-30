@@ -124,8 +124,8 @@ def _resolve_repo_path(path: str, *, must_exist: bool) -> Path:
         resolved.relative_to(REPO_ROOT)
     except ValueError as error:
         raise QualityCheckError(f"Path is outside the repository: {path}") from error
-    if must_exist and not resolved.exists():
-        raise QualityCheckError(f"Repository path does not exist: {path}")
+    if must_exist and not resolved.is_file():
+        raise QualityCheckError(f"Repository file does not exist: {path}")
     return resolved
 
 
@@ -228,7 +228,11 @@ def _validate_snapshot(value: object) -> dict[str, object]:
     if frozenset(snapshot) != SNAPSHOT_KEYS:
         raise QualityCheckError("Snapshot has missing or unknown keys")
     schema_version = snapshot["schemaVersion"]
-    if isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != SCHEMA_VERSION
+    ):
         raise QualityCheckError(f"Snapshot schemaVersion must be {SCHEMA_VERSION}")
     version = _require_scalar_string(
         snapshot["basedpyrightVersion"], "Snapshot basedpyrightVersion", nonempty=True

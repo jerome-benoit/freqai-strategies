@@ -78,9 +78,21 @@ class ExactSnapshotTests(unittest.TestCase):
         with self.assertRaises(checker.QualityCheckError):
             checker._snapshot_from_child(self._child([self._diagnostic(range=inverted)]))
 
+    def test_child_rejects_directory_as_file(self) -> None:
+        with self.assertRaises(checker.QualityCheckError):
+            checker._snapshot_from_child(
+                self._child([self._diagnostic(file=str(checker.REPO_ROOT))])
+            )
+
     def test_snapshot_rejects_unknown_keys(self) -> None:
         snapshot = checker._snapshot_from_child(self._child())
         snapshot["unexpected"] = True
+        with self.assertRaises(checker.QualityCheckError):
+            checker._validate_snapshot(snapshot)
+
+    def test_snapshot_rejects_float_schema_version(self) -> None:
+        snapshot = checker._snapshot_from_child(self._child())
+        snapshot["schemaVersion"] = 1.0
         with self.assertRaises(checker.QualityCheckError):
             checker._validate_snapshot(snapshot)
 
