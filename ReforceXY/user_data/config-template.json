@@ -142,7 +142,7 @@
         32
       ],
       "inlier_metric_window": 0,
-      "noise_standard_deviation": 0.02,
+      "noise_standard_deviation": 0,
       "reverse_train_test_order": false,
       "plot_feature_importances": 0,
       "buffer_train_data_candles": 100
@@ -154,7 +154,8 @@
     },
     "model_training_parameters": {
       "device": "auto",
-      "verbose": 1
+      "verbose": 1,
+      "seed": 42 // Fixed across Optuna trials; evaluate the selected parameters over multiple seeds offline
     },
     "rl_config": {
       "model_type": "MaskablePPO",
@@ -168,6 +169,9 @@
       },
       "train_cycles": 25,
       "add_state_info": true,
+      "validation_holdout_fraction": 0.5, // Chronological fraction of FreqAI's test block reserved for one-shot final evaluation
+      "n_eval_envs": 1, // A single deterministic chronological validation path
+      "n_eval_episodes": 1, // Repeating the same path is not an independent replication
       "cpu_count": 4,
       "max_training_drawdown_pct": 0.02,
       "n_envs": 8, // Number of DummyVecEnv or SubProcVecEnv training environments
@@ -184,7 +188,9 @@
       "enabled": true, // Enable optuna hyperopt
       "n_trials": 100,
       "n_startup_trials": 15,
-      "timeout_hours": 0
+      "timeout_hours": 0,
+      "timeout_min_completed_trials": 15, // Fail closed on timeout unless this many trials completed
+      "seed": 42 // Optuna sampler seed; independent from the fixed model seed above
     }
   },
   "bot_name": "freqtrade-ReforceXY",
