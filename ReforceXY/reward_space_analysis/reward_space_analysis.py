@@ -16,6 +16,7 @@ import numbers
 import pickle
 import random
 import warnings
+from decimal import Decimal, localcontext
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -70,16 +71,17 @@ _LOG_2 = math.log(2.0)
 
 DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 
-# Tolerance for PBRS invariance classification.
+# Tolerance for PBRS algebraic-conformance classification.
 #
 # When `reward_invariance_correction` is available (reward_shaping - reward_pbrs_delta),
-# canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL.
-#
-# When that diagnostic column is not available (e.g., reporting from partial datasets),
-# we fall back to the weaker heuristic |Σ shaping| < PBRS_INVARIANCE_TOL.
+# canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL. A raw
+# shaping sum is never a classifier: for gamma < 1, only the discounted shaping
+# sum has the PBRS telescoping interpretation.
 PBRS_INVARIANCE_TOL: float = 1e-6
 # Default discount factor γ for potential-based reward shaping
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
+BASE_ENVIRONMENT_FEE_FALLBACK: float = 0.0015
+MIN_LIQUIDATION_VALUE: float = 1e-12
 
 # Default risk/reward ratio (RR)
 RISK_REWARD_RATIO_DEFAULT: float = 2.0
@@ -134,6 +136,8 @@ _ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
     "invalid_action": -2.0,
     "base_factor": 100.0,
+    # One fee mirrors the native LocalTrade open/close fee inputs.
+    "fee_rate": BASE_ENVIRONMENT_FEE_FALLBACK,
     # Idle penalty defaults
     "idle_penalty_ratio": 1.0,
     "idle_penalty_power": 1.025,
@@ -191,6 +195,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
 DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "invalid_action": "Penalty for invalid actions",
     "base_factor": "Base reward scale",
+    "fee_rate": "Unified fee rate used by Freqtrade spot LocalTrade",
     "idle_penalty_power": "Idle penalty exponent",
     "idle_penalty_ratio": "Idle penalty ratio",
     "max_trade_duration_candles": "Trade duration cap (candles)",
@@ -241,6 +246,7 @@ _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     # key: {min: ..., max: ...}  (bounds are inclusive where it makes sense)
     "invalid_action": {"max": 0.0},  # penalty should be <= 0
     "base_factor": {"min": 0.0},
+    "fee_rate": {"min": 0.0, "max": 0.1},
     "idle_penalty_power": {"min": 0.0},
     "idle_penalty_ratio": {"min": 0.0},
     "max_trade_duration_candles": {"min": 1.0},
@@ -3014,37 +3020,43 @@ def _get_potential_gamma(params: RewardParams) -> float:
 # === PBRS IMPLEMENTATION ===
 
 
-def _get_fee_rates(params: RewardParams) -> tuple[float, float]:
-    """Return clamped `(entry_fee_rate, exit_fee_rate)`.
+def _get_fee_rate(params: RewardParams) -> float:
+    """Return the unified fee used by Freqtrade's spot ``LocalTrade``.
 
-    Semantics follow Freqtrade's `BaseEnvironment` fee helpers:
-    - Entry fee is applied as multiplication: `price * (1 + entry_fee_rate)`.
-    - Exit fee is applied as division: `price / (1 + exit_fee_rate)`.
-
-    Notes:
-    - Supports two tunables (`entry_fee_rate`, `exit_fee_rate`).
-    - Missing/non-finite values fall back to the min bound (usually 0.0).
-    - Values are clamped to `_PARAMETER_BOUNDS`.
-
-    This function intentionally clamps (never raises) so callers do not need to
-    pre-run `validate_reward_parameters()`.
+    Runtime supplies the same pair-specific fee to ``LocalTrade.fee_open`` and
+    ``LocalTrade.fee_close``. ``entry_fee_rate`` and ``exit_fee_rate`` remain
+    accepted only as migration aliases. When asymmetric legacy values are
+    supplied, the larger value is used conservatively and a warning is emitted.
     """
 
-    raw_entry_fee_rate = _get_float_param(params, "entry_fee_rate")
-    raw_exit_fee_rate = _get_float_param(params, "exit_fee_rate")
+    if "fee_rate" in params:
+        raw_fee_rate = _get_float_param(params, "fee_rate")
+    else:
+        entry_fee_rate = _get_float_param(params, "entry_fee_rate", 0.0)
+        exit_fee_rate = _get_float_param(params, "exit_fee_rate", 0.0)
+        raw_fee_rate = max(entry_fee_rate, exit_fee_rate)
+        if not np.isclose(entry_fee_rate, exit_fee_rate):
+            warnings.warn(
+                "Param: asymmetric legacy fee rates cannot mirror Freqtrade; "
+                f"using conservative fee_rate={raw_fee_rate:.6g}",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
 
-    entry_fee_rate, _ = _clamp_float_to_bounds(
-        "entry_fee_rate",
-        float(raw_entry_fee_rate),
-        strict=False,
-    )
-    exit_fee_rate, _ = _clamp_float_to_bounds(
-        "exit_fee_rate",
-        float(raw_exit_fee_rate),
-        strict=False,
-    )
+    fee_rate = float(raw_fee_rate)
+    max_fee_rate = float(_PARAMETER_BOUNDS["fee_rate"]["max"])
+    if not np.isfinite(fee_rate) or not 0.0 <= fee_rate <= max_fee_rate:
+        raise ValueError(
+            f"Reward: fee_rate must be finite within [0, {max_fee_rate}], got {fee_rate!r}"
+        )
+    return fee_rate
 
-    return entry_fee_rate, exit_fee_rate
+
+def _get_fee_rates(params: RewardParams) -> tuple[float, float]:
+    """Return symmetric fee rates for backward-compatible helper callers."""
+
+    fee_rate = _get_fee_rate(params)
+    return fee_rate, fee_rate
 
 
 def _apply_entry_fee(price: float, entry_fee_rate: float) -> float:
@@ -3054,7 +3066,7 @@ def _apply_entry_fee(price: float, entry_fee_rate: float) -> float:
 def _apply_exit_fee(price: float, exit_fee_rate: float) -> float:
     denom = 1.0 + exit_fee_rate
     if denom <= 0.0 or not np.isfinite(denom):
-        return float(price)
+        raise ValueError(f"Reward: invalid exit fee denominator {denom!r}")
     return float(price / denom)
 
 
@@ -3065,45 +3077,69 @@ def _compute_unrealized_pnl_estimate(
     current_open: float,
     params: RewardParams,
 ) -> float:
-    """Estimate unrealized PnL using fee application parity with Freqtrade.
+    """Retain the historical BaseEnvironment estimate for analytical PBRS.
 
-    Long:
-        entry_price = entry_open * (1 + entry_fee_rate)
-        current_price = current_open / (1 + exit_fee_rate)
-        pnl = (current_price - entry_price) / entry_price
-
-    Short:
-        entry_price = entry_open / (1 + exit_fee_rate)
-        current_price = current_open * (1 + entry_fee_rate)
-        pnl = (entry_price - current_price) / entry_price
+    This helper is compatibility-only and is selected only when the
+    non-promotable ``hold_potential_enabled`` mode is active. Promotable
+    analysis uses ``_compute_spot_local_trade_pnl_estimate``.
     """
 
     if position not in (Positions.Long, Positions.Short):
         return 0.0
 
     if not np.isfinite(entry_open) or entry_open <= 0.0:
-        return 0.0
+        raise ValueError(f"Reward: entry_open must be finite and positive, got {entry_open!r}")
     if not np.isfinite(current_open) or current_open <= 0.0:
-        return 0.0
+        raise ValueError(f"Reward: current_open must be finite and positive, got {current_open!r}")
 
     entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
 
     if position == Positions.Long:
         current_price = _apply_exit_fee(current_open, exit_fee_rate)
         entry_price = _apply_entry_fee(entry_open, entry_fee_rate)
-        if entry_price == 0.0 or not np.isfinite(entry_price):
-            return 0.0
+        if entry_price <= 0.0 or not np.isfinite(entry_price):
+            raise ValueError(f"Reward: invalid long entry price {entry_price!r}")
         pnl = (current_price - entry_price) / entry_price
     else:
         current_price = _apply_entry_fee(current_open, entry_fee_rate)
         entry_price = _apply_exit_fee(entry_open, exit_fee_rate)
-        if entry_price == 0.0 or not np.isfinite(entry_price):
-            return 0.0
+        if entry_price <= 0.0 or not np.isfinite(entry_price):
+            raise ValueError(f"Reward: invalid short entry price {entry_price!r}")
         pnl = (entry_price - current_price) / entry_price
 
     if not np.isfinite(pnl):
-        return 0.0
+        raise ValueError(f"Reward: unrealized PnL is not finite: {pnl!r}")
     return float(pnl)
+
+
+def _compute_spot_local_trade_pnl_estimate(
+    position: Positions,
+    *,
+    entry_open: float,
+    current_open: float,
+    params: RewardParams,
+) -> float:
+    """Mirror ``LocalTrade.calc_profit_ratio`` for spot leverage-one analysis."""
+    if position == Positions.Neutral:
+        return 0.0
+
+    fee_rate = _get_fee_rate(params)
+    with localcontext() as context:
+        context.prec = 64
+        entry_value = Decimal(str(entry_open))
+        mark_value = Decimal(str(current_open))
+        fee_value = Decimal(str(fee_rate))
+        entry_fee = entry_value * fee_value
+        mark_fee = mark_value * fee_value
+        if position == Positions.Long:
+            open_trade_value = float(entry_value + entry_fee)
+            close_trade_value = float(mark_value - mark_fee)
+            pnl = close_trade_value / open_trade_value - 1.0
+        else:
+            open_trade_value = float(entry_value - entry_fee)
+            close_trade_value = float(mark_value + mark_fee)
+            pnl = 1.0 - close_trade_value / open_trade_value
+    return round(pnl, 8) + 0.0
 
 
 def _loss_duration_multiplier(pnl_ratio: float, risk_reward_ratio: float) -> float:
@@ -4387,14 +4423,41 @@ def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
 
-    params = dict(DEFAULT_MODEL_REWARD_PARAMETERS)
-    # Merge CLI tunables first (only those explicitly provided)
     _tunable_keys = set(DEFAULT_MODEL_REWARD_PARAMETERS.keys())
-    for key, value in vars(args).items():
-        if key in _tunable_keys and value is not None:
-            params[key] = value
-    # Then apply --params KEY=VALUE overrides (highest precedence)
-    params.update(parse_overrides(args.params))
+    cli_params = {
+        key: value
+        for key, value in vars(args).items()
+        if key in _tunable_keys and value is not None
+    }
+    override_params = parse_overrides(args.params)
+    params = {
+        **DEFAULT_MODEL_REWARD_PARAMETERS,
+        **cli_params,
+        **override_params,
+    }
+    # Translate explicitly supplied legacy fee aliases into the unified
+    # ``fee_rate`` before they are masked by the canonical default:
+    # ``params`` always carries ``fee_rate``, so ``_get_fee_rate()`` alone
+    # cannot distinguish a default from user intent.
+    if "fee_rate" not in cli_params and "fee_rate" not in override_params:
+        supplied_legacy_fees = [
+            float(params[key])
+            for key in ("entry_fee_rate", "exit_fee_rate")
+            if key in cli_params or key in override_params
+        ]
+        if supplied_legacy_fees:
+            if len(supplied_legacy_fees) > 1 and not np.isclose(
+                supplied_legacy_fees[0], supplied_legacy_fees[1]
+            ):
+                warnings.warn(
+                    "CLI: asymmetric legacy fee rates cannot mirror Freqtrade; "
+                    f"using conservative fee_rate={max(supplied_legacy_fees):.6g}",
+                    RewardDiagnosticsWarning,
+                    stacklevel=2,
+                )
+            params.pop("entry_fee_rate", None)
+            params.pop("exit_fee_rate", None)
+            params["fee_rate"] = max(supplied_legacy_fees)
 
     params_validated, adjustments = validate_reward_parameters(
         params, strict=args.strict_validation
