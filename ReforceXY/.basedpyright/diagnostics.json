@@ -353,203 +353,223 @@
     },
     {
       "endCharacter": 56,
-      "endLine": 2964,
+      "endLine": 2966,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"mean\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 43,
-      "startLine": 2964
+      "startLine": 2966
     },
     {
       "endCharacter": 55,
-      "endLine": 2964,
+      "endLine": 2966,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"mean\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 51,
-      "startLine": 2964
+      "startLine": 2966
     },
     {
       "endCharacter": 62,
-      "endLine": 2965,
+      "endLine": 2967,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"std\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 42,
-      "startLine": 2965
+      "startLine": 2967
     },
     {
       "endCharacter": 53,
-      "endLine": 2965,
+      "endLine": 2967,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"std\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 2965
+      "startLine": 2967
+    },
+    {
+      "endCharacter": 23,
+      "endLine": 2968,
+      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
+      "message": "No overloads for \"ptp\" match the provided arguments",
+      "rule": "reportCallIssue",
+      "severity": "error",
+      "startCharacter": 11,
+      "startLine": 2968
+    },
+    {
+      "endCharacter": 22,
+      "endLine": 2968,
+      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
+      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"ptp\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 18,
+      "startLine": 2968
     },
     {
       "endCharacter": 39,
-      "endLine": 2966,
+      "endLine": 2995,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"skew\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 23,
-      "startLine": 2966
+      "startLine": 2995
     },
     {
       "endCharacter": 38,
-      "endLine": 2966,
+      "endLine": 2995,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"ToFloatND\" in function \"skew\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 2966
+      "startLine": 2995
     },
     {
       "endCharacter": 56,
-      "endLine": 2967,
+      "endLine": 2996,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"kurtosis\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 23,
-      "startLine": 2967
+      "startLine": 2996
     },
     {
       "endCharacter": 42,
-      "endLine": 2967,
+      "endLine": 2996,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"ToFloatND\" in function \"kurtosis\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 38,
-      "startLine": 2967
+      "startLine": 2996
     },
     {
       "endCharacter": 50,
-      "endLine": 2978,
+      "endLine": 3007,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"shapiro\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 2978
+      "startLine": 3007
     },
     {
       "endCharacter": 49,
-      "endLine": 2978,
+      "endLine": 3007,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"x\" of type \"ToFloat | ToFloatND\" in function \"shapiro\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloat | ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloat | ToFloatND\"\n      \"ExtensionArray\" is not assignable to \"float\"\n      \"ExtensionArray\" is not assignable to \"floating[Any]\"\n      \"ExtensionArray\" is not assignable to \"integer[Any]\"\n      \"ExtensionArray\" is not assignable to \"numpy.bool[builtins.bool]\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 45,
-      "startLine": 2978
+      "startLine": 3007
     },
     {
       "endCharacter": 39,
-      "endLine": 2983,
+      "endLine": 3013,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"x\" of type \"ToFloatND\" in function \"anderson\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 35,
-      "startLine": 2983
+      "startLine": 3013
     },
     {
       "endCharacter": 61,
-      "endLine": 2990,
+      "endLine": 3020,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"x\" of type \"ToFloat | ToFloatND\" in function \"probplot\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloat | ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloat | ToFloatND\"\n      \"ExtensionArray\" is not assignable to \"float\"\n      \"ExtensionArray\" is not assignable to \"floating[Any]\"\n      \"ExtensionArray\" is not assignable to \"integer[Any]\"\n      \"ExtensionArray\" is not assignable to \"numpy.bool[builtins.bool]\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 57,
-      "startLine": 2990
+      "startLine": 3020
     },
     {
       "endCharacter": 17,
-      "endLine": 3788,
+      "endLine": 3818,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Declaration \"reward_params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 4,
-      "startLine": 3788
+      "startLine": 3818
     },
     {
       "endCharacter": 5,
-      "endLine": 3792,
+      "endLine": 3822,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 3788
+      "startLine": 3818
     },
     {
       "endCharacter": 43,
-      "endLine": 3789,
+      "endLine": 3819,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3789
+      "startLine": 3819
     },
     {
       "endCharacter": 42,
-      "endLine": 3789,
+      "endLine": 3819,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 3789
+      "startLine": 3819
     },
     {
       "endCharacter": 9,
-      "endLine": 3935,
+      "endLine": 3965,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 38,
-      "startLine": 3931
+      "startLine": 3961
     },
     {
       "endCharacter": 47,
-      "endLine": 3932,
+      "endLine": 3962,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 3932
+      "startLine": 3962
     },
     {
       "endCharacter": 46,
-      "endLine": 3932,
+      "endLine": 3962,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 17,
-      "startLine": 3932
+      "startLine": 3962
     },
     {
       "endCharacter": 14,
-      "endLine": 4671,
+      "endLine": 4701,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Declaration \"sim_params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 4,
-      "startLine": 4671
+      "startLine": 4701
     },
     {
       "endCharacter": 51,
