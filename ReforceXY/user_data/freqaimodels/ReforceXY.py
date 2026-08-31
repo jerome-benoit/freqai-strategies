@@ -537,6 +537,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
+    _OPTUNAHUB_REGISTRY_REF: Final[str] = "a2b07129160c004da894c2ccbe1ff2fee05d6614"
     _VALIDATION_SEED_OFFSET: Final[int] = 10_000
     _HOLDOUT_SEED_OFFSET: Final[int] = 20_000
     _OPTUNA_STUDY_CONTRACT_SCHEMA_VERSION: Final[int] = 3
@@ -2266,6 +2267,23 @@ class ReforceXY(BaseReinforcementLearningModel):
         return digest.hexdigest()
 
     @staticmethod
+    def _sampler_provenance_contract(sampler: Any) -> dict[str, Any]:
+        """Return sampler provenance for the study source contract.
+
+        The OptunaHub registry ref is recorded only when the resolved sampler
+        actually comes from OptunaHub: pinning the ref into every contract
+        would invalidate TPE studies on unrelated registry bumps.
+        """
+        provenance: dict[str, Any] = {
+            "sampler": ReforceXY._source_contract_digest("sampler", (type(sampler),)),
+        }
+        sampler_type = type(sampler)
+        module = getattr(sampler_type, "__module__", "").lower()
+        if "optunahub" in module or sampler_type.__name__ == "AutoSampler":
+            provenance["optunahub_registry_ref"] = ReforceXY._OPTUNAHUB_REGISTRY_REF
+        return provenance
+
+    @staticmethod
     def _material_environment_constants() -> dict[str, Any]:
         try:
             environment_source = inspect.getsource(MyRLEnv)
@@ -2390,7 +2408,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     type(self)._normalize_position,
                 ),
             ),
-            "sampler": ReforceXY._source_contract_digest("sampler", (type(sampler),)),
+            **ReforceXY._sampler_provenance_contract(sampler),
             "pruner": ReforceXY._source_contract_digest("pruner", (type(pruner),)),
         }
         model_params = self.get_model_params()
@@ -2516,6 +2534,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         compatibility_source = {key: value for key, value in contract.items() if key != "data"}
         compatibility_source["context"] = {
             key: value for key, value in contract["context"].items() if key != "training_window"
+        }
+        # An OptunaHub registry pin bump must not invalidate cross-window
+        # best-params warm start: provenance stays in the full study contract
+        # while the compatibility identity stays pin-independent.
+        compatibility_source["source"] = {
+            key: value
+            for key, value in contract["source"].items()
+            if key != "optunahub_registry_ref"
         }
         compatibility_hash = hashlib.sha256(
             ReforceXY._canonical_optuna_contract_json(
@@ -3253,7 +3279,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Hyperopt [global]: using AutoSampler (seed=%d)",
                     seed,
                 )
-                return optunahub.load_module("samplers/auto_sampler").AutoSampler(seed=seed)
+                return optunahub.load_module(
+                    "samplers/auto_sampler",
+                    ref=ReforceXY._OPTUNAHUB_REGISTRY_REF,
+                ).AutoSampler(seed=seed)
             case _:
                 assert_never(sampler)
 
