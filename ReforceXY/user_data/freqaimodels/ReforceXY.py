@@ -668,6 +668,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._pending_optuna_best_trial_params: dict[str, Any] | None = None
         self._pending_optuna_best_trial_metadata: dict[str, str] | None = None
         self._model_params_cache: dict[str, Any] | None = None
+        self.optuna_run_status: str = "pending" if self.hyperopt else "disabled"
         self._training_splits: dict[str, _TrainingSplit] = {}
         self._lstm_states_cache: dict[
             str,
@@ -3318,6 +3319,41 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
 
     def optimize(
+        self,
+        dk: FreqaiDataKitchen,
+        total_timesteps: int,
+        train_df: DataFrame,
+        validation_df: DataFrame,
+        prices_train: DataFrame,
+        prices_validation: DataFrame,
+    ) -> dict[str, Any]:
+        """Run Optuna and classify every setup or execution interruption."""
+        self.optuna_run_status = "running"
+        try:
+            resolved = self._optimize(
+                dk,
+                total_timesteps,
+                train_df,
+                validation_df,
+                prices_train,
+                prices_validation,
+            )
+            if self.optuna_run_status == "running":
+                self.optuna_run_status = "completed"
+            return resolved
+        except KeyboardInterrupt:
+            self.optuna_run_status = "interrupted"
+            raise
+        except Exception:
+            self.optuna_run_status = "failed"
+            raise
+        finally:
+            # SystemExit/GeneratorExit are not Exception; ensure the run status is
+            # never left stuck at "running" for any escaping BaseException.
+            if self.optuna_run_status == "running":
+                self.optuna_run_status = "interrupted"
+
+    def _optimize(
         self,
         dk: FreqaiDataKitchen,
         total_timesteps: int,
