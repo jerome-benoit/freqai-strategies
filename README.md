@@ -426,6 +426,8 @@ docker compose up -d --build
 
 PPO, MaskablePPO, RecurrentPPO, DQN, QRDQN
 
+RecurrentPPO is restricted to backtesting and hyperopt: it is rejected in dry-run and live because ReforceXY does not maintain complete causal observation history or durable episode state across process restarts.
+
 ### Configuration tunables
 
 The documented list of model tunables is at the top of the
