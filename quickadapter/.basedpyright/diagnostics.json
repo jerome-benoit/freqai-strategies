@@ -925,7 +925,7 @@
       "endCharacter": 68,
       "endLine": 3601,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Type \"Incomplete | NDArray[floating[Any]] | floating[Any] | NDArray[float64]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  Type \"Incomplete | NDArray[floating[Any]] | floating[Any] | NDArray[float64]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"floating[Any]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
+      "message": "Type \"floating[Any] | NDArray[float64]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  Type \"floating[Any] | NDArray[float64]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"floating[Any]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportReturnType",
       "severity": "error",
       "startCharacter": 15,
@@ -952,16 +952,6 @@
       "startLine": 3637
     },
     {
-      "endCharacter": 27,
-      "endLine": 3705,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[floating[Any]] | None\" cannot be assigned to parameter \"weights\" of type \"NDArray[floating[Any]]\" in function \"_distance_to_reference\"\n  Type \"Unknown | NDArray[floating[Any]] | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 3705
-    },
-    {
       "endCharacter": 9,
       "endLine": 3748,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
@@ -982,26 +972,6 @@
       "startLine": 3747
     },
     {
-      "endCharacter": 27,
-      "endLine": 3796,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[floating[Any]] | None\" cannot be assigned to parameter \"weights\" of type \"NDArray[floating[Any]]\" in function \"_distance_to_reference\"\n  Type \"Unknown | NDArray[floating[Any]] | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 3796
-    },
-    {
-      "endCharacter": 27,
-      "endLine": 3806,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[floating[Any]] | None\" cannot be assigned to parameter \"weights\" of type \"NDArray[floating[Any]]\" in function \"_distance_to_reference\"\n  Type \"Unknown | NDArray[floating[Any]] | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 3806
-    },
-    {
       "endCharacter": 9,
       "endLine": 3845,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
@@ -1020,16 +990,6 @@
       "severity": "error",
       "startCharacter": 19,
       "startLine": 3843
-    },
-    {
-      "endCharacter": 82,
-      "endLine": 4051,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Type \"NDArray[floating[Any] | integer[Any]]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  \"ndarray[_AnyShape, dtype[floating[Any] | integer[Any]]]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n    Type parameter \"_DTypeT_co@ndarray\" is covariant, but \"dtype[floating[Any] | integer[Any]]\" is not a subtype of \"dtype[floating[Any]]\"\n      \"dtype[floating[Any] | integer[Any]]\" is not assignable to \"dtype[floating[Any]]\"\n        Type parameter \"_ScalarT_co@dtype\" is covariant, but \"floating[Any] | integer[Any]\" is not a subtype of \"floating[Any]\"\n          Type \"floating[Any] | integer[Any]\" is not assignable to type \"floating[Any]\"",
-      "rule": "reportReturnType",
-      "severity": "error",
-      "startCharacter": 19,
-      "startLine": 4051
     },
     {
       "endCharacter": 55,
@@ -1572,16 +1532,6 @@
       "startLine": 1088
     },
     {
-      "endCharacter": 70,
-      "endLine": 1184,
-      "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
-      "message": "Type \"floating[Any]\" is not assignable to return type \"float | None\"\n  Type \"floating[Any]\" is not assignable to type \"float | None\"\n    \"floating[Any]\" is not assignable to \"float\"\n    \"floating[Any]\" is not assignable to \"None\"",
-      "rule": "reportReturnType",
-      "severity": "error",
-      "startCharacter": 19,
-      "startLine": 1184
-    },
-    {
       "endCharacter": 73,
       "endLine": 1219,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
@@ -1992,46 +1942,6 @@
       "startLine": 1655
     },
     {
-      "endCharacter": 97,
-      "endLine": 2448,
-      "file": "quickadapter/user_data/strategies/Utils.py",
-      "message": "Type \"NDArray[floating[Any] | integer[Any]]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  \"ndarray[_AnyShape, dtype[floating[Any] | integer[Any]]]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n    Type parameter \"_DTypeT_co@ndarray\" is covariant, but \"dtype[floating[Any] | integer[Any]]\" is not a subtype of \"dtype[floating[Any]]\"\n      \"dtype[floating[Any] | integer[Any]]\" is not assignable to \"dtype[floating[Any]]\"\n        Type parameter \"_ScalarT_co@dtype\" is covariant, but \"floating[Any] | integer[Any]\" is not a subtype of \"floating[Any]\"\n          Type \"floating[Any] | integer[Any]\" is not assignable to type \"floating[Any]\"",
-      "rule": "reportReturnType",
-      "severity": "error",
-      "startCharacter": 15,
-      "startLine": 2448
-    },
-    {
-      "endCharacter": 97,
-      "endLine": 2450,
-      "file": "quickadapter/user_data/strategies/Utils.py",
-      "message": "Type \"NDArray[floating[Any] | integer[Any]]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  \"ndarray[_AnyShape, dtype[floating[Any] | integer[Any]]]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n    Type parameter \"_DTypeT_co@ndarray\" is covariant, but \"dtype[floating[Any] | integer[Any]]\" is not a subtype of \"dtype[floating[Any]]\"\n      \"dtype[floating[Any] | integer[Any]]\" is not assignable to \"dtype[floating[Any]]\"\n        Type parameter \"_ScalarT_co@dtype\" is covariant, but \"floating[Any] | integer[Any]\" is not a subtype of \"floating[Any]\"\n          Type \"floating[Any] | integer[Any]\" is not assignable to type \"floating[Any]\"",
-      "rule": "reportReturnType",
-      "severity": "error",
-      "startCharacter": 15,
-      "startLine": 2450
-    },
-    {
-      "endCharacter": 98,
-      "endLine": 2452,
-      "file": "quickadapter/user_data/strategies/Utils.py",
-      "message": "Type \"NDArray[floating[Any] | integer[Any]]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  \"ndarray[_AnyShape, dtype[floating[Any] | integer[Any]]]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n    Type parameter \"_DTypeT_co@ndarray\" is covariant, but \"dtype[floating[Any] | integer[Any]]\" is not a subtype of \"dtype[floating[Any]]\"\n      \"dtype[floating[Any] | integer[Any]]\" is not assignable to \"dtype[floating[Any]]\"\n        Type parameter \"_ScalarT_co@dtype\" is covariant, but \"floating[Any] | integer[Any]\" is not a subtype of \"floating[Any]\"\n          Type \"floating[Any] | integer[Any]\" is not assignable to type \"floating[Any]\"",
-      "rule": "reportReturnType",
-      "severity": "error",
-      "startCharacter": 15,
-      "startLine": 2452
-    },
-    {
-      "endCharacter": 97,
-      "endLine": 2454,
-      "file": "quickadapter/user_data/strategies/Utils.py",
-      "message": "Type \"NDArray[floating[Any] | integer[Any]]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  \"ndarray[_AnyShape, dtype[floating[Any] | integer[Any]]]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n    Type parameter \"_DTypeT_co@ndarray\" is covariant, but \"dtype[floating[Any] | integer[Any]]\" is not a subtype of \"dtype[floating[Any]]\"\n      \"dtype[floating[Any] | integer[Any]]\" is not assignable to \"dtype[floating[Any]]\"\n        Type parameter \"_ScalarT_co@dtype\" is covariant, but \"floating[Any] | integer[Any]\" is not a subtype of \"floating[Any]\"\n          Type \"floating[Any] | integer[Any]\" is not assignable to type \"floating[Any]\"",
-      "rule": "reportReturnType",
-      "severity": "error",
-      "startCharacter": 15,
-      "startLine": 2454
-    },
-    {
       "endCharacter": 83,
       "endLine": 2508,
       "file": "quickadapter/user_data/strategies/Utils.py",
@@ -2320,6 +2230,16 @@
       "severity": "error",
       "startCharacter": 31,
       "startLine": 4060
+    },
+    {
+      "endCharacter": 92,
+      "endLine": 4419,
+      "file": "quickadapter/user_data/strategies/Utils.py",
+      "message": "Type \"bool_ | bool\" is not assignable to return type \"bool\"\n  Type \"bool_ | bool\" is not assignable to type \"bool\"\n    \"numpy.bool[builtins.bool]\" is not assignable to \"bool\"",
+      "rule": "reportReturnType",
+      "severity": "error",
+      "startCharacter": 15,
+      "startLine": 4419
     },
     {
       "endCharacter": 85,
