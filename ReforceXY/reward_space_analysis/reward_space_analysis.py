@@ -3047,8 +3047,7 @@ def _get_fee_rate(params: RewardParams) -> float:
     max_fee_rate = float(_PARAMETER_BOUNDS["fee_rate"]["max"])
     if not np.isfinite(fee_rate) or not 0.0 <= fee_rate <= max_fee_rate:
         raise ValueError(
-            f"Reward: fee_rate must be finite within [0, {max_fee_rate}], "
-            f"got {fee_rate!r}"
+            f"Reward: fee_rate must be finite within [0, {max_fee_rate}], got {fee_rate!r}"
         )
     return fee_rate
 
