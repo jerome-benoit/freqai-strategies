@@ -1,6 +1,6 @@
 FROM freqtradeorg/freqtrade:stable_freqairl AS runtime
 
-ARG optuna_version=4.9.0
+ARG optuna_version=5.0.0
 ARG optuna_dashboard_version=0.20.0
 ARG optunahub_version=0.4.1
 ARG matplotlib_version=3.11.1
