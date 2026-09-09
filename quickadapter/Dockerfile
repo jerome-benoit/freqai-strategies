@@ -9,6 +9,7 @@ ARG ngboost_version=0.5.11
 ARG catboost_version=1.2.10
 ARG xgboost_version=3.4.1
 ARG lightgbm_version=4.7.0
+
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential git \
