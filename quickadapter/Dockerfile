@@ -8,7 +8,7 @@ ARG scikit_image_version=0.26.0
 ARG ngboost_version=0.5.11
 ARG catboost_version=1.2.10
 ARG xgboost_version=3.4.1
-
+ARG lightgbm_version=4.7.0
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential git \
@@ -25,7 +25,8 @@ RUN pip install --user --no-cache-dir \
     scikit-image==${scikit_image_version} \
     ngboost==${ngboost_version} \
     catboost==${catboost_version} \
-    xgboost==${xgboost_version}
+    xgboost==${xgboost_version} \
+    lightgbm==${lightgbm_version}
 
 LABEL org.opencontainers.image.source="freqai-strategies" \
       org.opencontainers.image.title="freqtrade-quickadapter" \

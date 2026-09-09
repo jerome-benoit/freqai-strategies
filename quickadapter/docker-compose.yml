@@ -25,6 +25,7 @@ services:
         ngboost_version: 0.5.11
         catboost_version: 1.2.10
         xgboost_version: 3.4.1
+        lightgbm_version: 4.7.0
     restart: unless-stopped
     container_name: freqtrade-quickadapter
     environment:
