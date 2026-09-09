@@ -7,6 +7,7 @@ ARG scikit_learn_extra_version=0.3.0
 ARG scikit_image_version=0.26.0
 ARG ngboost_version=0.5.11
 ARG catboost_version=1.2.10
+ARG xgboost_version=3.4.1
 
 USER root
 RUN apt-get update \
@@ -23,7 +24,8 @@ RUN pip install --user --no-cache-dir \
     scikit-learn-extra==${scikit_learn_extra_version} \
     scikit-image==${scikit_image_version} \
     ngboost==${ngboost_version} \
-    catboost==${catboost_version}
+    catboost==${catboost_version} \
+    xgboost==${xgboost_version}
 
 LABEL org.opencontainers.image.source="freqai-strategies" \
       org.opencontainers.image.title="freqtrade-quickadapter" \
