@@ -535,6 +535,19 @@ def _canonical_bytes(snapshot: Mapping[str, object]) -> bytes:
         raise QualityCheckError(f"Snapshot cannot be serialized: {error}") from error
 
 
+def _comparison_key(snapshot: Mapping[str, object]) -> bytes:
+    """Canonical comparison bytes with the tool version normalized out.
+
+    The recorded ``basedpyrightVersion`` stays in stored snapshots and in
+    ``--write`` output as provenance, but a tool upgrade that changes no
+    diagnostics must not fail the check: only the diagnostics (plus the
+    file inventory) form the acceptance contract.
+    """
+    comparable = dict(snapshot)
+    comparable["basedpyrightVersion"] = ""
+    return _canonical_bytes(comparable)
+
+
 def _validate_environment(project: Project) -> Path:
     marker = os.environ.get(QA_PROJECT_ENV)
     if marker != project.qa_marker:
@@ -675,11 +688,13 @@ def _check_project(project_name: str, *, write: bool) -> int:
 
     stored_snapshot = _read_snapshot(baseline)
     stored_bytes = _canonical_bytes(stored_snapshot)
-    if stored_bytes == current_bytes:
+    if _comparison_key(stored_snapshot) == _comparison_key(current_snapshot):
         print(
             f"BasedPyright snapshot matches for {project_name}: "
             f"{len(current_snapshot['diagnostics'])} diagnostics across "
-            f"{current_snapshot['filesAnalyzed']} analyzed files"
+            f"{current_snapshot['filesAnalyzed']} analyzed files "
+            f"(snapshot tool {stored_snapshot['basedpyrightVersion']}, "
+            f"current tool {current_snapshot['basedpyrightVersion']})"
         )
         return 0
 

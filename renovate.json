@@ -13,8 +13,8 @@
       "customType": "regex",
       "managerFilePatterns": ["**/Dockerfile*", "**/docker-compose*.yml"],
       "matchStrings": [
-        "ARG\\s+(?<depName>\\w+)_version=(?<currentValue>[^\\s]+)",
-        "\\s+(?<depName>\\w+)_version:\\s*(?<currentValue>[^\\s]+)"
+        "ARG\\s+(?<depName>\\w+)_version=(?<currentValue>\\d[^\\s]*)",
+        "\\s+(?<depName>\\w+)_version:\\s*(?<currentValue>\\d[^\\s]*)"
       ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "{{{replace '_' '-' depName}}}"
