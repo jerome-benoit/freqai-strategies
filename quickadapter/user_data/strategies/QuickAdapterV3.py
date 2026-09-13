@@ -123,22 +123,19 @@ def _install_rpc_custom_data_cleanup_patch() -> None:
     Recheck RPC and request-context contracts on Freqtrade upgrades. Removal is
     harmless after upstream cleanup; a shared Trade session remains API-owned.
     """
-    from inspect import iscoroutinefunction
+    from inspect import iscoroutinefunction, unwrap
 
     from freqtrade.persistence.custom_data import _CustomData
     from freqtrade.persistence.models import _request_id_ctx_var
     from freqtrade.rpc.rpc import RPC
 
     original = RPC._rpc_analysed_dataframe
-    current = original
-    while True:
-        if getattr(current, _RPC_CUSTOM_DATA_SENTINEL, False):
-            return
-        wrapped = getattr(current, "__wrapped__", None)
-        if wrapped is None:
-            break
-        current = wrapped
-    if iscoroutinefunction(original):
+    current = unwrap(
+        original, stop=lambda method: bool(getattr(method, _RPC_CUSTOM_DATA_SENTINEL, False))
+    )
+    if getattr(current, _RPC_CUSTOM_DATA_SENTINEL, False):
+        return
+    if iscoroutinefunction(current):
         raise RuntimeError("QuickAdapter RPC cleanup requires a synchronous annotation RPC")
 
     @wraps(original)
