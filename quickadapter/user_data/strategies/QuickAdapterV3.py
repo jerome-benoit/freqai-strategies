@@ -3,7 +3,7 @@ import hashlib
 import logging
 import math
 from collections.abc import Callable
-from functools import cached_property, lru_cache, reduce
+from functools import cached_property, lru_cache, reduce, wraps
 from pathlib import Path
 from typing import (
     Any,
@@ -114,6 +114,58 @@ class _FinalTakeProfitState(TypedDict):
 logger = logging.getLogger(__name__)
 
 
+_RPC_CUSTOM_DATA_SENTINEL = "_quickadapter_rpc_custom_data_cleanup_patched"
+
+
+def _install_rpc_custom_data_cleanup_patch() -> None:
+    """Release the separate custom-data session leaked by Freqtrade 2026.8 annotations.
+
+    Recheck RPC and request-context contracts on Freqtrade upgrades. Removal is
+    harmless after upstream cleanup; a shared Trade session remains API-owned.
+    """
+    from inspect import iscoroutinefunction
+
+    from freqtrade.persistence.custom_data import _CustomData
+    from freqtrade.persistence.models import _request_id_ctx_var
+    from freqtrade.rpc.rpc import RPC
+
+    original = RPC._rpc_analysed_dataframe
+    current = original
+    while True:
+        if getattr(current, _RPC_CUSTOM_DATA_SENTINEL, False):
+            return
+        wrapped = getattr(current, "__wrapped__", None)
+        if wrapped is None:
+            break
+        current = wrapped
+    if iscoroutinefunction(original):
+        raise RuntimeError("QuickAdapter RPC cleanup requires a synchronous annotation RPC")
+
+    @wraps(original)
+    def analysed_dataframe(self, *args, **kwargs):
+        if _request_id_ctx_var.get() is None:
+            return original(self, *args, **kwargs)
+        failed = False
+        try:
+            return original(self, *args, **kwargs)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                session = _CustomData.session
+                if session is not Trade.session:
+                    session.remove()
+            except Exception:
+                if not failed:
+                    raise
+                logger.exception("Custom-data session cleanup failed after annotation RPC error")
+
+    setattr(analysed_dataframe, _RPC_CUSTOM_DATA_SENTINEL, True)
+    RPC._rpc_analysed_dataframe = analysed_dataframe
+    logger.info("Installed QuickAdapter annotation RPC custom-data session cleanup")
+
+
 class QuickAdapterV3(IStrategy):
     """
     The following freqtrade strategy is released to sponsors of the non-profit FreqAI open-source project.
@@ -209,6 +261,8 @@ class QuickAdapterV3(IStrategy):
     def __init__(self, config: dict[str, Any], *args, **kwargs) -> None:
         super().__init__(config, *args, **kwargs)
         migrate_config(self.config, logger)
+        if self.is_trade_runmode and self.config.get("api_server", {}).get("enabled", False):
+            _install_rpc_custom_data_cleanup_patch()
 
     @cached_property
     def timeframe_minutes(self) -> int:
