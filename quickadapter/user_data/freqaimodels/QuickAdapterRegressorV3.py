@@ -113,7 +113,7 @@ from Utils import (
     zigzag,
 )
 
-_DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
+_DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
@@ -125,7 +125,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     Indistinguishable legacy rows use last-write-wins; label magnitudes never rank rows.
     Invalid dates cannot match a candle and are discarded.
     """
-    date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
+    date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
     if valid.all() and date_pred.is_monotonic_increasing and date_pred.is_unique:
         if date_pred.dtype == frame["date_pred"].dtype:
@@ -159,25 +159,31 @@ def _install_date_pred_dedup_patch() -> None:
     """Repair persisted history and duplicates produced by older Freqtrade writers.
 
     Normalize before upstream positional writes and after legacy duplicate writes.
-    Already-clean upstream results are preserved. Recheck the three synchronous
+    Normalize before upstream disk repair can discard a recorded duplicate.
+    Already-clean upstream results are preserved. Recheck these synchronous
     method contracts on Freqtrade upgrades.
     """
-    originals = (
-        FreqaiDataDrawer.set_initial_return_values,
-        FreqaiDataDrawer.append_model_predictions,
-        FreqaiDataDrawer.attach_return_values_to_return_dataframe,
+    names = (
+        "set_initial_return_values",
+        "append_model_predictions",
+        "attach_return_values_to_return_dataframe",
     )
+    # Freqtrade 2026.7 has no per-frame disk-repair hook.
+    original_repair = getattr(FreqaiDataDrawer, "_repair_historic_predictions", None)
+    if original_repair is not None:
+        names += ("_repair_historic_predictions",)
+    originals = tuple(getattr(FreqaiDataDrawer, name) for name in names)
     pending = []
     for original in originals:
         current = unwrap(
             original, stop=lambda method: bool(getattr(method, _DATE_PRED_DEDUP_SENTINEL, False))
         )
         pending.append(not getattr(current, _DATE_PRED_DEDUP_SENTINEL, False))
-        if iscoroutinefunction(current):
-            raise RuntimeError("QuickAdapter prediction repair requires synchronous drawer methods")
+        if iscoroutinefunction(original) or iscoroutinefunction(current):
+            raise RuntimeError("FreqAI prediction repair requires synchronous drawer methods")
     if not any(pending):
         return
-    original_set_initial, original_append, original_attach = originals
+    original_set_initial, original_append, original_attach = originals[:3]
 
     @wraps(original_set_initial)
     def set_initial_return_values(
@@ -207,6 +213,9 @@ def _install_date_pred_dedup_patch() -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
             self.historic_predictions[pair]
         )
+        if self.historic_predictions[pair].empty and not strat_df.empty:
+            # Legacy append requires an initialized row; let upstream construct it.
+            original_set_initial(self, pair, pd.DataFrame(index=pd.RangeIndex(1)), strat_df.tail(1))
         original_append(self, pair, predictions, do_preds, dk, strat_df)
         history = self.historic_predictions[pair]
         repaired = _dedupe_historic_predictions_on_date_pred(history)
@@ -230,11 +239,15 @@ def _install_date_pred_dedup_patch() -> None:
         append_model_predictions,
         attach_return_values_to_return_dataframe,
     )
-    names = (
-        "set_initial_return_values",
-        "append_model_predictions",
-        "attach_return_values_to_return_dataframe",
-    )
+    if original_repair is not None:
+
+        @wraps(original_repair)
+        def repair_historic_predictions(self, pair: str, pair_df: pd.DataFrame) -> pd.DataFrame:
+            if "date_pred" in pair_df:
+                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df)
+            return original_repair(self, pair, pair_df)
+
+        replacements += (repair_historic_predictions,)
     for name, replacement, needed in zip(names, replacements, pending, strict=True):
         if needed:
             setattr(replacement, _DATE_PRED_DEDUP_SENTINEL, True)

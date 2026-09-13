@@ -133,10 +133,10 @@ def _install_rpc_custom_data_cleanup_patch() -> None:
     current = unwrap(
         original, stop=lambda method: bool(getattr(method, _RPC_CUSTOM_DATA_SENTINEL, False))
     )
+    if iscoroutinefunction(original) or iscoroutinefunction(current):
+        raise RuntimeError("QuickAdapter RPC cleanup requires a synchronous annotation RPC")
     if getattr(current, _RPC_CUSTOM_DATA_SENTINEL, False):
         return
-    if iscoroutinefunction(current):
-        raise RuntimeError("QuickAdapter RPC cleanup requires a synchronous annotation RPC")
 
     @wraps(original)
     def analysed_dataframe(self, *args, **kwargs):
