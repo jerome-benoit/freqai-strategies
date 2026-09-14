@@ -8,7 +8,8 @@ from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cached_property
+from functools import cached_property, wraps
+from inspect import iscoroutinefunction, unwrap
 from pathlib import Path
 from typing import (
     Any,
@@ -112,64 +113,95 @@ from Utils import (
     zigzag,
 )
 
-_DATE_PRED_DEDUP_SENTINEL = "_quickadapter_date_pred_dedup_patched"
+_DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return ``frame`` with a unique, chronologically ordered ``date_pred``,
-    keeping the most informative row per timestamp (a real prediction outranks a
-    zero/NaN placeholder). ``NaT`` ``date_pred`` rows are dropped: they match no
-    candle, and two or more of them break the ``validate="m:1"`` merge in
-    ``attach_return_values_to_return_dataframe`` (data_drawer.py:429-431) since
-    pandas treats repeated null keys as non-unique.
+    """Normalize dates and retain the latest recorded row per candle, in date order.
+
+    Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
+    prediction status. Those rows must not replace recorded predictions, including
+    zero predictions and rejected predictions (do_predict == 0 with a candle close).
+    Indistinguishable legacy rows use last-write-wins; label magnitudes never rank rows.
+    Invalid dates cannot match a candle and are discarded.
     """
-    date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce")
+    date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
-    if valid.all() and not date_pred[valid].duplicated().any():
-        return frame
-    work = frame.reset_index(drop=True)
-    content = [column for column in work.columns if column not in ("date_pred", "date")]
-    block = work[content]
-    numeric = block.apply(pd.to_numeric, errors="coerce")
-    is_numeric = numeric.notna()
-    informative = (block.notna() & is_numeric & numeric.ne(0)) | (block.notna() & ~is_numeric)
-    work = work.assign(
-        _dp=date_pred.to_numpy(),
-        _score=informative.sum(axis=1).to_numpy(),
-        _nonnull=block.notna().sum(axis=1).to_numpy(),
-        _order=work.index.to_numpy(),
+    if valid.all() and date_pred.is_monotonic_increasing and date_pred.is_unique:
+        if date_pred.dtype == frame["date_pred"].dtype:
+            return frame
+        result = frame.copy()
+        result["date_pred"] = date_pred
+        return result
+
+    recorded = np.zeros(len(frame), dtype=bool)
+    if "close_price" in frame:
+        close = pd.to_numeric(frame["close_price"], errors="coerce")
+        recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
+    if "do_predict" in frame:
+        status = pd.to_numeric(frame["do_predict"], errors="coerce")
+        recorded |= (status.notna() & status.ne(0)).to_numpy(dtype=bool)
+    # Rank only metadata, without copying or coercing all prediction columns.
+    order = pd.DataFrame(
+        {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
     )
-    contested = work[valid.to_numpy()].sort_values(
-        ["_dp", "_score", "_nonnull", "_order"], kind="stable"
+    kept = (
+        order.loc[valid.to_numpy()]
+        .sort_values(["date_pred", "recorded", "position"])
+        .drop_duplicates("date_pred", keep="last")
     )
-    kept = contested.drop_duplicates("_dp", keep="last")
-    return kept.drop(columns=["_dp", "_score", "_nonnull", "_order"]).reset_index(drop=True)
+    result = frame.iloc[kept.index].copy()
+    result["date_pred"] = date_pred.iloc[kept.index].array
+    return result.reset_index(drop=True)
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Keep ``FreqaiDataDrawer``'s per-pair prediction store free of duplicate
-    ``date_pred`` rows, which freqtrade 2026.7 does not deduplicate and its
-    ``validate="m:1"`` merge (data_drawer.py:429-431) then rejects with a
-    ``MergeError``. Duplicates persist across a crash or are re-created by the
-    positional trim in ``set_initial_return_values`` (data_drawer.py:319-321).
+    """Repair persisted history and duplicates produced by older Freqtrade writers.
 
-    Re-verify the three wrapped signatures against ``data_drawer.py`` on every
-    freqtrade bump.
+    Normalize before upstream positional writes and after legacy duplicate writes.
+    Normalize before upstream disk repair can discard a recorded duplicate.
+    Already-clean upstream results are preserved. Recheck these synchronous
+    method contracts on Freqtrade upgrades.
     """
-    if getattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, False):
+    names = (
+        "set_initial_return_values",
+        "append_model_predictions",
+        "attach_return_values_to_return_dataframe",
+    )
+    # Freqtrade 2026.7 has no per-frame disk-repair hook.
+    original_repair = getattr(FreqaiDataDrawer, "_repair_historic_predictions", None)
+    if original_repair is not None:
+        names += ("_repair_historic_predictions",)
+    originals = tuple(getattr(FreqaiDataDrawer, name) for name in names)
+    pending = []
+    for original in originals:
+        current = unwrap(
+            original, stop=lambda method: bool(getattr(method, _DATE_PRED_DEDUP_SENTINEL, False))
+        )
+        pending.append(not getattr(current, _DATE_PRED_DEDUP_SENTINEL, False))
+        if iscoroutinefunction(original) or iscoroutinefunction(current):
+            raise RuntimeError("FreqAI prediction repair requires synchronous drawer methods")
+    if not any(pending):
         return
-    original_set_initial = FreqaiDataDrawer.set_initial_return_values
-    original_append = FreqaiDataDrawer.append_model_predictions
-    original_attach = FreqaiDataDrawer.attach_return_values_to_return_dataframe
+    original_set_initial, original_append, original_attach = originals[:3]
 
+    @wraps(original_set_initial)
     def set_initial_return_values(
         self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
     ) -> None:
+        self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
+            self.historic_predictions[pair]
+        )
         original_set_initial(self, pair, pred_df, dataframe)
-        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
-        self.historic_predictions[pair] = frame
-        self.model_return_values[pair] = frame.tail(len(dataframe.index)).reset_index(drop=True)
+        history = self.historic_predictions[pair]
+        repaired = _dedupe_historic_predictions_on_date_pred(history)
+        if repaired is not history:
+            self.historic_predictions[pair] = repaired
+            self.model_return_values[pair] = repaired.tail(len(dataframe.index)).reset_index(
+                drop=True
+            )
 
+    @wraps(original_append)
     def append_model_predictions(
         self,
         pair: str,
@@ -178,11 +210,22 @@ def _install_date_pred_dedup_patch() -> None:
         dk: FreqaiDataKitchen,
         strat_df: pd.DataFrame,
     ) -> None:
+        self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
+            self.historic_predictions[pair]
+        )
+        if self.historic_predictions[pair].empty and not strat_df.empty:
+            # Legacy append requires an initialized row; let upstream construct it.
+            original_set_initial(self, pair, pd.DataFrame(index=pd.RangeIndex(1)), strat_df.tail(1))
         original_append(self, pair, predictions, do_preds, dk, strat_df)
-        frame = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
-        self.historic_predictions[pair] = frame
-        self.model_return_values[pair] = frame.tail(len(strat_df.index)).reset_index(drop=True)
+        history = self.historic_predictions[pair]
+        repaired = _dedupe_historic_predictions_on_date_pred(history)
+        if repaired is not history:
+            self.historic_predictions[pair] = repaired
+            self.model_return_values[pair] = repaired.tail(len(strat_df.index)).reset_index(
+                drop=True
+            )
 
+    @wraps(original_attach)
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
@@ -191,12 +234,24 @@ def _install_date_pred_dedup_patch() -> None:
         )
         return original_attach(self, pair, dataframe)
 
-    FreqaiDataDrawer.set_initial_return_values = set_initial_return_values
-    FreqaiDataDrawer.append_model_predictions = append_model_predictions
-    FreqaiDataDrawer.attach_return_values_to_return_dataframe = (
-        attach_return_values_to_return_dataframe
+    replacements = (
+        set_initial_return_values,
+        append_model_predictions,
+        attach_return_values_to_return_dataframe,
     )
-    setattr(FreqaiDataDrawer, _DATE_PRED_DEDUP_SENTINEL, True)
+    if original_repair is not None:
+
+        @wraps(original_repair)
+        def repair_historic_predictions(self, pair: str, pair_df: pd.DataFrame) -> pd.DataFrame:
+            if "date_pred" in pair_df:
+                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df)
+            return original_repair(self, pair, pair_df)
+
+        replacements += (repair_historic_predictions,)
+    for name, replacement, needed in zip(names, replacements, pending, strict=True):
+        if needed:
+            setattr(replacement, _DATE_PRED_DEDUP_SENTINEL, True)
+            setattr(FreqaiDataDrawer, name, replacement)
 
 
 _install_date_pred_dedup_patch()
@@ -309,7 +364,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.8"
+    version = "3.13.0-rc.9"
 
     _TEST_SIZE: Final[float] = 0.1
     _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
