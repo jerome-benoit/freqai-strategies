@@ -1,4 +1,4 @@
-pandas-stubs==3.0.5.260730
+pandas-stubs==3.0.5.260914
 scipy-stubs==1.18.1.0
 uv
 ruff
