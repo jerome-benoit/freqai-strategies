@@ -302,16 +302,6 @@
       "startLine": 2450
     },
     {
-      "endCharacter": 26,
-      "endLine": 2720,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Cannot access attribute \"size\" for class \"ExtensionArray\"\n  Attribute \"size\" is unknown",
-      "rule": "reportAttributeAccessIssue",
-      "severity": "error",
-      "startCharacter": 22,
-      "startLine": 2720
-    },
-    {
       "endCharacter": 29,
       "endLine": 2722,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
