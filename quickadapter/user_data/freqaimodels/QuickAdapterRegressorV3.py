@@ -3642,10 +3642,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         mode: ValidationMode = "none",
         p_ctx: str = "p",
     ) -> NDArray[np.floating]:
+        validated_p = QuickAdapterRegressorV3._validate_power_mean_p(p, ctx=p_ctx, mode=mode)
         power = (
             QuickAdapterRegressorV3._POWER_MEAN_MAP[distance_metric]
             if distance_metric in QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
-            else (QuickAdapterRegressorV3._validate_power_mean_p(p, ctx=p_ctx, mode=mode) or 1.0)
+            else (1.0 if validated_p is None else validated_p)
         )
         if weights is None:
             weights = np.ones(matrix.shape[1])
