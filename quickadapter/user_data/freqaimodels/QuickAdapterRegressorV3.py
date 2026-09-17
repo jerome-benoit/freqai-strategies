@@ -19,6 +19,7 @@ from typing import (
     NamedTuple,
     assert_never,
     cast,
+    get_args,
 )
 
 import numpy as np
@@ -267,6 +268,7 @@ ClusterMethod = Literal["kmeans", "kmeans2", "kmedoids"]
 DensityMethod = Literal["knn", "medoid"]
 SelectionMethod = DistanceMethod | ClusterMethod | DensityMethod
 ValidationMode = Literal["warn", "raise", "none"]
+_VALIDATION_MODES: Final[tuple[ValidationMode, ...]] = get_args(ValidationMode)
 SplitFn = Callable[[pd.DataFrame, pd.DataFrame, "SampleWeightInputs", pd.DataFrame], dict[str, Any]]
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -450,6 +452,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "cluster": _CLUSTER_METHODS,
         "density": _DENSITY_METHODS,
     }
+    _CATEGORY_DISTANCE, _CATEGORY_CLUSTER, _CATEGORY_DENSITY = _SELECTION_CATEGORIES
+    _SUPPORT_POLICY_FALLBACK: Final[Literal["fallback"]] = LABEL_WEIGHT_SUPPORT_POLICIES[0]
+    _SUPPORT_POLICY_RAISE: Final[Literal["raise"]] = LABEL_WEIGHT_SUPPORT_POLICIES[1]
 
     _SELECTION_METHODS: Final[tuple[SelectionMethod, ...]] = (
         *_DISTANCE_METHODS,
@@ -492,6 +497,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     # SciPy-compatible distance metrics: the first 8 entries of
     # ``_DISTANCE_METRICS`` route to ``scipy.spatial.distance.cdist``.
     _SCIPY_METRICS_SET: Final[frozenset[str]] = frozenset(_DISTANCE_METRICS[:8])
+    _STANDARDIZED_DISTANCE_METRICS_SET: Final[frozenset[str]] = frozenset(_DISTANCE_METRICS[5:7])
 
     _UNSUPPORTED_WEIGHTS_METRICS: Final[tuple[str, ...]] = (
         _DISTANCE_METRICS[6],  # "mahalanobis"
@@ -503,9 +509,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     )
 
     _PROBABILITY_DISTANCE_METRICS: Final[tuple[str, ...]] = (
-        "jensenshannon",
-        "hellinger",
-        "shellinger",
+        _DISTANCE_METRICS[7],
+        _METRIC_HELLINGER,
+        _METRIC_SHELLINGER,
     )
     _PROBABILITY_DISTANCE_METRICS_SET: Final[frozenset[str]] = frozenset(
         _PROBABILITY_DISTANCE_METRICS
@@ -543,11 +549,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     )
 
     _POWER_MEAN_MAP: Final[dict[str, float]] = {
-        "harmonic_mean": -1.0,
-        "geometric_mean": 0.0,
-        "arithmetic_mean": 1.0,
-        "quadratic_mean": 2.0,
-        "cubic_mean": 3.0,
+        _DISTANCE_METRICS[10]: -1.0,
+        _DISTANCE_METRICS[11]: 0.0,
+        _DISTANCE_METRICS[12]: 1.0,
+        _DISTANCE_METRICS[13]: 2.0,
+        _DISTANCE_METRICS[14]: 3.0,
     }
     _POWER_MEAN_METRICS_SET: Final[frozenset[str]] = frozenset(_POWER_MEAN_MAP)
 
@@ -781,7 +787,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_weights,
                 logger=logger,
                 context=context,
-                on_collapse="fallback",
+                on_collapse=LABEL_WEIGHT_SUPPORT_POLICIES[0],
             )
         except LabelWeightSupportError as exc:
             logger.warning(
@@ -808,12 +814,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """
         reason_text = "; ".join(reasons)
         match policy:
-            case "raise":
+            case QuickAdapterRegressorV3._SUPPORT_POLICY_RAISE:
                 raise ValueError(
                     f"{context}: label weighting support failed ({reason_text}); "
                     "support_policy='raise'"
                 )
-            case "fallback":
+            case QuickAdapterRegressorV3._SUPPORT_POLICY_FALLBACK:
                 logger.warning(
                     "%s: label weighting support failed (%s); "
                     "falling back to sanitized base weights (support_policy='fallback')",
@@ -1000,7 +1006,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> float | None:
         if value is None:
             return None
-        if mode == "none":
+        if mode == _VALIDATION_MODES[2]:
             return (
                 float(value)
                 if (np.isfinite(value) and (predicate is None or predicate(value)))
@@ -1009,14 +1015,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         if not np.isfinite(value):
             msg = f"Invalid {ctx} value {value!r}: must be finite"
-            if mode == "raise":
+            if mode == _VALIDATION_MODES[1]:
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
             return None
 
         if predicate is not None and not predicate(value):
             msg = f"Invalid {ctx} value {value!r}: {constraint}"
-            if mode == "raise":
+            if mode == _VALIDATION_MODES[1]:
                 raise ValueError(msg)
             logger.warning(f"{msg}, using default")
             return None
@@ -1025,7 +1031,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _validate_minkowski_p(
-        p: float | None, *, ctx: str, mode: ValidationMode = "raise"
+        p: float | None, *, ctx: str, mode: ValidationMode = _VALIDATION_MODES[1]
     ) -> float | None:
         return QuickAdapterRegressorV3._validate_scalar(
             p, ctx=ctx, mode=mode, predicate=lambda v: v > 0, constraint="must be > 0"
@@ -1036,7 +1042,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         distance_metric: str,
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
-        mode: ValidationMode = "none",
+        mode: ValidationMode = _VALIDATION_MODES[2],
         metric_ctx: str = "distance_metric",
         p_ctx: str = "p",
         *,
@@ -1056,7 +1062,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if validated_p is not None:
                 kwargs["p"] = validated_p
 
-        if distance_metric in {"seuclidean", "mahalanobis"}:
+        if distance_metric in QuickAdapterRegressorV3._STANDARDIZED_DISTANCE_METRICS_SET:
             if reference_matrix.shape[0] < 2 or not np.all(np.isfinite(reference_matrix)):
                 raise ValueError(
                     "Standardized distances require a finite full front with at least two rows"
@@ -1066,7 +1072,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 raise ValueError(
                     "Standardized distances require positive active-objective variances"
                 )
-            if distance_metric == "seuclidean":
+            if distance_metric == QuickAdapterRegressorV3._DISTANCE_METRICS[5]:
                 kwargs["V"] = variances
             else:
                 covariance = np.atleast_2d(np.cov(reference_matrix, rowvar=False, ddof=1))
@@ -1078,7 +1084,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _validate_quantile_q(
-        q: float | None, *, ctx: str, mode: ValidationMode = "raise"
+        q: float | None, *, ctx: str, mode: ValidationMode = _VALIDATION_MODES[1]
     ) -> float | None:
         return QuickAdapterRegressorV3._validate_scalar(
             q,
@@ -1090,22 +1096,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _validate_power_mean_p(
-        p: float | None, *, ctx: str, mode: ValidationMode = "raise"
+        p: float | None, *, ctx: str, mode: ValidationMode = _VALIDATION_MODES[1]
     ) -> float | None:
         return QuickAdapterRegressorV3._validate_scalar(p, ctx=ctx, mode=mode)
 
     @staticmethod
     def _validate_metric_weights_support(
-        metric: str, *, ctx: str, mode: ValidationMode = "warn"
+        metric: str, *, ctx: str, mode: ValidationMode = _VALIDATION_MODES[0]
     ) -> str | None:
         if metric not in QuickAdapterRegressorV3._UNSUPPORTED_WEIGHTS_METRICS_SET:
             return metric
 
-        if mode == "none":
+        if mode == _VALIDATION_MODES[2]:
             return None
 
         msg = f"Invalid {ctx} value {metric!r}: does not support custom weights"
-        if mode == "raise":
+        if mode == _VALIDATION_MODES[1]:
             raise ValueError(msg)
         logger.warning(f"{msg}, using uniform weights")
         return None
@@ -1116,7 +1122,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         n_objectives: int,
         *,
         ctx: str,
-        mode: ValidationMode = "raise",
+        mode: ValidationMode = _VALIDATION_MODES[1],
     ) -> NDArray[np.floating] | None:
         if weights is None:
             return np.full(n_objectives, 1.0 / n_objectives)
@@ -1144,9 +1150,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         return normalized
                     msg = f"Invalid {ctx} value: sum is zero"
 
-        if mode == "raise":
+        if mode == _VALIDATION_MODES[1]:
             raise ValueError(msg)
-        if mode == "warn":
+        if mode == _VALIDATION_MODES[0]:
             logger.warning(f"{msg}, using uniform weights")
         return np.full(n_objectives, 1.0 / n_objectives)
 
@@ -1157,17 +1163,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         valid_options: tuple[str, ...],
         *,
         ctx: str,
-        mode: ValidationMode = "raise",
+        mode: ValidationMode = _VALIDATION_MODES[1],
         default: str | None = None,
     ) -> str | None:
         if isinstance(value, str) and value in valid_set:
             return value
 
-        if mode == "none":
+        if mode == _VALIDATION_MODES[2]:
             return default
 
         msg = enum_error_message(ctx, value, valid_options)
-        if mode == "raise":
+        if mode == _VALIDATION_MODES[1]:
             raise ValueError(msg)
         logger.warning(f"{msg}, using {default!r}")
         return default
@@ -1179,7 +1185,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ctx: str,
         default: str,
         aggregate_allowed: bool,
-        mode: ValidationMode = "warn",
+        mode: ValidationMode = _VALIDATION_MODES[0],
     ) -> str:
         if aggregate_allowed:
             valid_metrics = QuickAdapterRegressorV3._LABEL_SELECTION_DISTANCE_METRICS_SET
@@ -1210,7 +1216,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_p_order: float | None,
         *,
         ctx: str,
-        mode: ValidationMode = "raise",
+        mode: ValidationMode = _VALIDATION_MODES[1],
     ) -> float | None:
         p = (
             label_p_order
@@ -1227,7 +1233,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._SELECTION_METHODS_SET,
             QuickAdapterRegressorV3._SELECTION_METHODS,
             ctx="label_method",
-            mode="raise",
+            mode=_VALIDATION_MODES[1],
         )
 
         category = QuickAdapterRegressorV3._get_selection_category(label_method)
@@ -1236,7 +1242,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "method": label_method,
         }
 
-        if category == "distance":
+        if category == QuickAdapterRegressorV3._CATEGORY_DISTANCE:
             distance_metric = self.ft_params.get(
                 "label_distance_metric",
                 QuickAdapterRegressorV3.LABEL_DISTANCE_METRIC_DEFAULT,
@@ -1244,12 +1250,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             distance_metric = QuickAdapterRegressorV3._validate_label_selection_metric(
                 distance_metric,
                 ctx="label_distance_metric",
-                mode="warn",
+                mode=_VALIDATION_MODES[0],
                 default=QuickAdapterRegressorV3.LABEL_DISTANCE_METRIC_DEFAULT,
                 aggregate_allowed=True,
             )
             config["distance_metric"] = distance_metric
-        elif category == "cluster":
+        elif category == QuickAdapterRegressorV3._CATEGORY_CLUSTER:
             distance_metric = self.ft_params.get(
                 "label_cluster_metric",
                 QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
@@ -1257,7 +1263,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             distance_metric = QuickAdapterRegressorV3._validate_label_selection_metric(
                 distance_metric,
                 ctx="label_cluster_metric",
-                mode="warn",
+                mode=_VALIDATION_MODES[0],
                 default=QuickAdapterRegressorV3.LABEL_CLUSTER_METRIC_DEFAULT,
                 aggregate_allowed=False,
             )
@@ -1286,7 +1292,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ctx="label_cluster_trial_selection_method",
             )
             config["trial_selection_method"] = trial_selection_method
-        elif category == "density":
+        elif category == QuickAdapterRegressorV3._CATEGORY_DENSITY:
             density_method = cast("DensityMethod", label_method)
             density_metric_default = QuickAdapterRegressorV3._get_label_density_metric_default(
                 density_method
@@ -1298,7 +1304,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             distance_metric = QuickAdapterRegressorV3._validate_label_selection_metric(
                 distance_metric,
                 ctx="label_density_metric",
-                mode="warn",
+                mode=_VALIDATION_MODES[0],
                 default=density_metric_default,
                 aggregate_allowed=False,
             )
@@ -1903,7 +1909,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             QuickAdapterRegressorV3._SCALER_TYPES_SET,
             QuickAdapterRegressorV3._SCALER_TYPES,
             ctx="scaler",
-            mode="raise",
+            mode=_VALIDATION_MODES[1],
         )
 
         feature_range = self.ft_params.get("range", QuickAdapterRegressorV3.RANGE_DEFAULT)
@@ -1973,9 +1979,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         match method:
-            case "train_test_split":
+            case QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT:
                 split_builder = self._make_train_test_split_datasets
-            case "timeseries_split":
+            case QuickAdapterRegressorV3._DATA_SPLIT_TIMESERIES:
                 split_builder = self._make_timeseries_split_datasets
             case _:
                 raise ValueError(
@@ -3634,7 +3640,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *,
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
-        mode: ValidationMode = "none",
+        mode: ValidationMode = _VALIDATION_MODES[2],
         p_ctx: str = "p",
     ) -> NDArray[np.floating]:
         if distance_metric in QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET:
@@ -3701,7 +3707,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 distance_metric,
                 weights=weights,
                 p=p,
-                mode="warn",
+                mode=_VALIDATION_MODES[0],
                 p_ctx="label_distance_p",
             )
             return np.abs(distances) if apply_abs else distances
@@ -4336,7 +4342,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weights,
             n_objectives,
             ctx="label_weights",
-            mode="raise",
+            mode=_VALIDATION_MODES[1],
         )
 
         if n_samples == 1 and method in {
@@ -4350,14 +4356,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         distance_metric = label_config["distance_metric"]
         p = QuickAdapterRegressorV3._resolve_p_order(
-            distance_metric, label_p_order, ctx=f"label_p_order for {method}", mode="none"
+            distance_metric,
+            label_p_order,
+            ctx=f"label_p_order for {method}",
+            mode=_VALIDATION_MODES[2],
         )
         distance_kwargs = (
             QuickAdapterRegressorV3._prepare_distance_kwargs(
                 distance_metric,
                 weights=weights,
                 p=p,
-                mode="warn",
+                mode=_VALIDATION_MODES[0],
                 metric_ctx=f"label_{category}_metric",
                 reference_matrix=normalized_matrix,
             )
@@ -4365,7 +4374,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             else {}
         )
 
-        if category == "distance":
+        if category == QuickAdapterRegressorV3._CATEGORY_DISTANCE:
             if method == QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING:
                 return QuickAdapterRegressorV3._compromise_programming_scores(
                     normalized_matrix,
@@ -4383,7 +4392,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     distance_kwargs=distance_kwargs,
                 )
 
-        if category == "cluster":
+        if category == QuickAdapterRegressorV3._CATEGORY_CLUSTER:
             cluster_metric = label_config["distance_metric"]
             cluster_selection_method = label_config["selection_method"]
             trial_selection_method = label_config["trial_selection_method"]
@@ -4399,7 +4408,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 distance_kwargs=distance_kwargs,
             )
 
-        if category == "density":
+        if category == QuickAdapterRegressorV3._CATEGORY_DENSITY:
             density_method = cast("DensityMethod", method)
             density_metric = label_config["distance_metric"]
 

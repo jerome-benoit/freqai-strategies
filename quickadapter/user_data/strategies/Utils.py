@@ -847,12 +847,12 @@ def _generate_extrema_label(
         series.loc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
-        "amplitude": result.amplitudes,
-        "amplitude_threshold_ratio": result.amplitude_threshold_ratios,
-        "volume_rate": result.volume_rates,
-        "speed": result.speeds,
-        "efficiency_ratio": result.efficiency_ratios,
-        "volume_weighted_efficiency_ratio": result.volume_weighted_efficiency_ratios,
+        COMBINED_METRICS[0]: result.amplitudes,
+        COMBINED_METRICS[1]: result.amplitude_threshold_ratios,
+        COMBINED_METRICS[2]: result.volume_rates,
+        COMBINED_METRICS[3]: result.speeds,
+        COMBINED_METRICS[4]: result.efficiency_ratios,
+        COMBINED_METRICS[5]: result.volume_weighted_efficiency_ratios,
     }
 
     known_at_lookahead = pd.Series(
@@ -947,7 +947,7 @@ def get_smoothing_kernel_half_width(
         return int(4.0 * sigma + 0.5)
     if method == SMOOTHING_METHODS[7]:  # "savgol"
         polyorder = max(int(config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])), 0)
-        effective_window, _, _ = get_savgol_params(raw_window, polyorder, "mirror")
+        effective_window, _, _ = get_savgol_params(raw_window, polyorder, SMOOTHING_MODES[0])
     elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
         effective_window = get_even_window(raw_window)
     else:
@@ -1010,7 +1010,7 @@ def compose_label_lookahead(
         center=True,
         min_periods=1,
     ).max()
-    if method == "savgol" and mode == "interp":
+    if method == SMOOTHING_METHODS[7] and mode == SMOOTHING_MODES[4]:
         smoothed_known_at_positions.iloc[:kernel_half_width] = known_at_positions.iloc[
             : 2 * kernel_half_width + 1
         ].max()
@@ -1843,7 +1843,7 @@ def compose_sample_weights(
     *,
     logger: Logger,
     context: str,
-    on_collapse: Literal["raise", "fallback"] = "raise",
+    on_collapse: Literal["raise", "fallback"] = LABEL_WEIGHT_SUPPORT_POLICIES[1],
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
 
@@ -3726,6 +3726,10 @@ def calculate_zero_lag(series: pd.Series, period: int) -> pd.Series:
     return 2 * series - series.shift(int(lag))
 
 
+MA_MODES: Final[tuple[str, ...]] = ("sma", "ema", "wma", "dema", "tema", "trima", "kama", "t3")
+PRICE_MODES: Final[tuple[str, ...]] = ("average", "median", "typical", "weighted-close", "close")
+
+
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_ma_fn(
     mamode: str,
@@ -3734,16 +3738,16 @@ def get_ma_fn(
         str,
         Callable[[pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]],
     ] = {
-        "sma": ta.SMA,
-        "ema": ta.EMA,
-        "wma": ta.WMA,
-        "dema": ta.DEMA,
-        "tema": ta.TEMA,
-        "trima": ta.TRIMA,
-        "kama": ta.KAMA,
-        "t3": ta.T3,
+        MA_MODES[0]: ta.SMA,
+        MA_MODES[1]: ta.EMA,
+        MA_MODES[2]: ta.WMA,
+        MA_MODES[3]: ta.DEMA,
+        MA_MODES[4]: ta.TEMA,
+        MA_MODES[5]: ta.TRIMA,
+        MA_MODES[6]: ta.KAMA,
+        MA_MODES[7]: ta.T3,
     }
-    return mamodes.get(mamode, mamodes["sma"])
+    return mamodes.get(mamode, mamodes[MA_MODES[0]])
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
@@ -3860,21 +3864,21 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_price_fn(pricemode: str) -> Callable[[pd.DataFrame], pd.Series]:
     pricemodes = {
-        "average": ta.AVGPRICE,
-        "median": ta.MEDPRICE,
-        "typical": ta.TYPPRICE,
-        "weighted-close": ta.WCLPRICE,
-        "close": lambda df: df.get("close"),
+        PRICE_MODES[0]: ta.AVGPRICE,
+        PRICE_MODES[1]: ta.MEDPRICE,
+        PRICE_MODES[2]: ta.TYPPRICE,
+        PRICE_MODES[3]: ta.WCLPRICE,
+        PRICE_MODES[4]: lambda df: df.get("close"),
     }
-    return pricemodes.get(pricemode, pricemodes["close"])
+    return pricemodes.get(pricemode, pricemodes[PRICE_MODES[4]])
 
 
 def ewo(
     dataframe: pd.DataFrame,
     ma1_length: int = 5,
     ma2_length: int = 34,
-    pricemode: str = "close",
-    mamode: str = "sma",
+    pricemode: str = PRICE_MODES[4],
+    mamode: str = MA_MODES[0],
     zero_lag: bool = False,
     normalize: bool = False,
     *,
@@ -3886,7 +3890,7 @@ def ewo(
     prices = get_price_fn(pricemode)(dataframe)
 
     if zero_lag:
-        if mamode == "ema":
+        if mamode == MA_MODES[1]:
 
             def ma_fn(series, timeperiod):
                 return zlema(series, period=timeperiod)
@@ -3919,7 +3923,7 @@ def alligator(
     jaw_shift: int = 8,
     teeth_shift: int = 5,
     lips_shift: int = 3,
-    pricemode: str = "median",
+    pricemode: str = PRICE_MODES[1],
     zero_lag: bool = False,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
@@ -4655,6 +4659,23 @@ RegressorCallback = Callable[..., Any] | XGBoostTrainingCallback
 
 _EARLY_STOPPING_ROUNDS_DEFAULT: Final[int] = 50
 
+_REGRESSOR_EVAL_METRIC: Final[str] = "rmse"
+_XGBOOST_BOOSTERS: Final[tuple[str, ...]] = ("gbtree", "dart")
+_XGBOOST_GROW_POLICIES: Final[tuple[str, ...]] = ("depthwise", "lossguide")
+_LIGHTGBM_BOOSTING_TYPES: Final[tuple[str, ...]] = ("gbdt", "dart")
+_NGBOOST_DISTRIBUTIONS: Final[tuple[str, ...]] = (
+    "normal",
+    "lognormal",
+    "exponential",
+    "laplace",
+    "t",
+)
+_CATBOOST_TASK_TYPES: Final[tuple[str, ...]] = ("CPU", "GPU")
+_CATBOOST_DEFAULT_LOSS: Final[str] = "RMSE"
+_CATBOOST_BOOTSTRAP_TYPES: Final[tuple[str, ...]] = ("Bayesian", "Bernoulli", "MVS")
+_CATBOOST_BOOSTING_TYPES: Final[tuple[str, ...]] = ("Plain", "Ordered")
+_CATBOOST_GROW_POLICIES: Final[tuple[str, ...]] = ("SymmetricTree", "Depthwise", "Lossguide")
+
 _CATBOOST_GPU_RSM_LOSS_FUNCTIONS: Final[tuple[str, ...]] = (
     "PairLogit",
     "PairLogitPairwise",
@@ -4688,11 +4709,11 @@ def get_ngboost_dist(dist_name: str) -> type:
     from ngboost.distns import Exponential, Laplace, LogNormal, Normal, T
 
     dist_map = {
-        "normal": Normal,
-        "lognormal": LogNormal,
-        "exponential": Exponential,
-        "laplace": Laplace,
-        "t": T,
+        _NGBOOST_DISTRIBUTIONS[0]: Normal,
+        _NGBOOST_DISTRIBUTIONS[1]: LogNormal,
+        _NGBOOST_DISTRIBUTIONS[2]: Exponential,
+        _NGBOOST_DISTRIBUTIONS[3]: Laplace,
+        _NGBOOST_DISTRIBUTIONS[4]: T,
     }
 
     if dist_name not in dist_map:
@@ -4809,7 +4830,7 @@ def fit_regressor(
             fit_callbacks.append(
                 EarlyStopping(
                     rounds=early_stopping_rounds,
-                    metric_name="rmse",
+                    metric_name=_REGRESSOR_EVAL_METRIC,
                     data_name="validation_0",
                     save_best=True,
                 )
@@ -4822,7 +4843,7 @@ def fit_regressor(
 
         model = XGBRegressor(
             objective="reg:squarederror",
-            eval_metric="rmse",
+            eval_metric=_REGRESSOR_EVAL_METRIC,
             callbacks=fit_callbacks if fit_callbacks else None,
             **model_training_parameters,
         )
@@ -4850,7 +4871,9 @@ def fit_regressor(
 
         if trial is not None and has_eval_set:
             fit_callbacks.append(
-                optuna.integration.LightGBMPruningCallback(trial, "rmse", valid_name="valid_0")
+                optuna.integration.LightGBMPruningCallback(
+                    trial, _REGRESSOR_EVAL_METRIC, valid_name="valid_0"
+                )
             )
 
         model = LGBMRegressor(objective="regression", **model_training_parameters)
@@ -4860,7 +4883,7 @@ def fit_regressor(
             sample_weight=train_weights,
             eval_set=eval_set,
             eval_sample_weight=eval_weights,
-            eval_metric="rmse",
+            eval_metric=_REGRESSOR_EVAL_METRIC,
             init_model=init_model,
             callbacks=fit_callbacks if fit_callbacks else None,
         )
@@ -4914,8 +4937,8 @@ def fit_regressor(
 
         early_stopping_rounds = _pop_early_stopping_rounds(model_training_parameters, has_eval_set)
 
-        dist = model_training_parameters.pop("dist", "normal")
-        if dist == "lognormal":
+        dist = model_training_parameters.pop("dist", _NGBOOST_DISTRIBUTIONS[0])
+        if dist == _NGBOOST_DISTRIBUTIONS[1]:
             label_sets = [y] + ([labels for _, labels in eval_set] if eval_set else [])
             if any(
                 not np.all(np.isfinite(values) & (values > 0))
@@ -4942,7 +4965,7 @@ def fit_regressor(
                 max_depth=model_training_parameters.pop("max_depth", None),
                 min_samples_split=model_training_parameters.pop("min_samples_split", 2),
                 min_samples_leaf=model_training_parameters.pop("min_samples_leaf", 1),
-                random_state=model_training_parameters["random_state"],
+                random_state=model_training_parameters[spec.seed_param],
             ),
             **model_training_parameters,
         )
@@ -4959,7 +4982,7 @@ def fit_regressor(
     elif regressor == _REGRESSOR_SPECS.catboost.name:
         from catboost import CatBoostRegressor, Pool
 
-        model_training_parameters.setdefault("loss_function", "RMSE")
+        model_training_parameters.setdefault("loss_function", _CATBOOST_DEFAULT_LOSS)
 
         if model_path is not None and "train_dir" not in model_training_parameters:
             if trial is not None:
@@ -4969,9 +4992,9 @@ def fit_regressor(
             else:
                 model_training_parameters["train_dir"] = str(model_path / "catboost_info")
 
-        task_type = model_training_parameters.get("task_type", "CPU")
-        loss_function = model_training_parameters.get("loss_function", "RMSE")
-        if task_type == "GPU":
+        task_type = model_training_parameters.get("task_type", _CATBOOST_TASK_TYPES[0])
+        loss_function = model_training_parameters.get("loss_function", _CATBOOST_DEFAULT_LOSS)
+        if task_type == _CATBOOST_TASK_TYPES[1]:
             model_training_parameters.pop("gpu_vram_gb", None)
             model_training_parameters.pop("n_jobs", None)
             model_training_parameters.setdefault("max_ctr_complexity", 4)
@@ -4991,8 +5014,10 @@ def fit_regressor(
         _apply_verbosity_alias(model_training_parameters)
 
         pruning_callback = None
-        if trial is not None and has_eval_set and task_type != "GPU":
-            pruning_callback = optuna.integration.CatBoostPruningCallback(trial, "RMSE")
+        if trial is not None and has_eval_set and task_type != _CATBOOST_TASK_TYPES[1]:
+            pruning_callback = optuna.integration.CatBoostPruningCallback(
+                trial, _CATBOOST_DEFAULT_LOSS
+            )
             fit_callbacks.append(pruning_callback)
 
         model = CatBoostRegressor(**model_training_parameters)
@@ -5514,7 +5539,10 @@ def optuna_save_best_params(
 def resolve_optuna_model_parameters(regressor: Regressor, params: dict[str, Any]) -> dict[str, Any]:
     """Reconstruct estimator parameters from replayable raw Optuna suggestions."""
     resolved = params.copy()
-    if regressor == _REGRESSOR_SPECS.xgboost.name and resolved.get("grow_policy") == "lossguide":
+    if (
+        regressor == _REGRESSOR_SPECS.xgboost.name
+        and resolved.get("grow_policy") == _XGBOOST_GROW_POLICIES[1]
+    ):
         resolved["max_depth"] = 0
     elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name and resolved.pop(
         "l2_regularization_zero", False
@@ -5605,8 +5633,8 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        booster = trial.suggest_categorical("booster", ["gbtree", "dart"])
-        grow_policy = trial.suggest_categorical("grow_policy", ["depthwise", "lossguide"])
+        booster = trial.suggest_categorical("booster", _XGBOOST_BOOSTERS)
+        grow_policy = trial.suggest_categorical("grow_policy", _XGBOOST_GROW_POLICIES)
 
         params: dict[str, Any] = {
             # Boosting/Training
@@ -5629,7 +5657,7 @@ def get_optuna_study_model_parameters(
                         trial, "max_leaves", ranges["max_leaves"], min_val=2, log=True
                     ),
                 }
-                if grow_policy == "lossguide"
+                if grow_policy == _XGBOOST_GROW_POLICIES[1]
                 else {
                     "max_depth": _optuna_suggest_int_from_range(
                         trial, "max_depth", ranges["max_depth"], min_val=1
@@ -5676,7 +5704,7 @@ def get_optuna_study_model_parameters(
             ),
         }
 
-        if booster == "dart":
+        if booster == _XGBOOST_BOOSTERS[1]:
             params["sample_type"] = trial.suggest_categorical(
                 "sample_type", ["uniform", "weighted"]
             )
@@ -5724,7 +5752,7 @@ def get_optuna_study_model_parameters(
 
         ranges = _build_ranges(default_ranges, log_scaled_params)
 
-        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
+        boosting_type = trial.suggest_categorical("boosting_type", _LIGHTGBM_BOOSTING_TYPES)
 
         params: dict[str, Any] = {
             # Boosting/Training
@@ -5783,7 +5811,7 @@ def get_optuna_study_model_parameters(
             ),
         }
 
-        if boosting_type == "dart":
+        if boosting_type == _LIGHTGBM_BOOSTING_TYPES[1]:
             params["xgboost_dart_mode"] = trial.suggest_categorical(
                 "xgboost_dart_mode", [False, True]
             )
@@ -5960,15 +5988,15 @@ def get_optuna_study_model_parameters(
                 log=True,
             ),
             # Distribution
-            "dist": trial.suggest_categorical("dist", ["normal", "lognormal"]),
+            "dist": trial.suggest_categorical("dist", _NGBOOST_DISTRIBUTIONS[:2]),
         }
 
     elif regressor == _REGRESSOR_SPECS.catboost.name:
         # Parameter order: boosting -> tree structure -> regularization -> sampling
-        task_type = model_training_parameters.get("task_type", "CPU")
-        loss_function = model_training_parameters.get("loss_function", "RMSE")
+        task_type = model_training_parameters.get("task_type", _CATBOOST_TASK_TYPES[0])
+        loss_function = model_training_parameters.get("loss_function", _CATBOOST_DEFAULT_LOSS)
 
-        if task_type == "GPU":
+        if task_type == _CATBOOST_TASK_TYPES[1]:
             gpu_vram_gb = model_training_parameters.get("gpu_vram_gb", _CATBOOST_GPU_VRAM_DEFAULT)
             matched_vram_gb = max(
                 (v for v in _CATBOOST_GPU_VRAM_PARAM_RANGES if v <= gpu_vram_gb),
@@ -5999,8 +6027,8 @@ def get_optuna_study_model_parameters(
                 "rsm": (0.5, 1.0),
                 "subsample": (0.6, 1.0),
             }
-            bootstrap_options = ["Bayesian", "Bernoulli"]
-            boosting_type_options = ["Plain"]
+            bootstrap_options = _CATBOOST_BOOTSTRAP_TYPES[:2]
+            boosting_type_options = _CATBOOST_BOOSTING_TYPES[:1]
         else:  # CPU
             default_ranges: dict[str, tuple[float, float]] = {
                 # Boosting/Training
@@ -6018,8 +6046,8 @@ def get_optuna_study_model_parameters(
                 "rsm": (0.5, 1.0),
                 "subsample": (0.6, 1.0),
             }
-            bootstrap_options = ["Bayesian", "Bernoulli", "MVS"]
-            boosting_type_options = ["Plain", "Ordered"]
+            bootstrap_options = _CATBOOST_BOOTSTRAP_TYPES
+            boosting_type_options = _CATBOOST_BOOSTING_TYPES
 
         log_scaled_params = {
             "iterations",
@@ -6032,10 +6060,11 @@ def get_optuna_study_model_parameters(
 
         boosting_type = trial.suggest_categorical("boosting_type", boosting_type_options)
         bootstrap_type = trial.suggest_categorical("bootstrap_type", bootstrap_options)
-        grow_policy = trial.suggest_categorical(
-            "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
-        )
-        if boosting_type == "Ordered" and grow_policy != "SymmetricTree":
+        grow_policy = trial.suggest_categorical("grow_policy", _CATBOOST_GROW_POLICIES)
+        if (
+            boosting_type == _CATBOOST_BOOSTING_TYPES[1]
+            and grow_policy != _CATBOOST_GROW_POLICIES[0]
+        ):
             raise optuna.TrialPruned("Ordered boosting is not supported for nonsymmetric trees")
 
         params: dict[str, Any] = {
@@ -6081,28 +6110,31 @@ def get_optuna_study_model_parameters(
             ),
         }
 
-        if task_type == "CPU" or loss_function in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS:
+        if (
+            task_type == _CATBOOST_TASK_TYPES[0]
+            or loss_function in _CATBOOST_GPU_RSM_LOSS_FUNCTIONS
+        ):
             params["rsm"] = trial.suggest_float(
                 "rsm",
                 ranges["rsm"][0],
                 ranges["rsm"][1],
             )
 
-        if bootstrap_type == "Bayesian":
+        if bootstrap_type == _CATBOOST_BOOTSTRAP_TYPES[0]:
             params["bagging_temperature"] = trial.suggest_float(
                 "bagging_temperature",
                 ranges["bagging_temperature"][0],
                 ranges["bagging_temperature"][1],
             )
 
-        if bootstrap_type in ["Bernoulli", "MVS"]:
+        if bootstrap_type in _CATBOOST_BOOTSTRAP_TYPES[1:]:
             params["subsample"] = trial.suggest_float(
                 "subsample",
                 ranges["subsample"][0],
                 ranges["subsample"][1],
             )
 
-        if task_type == "GPU":
+        if task_type == _CATBOOST_TASK_TYPES[1]:
             params["border_count"] = _optuna_suggest_int_from_range(
                 trial, "border_count", ranges["border_count"], min_val=1
             )

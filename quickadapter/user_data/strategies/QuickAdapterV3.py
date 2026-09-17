@@ -45,6 +45,8 @@ from Utils import (
     EXTREMA_WEIGHT_COLUMN,
     EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
+    MA_MODES,
+    PRICE_MODES,
     TRADE_NATR_METHODS,
     OptunaNamespace,
     alligator,
@@ -735,8 +737,8 @@ class QuickAdapterV3(IStrategy):
         )
         dataframe["%-ewo"] = ewo(
             dataframe=dataframe,
-            pricemode="close",
-            mamode="ema",
+            pricemode=PRICE_MODES[4],
+            mamode=MA_MODES[1],
             zero_lag=True,
             normalize=True,
             logger=logger,
@@ -776,7 +778,7 @@ class QuickAdapterV3(IStrategy):
         )
         dataframe["%-ibs"] = (closes - lows) / non_zero_diff(highs, lows)
         dataframe["jaw"], dataframe["teeth"], dataframe["lips"] = alligator(
-            dataframe, pricemode="median", zero_lag=True
+            dataframe, pricemode=PRICE_MODES[1], zero_lag=True
         )
         dataframe["%-dist_to_jaw"] = get_distance(closes, dataframe["jaw"])
         dataframe["%-dist_to_teeth"] = get_distance(closes, dataframe["teeth"])
@@ -1271,7 +1273,7 @@ class QuickAdapterV3(IStrategy):
         if label_natr is None or label_natr.empty:
             return None
         if trade_duration_candles >= 2:
-            zl_kama = get_zl_ma_fn("kama")
+            zl_kama = get_zl_ma_fn(MA_MODES[6])
             try:
                 trade_kama_natr_values = np.asarray(
                     zl_kama(label_natr, timeperiod=trade_duration_candles), dtype=float
@@ -1958,7 +1960,7 @@ class QuickAdapterV3(IStrategy):
         min_natr_multiplier_fraction: float,
         max_natr_multiplier_fraction: float,
         candle_idx: int = -1,
-        interpolation_direction: InterpolationDirection = "direct",
+        interpolation_direction: InterpolationDirection = _INTERPOLATION_DIRECTIONS[0],
         quantile_exponent: float = 1.5,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
