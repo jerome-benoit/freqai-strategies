@@ -99,7 +99,7 @@ FILL_BANDWIDTHS: Final[tuple[FillBandwidth, ...]] = (
 )
 
 LabelWeightSupportPolicy = Literal["fallback", "raise"]
-LABEL_WEIGHT_SUPPORT_POLICIES: Final[tuple[LabelWeightSupportPolicy, ...]] = (
+LABEL_WEIGHT_SUPPORT_POLICIES: Final[tuple[Literal["fallback"], Literal["raise"]]] = (
     "fallback",  # 0 - warn and use sanitized base weights (default)
     "raise",  # 1 - abort the fit with ValueError
 )
