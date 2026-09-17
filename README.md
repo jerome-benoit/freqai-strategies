@@ -215,7 +215,7 @@ Operational constraints:
   while direct fits raise an error.
 - Changing objective-weight normalization, softmax stabilization, metric-type
   validation, or bound publication resets label HPO selection state
-  (selection schema 4). The persisted best-params JSON layout remains
+  (selection schema 3). The persisted best-params JSON layout remains
   independently versioned.
 
 ### Backtest evaluation protocol
