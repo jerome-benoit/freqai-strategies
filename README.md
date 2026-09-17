@@ -194,6 +194,16 @@ Operational constraints:
   Singular covariance eigenvalues are floored at the largest eigenvalue times
   the square root of machine epsilon. These two metrics do not support custom
   objective weights; configured weights warn and fall back to uniform weights.
+- Objective weights are validated once and normalized by maximum then sum;
+  scale-invariant selection survives any positive rescaling of the same
+  weights. An all-zero configuration falls back to uniform weights.
+- Combined-metric softmax aggregation is numerically stable for any finite
+  positive temperature and coefficients; log coefficients are applied after
+  temperature division. Boolean metric coefficients are ignored.
+- Invalid label metric values of any JSON type follow the documented
+  warning/fallback policy instead of raising.
+- Reversed label HPO bounds publish their validated fallback to the shared
+  configuration, so the label objective receives consistent ranges.
 - With `space_reduction=true`, `space_fraction=0` fixes numerical search ranges
   at valid previous best values; it does not freeze every categorical choice.
   Saved HPO suggestions reconstruct derived estimator parameters for final fits:
@@ -203,6 +213,10 @@ Operational constraints:
   signed labels. Explicit `"lognormal"` requires finite, strictly positive
   transformed training and validation labels; incompatible HPO trials are pruned,
   while direct fits raise an error.
+- Changing objective-weight normalization, softmax stabilization, metric-type
+  validation, or bound publication resets label HPO selection state
+  (selection schema 4). The persisted best-params JSON layout remains
+  independently versioned.
 
 ### Backtest evaluation protocol
 
