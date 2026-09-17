@@ -1418,6 +1418,10 @@ class QuickAdapterV3(IStrategy):
         after_fill: bool,
         **kwargs,
     ) -> float | None:
+        # Partial exits must not refresh an acquired stop in either direction.
+        if after_fill:
+            return None
+
         df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
         if df.empty:
             return None

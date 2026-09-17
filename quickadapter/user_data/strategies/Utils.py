@@ -3254,11 +3254,11 @@ def compute_label_weight_known_at_lookahead(
     ``i_{k+1} == known_at_positions[indices[k+1]]``; the terminal pivot has no
     closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
     -> ``n``. A uniform pivot instead has a unit weight at its own label
-    availability. Off-pivot rows keep their label availability, except that a
-    Gaussian fill spreads each pivot's weight over a LOCAL band
-    ``[idx-fill_radius, idx+fill_radius]`` (0 disables) -- never a global max,
-    which would force ``n`` on all rows (total train purge). Folded via
-    ``max(label, weight)`` by the causal purge.
+    availability. Gaussian-filled rows additionally wait for the raw label
+    availability throughout their LOCAL band ``[row-fill_radius, row+fill_radius]``:
+    an as-yet-unconfirmed pivot can still change their weight. Actual pivot metric
+    dependencies are then spread separately, without dilating terminal weights.
+    Folded via ``max(label, weight)`` by the causal purge.
 
     For adaptive k-NN bandwidths a pivot's band additionally waits until every
     confirmable finite suffix of the frame yields the same clipped sigma --
@@ -3314,6 +3314,13 @@ def compute_label_weight_known_at_lookahead(
     dependency_mask = raw_dependency_mask[valid_mask][order]
     leading_stable_mask = raw_leading_stable_mask[valid_mask][order]
     base = known_at_positions.copy()
+    if idx.size and fill_radius > 0:
+        base = (
+            pd.Series(known_at_positions)
+            .rolling(window=2 * min(fill_radius, n - 1) + 1, center=True, min_periods=1)
+            .max()
+            .to_numpy(dtype=np.int64)
+        )
     if idx.size:
         weight_availability = np.empty(idx.size, dtype=np.int64)
         weight_availability[:-1] = known_at_positions[idx[1:]]
@@ -4982,6 +4989,11 @@ def fit_regressor(
             val_sample_weight=val_sample_weight,
             early_stopping_rounds=early_stopping_rounds,
         )
+        if early_stopping_rounds is not None and model.best_val_loss_itr is not None:
+            selected_count = model.best_val_loss_itr + 1
+            del model.base_models[selected_count:]
+            del model.scalings[selected_count:]
+            del model.col_idxs[selected_count:]
     elif regressor == _REGRESSOR_SPECS.catboost.name:
         from catboost import CatBoostRegressor, Pool
 
@@ -5151,7 +5163,7 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
 
 
-_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 3
+_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 4
 """Version of the label-namespace Optuna best-trial selection algorithm.
 
 Incremented on any change to tie-break, normalization, distance-metric

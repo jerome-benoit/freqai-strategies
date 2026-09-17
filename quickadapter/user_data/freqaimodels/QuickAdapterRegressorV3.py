@@ -34,7 +34,12 @@ from datasieve.transforms import SKLearnWrapper
 from freqtrade.enums import TRADE_MODES
 from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
-from freqtrade.freqai.data_drawer import FreqaiDataDrawer
+from freqtrade.freqai.data_drawer import (
+    FEATURE_PIPELINE,
+    LABEL_PIPELINE,
+    METADATA,
+    FreqaiDataDrawer,
+)
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 
 # Disabled: scikit-learn-extra 0.3.0 fails on Python 3.14 (__gxx_personality_v0).
@@ -66,9 +71,11 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 from Utils import (
+    _CATBOOST_TASK_TYPES,
     _FORMAT_STYLES,
     _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
     _OPTUNA_NAMESPACES,
+    _REGRESSOR_SPECS,
     DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
     DEFAULT_MAX_LABEL_PERIOD_CANDLES,
     DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
@@ -388,7 +395,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     # objective (search space, scoring, or fit protocol): it gates warm-state
     # study reuse and persisted best-params loading; a stale value silently
     # reuses incompatible trials.
-    _OPTUNA_HP_OBJECTIVE_IDENTITY: Final[str] = "candidate-cold-start-v1"
+    _OPTUNA_HP_OBJECTIVE_IDENTITY: Final[str] = "candidate-cold-start-v2"
     _OPTUNA_LABEL_DIRECTIONS: Final[tuple[optuna.study.StudyDirection, ...]] = (
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
@@ -1124,7 +1131,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         *,
         ctx: str,
         mode: ValidationMode = _VALIDATION_MODES[1],
-    ) -> NDArray[np.floating] | None:
+    ) -> NDArray[np.floating]:
         if weights is None:
             return np.full(n_objectives, 1.0 / n_objectives)
 
@@ -1136,7 +1143,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             except (ValueError, TypeError):
                 msg = f"Invalid {ctx} value: must contain numeric weights"
             else:
-                if np_weights.size != n_objectives:
+                if np_weights.ndim != 1:
+                    msg = f"Invalid {ctx}: must be a one-dimensional vector"
+                elif np_weights.size != n_objectives:
                     msg = f"Invalid {ctx}: must contain {n_objectives} weights"
                 elif not np.all(np.isfinite(np_weights)):
                     msg = f"Invalid {ctx} value: contains non-finite values"
@@ -2275,6 +2284,78 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weighting_config=label_weighting_config,
         )
 
+    def _resolve_deployment_state(
+        self, dk: FreqaiDataKitchen, pair: str
+    ) -> tuple[Any, Pipeline, Pipeline] | None:
+        """Restore the model and its matching coordinate system as one unit."""
+        if not self.continual_learning:
+            return None
+        if self.regressor == _REGRESSOR_SPECS.xgboost.name:
+            from xgboost import XGBRegressor
+
+            model_class = XGBRegressor
+        elif self.regressor == _REGRESSOR_SPECS.lightgbm.name:
+            from lightgbm import LGBMRegressor
+
+            model_class = LGBMRegressor
+        elif self.regressor == _REGRESSOR_SPECS.catboost.name:
+            if (
+                self.model_training_parameters.get("task_type", _CATBOOST_TASK_TYPES[0])
+                == _CATBOOST_TASK_TYPES[1]
+            ):
+                return None
+            from catboost import CatBoostRegressor
+
+            model_class = CatBoostRegressor
+        else:
+            return None
+
+        model = self.dd.model_dictionary.get(pair)
+        previous = self.dd.pair_dict.get(pair, {})
+        if model is None and not previous.get("model_filename"):
+            return None
+        try:
+            cached = self.dd.meta_data_dictionary.get(pair)
+            if model is not None and cached is not None:
+                metadata = cached[METADATA]
+                feature_pipeline = cached[FEATURE_PIPELINE]
+                label_pipeline = cached[LABEL_PIPELINE]
+            else:
+                # The current kitchen already points at the NEW training window.
+                # Canonical loading must target the previously deployed files.
+                previous_dk = copy.copy(dk)
+                previous_dk.data_path = Path(previous["data_path"])
+                previous_dk.model_filename = previous["model_filename"]
+                model = self.dd.load_data(pair, previous_dk)
+                metadata = previous_dk.data
+                feature_pipeline = previous_dk.feature_pipeline
+                label_pipeline = previous_dk.label_pipeline
+            if not isinstance(model, model_class):
+                raise ValueError("persisted regressor type differs from the configured regressor")
+            for name, expected, actual in (
+                ("features", dk.training_features_list, metadata["training_features_list"]),
+                ("labels", dk.label_list, metadata["label_list"]),
+                (
+                    "feature pipeline inputs",
+                    dk.training_features_list,
+                    feature_pipeline.features_in,
+                ),
+                ("label pipeline inputs", dk.label_list, label_pipeline.features_in),
+            ):
+                if list(expected) != list(actual):
+                    raise ValueError(f"persisted {name} differ in names or order")
+            state = model, copy.deepcopy(feature_pipeline), copy.deepcopy(label_pipeline)
+        except Exception as exc:
+            raise DependencyException(
+                f"[{pair}] Cannot continue training with matching persisted pipelines: {exc}. "
+                "Reset trained models or use a new freqai.identifier."
+            ) from exc
+        logger.info(
+            f"[{pair}] Continuing deployment in the persisted feature/label coordinate system; "
+            "reset trained models to change pipeline configuration"
+        )
+        return state
+
     def _train_common(
         self,
         unfiltered_df: pd.DataFrame,
@@ -2322,10 +2403,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
-        dd = self._apply_pipelines(dd, train_weight_inputs, dk, pair)
+        deployment_state = self._resolve_deployment_state(dk, pair)
+        dd = self._apply_pipelines(
+            dd,
+            train_weight_inputs,
+            dk,
+            pair,
+            deployment_state=deployment_state if self._get_validation_size() == 0 else None,
+        )
         logger.info(f"Training model on {len(dd['train_features'].columns)} features")
         logger.info(f"Training model on {len(dd['train_features'])} data points")
-        model = self.fit(dd, dk, **kwargs)
+        model = self.fit(dd, dk, deployment_state=deployment_state, **kwargs)
         end_time = time.time()
         logger.info(
             f"-------------------- Done training {pair} "
@@ -2592,45 +2680,67 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         dk: FreqaiDataKitchen,
         pair: str,
         context: str,
+        deployment_state: tuple[Any, Pipeline, Pipeline] | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame, NDArray[np.floating]]:
-        """Fit FreqAI pipelines and enforce support on the surviving train rows."""
-        dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
-        dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
+        """Prepare training rows without changing a reused booster's coordinates."""
+        if deployment_state is None:
+            dk.feature_pipeline = self.define_data_pipeline(threads=dk.thread_count)
+            dk.label_pipeline = self.define_label_pipeline(threads=dk.thread_count)
+        else:
+            _, dk.feature_pipeline, dk.label_pipeline = deployment_state
         pipeline_labels = labels
+        # Unique sentinel keys keep the smuggled vectors free of collisions
+        # with real label columns; they are initialized before use regardless
+        # of availability. ``__getitem__``/``drop`` handle non-string keys
+        # (DataFrame.pop's stub only accepts strings).
+        base_weight_column = object()
+        label_weight_column = object()
         if weight_inputs.label is not None:
-            # Smuggle base/label weights as extra label columns so datasieve
-            # row-filters them in lockstep with the features. Relies on datasieve
-            # not altering y VALUES (X-only transforms + row drops) and restoring
-            # them via ``label_list``. ``_sanitize_pipeline_weights`` guards
-            # row count, not a silent y-value transform: a future y-transforming
-            # step would corrupt these vectors undetected.
-            base_weight_column = object()
-            label_weight_column = object()
             pipeline_labels = labels.copy()
             pipeline_labels[base_weight_column] = weight_inputs.base
             pipeline_labels[label_weight_column] = weight_inputs.label
-        features, pipeline_labels, weights = dk.feature_pipeline.fit_transform(
-            features, pipeline_labels, weights
-        )
+        original_label_list = list(labels.columns)
+        try:
+            if deployment_state is None:
+                transformed_features, transformed_labels, transformed_weights = (
+                    dk.feature_pipeline.fit_transform(features, pipeline_labels, weights)
+                )
+                features = cast("pd.DataFrame", transformed_features)
+                pipeline_labels = cast("pd.DataFrame", transformed_labels)
+            else:
+                original_label_list = dk.feature_pipeline.label_list
+                dk.feature_pipeline.label_list = list(pipeline_labels.columns)
+                transformed_features, transformed_labels, transformed_weights = (
+                    dk.feature_pipeline.transform(features, pipeline_labels, weights)
+                )
+                # DataFrame inputs are restored as DataFrames by datasieve;
+                # its generic ArrayLike annotation does not express this.
+                features = cast("pd.DataFrame", transformed_features)
+                pipeline_labels = cast("pd.DataFrame", transformed_labels)
+                # Noise.transform is intentionally a no-op in datasieve. Only
+                # this final augmentation is fitted; coordinates remain frozen.
+                for name, transformer in dk.feature_pipeline.steps:
+                    if name == "noise":
+                        noisy, _, _, _ = transformer.fit_transform(features.to_numpy(copy=True))
+                        features = pd.DataFrame(
+                            noisy, columns=features.columns, index=features.index
+                        )
+        finally:
+            dk.feature_pipeline.label_list = original_label_list
         weights = QuickAdapterRegressorV3._sanitize_pipeline_weights(
             features,
-            weights,
+            transformed_weights,
             pair=pair,
             context=context,
         )
         # Label-only re-gate: base-only weights carry no pivot/fraction/ESS
         # support to recheck (settled pre-pipeline), so they skip this stage.
         if weight_inputs.label is not None:
-            post_pipeline_base_weights = pipeline_labels.pop(base_weight_column).to_numpy(
-                dtype=float
+            post_pipeline_base_weights = pipeline_labels[base_weight_column].to_numpy(dtype=float)
+            post_pipeline_label_weights = pipeline_labels[label_weight_column].to_numpy(dtype=float)
+            pipeline_labels = pipeline_labels.drop(
+                columns=[base_weight_column, label_weight_column]
             )
-            post_pipeline_label_weights = pipeline_labels.pop(label_weight_column).to_numpy(
-                dtype=float
-            )
-            # Load-bearing: ``fit_transform`` captured ``label_list`` WITH the smuggled
-            # columns; restore it to the real labels or the next validation/test
-            # transform rebuilds y with the wrong column count (``ValueError``).
-            dk.feature_pipeline.label_list = pipeline_labels.columns
             weights = QuickAdapterRegressorV3._enforce_train_weight_support(
                 post_pipeline_base_weights,
                 post_pipeline_label_weights,
@@ -2639,7 +2749,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 context=f"[{pair}] post_feature_pipeline:{context}",
             )
         labels = pipeline_labels
-        labels, _, _ = dk.label_pipeline.fit_transform(labels)
+        if deployment_state is None:
+            transformed_labels, _, _ = dk.label_pipeline.fit_transform(labels)
+        else:
+            transformed_labels, _, _ = dk.label_pipeline.transform(labels)
+        labels = cast("pd.DataFrame", transformed_labels)
         return features, labels, weights
 
     def _apply_pipelines(
@@ -2648,6 +2762,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         train_weight_inputs: SampleWeightInputs,
         dk: FreqaiDataKitchen,
         pair: str,
+        deployment_state: tuple[Any, Pipeline, Pipeline] | None = None,
     ) -> dict:
         """Apply feature and label pipelines; renormalize weights post-transform."""
         (dd["train_features"], dd["train_labels"], dd["train_weights"]) = (
@@ -2659,6 +2774,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dk,
                 pair,
                 "train",
+                deployment_state=deployment_state,
             )
         )
 
@@ -2938,7 +3054,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         validation_size = self._get_validation_size()
 
         model_training_parameters = copy.deepcopy(self.model_training_parameters)
-        deployment_init_model = self.get_init_model(dk.pair)
+        deployment_state = kwargs.get("deployment_state")
+        deployment_init_model = None if deployment_state is None else deployment_state[0]
         selection_init_model = None if validation_size != 0 else deployment_init_model
 
         start_time = time.time()
@@ -3036,6 +3153,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 dk,
                 dk.pair,
                 "refit",
+                deployment_state=deployment_state,
             )
             logger.info(
                 f"[{dk.pair}] Refitting final model on "
@@ -3109,10 +3227,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
 
         if self.live:
-            if not hasattr(self, "exchange_candles"):
-                self.exchange_candles = len(self.dd.model_return_values[pair].index)
+            if not hasattr(self, "_exchange_candles_by_pair"):
+                self._exchange_candles_by_pair: dict[str, int] = {}
+            exchange_candles = self._exchange_candles_by_pair.setdefault(
+                pair, len(self.dd.model_return_values[pair].index)
+            )
             candles_diff = len(self.dd.historic_predictions[pair].index) - (
-                fit_live_predictions_candles + self.exchange_candles
+                fit_live_predictions_candles + exchange_candles
             )
             if candles_diff < 0:
                 logger.warning(
@@ -3649,11 +3770,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             validated_p = QuickAdapterRegressorV3._validate_power_mean_p(p, ctx=p_ctx, mode=mode)
             power = 1.0 if validated_p is None else validated_p
-        if weights is None:
-            weights = np.ones(matrix.shape[1])
+        weights = QuickAdapterRegressorV3._validate_label_weights(
+            weights, matrix.shape[1], ctx="weights", mode=mode
+        )
+        positive_weight = weights > 0
+        weights = weights[positive_weight]
+        matrix = matrix[:, positive_weight]
+        reference_point = reference_point.reshape(-1)[positive_weight]
 
         return sp.stats.pmean(
-            reference_point.flatten() if reference_point.ndim > 1 else reference_point,
+            reference_point,
             p=power,
             weights=weights,
         ) - sp.stats.pmean(matrix, p=power, weights=weights, axis=1)
@@ -4303,42 +4429,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and objective_indices is not None
             and original_n_objectives != n_objectives
         ):
-            try:
-                label_weights_array = np.asarray(label_weights, dtype=float)
-            except (ValueError, TypeError):
-                label_weights_array = None
-            if label_weights_array is not None and label_weights_array.ndim == 1:
-                if label_weights_array.size != original_n_objectives:
-                    raise ValueError(
-                        f"Invalid label_weights size {label_weights_array.size}: "
-                        f"must match original objective count "
-                        f"{original_n_objectives}"
-                    )
-                sliced_weights = label_weights_array[objective_indices]
-                if np.all(sliced_weights == 0.0):
-                    # All user-positive weights project onto dropped
-                    # (constant) objectives; uniform fallback keeps
-                    # selection deterministic and avoids
-                    # ``_validate_label_weights`` raising on sum-zero.
-                    # Negative or non-finite slices flow through to the
-                    # validator.
-                    logger.warning(
-                        "label_weights sliced to non-constant objectives "
-                        "is all-zero (indices=%s, original=%s); "
-                        "falling back to uniform weights",
-                        objective_indices.tolist(),
-                        label_weights_array.tolist(),
-                    )
-                    label_weights = None
-                else:
-                    label_weights = sliced_weights
-                    logger.debug(
-                        "label_weights sliced to non-constant objectives "
-                        "(indices=%s, original_size=%d, sliced_size=%d)",
-                        objective_indices.tolist(),
-                        label_weights_array.size,
-                        sliced_weights.size,
-                    )
+            label_weights_array = QuickAdapterRegressorV3._validate_label_weights(
+                label_weights,
+                original_n_objectives,
+                ctx="label_weights",
+                mode=_VALIDATION_MODES[1],
+            )
+            sliced_weights = label_weights_array[objective_indices]
+            if np.all(sliced_weights == 0.0):
+                logger.warning(
+                    "label_weights sliced to non-constant objectives "
+                    "is all-zero (indices=%s, original=%s); "
+                    "falling back to uniform weights",
+                    objective_indices.tolist(),
+                    label_weights_array.tolist(),
+                )
+                label_weights = None
+            else:
+                label_weights = sliced_weights
         weights = QuickAdapterRegressorV3._validate_label_weights(
             label_weights,
             n_objectives,
