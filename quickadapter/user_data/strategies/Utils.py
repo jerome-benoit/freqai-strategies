@@ -2444,7 +2444,7 @@ def _parse_metric_coefficients(
     out: dict[CombinedMetric, float] = {}
     for metric in COMBINED_METRICS:
         value = metric_coefficients.get(metric)
-        if not isinstance(value, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         if not np.isfinite(value) or value <= 0:
             continue
@@ -2482,10 +2482,12 @@ def _aggregate_metrics(
     elif aggregation == COMBINED_AGGREGATIONS[5]:  # "softmax"
         # Per-column softmax-weighted convex combination of stacked rows.
         # T -> 0 collapses to argmax row; T -> +inf collapses to coefficient-weighted mean.
-        scaled_metrics = stacked_metrics / softmax_temperature
-        softmax_weights = sp.special.softmax(scaled_metrics, axis=0)
-        combined_weights = softmax_weights * coefficients[:, np.newaxis]
-        combined_weights = combined_weights / np.sum(combined_weights, axis=0, keepdims=True)
+        logits = stacked_metrics - np.max(stacked_metrics, axis=0, keepdims=True)
+        # Negative infinity after division is zero probability, not a failed column.
+        with np.errstate(over="ignore"):
+            logits /= softmax_temperature
+        logits += np.log(coefficients)[:, np.newaxis]
+        combined_weights = sp.special.softmax(logits, axis=0)
         return np.sum(stacked_metrics * combined_weights, axis=0)
     else:
         raise ValueError(enum_error_message("aggregation", aggregation, COMBINED_AGGREGATIONS))
@@ -5121,7 +5123,7 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
 
 
-_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 3
+_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 4
 """Version of the label-namespace Optuna best-trial selection algorithm.
 
 Incremented on any change to tie-break, normalization, distance-metric
@@ -6296,6 +6298,8 @@ def get_label_defaults(
         non_negative=True,
         finite_only=True,
     )
+    feature_parameters["min_label_natr_multiplier"] = min_label_natr_multiplier
+    feature_parameters["max_label_natr_multiplier"] = max_label_natr_multiplier
     default_label_natr_multiplier = float(
         midpoint(min_label_natr_multiplier, max_label_natr_multiplier)
     )
@@ -6318,6 +6322,8 @@ def get_label_defaults(
         non_negative=True,
         finite_only=True,
     )
+    feature_parameters["min_label_period_candles"] = min_label_period_candles
+    feature_parameters["max_label_period_candles"] = max_label_period_candles
     default_label_period_candles = round(
         midpoint(min_label_period_candles, max_label_period_candles)
     )

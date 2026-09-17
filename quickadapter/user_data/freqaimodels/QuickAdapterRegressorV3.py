@@ -1118,71 +1118,37 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ctx: str,
         mode: ValidationMode = "raise",
     ) -> NDArray[np.floating] | None:
-        uniform_weights = np.full(n_objectives, 1.0 / n_objectives)
-
         if weights is None:
-            return uniform_weights
-
-        if mode == "none":
-            if not isinstance(weights, (list, tuple, np.ndarray)):
-                return uniform_weights
-            try:
-                np_weights = np.asarray(weights, dtype=float)
-            except (ValueError, TypeError):
-                return uniform_weights
-            if np_weights.size != n_objectives:
-                return uniform_weights
-            if not np.all(np.isfinite(np_weights)):
-                return uniform_weights
-            if np.any(np_weights < 0):
-                return uniform_weights
-            weights_sum = np.nansum(np_weights)
-            if np.isclose(weights_sum, 0.0):
-                return uniform_weights
-            return np_weights / weights_sum
+            return np.full(n_objectives, 1.0 / n_objectives)
 
         if not isinstance(weights, (list, tuple, np.ndarray)):
             msg = f"Invalid {ctx} {type(weights).__name__!r}: must be a list, tuple, or array"
-            if mode == "raise":
-                raise ValueError(msg)
+        else:
+            try:
+                np_weights = np.asarray(weights, dtype=float)
+            except (ValueError, TypeError):
+                msg = f"Invalid {ctx} value: must contain numeric weights"
+            else:
+                if np_weights.size != n_objectives:
+                    msg = f"Invalid {ctx}: must contain {n_objectives} weights"
+                elif not np.all(np.isfinite(np_weights)):
+                    msg = f"Invalid {ctx} value: contains non-finite values"
+                elif np.any(np_weights < 0):
+                    msg = f"Invalid {ctx} value: contains negative values"
+                else:
+                    maximum = np.max(np_weights, initial=0.0)
+                    if maximum > 0:
+                        # Scale before summing; never mutate the caller's array.
+                        normalized = np_weights / maximum
+                        normalized /= normalized.sum()
+                        return normalized
+                    msg = f"Invalid {ctx} value: sum is zero"
+
+        if mode == "raise":
+            raise ValueError(msg)
+        if mode == "warn":
             logger.warning(f"{msg}, using uniform weights")
-            return uniform_weights
-
-        np_weights = np.asarray(weights, dtype=float)
-
-        if np_weights.size != n_objectives:
-            msg = (
-                f"Invalid {ctx} (length={np_weights.size}): "
-                f"must match number of objectives ({n_objectives})"
-            )
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using uniform weights")
-            return uniform_weights
-
-        if not np.all(np.isfinite(np_weights)):
-            msg = f"Invalid {ctx} value: contains non-finite values"
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using uniform weights")
-            return uniform_weights
-
-        if np.any(np_weights < 0):
-            msg = f"Invalid {ctx} value: contains negative values"
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using uniform weights")
-            return uniform_weights
-
-        weights_sum = np.nansum(np_weights)
-        if np.isclose(weights_sum, 0.0):
-            msg = f"Invalid {ctx} value: sum is zero"
-            if mode == "raise":
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using uniform weights")
-            return uniform_weights
-
-        return np_weights / weights_sum
+        return np.full(n_objectives, 1.0 / n_objectives)
 
     @staticmethod
     def _validate_enum_value(
@@ -1194,7 +1160,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         mode: ValidationMode = "raise",
         default: str | None = None,
     ) -> str | None:
-        if value in valid_set:
+        if isinstance(value, str) and value in valid_set:
             return value
 
         if mode == "none":
