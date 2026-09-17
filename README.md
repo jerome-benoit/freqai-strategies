@@ -169,55 +169,6 @@ ignored with a warning. Matching column patterns are applied from least to most
 specific; equally specific patterns follow declaration order, so the later one
 wins.
 
-Operational constraints:
-
-- Entries require every requested prior confirmation candle. Exits may use the
-  available history, but still reject a failed measurable comparison. Partial
-  take-profit exits check both the outgoing quantity and the remainder against
-  exchange minimums after contract precision rounding, including leverage.
-  An infeasible partial exit requests a full exit; this cannot guarantee that an
-  exchange accepts an already-dust position.
-- `freqai.fit_live_predictions_candles` defaults to 100. Missing or invalid
-  values normalize to 100 in the shared strategy/FreqAI configuration; valid
-  positive integers are preserved.
-- Label HPO scheduling permits pairs to share slots when there are fewer slots
-  than pairs. Scheduling is inactive when HPO is disabled.
-- Causal training removes unavailable terminal labels even with `test_size=0`.
-  Savitzky–Golay `interp` edge availability includes the whole edge-fit window
-  for labels and weights. A window longer than the series leaves both unchanged.
-- Cluster ranking and member selection honor supported objective weights. KNN
-  uses weighted SciPy distances, excludes only each row's own index, and retains
-  distinct candidates at zero distance. Its distance matrix requires quadratic
-  memory in the number of Pareto candidates.
-- Standardized Euclidean variance and Mahalanobis covariance are estimated once
-  from the full normalized Pareto front, after constant objectives are removed.
-  Singular covariance eigenvalues are floored at the largest eigenvalue times
-  the square root of machine epsilon. These two metrics do not support custom
-  objective weights; configured weights warn and fall back to uniform weights.
-- Objective weights are validated once and normalized by maximum then sum;
-  scale-invariant selection survives any positive rescaling of the same
-  weights. An all-zero configuration falls back to uniform weights.
-- Combined-metric softmax aggregation is numerically stable for any finite
-  positive temperature and coefficients; log coefficients are applied after
-  temperature division. Boolean metric coefficients are ignored.
-- Invalid label metric values of any JSON type follow the documented
-  warning/fallback policy instead of raising.
-- Reversed label HPO bounds publish their validated fallback to the shared
-  configuration, so the label objective receives consistent ranges.
-- With `space_reduction=true`, `space_fraction=0` fixes numerical search ranges
-  at valid previous best values; it does not freeze every categorical choice.
-  Saved HPO suggestions reconstruct derived estimator parameters for final fits:
-  XGBoost `lossguide` uses unlimited depth and histogram gradient boosting
-  restores the selected zero-regularization branch.
-- NGBoost defaults to `model_training_parameters.dist="normal"`, which supports
-  signed labels. Explicit `"lognormal"` requires finite, strictly positive
-  transformed training and validation labels; incompatible HPO trials are pruned,
-  while direct fits raise an error.
-- Changing objective-weight normalization, softmax stabilization, metric-type
-  validation, or bound publication resets label HPO selection state
-  (selection schema 3). The persisted best-params JSON layout remains
-  independently versioned.
-
 ### Backtest evaluation protocol
 
 Use this protocol before adopting a change to a QuickAdapter default. It is an
