@@ -171,225 +171,132 @@ wins.
 
 ### Backtest evaluation protocol
 
-Use this protocol before adopting a change to a QuickAdapter default. It is an
-evaluation procedure, not evidence that any current default is optimal.
-When `freqai.data_split_parameters.test_size` yields a non-empty outer holdout,
-QuickAdapter's `holdout_rmse` is the weighted prediction error of the selection
-model on the original label scale. When the effective validation size is
-nonzero, the final model is subsequently refitted. With `test_size=0`, the
-holdout is empty, `holdout_rmse=inf` is an unavailable-metric sentinel rather
-than a measured error, and the final refit is skipped. The label is smoothed
-Zigzag morphology rather than a return. Consequently, a finite `holdout_rmse` is
-a diagnostic, not an economic objective or a promotion criterion.
+Evaluate a proposed change against the current configuration on the same unseen
+market history. Judge portfolio performance after costs, not training loss. This
+procedure does not establish that the current defaults are optimal.
 
-#### Scope of a native FreqAI backtest
+#### What the backtest measures
 
-A native FreqAI backtest trains and predicts each sliding model window before
-`backtesting_fit_live_predictions()` replays `fit_live_predictions()` over the
-assembled prediction frame. It can evaluate fixed training, feature, regressor,
-prediction-threshold and strategy settings with FreqAI's rolling prediction
-windows. It also exercises the replayed thresholds and strategy decisions.
+In Freqtrade 2026.8, the [native backtest][freqai-running] constructs each pair's
+rolling predictions before replaying enabled `fit_live_predictions()` updates
+([training loop][freqai-source], [replay loop][freqai-replay]). It exercises
+rolling model fits, threshold replay and strategy decisions, but a label-HPO
+update during replay cannot affect an already-trained model. Testing that live
+feedback requires a chronological runner that interleaves training, prediction
+and state updates, or a forward dry-run. This repository provides no such runner;
+do not present native-backtest results as validation of the complete live loop.
 
-The replay cannot make a label-HPO result or other adaptive state affect a model
-window that has already been trained. A native backtest therefore does not
-evaluate QuickAdapter's complete live feedback loop. Evaluate that loop with a
-chronological runner which trains, predicts, updates state and only then advances
-to the next window, or with a forward dry-run. Keep native-backtest and
-full-loop results in separate report sections. This repository does not provide
-that chronological runner. See the [FreqAI running guide][freqai-running] and
-the [FreqAI sliding-window train and predict loop][freqai-source] and
-[backtesting replay loop][freqai-replay].
+QuickAdapter predicts smoothed Zigzag morphology, not returns. `holdout_rmse`
+measures the selection model's weighted error on the original label scale,
+on a holdout within the training window, before any deployment refit. An empty
+holdout, including one emptied by causal purging, yields `holdout_rmse=inf`
+(unavailable). With `method=train_test_split`, `test_size=0` disables internal
+validation and final refit, not later rolling predictions; `timeseries_split`
+does not accept zero. Use RMSE to diagnose prediction quality, not profitability.
 
-#### Procedure
+#### Design the comparison
 
-1. **Pre-register the decision.** Before inspecting candidate results, freeze the
-   incumbent, candidate change, pair universe, data source and hash, outer
-   timerange, rolling-window schedule, point-in-time pair-eligibility and
-   missing-data rules, random seeds, HPO budget, costs, baselines, minimum
-   coverage, primary metric and tested families or model universes. For every
-   comparison, freeze the positive-is-favorable estimand, practical margin and
-   its units, test statistic and one-sided confidence-bound construction; also
-   freeze each raw or universe p-value construction, the familywise error rate
-   and correction method. Count every configuration inspected, including failed
-   and abandoned trials. Reserve a final chronological confirmation period that
-   is not used to choose features, parameters, margins or the candidate.
-2. **Build one paired rolling-origin path.** At every outer prediction window,
-   train each candidate only on data available before that window and score all
-   candidates on the same timestamps. Fit scalers, label transforms, feature
-   selection and regressor HPO inside the corresponding training window.
-   Calibrate prediction thresholds only from prior out-of-sample predictions
-   available at the decision time. Use distinct FreqAI identifiers and storage
-   for every candidate/seed; never share model, prediction or Optuna state
-   between them.
-3. **Purge labels and impose an embargo gap.** Keep `causal_mode` enabled. Remove
-   every training row whose label-information interval overlaps the next
-   validation or prediction window. In the unsliced window frame, take the
-   row-wise maximum of the `known_at_lookahead` values of all emitted labels
-   and weights, add the row's local position, and map that availability
-   position to its information time. Treat every non-finite or out-of-frame
-   availability position as unavailable and purge it; never clip it to a
-   boundary timestamp. Verify that the latest retained information time
-   precedes the scoring window. Then apply a pre-registered non-negative gap
-   between the latest retained information time and that window to cover any
-   additional data publication or execution delay. If an inner procedure uses
-   observations after a validation block, also embargo the observations
-   immediately after that block; the preferred rolling-origin design never
-   trains on future observations. Record the purged row count and effective
-   gap for every split. Use an external runner when the native window schedule
-   cannot express the pre-registered gap.
-   These controls follow the purging and embargo concepts in [Advances in
-   Financial Machine Learning][afml].
-4. **Separate the experiment from HPO.** First compare the incumbent and
-   candidate with label and model hyperparameters fixed, changing only the
-   component under test. If HPO is part of the proposed behavior, run a second
-   nested experiment: tune regressor parameters only on time-ordered inner
-   training/validation splits, then evaluate once on the untouched outer
-   prediction window. QuickAdapter's dynamic label HPO is different: it selects
-   label parameters from causal morphology objectives in `fit_live_predictions()`;
-   reproduce that deployed selector and judge it only by later outer economic
-   results. Do not reinterpret label trials as regressor-validation trials. Any
-   warm-start state used by an inner trial or selection model must have been
-   fitted only on that split's training prefix; otherwise disable
-   `continual_learning` during selection. Evaluate a pre-registered
-   `continual_learning` treatment only on later outer prediction windows.
-5. **Pair stochastic runs.** Use the same seed list for every candidate and at
-   least five complete paired seeds for a promotion decision; fewer seeds are
-   diagnostic only. Do not replace or omit a pre-registered seed: a
-   candidate-attributable training, prediction or runtime failure fails its
-   operational promotion gate. An incumbent-attributable failure makes the
-   comparison inconclusive unless a deployable fallback and its finite scoring
-   rule were pre-registered. Retry the same seed only for a documented
-   infrastructure failure, under one pre-registered retry budget and policy
-   applied to both arms; exhausted retries make the experiment inconclusive.
-   Record the Optuna sampler and label-candle shuffling seed roles, regressor
-   seed and bootstrap seed separately. QuickAdapter currently derives both
-   Optuna roles from `freqai.optuna_hyperopt.seed`. Sequential HPO removes
-   parallel trial-scheduling nondeterminism and improves sampler replayability;
-   exact replay also requires deterministic backend settings and fixed software
-   and hardware. Otherwise, treat full searches as stochastic repetitions. If
-   parallel HPO is the deployed behavior, also report its trial order.
-6. **Model execution costs explicitly.** Except for the single pre-registered
-   component under test, hold position sizing, protections, order types and fill
-   rules constant. Run a declared base-cost case and at least one adverse case
-   covering fees, spread, slippage and market impact;
-   include funding or borrow costs when applicable. Use
-   `--enable-protections`, explicit `--fee`, `--cache none` and
-   `--timeframe-detail <smaller-timeframe>` backed by downloaded detail candles
-   where feasible. Apply non-fee costs through a pre-registered conservative
-   price or external fill model; this repository does not provide that model.
-   Freqtrade's candle simulator cannot prove queue position, fill probability or
-   capacity, so validate material fill/callback behavior in forward dry-run. See
-   the [backtesting assumptions][freqtrade-backtesting]. `--cache none` disables
-   Freqtrade's backtest-result cache, not model artifacts under a reused FreqAI
-   identifier.
-7. **Measure portfolio economics and model health.** Preserve the whole
-   portfolio's net marked-equity path at the strategy or detail timeframe.
-   Aggregate a copy at fixed UTC daily boundaries for paired net-log-return
-   inference and consistent attribution of trades crossing model windows.
-   Before computing log returns, require finite, strictly positive marked
-   equity at every timestamp in every paired run. Any candidate breach is an
-   automatic failed promotion gate for that cost case, remains counted, and
-   must not be relabeled an invalid seed or omitted. An incumbent breach makes
-   the paired log statistic undefined and the experiment inconclusive unless a
-   finite treatment was pre-registered.
-   Compute drawdown from the full intraday path instead of daily marks or
-   averaged interval drawdowns. Derive this path externally when the backtest
-   output does not expose it; do not substitute closed-trade balance. Report net
-   return, drawdown, exposure, turnover, trades, partial exits, exit reasons and
-   long/short contribution. Also report per-window `holdout_rmse`, raw and
-   post-pipeline row counts, feature count, latest retained information time,
-   pivot prevalence, threshold support and training latency. Compute any
-   additional label-prediction metric after inverse transformation to the
-   original label scale. Compare against the incumbent and, when relevant to the
-   change, fixed-label/fixed-model ablations. Cash and buy-and-hold are context
-   baselines, not substitutes for the paired incumbent comparison.
-8. **Quantify both temporal and seed uncertainty.** Across the complete
-   pre-registered family or model universe, use one hierarchical paired
-   stationary bootstrap. In each replication, resample a list of paired seed
-   indices of the original length with replacement, draw one
-   stationary-bootstrap sequence of calendar-day blocks, and apply the same seed
-   selection and block sequence to every run entering every comparison.
-   For drawdown, concatenate the selected days' full intraday equity-return
-   segments before recomputing the statistic. Because maximum drawdown is a
-   non-smooth path-dependent functional, read its bootstrap bound as
-   approximate rather than a calibrated interval. Pre-register an independent
-   pilot period, a block-length selection rule applied to representative paired
-   differentials, and a conservative longer-dependence sensitivity range before
-   running the pilot; fix the resulting settings before opening evaluation
-   results and require the decision to hold throughout the range. Use at least
-   10,000 replications per setting and record the bootstrap seed. Report the
-   paired effect, one-sided confidence bound and seed distribution. Declare the
-   result inconclusive when the pre-registered minimum number of effective
-   blocks, trades, scored days or valid seeds is not met, when resampling is
-   degenerate, or when the paired series' stationarity and local-dependence
-   assumptions are not credible under a fixed or moving-window scheme. The
-   stationary bootstrap preserves local dependence under its assumptions; it
-   does not create information absent from a short backtest [Politis and
-   Romano][stationary-bootstrap]. Use the corrected automatic selector from
-   [Politis and White][block-length] together with the published
-   [Patton, Politis and White correction][block-length-correction].
-9. **Control selection and decide once.** Orient effects so positive values
-   favor the candidate. A promotion requires the one-sided lower confidence
-   bound for the primary net-log-return effect to exceed its practical margin,
-   the lower bound for incumbent-minus-candidate maximum drawdown to exceed the
-   negative degradation margin, all operational constraints to pass, and the
-   conclusion to hold in every pre-registered cost case and on the untouched
-   confirmation period. Use each comparison's positive-is-favorable effect and
-   pre-registered practical margin to test `H0: effect <= margin` against
-   `H1: effect > margin`. For each candidate, combine its mandatory statistical
-   gates and cost cases into an intersection-union p-value: the maximum component
-   p-value. Do not correct these conjunctive components against one another; keep
-   deterministic operational constraints as pass/fail. Apply
-   [Holm adjustment][holm] across the resulting candidate-level or confirmatory
-   claims that offer alternative routes to promotion. Report every component
-   statistic and raw p-value, the candidate-level p-value, Holm-adjusted p-value
-   and familywise decision.
-   A [Reality Check][white-reality-check]/[SPA test][hansen-spa] may instead test
-   a compatible model-universe claim, but its single universe p-value does not
-   identify a promotable model; a specific promotion still requires the
-   model-specific multiplicity-adjusted inference above. Reality Check/SPA
-   applies only to a time-indexed additive performance-differential series whose
-   estimand is its per-period expectation; it does not directly test
-   path-dependent statistics such as maximum drawdown. Express every universe
-   margin in the same per-period units, subtract it observation by observation,
-   and use the published null construction. For these published tests,
-   pre-aggregate complete seed runs at each timestamp by a pre-registered
-   function to form one differential series per candidate, then bootstrap only
-   the time index with common blocks across the complete universe; the
-   hierarchical seed resampling in step 8 is separate effect-size uncertainty.
-   Include SPA studentization and sample-dependent recentering. Apply the tests
-   only when their stationarity assumptions are credible and the scheme is fixed
-   or moving-window; the published SPA test does not cover recursively estimated
-   state. Report the seed aggregation, universe statistic and bootstrap p-value.
-   A [Deflated Sharpe Ratio][dsr] or [Probability of Backtest
-   Overfitting][pbo] analysis is a useful selection-bias audit, not a replacement
-   for chronological confirmation. If any gate fails, keep the incumbent and
-   report the result as inconclusive or rejected.
+1. **Fix the question before inspecting results.** Specify the incumbent,
+   candidate change, pair universe, evaluation dates, training/prediction window
+   lengths, HPO budget, seeds and costs. Choose a primary economic metric, a
+   minimum worthwhile improvement and acceptable risk limits. Record all tried
+   configurations, including failures. Reserve a final chronological period for
+   confirmation; once used to revise the strategy, it is no longer unseen.
+2. **Reproduce the information available at each decision.** Train on earlier
+   data and compare both configurations on identical subsequent timestamps.
+   Account for listing/delisting dates and missing candles; selecting only
+   today's surviving pairs biases historical results. Fit preprocessing and
+   select features/model hyperparameters inside each training window, using
+   time-ordered inner validation. Keep scoring windows outside model selection.
+   Threshold calibration must use only predictions available at that time.
+3. **Respect label availability.** Keep `causal_mode` enabled. A historical row
+   is not usable for training until all observations needed for its labels and
+   weights are known. Add each `known_at_lookahead` candle offset to its row
+   position in the unsliced window; use the latest availability across labels
+   and weights. Audit it against each split cutoff, rejecting unknown or
+   out-of-frame availability. `causal_mode` alone is not proof of this invariant.
+   Allow for additional publication/execution delays where relevant. Purging
+   removes overlapping label information; an embargo excludes training samples
+   immediately *after* a validation block when a split uses future training data
+   ([López de Prado][afml]). Prefer earlier-only training here, not an arbitrary
+   universal embargo duration.
+4. **Isolate the change and its state.** Start with fixed label/model parameters
+   when comparing a component; evaluate tuning separately if it is part of the
+   proposed behavior. Dynamic label HPO optimizes morphology in
+   `fit_live_predictions()`, not held-out trading returns: judge its choices on
+   subsequent economic results using the live-loop evaluation above. With
+   validation enabled, QuickAdapter cold-starts regressor trials and the
+   selection model; inherited models are reserved for deployment refit. Use separate
+   `freqai.identifier` values and model, prediction and Optuna storage for each
+   configuration/seed. `--cache none` bypasses backtest-result caching, not FreqAI
+   model or prediction reuse.
 
-Before reporting, run [lookahead analysis][lookahead-analysis] and [recursive
-analysis][recursive-analysis] with a startup window long enough for every
-informative timeframe. Freqtrade supports FreqAI lookahead analysis, but its
-documented target indicators from `set_freqai_targets()` can be false positives;
-ignore only those target-column flags, not feature or signal differences. Before
-each command, set `freqai.identifier` to a value never used by another run and
-verify that `<user-data-dir>/models/<identifier>` is absent. Use separate fresh
-identifiers for the two analyses: `--cache none` only bypasses the backtest-result
-cache.
-Archive a timestamped manifest containing the Git commit, image digest,
-Freqtrade and dependency versions, configuration and data hashes, exact
-commands, identifiers, seeds, HPO trial histories, per-window cutoffs, costs
-and result hashes.
+#### Measure economics and uncertainty
+
+- **Model costs and execution.** Hold sizing, protections and execution rules
+  constant unless they are the change under test. Set `--fee` explicitly, use
+  `--enable-protections` when evaluating protections, and use downloaded detail
+  candles with `--timeframe-detail` where feasible. Compare plausible base and
+  adverse cost scenarios, including spread, slippage, impact and funding/borrow
+  costs where applicable. Freqtrade's [candle assumptions][freqtrade-backtesting]
+  do not establish realistic fills or capacity; non-fee execution effects need
+  a separate model. A dry-run checks forward behavior, not actual exchange fills.
+- **Report portfolio outcomes.** Compare net return, maximum drawdown, exposure,
+  turnover and trade count, with results by period and long/short side. State the
+  equity convention and sampling interval. Closed-trade balance omits unrealized
+  losses: use equity including open positions for portfolio drawdown, or label
+  the reported balance-based measure and its limitation. Do not average window
+  drawdowns. Report prediction coverage, failed windows, `holdout_rmse` and
+  training latency alongside economics. Do not discard failed runs to improve
+  averages. Cash/buy-and-hold provide context, not a replacement for the incumbent.
+- **Separate market uncertainty from training randomness.** Repeat stochastic
+  fits/searches with the same planned seed list for both configurations and
+  report the paired differences, not just the best run. Seeds reuse the same
+  market history; they are not independent market samples. There is no universal
+  sufficient seed count. Record sampler/model seeds and parallelism; a fixed
+  seed alone does not guarantee identical HPO or GPU results.
+- **Match inference to the data.** For uncertainty in mean performance, compare
+  aligned portfolio returns at a stated frequency. A paired block bootstrap can
+  preserve temporal dependence by resampling the same time blocks for both
+  configurations ([Politis and Romano][stationary-bootstrap]). State the effect,
+  interval method, confidence level, block-length choice and sensitivity to it.
+  Justify the dependence/stationarity assumptions; neither extra seeds nor more
+  bootstrap draws compensate for short history or regime changes. Maximum
+  drawdown is path-dependent: an interval for mean return is not its risk bound.
+  Report results as inconclusive when the data cannot support the intended claim.
+- **Account for strategy selection.** Repeatedly choosing the best backtest
+  inflates apparent performance ([Bailey et al.][pbo]). If making significance
+  claims across candidates, define the comparison family and use valid
+  dependence-aware tests with a multiple-testing correction such as
+  [Holm's procedure][holm]; correction cannot repair invalid underlying p-values.
+  Report effect sizes and uncertainty, not only significance. Keep drawdown and
+  cost sensitivity visible rather than reducing the decision to a single score.
+
+#### Confirm and preserve the evidence
+
+Run [lookahead analysis][lookahead-analysis] and [recursive
+analysis][recursive-analysis] to investigate leakage and startup sensitivity.
+Use adequate history for every informative timeframe and a separate disposable
+FreqAI identifier for each analysis, with no existing model directory. **Both
+commands delete the selected identifier's model directory during analysis.**
+Never use retained or live-run identifiers. Exempt only confirmed
+target-construction flags; investigate feature and signal differences. Clean
+results cover only the paths exercised, not the absence of all leakage.
+
+Evaluate the frozen candidate on the reserved period, then check forward behavior
+in dry-run. Adopt it only if the evidence supports the planned economic and risk
+criteria; otherwise retain the incumbent and distinguish rejection from
+insufficient evidence. Archive a timestamped run manifest with commits, resolved
+image/dependency versions, configuration/data hashes, commands, identifiers,
+seeds, HPO histories, split cutoffs, costs and results. The Docker base tag moves;
+record the image digest, not just `stable_freqai`.
 
 [afml]: https://www.wiley.com/en-us/Advances+in+Financial+Machine+Learning-p-9781119482086
-[block-length]: https://doi.org/10.1081/ETC-120028836
-[block-length-correction]: https://doi.org/10.1080/07474930802459016
-[dsr]: https://doi.org/10.3905/jpm.2014.40.5.094
 [freqai-parameters]: https://www.freqtrade.io/en/stable/freqai-parameter-table/#general-configuration-parameters
 [freqai-running]: https://www.freqtrade.io/en/stable/freqai-running/
-[freqai-replay]: https://github.com/freqtrade/freqtrade/blob/2026.7/freqtrade/freqai/freqai_interface.py#L900-L927
-[freqai-source]: https://github.com/freqtrade/freqtrade/blob/2026.7/freqtrade/freqai/freqai_interface.py#L273-L410
+[freqai-replay]: https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/freqai/freqai_interface.py#L900-L942
+[freqai-source]: https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/freqai/freqai_interface.py#L273-L411
 [freqtrade-backtesting]: https://www.freqtrade.io/en/stable/backtesting/
-[hansen-spa]: https://doi.org/10.1198/073500105000000063
 [holm]: https://www.jstor.org/stable/4615733
 [knn-density]: https://doi.org/10.1214/aoms/1177700079
 [lookahead-analysis]: https://www.freqtrade.io/en/stable/lookahead-analysis/
@@ -397,7 +304,6 @@ and result hashes.
 [recursive-analysis]: https://www.freqtrade.io/en/stable/recursive-analysis/
 [silverman-density]: https://doi.org/10.1201/9781315140919
 [stationary-bootstrap]: https://doi.org/10.1080/01621459.1994.10476870
-[white-reality-check]: https://doi.org/10.1111/1468-0262.00152
 
 ## ReforceXY
 
