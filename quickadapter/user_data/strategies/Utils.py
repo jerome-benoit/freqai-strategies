@@ -5138,7 +5138,7 @@ def _validate_optuna_label_best_params(
     *,
     expected_selection_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Validate an Optuna ``label`` best-params payload against the v2 schema.
+    """Validate an Optuna ``label`` best-params payload.
 
     Returns the inner ``params`` dict on success; returns ``None`` on
     rejection. Rejects non-dict input, missing or invalid ``schema_version``,
