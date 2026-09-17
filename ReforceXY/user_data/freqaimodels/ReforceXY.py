@@ -264,6 +264,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         ...
         "freqai": {
             ...
+            "fit_live_predictions_candles": 0,      // Optional non-negative integer; omitted or 0 disables prediction statistics
             "model_training_parameters": {
                 "device": "auto",                   // PyTorch device (auto|cpu|cuda|cuda:0)
                 "gpu_memory_fraction": null,        // GPU VRAM fraction limit per process (0.0, 1.0], null disables
@@ -431,6 +432,20 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        fit_live_predictions_candles: Any = self.freqai_info.get("fit_live_predictions_candles", 0)
+        # Freqtrade's schema validates the integer type, not the range; a
+        # negative window produces NaN backtest label statistics.
+        if (
+            isinstance(fit_live_predictions_candles, bool)
+            or not isinstance(fit_live_predictions_candles, int)
+            or fit_live_predictions_candles < 0
+        ):
+            raise ValueError(
+                f"Config [global]: fit_live_predictions_candles="
+                f"{fit_live_predictions_candles!r} invalid; "
+                "must be a non-negative integer (0 disables label statistics)"
+            )
+        self.freqai_info["fit_live_predictions_candles"] = fit_live_predictions_candles
 
         self.pairs: list[str] = self.config.get("exchange", {}).get("pair_whitelist")
         if not self.pairs:

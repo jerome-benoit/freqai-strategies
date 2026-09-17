@@ -117,7 +117,6 @@
     "backtest_period_days": 2,
     "write_metrics_to_disk": false,
     "identifier": "ReforceXY-PPO",
-    "fit_live_predictions_candles": 864,
     "data_kitchen_thread_count": 4, // set to number of CPU threads / 4
     "track_performance": false,
     "feature_parameters": {
