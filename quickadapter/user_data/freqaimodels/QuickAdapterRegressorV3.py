@@ -1960,7 +1960,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             scaler_obj = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
 
         steps = [
-            (name, scaler_obj) if name in ("scaler", "post-pca-scaler") else (name, transformer)
+            (name, copy.deepcopy(scaler_obj)) if name in ("scaler", "post-pca-scaler") else (name, transformer)
             for name, transformer in pipeline.steps
         ]
 
