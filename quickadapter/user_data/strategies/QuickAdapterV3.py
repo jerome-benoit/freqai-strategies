@@ -38,6 +38,7 @@ from pandas import DataFrame, Series, isna, to_numeric
 from technical.pivots_points import pivots_points
 from Utils import (
     _CACHE_MAXSIZE_LARGE,
+    _FORMAT_STYLES,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -524,7 +525,7 @@ class QuickAdapterV3(IStrategy):
             logger.info("  Weighting:")
             logger.info(f"    strategy: {col_weighting['strategy']}")
             logger.info(
-                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style='dict')}"
+                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLES[0])}"
             )
             logger.info(f"    aggregation: {col_weighting['aggregation']}")
             if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
@@ -640,7 +641,9 @@ class QuickAdapterV3(IStrategy):
             for protection in self.protections:
                 method = protection.get("method", "Unknown")
                 protection_params = {k: v for k, v in protection.items() if k != "method"}
-                logger.info(f"  {method}: {format_dict(protection_params, style='dict')}")
+                logger.info(
+                    f"  {method}: {format_dict(protection_params, style=_FORMAT_STYLES[0])}"
+                )
         else:
             logger.info("  No protections enabled")
 
@@ -970,11 +973,11 @@ class QuickAdapterV3(IStrategy):
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style='params')}"
+                    f"[{pair}] No {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style=_FORMAT_STYLES[1])}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style='params')}"
+                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style=_FORMAT_STYLES[1])}"
                 )
 
             col_weighting_config = get_label_column_config(

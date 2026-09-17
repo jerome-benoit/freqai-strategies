@@ -66,6 +66,7 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 from Utils import (
+    _FORMAT_STYLES,
     _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
     _OPTUNA_NAMESPACES,
     DEFAULT_MAX_LABEL_NATR_MULTIPLIER,
@@ -4586,14 +4587,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_config = self._resolve_label_method_config(
                 self.ft_params.get("label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT)
             )
-            metric_log_msg = f" ({format_dict(label_config, style='params')})"
+            metric_log_msg = f" ({format_dict(label_config, style=_FORMAT_STYLES[1])})"
         logger.info(
             f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed"
             f"{metric_log_msg} ({time_spent:.2f} secs)"
         )
         if study_best_results:
             logger.info(
-                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params: {format_dict(study_best_results, style='dict')}"
+                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params: {format_dict(study_best_results, style=_FORMAT_STYLES[0])}"
             )
         if not self.optuna_validate_params(pair, namespace, study):
             logger.warning(

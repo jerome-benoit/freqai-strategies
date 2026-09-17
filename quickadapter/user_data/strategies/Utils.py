@@ -3591,20 +3591,24 @@ def _format_collection(
     return f"{brackets[0]}{content}{brackets[1]}"
 
 
+_FORMAT_STYLES: Final[tuple[Literal["dict", "params"], ...]] = ("dict", "params")
+"""Canonical formatting style domain for ``format_dict``."""
+
+
 def format_dict(
     d: dict[str, Any],
-    style: Literal["dict", "params"] = "dict",
+    style: Literal["dict", "params"] = _FORMAT_STYLES[0],
     significant_digits: int = 5,
 ) -> str:
     if not d:
-        return "{}" if style == "dict" else ""
+        return "{}" if style == _FORMAT_STYLES[0] else ""
 
-    ctx = _FormatContext(quote_strings=(style == "dict"), sig_digits=significant_digits)
-    sep = ": " if style == "dict" else "="
+    ctx = _FormatContext(quote_strings=(style == _FORMAT_STYLES[0]), sig_digits=significant_digits)
+    sep = ": " if style == _FORMAT_STYLES[0] else "="
     items = [f"{k}{sep}{_format_value(v, ctx, 0)}" for k, v in d.items()]
     joined = ", ".join(items)
 
-    return f"{{{joined}}}" if style == "dict" else joined
+    return f"{{{joined}}}" if style == _FORMAT_STYLES[0] else joined
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
