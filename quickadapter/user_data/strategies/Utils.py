@@ -5121,7 +5121,7 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
 
 
-_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 2
+_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 3
 """Version of the label-namespace Optuna best-trial selection algorithm.
 
 Incremented on any change to tie-break, normalization, distance-metric
