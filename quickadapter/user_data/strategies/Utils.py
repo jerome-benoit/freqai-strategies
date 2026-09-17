@@ -1551,7 +1551,7 @@ def get_fit_live_predictions_candles(config: Any, logger: Logger) -> int:
 
 
 def normalize_fit_live_predictions_config(config: dict[str, Any], logger: Logger) -> None:
-    """Publish the canonical window without hiding an absent/invalid FreqAI section."""
+    """Normalize ``fit_live_predictions_candles`` in a nonempty FreqAI configuration."""
     freqai = config.get("freqai")
     if isinstance(freqai, dict) and freqai:
         freqai["fit_live_predictions_candles"] = get_fit_live_predictions_candles(freqai, logger)
@@ -3592,7 +3592,6 @@ def _format_collection(
 
 
 _FORMAT_STYLES: Final[tuple[Literal["dict", "params"], ...]] = ("dict", "params")
-"""Canonical formatting style domain for ``format_dict``."""
 
 
 def format_dict(
@@ -5177,10 +5176,11 @@ def _validate_optuna_label_best_params(
     missing or invalid ``selection_metadata``, missing or invalid
     ``selection_metadata.schema_version``, schema-version mismatch with
     ``_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION``, missing or invalid
-    ``label_period_candles`` / ``label_natr_multiplier`` /
-    ``label_horizon_candles``, and -- when ``expected_selection_metadata``
-    is provided -- any drift between the stored and the caller's current
-    ``selection_metadata``. Every rejection emits a ``[<pair>]``-prefixed
+    ``label_period_candles`` / ``label_natr_multiplier``, and -- when
+    ``expected_selection_metadata`` is provided -- any drift between the
+    stored and the caller's current ``selection_metadata``.
+    ``label_horizon_candles`` may be absent or ``None``; otherwise it must
+    be a positive integer. Every rejection emits a ``[<pair>]``-prefixed
     warning when ``logger`` is provided.
     """
     if not isinstance(best_params, dict):
@@ -5656,7 +5656,7 @@ def get_optuna_study_model_parameters(
             "grow_policy": grow_policy,
             **(
                 {
-                    # Unlimited depth is reconstructed at the estimator boundary.
+                    # resolve_optuna_model_parameters adds max_depth=0 for lossguide.
                     "max_leaves": _optuna_suggest_int_from_range(
                         trial, "max_leaves", ranges["max_leaves"], min_val=2, log=True
                     ),
