@@ -24,6 +24,7 @@ from freqtrade.exchange import (
 from freqtrade.persistence import Trade
 from freqtrade.strategy import AnnotationType, stoploss_from_absolute
 from freqtrade.strategy.interface import IStrategy
+from freqtrade.util import FtPrecise
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
     FILL_METHODS,
@@ -79,6 +80,7 @@ from Utils import (
     migrate_config,
     nan_average,
     non_zero_diff,
+    normalize_fit_live_predictions_config,
     optuna_load_best_params,
     price_retracement_percent,
     safe_divide,
@@ -256,8 +258,9 @@ class QuickAdapterV3(IStrategy):
     process_only_new_candles = True
 
     def __init__(self, config: dict[str, Any], *args, **kwargs) -> None:
+        migrate_config(config, logger)
+        normalize_fit_live_predictions_config(config, logger)
         super().__init__(config, *args, **kwargs)
-        migrate_config(self.config, logger)
         if self.is_trade_runmode and self.config.get("api_server", {}).get("enabled", False):
             _install_rpc_custom_data_cleanup_patch()
 
@@ -1055,7 +1058,10 @@ class QuickAdapterV3(IStrategy):
             ):
                 if lookahead_column in dataframe.columns:
                     dataframe[lookahead_column] = compose_label_lookahead(
-                        dataframe[lookahead_column], kernel_half_width
+                        dataframe[lookahead_column],
+                        kernel_half_width,
+                        method=col_smoothing_config["method"],
+                        mode=col_smoothing_config["mode"],
                     )
 
             if label_col == EXTREMA_COLUMN:
@@ -1864,40 +1870,51 @@ class QuickAdapterV3(IStrategy):
         if trade_partial_exit:
             trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][1]
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
-            if min_stake is not None and min_stake > 0:
-                current_position_value = trade.amount * current_exit_rate
-                # Live/dry-run passes ``min_entry_stake``, while freqtrade's
-                # backtesting path already passes the adjusted minimum it guards.
-                min_remaining_position_value = min_stake
-                if self.is_trade_runmode:
-                    # For both the cost- and amount-driven minimum, ``min_exit_stake``
-                    # <= ``min_stake`` * max(exit/entry, 1/(1-|sl|)).
-                    min_remaining_position_value *= max(
-                        current_exit_rate / current_entry_rate,
-                        1.0 / (1.0 - abs(self.stoploss)),
+            tag = (
+                f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
+                f"{trade.trade_direction}_{trade_exit_stage}"
+            )
+            exchange = self.dp._exchange
+            if exchange is None:
+                return -trade.stake_amount, tag
+            exit_minimum = exchange.get_min_pair_stake_amount(
+                pair, current_exit_rate, 0.0, trade.leverage
+            )
+            remaining_minimum = exchange.get_min_pair_stake_amount(
+                pair, current_exit_rate, self.stoploss, trade.leverage
+            )
+            exit_minimum_value = (exit_minimum or 0.0) * trade.leverage
+            remaining_minimum_value = (remaining_minimum or 0.0) * trade.leverage
+            if not self.is_trade_runmode:
+                # Backtesting guards quote notional against its unleveraged callback minimum.
+                remaining_minimum_value = max(remaining_minimum_value, min_stake or 0.0)
+            remaining_minimum_value *= 1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
+            current_position_value = trade.amount * current_exit_rate
+            if current_position_value <= remaining_minimum_value:
+                return -trade.stake_amount, tag
+            trade_partial_stake_amount = min(
+                trade_partial_stake_amount,
+                trade.stake_amount * (1 - remaining_minimum_value / current_position_value),
+            )
+            exit_amount = exchange.amount_to_contract_precision(
+                pair,
+                abs(
+                    float(
+                        FtPrecise(trade_partial_stake_amount)
+                        * FtPrecise(trade.amount)
+                        / FtPrecise(trade.stake_amount)
                     )
-                min_remaining_position_value *= 1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
-                if current_position_value <= min_remaining_position_value:
-                    return None
-                remaining_position_value = current_position_value * (1 - trade_stake_percent)
-                if remaining_position_value < min_remaining_position_value:
-                    initial_trade_partial_stake_amount = trade_partial_stake_amount
-                    trade_partial_stake_amount = trade.stake_amount * (
-                        1 - min_remaining_position_value / current_position_value
-                    )
-                    logger.info(
-                        f"[{pair}] {trade.trade_direction} partial exit stage "
-                        f"{trade_exit_stage} | stake "
-                        f"{format_number(initial_trade_partial_stake_amount)} -> "
-                        f"{format_number(trade_partial_stake_amount)} to preserve "
-                        f"min_remaining_position_value {format_number(min_remaining_position_value)}"
-                    )
+                ),
+            )
+            if (
+                exit_amount <= 0
+                or exit_amount * current_exit_rate < exit_minimum_value
+                or (trade.amount - exit_amount) * current_exit_rate < remaining_minimum_value
+            ):
+                return -trade.stake_amount, tag
             return (
                 -trade_partial_stake_amount,
-                (
-                    f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
-                    f"{trade.trade_direction}_{trade_exit_stage}"
-                ),
+                tag,
             )
 
         return None
@@ -2108,6 +2125,11 @@ class QuickAdapterV3(IStrategy):
         trade_direction = side
 
         max_lookback_period_candles = max(0, len(df) - 1)
+        if (
+            order == QuickAdapterV3._ORDER_ENTRY
+            and lookback_period_candles > max_lookback_period_candles
+        ):
+            return False
         lookback_period_candles = min(lookback_period_candles, max_lookback_period_candles)
         if not isinstance(decay_fraction, (int, float)):
             logger.debug(f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction type")

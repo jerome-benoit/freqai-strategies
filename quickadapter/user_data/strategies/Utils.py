@@ -982,6 +982,9 @@ def _sanitize_known_at_lookahead(
 def compose_label_lookahead(
     known_at_lookahead: pd.Series,
     kernel_half_width: int,
+    *,
+    method: SmoothingMethod,
+    mode: SmoothingMode,
 ) -> pd.Series:
     """Compose row-wise label availability with a centered smoothing kernel.
 
@@ -1007,6 +1010,10 @@ def compose_label_lookahead(
         center=True,
         min_periods=1,
     ).max()
+    if method == "savgol" and mode == "interp":
+        smoothed_known_at_positions.iloc[:kernel_half_width] = known_at_positions.iloc[
+            : 2 * kernel_half_width + 1
+        ].max()
     right_edge_start = max(0, n - kernel_half_width)
     smoothed_known_at_positions.iloc[right_edge_start:] = n
     return pd.Series(
@@ -1541,6 +1548,13 @@ def get_fit_live_predictions_candles(config: Any, logger: Logger) -> int:
         _FIT_LIVE_PREDICTIONS_SPECS,
         {"fit_live_predictions_candles": DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES},
     )["fit_live_predictions_candles"]
+
+
+def normalize_fit_live_predictions_config(config: dict[str, Any], logger: Logger) -> None:
+    """Publish the canonical window without hiding an absent/invalid FreqAI section."""
+    freqai = config.get("freqai")
+    if isinstance(freqai, dict) and freqai:
+        freqai["fit_live_predictions_candles"] = get_fit_live_predictions_candles(freqai, logger)
 
 
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
@@ -4898,7 +4912,17 @@ def fit_regressor(
 
         early_stopping_rounds = _pop_early_stopping_rounds(model_training_parameters, has_eval_set)
 
-        dist = model_training_parameters.pop("dist", "lognormal")
+        dist = model_training_parameters.pop("dist", "normal")
+        if dist == "lognormal":
+            label_sets = [y] + ([labels for _, labels in eval_set] if eval_set else [])
+            if any(
+                not np.all(np.isfinite(values) & (values > 0))
+                for values in (labels.to_numpy() for labels in label_sets)
+            ):
+                message = "NGBoost lognormal requires strictly positive finite training and evaluation labels"
+                if trial is not None:
+                    raise optuna.TrialPruned(message)
+                raise ValueError(message)
 
         X_val = None
         Y_val = None
@@ -5485,6 +5509,18 @@ def optuna_save_best_params(
         raise
 
 
+def resolve_optuna_model_parameters(regressor: Regressor, params: dict[str, Any]) -> dict[str, Any]:
+    """Reconstruct estimator parameters from replayable raw Optuna suggestions."""
+    resolved = params.copy()
+    if regressor == _REGRESSOR_SPECS.xgboost.name and resolved.get("grow_policy") == "lossguide":
+        resolved["max_depth"] = 0
+    elif regressor == _REGRESSOR_SPECS.histgradientboostingregressor.name and resolved.pop(
+        "l2_regularization_zero", False
+    ):
+        resolved["l2_regularization"] = 0.0
+    return resolved
+
+
 def get_optuna_study_model_parameters(
     trial: optuna.trial.Trial,
     regressor: Regressor,
@@ -5527,7 +5563,7 @@ def get_optuna_study_model_parameters(
                     new_max = center_value + margin
                 param_min = max(default_min, new_min)
                 param_max = min(default_max, new_max)
-                if param_min < param_max:
+                if param_min <= param_max:
                     ranges[param] = (param_min, param_max)
         return ranges
 
@@ -5586,7 +5622,7 @@ def get_optuna_study_model_parameters(
             "grow_policy": grow_policy,
             **(
                 {
-                    "max_depth": 0,
+                    # Unlimited depth is reconstructed at the estimator boundary.
                     "max_leaves": _optuna_suggest_int_from_range(
                         trial, "max_leaves", ranges["max_leaves"], min_val=2, log=True
                     ),
@@ -5649,7 +5685,7 @@ def get_optuna_study_model_parameters(
             params["skip_drop"] = trial.suggest_float("skip_drop", 0.0, 0.7)
             params["one_drop"] = trial.suggest_categorical("one_drop", [False, True])
 
-        return params
+        return resolve_optuna_model_parameters(regressor, params)
 
     elif regressor == _REGRESSOR_SPECS.lightgbm.name:
         # Parameter order: boosting -> tree structure -> leaf constraints ->
@@ -5808,7 +5844,7 @@ def get_optuna_study_model_parameters(
                 min(max_leaf_nodes_range[1], float(2**max_depth)),
             )
 
-        return {
+        params = {
             # Boosting/Training
             "max_iter": _optuna_suggest_int_from_range(
                 trial, "max_iter", ranges["max_iter"], min_val=1, log=True
@@ -5840,6 +5876,7 @@ def get_optuna_study_model_parameters(
             ),
             # Regularization
             "l2_regularization": l2_regularization,
+            "l2_regularization_zero": l2_regularization_zero,
             # Binning
             "max_bins": _optuna_suggest_int_from_range(
                 trial, "max_bins", ranges["max_bins"], min_val=2
@@ -5855,6 +5892,7 @@ def get_optuna_study_model_parameters(
                 log=True,
             ),
         }
+        return resolve_optuna_model_parameters(regressor, params)
 
     elif regressor == _REGRESSOR_SPECS.ngboost.name:
         # Parameter order: boosting -> tree structure -> sampling -> early stopping -> distribution

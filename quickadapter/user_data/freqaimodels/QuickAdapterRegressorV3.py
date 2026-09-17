@@ -102,10 +102,12 @@ from Utils import (
     label_weight_known_at_lookahead_column_name,
     make_test_set_and_weights,
     migrate_config,
+    normalize_fit_live_predictions_config,
     optuna_load_best_params,
     optuna_save_best_params,
     require_bool,
     require_numeric,
+    resolve_optuna_model_parameters,
     safe_distribution_fit,
     sanitize_and_renormalize,
     soft_extremum,
@@ -1037,6 +1039,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         mode: ValidationMode = "none",
         metric_ctx: str = "distance_metric",
         p_ctx: str = "p",
+        *,
+        reference_matrix: NDArray[np.floating],
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
 
@@ -1051,6 +1055,24 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             validated_p = QuickAdapterRegressorV3._validate_minkowski_p(p, ctx=p_ctx, mode=mode)
             if validated_p is not None:
                 kwargs["p"] = validated_p
+
+        if distance_metric in {"seuclidean", "mahalanobis"}:
+            if reference_matrix.shape[0] < 2 or not np.all(np.isfinite(reference_matrix)):
+                raise ValueError(
+                    "Standardized distances require a finite full front with at least two rows"
+                )
+            variances = np.var(reference_matrix, axis=0, ddof=1)
+            if not np.all(np.isfinite(variances) & (variances > 0)):
+                raise ValueError(
+                    "Standardized distances require positive active-objective variances"
+                )
+            if distance_metric == "seuclidean":
+                kwargs["V"] = variances
+            else:
+                covariance = np.atleast_2d(np.cov(reference_matrix, rowvar=False, ddof=1))
+                eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+                floor = eigenvalues[-1] * np.sqrt(np.finfo(float).eps)
+                kwargs["VI"] = (eigenvectors / np.maximum(eigenvalues, floor)) @ eigenvectors.T
 
         return kwargs
 
@@ -1215,26 +1237,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             default=default,
         )
         return cast("str", resolved_metric)
-
-    @staticmethod
-    def _prepare_knn_kwargs(
-        distance_metric: str,
-        *,
-        weights: NDArray[np.floating] | None = None,
-        p: float | None = None,
-        mode: ValidationMode = "warn",
-        p_ctx: str = "label_density_p",
-    ) -> dict[str, Any]:
-        knn_kwargs: dict[str, Any] = {}
-
-        if distance_metric == QuickAdapterRegressorV3._METRIC_MINKOWSKI:
-            validated_p = QuickAdapterRegressorV3._validate_minkowski_p(p, ctx=p_ctx, mode=mode)
-            if validated_p is not None:
-                knn_kwargs["p"] = validated_p
-            if weights is not None:
-                knn_kwargs["metric_params"] = {"w": weights}
-
-        return knn_kwargs
 
     @staticmethod
     def _resolve_p_order(
@@ -1581,9 +1583,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ]
         return copy.deepcopy(self._optuna_label_candle_pool_full_cache[cache_key])
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        migrate_config(self.config, logger)
+    def __init__(self, config: dict[str, Any], *args, **kwargs):
+        migrate_config(config, logger)
+        normalize_fit_live_predictions_config(config, logger)
+        super().__init__(config, *args, **kwargs)
         self._fit_live_predictions_candles: int = get_fit_live_predictions_candles(
             self.freqai_info, logger
         )
@@ -1612,7 +1615,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_candle_pool_full_cache: dict[int, list[int]] = {}
         self._optuna_label_shuffle_rng = random.Random(self._optuna_config["seed"])
-        self.init_optuna_label_candle_pool()
+        self._optuna_label_candle_pool: list[int] = []
+        if self._optuna_hyperopt:
+            self.init_optuna_label_candle_pool()
         self._optuna_label_candle: dict[str, int] = {}
         self._optuna_label_candles: dict[str, int] = {}
         self._optuna_label_incremented_pairs: list[str] = []
@@ -1644,7 +1649,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_params[pair] = (
                 self.optuna_load_best_params(pair, _OPTUNA_NAMESPACES.label) if trade_mode else None
             ) or configured_label_params
-            self.set_optuna_label_candle(pair)
+            if self._optuna_hyperopt:
+                self.set_optuna_label_candle(pair)
             self._optuna_label_candles[pair] = 0
 
         self.regressor: Regressor = self.freqai_info.get("regressor", DEFAULT_REGRESSOR)
@@ -1907,7 +1913,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 remaining_candles = optuna_label_candle - optuna_label_candles
                 if remaining_candles in optuna_label_candle_pool:
                     optuna_label_candle_pool.remove(remaining_candles)
-        optuna_label_candle = optuna_label_candle_pool.pop()
+        optuna_label_candle = (
+            optuna_label_candle_pool[-1]
+            if optuna_label_candle_pool
+            else self._optuna_label_candle_pool[-1]
+        )
         self._optuna_label_candle[pair] = optuna_label_candle
         self._optuna_label_candle_pool.remove(optuna_label_candle)
         optuna_label_available_candles = (
@@ -1960,7 +1970,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             scaler_obj = SKLearnWrapper(MinMaxScaler(feature_range=feature_range))
 
         steps = [
-            (name, copy.deepcopy(scaler_obj)) if name in ("scaler", "post-pca-scaler") else (name, transformer)
+            (name, copy.deepcopy(scaler_obj))
+            if name in ("scaler", "post-pca-scaler")
+            else (name, transformer)
             for name, transformer in pipeline.steps
         ]
 
@@ -2139,6 +2151,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             train_labels = labels
             train_base_weights = weights.base
             train_label_weights = weights.label
+            if causal_mode:
+                keep_mask = self._known_before_position_mask(
+                    features, unfiltered_df, dk.pair, len(unfiltered_df)
+                )
+                (
+                    train_features,
+                    train_labels,
+                    train_base_weights,
+                    train_label_weights,
+                ) = QuickAdapterRegressorV3._filter_train_by_mask(
+                    train_features,
+                    train_labels,
+                    train_base_weights,
+                    keep_mask,
+                    f"[{dk.pair}] full-training causal guard",
+                    train_label_weights=train_label_weights,
+                )
             test_features = features.iloc[:0]
             test_labels = labels.iloc[:0]
             test_base_weights = weights.base[:0]
@@ -2969,7 +2998,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             if optuna_hp_params:
                 model_training_parameters = {
                     **model_training_parameters,
-                    **optuna_hp_params,
+                    **resolve_optuna_model_parameters(self.regressor, optuna_hp_params),
                 }
 
         eval_set, eval_weights = make_test_set_and_weights(
@@ -3642,12 +3671,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         mode: ValidationMode = "none",
         p_ctx: str = "p",
     ) -> NDArray[np.floating]:
-        validated_p = QuickAdapterRegressorV3._validate_power_mean_p(p, ctx=p_ctx, mode=mode)
-        power = (
-            QuickAdapterRegressorV3._POWER_MEAN_MAP[distance_metric]
-            if distance_metric in QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET
-            else (1.0 if validated_p is None else validated_p)
-        )
+        if distance_metric in QuickAdapterRegressorV3._POWER_MEAN_METRICS_SET:
+            power = QuickAdapterRegressorV3._POWER_MEAN_MAP[distance_metric]
+        else:
+            validated_p = QuickAdapterRegressorV3._validate_power_mean_p(p, ctx=p_ctx, mode=mode)
+            power = 1.0 if validated_p is None else validated_p
         if weights is None:
             weights = np.ones(matrix.shape[1])
 
@@ -3676,18 +3704,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         p: float | None,
         method: str,
         apply_abs: bool,
-        cdist_kwargs: dict[str, Any] | None = None,
+        cdist_kwargs: dict[str, Any],
     ) -> NDArray[np.floating]:
         if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET:
-            if cdist_kwargs is None:
-                cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-                    distance_metric,
-                    weights=weights,
-                    p=p,
-                    mode="warn",
-                    metric_ctx="label_distance_metric",
-                    p_ctx="label_distance_p",
-                )
             return sp.spatial.distance.cdist(
                 normalized_matrix,
                 reference_point.reshape(1, -1),
@@ -3740,6 +3759,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         normalized_matrix: NDArray[np.floating],
         distance_metric: str,
         *,
+        distance_kwargs: dict[str, Any],
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
     ) -> NDArray[np.floating]:
@@ -3763,6 +3783,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             p=p,
             method=QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING,
             apply_abs=False,
+            cdist_kwargs=distance_kwargs,
         )
 
     @staticmethod
@@ -3770,6 +3791,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         matrix: NDArray[np.floating],
         distance_metric: str,
         *,
+        distance_kwargs: dict[str, Any],
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
     ) -> NDArray[np.floating]:
@@ -3791,17 +3813,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if n == 1:
             return np.array([0.0])
 
-        pdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-            distance_metric,
-            weights=weights,
-            p=p,
-            mode="warn",
-            metric_ctx="label_density_metric",
-            p_ctx="label_density_p",
-        )
-
         pairwise_distances_vector = sp.spatial.distance.pdist(
-            matrix, metric=distance_metric, **pdist_kwargs
+            matrix, metric=distance_metric, **distance_kwargs
         )
 
         sums = np.zeros(n, dtype=float)
@@ -3817,6 +3830,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         normalized_matrix: NDArray[np.floating],
         distance_metric: str,
         *,
+        distance_kwargs: dict[str, Any],
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
     ) -> NDArray[np.floating]:
@@ -3833,19 +3847,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point = np.ones(n_objectives)
         anti_ideal_point = np.zeros(n_objectives)
 
-        cdist_kwargs = (
-            QuickAdapterRegressorV3._prepare_distance_kwargs(
-                distance_metric,
-                weights=weights,
-                p=p,
-                mode="warn",
-                metric_ctx="label_distance_metric",
-                p_ctx="label_distance_p",
-            )
-            if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET
-            else None
-        )
-
         dist_to_ideal = QuickAdapterRegressorV3._distance_to_reference(
             normalized_matrix,
             ideal_point,
@@ -3854,7 +3855,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             p=p,
             method=QuickAdapterRegressorV3._METHOD_TOPSIS,
             apply_abs=True,
-            cdist_kwargs=cdist_kwargs,
+            cdist_kwargs=distance_kwargs,
         )
         dist_to_anti_ideal = QuickAdapterRegressorV3._distance_to_reference(
             normalized_matrix,
@@ -3864,7 +3865,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             p=p,
             method=QuickAdapterRegressorV3._METHOD_TOPSIS,
             apply_abs=True,
-            cdist_kwargs=cdist_kwargs,
+            cdist_kwargs=distance_kwargs,
         )
 
         denominator = dist_to_ideal + dist_to_anti_ideal
@@ -3882,23 +3883,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point_2d: NDArray[np.floating],
         distance_metric: str,
         *,
+        distance_kwargs: dict[str, Any],
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
     ) -> float:
-        cdist_kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-            distance_metric=distance_metric,
-            weights=weights,
-            p=p,
-            mode="warn",
-            metric_ctx="label_cluster_metric",
-            p_ctx="label_cluster_p",
-        )
-
         return sp.spatial.distance.cdist(
             normalized_matrix[[trial_index]],
             ideal_point_2d,
             metric=distance_metric,
-            **cdist_kwargs,
+            **distance_kwargs,
         ).item()
 
     def _select_best_trial_from_cluster(
@@ -3909,6 +3902,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ideal_point_2d: NDArray[np.floating],
         distance_metric: str,
         *,
+        distance_kwargs: dict[str, Any],
         weights: NDArray[np.floating] | None = None,
         p: float | None = None,
     ) -> tuple[int, float]:
@@ -3921,6 +3915,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 distance_metric,
                 weights=weights,
                 p=p,
+                distance_kwargs=distance_kwargs,
             )
             return best_trial_index, best_trial_distance
 
@@ -3930,6 +3925,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 distance_metric,
                 weights=weights,
                 p=p,
+                distance_kwargs=distance_kwargs,
             )
         elif trial_selection_method == QuickAdapterRegressorV3._METHOD_TOPSIS:
             scores = QuickAdapterRegressorV3._topsis_scores(
@@ -3937,6 +3933,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 distance_metric,
                 weights=weights,
                 p=p,
+                distance_kwargs=distance_kwargs,
             )
         else:
             raise ValueError(
@@ -3956,6 +3953,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             distance_metric,
             weights=weights,
             p=p,
+            distance_kwargs=distance_kwargs,
         )
         return best_trial_index, best_trial_distance
 
@@ -3964,6 +3962,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         normalized_matrix: NDArray[np.floating],
         cluster_method: ClusterMethod,
         *,
+        distance_kwargs: dict[str, Any],
         distance_metric: str,
         selection_method: DistanceMethod,
         trial_selection_method: DistanceMethod,
@@ -3998,12 +3997,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 cluster_center_scores = QuickAdapterRegressorV3._compromise_programming_scores(
                     cluster_centers,
                     distance_metric,
+                    weights=weights,
+                    distance_kwargs=distance_kwargs,
                     p=p,
                 )
             elif selection_method == QuickAdapterRegressorV3._METHOD_TOPSIS:
                 cluster_center_scores = QuickAdapterRegressorV3._topsis_scores(
                     cluster_centers,
                     distance_metric,
+                    weights=weights,
+                    distance_kwargs=distance_kwargs,
                     p=p,
                 )
             else:
@@ -4033,6 +4036,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     distance_metric,
                     weights=weights,
                     p=p,
+                    distance_kwargs=distance_kwargs,
                 )
                 trial_distances[best_trial_index] = best_trial_distance
             return trial_distances
@@ -4059,6 +4063,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         normalized_matrix: NDArray[np.floating],
         aggregation: DensityAggregation,
         *,
+        distance_kwargs: dict[str, Any],
         distance_metric: str,
         n_neighbors: int,
         weights: NDArray[np.floating] | None = None,
@@ -4072,20 +4077,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if n_samples == 1:
             return np.array([0.0])
 
-        knn_kwargs = QuickAdapterRegressorV3._prepare_knn_kwargs(
-            distance_metric,
-            weights=weights,
-            p=p,
-            mode="raise",
+        k = min(n_neighbors, n_samples - 1)
+        if k < 1:
+            return np.full(n_samples, np.inf)
+        distances = sp.spatial.distance.squareform(
+            sp.spatial.distance.pdist(normalized_matrix, metric=distance_metric, **distance_kwargs)
         )
-
-        nbrs = sklearn.neighbors.NearestNeighbors(
-            n_neighbors=min(n_neighbors, n_samples - 1) + 1,
-            metric=distance_metric,
-            **knn_kwargs,
-        ).fit(normalized_matrix)
-        distances, _ = nbrs.kneighbors(normalized_matrix)
-        neighbor_distances = distances[:, 1:]
+        np.fill_diagonal(distances, np.inf)
+        distances.partition(k - 1, axis=1)
+        neighbor_distances = distances[:, :k]
 
         if neighbor_distances.shape[1] < 1:
             return np.full(n_samples, np.inf)
@@ -4382,21 +4382,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         }:
             return np.array([0.0])
 
-        if category == "distance":
-            distance_metric = label_config["distance_metric"]
-            p = QuickAdapterRegressorV3._resolve_p_order(
+        distance_metric = label_config["distance_metric"]
+        p = QuickAdapterRegressorV3._resolve_p_order(
+            distance_metric, label_p_order, ctx=f"label_p_order for {method}", mode="none"
+        )
+        distance_kwargs = (
+            QuickAdapterRegressorV3._prepare_distance_kwargs(
                 distance_metric,
-                label_p_order,
-                ctx=f"label_p_order for {method}",
-                mode="none",
+                weights=weights,
+                p=p,
+                mode="warn",
+                metric_ctx=f"label_{category}_metric",
+                reference_matrix=normalized_matrix,
             )
+            if distance_metric in QuickAdapterRegressorV3._SCIPY_METRICS_SET and n_samples > 1
+            else {}
+        )
 
+        if category == "distance":
             if method == QuickAdapterRegressorV3._METHOD_COMPROMISE_PROGRAMMING:
                 return QuickAdapterRegressorV3._compromise_programming_scores(
                     normalized_matrix,
                     distance_metric,
                     weights=weights,
                     p=p,
+                    distance_kwargs=distance_kwargs,
                 )
             if method == QuickAdapterRegressorV3._METHOD_TOPSIS:
                 return QuickAdapterRegressorV3._topsis_scores(
@@ -4404,6 +4414,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     distance_metric,
                     weights=weights,
                     p=p,
+                    distance_kwargs=distance_kwargs,
                 )
 
         if category == "cluster":
@@ -4411,12 +4422,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             cluster_selection_method = label_config["selection_method"]
             trial_selection_method = label_config["trial_selection_method"]
 
-            p = QuickAdapterRegressorV3._resolve_p_order(
-                cluster_metric,
-                label_p_order,
-                ctx=f"label_p_order for {method}",
-                mode="none",
-            )
             return self._cluster_based_selection(
                 normalized_matrix,
                 method,
@@ -4425,17 +4430,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 trial_selection_method=trial_selection_method,
                 weights=weights,
                 p=p,
+                distance_kwargs=distance_kwargs,
             )
 
         if category == "density":
             density_method = cast("DensityMethod", method)
             density_metric = label_config["distance_metric"]
-            p = QuickAdapterRegressorV3._resolve_p_order(
-                density_metric,
-                label_p_order,
-                ctx=f"label_p_order for {density_method}",
-                mode="none",
-            )
 
             if density_method == QuickAdapterRegressorV3._DENSITY_KNN:
                 knn_n_neighbors = int(label_config["n_neighbors"])
@@ -4454,6 +4454,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     weights=weights,
                     p=p,
                     aggregation_param=knn_aggregation_param,
+                    distance_kwargs=distance_kwargs,
                 )
 
             if density_method == QuickAdapterRegressorV3._DENSITY_MEDOID:
@@ -4462,6 +4463,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     density_metric,
                     weights=weights,
                     p=p,
+                    distance_kwargs=distance_kwargs,
                 )
 
         raise ValueError(
