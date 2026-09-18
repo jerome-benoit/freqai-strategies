@@ -3677,10 +3677,10 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         Take a step in the environment based on the provided action
         """
+        previous_equity = self._get_portfolio_equity(self.get_unrealized_profit())
         self._current_tick += 1
         self._update_unrealized_total_profit()
         pre_pnl = self.get_unrealized_profit()
-        self._update_portfolio_log_returns()
         reward = self.calculate_reward(action)
         trade_type = self.execute_trade(action)
         if trade_type is not None:
@@ -3701,6 +3701,7 @@ class MyRLEnv(Base5ActionRLEnv):
             self._last_potential = 0.0
         self.total_reward += reward
         pnl = self.get_unrealized_profit()
+        self._update_portfolio_log_returns(previous_equity, self._get_portfolio_equity(pnl))
         self._update_max_unrealized_profit(pnl)
         self._update_min_unrealized_profit(pnl)
         delta_pnl = pnl - pre_pnl
@@ -3861,125 +3862,45 @@ class MyRLEnv(Base5ActionRLEnv):
         ):
             self._min_unrealized_profit = pnl
 
+    def _get_portfolio_equity(self, pnl: float) -> float:
+        """Mark equity to liquidation using the upstream fee and staking conventions."""
+        if self.compound_trades:
+            return self._total_profit * (1.0 + pnl)
+        return self._total_profit + pnl
+
     def get_most_recent_return(self) -> float:
+        """Return the stored log equity change for the last completed transition."""
+        return float(self.portfolio_log_returns[self._current_tick])
+
+    def _update_portfolio_log_returns(self, previous_equity: float, current_equity: float) -> None:
+        """Record log(E_after / E_before), provisioning round-trip fees at entry.
+
+        Equity includes unrealized liquidation PnL while a position is open and
+        realized capital after exit. This accounts for the final price move
+        without charging liquidation fees twice. Non-positive or non-finite
+        equity has no finite log return and is reported as NaN, not zero.
         """
-        Calculate tick-to-tick log-return for the current position.
-
-        Entry fees are applied on position transitions only (Neutral/opposite → current).
-
-        Returns
-        -------
-        float
-            Log-return: ln(current/previous)
-            - Long: positive when price rises
-            - Short: positive when price falls
-            - 0.0 if no trade, neutral position, or invalid prices
-        """
-        if self._last_trade_tick is None:
-            return 0.0
-        if self._position == Positions.Neutral:
-            return 0.0
-
-        elif self._position == Positions.Long:
-            current_price = self.current_price()
-            previous_price = self.previous_price()
-            previous_tick = self.previous_tick()
-            if (
-                self._position_history[previous_tick] == Positions.Short
-                or self._position_history[previous_tick] == Positions.Neutral
-            ):
-                previous_price = self.add_entry_fee(previous_price)
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return np.log(current_price) - np.log(previous_price)
-
-        elif self._position == Positions.Short:
-            current_price = self.current_price()
-            previous_price = self.previous_price()
-            previous_tick = self.previous_tick()
-            if (
-                self._position_history[previous_tick] == Positions.Long
-                or self._position_history[previous_tick] == Positions.Neutral
-            ):
-                previous_price = self.add_exit_fee(previous_price)
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return np.log(previous_price) - np.log(current_price)
-
-        return 0.0
-
-    def _update_portfolio_log_returns(self):
-        self.portfolio_log_returns[self._current_tick] = self.get_most_recent_return()
+        if (
+            not np.isfinite(previous_equity)
+            or not np.isfinite(current_equity)
+            or previous_equity <= 0.0
+            or current_equity <= 0.0
+        ):
+            value = np.nan
+            logger.warning(
+                "Env [%s]: undefined portfolio log return at tick=%d: equity %s -> %s",
+                self.id,
+                self._current_tick,
+                previous_equity,
+                current_equity,
+            )
+        else:
+            value = math.log(current_equity) - math.log(previous_equity)
+        self.portfolio_log_returns[self._current_tick] = value
 
     def get_most_recent_profit(self) -> float:
-        """
-        Calculate tick-to-tick unrealized profit ratio with fees.
-
-        Returns simple return: (current - previous) / previous
-        Entry/exit fees are always applied to simulate closing the position.
-
-        Returns
-        -------
-        float
-            Profit ratio (not log-return)
-            - Long: (current_with_exit_fee - previous_with_entry_fee) / previous
-            - Short: (previous_with_exit_fee - current_with_entry_fee) / previous
-            - 0.0 if no trade, neutral position, or invalid prices
-        """
-        if self._last_trade_tick is None:
-            return 0.0
-        if self._position == Positions.Neutral:
-            return 0.0
-
-        elif self._position == Positions.Long:
-            current_price = self.add_exit_fee(self.current_price())
-            previous_price = self.add_entry_fee(self.previous_price())
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return (current_price - previous_price) / previous_price
-
-        elif self._position == Positions.Short:
-            current_price = self.add_entry_fee(self.current_price())
-            previous_price = self.add_exit_fee(self.previous_price())
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return (previous_price - current_price) / previous_price
-
-        return 0.0
-
-    def previous_tick(self) -> int:
-        return max(self._current_tick - 1, self._start_tick)
-
-    def previous_price(self) -> float:
-        return self.prices.iloc[self.previous_tick()].get("open")
+        """Return the simple equity change corresponding to the stored log return."""
+        return float(np.expm1(self.get_most_recent_return()))
 
     def get_env_history(self) -> DataFrame:
         """

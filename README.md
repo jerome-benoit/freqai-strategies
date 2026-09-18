@@ -434,6 +434,21 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
+Environment diagnostics `most_recent_return` (log return) and
+`most_recent_profit` (simple return) measure changes in liquidation equity,
+including unrealized PnL and Freqtrade's staking convention. Round-trip fees are
+provisioned at entry; exits include the final price move without charging fees
+again. `portfolio_log_returns` stores the same log returns. Non-positive or
+non-finite equity produces NaN diagnostics rather than a zero return. These
+diagnostics do not change the training reward or realized capital.
+
+Run the runtime accounting regressions inside the ReforceXY QA image, with the
+repository mounted at `/workspace` and `/workspace` as the working directory:
+
+```shell
+python -m unittest discover -s ReforceXY/tests -v
+```
+
 ## Development
 
 **Run repository quality checks from the repository root:**
