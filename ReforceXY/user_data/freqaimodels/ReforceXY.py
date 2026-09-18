@@ -1349,9 +1349,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             tensorboard_log_path = None
 
         # Use preserved raw prices with the final policy's feature coordinates.
-        # A disk-restored learner keeps its own discount gamma; the final
-        # environments must shape rewards with that same gamma instead of the
-        # configured or HPO-selected one.
+        # Reward shaping must use the resumed policy's discount gamma,
+        # not the configured or HPO-selected value.
         resumed_gamma: dict[str, Any] | None = None
         if deployment_state is not None:
             learner_gamma = getattr(deployment_state[0], "gamma", None)
@@ -1961,7 +1960,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     ) -> dict[str, Any] | None:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
-        Only studies and best params from the current objective generation are reused.
+        Only studies and best params with the current objective identity are reused.
         """
         identifier = self.freqai_info.get("identifier", "no_id_provided")
         study_name = f"{identifier}-{dk.pair}"
