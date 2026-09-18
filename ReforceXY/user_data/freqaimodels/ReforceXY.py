@@ -188,7 +188,7 @@ def _install_date_pred_dedup_patch() -> None:
         )
         pending.append(not getattr(current, _DATE_PRED_DEDUP_SENTINEL, False))
         if iscoroutinefunction(original) or iscoroutinefunction(current):
-            raise RuntimeError("FreqAI prediction repair requires synchronous drawer methods")
+            raise RuntimeError("Repair [global]: requires synchronous drawer methods")
     if not any(pending):
         return
     original_set_initial, original_append, original_attach = originals[:3]
@@ -1142,11 +1142,11 @@ class ReforceXY(BaseReinforcementLearningModel):
             state = model, copy.deepcopy(feature_pipeline)
         except Exception as exc:
             raise DependencyException(
-                f"[{pair}] Cannot continue training with matching persisted pipelines: {exc}. "
+                f"Training [{pair}]: cannot continue with matching persisted pipelines: {exc}. "
                 "Reset trained models or use a new freqai.identifier."
             ) from exc
         logger.info(
-            f"[{pair}] Continuing deployment in the persisted feature coordinate system; "
+            f"Training [{pair}]: continuing deployment in the persisted feature coordinate system; "
             "reset trained models to change pipeline configuration"
         )
         return state
@@ -1183,7 +1183,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             transformed_weights = cast("NDArray[np.float64]", np.asarray(transformed_weights))
             if len(transformed) != len(features) or len(transformed_weights) != len(features):
                 raise DependencyException(
-                    f"[{dk.pair}] RL preprocessing must preserve chronological rows "
+                    f"Training [{dk.pair}]: RL preprocessing must preserve chronological rows "
                     "and their alignment with raw prices."
                 )
             # DataSieve reconstructs frames with RangeIndex while retaining row order.
@@ -1208,7 +1208,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         # Drawer metadata can alias this kitchen; never invalidate the deployed marker.
         dk.data = dk.data.copy()
         dk.data.pop(self._DEPLOYMENT_COORDINATE_MARKER_KEY, None)
-        logger.info(f"--------------------Starting training {pair} --------------------")
+        logger.info("Training [%s]: starting", pair)
         features_filtered, labels_filtered = dk.filter_features(
             unfiltered_df, dk.training_features_list, dk.label_list, training_filter=True
         )
@@ -1222,7 +1222,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             raw_data, dk, deployment_state=None if self.hyperopt else deployment_state
         )
         logger.info(
-            f"Training model on {len(dd['train_features'].columns)}"
+            f"Training [{pair}]: model on {len(dd['train_features'].columns)}"
             f" features and {len(dd['train_features'])} data points"
         )
         model = self.fit(
@@ -1236,7 +1236,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if model is not None:
             dk.data[self._DEPLOYMENT_COORDINATE_MARKER_KEY] = self._DEPLOYMENT_COORDINATE_GENERATION
-        logger.info(f"--------------------done training {pair}--------------------")
+        logger.info("Training [%s]: completed", pair)
         return model
 
     def fit(
@@ -1460,7 +1460,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             warmed_up = remaining <= 0
             if not warmed_up:
                 logger.warning(
-                    f"[{pair}] Fit live predictions not warmed up: {remaining} produced observations until warmup completion"
+                    f"Predict [{pair}]: fit live predictions not warmed up; {remaining} produced observations until warmup completion"
                 )
         pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
@@ -1831,7 +1831,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         quarantine_path = ReforceXY._quarantine_path(journal_path, datetime.now(timezone.utc))
         journal_path.rename(quarantine_path)
         logger.warning(
-            "Optuna journal %s corrupt (%r); quarantined to %s; resuming with fresh journal",
+            "Journal [%s]: corrupt (%r); quarantined to %s; resuming with fresh journal",
             journal_path.name,
             cause,
             quarantine_path.name,
@@ -2197,7 +2197,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return
         try:
             if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
-                raise OSError(f"Hyperopt best params lock {lock_path} must be a regular file")
+                raise OSError(f"Hyperopt [global]: lock {lock_path} must be a regular file")
             fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
             yield
         finally:
@@ -2207,7 +2207,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _reject_best_trial_params_symlink(best_trial_params_path: Path) -> None:
         if best_trial_params_path.is_symlink():
             raise OSError(
-                f"Hyperopt best params path {best_trial_params_path} must not be a symlink"
+                f"Hyperopt [global]: best params path {best_trial_params_path} must not be a symlink"
             )
 
     @staticmethod
