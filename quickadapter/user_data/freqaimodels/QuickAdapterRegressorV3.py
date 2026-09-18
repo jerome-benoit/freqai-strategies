@@ -409,7 +409,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.9"
+    version = "3.13.0-rc.10"
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
     _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
