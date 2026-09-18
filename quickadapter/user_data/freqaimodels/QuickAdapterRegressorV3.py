@@ -4496,8 +4496,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"Invalid label_weights size {label_weights_array.size}: "
                         f"must match original objective count {original_n_objectives}"
                     )
-                # Validate only after slicing: normalizing the full vector first
-                # lets a huge weight on a constant objective underflow the rest.
+                # Validate the original vector before slicing so invalid
+                # configurations cannot bypass strict validation through the
+                # slice fallback; slicing first still prevents underflow of
+                # active weights when a constant objective holds a huge weight.
+                QuickAdapterRegressorV3._validate_label_weights(
+                    label_weights_array,
+                    original_n_objectives,
+                    ctx="label_weights",
+                    mode=_VALIDATION_MODES[1],
+                )
                 sliced_weights = label_weights_array[objective_indices]
                 if np.all(sliced_weights == 0.0):
                     logger.warning(
