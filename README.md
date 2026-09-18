@@ -294,8 +294,8 @@ record the image digest, not just `stable_freqai`.
 [afml]: https://www.wiley.com/en-us/Advances+in+Financial+Machine+Learning-p-9781119482086
 [freqai-parameters]: https://www.freqtrade.io/en/stable/freqai-parameter-table/#general-configuration-parameters
 [freqai-running]: https://www.freqtrade.io/en/stable/freqai-running/
-[freqai-replay]: https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/freqai/freqai_interface.py#L900-L942
-[freqai-source]: https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/freqai/freqai_interface.py#L273-L411
+[freqai-replay]: https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/freqai/freqai_interface.py#L895-L935
+[freqai-source]: https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/freqai/freqai_interface.py#L272-L409
 [freqtrade-backtesting]: https://www.freqtrade.io/en/stable/backtesting/
 [holm]: https://www.jstor.org/stable/4615733
 [knn-density]: https://doi.org/10.1214/aoms/1177700079
