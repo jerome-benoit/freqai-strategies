@@ -1348,7 +1348,6 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        # Use preserved raw prices with the final policy's feature coordinates.
         # Reward shaping must use the resumed policy's discount gamma,
         # not the configured or HPO-selected value.
         resumed_gamma: dict[str, Any] | None = None
