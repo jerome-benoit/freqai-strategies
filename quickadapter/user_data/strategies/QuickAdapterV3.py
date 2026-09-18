@@ -73,9 +73,9 @@ from Utils import (
     get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
+    get_ma_fn,
     get_reversal_confirmation_config,
     get_smoothing_kernel_half_width,
-    get_zl_ma_fn,
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
@@ -217,7 +217,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.13.0-rc.9"
+        return "3.13.0-rc.10"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -585,7 +585,7 @@ class QuickAdapterV3(IStrategy):
                 or (method == QuickAdapterV3._SMOOTHING_SAVGOL and col_smoothing["polyorder"] >= 2)
             ):
                 logger.warning(
-                    f"  Label [{label_col}]: smoothing method {method!r} can "
+                    f"  Label [{label_col}]: Smoothing method {method!r} can "
                     f"collapse sparse weight signals (smm zeroes them when "
                     f"fewer than half the window rows are nonzero; savgol "
                     f"with polyorder>=2 adds negative lobes that are clipped "
@@ -1276,10 +1276,10 @@ class QuickAdapterV3(IStrategy):
         if label_natr is None or label_natr.empty:
             return None
         if trade_duration_candles >= 2:
-            zl_kama = get_zl_ma_fn(MA_MODES[6])
+            kama = get_ma_fn(MA_MODES[6])
             try:
                 trade_kama_natr_values = np.asarray(
-                    zl_kama(label_natr, timeperiod=trade_duration_candles), dtype=float
+                    kama(label_natr, timeperiod=trade_duration_candles), dtype=float
                 )
                 trade_kama_natr_values = trade_kama_natr_values[np.isfinite(trade_kama_natr_values)]
                 if trade_kama_natr_values.size > 0:
@@ -1418,6 +1418,10 @@ class QuickAdapterV3(IStrategy):
         after_fill: bool,
         **kwargs,
     ) -> float | None:
+        # Post-fill updates can widen the stop; preserve the existing stop instead.
+        if after_fill:
+            return None
+
         df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
         if df.empty:
             return None

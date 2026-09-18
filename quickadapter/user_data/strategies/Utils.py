@@ -149,7 +149,7 @@ def safe_distribution_fit(
     if sample.finite_count < min_count:
         if logger is not None:
             logger.warning(
-                "%s: insufficient finite sample for distribution fit "
+                "%s: Insufficient finite sample for distribution fit "
                 "(usable=%d, total=%d, dropped=%d); using fallback %r",
                 context,
                 sample.finite_count,
@@ -163,7 +163,7 @@ def safe_distribution_fit(
     if require_variance and np.isclose(sample_range, 0.0):
         if logger is not None:
             logger.warning(
-                "%s: constant finite sample for distribution fit "
+                "%s: Constant finite sample for distribution fit "
                 "(usable=%d, dropped=%d); using fallback %r",
                 context,
                 sample.finite_count,
@@ -177,7 +177,7 @@ def safe_distribution_fit(
     except (RuntimeError, ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
         if logger is not None:
             logger.warning(
-                "%s: distribution fit failed (%s); using fallback %r",
+                "%s: Distribution fit failed (%s); using fallback %r",
                 context,
                 exc,
                 fallback_tuple,
@@ -187,7 +187,7 @@ def safe_distribution_fit(
     if len(params) != len(fallback_tuple) or not all(np.isfinite(params)):
         if logger is not None:
             logger.warning(
-                "%s: distribution fit returned invalid params %r; using fallback %r",
+                "%s: Distribution fit returned invalid params %r; using fallback %r",
                 context,
                 params,
                 fallback_tuple,
@@ -196,7 +196,7 @@ def safe_distribution_fit(
 
     if sample.dropped_count and logger is not None:
         logger.debug(
-            "%s: dropped %d/%d non-finite values before distribution fit",
+            "%s: Dropped %d/%d non-finite values before distribution fit",
             context,
             sample.dropped_count,
             sample.total_count,
@@ -266,7 +266,7 @@ def safe_divide(
     result = np.where(finite_mask, result, fallback)
     if invalid_count and logger is not None:
         logger.debug(
-            "%s: replaced %d invalid division result(s) with %r",
+            "%s: Replaced %d invalid division result(s) with %r",
             context,
             invalid_count,
             fallback,
@@ -312,7 +312,7 @@ def safe_log_ratio(
     result = np.where(finite_mask, result, fallback)
     if invalid_count and logger is not None:
         logger.debug(
-            "%s: replaced %d invalid log-ratio result(s) with %r",
+            "%s: Replaced %d invalid log-ratio result(s) with %r",
             context,
             invalid_count,
             fallback,
@@ -1716,14 +1716,14 @@ def sanitize_and_renormalize(
     if logger is not None:
         if rescale_overflow:
             logger.warning(
-                "%s: rescale factor non-finite (n=%d, total=%r); falling back to uniform weights",
+                "%s: Rescale factor non-finite (n=%d, total=%r); falling back to uniform weights",
                 context,
                 n,
                 total,
             )
         else:
             logger.warning(
-                "%s: weights collapsed (total=%r, n=%d); falling back to uniform weights",
+                "%s: Weights collapsed (total=%r, n=%d); falling back to uniform weights",
                 context,
                 total,
                 n,
@@ -1886,7 +1886,7 @@ def compose_sample_weights(
     nonzero = _pivot_equivalent_count(arr, drop_mask)
     if nonzero / n < SPARSE_TRAINING_MASS_THRESHOLD:
         logger.warning(
-            "%s: sparse weighting mass "
+            "%s: Sparse weighting mass "
             "(%d/%d rows above %.0f%% of surviving max = %.2f%%, "
             "threshold=%.2f%%)",
             context,
@@ -1914,7 +1914,7 @@ def compose_sample_weights(
             )
         case "fallback":
             logger.warning(
-                "%s: composed weights collapsed on surviving rows "
+                "%s: Composed weights collapsed on surviving rows "
                 "(survivor_total=%.6g); falling back to base weights",
                 context,
                 survivor_total,
@@ -1971,7 +1971,7 @@ def nan_average(
     if not np.isfinite(weight_sum) or np.isclose(weight_sum, 0.0):
         if logger is not None:
             logger.warning(
-                "nan_average: finite weights sum to %g; using fallback NaN",
+                "nan_average: Finite weights sum to %g; using fallback NaN",
                 weight_sum,
             )
         return np.nan
@@ -2344,7 +2344,7 @@ def _gaussian_fill_weights(
     M = pivot_indices_array.size
     if logger is not None and n_values > 0 and M / n_values > _GAUSSIAN_FILL_DENSITY_WARN:
         logger.warning(
-            "gaussian_fill: pivot density M/N=%.3f > %.2f (M=%d, N=%d); "
+            "gaussian_fill: Pivot density M/N=%.3f > %.2f (M=%d, N=%d); "
             "consider tightening zigzag detection",
             M / n_values,
             _GAUSSIAN_FILL_DENSITY_WARN,
@@ -3254,11 +3254,11 @@ def compute_label_weight_known_at_lookahead(
     ``i_{k+1} == known_at_positions[indices[k+1]]``; the terminal pivot has no
     closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
     -> ``n``. A uniform pivot instead has a unit weight at its own label
-    availability. Off-pivot rows keep their label availability, except that a
-    Gaussian fill spreads each pivot's weight over a LOCAL band
-    ``[idx-fill_radius, idx+fill_radius]`` (0 disables) -- never a global max,
-    which would force ``n`` on all rows (total train purge). Folded via
-    ``max(label, weight)`` by the causal purge.
+    availability. With Gaussian fill, rows wait for label availability throughout
+    ``[row-fill_radius, row+fill_radius]`` because unconfirmed pivots can change
+    their weights. They also wait for contributing pivots' metric weights;
+    zero terminal-pivot weights add no dependency. The causal purge uses
+    ``max(label, weight)`` availability.
 
     For adaptive k-NN bandwidths a pivot's band additionally waits until every
     confirmable finite suffix of the frame yields the same clipped sigma --
@@ -3314,6 +3314,13 @@ def compute_label_weight_known_at_lookahead(
     dependency_mask = raw_dependency_mask[valid_mask][order]
     leading_stable_mask = raw_leading_stable_mask[valid_mask][order]
     base = known_at_positions.copy()
+    if idx.size and fill_radius > 0:
+        base = (
+            pd.Series(known_at_positions)
+            .rolling(window=2 * min(fill_radius, n - 1) + 1, center=True, min_periods=1)
+            .max()
+            .to_numpy(dtype=np.int64)
+        )
     if idx.size:
         weight_availability = np.empty(idx.size, dtype=np.int64)
         weight_availability[:-1] = known_at_positions[idx[1:]]
@@ -3627,10 +3634,10 @@ def top_log_return(
     *,
     logger: Logger | None = None,
 ) -> pd.Series:
-    """Logarithmic return from rolling maximum: ``log(close / rolling_max)``.
+    """Log return relative to the maximum close over the previous ``period`` bars.
 
-    Measures distance below the highest close in previous ``period`` bars.
-    Returns <= 0 (e.g. -0.10 ~ -9.5% below peak), zero when at peak.
+    Excludes the current bar: ``log(close / previous_rolling_max)``. Negative
+    below that reference, zero at it, and positive on an upside breakout.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -3651,10 +3658,10 @@ def bottom_log_return(
     *,
     logger: Logger | None = None,
 ) -> pd.Series:
-    """Logarithmic return from rolling minimum: ``log(close / rolling_min)``.
+    """Log return relative to the minimum close over the previous ``period`` bars.
 
-    Measures distance above the lowest close in previous ``period`` bars.
-    Returns >= 0 (e.g. +0.10 ~ +10.5% above bottom), zero when at bottom.
+    Excludes the current bar: ``log(close / previous_rolling_min)``. Positive
+    above that reference, zero at it, and negative on a downside breakout.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -4982,6 +4989,11 @@ def fit_regressor(
             val_sample_weight=val_sample_weight,
             early_stopping_rounds=early_stopping_rounds,
         )
+        if early_stopping_rounds is not None and model.best_val_loss_itr is not None:
+            selected_count = model.best_val_loss_itr + 1
+            del model.base_models[selected_count:]
+            del model.scalings[selected_count:]
+            del model.col_idxs[selected_count:]
     elif regressor == _REGRESSOR_SPECS.catboost.name:
         from catboost import CatBoostRegressor, Pool
 
@@ -5154,7 +5166,7 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 3
 """Version of the label-namespace Optuna best-trial selection algorithm.
 
-Incremented on any change to tie-break, normalization, distance-metric
+Incremented for released changes to tie-break, normalization, distance-metric
 whitelist, or selection metadata. Independent of
 ``_OPTUNA_LABEL_BEST_PARAMS_SCHEMA_VERSION`` (on-disk JSON layout vs
 selection-algorithm semantics are versioned separately).
