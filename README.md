@@ -363,8 +363,9 @@ potential and state features for backtests. Live action masks use the real open
 position even when state features are disabled. Live frame stacks persist per
 pair and model and reset after training or model replacement.
 
-Optuna HPO disables `continual_learning`: each fit uses the selected parameters
-instead of resuming a model with a different architecture or discount factor.
+Optuna HPO trains fresh candidates with the selected parameters; after
+selection the fit resumes the deployed model in its frozen feature
+coordinates, including its discount factor, instead of rebuilding it.
 An explicitly sampled `target_kl=null` disables the KL stopping threshold even
 when `model_training_parameters` specifies a numeric value. Environment prices
 remain raw regardless of `drop_ohlc_from_features`. Training returns the best
