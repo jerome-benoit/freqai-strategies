@@ -4486,24 +4486,30 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             and objective_indices is not None
             and original_n_objectives != n_objectives
         ):
-            label_weights_array = QuickAdapterRegressorV3._validate_label_weights(
-                label_weights,
-                original_n_objectives,
-                ctx="label_weights",
-                mode=_VALIDATION_MODES[1],
-            )
-            sliced_weights = label_weights_array[objective_indices]
-            if np.all(sliced_weights == 0.0):
-                logger.warning(
-                    "label_weights sliced to non-constant objectives "
-                    "is all-zero (indices=%s, original=%s); "
-                    "falling back to uniform weights",
-                    objective_indices.tolist(),
-                    label_weights_array.tolist(),
-                )
-                label_weights = None
-            else:
-                label_weights = sliced_weights
+            try:
+                label_weights_array = np.asarray(label_weights, dtype=float)
+            except (ValueError, TypeError):
+                label_weights_array = None
+            if label_weights_array is not None and label_weights_array.ndim == 1:
+                if label_weights_array.size != original_n_objectives:
+                    raise ValueError(
+                        f"Invalid label_weights size {label_weights_array.size}: "
+                        f"must match original objective count {original_n_objectives}"
+                    )
+                # Validate only after slicing: normalizing the full vector first
+                # lets a huge weight on a constant objective underflow the rest.
+                sliced_weights = label_weights_array[objective_indices]
+                if np.all(sliced_weights == 0.0):
+                    logger.warning(
+                        "label_weights sliced to non-constant objectives "
+                        "is all-zero (indices=%s, original=%s); "
+                        "falling back to uniform weights",
+                        objective_indices.tolist(),
+                        label_weights_array.tolist(),
+                    )
+                    label_weights = None
+                else:
+                    label_weights = sliced_weights
         weights = QuickAdapterRegressorV3._validate_label_weights(
             label_weights,
             n_objectives,
