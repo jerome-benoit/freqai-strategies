@@ -337,6 +337,16 @@ PPO, MaskablePPO, RecurrentPPO, DQN, QRDQN
 The documented list of model tunables is at the top of the
 [ReforceXY.py](./ReforceXY/user_data/freqaimodels/ReforceXY.py) file.
 
+Continuation reuses the previously deployed policy in its persisted feature
+coordinate system (`reforcexy_deployment_coordinates` marker, generation
+`frozen-pipelines-v1`); incompatible or legacy artifacts are rejected with a
+reset / new `freqai.identifier` instruction. First training, HPO trials and
+`continual_learning=false` stay cold-started; HPO trials use fresh candidate
+pipelines and only the final continuation reuses the frozen deployment
+pipeline. Optional `fit_live_predictions_candles` statistics count produced
+observations per pair after session startup; restarts reset the warmup.
+Model docstrings remain the authoritative description.
+
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
