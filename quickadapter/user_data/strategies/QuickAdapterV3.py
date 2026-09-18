@@ -73,9 +73,9 @@ from Utils import (
     get_label_horizon_candles,
     get_label_smoothing_config,
     get_label_weighting_config,
+    get_ma_fn,
     get_reversal_confirmation_config,
     get_smoothing_kernel_half_width,
-    get_zl_ma_fn,
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
@@ -1276,10 +1276,10 @@ class QuickAdapterV3(IStrategy):
         if label_natr is None or label_natr.empty:
             return None
         if trade_duration_candles >= 2:
-            zl_kama = get_zl_ma_fn(MA_MODES[6])
+            kama = get_ma_fn(MA_MODES[6])
             try:
                 trade_kama_natr_values = np.asarray(
-                    zl_kama(label_natr, timeperiod=trade_duration_candles), dtype=float
+                    kama(label_natr, timeperiod=trade_duration_candles), dtype=float
                 )
                 trade_kama_natr_values = trade_kama_natr_values[np.isfinite(trade_kama_natr_values)]
                 if trade_kama_natr_values.size > 0:
