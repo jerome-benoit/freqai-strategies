@@ -127,6 +127,31 @@ from Utils import (
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 
 
+def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Identify recorded rows from metadata, never from prediction magnitudes."""
+    recorded = np.zeros(len(frame), dtype=bool)
+    if "close_price" in frame:
+        close = pd.to_numeric(frame["close_price"], errors="coerce")
+        recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
+    if "do_predict" in frame:
+        status = pd.to_numeric(frame["do_predict"], errors="coerce")
+        recorded |= (
+            (status.gt(-np.inf) & status.lt(np.inf) & status.ne(0))
+            .fillna(False)
+            .to_numpy(dtype=bool)
+        )
+    return recorded
+
+
+def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Exclude expired-model placeholders from recorded model observations."""
+    produced = _recorded_prediction_mask(frame)
+    if "do_predict" in frame:
+        status = pd.to_numeric(frame["do_predict"], errors="coerce")
+        produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    return produced
+
+
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
     """Normalize dates and retain the latest recorded row per candle, in date order.
 
@@ -145,13 +170,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         result["date_pred"] = date_pred
         return result
 
-    recorded = np.zeros(len(frame), dtype=bool)
-    if "close_price" in frame:
-        close = pd.to_numeric(frame["close_price"], errors="coerce")
-        recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
-    if "do_predict" in frame:
-        status = pd.to_numeric(frame["do_predict"], errors="coerce")
-        recorded |= (status.notna() & status.ne(0)).to_numpy(dtype=bool)
+    recorded = _recorded_prediction_mask(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
         {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
@@ -164,6 +183,21 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     result = frame.iloc[kept.index].copy()
     result["date_pred"] = date_pred.iloc[kept.index].array
     return result.reset_index(drop=True)
+
+
+def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Align unique, normalized history to requested candle dates and exact index."""
+    dates = pd.to_datetime(dataframe["date"], utc=True, errors="coerce", format="mixed")
+    indexed = history.set_index("date_pred", drop=False)
+    aligned = indexed.reindex(pd.DatetimeIndex(dates))
+    missing = ~pd.DatetimeIndex(dates).isin(indexed.index)
+    aligned.index = dataframe.index
+    aligned["date_pred"] = dates.array
+    if "do_predict" in aligned:
+        aligned["do_predict"] = aligned["do_predict"].where(~missing, 0)
+    else:
+        aligned["do_predict"] = 0
+    return aligned
 
 
 def _install_date_pred_dedup_patch() -> None:
@@ -203,14 +237,12 @@ def _install_date_pred_dedup_patch() -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
             self.historic_predictions[pair]
         )
-        original_set_initial(self, pair, pred_df, dataframe)
-        history = self.historic_predictions[pair]
-        repaired = _dedupe_historic_predictions_on_date_pred(history)
-        if repaired is not history:
-            self.historic_predictions[pair] = repaired
-            self.model_return_values[pair] = repaired.tail(len(dataframe.index)).reset_index(
-                drop=True
-            )
+        original_set_initial(
+            self, pair, pred_df.reset_index(drop=True), dataframe.reset_index(drop=True)
+        )
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = repaired
+        self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
 
     @wraps(original_append)
     def append_model_predictions(
@@ -226,23 +258,24 @@ def _install_date_pred_dedup_patch() -> None:
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
             # Legacy append requires an initialized row; let upstream construct it.
-            original_set_initial(self, pair, pd.DataFrame(index=pd.RangeIndex(1)), strat_df.tail(1))
-        original_append(self, pair, predictions, do_preds, dk, strat_df)
-        history = self.historic_predictions[pair]
-        repaired = _dedupe_historic_predictions_on_date_pred(history)
-        if repaired is not history:
-            self.historic_predictions[pair] = repaired
-            self.model_return_values[pair] = repaired.tail(len(strat_df.index)).reset_index(
-                drop=True
+            original_set_initial(
+                self,
+                pair,
+                pd.DataFrame(index=pd.RangeIndex(1)),
+                strat_df.tail(1).reset_index(drop=True),
             )
+        original_append(self, pair, predictions, do_preds, dk, strat_df)
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = repaired
+        self.model_return_values[pair] = _align_historic_predictions(repaired, strat_df)
 
     @wraps(original_attach)
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        self.model_return_values[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.model_return_values[pair]
-        )
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = repaired
+        self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
         return original_attach(self, pair, dataframe)
 
     replacements = (
@@ -377,6 +410,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     """
 
     version = "3.13.0-rc.9"
+
+    _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
 
     _TEST_SIZE: Final[float] = 0.1
     _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
@@ -2330,6 +2366,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 metadata = previous_dk.data
                 feature_pipeline = previous_dk.feature_pipeline
                 label_pipeline = previous_dk.label_pipeline
+            if (
+                metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
+                != self._DEPLOYMENT_COORDINATE_GENERATION
+            ):
+                raise ValueError(
+                    "persisted deployment coordinate generation is missing or incompatible"
+                )
             if not isinstance(model, model_class):
                 raise ValueError("persisted regressor type differs from the configured regressor")
             for name, expected, actual in (
@@ -2364,6 +2407,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         split_fn: SplitFn,
         **kwargs,
     ) -> Any:
+        # Drawer metadata may alias this kitchen; do not invalidate the deployed artifact.
+        dk.data = dk.data.copy()
+        dk.data.pop(self._DEPLOYMENT_COORDINATE_MARKER_KEY, None)
         logger.info(f"-------------------- Starting training {pair} --------------------")
         start_time = time.time()
         features_filtered, labels_filtered = dk.filter_features(
@@ -2414,6 +2460,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(f"Training model on {len(dd['train_features'].columns)} features")
         logger.info(f"Training model on {len(dd['train_features'])} data points")
         model = self.fit(dd, dk, deployment_state=deployment_state, **kwargs)
+        if model is not None:
+            dk.data[self._DEPLOYMENT_COORDINATE_MARKER_KEY] = self._DEPLOYMENT_COORDINATE_GENERATION
         end_time = time.time()
         logger.info(
             f"-------------------- Done training {pair} "
@@ -3226,26 +3274,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ),
             )
 
+        history = self.dd.historic_predictions[pair]
         if self.live:
-            if not hasattr(self, "_exchange_candles_by_pair"):
-                self._exchange_candles_by_pair: dict[str, int] = {}
-            exchange_candles = self._exchange_candles_by_pair.setdefault(
-                pair, len(self.dd.model_return_values[pair].index)
-            )
-            candles_diff = len(self.dd.historic_predictions[pair].index) - (
-                fit_live_predictions_candles + exchange_candles
-            )
-            if candles_diff < 0:
-                logger.warning(
-                    f"[{pair}] Fit live predictions not warmed up: {abs(candles_diff)} candles until warmup completion"
+            history = _dedupe_historic_predictions_on_date_pred(history)
+            if not hasattr(self, "_prediction_session_cutoffs"):
+                self._prediction_session_cutoffs: dict[str, pd.Timestamp] = {}
+            if pair not in self._prediction_session_cutoffs:
+                initial_dates = pd.to_datetime(
+                    self.dd.model_return_values[pair]["date_pred"],
+                    utc=True,
+                    errors="coerce",
+                    format="mixed",
                 )
-                warmed_up = False
-
-        pred_df = (
-            self.dd.historic_predictions[pair]
-            .iloc[-fit_live_predictions_candles:]
-            .reset_index(drop=True)
-        )
+                self._prediction_session_cutoffs[pair] = initial_dates.max()
+            cutoff = self._prediction_session_cutoffs[pair]
+            eligible = (
+                _produced_prediction_mask(history) & history["date_pred"].gt(cutoff).to_numpy()
+            )
+            history = history.loc[eligible]
+            remaining = fit_live_predictions_candles - len(history)
+            warmed_up = remaining <= 0
+            if not warmed_up:
+                logger.warning(
+                    f"[{pair}] Fit live predictions not warmed up: {remaining} produced observations until warmup completion"
+                )
+        pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
         di_values = pred_df.get("DI_values")
         if di_values is not None:
@@ -3320,8 +3373,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
         for label_col in dk.label_list + dk.unique_class_list:
-            pred_label = pred_df.get(label_col)
-            if pred_label is None or pred_label.dtype == object:
+            raw_label = pred_df.get(label_col)
+            if raw_label is None:
+                continue
+            # Downtime zero-filling upcasts stored numeric columns to object;
+            # coerce instead of silently skipping post-downtime statistics.
+            pred_label = pd.to_numeric(raw_label, errors="coerce")
+            if raw_label.dtype == object and pred_label.isna().all():
                 continue
             if not warmed_up:
                 f = [0.0, 0.0]
@@ -3379,7 +3437,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         elif pair not in self._session_fitted_pairs:
             historic = self.dd.historic_predictions.get(pair)
             if historic is not None and "holdout_rmse" in historic:
-                holdout_values = pd.to_numeric(historic["holdout_rmse"], errors="coerce").dropna()
+                holdout_values = pd.to_numeric(
+                    historic.loc[_produced_prediction_mask(historic), "holdout_rmse"],
+                    errors="coerce",
+                ).dropna()
                 if not holdout_values.empty:
                     current_holdout_rmse = float(holdout_values.iloc[-1])
         holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(current_holdout_rmse)
@@ -4453,6 +4514,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ctx="label_weights",
             mode=_VALIDATION_MODES[1],
         )
+        if category == QuickAdapterRegressorV3._CATEGORY_CLUSTER:
+            positive_weight = weights > 0.0
+            if not np.all(positive_weight):
+                normalized_matrix = normalized_matrix[:, positive_weight]
+                weights = weights[positive_weight]
 
         if n_samples == 1 and method in {
             QuickAdapterRegressorV3._SELECTION_MEDOID,

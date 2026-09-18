@@ -3634,10 +3634,10 @@ def top_log_return(
     *,
     logger: Logger | None = None,
 ) -> pd.Series:
-    """Logarithmic return from rolling maximum: ``log(close / rolling_max)``.
+    """Log return relative to the maximum close over the previous ``period`` bars.
 
-    Measures distance below the highest close in previous ``period`` bars.
-    Returns <= 0 (e.g. -0.10 ~ -9.5% below peak), zero when at peak.
+    Excludes the current bar: ``log(close / previous_rolling_max)``. Negative
+    below that reference, zero at it, and positive on an upside breakout.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -3658,10 +3658,10 @@ def bottom_log_return(
     *,
     logger: Logger | None = None,
 ) -> pd.Series:
-    """Logarithmic return from rolling minimum: ``log(close / rolling_min)``.
+    """Log return relative to the minimum close over the previous ``period`` bars.
 
-    Measures distance above the lowest close in previous ``period`` bars.
-    Returns >= 0 (e.g. +0.10 ~ +10.5% above bottom), zero when at bottom.
+    Excludes the current bar: ``log(close / previous_rolling_min)``. Positive
+    above that reference, zero at it, and negative on a downside breakout.
     """
     if period < 1:
         raise ValueError(f"Invalid period value {period!r}: must be >= 1")
@@ -5163,7 +5163,7 @@ Incremented on every on-disk JSON shape change (top-level keys, params layout).
 """
 
 
-_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 4
+_OPTUNA_LABEL_SELECTION_SCHEMA_VERSION: Final[int] = 6
 """Version of the label-namespace Optuna best-trial selection algorithm.
 
 Incremented on any change to tie-break, normalization, distance-metric
