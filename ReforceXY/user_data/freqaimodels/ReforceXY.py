@@ -32,18 +32,27 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import optunahub
 import pandas as pd
+import rapidjson
 import torch as th
-from freqtrade.freqai.data_drawer import FreqaiDataDrawer
+from datasieve.pipeline import Pipeline
+from freqtrade.exceptions import DependencyException
+from freqtrade.freqai.data_drawer import (
+    FEATURE_PIPELINE,
+    METADATA,
+    METADATA_NUMBER_MODE,
+    FreqaiDataDrawer,
+)
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions, Base5ActionRLEnv, Positions
 from freqtrade.freqai.RL.BaseEnvironment import BaseEnvironment
 from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
     BaseReinforcementLearningModel,
 )
-from freqtrade.persistence import Trade
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
+from freqtrade.persistence import Trade
 from freqtrade.strategy import timeframe_to_minutes
 from gymnasium.spaces import Box
+from joblib.externals import cloudpickle
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from optuna import Trial, TrialPruned, create_study, delete_study
@@ -93,10 +102,35 @@ def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> N
     if not hasattr(callback, "best_mean_reward") or mean_reward > callback.best_mean_reward:
         callback.best_mean_reward = mean_reward
         if callback.best_model_save_path is not None and model is not None:
-            model.save(os.path.join(callback.best_model_save_path, "best_model.zip"))
+            model.save(Path(callback.best_model_save_path) / "best_model.zip")
 
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
+
+
+def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Identify recorded rows from metadata, never from prediction magnitudes."""
+    recorded = np.zeros(len(frame), dtype=bool)
+    if "close_price" in frame:
+        close = pd.to_numeric(frame["close_price"], errors="coerce")
+        recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
+    if "do_predict" in frame:
+        status = pd.to_numeric(frame["do_predict"], errors="coerce")
+        recorded |= (
+            (status.gt(-np.inf) & status.lt(np.inf) & status.ne(0))
+            .fillna(False)
+            .to_numpy(dtype=bool)
+        )
+    return recorded
+
+
+def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Exclude expired-model placeholders from recorded model observations."""
+    produced = _recorded_prediction_mask(frame)
+    if "do_predict" in frame:
+        status = pd.to_numeric(frame["do_predict"], errors="coerce")
+        produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    return produced
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
@@ -117,13 +151,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         result["date_pred"] = date_pred
         return result
 
-    recorded = np.zeros(len(frame), dtype=bool)
-    if "close_price" in frame:
-        close = pd.to_numeric(frame["close_price"], errors="coerce")
-        recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
-    if "do_predict" in frame:
-        status = pd.to_numeric(frame["do_predict"], errors="coerce")
-        recorded |= (status.notna() & status.ne(0)).to_numpy(dtype=bool)
+    recorded = _recorded_prediction_mask(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
         {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
@@ -136,6 +164,21 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     result = frame.iloc[kept.index].copy()
     result["date_pred"] = date_pred.iloc[kept.index].array
     return result.reset_index(drop=True)
+
+
+def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Align unique, normalized history to requested candle dates and exact index."""
+    dates = pd.to_datetime(dataframe["date"], utc=True, errors="coerce", format="mixed")
+    indexed = history.set_index("date_pred", drop=False)
+    aligned = indexed.reindex(pd.DatetimeIndex(dates))
+    missing = ~pd.DatetimeIndex(dates).isin(indexed.index)
+    aligned.index = dataframe.index
+    aligned["date_pred"] = dates.array
+    if "do_predict" in aligned:
+        aligned["do_predict"] = aligned["do_predict"].where(~missing, 0)
+    else:
+        aligned["do_predict"] = 0
+    return aligned
 
 
 def _install_date_pred_dedup_patch() -> None:
@@ -163,7 +206,7 @@ def _install_date_pred_dedup_patch() -> None:
         )
         pending.append(not getattr(current, _DATE_PRED_DEDUP_SENTINEL, False))
         if iscoroutinefunction(original) or iscoroutinefunction(current):
-            raise RuntimeError("FreqAI prediction repair requires synchronous drawer methods")
+            raise RuntimeError("Repair [global]: requires synchronous drawer methods")
     if not any(pending):
         return
     original_set_initial, original_append, original_attach = originals[:3]
@@ -175,14 +218,12 @@ def _install_date_pred_dedup_patch() -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
             self.historic_predictions[pair]
         )
-        original_set_initial(self, pair, pred_df, dataframe)
-        history = self.historic_predictions[pair]
-        repaired = _dedupe_historic_predictions_on_date_pred(history)
-        if repaired is not history:
-            self.historic_predictions[pair] = repaired
-            self.model_return_values[pair] = repaired.tail(len(dataframe.index)).reset_index(
-                drop=True
-            )
+        original_set_initial(
+            self, pair, pred_df.reset_index(drop=True), dataframe.reset_index(drop=True)
+        )
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = repaired
+        self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
 
     @wraps(original_append)
     def append_model_predictions(
@@ -198,27 +239,24 @@ def _install_date_pred_dedup_patch() -> None:
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
             # Legacy append requires an initialized row; let upstream construct it.
-            original_set_initial(self, pair, pd.DataFrame(index=pd.RangeIndex(1)), strat_df.tail(1))
-        original_append(self, pair, predictions, do_preds, dk, strat_df)
-        history = self.historic_predictions[pair]
-        repaired = _dedupe_historic_predictions_on_date_pred(history)
-        if repaired is not history:
-            self.historic_predictions[pair] = repaired
-            self.model_return_values[pair] = repaired.tail(len(strat_df.index)).reset_index(
-                drop=True
+            original_set_initial(
+                self,
+                pair,
+                pd.DataFrame(index=pd.RangeIndex(1)),
+                strat_df.tail(1).reset_index(drop=True),
             )
+        original_append(self, pair, predictions, do_preds, dk, strat_df)
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = repaired
+        self.model_return_values[pair] = _align_historic_predictions(repaired, strat_df)
 
     @wraps(original_attach)
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        predictions = _dedupe_historic_predictions_on_date_pred(self.model_return_values[pair])
-        if "date_pred" in predictions:
-            dates = pd.to_datetime(dataframe["date"], utc=True)
-            predictions = predictions.set_index("date_pred", drop=False).reindex(dates)
-            predictions["date_pred"] = dates.array
-            predictions.index = dataframe.index
-        self.model_return_values[pair] = predictions
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        self.historic_predictions[pair] = repaired
+        self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
         return original_attach(self, pair, dataframe)
 
     replacements = (
@@ -286,7 +324,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         ...
         "freqai": {
             ...
-            "fit_live_predictions_candles": 0,      // Optional non-negative integer; omitted or 0 disables prediction statistics
+            "fit_live_predictions_candles": 0,      // Optional non-negative integer; omitted or 0 disables action statistics
+            // Live/dry-run: latest N produced observations per pair after session startup.
+            // Restart resets warmup; numeric mean/std are zero until N observations exist.
+            // Downtime and expired status 2 do not count; neutral/exit actions and recorded
+            // rejected predictions do. Backtests use the previous N rows, not the current row.
+            // Numeric objects are coerced; non-finite samples are ignored. Empty finite
+            // samples yield zeros; constants have zero spread; nonnumeric objects are skipped.
+            // Statistics do not gate RL actions. Population standard deviation is used.
             "model_training_parameters": {
                 "device": "auto",                   // PyTorch device (auto|cpu|cuda|cuda:0)
                 "gpu_memory_fraction": null,        // GPU VRAM fraction limit per process (0.0, 1.0], null disables
@@ -324,6 +369,20 @@ class ReforceXY(BaseReinforcementLearningModel):
             }
         }
     }
+
+    Continual learning keeps the deployed policy's fitted feature coordinates frozen,
+    including feature selection and scaling. Reset trained models or use a new
+    freqai.identifier to change those coordinates or migrate legacy artifacts.
+    First training and continual_learning=false use fresh pipelines and policies.
+    Hyperopt always uses fresh current-window pipelines and cold policies; final
+    continuation uses the original raw split in the deployed coordinates. Selected
+    constructor/network parameters do not rebuild an existing policy's architecture;
+    a resumed policy keeps its own discount gamma for environment reward shaping.
+    Raw OHLC prices are preserved separately for every environment. Noise augments
+    training features only, never evaluation or prediction features.
+    Prediction uses the best checkpoint selected by the current fit's evaluation,
+    falling back to the final policy if no usable current checkpoint was selected.
+
     Requirements:
         - pip install optuna optunahub -r https://hub.optuna.org/samplers/auto_sampler/requirements.txt
 
@@ -332,6 +391,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     """
 
     _LOG_2: Final[float] = math.log(2.0)
+
+    _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
 
@@ -445,6 +507,8 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TAG: Final[str] = "corrupt"
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
+    # Bump on objective changes that make persisted trials or best params incompatible.
+    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "transition-aligned-final-policy-v2"
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -675,11 +739,6 @@ class ReforceXY(BaseReinforcementLearningModel):
         ):
             logger.warning("Config [global]: hold potential requires add_state_info; enabling")
             self.rl_config["add_state_info"] = True
-        if self.continual_learning and self.hyperopt:
-            logger.warning(
-                "Config [global]: continual_learning is incompatible with HPO; disabling continuation"
-            )
-            self.continual_learning = False
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
@@ -743,8 +802,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             logger.info("Env [%s]: closing environments", dk.pair)
             self.close_envs()
 
-        train_df = data_dictionary.get("train_features")
-        test_df = data_dictionary.get("test_features")
+        train_df = data_dictionary["train_features"]
+        test_df = data_dictionary["test_features"]
         env_dict = self.pack_env_dict(dk.pair, model_params)
         effective_params = self.get_model_params() if model_params is None else model_params
         seed = effective_params.get("seed", 42)
@@ -1053,7 +1112,165 @@ class ReforceXY(BaseReinforcementLearningModel):
             callbacks.append(self.optuna_eval_callback)
         return callbacks
 
-    def fit(self, data_dictionary: dict[str, Any], dk: FreqaiDataKitchen, **kwargs) -> Any:
+    def _resolve_deployment_state(
+        self, dk: FreqaiDataKitchen, pair: str
+    ) -> tuple[Any, Pipeline] | None:
+        """Restore the deployed policy and an independent fitted feature pipeline."""
+        if not self.continual_learning:
+            return None
+        model = self.dd.model_dictionary.get(pair)
+        previous = self.dd.pair_dict.get(pair, {})
+        if model is None and not previous.get("model_filename"):
+            return None
+        try:
+            cached = self.dd.meta_data_dictionary.get(pair, {})
+            metadata = cached.get(METADATA)
+            feature_pipeline = cached.get(FEATURE_PIPELINE)
+            if model is None or metadata is None or feature_pipeline is None:
+                # The current kitchen points to the new window, not deployed files.
+                previous_dk = copy.copy(dk)
+                previous_dk.data_path = Path(previous["data_path"])
+                previous_dk.model_filename = previous["model_filename"]
+                prefix = previous_dk.data_path / previous_dk.model_filename
+                if metadata is None:
+                    with Path(f"{prefix}_{METADATA}.json").open("r") as fp:
+                        metadata = rapidjson.load(fp, number_mode=METADATA_NUMBER_MODE)
+                if feature_pipeline is None:
+                    with Path(f"{prefix}_{FEATURE_PIPELINE}.pkl").open("rb") as fp:
+                        feature_pipeline = cloudpickle.load(fp)
+                if model is None:
+                    model = self.MODELCLASS.load(Path(f"{prefix}_model"))
+            if (
+                metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
+                != self._DEPLOYMENT_COORDINATE_GENERATION
+            ):
+                raise ValueError(
+                    "persisted deployment coordinate generation is missing or incompatible"
+                )
+            if not isinstance(model, self.MODELCLASS):
+                raise ValueError("persisted policy type differs from the configured model")
+            for name, expected, actual in (
+                ("features", dk.training_features_list, metadata["training_features_list"]),
+                ("labels", dk.label_list, metadata["label_list"]),
+                (
+                    "feature pipeline inputs",
+                    dk.training_features_list,
+                    feature_pipeline.features_in,
+                ),
+            ):
+                if list(expected) != list(actual):
+                    raise ValueError(f"persisted {name} differ in names or order")
+            state = model, copy.deepcopy(feature_pipeline)
+        except Exception as exc:
+            raise DependencyException(
+                f"Training [{pair}]: cannot continue with matching persisted pipelines: {exc}. "
+                "Reset trained models or use a new freqai.identifier."
+            ) from exc
+        logger.info(
+            f"Training [{pair}]: continuing deployment in the persisted feature coordinate system; "
+            "reset trained models to change pipeline configuration"
+        )
+        return state
+
+    def _apply_training_pipeline(
+        self,
+        data_dictionary: dict[str, Any],
+        dk: FreqaiDataKitchen,
+        deployment_state: tuple[Any, Pipeline] | None = None,
+    ) -> dict[str, Any]:
+        """Preserve chronological raw splits; never transform RL action labels."""
+        dd = data_dictionary.copy()
+        dk.feature_pipeline = (
+            self.define_data_pipeline(threads=dk.thread_count)
+            if deployment_state is None
+            else deployment_state[1]
+        )
+        for split in ("train", "test"):
+            features = data_dictionary[f"{split}_features"]
+            labels = data_dictionary[f"{split}_labels"]
+            weights = data_dictionary[f"{split}_weights"]
+            if split == "test" and features.empty:
+                continue
+            transform = (
+                dk.feature_pipeline.fit_transform
+                if split == "train" and deployment_state is None
+                else dk.feature_pipeline.transform
+            )
+            transformed, transformed_labels, transformed_weights = transform(
+                features.copy(), labels.copy(), weights.copy()
+            )
+            transformed = cast("pd.DataFrame", transformed)
+            transformed_labels = cast("pd.DataFrame", transformed_labels)
+            transformed_weights = cast("NDArray[np.float64]", np.asarray(transformed_weights))
+            if len(transformed) != len(features) or len(transformed_weights) != len(features):
+                raise DependencyException(
+                    f"Training [{dk.pair}]: RL preprocessing must preserve chronological rows "
+                    "and their alignment with raw prices."
+                )
+            # DataSieve reconstructs frames with RangeIndex while retaining row order.
+            transformed.index = features.index
+            transformed_labels.index = labels.index
+            if split == "train" and deployment_state is not None:
+                # Noise.transform is a no-op; only augmentation may be fitted.
+                for name, transformer in dk.feature_pipeline.steps:
+                    if name == "noise":
+                        noisy, _, _, _ = transformer.fit_transform(transformed.to_numpy(copy=True))
+                        transformed = pd.DataFrame(
+                            noisy, columns=transformed.columns, index=transformed.index
+                        )
+            dd[f"{split}_features"] = transformed
+            dd[f"{split}_labels"] = transformed_labels
+            dd[f"{split}_weights"] = transformed_weights
+        dk.data_dictionary = dd
+        return dd
+
+    def train(self, unfiltered_df: DataFrame, pair: str, dk: FreqaiDataKitchen, **kwargs) -> Any:
+        """Train cold candidates and continue only in persisted deployment coordinates."""
+        # Drawer metadata can alias this kitchen; never invalidate the deployed marker.
+        dk.data = dk.data.copy()
+        dk.data.pop(self._DEPLOYMENT_COORDINATE_MARKER_KEY, None)
+        logger.info("Training [%s]: starting", pair)
+        features_filtered, labels_filtered = dk.filter_features(
+            unfiltered_df, dk.training_features_list, dk.label_list, training_filter=True
+        )
+        raw_data = dk.make_train_test_datasets(features_filtered, labels_filtered)
+        self.df_raw = copy.deepcopy(raw_data["train_features"])
+        dk.fit_labels()
+        # Capture prices once, before normalization and optional raw-OHLC removal.
+        prices_train, prices_test = self.build_ohlc_price_dataframes(raw_data, pair, dk)
+        deployment_state = self._resolve_deployment_state(dk, pair)
+        dd = self._apply_training_pipeline(
+            raw_data, dk, deployment_state=None if self.hyperopt else deployment_state
+        )
+        logger.info(
+            f"Training [{pair}]: model on {len(dd['train_features'].columns)}"
+            f" features and {len(dd['train_features'])} data points"
+        )
+        model = self.fit(
+            dd,
+            dk,
+            prices_train=prices_train,
+            prices_test=prices_test,
+            deployment_state=deployment_state,
+            raw_data_dictionary=raw_data if self.hyperopt and deployment_state else None,
+            **kwargs,
+        )
+        if model is not None:
+            dk.data[self._DEPLOYMENT_COORDINATE_MARKER_KEY] = self._DEPLOYMENT_COORDINATE_GENERATION
+        logger.info("Training [%s]: completed", pair)
+        return model
+
+    def fit(
+        self,
+        data_dictionary: dict[str, Any],
+        dk: FreqaiDataKitchen,
+        *,
+        prices_train: DataFrame,
+        prices_test: DataFrame,
+        deployment_state: tuple[Any, Pipeline] | None = None,
+        raw_data_dictionary: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> Any:
         """
         Model fitting method
         :param data_dictionary: dict = common data dictionary containing all train/test features/labels/weights.
@@ -1106,7 +1323,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         start_time = time.time()
         if self.hyperopt:
-            best_params = self.optimize(dk, total_timesteps)
+            best_params = self.optimize(dk, total_timesteps, prices_train, prices_test)
             if best_params is None:
                 logger.error(
                     "Hyperopt [%s]: optimization failed, using default model params",
@@ -1116,6 +1333,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             model_params = best_params
         else:
             model_params = self.get_model_params()
+        if raw_data_dictionary is not None:
+            data_dictionary = self._apply_training_pipeline(
+                raw_data_dictionary, dk, deployment_state=deployment_state
+            )
         logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
 
         if self.activate_tensorboard:
@@ -1123,16 +1344,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        model = self.get_init_model(dk.pair)
+        model = deployment_state[0] if deployment_state is not None else None
         effective_params = dict(model_params)
         if model is not None:
-            effective_params["gamma"] = model.gamma
-        # Reuse raw prices captured before the feature pipeline transformed the data.
+            learner_gamma = getattr(model, "gamma", None)
+            if isinstance(learner_gamma, (int, float)) and np.isfinite(learner_gamma):
+                effective_params["gamma"] = float(learner_gamma)
+        # Preserve raw prices and the resumed learner's discount in its environments.
         try:
             self.set_train_and_eval_environments(
                 data_dictionary,
-                data_dictionary["train_prices"],
-                data_dictionary["test_prices"],
+                prices_train,
+                prices_test,
                 dk,
                 model_params=effective_params,
             )
@@ -1141,6 +1364,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     "Training [%s]: continual training activated, starting from previously trained model state",
                     dk.pair,
                 )
+                model.tb_logger = getattr(self, "tb_logger", None)
                 model.set_env(self.train_env)
             else:
                 model = self.MODELCLASS(
@@ -1188,15 +1412,19 @@ class ReforceXY(BaseReinforcementLearningModel):
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
 
-        model_filepath = Path(dk.data_path / "best_model.zip")
-        if (
-            self.eval_callback is not None
-            and self.eval_callback.best_mean_reward > -np.inf
-            and model_filepath.is_file()
-        ):
+        model_filepath = Path(dk.data_path) / "best_model.zip"
+        current_best = np.isfinite(getattr(self.eval_callback, "best_mean_reward", np.nan))
+        if current_best and model_filepath.is_file():
             logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
                 best_model = self.MODELCLASS.load(model_filepath)
+                # SB3 archives exclude replay buffers; preserve experience for continuation.
+                if (
+                    model is not None
+                    and hasattr(model, "replay_buffer")
+                    and getattr(best_model, "replay_buffer", None) is not None
+                ):
+                    best_model.replay_buffer = model.replay_buffer
                 return best_model
             except Exception as e:
                 logger.error(
@@ -1207,12 +1435,73 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
 
         logger.warning(
-            "Model [%s]: best model not found at %s, using final model",
+            "Model [%s]: no usable current best checkpoint at %s, using final model",
             dk.pair,
             model_filepath,
         )
 
         return model
+
+    def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
+        """Compute optional action statistics from prior prediction observations."""
+        fit_live_predictions_candles = self.freqai_info.get("fit_live_predictions_candles", 0)
+        if not fit_live_predictions_candles:
+            return
+
+        warmed_up = True
+        history = self.dd.historic_predictions[pair]
+        if self.live:
+            history = _dedupe_historic_predictions_on_date_pred(history)
+            if not hasattr(self, "_prediction_session_cutoffs"):
+                self._prediction_session_cutoffs: dict[str, pd.Timestamp] = {}
+            if pair not in self._prediction_session_cutoffs:
+                initial_dates = pd.to_datetime(
+                    self.dd.model_return_values[pair]["date_pred"],
+                    utc=True,
+                    errors="coerce",
+                    format="mixed",
+                )
+                self._prediction_session_cutoffs[pair] = initial_dates.max()
+            cutoff = self._prediction_session_cutoffs[pair]
+            eligible = (
+                _produced_prediction_mask(history) & history["date_pred"].gt(cutoff).to_numpy()
+            )
+            history = history.loc[eligible]
+            remaining = fit_live_predictions_candles - len(history)
+            warmed_up = remaining <= 0
+            if not warmed_up:
+                logger.warning(
+                    f"Predict [{pair}]: fit live predictions not warmed up; {remaining} produced observations until warmup completion"
+                )
+        pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
+
+        dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
+        for label_col in dk.label_list + dk.unique_class_list:
+            raw_label = pred_df.get(label_col)
+            if raw_label is None:
+                continue
+            # Downtime filling can leave numeric predictions in object-typed columns.
+            pred_label = pd.to_numeric(raw_label, errors="coerce")
+            if raw_label.dtype == object and pred_label.isna().all():
+                continue
+            if not warmed_up:
+                f = [0.0, 0.0]
+            else:
+                values = pred_label.to_numpy(dtype=float, na_value=np.nan)
+                values = values[np.isfinite(values)]
+                if values.size == 0:
+                    f = (0.0, 0.0)
+                else:
+                    sample_mean = float(np.mean(values))
+                    sample_std = float(np.std(values, ddof=0))
+                    f = (
+                        sample_mean if np.isfinite(sample_mean) else 0.0,
+                        sample_std if np.isfinite(sample_std) else 0.0,
+                    )
+            dk.data["labels_mean"][label_col], dk.data["labels_std"][label_col] = (
+                f[0],
+                f[1],
+            )
 
     def get_state_info(self, pair: str) -> tuple[float, float, int]:
         """
@@ -1243,10 +1532,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 current_profit = profit_ratio / leverage
             else:
                 current_profit = profit_ratio
-            if trade.is_short:
-                market_side = 0
-            else:
-                market_side = 1
+            market_side = 0 if trade.is_short else 1
         return market_side, current_profit, int(trade_duration)
 
     def rl_model_predict(
@@ -1600,7 +1886,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         quarantine_path = ReforceXY._quarantine_path(journal_path, datetime.now(timezone.utc))
         journal_path.rename(quarantine_path)
         logger.warning(
-            "Optuna journal %s corrupt (%r); quarantined to %s; resuming with fresh journal",
+            "Journal [%s]: corrupt (%r); quarantined to %s; resuming with fresh journal",
             journal_path.name,
             cause,
             quarantine_path.name,
@@ -1738,9 +2024,16 @@ class ReforceXY(BaseReinforcementLearningModel):
             max(min_resource, ReforceXY._ceil_to_multiple(total_timesteps, rollout)),
         )
 
-    def optimize(self, dk: FreqaiDataKitchen, total_timesteps: int) -> dict[str, Any] | None:
+    def optimize(
+        self,
+        dk: FreqaiDataKitchen,
+        total_timesteps: int,
+        prices_train: DataFrame,
+        prices_test: DataFrame,
+    ) -> dict[str, Any] | None:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
+        Only studies and best params with the current objective identity are reused.
         """
         identifier = self.freqai_info.get("identifier", "no_id_provided")
         study_name = f"{identifier}-{dk.pair}"
@@ -1787,6 +2080,25 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         direction = StudyDirection.MAXIMIZE
         load_if_exists = not continuous and not pair_purge_triggered
+        if load_if_exists:
+            try:
+                existing_study_id = storage.get_study_id_from_name(study_name)
+            except KeyError:
+                pass
+            else:
+                existing_identity = storage.get_study_user_attrs(existing_study_id).get(
+                    "objective_identity"
+                )
+                if existing_identity != ReforceXY._OPTUNA_OBJECTIVE_IDENTITY:
+                    logger.warning(
+                        "Hyperopt [%s]: objective identity %r incompatible with %r; resetting study",
+                        study_name,
+                        existing_identity,
+                        ReforceXY._OPTUNA_OBJECTIVE_IDENTITY,
+                    )
+                    ReforceXY.delete_study(study_name, storage)
+                    # Fail closed if deletion failed rather than reload incompatible trials.
+                    load_if_exists = False
         study: Study = create_study(
             study_name=study_name,
             sampler=self.create_sampler(),
@@ -1795,6 +2107,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             storage=storage,
             load_if_exists=load_if_exists,
         )
+        if study.user_attrs.get("objective_identity") != ReforceXY._OPTUNA_OBJECTIVE_IDENTITY:
+            study.set_user_attr("objective_identity", ReforceXY._OPTUNA_OBJECTIVE_IDENTITY)
         logger.info(
             "Hyperopt [%s]: study created (direction=%s, n_trials=%s, timeout=%s, continuous=%s, load_if_exists=%s)",
             study_name,
@@ -1823,7 +2137,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         start_time = time.time()
         try:
             study.optimize(
-                lambda trial: self.objective(trial, dk, total_timesteps),
+                lambda trial: self.objective(trial, dk, total_timesteps, prices_train, prices_test),
                 n_trials=self.optuna_n_trials,
                 timeout=(
                     hours_to_seconds(self.optuna_timeout_hours)
@@ -1958,7 +2272,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             return
         try:
             if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
-                raise OSError(f"Hyperopt best params lock {lock_path} must be a regular file")
+                raise OSError(f"Hyperopt [global]: lock {lock_path} must be a regular file")
             fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
             yield
         finally:
@@ -1968,7 +2282,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _reject_best_trial_params_symlink(best_trial_params_path: Path) -> None:
         if best_trial_params_path.is_symlink():
             raise OSError(
-                f"Hyperopt best params path {best_trial_params_path} must not be a symlink"
+                f"Hyperopt [global]: best params path {best_trial_params_path} must not be a symlink"
             )
 
     @staticmethod
@@ -2003,7 +2317,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def save_best_trial_params(self, best_trial_params: dict[str, Any], pair: str) -> None:
         """
-        Save the best trial hyperparameters found during hyperparameter optimization
+        Save the best trial hyperparameters with the current objective identity.
         """
         best_trial_params_path = self._best_trial_params_path(pair)
         logger.info("Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path)
@@ -2056,7 +2370,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                             write_file.fileno(),
                             stat.S_IMODE(existing_metadata.st_mode),
                         )
-                    json.dump(best_trial_params, write_file, indent=4)
+                    json.dump(
+                        {
+                            "objective_identity": ReforceXY._OPTUNA_OBJECTIVE_IDENTITY,
+                            "params": best_trial_params,
+                        },
+                        write_file,
+                        indent=4,
+                    )
                     write_file.flush()
                     os.fsync(write_file.fileno())
                 temporary_path.replace(best_trial_params_path)
@@ -2085,7 +2406,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def load_best_trial_params(self, pair: str) -> dict[str, Any] | None:
         """
-        Load the best trial hyperparameters found and saved during hyperparameter optimization
+        Load saved best trial hyperparameters only for the current objective identity.
         """
         best_trial_params_path = self._best_trial_params_path(pair)
         if not best_trial_params_path.parent.is_dir():
@@ -2123,28 +2444,32 @@ class ReforceXY(BaseReinforcementLearningModel):
                     if quarantined is None:
                         raise
                     return None
-        return best_trial_params
+        if (
+            not isinstance(best_trial_params, dict)
+            or best_trial_params.get("objective_identity") != ReforceXY._OPTUNA_OBJECTIVE_IDENTITY
+            or not isinstance(best_trial_params.get("params"), dict)
+        ):
+            logger.warning(
+                "Hyperopt [%s]: ignoring best params with missing or incompatible objective identity "
+                "(expected %r) or invalid params payload",
+                pair,
+                ReforceXY._OPTUNA_OBJECTIVE_IDENTITY,
+            )
+            return None
+        return best_trial_params["params"]
 
     def _get_train_and_eval_environments(
         self,
         dk: FreqaiDataKitchen,
-        train_df: DataFrame | None = None,
-        test_df: DataFrame | None = None,
-        prices_train: DataFrame | None = None,
-        prices_test: DataFrame | None = None,
+        train_df: DataFrame,
+        test_df: DataFrame,
+        prices_train: DataFrame,
+        prices_test: DataFrame,
         seed: int | None = None,
         env_info: dict[str, Any] | None = None,
         trial: Trial | None = None,
         model_params: dict[str, Any] | None = None,
     ) -> tuple[VecEnv, VecEnv | None]:
-        if train_df is None:
-            train_df = dk.data_dictionary["train_features"]
-        if test_df is None:
-            test_df = dk.data_dictionary["test_features"]
-        if prices_train is None:
-            prices_train = dk.data_dictionary["train_prices"]
-        if prices_test is None:
-            prices_test = dk.data_dictionary["test_prices"]
         seed: int = self.get_model_params().get("seed", 42) if seed is None else seed
         if trial is not None:
             seed += trial.number
@@ -2234,7 +2559,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Hyperopt [{trial.study.study_name}]: model type '{self.model_type}' not supported"
             )
 
-    def objective(self, trial: Trial, dk: FreqaiDataKitchen, total_timesteps: int) -> float:
+    def objective(
+        self,
+        trial: Trial,
+        dk: FreqaiDataKitchen,
+        total_timesteps: int,
+        prices_train: DataFrame,
+        prices_test: DataFrame,
+    ) -> float:
         """
         Objective function for Optuna trials hyperparameter optimization
         """
@@ -2306,7 +2638,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         train_env = eval_env = model = None
         try:
             train_env, eval_env = self._get_train_and_eval_environments(
-                dk, trial=trial, model_params=params
+                dk,
+                train_df=dk.data_dictionary["train_features"],
+                test_df=dk.data_dictionary["test_features"],
+                prices_train=prices_train,
+                prices_test=prices_test,
+                trial=trial,
+                model_params=params,
             )
 
             model = self.MODELCLASS(

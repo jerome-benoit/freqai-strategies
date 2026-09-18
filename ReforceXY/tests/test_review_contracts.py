@@ -2,7 +2,8 @@
 
 import tempfile
 import unittest
-from datetime import datetime as dt, timezone
+from datetime import datetime as dt
+from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -147,7 +148,12 @@ class ReviewContractsTest(unittest.TestCase):
                 )
                 self.assertIn(int(prediction.iloc[0, 0]), (0, 1))
                 train_env, eval_env = model._get_train_and_eval_environments(
-                    dk, model_params={"gamma": 0.91}
+                    dk,
+                    train_df=dk.data_dictionary["train_features"],
+                    test_df=dk.data_dictionary["test_features"],
+                    prices_train=dk.data_dictionary["train_prices"],
+                    prices_test=dk.data_dictionary["test_prices"],
+                    model_params={"gamma": 0.91},
                 )
                 try:
                     np.testing.assert_allclose(
@@ -201,17 +207,136 @@ class ReviewContractsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             model.pack_env_dict("BTC/USDT")
 
-    def test_hpo_does_not_reuse_incompatible_continual_model(self):
-        model = self.model(hpo=True)
-        old = object()
-        model.dd.model_dictionary["BTC/USDT"] = old
-        self.assertIsNone(model.get_init_model("BTC/USDT"))
-        info = model.pack_env_dict("BTC/USDT", {"gamma": 0.999})
-        self.assertEqual(
-            info["config"]["freqai"]["rl_config"]["model_reward_parameters"]["potential_gamma"],
-            0.999,
-        )
-        self.assertNotIn("potential_gamma", model.reward_params)
+    def test_hpo_uses_cold_candidate_and_continues_in_frozen_coordinates(self):
+        from freqtrade.freqai.data_drawer import FEATURE_PIPELINE, METADATA
+        from optuna import create_study
+        from sb3_contrib.common.maskable.evaluation import evaluate_policy
+
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            config["freqai"]["continual_learning"] = True
+            config["freqai"]["model_training_parameters"]["gamma"] = 0.91
+
+            def kitchen(window):
+                dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+                dk.data_path = Path(temp) / window
+                dk.data_path.mkdir()
+                dk.model_filename = f"cb_btc_{window}"
+                dk.label_list = ["&-action"]
+                dk.training_features_list = [column for column in frame if column.startswith("%")]
+                return dk
+
+            frame = pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-01-01", periods=64, freq="5min", tz="UTC"),
+                    "%-feature": np.sin(np.arange(64)),
+                    "&-action": np.zeros(64),
+                }
+            )
+            for column in ("open", "high", "low", "close"):
+                frame[f"%-raw_{column}"] = 100 + np.arange(64) * 0.1
+
+            initial = ReforceXY(config=config)
+            initial.live = True
+            initial.can_short = False
+            self.addCleanup(initial.close_envs)
+            previous_dk = kitchen("initial")
+            deployed = initial.train(frame, previous_dk.pair, previous_dk)
+            deployed_updates = deployed._n_updates
+            deployed_pipeline = previous_dk.feature_pipeline
+            initial_features = previous_dk.data_dictionary["train_features"].copy()
+
+            config["freqai"]["rl_config_optuna"] = {"enabled": True}
+            model = ReforceXY(config=config)
+            model.live = True
+            model.can_short = False
+            self.addCleanup(model.close_envs)
+            model.dd.model_dictionary[previous_dk.pair] = deployed
+            model.dd.meta_data_dictionary[previous_dk.pair] = {
+                METADATA: {
+                    **previous_dk.data,
+                    "training_features_list": previous_dk.training_features_list,
+                    "label_list": previous_dk.label_list,
+                },
+                FEATURE_PIPELINE: deployed_pipeline,
+            }
+
+            shifted = frame.copy()
+            shifted["date"] += pd.Timedelta(days=1)
+            shifted["%-feature"] += 10
+            for column in ("open", "high", "low", "close"):
+                shifted[f"%-raw_{column}"] += 20
+            dk = kitchen("continued")
+            expected_features, _, _ = deployed_pipeline.transform(
+                shifted[dk.training_features_list].copy()
+            )
+            selected_params = {**model.get_model_params(), "gamma": 0.999}
+            evaluations = []
+
+            def evaluate_final(policy, environment, **kwargs):
+                training_env = policy.get_env()
+                evaluations.append(
+                    {
+                        "policy": policy,
+                        "updates": policy._n_updates,
+                        "gamma": policy.gamma,
+                        "train_features": training_env.get_attr("signal_features")[0].copy(),
+                        "test_features": environment.get_attr("signal_features")[0].copy(),
+                        "train_prices": training_env.get_attr("prices")[0].copy(),
+                        "test_prices": environment.get_attr("prices")[0].copy(),
+                        "train_gamma": training_env.get_attr("_potential_gamma"),
+                        "test_gamma": environment.get_attr("_potential_gamma"),
+                    }
+                )
+                return evaluate_policy(policy, environment, **kwargs)
+
+            def optimize_once(current_dk, total_timesteps, prices_train, prices_test):
+                trial = create_study(direction="maximize").ask()
+                with mock.patch.object(model, "get_optuna_params", return_value=selected_params):
+                    score = model.objective(
+                        trial, current_dk, total_timesteps, prices_train, prices_test
+                    )
+                self.assertTrue(np.isfinite(score))
+                return selected_params
+
+            with (
+                mock.patch.object(model, "optimize", side_effect=optimize_once),
+                mock.patch(
+                    "ReforceXY.user_data.freqaimodels.ReforceXY.evaluate_policy",
+                    side_effect=evaluate_final,
+                ),
+            ):
+                continued = model.train(shifted, dk.pair, dk)
+
+            self.assertEqual(len(evaluations), 2)
+            candidate, resumed = evaluations
+            self.assertIsNot(candidate["policy"], deployed)
+            self.assertEqual(candidate["gamma"], 0.999)
+            self.assertGreater(candidate["updates"], 0)
+            self.assertIs(resumed["policy"], deployed)
+            self.assertEqual(resumed["gamma"], 0.91)
+            self.assertGreater(resumed["updates"], deployed_updates)
+            self.assertEqual(continued.gamma, 0.91)
+            np.testing.assert_allclose(candidate["train_features"], initial_features, atol=1e-12)
+            self.assertFalse(np.allclose(candidate["train_features"], resumed["train_features"]))
+            for split, rows in (("train", slice(None, 48)), ("test", slice(48, None))):
+                np.testing.assert_allclose(
+                    resumed[f"{split}_features"], expected_features.iloc[rows]
+                )
+                np.testing.assert_allclose(
+                    dk.data_dictionary[f"{split}_features"], expected_features.iloc[rows]
+                )
+                for evaluation in evaluations:
+                    self.assertEqual(evaluation[f"{split}_gamma"], [evaluation["gamma"]])
+                    for column in ("open", "high", "low", "close"):
+                        np.testing.assert_allclose(
+                            evaluation[f"{split}_prices"][column],
+                            shifted[f"%-raw_{column}"].iloc[rows],
+                        )
+            frozen_after, _, _ = dk.feature_pipeline.transform(
+                shifted[dk.training_features_list].copy()
+            )
+            np.testing.assert_allclose(frozen_after, expected_features)
 
     def test_null_target_kl_overrides_user_value(self):
         params = {

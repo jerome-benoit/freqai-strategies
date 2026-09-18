@@ -638,22 +638,26 @@ class TestStatistics(RewardSpaceTestBase):
             (0.0, 0.0, np.inf),
         ):
             for strict in (False, True):
-                with self.subTest(bounds=bounds, strict_diagnostics=strict):
-                    with self.assertRaises(AssertionError):
-                        reward_space_analysis._validate_bootstrap_results(
-                            {"reward": bounds}, strict_diagnostics=strict
-                        )
+                with (
+                    self.subTest(bounds=bounds, strict_diagnostics=strict),
+                    self.assertRaises(AssertionError),
+                ):
+                    reward_space_analysis._validate_bootstrap_results(
+                        {"reward": bounds}, strict_diagnostics=strict
+                    )
 
     def test_stats_diagnostics_rejects_fabricated_constant_fallbacks(self):
         """A constant marker cannot turn invalid statistics into synthetic moments or R²."""
         for key in ("reward_skewness", "reward_anderson_stat", "reward_qq_r_squared"):
             for strict in (False, True):
-                with self.subTest(key=key, strict_diagnostics=strict):
-                    with self.assertRaises(AssertionError):
-                        reward_space_analysis._validate_distribution_diagnostics(
-                            {"reward_constant": True, "reward_std": 0.0, key: np.nan},
-                            strict_diagnostics=strict,
-                        )
+                with (
+                    self.subTest(key=key, strict_diagnostics=strict),
+                    self.assertRaises(AssertionError),
+                ):
+                    reward_space_analysis._validate_distribution_diagnostics(
+                        {"reward_constant": True, "reward_std": 0.0, key: np.nan},
+                        strict_diagnostics=strict,
+                    )
 
 
 if __name__ == "__main__":
