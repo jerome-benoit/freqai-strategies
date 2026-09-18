@@ -1407,6 +1407,13 @@ class ReforceXY(BaseReinforcementLearningModel):
             logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
                 best_model = self.MODELCLASS.load(model_filepath)
+                # SB3 archives exclude replay buffers; restore the final buffer so
+                # the next cached retrain keeps the experience accumulated this fit.
+                if (
+                    hasattr(model, "replay_buffer")
+                    and getattr(best_model, "replay_buffer", None) is not None
+                ):
+                    best_model.replay_buffer = model.replay_buffer
                 return best_model
             except Exception as e:
                 logger.error(
