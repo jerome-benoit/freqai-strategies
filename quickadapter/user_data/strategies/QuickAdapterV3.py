@@ -585,7 +585,7 @@ class QuickAdapterV3(IStrategy):
                 or (method == QuickAdapterV3._SMOOTHING_SAVGOL and col_smoothing["polyorder"] >= 2)
             ):
                 logger.warning(
-                    f"  Label [{label_col}]: smoothing method {method!r} can "
+                    f"  Label [{label_col}]: Smoothing method {method!r} can "
                     f"collapse sparse weight signals (smm zeroes them when "
                     f"fewer than half the window rows are nonzero; savgol "
                     f"with polyorder>=2 adds negative lobes that are clipped "

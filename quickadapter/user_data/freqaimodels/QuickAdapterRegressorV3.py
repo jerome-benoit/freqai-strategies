@@ -324,7 +324,7 @@ def _log_known_at_none_once(pair: str, context: str) -> None:
         return
     _KNOWN_AT_NONE_LOGGED.add(key)
     logger.info(
-        f"[{pair}] {context}: no <label>_known_at_lookahead column present; "
+        f"[{pair}] {context}: No <label>_known_at_lookahead column present; "
         "causal guards use position-based purge only (label-aware filtering disabled)"
     )
 
@@ -763,7 +763,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ]:
         removed = int((~keep_mask).sum())
         if removed:
-            logger.info(f"{context}: removed {removed} causal-unsafe train rows")
+            logger.info(f"{context}: Removed {removed} causal-unsafe train rows")
         if not keep_mask.any():
             raise ValueError(
                 f"{context}: causal guard removed all train rows "
@@ -835,7 +835,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
         except LabelWeightSupportError as exc:
             logger.warning(
-                "%s: label-weighted eval weights failed (%s); using base weights",
+                "%s: Label-weighted eval weights failed (%s); using base weights",
                 context,
                 exc,
             )
@@ -865,7 +865,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             case QuickAdapterRegressorV3._SUPPORT_POLICY_FALLBACK:
                 logger.warning(
-                    "%s: label weighting support failed (%s); "
+                    "%s: Label weighting support failed (%s); "
                     "falling back to sanitized base weights (support_policy='fallback')",
                     context,
                     reason_text,
@@ -993,7 +993,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reasons=reasons,
             )
         logger.debug(
-            "%s: label weighting support passed "
+            "%s: Label weighting support passed "
             "(pivot_equivalent_count=%d, positive_label_weight_fraction=%.6g, "
             "effective_sample_size=%.6g)",
             context,
@@ -2307,11 +2307,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weights = unfiltered_df.loc[features_filtered.index, weight_col].to_numpy(
                 dtype=float
             )
-            logger.debug("label weight column active: %r", weight_col)
+            logger.debug("Label weight column active: %r", weight_col)
         else:
             label_weights = None
             logger.debug(
-                "label weight column absent (%r); using base weights only",
+                "Label weight column absent (%r); using base weights only",
                 weight_col,
             )
         return SampleWeightInputs(
@@ -2579,7 +2579,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 data_dictionary["test_weights"] = data_dictionary["test_weights"][holdout_mask]
                 if data_dictionary["test_features"].empty:
                     logger.warning(
-                        f"[{pair}] causal purge emptied the holdout (label horizon "
+                        f"[{pair}] Causal purge emptied the holdout (label horizon "
                         f">= holdout span); skipping holdout evaluation "
                         f"(holdout_rmse=inf)"
                     )
@@ -3427,7 +3427,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 current_holdout_rmse = holdout_series.loc[current_dates.index[0]]
                 if pd.isna(current_holdout_rmse):
                     logger.warning(
-                        f"[{pair}] replayed holdout_rmse is NaN at "
+                        f"[{pair}] Replayed holdout_rmse is NaN at "
                         f"{current_dates.index[0]}; defaulting to inf"
                     )
         elif pair not in self._session_fitted_pairs:
@@ -3602,7 +3602,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         logger.debug(
-            f"Extrema filtering | rank_peaks: kept {n_kept_minima}/{minima_indices.size} minima, "
+            f"Extrema filtering | rank_peaks: Kept {n_kept_minima}/{minima_indices.size} minima, "
             f"{n_kept_maxima}/{maxima_indices.size} maxima with keep_fraction={keep_fraction}"
         )
         return pred_label_minima, pred_label_maxima
@@ -3625,7 +3625,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
         logger.debug(
-            f"Extrema filtering | rank_extrema: kept {n_kept_minima}/{n_minima} minima, "
+            f"Extrema filtering | rank_extrema: Kept {n_kept_minima}/{n_minima} minima, "
             f"{n_kept_maxima}/{n_maxima} maxima with keep_fraction={keep_fraction}"
         )
         return pred_label_minima, pred_label_maxima
@@ -4424,7 +4424,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ]
         if not candidates:
             logger.warning(
-                "_select_best_trial_by_distance: all %d candidate distances "
+                "_select_best_trial_by_distance: All %d candidate distances "
                 "are non-finite; falling back to lowest trial number",
                 len(trials),
             )
@@ -5063,7 +5063,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 reset_study = study_marker.reset_on_mismatch
                 logger.warning(
                     f"[{pair}] Optuna {namespace} study {study_name}: "
-                    f"stored {study_marker.user_attr_key} {existing_marker!r} "
+                    f"Stored {study_marker.user_attr_key} {existing_marker!r} "
                     f"incompatible with current; "
                     f"{'resetting' if reset_study else 'preserving'} study"
                 )
