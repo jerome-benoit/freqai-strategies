@@ -1192,8 +1192,8 @@ def assert_pbrs_invariance_report_classification(
     Args:
         test_case: Test case instance with assertion methods
         content: Report content string to validate
-        expected_status: Expected classification: "Canonical",
-                        "Canonical (with warning)", or "Non-canonical"
+        expected_status: Expected classification: "Canonical: observed PBRS verified",
+                        "Not verified", or "Non-canonical: not verified"
         expect_additives: Whether additive components should be mentioned
 
     Example:
@@ -1209,10 +1209,11 @@ def assert_pbrs_invariance_report_classification(
     )
     if expect_additives:
         test_case.assertRegex(
-            content, r"additives=\['entry', 'exit'\]|additives=\['exit', 'entry'\]"
+            content,
+            r"\| Entry Additive Effective \| True \|\n\| Exit Additive Effective \| True \|",
         )
     else:
-        test_case.assertNotRegex(content, r"additives=\[")
+        test_case.assertNotRegex(content, r"\| (?:Entry|Exit) Additive Effective \| True \|")
 
 
 def assert_pbrs_canonical_sum_within_tolerance(test_case, total_shaping: float, tolerance: float):

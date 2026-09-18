@@ -3,1443 +3,1363 @@
   "diagnostics": [
     {
       "endCharacter": 58,
-      "endLine": 337,
+      "endLine": 333,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"RewardParamValue\" is not assignable to declared type \"bool | None\"\n  Type \"RewardParamValue\" is not assignable to type \"bool | None\"\n    Type \"float\" is not assignable to type \"bool | None\"\n      \"float\" is not assignable to \"bool\"\n      \"float\" is not assignable to \"None\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 18,
-      "startLine": 337
+      "startLine": 333
     },
     {
       "endCharacter": 92,
-      "endLine": 564,
+      "endLine": 560,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"RewardParamValue\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"RewardParamValue\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 22,
-      "startLine": 564
+      "startLine": 560
     },
     {
       "endCharacter": 92,
-      "endLine": 564,
+      "endLine": 560,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"RewardParamValue\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"RewardParamValue\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 22,
-      "startLine": 564
+      "startLine": 560
     },
     {
       "endCharacter": 5,
-      "endLine": 1889,
+      "endLine": 1946,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"cut\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 17,
-      "startLine": 1884
+      "startLine": 1941
     },
     {
       "endCharacter": 21,
-      "endLine": 1886,
+      "endLine": 1943,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"_Array1D[Any]\" cannot be assigned to parameter \"bins\" of type \"int | Sequence[float] | Index[int] | Index[float] | IntervalIndex[Interval[Any]] | Series[Any]\" in function \"cut\"\n  Type \"_Array1D[Any]\" is not assignable to type \"int | Sequence[float] | Index[int] | Index[float] | IntervalIndex[Interval[Any]] | Series[Any]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"int\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Sequence[float]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Index[int]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Index[float]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"IntervalIndex[Interval[Any]]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Series[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 1886
+      "startLine": 1943
     },
     {
       "endCharacter": 5,
-      "endLine": 1911,
+      "endLine": 1968,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 1907
+      "startLine": 1964
     },
     {
       "endCharacter": 43,
-      "endLine": 1908,
+      "endLine": 1965,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 1908
+      "startLine": 1965
     },
     {
       "endCharacter": 42,
-      "endLine": 1908,
+      "endLine": 1965,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 1908
+      "startLine": 1965
     },
     {
       "endCharacter": 60,
-      "endLine": 2167,
+      "endLine": 2224,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"importances_mean\" for class \"dict[Unknown, Bunch]\"\n  Attribute \"importances_mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 2167
+      "startLine": 2224
     },
     {
       "endCharacter": 58,
-      "endLine": 2168,
+      "endLine": 2225,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"importances_std\" for class \"dict[Unknown, Bunch]\"\n  Attribute \"importances_std\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 43,
-      "startLine": 2168
+      "startLine": 2225
     },
     {
       "endCharacter": 88,
-      "endLine": 2187,
+      "endLine": 2244,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"columns\" for class \"NDArray[Unknown]\"\n  Attribute \"columns\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 81,
-      "startLine": 2187
+      "startLine": 2244
     },
     {
       "endCharacter": 88,
-      "endLine": 2187,
+      "endLine": 2244,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"columns\" for class \"list[Unknown]\"\n  Attribute \"columns\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 81,
-      "startLine": 2187
+      "startLine": 2244
     },
     {
       "endCharacter": 17,
-      "endLine": 2196,
+      "endLine": 2253,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Object of type \"None\" cannot be called",
       "rule": "reportOptionalCall",
       "severity": "error",
       "startCharacter": 28,
-      "startLine": 2190
+      "startLine": 2247
     },
     {
       "endCharacter": 40,
-      "endLine": 2410,
+      "endLine": 2462,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | object | NAType | Unknown\" cannot be assigned to parameter \"arg1\" of type \"SupportsRichComparisonT@min\" in function \"min\"\n  Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n    Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n      Type \"object\" is not assignable to type \"SupportsRichComparison\"\n        \"object\" is incompatible with protocol \"SupportsDunderLT[Any]\"\n          \"__lt__\" is not present\n        \"object\" is incompatible with protocol \"SupportsDunderGT[Any]\"\n          \"__gt__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 22,
-      "startLine": 2410
+      "startLine": 2462
     },
     {
       "endCharacter": 38,
-      "endLine": 2410,
+      "endLine": 2462,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"min\" for class \"ExtensionArray\"\n  Attribute \"min\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 35,
-      "startLine": 2410
+      "startLine": 2462
     },
     {
       "endCharacter": 59,
-      "endLine": 2410,
+      "endLine": 2462,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | object | NAType | Unknown\" cannot be assigned to parameter \"arg2\" of type \"SupportsRichComparisonT@min\" in function \"min\"\n  Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n    Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n      Type \"object\" is not assignable to type \"SupportsRichComparison\"\n        \"object\" is incompatible with protocol \"SupportsDunderLT[Any]\"\n          \"__lt__\" is not present\n        \"object\" is incompatible with protocol \"SupportsDunderGT[Any]\"\n          \"__gt__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 42,
-      "startLine": 2410
+      "startLine": 2462
     },
     {
       "endCharacter": 57,
-      "endLine": 2410,
+      "endLine": 2462,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"min\" for class \"ExtensionArray\"\n  Attribute \"min\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 54,
-      "startLine": 2410
+      "startLine": 2462
     },
     {
       "endCharacter": 40,
-      "endLine": 2411,
+      "endLine": 2463,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | object | NAType | Unknown\" cannot be assigned to parameter \"arg1\" of type \"SupportsRichComparisonT@max\" in function \"max\"\n  Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n    Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n      Type \"object\" is not assignable to type \"SupportsRichComparison\"\n        \"object\" is incompatible with protocol \"SupportsDunderLT[Any]\"\n          \"__lt__\" is not present\n        \"object\" is incompatible with protocol \"SupportsDunderGT[Any]\"\n          \"__gt__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 22,
-      "startLine": 2411
+      "startLine": 2463
     },
     {
       "endCharacter": 38,
-      "endLine": 2411,
+      "endLine": 2463,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"max\" for class \"ExtensionArray\"\n  Attribute \"max\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 35,
-      "startLine": 2411
+      "startLine": 2463
     },
     {
       "endCharacter": 59,
-      "endLine": 2411,
+      "endLine": 2463,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | object | NAType | Unknown\" cannot be assigned to parameter \"arg2\" of type \"SupportsRichComparisonT@max\" in function \"max\"\n  Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n    Type \"Any | object | NAType | Unknown\" is not assignable to type \"SupportsRichComparison\"\n      Type \"object\" is not assignable to type \"SupportsRichComparison\"\n        \"object\" is incompatible with protocol \"SupportsDunderLT[Any]\"\n          \"__lt__\" is not present\n        \"object\" is incompatible with protocol \"SupportsDunderGT[Any]\"\n          \"__gt__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 42,
-      "startLine": 2411
+      "startLine": 2463
     },
     {
       "endCharacter": 57,
-      "endLine": 2411,
+      "endLine": 2463,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"max\" for class \"ExtensionArray\"\n  Attribute \"max\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 54,
-      "startLine": 2411
+      "startLine": 2463
     },
     {
       "endCharacter": 76,
-      "endLine": 2431,
+      "endLine": 2479,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"histogram\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 24,
-      "startLine": 2431
+      "startLine": 2479
     },
     {
       "endCharacter": 49,
-      "endLine": 2431,
+      "endLine": 2479,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeComplex_co\" in function \"histogram\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeComplex_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeComplex_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[numpy.bool[builtins.bool] | number[Any, Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool] | number[Any, Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 37,
-      "startLine": 2431
+      "startLine": 2479
     },
     {
       "endCharacter": 74,
-      "endLine": 2432,
+      "endLine": 2480,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"histogram\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 23,
-      "startLine": 2432
+      "startLine": 2480
     },
     {
       "endCharacter": 47,
-      "endLine": 2432,
+      "endLine": 2480,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeComplex_co\" in function \"histogram\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeComplex_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeComplex_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[numpy.bool[builtins.bool] | number[Any, Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool] | number[Any, Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 2432
+      "startLine": 2480
     },
     {
       "endCharacter": 51,
-      "endLine": 2447,
+      "endLine": 2495,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"u_values\" of type \"ToFloatND\" in function \"wasserstein_distance\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 39,
-      "startLine": 2447
+      "startLine": 2495
     },
     {
       "endCharacter": 64,
-      "endLine": 2447,
+      "endLine": 2495,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"v_values\" of type \"ToFloatND\" in function \"wasserstein_distance\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 53,
-      "startLine": 2447
+      "startLine": 2495
     },
     {
       "endCharacter": 68,
-      "endLine": 2450,
+      "endLine": 2498,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"ks_2samp\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 2450
+      "startLine": 2498
     },
     {
       "endCharacter": 54,
-      "endLine": 2450,
+      "endLine": 2498,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"data1\" of type \"ToFloatND\" in function \"ks_2samp\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 42,
-      "startLine": 2450
+      "startLine": 2498
     },
     {
       "endCharacter": 67,
-      "endLine": 2450,
+      "endLine": 2498,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"data2\" of type \"ToFloatND\" in function \"ks_2samp\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 56,
-      "startLine": 2450
+      "startLine": 2498
     },
     {
       "endCharacter": 29,
-      "endLine": 2722,
+      "endLine": 2799,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"ptp\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 11,
-      "startLine": 2722
+      "startLine": 2799
     },
     {
       "endCharacter": 28,
-      "endLine": 2722,
+      "endLine": 2799,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"ptp\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 18,
-      "startLine": 2722
+      "startLine": 2799
     },
     {
       "endCharacter": 65,
-      "endLine": 2735,
+      "endLine": 2808,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"mean\" for class \"Categorical[object]\"\n  Attribute \"mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 61,
-      "startLine": 2735
+      "startLine": 2808
     },
     {
       "endCharacter": 65,
-      "endLine": 2735,
+      "endLine": 2808,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"mean\" for class \"ExtensionArray\"\n  Attribute \"mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 61,
-      "startLine": 2735
-    },
-    {
-      "endCharacter": 56,
-      "endLine": 2815,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "No overloads for \"mean\" match the provided arguments",
-      "rule": "reportCallIssue",
-      "severity": "error",
-      "startCharacter": 43,
-      "startLine": 2815
-    },
-    {
-      "endCharacter": 55,
-      "endLine": 2815,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"mean\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 51,
-      "startLine": 2815
-    },
-    {
-      "endCharacter": 62,
-      "endLine": 2816,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "No overloads for \"std\" match the provided arguments",
-      "rule": "reportCallIssue",
-      "severity": "error",
-      "startCharacter": 42,
-      "startLine": 2816
-    },
-    {
-      "endCharacter": 53,
-      "endLine": 2816,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"std\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 49,
-      "startLine": 2816
-    },
-    {
-      "endCharacter": 39,
-      "endLine": 2817,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "No overloads for \"skew\" match the provided arguments",
-      "rule": "reportCallIssue",
-      "severity": "error",
-      "startCharacter": 23,
-      "startLine": 2817
-    },
-    {
-      "endCharacter": 38,
-      "endLine": 2817,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"ToFloatND\" in function \"skew\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 34,
-      "startLine": 2817
-    },
-    {
-      "endCharacter": 56,
-      "endLine": 2818,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "No overloads for \"kurtosis\" match the provided arguments",
-      "rule": "reportCallIssue",
-      "severity": "error",
-      "startCharacter": 23,
-      "startLine": 2818
-    },
-    {
-      "endCharacter": 42,
-      "endLine": 2818,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"ToFloatND\" in function \"kurtosis\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 38,
-      "startLine": 2818
-    },
-    {
-      "endCharacter": 50,
-      "endLine": 2829,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "No overloads for \"shapiro\" match the provided arguments",
-      "rule": "reportCallIssue",
-      "severity": "error",
-      "startCharacter": 31,
-      "startLine": 2829
-    },
-    {
-      "endCharacter": 49,
-      "endLine": 2829,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"x\" of type \"ToFloat | ToFloatND\" in function \"shapiro\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloat | ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloat | ToFloatND\"\n      \"ExtensionArray\" is not assignable to \"float\"\n      \"ExtensionArray\" is not assignable to \"floating[Any]\"\n      \"ExtensionArray\" is not assignable to \"integer[Any]\"\n      \"ExtensionArray\" is not assignable to \"numpy.bool[builtins.bool]\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 45,
-      "startLine": 2829
-    },
-    {
-      "endCharacter": 39,
-      "endLine": 2834,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"x\" of type \"ToFloatND\" in function \"anderson\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloatND\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"SequenceND[py_float | _CanArray[floating_co]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 35,
-      "startLine": 2834
-    },
-    {
-      "endCharacter": 61,
-      "endLine": 2841,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"x\" of type \"ToFloat | ToFloatND\" in function \"probplot\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"ToFloat | ToFloatND\"\n    Type \"ExtensionArray\" is not assignable to type \"ToFloat | ToFloatND\"\n      \"ExtensionArray\" is not assignable to \"float\"\n      \"ExtensionArray\" is not assignable to \"floating[Any]\"\n      \"ExtensionArray\" is not assignable to \"integer[Any]\"\n      \"ExtensionArray\" is not assignable to \"numpy.bool[builtins.bool]\"\n      \"ExtensionArray\" is incompatible with protocol \"_CanArrayND[floating_co]\"\n        \"__array__\" is not present\n  ...",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 57,
-      "startLine": 2841
+      "startLine": 2808
     },
     {
       "endCharacter": 17,
-      "endLine": 3640,
+      "endLine": 3699,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Declaration \"reward_params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 4,
-      "startLine": 3640
+      "startLine": 3699
     },
     {
       "endCharacter": 5,
-      "endLine": 3644,
+      "endLine": 3703,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 3640
+      "startLine": 3699
     },
     {
       "endCharacter": 43,
-      "endLine": 3641,
+      "endLine": 3700,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3641
+      "startLine": 3700
     },
     {
       "endCharacter": 42,
-      "endLine": 3641,
+      "endLine": 3700,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 3641
+      "startLine": 3700
     },
     {
       "endCharacter": 9,
-      "endLine": 3787,
+      "endLine": 3862,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 38,
-      "startLine": 3783
+      "startLine": 3858
     },
     {
       "endCharacter": 47,
-      "endLine": 3784,
+      "endLine": 3859,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 3784
+      "startLine": 3859
     },
     {
       "endCharacter": 46,
-      "endLine": 3784,
+      "endLine": 3859,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 17,
-      "startLine": 3784
+      "startLine": 3859
     },
     {
       "endCharacter": 14,
-      "endLine": 4480,
+      "endLine": 4502,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Declaration \"sim_params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 4,
-      "startLine": 4480
+      "startLine": 4502
     },
     {
       "endCharacter": 22,
-      "endLine": 762,
+      "endLine": 783,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Cannot assign to attribute \"train_env\" for class \"ReforceXY*\"\n  Expression of type \"VecEnv\" cannot be assigned to attribute \"train_env\" of class \"ReforceXY\"\n    Type \"VecEnv\" is not assignable to type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\"\n      \"VecEnv\" is not assignable to \"VecMonitor\"\n      \"VecEnv\" is not assignable to \"SubprocVecEnv\"\n      \"VecEnv\" is not assignable to \"Env[Unknown, Unknown]\"",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 762
+      "startLine": 783
     },
     {
       "endCharacter": 37,
-      "endLine": 762,
+      "endLine": 783,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
-      "message": "Cannot assign to attribute \"eval_env\" for class \"ReforceXY*\"\n  Expression of type \"VecEnv\" cannot be assigned to attribute \"eval_env\" of class \"ReforceXY\"\n    Type \"VecEnv\" is not assignable to type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\"\n      \"VecEnv\" is not assignable to \"VecMonitor\"\n      \"VecEnv\" is not assignable to \"SubprocVecEnv\"\n      \"VecEnv\" is not assignable to \"Env[Unknown, Unknown]\"",
+      "message": "Cannot assign to attribute \"eval_env\" for class \"ReforceXY*\"\n  Expression of type \"VecEnv | None\" cannot be assigned to attribute \"eval_env\" of class \"ReforceXY\"\n    Type \"VecEnv | None\" is not assignable to type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\"\n      Type \"VecEnv\" is not assignable to type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\"\n        \"VecEnv\" is not assignable to \"VecMonitor\"\n        \"VecEnv\" is not assignable to \"SubprocVecEnv\"\n        \"VecEnv\" is not assignable to \"Env[Unknown, Unknown]\"",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 29,
-      "startLine": 762
+      "startLine": 783
+    },
+    {
+      "endCharacter": 24,
+      "endLine": 1042,
+      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+      "message": "Argument of type \"VecEnv\" cannot be assigned to parameter \"eval_env\" of type \"BaseEnvironment\" in function \"__init__\"\n  \"VecEnv\" is not assignable to \"BaseEnvironment\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 16,
+      "startLine": 1042
     },
     {
       "endCharacter": 38,
-      "endLine": 1037,
+      "endLine": 1064,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"obj\" of type \"Sized\" in function \"len\"\n  Type \"Any | None\" is not assignable to type \"Sized\"\n    \"None\" is incompatible with protocol \"Sized\"\n      \"__len__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 30,
-      "startLine": 1037
+      "startLine": 1064
     },
     {
       "endCharacter": 36,
-      "endLine": 1041,
+      "endLine": 1068,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"obj\" of type \"Sized\" in function \"len\"\n  Type \"Any | None\" is not assignable to type \"Sized\"\n    \"None\" is incompatible with protocol \"Sized\"\n      \"__len__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 29,
-      "startLine": 1041
+      "startLine": 1068
     },
     {
       "endCharacter": 80,
-      "endLine": 1044,
+      "endLine": 1071,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"timeframe\" of type \"str\" in function \"steps_to_days\"\n  Type \"Any | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 52,
-      "startLine": 1044
+      "startLine": 1071
     },
     {
       "endCharacter": 78,
-      "endLine": 1045,
+      "endLine": 1072,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"timeframe\" of type \"str\" in function \"steps_to_days\"\n  Type \"Any | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 50,
-      "startLine": 1045
+      "startLine": 1072
     },
     {
       "endCharacter": 80,
-      "endLine": 1046,
+      "endLine": 1073,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"timeframe\" of type \"str\" in function \"steps_to_days\"\n  Type \"Any | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 52,
-      "startLine": 1046
+      "startLine": 1073
     },
     {
-      "endCharacter": 83,
-      "endLine": 1114,
+      "endCharacter": 56,
+      "endLine": 1154,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"timeframe\" of type \"str\" in function \"steps_to_days\"\n  Type \"Any | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "message": "Argument of type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\" cannot be assigned to parameter \"eval_env\" of type \"VecEnv | None\" in function \"get_callbacks\"\n  Type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\" is not assignable to type \"VecEnv | None\"\n    Type \"Env[Unknown, Unknown]\" is not assignable to type \"VecEnv | None\"\n      \"Env[Unknown, Unknown]\" is not assignable to \"VecEnv\"\n      \"Env[Unknown, Unknown]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
-      "startCharacter": 55,
-      "startLine": 1114
+      "startCharacter": 43,
+      "startLine": 1154
     },
     {
-      "endCharacter": 52,
-      "endLine": 1150,
+      "endCharacter": 84,
+      "endLine": 1176,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
-      "message": "Argument of type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\" cannot be assigned to parameter \"eval_env\" of type \"BaseEnvironment\" in function \"get_callbacks\"\n  Type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\" is not assignable to type \"BaseEnvironment\"\n    \"SubprocVecEnv\" is not assignable to \"BaseEnvironment\"",
+      "message": "Argument of type \"float | list[float]\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | list[float]\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"list[float]\" is not assignable to type \"ConvertibleToFloat\"\n      \"list[float]\" is not assignable to \"str\"\n      \"list[float]\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
-      "startCharacter": 39,
-      "startLine": 1150
+      "startCharacter": 67,
+      "startLine": 1176
+    },
+    {
+      "endCharacter": 84,
+      "endLine": 1176,
+      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+      "message": "Argument of type \"float | list[float]\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | list[float]\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"list[float]\" is not assignable to type \"ConvertibleToFloat\"\n      \"list[float]\" is not assignable to \"str\"\n      \"list[float]\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsIndex\"\n  ...",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 67,
+      "startLine": 1176
     },
     {
       "endCharacter": 32,
-      "endLine": 2049,
+      "endLine": 2125,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "\"best_trial_params\" is possibly unbound",
       "rule": "reportPossiblyUnboundVariable",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 2049
+      "startLine": 2125
     },
     {
       "endCharacter": 12,
-      "endLine": 2058,
+      "endLine": 2134,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Parameter declaration \"seed\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 2058
+      "startLine": 2134
     },
     {
       "endCharacter": 16,
-      "endLine": 2059,
+      "endLine": 2135,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Parameter declaration \"env_info\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 2059
+      "startLine": 2135
     },
     {
-      "endCharacter": 47,
-      "endLine": 2106,
+      "endCharacter": 51,
+      "endLine": 2186,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"list[() -> BaseEnvironment]\" cannot be assigned to parameter \"env_fns\" of type \"list[() -> Env[Unknown, Unknown]]\" in function \"__init__\"\n  \"list[() -> BaseEnvironment]\" is not assignable to \"list[() -> Env[Unknown, Unknown]]\"\n    Type parameter \"_T@list\" is invariant, but \"() -> BaseEnvironment\" is not the same as \"() -> Env[Unknown, Unknown]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
       "rule": "reportArgumentType",
       "severity": "error",
-      "startCharacter": 38,
-      "startLine": 2106
+      "startCharacter": 42,
+      "startLine": 2186
     },
     {
-      "endCharacter": 45,
-      "endLine": 2108,
+      "endCharacter": 53,
+      "endLine": 2192,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"list[() -> BaseEnvironment]\" cannot be assigned to parameter \"env_fns\" of type \"list[() -> Env[Unknown, Unknown]]\" in function \"__init__\"\n  \"list[() -> BaseEnvironment]\" is not assignable to \"list[() -> Env[Unknown, Unknown]]\"\n    Type parameter \"_T@list\" is invariant, but \"() -> BaseEnvironment\" is not the same as \"() -> Env[Unknown, Unknown]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
       "rule": "reportArgumentType",
       "severity": "error",
-      "startCharacter": 36,
-      "startLine": 2108
-    },
-    {
-      "endCharacter": 45,
-      "endLine": 2110,
-      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
-      "message": "Argument of type \"list[() -> BaseEnvironment]\" cannot be assigned to parameter \"env_fns\" of type \"list[() -> Env[Unknown, Unknown]]\" in function \"__init__\"\n  \"list[() -> BaseEnvironment]\" is not assignable to \"list[() -> Env[Unknown, Unknown]]\"\n    Type parameter \"_T@list\" is invariant, but \"() -> BaseEnvironment\" is not the same as \"() -> Env[Unknown, Unknown]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 37,
-      "startLine": 2110
-    },
-    {
-      "endCharacter": 43,
-      "endLine": 2112,
-      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
-      "message": "Argument of type \"list[() -> BaseEnvironment]\" cannot be assigned to parameter \"env_fns\" of type \"list[() -> Env[Unknown, Unknown]]\" in function \"__init__\"\n  \"list[() -> BaseEnvironment]\" is not assignable to \"list[() -> Env[Unknown, Unknown]]\"\n    Type parameter \"_T@list\" is invariant, but \"() -> BaseEnvironment\" is not the same as \"() -> Env[Unknown, Unknown]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 35,
-      "startLine": 2112
+      "startCharacter": 45,
+      "startLine": 2192
     },
     {
       "endCharacter": 22,
-      "endLine": 2153,
+      "endLine": 2248,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \"*\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 2153
+      "startLine": 2248
     },
     {
       "endCharacter": 96,
-      "endLine": 2155,
+      "endLine": 2250,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \"*\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 89,
-      "startLine": 2155
+      "startLine": 2250
     },
     {
       "endCharacter": 23,
-      "endLine": 2158,
+      "endLine": 2253,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \"*\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2158
+      "startLine": 2253
     },
     {
       "endCharacter": 98,
-      "endLine": 2160,
+      "endLine": 2255,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \"*\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 91,
-      "startLine": 2160
+      "startLine": 2255
     },
     {
       "endCharacter": 44,
-      "endLine": 2172,
+      "endLine": 2267,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \"*\" not supported for types \"Any | None\" and \"Any | int | None\"\n  Operator \"*\" not supported for types \"None\" and \"None\"\n  Operator \"*\" not supported for types \"None\" and \"int\"",
       "rule": "reportOperatorIssue",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 2172
+      "startLine": 2267
     },
     {
       "endCharacter": 133,
-      "endLine": 2174,
+      "endLine": 2269,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \"*\" not supported for types \"Any | None\" and \"Any | int | None\"\n  Operator \"*\" not supported for types \"None\" and \"None\"\n  Operator \"*\" not supported for types \"None\" and \"int\"",
       "rule": "reportOperatorIssue",
       "severity": "error",
       "startCharacter": 106,
-      "startLine": 2174
+      "startLine": 2269
     },
     {
       "endCharacter": 30,
-      "endLine": 2177,
+      "endLine": 2272,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Operator \">\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 2177
+      "startLine": 2272
     },
     {
-      "endCharacter": 47,
-      "endLine": 2221,
+      "endCharacter": 54,
+      "endLine": 2322,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
-      "message": "Argument of type \"VecEnv\" cannot be assigned to parameter \"eval_env\" of type \"BaseEnvironment\" in function \"get_callbacks\"\n  \"VecEnv\" is not assignable to \"BaseEnvironment\"",
+      "message": "\"is_pruned\" is not a known attribute of \"None\"",
+      "rule": "reportOptionalMemberAccess",
+      "severity": "error",
+      "startCharacter": 45,
+      "startLine": 2322
+    },
+    {
+      "endCharacter": 67,
+      "endLine": 2327,
+      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+      "message": "\"use_masking\" is not a known attribute of \"None\"",
+      "rule": "reportOptionalMemberAccess",
+      "severity": "error",
+      "startCharacter": 56,
+      "startLine": 2327
+    },
+    {
+      "endCharacter": 60,
+      "endLine": 2335,
+      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+      "message": "\"update_best_reward\" is not a known attribute of \"None\"",
+      "rule": "reportOptionalMemberAccess",
+      "severity": "error",
+      "startCharacter": 42,
+      "startLine": 2335
+    },
+    {
+      "endCharacter": 84,
+      "endLine": 2335,
+      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+      "message": "Argument of type \"float | list[float]\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | list[float]\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"list[float]\" is not assignable to type \"ConvertibleToFloat\"\n      \"list[float]\" is not assignable to \"str\"\n      \"list[float]\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
-      "startCharacter": 39,
-      "startLine": 2221
+      "startCharacter": 67,
+      "startLine": 2335
+    },
+    {
+      "endCharacter": 84,
+      "endLine": 2335,
+      "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
+      "message": "Argument of type \"float | list[float]\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | list[float]\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"list[float]\" is not assignable to type \"ConvertibleToFloat\"\n      \"list[float]\" is not assignable to \"str\"\n      \"list[float]\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"list[float]\" is incompatible with protocol \"SupportsIndex\"\n  ...",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 67,
+      "startLine": 2335
     },
     {
       "endCharacter": 46,
-      "endLine": 2278,
+      "endLine": 2389,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "\"is_pruned\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 37,
-      "startLine": 2278
+      "startLine": 2389
     },
     {
       "endCharacter": 57,
-      "endLine": 2281,
+      "endLine": 2392,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "\"best_mean_reward\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 2281
+      "startLine": 2392
     },
     {
       "endCharacter": 37,
-      "endLine": 2291,
+      "endLine": 2402,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Cannot assign to attribute \"train_env\" for class \"ReforceXY*\"\n  Type \"None\" is not assignable to type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\"\n    \"None\" is not assignable to \"VecMonitor\"\n    \"None\" is not assignable to \"SubprocVecEnv\"\n    \"None\" is not assignable to \"Env[Unknown, Unknown]\"",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 33,
-      "startLine": 2291
+      "startLine": 2402
     },
     {
       "endCharacter": 36,
-      "endLine": 2296,
+      "endLine": 2407,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Cannot assign to attribute \"eval_env\" for class \"ReforceXY*\"\n  Type \"None\" is not assignable to type \"VecMonitor | SubprocVecEnv | Env[Unknown, Unknown]\"\n    \"None\" is not assignable to \"VecMonitor\"\n    \"None\" is not assignable to \"SubprocVecEnv\"\n    \"None\" is not assignable to \"Env[Unknown, Unknown]\"",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 32,
-      "startLine": 2296
+      "startLine": 2407
     },
     {
       "endCharacter": 7,
-      "endLine": 2328,
+      "endLine": 2452,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Declaration \"MyRLEnv\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 0,
-      "startLine": 2328
+      "startLine": 2452
     },
     {
       "endCharacter": 34,
-      "endLine": 2340,
+      "endLine": 2464,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Declaration \"_last_closed_position\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 2340
+      "startLine": 2464
     },
     {
       "endCharacter": 36,
-      "endLine": 2341,
+      "endLine": 2465,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Declaration \"_last_closed_trade_tick\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 2341
+      "startLine": 2465
     },
     {
       "endCharacter": 13,
-      "endLine": 3174,
+      "endLine": 3310,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Method \"reset\" overrides class \"BaseEnvironment\" in an incompatible manner\n  Return type mismatch: base method returns type \"tuple[DataFrame, dict[Unknown, Unknown]]\", override returns type \"tuple[NDArray[float32], dict[str, Any]]\"\n    \"tuple[NDArray[float32], dict[str, Any]]\" is not assignable to \"tuple[DataFrame, dict[Unknown, Unknown]]\"\n      Tuple entry 1 is incorrect type\n        \"ndarray[_AnyShape, dtype[float32]]\" is not assignable to \"DataFrame\"",
       "rule": "reportIncompatibleMethodOverride",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3174
+      "startLine": 3310
     },
     {
       "endCharacter": 26,
-      "endLine": 3196,
+      "endLine": 3332,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Type \"tuple[DataFrame, dict[Unknown, Unknown]]\" is not assignable to return type \"tuple[NDArray[float32], dict[str, Any]]\"\n  \"DataFrame\" is not assignable to \"ndarray[_AnyShape, dtype[float32]]\"",
       "rule": "reportReturnType",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 3196
+      "startLine": 3332
     },
     {
       "endCharacter": 55,
-      "endLine": 3525,
+      "endLine": 3644,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 3525
+      "startLine": 3644
     },
     {
       "endCharacter": 55,
-      "endLine": 3525,
+      "endLine": 3644,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 3525
+      "startLine": 3644
     },
     {
       "endCharacter": 59,
-      "endLine": 3549,
+      "endLine": 3668,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 48,
-      "startLine": 3549
+      "startLine": 3668
     },
     {
       "endCharacter": 59,
-      "endLine": 3549,
+      "endLine": 3668,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 48,
-      "startLine": 3549
+      "startLine": 3668
     },
     {
       "endCharacter": 24,
-      "endLine": 3594,
+      "endLine": 3697,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Method \"_get_observation\" overrides class \"BaseEnvironment\" in an incompatible manner\n  Return type mismatch: base method returns type \"DataFrame\", override returns type \"NDArray[float32]\"\n    \"ndarray[_AnyShape, dtype[float32]]\" is not assignable to \"DataFrame\"",
       "rule": "reportIncompatibleMethodOverride",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3594
+      "startLine": 3697
     },
     {
       "endCharacter": 53,
-      "endLine": 3662,
+      "endLine": 3765,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "\"name\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 3662
+      "startLine": 3765
     },
     {
       "endCharacter": 12,
-      "endLine": 3696,
+      "endLine": 3799,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Method \"step\" overrides class \"Base5ActionRLEnv\" in an incompatible manner\n  Return type mismatch: base method returns type \"tuple[DataFrame, float, bool, Literal[False], dict[str, Unknown]]\", override returns type \"tuple[NDArray[float32], float, bool, bool, dict[str, Any]]\"\n    \"tuple[NDArray[float32], float, bool, bool, dict[str, Any]]\" is not assignable to \"tuple[DataFrame, float, bool, Literal[False], dict[str, Unknown]]\"\n      Tuple entry 1 is incorrect type\n        \"ndarray[_AnyShape, dtype[float32]]\" is not assignable to \"DataFrame\"",
       "rule": "reportIncompatibleMethodOverride",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3696
+      "startLine": 3799
     },
     {
       "endCharacter": 20,
-      "endLine": 3810,
+      "endLine": 3936,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Method \"action_masks\" overrides class \"BaseEnvironment\" in an incompatible manner\n  Return type mismatch: base method returns type \"list[bool]\", override returns type \"NDArray[bool_]\"\n    \"ndarray[_AnyShape, dtype[bool_]]\" is not assignable to \"list[bool]\"",
       "rule": "reportIncompatibleMethodOverride",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3810
+      "startLine": 3936
     },
     {
       "endCharacter": 40,
-      "endLine": 3962,
+      "endLine": 4088,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "\"Figure\" is not exported from module \"matplotlib.pyplot\"",
       "rule": "reportPrivateImportUsage",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 3962
+      "startLine": 4088
     },
     {
       "endCharacter": 54,
-      "endLine": 4460,
+      "endLine": 4586,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 45,
-      "startLine": 4460
+      "startLine": 4586
     },
     {
       "endCharacter": 54,
-      "endLine": 4460,
+      "endLine": 4586,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 45,
-      "startLine": 4460
+      "startLine": 4586
     },
     {
       "endCharacter": 50,
-      "endLine": 4472,
+      "endLine": 4598,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"object\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"object\" is not assignable to type \"ConvertibleToFloat\"\n    \"object\" is not assignable to \"str\"\n    \"object\" is incompatible with protocol \"Buffer\"\n      \"__buffer__\" is not present\n    \"object\" is incompatible with protocol \"SupportsFloat\"\n      \"__float__\" is not present\n    \"object\" is incompatible with protocol \"SupportsIndex\"\n      \"__index__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 37,
-      "startLine": 4472
+      "startLine": 4598
     },
     {
       "endCharacter": 72,
-      "endLine": 4483,
+      "endLine": 4609,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 70,
-      "startLine": 4483
+      "startLine": 4609
     },
     {
       "endCharacter": 72,
-      "endLine": 4483,
+      "endLine": 4609,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 70,
-      "startLine": 4483
+      "startLine": 4609
     },
     {
       "endCharacter": 73,
-      "endLine": 4492,
+      "endLine": 4618,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 71,
-      "startLine": 4492
+      "startLine": 4618
     },
     {
       "endCharacter": 73,
-      "endLine": 4492,
+      "endLine": 4618,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"float | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"float | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 71,
-      "startLine": 4492
+      "startLine": 4618
     },
     {
       "endCharacter": 58,
-      "endLine": 4501,
+      "endLine": 4627,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 56,
-      "startLine": 4501
+      "startLine": 4627
     },
     {
       "endCharacter": 58,
-      "endLine": 4501,
+      "endLine": 4627,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 56,
-      "startLine": 4501
+      "startLine": 4627
     },
     {
       "endCharacter": 50,
-      "endLine": 4725,
+      "endLine": 4859,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Mapping[Unknown, Unknown]\" cannot be assigned to parameter \"src\" of type \"dict[str, Any]\" in function \"deepmerge\"\n  \"Mapping[Unknown, Unknown]\" is not assignable to \"dict[str, Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 4725
+      "startLine": 4859
     },
     {
       "endCharacter": 20,
-      "endLine": 4902,
+      "endLine": 5036,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 18,
-      "startLine": 4902
+      "startLine": 5036
     },
     {
       "endCharacter": 20,
-      "endLine": 4902,
+      "endLine": 5036,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 18,
-      "startLine": 4902
+      "startLine": 5036
     },
     {
       "endCharacter": 59,
-      "endLine": 4907,
+      "endLine": 5041,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4907
+      "startLine": 5041
     },
     {
       "endCharacter": 59,
-      "endLine": 4907,
+      "endLine": 5041,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4907
+      "startLine": 5041
     },
     {
       "endCharacter": 65,
-      "endLine": 4908,
+      "endLine": 5042,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4908
+      "startLine": 5042
     },
     {
       "endCharacter": 65,
-      "endLine": 4908,
+      "endLine": 5042,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4908
+      "startLine": 5042
     },
     {
       "endCharacter": 57,
-      "endLine": 4909,
+      "endLine": 5043,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4909
+      "startLine": 5043
     },
     {
       "endCharacter": 57,
-      "endLine": 4909,
+      "endLine": 5043,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4909
+      "startLine": 5043
     },
     {
       "endCharacter": 63,
-      "endLine": 4911,
+      "endLine": 5045,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4911
+      "startLine": 5045
     },
     {
       "endCharacter": 63,
-      "endLine": 4911,
+      "endLine": 5045,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4911
+      "startLine": 5045
     },
     {
       "endCharacter": 61,
-      "endLine": 4913,
+      "endLine": 5047,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 32,
-      "startLine": 4913
+      "startLine": 5047
     },
     {
       "endCharacter": 61,
-      "endLine": 4913,
+      "endLine": 5047,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 32,
-      "startLine": 4913
+      "startLine": 5047
     },
     {
       "endCharacter": 67,
-      "endLine": 4914,
+      "endLine": 5048,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 4914
+      "startLine": 5048
     },
     {
       "endCharacter": 67,
-      "endLine": 4914,
+      "endLine": 5048,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 4914
+      "startLine": 5048
     },
     {
       "endCharacter": 73,
-      "endLine": 4915,
+      "endLine": 5049,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 39,
-      "startLine": 4915
+      "startLine": 5049
     },
     {
       "endCharacter": 73,
-      "endLine": 4915,
+      "endLine": 5049,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 39,
-      "startLine": 4915
+      "startLine": 5049
     },
     {
       "endCharacter": 61,
-      "endLine": 4916,
+      "endLine": 5050,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 33,
-      "startLine": 4916
+      "startLine": 5050
     },
     {
       "endCharacter": 61,
-      "endLine": 4916,
+      "endLine": 5050,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 33,
-      "startLine": 4916
+      "startLine": 5050
     },
     {
       "endCharacter": 89,
-      "endLine": 4923,
+      "endLine": 5057,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 52,
-      "startLine": 4923
+      "startLine": 5057
     },
     {
       "endCharacter": 89,
-      "endLine": 4923,
+      "endLine": 5057,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 52,
-      "startLine": 4923
+      "startLine": 5057
     },
     {
       "endCharacter": 83,
-      "endLine": 4924,
+      "endLine": 5058,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 4924
+      "startLine": 5058
     },
     {
       "endCharacter": 83,
-      "endLine": 4924,
+      "endLine": 5058,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 4924
+      "startLine": 5058
     },
     {
       "endCharacter": 57,
-      "endLine": 4949,
+      "endLine": 5083,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4949
+      "startLine": 5083
     },
     {
       "endCharacter": 57,
-      "endLine": 4949,
+      "endLine": 5083,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4949
+      "startLine": 5083
     },
     {
       "endCharacter": 65,
-      "endLine": 4950,
+      "endLine": 5084,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4950
+      "startLine": 5084
     },
     {
       "endCharacter": 65,
-      "endLine": 4950,
+      "endLine": 5084,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4950
+      "startLine": 5084
     },
     {
       "endCharacter": 67,
-      "endLine": 4952,
+      "endLine": 5086,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 35,
-      "startLine": 4952
+      "startLine": 5086
     },
     {
       "endCharacter": 67,
-      "endLine": 4952,
+      "endLine": 5086,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 35,
-      "startLine": 4952
+      "startLine": 5086
     },
     {
       "endCharacter": 87,
-      "endLine": 4955,
+      "endLine": 5089,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 46,
-      "startLine": 4955
+      "startLine": 5089
     },
     {
       "endCharacter": 87,
-      "endLine": 4955,
+      "endLine": 5089,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 46,
-      "startLine": 4955
+      "startLine": 5089
     },
     {
       "endCharacter": 93,
-      "endLine": 4956,
+      "endLine": 5090,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 4956
+      "startLine": 5090
     },
     {
       "endCharacter": 93,
-      "endLine": 4956,
+      "endLine": 5090,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 4956
+      "startLine": 5090
     },
     {
       "endCharacter": 89,
-      "endLine": 4957,
+      "endLine": 5091,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 47,
-      "startLine": 4957
+      "startLine": 5091
     },
     {
       "endCharacter": 89,
-      "endLine": 4957,
+      "endLine": 5091,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToFloat\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToFloat\"\n    Type \"None\" is not assignable to type \"ConvertibleToFloat\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsFloat\"\n        \"__float__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 47,
-      "startLine": 4957
+      "startLine": 5091
     },
     {
       "endCharacter": 89,
-      "endLine": 4958,
+      "endLine": 5092,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 46,
-      "startLine": 4958
+      "startLine": 5092
     },
     {
       "endCharacter": 89,
-      "endLine": 4958,
+      "endLine": 5092,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 46,
-      "startLine": 4958
+      "startLine": 5092
     },
     {
       "endCharacter": 75,
-      "endLine": 4959,
+      "endLine": 5093,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 39,
-      "startLine": 4959
+      "startLine": 5093
     },
     {
       "endCharacter": 75,
-      "endLine": 4959,
+      "endLine": 5093,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"Any | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 39,
-      "startLine": 4959
+      "startLine": 5093
     },
     {
       "endCharacter": 33,

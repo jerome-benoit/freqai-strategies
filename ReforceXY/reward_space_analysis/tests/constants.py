@@ -419,14 +419,12 @@ class StatisticalTolerances:
         KS_STATISTIC_IDENTITY: KS statistic threshold for identical distributions (5e-3)
         CORRELATION_SIGNIFICANCE: Minimum correlation for significance (0.1)
         VARIANCE_RATIO_THRESHOLD: Minimum variance ratio for heteroscedasticity (0.8)
-        CI_WIDTH_EPSILON: Minimum CI width for degenerate distributions (3e-9)
     """
 
     DISTRIBUTION_SHIFT: float = 5e-4
     KS_STATISTIC_IDENTITY: float = 5e-3
     CORRELATION_SIGNIFICANCE: float = 0.1
     VARIANCE_RATIO_THRESHOLD: float = 0.8
-    CI_WIDTH_EPSILON: float = 3e-9
 
 
 # Global singleton instances for easy import

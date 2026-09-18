@@ -71,6 +71,8 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "risk_reward_ratio": PARAMS.RISK_REWARD_RATIO,
             "is_entry": True,
             "is_exit": False,
+            # The entry additive consumes the fill-time entry PnL, not O_(t+1).
+            "entry_pnl": 0.012,
         }
         s0, _n0, _pbrs0, _entry0, _exit0 = compute_pbrs_components(
             params=base,

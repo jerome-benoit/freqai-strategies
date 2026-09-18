@@ -27,7 +27,6 @@ from ..constants import (
     STATISTICAL,
     TOLERANCE,
 )
-from ..helpers import assert_diagnostic_warning
 from ..test_base import RewardSpaceTestBase
 
 _perform_feature_analysis = getattr(reward_space_analysis, "_perform_feature_analysis", None)
@@ -94,7 +93,9 @@ class TestStatistics(RewardSpaceTestBase):
                 "idle_duration": np.ones(n) * 3.0,
             }
         )
-        metrics = compute_distribution_shift_metrics(df_const, df_const.copy())
+        metrics = compute_distribution_shift_metrics(
+            df_const, df_const.copy(), independent_observations=True
+        )
         # Each feature should have zero metrics and ks_pvalue=1.0
         for feature in ["pnl", "trade_duration", "idle_duration"]:
             for suffix in ["kl_divergence", "js_distance", "wasserstein", "ks_statistic"]:
@@ -120,7 +121,7 @@ class TestStatistics(RewardSpaceTestBase):
         df1 = self._make_idle_variance_df(100)
         df2 = self._make_idle_variance_df(100)
         df2["reward"] += 0.1
-        metrics = compute_distribution_shift_metrics(df1, df2)
+        metrics = compute_distribution_shift_metrics(df1, df2, independent_observations=True)
         expected_keys = {
             "pnl_kl_divergence",
             "pnl_js_distance",
@@ -150,7 +151,9 @@ class TestStatistics(RewardSpaceTestBase):
     def test_statistics_distribution_shift_identity_null_metrics(self):
         """Identity distributions -> near-zero shift metrics."""
         df = self._make_idle_variance_df(180)
-        metrics_id = compute_distribution_shift_metrics(df, df.copy())
+        metrics_id = compute_distribution_shift_metrics(
+            df, df.copy(), independent_observations=True
+        )
         for name, val in metrics_id.items():
             if name.endswith(("_kl_divergence", "_js_distance", "_wasserstein")):
                 self.assertLess(
@@ -187,8 +190,8 @@ class TestStatistics(RewardSpaceTestBase):
                     negative_ratio, 0.5, "Most idle rewards should be negative (penalties)"
                 )
 
-    def test_statistics_distribution_constant_fallback_diagnostics(self):
-        """Invariant 115: constant distribution triggers fallback diagnostics (zero moments, qq_r2=1.0)."""
+    def test_statistics_distribution_constant_diagnostics(self):
+        """Invariant 115: constant distributions keep exact mean/std and mark undefined diagnostics."""
         # Build constant reward/pnl columns to force degenerate stats
         n = 60
         df_const = pd.DataFrame(
@@ -200,28 +203,17 @@ class TestStatistics(RewardSpaceTestBase):
                 "pnl_raw": np.zeros(n),
             }
         )
-        diagnostics = distribution_diagnostics(df_const)
-        # Mean and std for constant arrays
-        for key in ["reward_mean", "reward_std", "pnl_mean", "pnl_std"]:
-            if key in diagnostics:
-                self.assertAlmostEqualFloat(
-                    float(diagnostics[key]), 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED
-                )
-        # Skewness & kurtosis fallback to INTERNAL_GUARDS['distribution_constant_fallback_moment'] (0.0)
-        for key in ["reward_skewness", "reward_kurtosis", "pnl_skewness", "pnl_kurtosis"]:
-            if key in diagnostics:
-                self.assertAlmostEqualFloat(
-                    float(diagnostics[key]), 0.0, tolerance=TOLERANCE.IDENTITY_RELAXED
-                )
-        # Q-Q plot r2 fallback value
-        qq_key = next((k for k in diagnostics if k.endswith("_qq_r2")), None)
-        if qq_key is not None:
-            self.assertAlmostEqualFloat(
-                float(diagnostics[qq_key]), 1.0, tolerance=TOLERANCE.IDENTITY_RELAXED
-            )
-        # All diagnostic values finite
-        for k, v in diagnostics.items():
-            self.assertFinite(v, name=k)
+        for strict in (False, True):
+            with self.subTest(strict_diagnostics=strict):
+                diagnostics = distribution_diagnostics(df_const, strict_diagnostics=strict)
+                for col in ["reward", "pnl"]:
+                    self.assertEqual(diagnostics[f"{col}_mean"], 0.0)
+                    self.assertEqual(diagnostics[f"{col}_std"], 0.0)
+                    self.assertIsNone(diagnostics[f"{col}_skewness"])
+                    self.assertIsNone(diagnostics[f"{col}_kurtosis"])
+                    self.assertTrue(diagnostics[f"{col}_constant"])
+                    for suffix in ("shapiro_stat", "shapiro_pval", "anderson_stat", "qq_r_squared"):
+                        self.assertNotIn(f"{col}_{suffix}", diagnostics)
 
     def test_stats_distribution_diagnostics(self):
         """Distribution diagnostics."""
@@ -241,17 +233,19 @@ class TestStatistics(RewardSpaceTestBase):
         """Test statistical_hypothesis_tests API integration with synthetic data."""
         base = self.make_stats_df(n=200, seed=SEEDS.BASE, idle_pattern="mixed")
         base.loc[:149, ["reward_idle", "reward_hold", "reward_exit"]] = 0.0
-        results = statistical_hypothesis_tests(base)
+        results = statistical_hypothesis_tests(base, independent_observations=True)
         self.assertIsInstance(results, dict)
 
     def test_stats_js_distance_symmetry_violin(self):
         """JS distance symmetry d(P,Q)==d(Q,P)."""
         df1 = self._shift_scale_df(300, shift=0.0)
         df2 = self._shift_scale_df(300, shift=0.3)
-        metrics = compute_distribution_shift_metrics(df1, df2)
+        metrics = compute_distribution_shift_metrics(df1, df2, independent_observations=True)
         self.assertIn("pnl_js_distance", metrics)
 
-        metrics_swapped = compute_distribution_shift_metrics(df2, df1)
+        metrics_swapped = compute_distribution_shift_metrics(
+            df2, df1, independent_observations=True
+        )
         self.assertIn("pnl_js_distance", metrics_swapped)
 
         self.assertAlmostEqualFloat(
@@ -280,7 +274,7 @@ class TestStatistics(RewardSpaceTestBase):
         df2 = df1.copy()
         df2["pnl"] *= scale
         df1["pnl"] *= scale
-        metrics = compute_distribution_shift_metrics(df1, df2)
+        metrics = compute_distribution_shift_metrics(df1, df2, independent_observations=True)
         for k, v in metrics.items():
             if k.endswith("_kl_divergence") or k.endswith("_js_distance"):
                 self.assertLess(
@@ -319,7 +313,7 @@ class TestStatistics(RewardSpaceTestBase):
         df["reward_idle"] = rng.normal(0, 1, n) * 0.001
         df["position"] = rng.choice([0.0, 1.0], size=n)
         df["action"] = rng.choice([0.0, 2.0], size=n)
-        tests = statistical_hypothesis_tests(df)
+        tests = statistical_hypothesis_tests(df, independent_observations=True)
         flags: list[bool] = []
         for v in tests.values():
             if isinstance(v, dict):
@@ -348,8 +342,12 @@ class TestStatistics(RewardSpaceTestBase):
     def test_stats_hypothesis_seed_reproducibility(self):
         """Seed reproducibility for statistical_hypothesis_tests + bootstrap."""
         df = self.make_stats_df(n=300, seed=SEEDS.BASE, idle_pattern="mixed")
-        r1 = statistical_hypothesis_tests(df, seed=SEEDS.REPRODUCIBILITY)
-        r2 = statistical_hypothesis_tests(df, seed=SEEDS.REPRODUCIBILITY)
+        r1 = statistical_hypothesis_tests(
+            df, seed=SEEDS.REPRODUCIBILITY, independent_observations=True
+        )
+        r2 = statistical_hypothesis_tests(
+            df, seed=SEEDS.REPRODUCIBILITY, independent_observations=True
+        )
         self.assertEqual(set(r1.keys()), set(r2.keys()))
         for k in r1:
             for field in ("p_value", "significant"):
@@ -364,10 +362,18 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertEqual(v1, v2, f"Mismatch for {k}:{field}")
         metrics = ["reward", "pnl"]
         ci_a = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS, seed=SEEDS.BOOTSTRAP
+            df,
+            metrics,
+            n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS,
+            seed=SEEDS.BOOTSTRAP,
+            independent_observations=True,
         )
         ci_b = bootstrap_confidence_intervals(
-            df, metrics, n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS, seed=SEEDS.BOOTSTRAP
+            df,
+            metrics,
+            n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS,
+            seed=SEEDS.BOOTSTRAP,
+            independent_observations=True,
         )
         for metric in metrics:
             m_a, lo_a, hi_a = ci_a[metric]
@@ -399,7 +405,7 @@ class TestStatistics(RewardSpaceTestBase):
                 "idle_duration": np.random.gamma(2.5, 6, 500),
             }
         )
-        metrics = compute_distribution_shift_metrics(df1, df2)
+        metrics = compute_distribution_shift_metrics(df1, df2, independent_observations=True)
         for feature in ["pnl", "trade_duration", "idle_duration"]:
             for suffix, upper in [
                 ("kl_divergence", None),
@@ -471,7 +477,9 @@ class TestStatistics(RewardSpaceTestBase):
                 self.assertPValue(
                     diagnostics[f"{col}_shapiro_pval"], msg=f"Shapiro p-value bounds for {col}"
                 )
-        hypothesis_results = statistical_hypothesis_tests(df, seed=SEEDS.BASE)
+        hypothesis_results = statistical_hypothesis_tests(
+            df, seed=SEEDS.BASE, independent_observations=True
+        )
         for test_name, result in hypothesis_results.items():
             if "p_value" in result:
                 self.assertPValue(result["p_value"], msg=f"p-value bounds for {test_name}")
@@ -487,6 +495,40 @@ class TestStatistics(RewardSpaceTestBase):
                 rho = result["rho"]
                 self.assertFinite(rho, name=f"rho[{test_name}]")
                 self.assertWithin(rho, -1.0, 1.0, name="rho")
+
+    def test_bh_excludes_undefined_tests_from_finite_family(self):
+        """Undefined constant-input correlation cannot contaminate valid adjusted p-values."""
+        rng = np.random.default_rng(SEEDS.BASE)
+        n = 120
+        df = pd.DataFrame(
+            {
+                "reward_idle": np.full(n, -1.0),
+                "idle_duration": np.ones(n),
+                "position": np.repeat([0.0, 1.0], n // 2),
+                "pnl": np.tile([-1.0, 1.0], n // 2),
+                "reward": rng.normal(size=n),
+            }
+        )
+        results = statistical_hypothesis_tests(
+            df, independent_observations=True, adjust_method="benjamini_hochberg"
+        )
+        undefined = results["idle_correlation"]
+        self.assertFalse(undefined["applicable"])
+        self.assertIsNone(undefined["significant"])
+        self.assertIsNone(undefined["significant_adj"])
+        self.assertTrue(np.isnan(undefined["p_value_adj"]))
+        valid = sorted(
+            [results["position_reward_difference"], results["pnl_sign_reward_difference"]],
+            key=lambda result: result["p_value"],
+        )
+        self.assertAlmostEqual(
+            valid[0]["p_value_adj"], min(2 * valid[0]["p_value"], valid[1]["p_value"], 1.0)
+        )
+        self.assertAlmostEqual(valid[1]["p_value_adj"], valid[1]["p_value"])
+        for result in valid:
+            self.assertTrue(result["applicable"])
+            self.assertTrue(np.isfinite(result["p_value_adj"]))
+            self.assertEqual(result["significant_adj"], result["p_value_adj"] < 0.05)
 
     def test_stats_benjamini_hochberg_adjustment(self):
         """BH adjustment adds p_value_adj & significant_adj with valid bounds."""
@@ -504,7 +546,10 @@ class TestStatistics(RewardSpaceTestBase):
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
         results_adj = statistical_hypothesis_tests(
-            df, adjust_method="benjamini_hochberg", seed=SEEDS.REPRODUCIBILITY
+            df,
+            adjust_method="benjamini_hochberg",
+            seed=SEEDS.REPRODUCIBILITY,
+            independent_observations=True,
         )
         self.assertGreater(len(results_adj), 0)
         for _name, res in results_adj.items():
@@ -526,7 +571,9 @@ class TestStatistics(RewardSpaceTestBase):
     def test_bootstrap_confidence_intervals_bounds_ordering(self):
         """Test bootstrap confidence intervals return ordered finite bounds."""
         test_data = self.make_stats_df(n=100, seed=SEEDS.BASE)
-        results = bootstrap_confidence_intervals(test_data, ["reward", "pnl"], n_bootstrap=100)
+        results = bootstrap_confidence_intervals(
+            test_data, ["reward", "pnl"], n_bootstrap=100, independent_observations=True
+        )
         for metric, (mean, ci_low, ci_high) in results.items():
             self.assertFinite(mean, name=f"mean[{metric}]")
             self.assertFinite(ci_low, name=f"ci_low[{metric}]")
@@ -538,8 +585,12 @@ class TestStatistics(RewardSpaceTestBase):
 
         small = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_SMALL - 20)
         large = self._shift_scale_df(SCENARIOS.SAMPLE_SIZE_LARGE)
-        res_small = bootstrap_confidence_intervals(small, ["reward"], n_bootstrap=400)
-        res_large = bootstrap_confidence_intervals(large, ["reward"], n_bootstrap=400)
+        res_small = bootstrap_confidence_intervals(
+            small, ["reward"], n_bootstrap=400, independent_observations=True
+        )
+        res_large = bootstrap_confidence_intervals(
+            large, ["reward"], n_bootstrap=400, independent_observations=True
+        )
         _, lo_s, hi_s = next(iter(res_small.values()))
         _, lo_l, hi_l = next(iter(res_large.values()))
         hw_small = (hi_s - lo_s) / 2.0
@@ -548,50 +599,61 @@ class TestStatistics(RewardSpaceTestBase):
         self.assertFinite(hw_large, name="hw_large")
         self.assertLess(hw_large, hw_small * 0.55)
 
-    # Owns invariant: statistics-constant-dist-widened-ci-113a
-    def test_stats_bootstrap_constant_distribution_widening(self):
-        """Invariant 113 (non-strict): constant distribution CI widened with warning (positive epsilon width)."""
+    def test_stats_bootstrap_constant_distribution_exact_bounds(self):
+        """Constants retain their exact degenerate interval in both diagnostic modes."""
+        df = pd.DataFrame({"reward": np.full(40, 2.5)})
+        for strict in (False, True):
+            with self.subTest(strict_diagnostics=strict):
+                res = bootstrap_confidence_intervals(
+                    df,
+                    ["reward"],
+                    n_bootstrap=200,
+                    strict_diagnostics=strict,
+                    independent_observations=True,
+                )
+                self.assertEqual(res, {"reward": (2.5, 2.5, 2.5)})
 
-        df = self._const_df(80)
-        with assert_diagnostic_warning(
-            ["degenerate", "bootstrap", "CI"],
-            warning_category=RewardDiagnosticsWarning,
-            strict_mode=False,
+    def test_stats_bootstrap_percentiles_need_not_contain_mean(self):
+        """A single resample yields its own mean, not a widened interval around the estimate."""
+        df = pd.DataFrame({"reward": np.arange(10, dtype=float)})
+        for strict in (False, True):
+            with self.subTest(strict_diagnostics=strict):
+                with self.assertWarns(RewardDiagnosticsWarning):
+                    res = bootstrap_confidence_intervals(
+                        df,
+                        ["reward"],
+                        n_bootstrap=1,
+                        seed=42,
+                        strict_diagnostics=strict,
+                        independent_observations=True,
+                    )
+                self.assertEqual(res["reward"], (4.5, 3.7, 3.7))
+
+    def test_stats_bootstrap_rejects_invalid_bounds(self):
+        """Non-finite or reversed bounds are errors, never repaired by the validator."""
+        for bounds in (
+            (0.0, 1.0, -1.0),
+            (np.nan, 0.0, 1.0),
+            (0.0, -np.inf, 1.0),
+            (0.0, 0.0, np.inf),
         ):
-            res = bootstrap_confidence_intervals(
-                df,
-                ["reward", "pnl"],
-                n_bootstrap=200,
-                confidence_level=0.95,
-                strict_diagnostics=False,
-            )
-        for _metric, (mean, lo, hi) in res.items():
-            self.assertLess(
-                lo,
-                hi,
-                "Degenerate CI should be widened (lo < hi) under non-strict diagnostics",
-            )
-            width = hi - lo
-            self.assertGreater(width, 0.0)
-            self.assertLessEqual(
-                width, STAT_TOL.CI_WIDTH_EPSILON, "Width should be small epsilon range"
-            )
-            # Mean should be centered (approx) within widened bounds
-            self.assertGreaterEqual(mean, lo)
-            self.assertLessEqual(mean, hi)
+            for strict in (False, True):
+                with self.subTest(bounds=bounds, strict_diagnostics=strict):
+                    with self.assertRaises(AssertionError):
+                        reward_space_analysis._validate_bootstrap_results(
+                            {"reward": bounds}, strict_diagnostics=strict
+                        )
 
-    # Owns invariant: statistics-constant-dist-strict-omit-113b
-    def test_stats_bootstrap_constant_distribution_strict_diagnostics(self):
-        """Invariant 113 (strict): constant distribution metrics are omitted (no widened CI returned)."""
-        df = self._const_df(60)
-        res = bootstrap_confidence_intervals(
-            df, ["reward", "pnl"], n_bootstrap=150, confidence_level=0.95, strict_diagnostics=True
-        )
-        # Strict mode should omit constant metrics entirely
-        self.assertTrue(
-            all(m not in res for m in ["reward", "pnl"]),
-            f"Strict diagnostics should omit constant metrics; got keys: {list(res.keys())}",
-        )
+    def test_stats_diagnostics_rejects_fabricated_constant_fallbacks(self):
+        """A constant marker cannot turn invalid statistics into synthetic moments or R²."""
+        for key in ("reward_skewness", "reward_anderson_stat", "reward_qq_r_squared"):
+            for strict in (False, True):
+                with self.subTest(key=key, strict_diagnostics=strict):
+                    with self.assertRaises(AssertionError):
+                        reward_space_analysis._validate_distribution_diagnostics(
+                            {"reward_constant": True, "reward_std": 0.0, key: np.nan},
+                            strict_diagnostics=strict,
+                        )
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ from freqtrade.freqai.RL.BaseEnvironment import BaseEnvironment
 from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
     BaseReinforcementLearningModel,
 )
+from freqtrade.persistence import Trade
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
 from freqtrade.strategy import timeframe_to_minutes
 from gymnasium.spaces import Box
@@ -60,6 +61,7 @@ from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from sb3_contrib.common.maskable.evaluation import evaluate_policy
 from sb3_contrib.common.maskable.utils import is_masking_supported
 from stable_baselines3.common.callbacks import (
     BaseCallback,
@@ -77,6 +79,22 @@ from stable_baselines3.common.vec_env import (
     VecFrameStack,
     VecMonitor,
 )
+
+
+def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> None:
+    """Track the final-policy reward and save the checkpoint when it improves.
+
+    Plain-fit counterpart of MaskableTrialEvalCallback.update_best_reward:
+    bookkeeping only, no fake on_step and no Optuna report.
+    """
+    if not np.isfinite(mean_reward):
+        return
+    callback.last_mean_reward = mean_reward
+    if not hasattr(callback, "best_mean_reward") or mean_reward > callback.best_mean_reward:
+        callback.best_mean_reward = mean_reward
+        if callback.best_model_save_path is not None and model is not None:
+            model.save(os.path.join(callback.best_model_save_path, "best_model.zip"))
+
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 
@@ -198,6 +216,7 @@ def _install_date_pred_dedup_patch() -> None:
         if "date_pred" in predictions:
             dates = pd.to_datetime(dataframe["date"], utc=True)
             predictions = predictions.set_index("date_pred", drop=False).reindex(dates)
+            predictions["date_pred"] = dates.array
             predictions.index = dataframe.index
         self.model_return_values[pair] = predictions
         return original_attach(self, pair, dataframe)
@@ -234,7 +253,7 @@ ExitPotentialMode = Literal[
     "spike_cancel",
     "retain_previous",
 ]
-TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "asinh", "clip"]
+TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "softsign_sqrt", "clip"]
 ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
 ActivationFunction = Literal["relu", "tanh", "elu", "leaky_relu"]
 OptimizerClassOptuna = Literal["adamw", "rmsprop"]
@@ -380,7 +399,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         "softsign",
         "arctan",
         "sigmoid",
-        "asinh",
+        "softsign_sqrt",
         "clip",
     )
     _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(_TRANSFORM_FUNCTIONS)
@@ -429,6 +448,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
+    _DQN_TRAIN_FREQS: Final[tuple[int, ...]] = (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
 
     _action_masks_cache: ClassVar[dict[tuple[bool, float], NDArray[np.bool_]]] = {}
@@ -742,17 +762,18 @@ class ReforceXY(BaseReinforcementLearningModel):
                 check_env(_train_env_check)
             finally:
                 _train_env_check.close()
-            _eval_env_check = MyRLEnv(
-                df=test_df,
-                prices=prices_test,
-                id="eval_env_check",
-                seed=seed + 10_000,
-                **env_dict,
-            )
-            try:
-                check_env(_eval_env_check)
-            finally:
-                _eval_env_check.close()
+            if self.data_split_parameters.get("test_size", 0.1) > 0:
+                _eval_env_check = MyRLEnv(
+                    df=test_df,
+                    prices=prices_test,
+                    id="eval_env_check",
+                    seed=seed + 10_000,
+                    **env_dict,
+                )
+                try:
+                    check_env(_eval_env_check)
+                finally:
+                    _eval_env_check.close()
 
         logger.info(
             "Env [%s]: populating %s train and %s eval environments",
@@ -961,7 +982,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def get_callbacks(
         self,
-        eval_env: BaseEnvironment,
+        eval_env: VecEnv | None,
         eval_freq: int,
         data_path: str,
         trial: Trial | None = None,
@@ -970,6 +991,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         Get the model specific callbacks
         """
         callbacks: list[BaseCallback] = []
+        self.eval_callback = None
+        self.optuna_eval_callback = None
+        self.progressbar_callback = None
         no_improvement_callback = None
         rollout_plot_callback = None
         verbose = self.get_model_params().get("verbose", 0)
@@ -994,6 +1018,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         if self.rl_config.get("progress_bar", False):
             self.progressbar_callback = ProgressBarCallback()
             callbacks.append(self.progressbar_callback)
+
+        if eval_env is None:
+            return callbacks
 
         use_masking = self.action_masking and is_masking_supported(eval_env)
         if not trial:
@@ -1091,31 +1118,6 @@ class ReforceXY(BaseReinforcementLearningModel):
             model_params = self.get_model_params()
         logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
 
-        # "PPO"
-        if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            n_steps = model_params.get("n_steps", 0)
-            min_timesteps = 2 * n_steps * self.n_envs
-            if total_timesteps <= min_timesteps:
-                logger.warning(
-                    "Training [%s]: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
-                    dk.pair,
-                    total_timesteps,
-                    min_timesteps,
-                    self.model_type,
-                )
-            if n_steps > 0:
-                rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
-                if aligned_total_timesteps != total_timesteps:
-                    total_timesteps = aligned_total_timesteps
-                    logger.info(
-                        "Training [%s]: aligned total %s steps (%s days) for model %s",
-                        dk.pair,
-                        total_timesteps,
-                        steps_to_days(total_timesteps, self.config.get("timeframe")),
-                        self.model_type,
-                    )
-
         if self.activate_tensorboard:
             tensorboard_log_path = Path(self.full_path / "tensorboard" / Path(dk.data_path).name)
         else:
@@ -1126,30 +1128,31 @@ class ReforceXY(BaseReinforcementLearningModel):
         if model is not None:
             effective_params["gamma"] = model.gamma
         # Reuse raw prices captured before the feature pipeline transformed the data.
-        self.set_train_and_eval_environments(
-            data_dictionary,
-            data_dictionary["train_prices"],
-            data_dictionary["test_prices"],
-            dk,
-            model_params=effective_params,
-        )
-        if model is not None:
-            logger.info(
-                "Training [%s]: continual training activated, starting from previously trained model state",
-                dk.pair,
-            )
-            model.set_env(self.train_env)
-        else:
-            model = self.MODELCLASS(
-                self.policy_type,
-                self.train_env,
-                tensorboard_log=tensorboard_log_path,
-                **model_params,
-            )
-
-        eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
-        callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
         try:
+            self.set_train_and_eval_environments(
+                data_dictionary,
+                data_dictionary["train_prices"],
+                data_dictionary["test_prices"],
+                dk,
+                model_params=effective_params,
+            )
+            if model is not None:
+                logger.info(
+                    "Training [%s]: continual training activated, starting from previously trained model state",
+                    dk.pair,
+                )
+                model.set_env(self.train_env)
+            else:
+                model = self.MODELCLASS(
+                    self.policy_type,
+                    self.train_env,
+                    tensorboard_log=tensorboard_log_path,
+                    **model_params,
+                )
+            total_timesteps = self._align_model_budget(model, total_timesteps)
+
+            eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
+            callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
             logger.debug(
                 "Training [%s]: starting model.learn with total_timesteps=%d, eval_freq=%d",
                 dk.pair,
@@ -1158,13 +1161,27 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
             logger.debug("Training [%s]: model.learn completed", dk.pair)
+            if self.eval_env is not None and self.eval_callback is not None:
+                # Evaluate the trained policy after the last gradient update and
+                # before env teardown so a budget that fits in a single rollout
+                # still compares the final weights; no fake on_step, no duplicated
+                # Optuna report (plain fit has no trial).
+                use_masking = self.eval_callback.use_masking
+                final_mean_reward, _ = evaluate_policy(
+                    model,
+                    self.eval_env,
+                    n_eval_episodes=self.n_eval_episodes,
+                    warn=False,
+                    use_masking=use_masking,
+                )
+                _update_eval_best_reward(self.eval_callback, float(final_mean_reward), model)
         except KeyboardInterrupt:
             pass
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
             self.close_envs()
-            if hasattr(model, "env") and model.env is not None:
+            if model is not None and hasattr(model, "env") and model.env is not None:
                 model.env.close()
             self._frame_buffers.pop(dk.pair, None)
             self._lstm_states_cache.pop(dk.pair, None)
@@ -1196,6 +1213,41 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
 
         return model
+
+    def get_state_info(self, pair: str) -> tuple[float, float, int]:
+        """
+        Read the live market side, leveraged profit ratio and candle duration
+        for the pair from the real open trade. The PnL observation is the
+        leveraged ratio produced by ``Trade.calc_profit_ratio`` (divided by the
+        trade's effective leverage when finite and positive), consistent with
+        the environment's unlevered proxy; no configured leverage value is
+        involved.
+        """
+        market_side = 0.5
+        current_profit = 0.0
+        trade_duration = 0
+        for trade in Trade.get_trades_proxy(is_open=True):
+            if trade.pair != pair:
+                continue
+            if self.data_provider is None or self.data_provider._exchange is None:
+                logger.error("State info [%s]: no exchange available", pair)
+                return 0, 0, 0
+            current_rate = self.data_provider._exchange.get_rate(
+                pair, refresh=False, side="exit", is_short=trade.is_short
+            )
+            now = datetime.now(timezone.utc).timestamp()
+            trade_duration = int((now - trade.open_date_utc.timestamp()) / self.base_tf_seconds)
+            profit_ratio = trade.calc_profit_ratio(current_rate)
+            leverage = float(trade.leverage)
+            if np.isfinite(leverage) and leverage > 0.0:
+                current_profit = profit_ratio / leverage
+            else:
+                current_profit = profit_ratio
+            if trade.is_short:
+                market_side = 0
+            else:
+                market_side = 1
+        return market_side, current_profit, int(trade_duration)
 
     def rl_model_predict(
         self, dataframe: DataFrame, dk: FreqaiDataKitchen, model: Any
@@ -1385,13 +1437,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         for start_idx in range(0, n - window_size + 1):
             action = _predict(start_idx)
             predicted_actions.append(action)
-            previous_virtual_position = virtual_position
-            virtual_position = _update_virtual_position(action, virtual_position)
-            virtual_trade_duration = _update_virtual_trade_duration(
-                virtual_position,
-                previous_virtual_position,
-                virtual_trade_duration,
-            )
+            if not self.live:
+                previous_virtual_position = virtual_position
+                prediction_index = start_idx + window_size - 1
+                do_predict = getattr(dk, "do_predict", None)
+                if do_predict is None or do_predict[prediction_index] == 1:
+                    virtual_position = _update_virtual_position(action, virtual_position)
+                virtual_trade_duration = _update_virtual_trade_duration(
+                    virtual_position,
+                    previous_virtual_position,
+                    virtual_trade_duration,
+                )
 
         pad_count = max(0, n - len(predicted_actions))
         actions_list = ([np.nan] * pad_count) + predicted_actions
@@ -1657,6 +1713,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         return ((value + multiple - 1) // multiple) * multiple
 
     @staticmethod
+    def _align_model_budget(model: Any, total_timesteps: int) -> int:
+        """Use the constructed algorithm's collection window, including defaults."""
+        if hasattr(model, "train_freq"):
+            frequency = model.train_freq
+            if frequency.unit.value != "step":
+                return total_timesteps
+            steps = frequency.frequency
+        else:
+            steps = model.n_steps
+        return ReforceXY._ceil_to_multiple(total_timesteps, steps * model.n_envs)
+
+    @staticmethod
     def _ppo_resources(total_timesteps: int, n_envs: int, reduction_factor: int) -> tuple[int, int]:
         min_n_steps = ReforceXY._PPO_N_STEPS_MIN
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
@@ -1706,12 +1774,16 @@ class ReforceXY(BaseReinforcementLearningModel):
             min_resource, max_resource = ReforceXY._ppo_resources(
                 total_timesteps, n_envs, reduction_factor
             )
-        else:
+        else:  # "DQN"/"QRDQN": gradient windows of train_freq * n_envs
+            window = max(ReforceXY._DQN_TRAIN_FREQS)
             min_resource = max(
                 2 * reduction_factor,
                 self.get_eval_freq(total_timesteps, hyperopt=True) * n_envs,
             )
-            max_resource = max(min_resource, total_timesteps + (n_envs - 1))
+            max_resource = max(
+                min_resource,
+                ReforceXY._ceil_to_multiple(total_timesteps, window * n_envs),
+            )
 
         direction = StudyDirection.MAXIMIZE
         load_if_exists = not continuous and not pair_purge_triggered
@@ -1823,6 +1895,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 study.best_trial.number,
                 study.best_trial.value,
             )
+        if self.model_type == "RecurrentPPO" and self.get_model_params().get(
+            "policy_kwargs", {}
+        ).get("shared_lstm", False):
+            best_trial_params = {**best_trial_params, "enable_critic_lstm": False}
         logger.info("Hyperopt [%s]: best params: %s", study_name, best_trial_params)
 
         self.save_best_trial_params(best_trial_params, dk.pair)
@@ -2060,7 +2136,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         env_info: dict[str, Any] | None = None,
         trial: Trial | None = None,
         model_params: dict[str, Any] | None = None,
-    ) -> tuple[VecEnv, VecEnv]:
+    ) -> tuple[VecEnv, VecEnv | None]:
         if train_df is None:
             train_df = dk.data_dictionary["train_features"]
         if test_df is None:
@@ -2100,31 +2176,50 @@ class ReforceXY(BaseReinforcementLearningModel):
                 prices_test,
                 env_info=env_info,
             )
-            for i in range(self.n_eval_envs)
+            for i in range(
+                self.n_eval_envs if self.data_split_parameters.get("test_size", 0.1) > 0 else 0
+            )
         ]
 
-        if self.multiprocessing and self.n_envs > 1:
-            train_env = SubprocVecEnv(train_fns, start_method="spawn")
-        else:
-            train_env = DummyVecEnv(train_fns)
-        if self.eval_multiprocessing and self.n_eval_envs > 1:
-            eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
-        else:
-            eval_env = DummyVecEnv(eval_fns)
+        train_env = eval_env = None
+        try:
+            if self.multiprocessing and self.n_envs > 1:
+                train_env = SubprocVecEnv(train_fns, start_method="spawn")
+            else:
+                train_env = _make_dummy_vec_env(train_fns)
+            eval_env = None
+            if eval_fns:
+                if self.eval_multiprocessing and self.n_eval_envs > 1:
+                    eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
+                else:
+                    eval_env = _make_dummy_vec_env(eval_fns)
 
-        if bool(self.frame_stacking) and self.frame_stacking > 1:
-            train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
-            eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
+            if bool(self.frame_stacking) and self.frame_stacking > 1:
+                train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
+                if eval_env is not None:
+                    eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
 
-        train_env = VecMonitor(train_env)
-        eval_env = VecMonitor(eval_env)
+            train_env = VecMonitor(train_env)
+            if eval_env is not None:
+                eval_env = VecMonitor(eval_env)
 
-        return train_env, eval_env
+            return train_env, eval_env
+        except BaseException:
+            if train_env is not None:
+                train_env.close()
+            if eval_env is not None:
+                eval_env.close()
+            raise
 
     def get_optuna_params(self, trial: Trial) -> dict[str, Any]:
         # "RecurrentPPO"
         if ReforceXY._MODEL_TYPES[1] in self.model_type:
-            return sample_params_recurrentppo(trial)
+            return sample_params_recurrentppo(
+                trial,
+                shared_lstm=self.get_model_params()
+                .get("policy_kwargs", {})
+                .get("shared_lstm", False),
+            )
         # "PPO"
         elif ReforceXY._MODEL_TYPES[0] in self.model_type:
             return sample_params_ppo(trial)
@@ -2185,16 +2280,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         params["seed"] = params.get("seed", 42) + trial.number
         logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
 
-        # "PPO"
-        if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            n_steps = params.get("n_steps", 0)
-            if n_steps > 0:
-                rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
-                if aligned_total_timesteps != total_timesteps:
-                    total_timesteps = aligned_total_timesteps
-
         nan_encountered = False
+
+        # shared_lstm=True forbids a separate critic LSTM; sampling
+        # enable_critic_lstm=True would crash RecurrentPPO at construction
+        # before any pruning logic can run, so the merged trial parameters
+        # never carry the incompatible pair.
+        if (
+            ReforceXY._MODEL_TYPES[1] in self.model_type  # "RecurrentPPO"
+            and bool((params.get("policy_kwargs") or {}).get("shared_lstm", False))
+        ):
+            params.setdefault("policy_kwargs", {})["enable_critic_lstm"] = False
 
         if self.activate_tensorboard:
             tensorboard_log_path = Path(
@@ -2207,21 +2303,37 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        train_env, eval_env = self._get_train_and_eval_environments(
-            dk, trial=trial, model_params=params
-        )
-
-        model = self.MODELCLASS(
-            self.policy_type,
-            train_env,
-            tensorboard_log=tensorboard_log_path,
-            **params,
-        )
-
-        eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
-        callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
+        train_env = eval_env = model = None
         try:
+            train_env, eval_env = self._get_train_and_eval_environments(
+                dk, trial=trial, model_params=params
+            )
+
+            model = self.MODELCLASS(
+                self.policy_type,
+                train_env,
+                tensorboard_log=tensorboard_log_path,
+                **params,
+            )
+            total_timesteps = self._align_model_budget(model, total_timesteps)
+
+            eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
+            callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
+            if not self.optuna_eval_callback.is_pruned and eval_env is not None:
+                # Evaluate the trained policy after the last update and before
+                # env teardown so a single-rollout budget still compares the
+                # final weights, without a fake on_step or a duplicated Optuna
+                # report from the eval callback.
+                use_masking = self.optuna_eval_callback.use_masking
+                final_mean_reward, _ = evaluate_policy(
+                    model,
+                    eval_env,
+                    n_eval_episodes=self.n_eval_episodes,
+                    warn=False,
+                    use_masking=use_masking,
+                )
+                self.optuna_eval_callback.update_best_reward(float(final_mean_reward), model)
         except AssertionError as e:
             logger.warning(
                 "Hyperopt [%s]: trial #%d encountered NaN (AssertionError): %r",
@@ -2267,11 +2379,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
-            train_env.close()
-            eval_env.close()
-            if hasattr(model, "env") and model.env is not None:
-                model.env.close()
-            del model, train_env, eval_env
+            if train_env is not None:
+                train_env.close()
+            if eval_env is not None:
+                eval_env.close()
 
         if nan_encountered:
             raise TrialPruned(f"Hyperopt [{study_name}]: NaN encountered during training")
@@ -2295,6 +2406,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.eval_env.close()
             finally:
                 self.eval_env = None
+
+
+def _make_dummy_vec_env(env_fns: list[Callable[[], BaseEnvironment]]) -> DummyVecEnv:
+    """Release already-created environments if a later factory or wrapper fails."""
+    environments = []
+    try:
+        for factory in env_fns:
+            environments.append(factory())
+        return DummyVecEnv([lambda env=env: env for env in environments])
+    except BaseException:
+        for environment in environments:
+            environment.close()
+        raise
 
 
 def make_env(
@@ -2775,7 +2899,7 @@ class MyRLEnv(Base5ActionRLEnv):
             except OverflowError:
                 return 1.0 if x > 0 else -1.0
 
-        if name == ReforceXY._TRANSFORM_FUNCTIONS[4]:  # "asinh"
+        if name == ReforceXY._TRANSFORM_FUNCTIONS[4]:  # "softsign_sqrt"
             return x / math.hypot(1.0, x)
 
         if name == ReforceXY._TRANSFORM_FUNCTIONS[5]:  # "clip"
@@ -2854,7 +2978,11 @@ class MyRLEnv(Base5ActionRLEnv):
     def _compute_pbrs_components(
         self,
         *,
-        action: int,
+        previous_position: Positions,
+        next_position: Positions,
+        next_trade_duration: float,
+        next_pnl: float,
+        entry_pnl: float,
         trade_duration: float,
         max_trade_duration: float,
         current_pnl: float,
@@ -2979,8 +3107,8 @@ class MyRLEnv(Base5ActionRLEnv):
 
         **Robustness:**
             - All transforms bounded: |T_x| ≤ 1
-            - Validation: |Φ(s)| ≤ scale
-            - Bounds: |Δ(s,a,s')| ≤ (1+γ)·scale
+            - Loss-side bound: |Φ(s)| ≤ scale·(1+risk_reward_ratio)/2
+            - Global bound B = scale·max(1, (1+risk_reward_ratio)/2): |Δ| ≤ (1+γ)·B
             - Terminal enforcement: Φ(s) = 0 when terminated
 
         Implementation Details
@@ -2989,7 +3117,7 @@ class MyRLEnv(Base5ActionRLEnv):
         - Reads Φ(s) from self._last_potential (previous state potential)
         - Reads γ from self._potential_gamma
         - Reads configuration from self._exit_potential_mode, self._entry_additive_enabled, etc.
-        - Computes next_position, next_duration_ratio, is_entry, is_exit internally
+        - Classifies entry/exit/hold from the supplied previous and next positions
         - Stores Φ(s') to self._last_potential for next step
         - Updates diagnostic accumulators (_total_reward_shaping, _total_entry_additive, etc.)
 
@@ -3000,11 +3128,22 @@ class MyRLEnv(Base5ActionRLEnv):
         trade_duration : float
             Trade duration at current tick.
             This is the duration for state s'.
+        previous_position : Positions
+            Position held before the action executed (state s in O_t).
+        next_position : Positions
+            Position after execution and advancement (state s' in O_(t+1)).
+        next_trade_duration : float
+            Trade duration in the next observation, state s'.
+        next_pnl : float
+            Unrealized PnL in the next observation, state s'.
+        entry_pnl : float
+            Fee-aware entry PnL provisioned at the fill open (state s).
+        trade_duration : float
+            Trade duration at the fill (state s), for the exit additive.
         max_trade_duration : float
             Maximum allowed trade duration (for normalization)
         current_pnl : float
-            Unrealized PnL at current tick.
-            This is the PnL for state s'.
+            Unrealized PnL at the fill (state s), for the exit additive.
         pnl_target : float
             Target PnL for ratio normalization: r_pnl = pnl / pnl_target
         hold_potential_scale : float
@@ -3041,8 +3180,8 @@ class MyRLEnv(Base5ActionRLEnv):
         - Monitor Σ_t γ^t·Δ_t ≈ 0 per episode in canonical mode
         - Disable additives to preserve theoretical PBRS guarantees
         """
-        prev_potential = float(self._last_potential)
 
+        prev_potential = float(self._last_potential)
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
@@ -3054,23 +3193,20 @@ class MyRLEnv(Base5ActionRLEnv):
             self._last_reward_shaping = 0.0
             return 0.0, 0.0, 0.0
 
-        next_position, next_trade_duration, next_pnl = self._get_next_transition_state(
-            action=action, trade_duration=trade_duration, current_pnl=current_pnl
-        )
         if max_trade_duration <= 0:
             next_duration_ratio = 0.0
         else:
             next_duration_ratio = next_trade_duration / max_trade_duration
 
-        is_entry = self._position == Positions.Neutral and next_position in (
+        is_entry = previous_position == Positions.Neutral and next_position in (
             Positions.Long,
             Positions.Short,
         )
         is_exit = (
-            self._position in (Positions.Long, Positions.Short)
+            previous_position in (Positions.Long, Positions.Short)
             and next_position == Positions.Neutral
         )
-        is_hold = self._position in (
+        is_hold = previous_position in (
             Positions.Long,
             Positions.Short,
         ) and next_position in (Positions.Long, Positions.Short)
@@ -3098,9 +3234,9 @@ class MyRLEnv(Base5ActionRLEnv):
 
             if is_entry and self._entry_additive_enabled and not self.is_pbrs_invariant_mode():
                 entry_additive = self._compute_entry_additive(
-                    next_pnl,
+                    entry_pnl,
                     pnl_target,
-                    next_duration_ratio,
+                    0.0,
                     entry_additive_scale,
                 )
                 self._total_entry_additive += float(entry_additive)
@@ -3412,6 +3548,9 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """
         Compute exit efficiency coefficient (typically 0.5-1.5) based on exit timing quality.
+
+        The coefficient is clamped to be nonnegative so an aggressive weight or
+        center can never flip the sign of a losing exit's penalty.
         """
         efficiency_weight = float(
             model_reward_parameters.get("efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT)
@@ -3440,41 +3579,21 @@ class MyRLEnv(Base5ActionRLEnv):
                     efficiency_coefficient = 1.0 + efficiency_weight * (
                         efficiency_center - efficiency_ratio
                     )
+        if efficiency_coefficient < 0.0:
+            logger.warning(
+                "PBRS [%s]: efficiency_coefficient=%.5f < 0; clamping to 0",
+                self.id,
+                efficiency_coefficient,
+            )
+            efficiency_coefficient = 0.0
 
         return efficiency_coefficient
 
     def calculate_reward(self, action: int) -> float:
-        """Compute per-step reward and apply potential-based reward shaping (PBRS).
+        """Compute base reward at the current action's execution price.
 
-        Reward Pipeline:
-            1. Invalid action penalty
-            2. Idle penalty
-            3. Hold overtime penalty
-            4. Exit reward
-            5. Default fallback (0.0 if no specific reward)
-            6. PBRS computation and application: R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-        The final shaped reward is what the RL agent receives for learning.
-        In canonical PBRS mode, the learned policy is theoretically equivalent
-        to training on base rewards only (policy invariance).
-
-        Parameters
-        ----------
-        action : int
-            Action index taken by the agent
-
-        Returns
-        -------
-        float
-            Shaped reward R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-            Implementation: base_reward + reward_shaping + entry_additive + exit_additive
-
-            where:
-            - R(s,a,s') / base_reward: Base reward (invalid/idle/hold penalty or exit reward)
-            - Δ(s,a,s') / reward_shaping: PBRS delta term = γ·Φ(s') - Φ(s)
-            - entry_additive: Optional entry bonus (breaks PBRS invariance)
-            - exit_additive: Optional exit bonus (breaks PBRS invariance)
+        Shaping is applied by step after execution and advancement, when the
+        actual next observation's position, duration and PnL are available.
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         base_reward: float | None = None
@@ -3574,26 +3693,10 @@ class MyRLEnv(Base5ActionRLEnv):
         if base_reward is None:
             base_reward = 0.0
 
-        # 6. Potential-based reward shaping
-        hold_potential_scale = self._hold_potential_ratio * base_factor
-        entry_additive_scale = self._entry_additive_ratio * base_factor
-        exit_additive_scale = self._exit_additive_ratio * base_factor
-
-        reward_shaping, entry_additive, exit_additive = self._compute_pbrs_components(
-            action=action,
-            trade_duration=trade_duration,
-            max_trade_duration=max_trade_duration,
-            current_pnl=pnl,
-            pnl_target=self._pnl_target,
-            hold_potential_scale=hold_potential_scale,
-            entry_additive_scale=entry_additive_scale,
-            exit_additive_scale=exit_additive_scale,
-        )
-
-        return base_reward + reward_shaping + entry_additive + exit_additive
+        return base_reward
 
     def _get_observation(self) -> NDArray[np.float32]:
-        start_idx = max(self._start_tick, self._current_tick - self.window_size)
+        start_idx = max(0, self._current_tick - self.window_size)
         end_idx = min(self._current_tick, len(self.signal_features))
         features_window = self.signal_features.iloc[start_idx:end_idx]
         features_window_array = features_window.to_numpy(dtype=np.float32, copy=False)
@@ -3699,11 +3802,12 @@ class MyRLEnv(Base5ActionRLEnv):
         Take a step in the environment based on the provided action
         """
         previous_equity = self._get_portfolio_equity(self.get_unrealized_profit())
-        self._current_tick += 1
-        self._update_unrealized_total_profit()
+        previous_position = self._position
+        pre_trade_duration = self.get_trade_duration()
         pre_pnl = self.get_unrealized_profit()
         reward = self.calculate_reward(action)
         trade_type = self.execute_trade(action)
+        entry_pnl = self.get_unrealized_profit() if previous_position == Positions.Neutral else 0.0
         if trade_type is not None:
             self.append_trade_history(trade_type, self.current_price(), pre_pnl)
         elif action != Actions.Neutral.value:
@@ -3716,6 +3820,28 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._current_tick,
             )
         self._position_history.append(self._position)
+        self._current_tick += 1
+        self._update_unrealized_total_profit()
+        base_factor = float(
+            self.rl_config.get("model_reward_parameters", {}).get(
+                "base_factor", ReforceXY.DEFAULT_BASE_FACTOR
+            )
+        )
+        shaping, entry_additive, exit_additive = self._compute_pbrs_components(
+            previous_position=previous_position,
+            next_position=self._position,
+            next_trade_duration=self.get_trade_duration(),
+            next_pnl=self.get_unrealized_profit(),
+            entry_pnl=entry_pnl,
+            trade_duration=pre_trade_duration,
+            max_trade_duration=max(1, self.max_trade_duration_candles),
+            current_pnl=pre_pnl,
+            pnl_target=self._pnl_target,
+            hold_potential_scale=self._hold_potential_ratio * base_factor,
+            entry_additive_scale=self._entry_additive_ratio * base_factor,
+            exit_additive_scale=self._exit_additive_ratio * base_factor,
+        )
+        reward += shaping + entry_additive + exit_additive
         terminated = self.is_terminated()
         if terminated:
             reward = self._apply_terminal_pbrs_correction(reward)
@@ -4695,14 +4821,19 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 )
                 self.is_pruned = True
                 return False
-
         return True
+
+    def update_best_reward(self, mean_reward: float, model: Any) -> None:
+        """Update final-policy bookkeeping without reporting another trial step."""
+        _update_eval_best_reward(self, mean_reward, model)
 
 
 class SimpleLinearSchedule:
     """
-    Linear schedule (from initial value to zero),
-    simpler than sb3 LinearSchedule.
+    Linear schedule (from initial value to zero), simpler than sb3
+    LinearSchedule. The progress factor is clamped to [0, 1] so overshooting
+    the aligned training budget never produces a negative learning rate or
+    clip range.
 
     :param initial_value: (float or str) The initial value for the schedule
     """
@@ -4712,7 +4843,10 @@ class SimpleLinearSchedule:
         self.initial_value = float(initial_value)
 
     def __call__(self, progress_remaining: float) -> float:
-        return progress_remaining * self.initial_value
+        # SB3 can request negative progress when overshooting the aligned
+        # budget (e.g. DQN finishing its train_freq); never emit a negative
+        # learning rate or clip range.
+        return min(1.0, max(0.0, float(progress_remaining))) * self.initial_value
 
     def __repr__(self) -> str:
         return f"SimpleLinearSchedule(initial_value={self.initial_value})"
@@ -5036,7 +5170,7 @@ def sample_params_ppo(trial: Trial) -> dict[str, Any]:
     )
 
 
-def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
+def sample_params_recurrentppo(trial: Trial, *, shared_lstm: bool = False) -> dict[str, Any]:
     """
     Sampler for RecurrentPPO hyperparams
     """
@@ -5045,7 +5179,9 @@ def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
         {
             "n_lstm_layers": trial.suggest_int("n_lstm_layers", 1, 2),
             "lstm_hidden_size": trial.suggest_categorical("lstm_hidden_size", [64, 128, 256, 512]),
-            "enable_critic_lstm": trial.suggest_categorical("enable_critic_lstm", [True, False]),
+            "enable_critic_lstm": False
+            if shared_lstm
+            else trial.suggest_categorical("enable_critic_lstm", [True, False]),
         }
     )
     return convert_optuna_params_to_model_params("RecurrentPPO", ppo_optuna_params)
@@ -5063,9 +5199,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
     else:
         min_fraction = 0.05
     return {
-        "train_freq": trial.suggest_categorical(
-            "train_freq", [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-        ),
+        "train_freq": trial.suggest_categorical("train_freq", ReforceXY._DQN_TRAIN_FREQS),
         "subsample_steps": trial.suggest_categorical("subsample_steps", [2, 4, 8, 16]),
         "gamma": trial.suggest_categorical(
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]

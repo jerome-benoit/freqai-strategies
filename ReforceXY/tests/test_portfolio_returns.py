@@ -37,7 +37,7 @@ class PortfolioReturnsTest(unittest.TestCase):
         return env
 
     def test_entry_does_not_capture_pre_entry_move(self):
-        env = self.make_env([100.0, 100.0, 110.0, 110.0, 110.0])
+        env = self.make_env([100.0, 110.0, 110.0, 110.0, 110.0])
         _, _, _, _, entry = env.step(Actions.Long_enter.value)
         self.assertAlmostEqual(entry["most_recent_return"], -2 * math.log1p(env.fee), places=5)
         for action in (Actions.Neutral, Actions.Long_exit):
@@ -65,22 +65,31 @@ class PortfolioReturnsTest(unittest.TestCase):
                         exit_action,
                     ):
                         _, _, _, _, info = env.step(action.value)
-                        price = prices[info["tick"]]
+                        fill_price = prices[info["tick"] - 1]
+                        mark_price = prices[info["tick"]]
+                        fee_factor = (1 + env.fee) ** 2
                         if action == enter:
-                            entry_price = price
-                        pnl = 0.0
-                        if entry_price is not None:
-                            price_ratio = price / entry_price
-                            fee_factor = (1 + env.fee) ** 2
-                            pnl = (
+                            entry_price = fill_price
+                        if action == exit_action:
+                            price_ratio = fill_price / entry_price
+                            exit_pnl = (
                                 1 - price_ratio * fee_factor
                                 if short
                                 else price_ratio / fee_factor - 1
                             )
-                        equity = capital * (1 + pnl) if compound else capital + pnl
-                        if action == exit_action:
+                            equity = capital * (1 + exit_pnl) if compound else capital + exit_pnl
                             capital = equity
                             entry_price = None
+                        else:
+                            pnl = 0.0
+                            if entry_price is not None:
+                                price_ratio = mark_price / entry_price
+                                pnl = (
+                                    1 - price_ratio * fee_factor
+                                    if short
+                                    else price_ratio / fee_factor - 1
+                                )
+                            equity = capital * (1 + pnl) if compound else capital + pnl
                         expected_log = math.log(equity / previous_equity)
                         self.assertAlmostEqual(
                             env.portfolio_log_returns[info["tick"]], expected_log
@@ -92,7 +101,6 @@ class PortfolioReturnsTest(unittest.TestCase):
                         previous_equity = equity
                     self.assertAlmostEqual(np.expm1(env.portfolio_log_returns.sum()), capital - 1)
                     self.assertAlmostEqual(env._total_profit, capital)
-                    env.reset()
                     self.assertEqual(env.get_most_recent_return(), 0.0)
                     self.assertEqual(env.get_most_recent_profit(), 0.0)
 

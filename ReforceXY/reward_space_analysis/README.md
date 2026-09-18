@@ -198,9 +198,11 @@ be overridden via `--params`.
   hide reward drift or invariance violations.
 - **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and
   finite checks; raises instead of silent clamp/discard when enabled.
-- **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate
-  statistical diagnostics (zero-width CIs, undefined distribution metrics)
-  instead of graceful fallbacks.
+- **`--strict_diagnostics`** (flag, default: false) – Raise on extreme distribution
+  moments instead of warning. In both modes, constants retain exact mean/std,
+  higher moments are N/A, and normality tests and Q-Q fits are not applicable.
+  Bootstrap percentile intervals retain their computed finite, ordered bounds,
+  including zero-width intervals; they need not contain the sample mean.
 - **`--exit_factor_threshold`** (float, default: 1000.0) – Emits a warning if
   the absolute value of the exit factor exceeds the threshold.
 - **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple
@@ -328,17 +330,21 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | `entry_fee_rate`         | 0.0       | Entry fee rate (`price · (1 + fee)`) |
 | `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
-PBRS invariance holds when: `exit_potential_mode=canonical`.
+PBRS verification is evidence-based, never a raw shaping sum: complete ordered
+episodes (contiguous `transition_index`, single terminal), the local identity
+`reward_shaping = gamma * next_potential - prev_potential`, temporal potential
+continuity, and the discounted terminal boundary residual must all hold with
+sufficient ordered data; otherwise the report classifies the observed PBRS as
+"Not verified" even in canonical configuration.
 
 In canonical mode, the entry/exit additive terms are suppressed even if the
 corresponding `*_additive_enabled` flags are set.
 
-Note: PBRS telescoping/zero-sum shaping is a property of coherent trajectories
-(episodes). `simulate_samples()` generates synthetic trajectories (state carried
+Note: `simulate_samples()` generates synthetic trajectories (state carried
 across samples) and does not apply any drift correction in post-processing.
 Trade duration is zero on entry and advances before each subsequent in-position
 reward, including an immediate exit on the next candle. The report summary uses
-the same canonical/non-canonical classification as the detailed PBRS section;
+the same verified/not-verified classification as the detailed PBRS section;
 a zero numerical correction alone does not establish canonical invariance.
 
 #### Hold Potential Transforms
@@ -419,7 +425,7 @@ r* = r            if not exit_plateau
 | `softsign` | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
 | `arctan`   | (2/π) · arctan(x)                | (-1, 1) | Slower saturation | Wide dynamic range            |
 | `sigmoid`  | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
-| `asinh`    | x / √(1 + x²)                    | (-1, 1) | Outlier robust    | Extreme stability             |
+| `softsign_sqrt` | x / √(1 + x²)             | (-1, 1) | Outlier robust    | Extreme stability             |
 | `clip`     | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |
 
 ### Skipping Feature Analysis

@@ -450,11 +450,16 @@ checkpoint saved by the current evaluation run when available.
 
 Environment diagnostics `most_recent_return` (log return) and
 `most_recent_profit` (simple return) measure changes in liquidation equity,
-including unrealized PnL and Freqtrade's staking convention. Round-trip fees are
-provisioned at entry; exits include the final price move without charging fees
-again. `portfolio_log_returns` stores the same log returns. Non-positive or
-non-finite equity produces NaN diagnostics rather than a zero return. These
-diagnostics do not change the training reward or realized capital.
+including unrealized PnL and Freqtrade's staking convention. Actions fill at
+`open[t]` while the observation window ends at candle `t-1`; equity marks, PnL
+features and trade durations in the returned observation refer to candle `t+1`.
+Round-trip fees are provisioned at entry; exits realize at the fill price
+without charging fees again. `portfolio_log_returns` stores the same log
+returns. Non-positive or non-finite equity produces NaN diagnostics rather than
+a zero return. These diagnostics do not change the training reward or realized
+capital. Rewards combine the fill-time base components with a potential-based
+shaping delta over the returned next observation; the terminal potential is
+zero.
 
 Run the runtime training, inference and accounting regressions inside the ReforceXY QA image, with the
 repository mounted at `/workspace` and `/workspace` as the working directory:

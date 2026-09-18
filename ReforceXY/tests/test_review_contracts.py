@@ -2,8 +2,10 @@
 
 import tempfile
 import unittest
+from datetime import datetime as dt, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -120,7 +122,21 @@ class ReviewContractsTest(unittest.TestCase):
                 for column in ("open", "high", "low", "close"):
                     frame[f"%-raw_{column}"] = 100 + np.arange(64) * 0.1
                 dk.training_features_list = [column for column in frame if column.startswith("%")]
-                trained = model.train(frame, dk.pair, dk)
+                from sb3_contrib.common.maskable.evaluation import evaluate_policy
+
+                evaluated_updates = []
+
+                def evaluate_final(policy, environment, updates=evaluated_updates, **kwargs):
+                    updates.append(policy._n_updates)
+                    return evaluate_policy(policy, environment, **kwargs)
+
+                with mock.patch(
+                    "ReforceXY.user_data.freqaimodels.ReforceXY.evaluate_policy",
+                    side_effect=evaluate_final,
+                ):
+                    trained = model.train(frame, dk.pair, dk)
+                self.assertEqual(len(evaluated_updates), 1)
+                self.assertGreater(evaluated_updates[0], 0)
                 checkpoint = MaskablePPO.load(dk.data_path / "best_model.zip")
                 for name, value in trained.policy.state_dict().items():
                     np.testing.assert_array_equal(
@@ -222,6 +238,30 @@ class ReviewContractsTest(unittest.TestCase):
         self.assertEqual(effective["target_kl"], 0.03)
 
     def test_historic_hole_does_not_shift_actions(self):
+        dates = pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC")
+        drawer = object.__new__(FreqaiDataDrawer)
+        drawer.historic_predictions = {
+            "BTC/USDT": pd.DataFrame(
+                {"date_pred": dates[[0, 3]], "close_price": [100.0, 103.0], "&-action": [1, 2]}
+            )
+        }
+        drawer.model_return_values = {"BTC/USDT": drawer.historic_predictions["BTC/USDT"].copy()}
+        frame = pd.DataFrame(
+            {
+                "date": dates,
+                "close": [100.0, 101.0, 102.0, 103.0],
+                "high": [100.0, 101.0, 102.0, 103.0],
+                "low": [100.0, 101.0, 102.0, 103.0],
+            }
+        )
+        result = drawer.attach_return_values_to_return_dataframe("BTC/USDT", frame)
+        self.assertEqual(result["&-action"].iloc[0], 1)
+        self.assertTrue(pd.isna(result["&-action"].iloc[1]))
+        self.assertTrue(pd.isna(result["&-action"].iloc[2]))
+        self.assertEqual(result["&-action"].iloc[3], 2)
+        pd.testing.assert_series_equal(result["date"], frame["date"])
+
+    def test_historic_initialization_does_not_shift_actions(self):
         dates = pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC")
         drawer = object.__new__(FreqaiDataDrawer)
         drawer.historic_predictions = {
@@ -230,16 +270,135 @@ class ReviewContractsTest(unittest.TestCase):
             )
         }
         drawer.model_return_values = {}
-        frame = pd.DataFrame(
-            {
-                "date": dates,
-                "close": [100.0, 101.0, 102.0],
-                "high": [100.0, 101.0, 102.0],
-                "low": [100.0, 101.0, 102.0],
-            }
-        )
+        frame = pd.DataFrame({"date": dates, "close": [100.0, 101.0, 102.0]})
         drawer.set_initial_return_values("BTC/USDT", pd.DataFrame({"&-action": [0, 0, 0]}), frame)
         result = drawer.attach_return_values_to_return_dataframe("BTC/USDT", frame)
         self.assertEqual(result["&-action"].iloc[0], 1)
         self.assertTrue(pd.isna(result["&-action"].iloc[1]))
         self.assertEqual(result["&-action"].iloc[2], 2)
+
+    def test_rejected_prediction_does_not_advance_virtual_position(self):
+        model = self.model()
+        model.live = False
+        model.CONV_WIDTH = 2
+
+        class EntryPolicy(RecordingPolicy):
+            def predict(self, observation, **kwargs):
+                super().predict(observation, **kwargs)
+                return np.array([1 if kwargs["action_masks"][1] else 0]), None
+
+        policy = EntryPolicy()
+        dk = SimpleNamespace(
+            pair="BTC/USDT", label_list=["&-action"], do_predict=np.array([1, 0, 1, 1])
+        )
+        prediction = model.rl_model_predict(
+            pd.DataFrame({"f": [10.0, 20.0, 30.0, 40.0]}, index=[11, 22, 33, 44]), dk, policy
+        )
+        np.testing.assert_array_equal(prediction["&-action"].iloc[1:], [1, 1, 0])
+        self.assertTrue(policy.masks[1][1])
+        self.assertFalse(policy.masks[2][1])
+        np.testing.assert_array_equal(policy.observations[1], [[[20.0], [30.0]]])
+
+    def test_execution_and_potential_match_returned_observation(self):
+        model = self.model(hold=True)
+        model.CONV_WIDTH = 2
+        features = pd.DataFrame({"f": np.arange(7, dtype=float) + 10})
+        prices = pd.DataFrame({"open": [100.0, 100.0, 100.0, 110.0, 99.0, 105.0, 106.0]})
+        env = MyRLEnv(df=features, prices=prices, **model.pack_env_dict("BTC/USDT"))
+        env.fee = 0.0
+        self.addCleanup(env.close)
+        observation, _ = env.reset()
+        np.testing.assert_array_equal(observation[:, 0], [10.0, 11.0])
+        observation, _, done, _, _ = env.step(1)
+        self.assertFalse(done)
+        self.assertEqual(env.trade_history[-1]["tick"], 2)
+        self.assertEqual(env.trade_history[-1]["price"], 100.0)
+        np.testing.assert_array_equal(observation[:, 0], [11.0, 12.0])
+        self.assertAlmostEqual(float(observation[-1, 1]), 0.1)
+        self.assertEqual(float(observation[-1, 3]), 1.0)
+        expected_potential = env._compute_hold_potential(
+            env._position,
+            env.get_unrealized_profit(),
+            env._pnl_target,
+            env.get_trade_duration() / max(1, env.max_trade_duration_candles),
+            env._hold_potential_ratio * float(model.reward_params.get("base_factor", 100)),
+        )
+        self.assertAlmostEqual(env._last_next_potential, expected_potential)
+        self.assertAlmostEqual(env._last_reward_shaping, env._potential_gamma * expected_potential)
+        env.step(2)
+        self.assertEqual(env.trade_history[-1]["tick"], 3)
+        self.assertEqual(env.trade_history[-1]["price"], 110.0)
+        self.assertAlmostEqual(env._last_reward_shaping, -expected_potential)
+        env.step(1)
+        _, _, done, _, _ = env.step(0)
+        self.assertTrue(done)
+        self.assertEqual(env._current_tick, 6)
+        self.assertEqual(env._last_next_potential, 0.0)
+
+    def test_state_info_normalizes_leveraged_profit_ratio(self):
+        trade = SimpleNamespace(
+            pair="BTC/USDT",
+            is_short=False,
+            leverage=2.0,
+            open_date_utc=dt.now(timezone.utc),
+            calc_profit_ratio=lambda rate: 0.04,
+        )
+
+        exchange = SimpleNamespace(get_rate=lambda *args, **kwargs: 102.0)
+        other_pair = SimpleNamespace(pair="ETH/USDT", is_short=False, leverage=1.0)
+
+        model = self.model()
+        # The shared fixture stubs get_state_info; the class override is the contract here.
+        del model.get_state_info
+        model.data_provider = SimpleNamespace(_exchange=exchange)
+        with mock.patch(
+            "ReforceXY.user_data.freqaimodels.ReforceXY.Trade.get_trades_proxy",
+            return_value=[trade, other_pair],
+        ) as trades:
+            side, profit, duration = model.get_state_info("BTC/USDT")
+        trades.assert_called_once_with(is_open=True)
+        self.assertEqual(side, 1.0)
+        # calc_profit_ratio includes leverage (2x): 4% / leverage 2 -> normalized 2%.
+        self.assertAlmostEqual(profit, 0.02, places=10)
+        self.assertEqual(duration, 0)
+
+    def test_negative_efficiency_coefficient_is_clamped(self):
+        features = pd.DataFrame({"f": np.zeros(6)})
+        prices = pd.DataFrame({"open": [100.0, 100.0, 100.0, 90.0, 98.0, 100.0]})
+        env = MyRLEnv(
+            df=features,
+            prices=prices,
+            df_raw=features.copy(),
+            window_size=1,
+            reward_kwargs={"rr": 2.0, "profit_aim": 0.03},
+            fee=0.0,
+            can_short=False,
+            config={
+                "stake_amount": "unlimited",
+                "freqai": {
+                    "rl_config": {
+                        "add_state_info": False,
+                        "max_training_drawdown_pct": 0.99,
+                        "model_reward_parameters": {
+                            "efficiency_weight": 2.0,
+                            "efficiency_center": 0.0,
+                        },
+                    }
+                },
+            },
+            live=True,
+        )
+        self.addCleanup(env.close)
+        env.reset()
+        env.step(1)
+        env.step(0)
+        env.step(0)
+        # weight=2, center=0 with a partially recovered loss: raw coefficient -0.6.
+        self.assertAlmostEqual(
+            env._compute_efficiency_coefficient(
+                -0.02, {"efficiency_weight": 2.0, "efficiency_center": 0.0}
+            ),
+            0.0,
+        )
+        exit_info = env.step(2)[-1]
+        self.assertAlmostEqual(exit_info["reward_exit"], 0.0)

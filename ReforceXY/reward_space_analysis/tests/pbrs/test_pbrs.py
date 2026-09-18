@@ -105,7 +105,7 @@ class TestSimulationParity(RewardSpaceTestBase):
             bootstrap_resamples=SCENARIOS.SAMPLE_SIZE_SMALL,
         )
         content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
-        self.assertRegex(content, r"\| Invariance Status \| [^\n]*Non-canonical \|")
+        self.assertRegex(content, r"\| Invariance Status \| [^\n]*Non-canonical")
         self.assertRegex(content, r"PBRS Invariance\*\* - [^\n]*Non-canonical")
 
 
@@ -1248,7 +1248,7 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant: pbrs-canonical-near-zero-report-116
     @pytest.mark.smoke
     def test_pbrs_canonical_near_zero_report(self):
-        """Invariant 116: canonical near-zero cumulative shaping classified in full report."""
+        """Canonical trajectories with valid PBRS evidence are classified as verified."""
 
         small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
         total_shaping = float(sum(small_vals))
@@ -1280,6 +1280,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(n),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": np.array([0.0, -1e-7, 1e-7]),
+                "next_potential": np.array([-1e-7, 1e-7, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1302,7 +1307,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical near-zero test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical", expect_additives=False
+            self, content, "Canonical: observed PBRS verified", expect_additives=False
         )
         self.assertRegex(content, r"\| Σ Shaping Reward \| 0\.000000 \|")
         m_abs = re.search(r"\| Abs Σ Shaping Reward \| ([0-9.]+e[+-][0-9]{2}) \|", content)
@@ -1312,7 +1317,7 @@ class TestPBRS(RewardSpaceTestBase):
             self.assertAlmostEqual(
                 abs(total_shaping), val_abs, places=TOLERANCE.DECIMAL_PLACES_STRICT
             )
-        self.assertIn("max|correction|≈0", content)
+        self.assertIn("Raw shaping sums do not certify invariance", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
@@ -1350,6 +1355,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(3),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": np.array([0.0, -1e-7, 1e-7]),
+                "next_potential": np.array([-1e-7, 1e-7, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1372,7 +1382,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical additives test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical", expect_additives=False
+            self, content, "Canonical: observed PBRS verified", expect_additives=False
         )
         self.assertIn("Additives are suppressed in canonical mode", content)
         self.assertIn("| Entry Additive Enabled | True |", content)
@@ -1380,8 +1390,8 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("| Entry Additive Effective | False |", content)
         self.assertIn("| Exit Additive Effective | False |", content)
 
-    def test_pbrs_canonical_warning_report(self):
-        """Canonical mode + no additives but max|invariance_correction| > tolerance -> warning."""
+    def test_pbrs_canonical_discontinuous_potentials_report(self):
+        """Broken potential continuity is never certified from raw shaping sums."""
 
         shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # Σ not near 0
         total_shaping = float(sum(shaping_vals))
@@ -1410,6 +1420,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.2, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(5),
+                "terminated": np.array([False, False, False, False, True]),
+                "prev_potential": np.zeros(5),
+                "next_potential": np.array([-1.2e-4, 1.0e-4, -2.0e-4, 1.5e-4, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1432,15 +1447,14 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical warning test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical (with warning)", expect_additives=False
+            self, content, "Not verified", expect_additives=False
         )
-        expected_corr_fragment = f"{max_abs_corr:.6e}"
-        self.assertIn(expected_corr_fragment, content)
+        self.assertIn("Raw shaping sums do not certify invariance", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
-        """Full report: Non-canonical classification aggregates mode + additives reasons."""
+        """Non-canonical configurations never certify observed PBRS."""
 
         shaping_vals = [0.02, -0.005, 0.007]
         entry_add_vals = [0.003, 0.0, 0.004]
@@ -1463,6 +1477,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.1, 1.0, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(3),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": np.array([0.0, 0.02, -0.005]),
+                "next_potential": np.array([0.02, -0.005, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1487,14 +1506,14 @@ class TestPBRS(RewardSpaceTestBase):
         )
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=True
+            self, content, "Non-canonical: not verified", expect_additives=True
         )
-        self.assertIn("exit_potential_mode='progressive_release'", content)
+        self.assertIn("| Exit Potential Mode | progressive_release |", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_mode_only_reason(self):
-        """Non-canonical exit mode with additives disabled -> reason excludes additive list."""
+        """Non-canonical exit mode with additives disabled -> not verified."""
 
         shaping_vals = [0.002, -0.0005, 0.0012]
         total_shaping = sum(shaping_vals)
@@ -1517,6 +1536,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.2, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(n),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": np.array([0.0, 0.002, -0.0005]),
+                "next_potential": np.array([0.002, -0.0005, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1541,9 +1565,9 @@ class TestPBRS(RewardSpaceTestBase):
         )
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=False
+            self, content, "Non-canonical: not verified", expect_additives=False
         )
-        self.assertIn("exit_potential_mode='retain_previous'", content)
+        self.assertIn("| Exit Potential Mode | retain_previous |", content)
 
     # Owns invariant: pbrs-absence-shift-placeholder-118
     def test_pbrs_absence_and_distribution_shift_placeholder(self):

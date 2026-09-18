@@ -143,7 +143,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertIn("PBRS Invariance", content)
 
     def test_strict_diagnostics_constant_distribution_succeeds(self):
-        """Run with --strict_diagnostics and low num_samples; expect success, exercising assertion branches before graceful fallback paths."""
+        """Strict diagnostics accepts constant distributions without fabricated statistics."""
         out_dir = self.output_path / "strict_diagnostics"
         result = _run_cli(
             out_dir=out_dir,
@@ -155,7 +155,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
                 "--strict_diagnostics",
             ],
         )
-        # Should not raise; if constant distributions occur they should assert before graceful fallback paths, exercising assertion branches.
+        # Constant distributions remain valid in strict mode.
         self.assertEqual(
             result.returncode,
             0,

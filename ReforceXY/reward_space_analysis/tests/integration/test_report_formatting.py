@@ -25,8 +25,8 @@ pytestmark = pytest.mark.integration
 
 
 class TestReportFormatting(RewardSpaceTestBase):
-    def test_statistical_validation_section_absent_when_no_hypothesis_tests(self):
-        """Section 5 omitted entirely when no hypothesis tests qualify (idle<30, groups<2, pnl sign groups<30)."""
+    def test_statistical_sections_do_not_depend_on_hypothesis_tests(self):
+        """Diagnostics and bootstrap sections survive when no hypothesis tests qualify."""
         # Construct df with idle_duration always zero -> reward_idle all zeros so idle_mask.sum()==0
         # Position has only one unique value -> groups<2
         # pnl all zeros so no positive/negative groups with >=30 each
@@ -43,14 +43,18 @@ class TestReportFormatting(RewardSpaceTestBase):
                 "position": np.zeros(n),
             }
         )
-        content = self._write_report(df, real_df=None)
-        # Hypothesis section header should be absent
-        self.assertNotIn("## 5. Statistical Validation", content)
-        # Summary numbering still includes Statistical Validation line (always written)
-        self.assertIn("5. **Statistical Validation**", content)
-        # Distribution shift subsection appears only inside Section 5; since Section 5 omitted it should be absent.
-        self.assertNotIn("### 5.4 Distribution Shift Analysis", content)
-        self.assertNotIn("_Not performed (no real episodes provided)._", content)
+        content = self._write_report(df, independent_observations=True, skip_feature_analysis=True)
+        self.assertNotIn("### 5.1 Hypothesis Tests", content)
+        self.assertIn("### 5.2 Confidence Intervals", content)
+        self.assertIn("### 5.3 Distribution Diagnostics", content)
+        self.assertIn("N/A (constant distribution)", content)
+        self.assertIn(f"{SCENARIOS.SAMPLE_SIZE_SMALL:,} resamples", content)
+        descriptive = self._write_report(df, real_df=df.copy(), skip_feature_analysis=True)
+        self.assertNotIn("### 5.2 Confidence Intervals", descriptive)
+        self.assertNotIn("Normal? (Shapiro-Wilk)", descriptive)
+        self.assertIn("### 5.4 Distribution Shift Analysis", descriptive)
+        self.assertNotIn("_Not performed (no real episodes provided)._", descriptive)
+        self.assertIn("inference suppressed", descriptive)
 
     def _write_report(
         self, df: pd.DataFrame, *, real_df: pd.DataFrame | None = None, **kwargs
@@ -81,6 +85,7 @@ class TestReportFormatting(RewardSpaceTestBase):
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             seed=SEEDS.BASE,
             real_df=real_df,
+            independent_observations=kwargs.get("independent_observations", False),
             adjust_method="none",
             strict_diagnostics=False,
             bootstrap_resamples=SCENARIOS.SAMPLE_SIZE_SMALL,  # keep test fast

@@ -45,7 +45,7 @@ except Exception:
     train_test_split = None
 
 AttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
-TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "asinh"]
+TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "clip", "softsign_sqrt"]
 ExitPotentialMode = Literal[
     "canonical", "non_canonical", "progressive_release", "spike_cancel", "retain_previous"
 ]
@@ -90,9 +90,6 @@ ATTENUATION_MODES_WITH_LEGACY: tuple[str, ...] = ("legacy", *ATTENUATION_MODES)
 
 # Internal numeric guards and behavior toggles
 INTERNAL_GUARDS: dict[str, float] = {
-    "degenerate_ci_epsilon": 1e-9,
-    "distribution_constant_fallback_moment": 0.0,
-    "distribution_constant_fallback_qq_r2": 1.0,
     "moment_extreme_threshold": 1e4,
     "bootstrap_min_recommended": 200,
     "sim_pnl_conservation_tol": 1e-10,
@@ -100,7 +97,6 @@ INTERNAL_GUARDS: dict[str, float] = {
     "sim_zero_reward_epsilon": 1e-12,
     "sim_extreme_pnl_threshold": 0.2,
     "histogram_epsilon": 1e-10,
-    "distribution_identity_epsilon": 1e-12,
     "efficiency_min_range_epsilon": 1e-6,
     "efficiency_min_range_fraction": 0.01,
 }
@@ -111,7 +107,7 @@ ALLOWED_TRANSFORMS = {
     "softsign",
     "arctan",
     "sigmoid",
-    "asinh",
+    "softsign_sqrt",
     "clip",
 }
 ALLOWED_EXIT_POTENTIAL_MODES = {
@@ -682,6 +678,35 @@ def validate_reward_parameters(
                 "validation_mode": "strict" if strict else "relaxed",
             }
 
+    # Joint nonnegativity guard: weight*(1-center) > 1 can flip a losing exit's
+    # penalty into a reward (efficiency coefficient < 0). Reject the combination
+    # explicitly instead of relying on the runtime clamp.
+    if "efficiency_weight" in sanitized or "efficiency_center" in sanitized:
+        weight_value = sanitized.get("efficiency_weight", 1.0)
+        center_value = sanitized.get("efficiency_center", 0.5)
+        weight = float(weight_value) if isinstance(weight_value, (int, float)) else 1.0
+        center = float(center_value) if isinstance(center_value, (int, float)) else 0.5
+        if weight * (1.0 - center) > 1.0:
+            message = (
+                "Param: efficiency combination weight="
+                f"{weight} * (1 - center={center}) > 1 can make the efficiency "
+                "coefficient negative on losing exits"
+            )
+            if strict:
+                raise ValueError(message)
+            warnings.warn(
+                message + "; falling back to weight=0.0",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            sanitized["efficiency_weight"] = 0.0
+            adjustments["efficiency_weight"] = {
+                "original": weight,
+                "adjusted": 0.0,
+                "reason": "negative_efficiency_guard",
+                "validation_mode": "relaxed",
+            }
+
     return sanitized, adjustments
 
 
@@ -1182,6 +1207,8 @@ def calculate_reward(
     short_allowed: bool,
     action_masking: bool,
     prev_potential: float = np.nan,
+    next_context: RewardContext | None = None,
+    terminated: bool = False,
 ) -> RewardBreakdown:
     """Calculate complete reward with base reward and PBRS shaping.
 
@@ -1362,6 +1389,12 @@ def calculate_reward(
         next_pnl = current_pnl
         next_duration_ratio = current_duration_ratio
 
+    if next_context is not None:
+        next_pnl = next_context.current_pnl
+        next_duration_ratio = _compute_duration_ratio(
+            next_context.trade_duration, max_trade_duration_candles
+        )
+
     # Apply PBRS only if enabled and not neutral self-loop
     exit_mode = _get_str_param(params, "exit_potential_mode")
 
@@ -1399,8 +1432,17 @@ def calculate_reward(
                 params=params,
                 risk_reward_ratio=risk_reward_ratio,
                 base_factor=base_factor,
+                entry_pnl=_compute_unrealized_pnl_estimate(
+                    next_position, entry_open=1.0, current_open=1.0, params=params
+                )
+                if is_entry
+                else 0.0,
             )
         )
+        if terminated:
+            next_potential = 0.0
+            reward_shaping = -prev_potential
+            pbrs_delta = reward_shaping
 
         breakdown.reward_shaping = reward_shaping
         breakdown.prev_potential = prev_potential
@@ -1609,6 +1651,61 @@ def simulate_samples(
     entry_open = current_open
 
     for _ in range(num_samples):
+        action, sample_entry_prob, sample_exit_prob, sample_neutral_prob = _sample_action(
+            position,
+            rng,
+            short_allowed=short_allowed,
+            trade_duration=trade_duration,
+            max_trade_duration_candles=max_trade_duration_candles,
+            idle_duration=idle_duration,
+            max_idle_duration_candles=max_idle_duration_candles,
+        )
+
+        context = RewardContext(
+            current_pnl=pnl,
+            trade_duration=trade_duration,
+            idle_duration=idle_duration,
+            max_unrealized_profit=max_unrealized_profit,
+            min_unrealized_profit=min_unrealized_profit,
+            position=position,
+            action=action,
+        )
+
+        # Transition state
+        if position == Positions.Neutral:
+            if action == Actions.Long_enter:
+                position = Positions.Long
+                trade_duration = 0
+                idle_duration = 0
+                entry_open = current_open
+                pnl = _compute_unrealized_pnl_estimate(
+                    Positions.Long,
+                    entry_open=entry_open,
+                    current_open=current_open,
+                    params=params,
+                )
+                max_unrealized_profit = pnl
+                min_unrealized_profit = pnl
+            elif action == Actions.Short_enter and short_allowed:
+                position = Positions.Short
+                trade_duration = 0
+                idle_duration = 0
+                entry_open = current_open
+                pnl = _compute_unrealized_pnl_estimate(
+                    Positions.Short,
+                    entry_open=entry_open,
+                    current_open=current_open,
+                    params=params,
+                )
+                max_unrealized_profit = pnl
+                min_unrealized_profit = pnl
+        else:
+            idle_duration = 0
+            if action in (Actions.Long_exit, Actions.Short_exit):
+                position = Positions.Neutral
+                trade_duration = 0
+                idle_duration = 0
+                entry_open = current_open
         if position in (Positions.Long, Positions.Short):
             trade_duration = min(trade_duration + 1, max_trade_duration_cap)
         else:
@@ -1650,27 +1747,15 @@ def simulate_samples(
             pnl = 0.0
             max_unrealized_profit = 0.0
             min_unrealized_profit = 0.0
-
-        action, sample_entry_prob, sample_exit_prob, sample_neutral_prob = _sample_action(
-            position,
-            rng,
-            short_allowed=short_allowed,
-            trade_duration=trade_duration,
-            max_trade_duration_candles=max_trade_duration_candles,
-            idle_duration=idle_duration,
-            max_idle_duration_candles=max_idle_duration_candles,
-        )
-
-        context = RewardContext(
+        next_context = RewardContext(
             current_pnl=pnl,
             trade_duration=trade_duration,
             idle_duration=idle_duration,
             max_unrealized_profit=max_unrealized_profit,
             min_unrealized_profit=min_unrealized_profit,
             position=position,
-            action=action,
+            action=Actions.Neutral,
         )
-
         breakdown = calculate_reward(
             context,
             params,
@@ -1680,15 +1765,23 @@ def simulate_samples(
             short_allowed=short_allowed,
             action_masking=action_masking,
             prev_potential=prev_potential,
+            next_context=next_context,
+            terminated=_ == num_samples - 1,
         )
         prev_potential = breakdown.next_potential
 
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
         samples.append(
             {
+                "episode_id": 0,
+                "transition_index": _,
                 "pnl": context.current_pnl,
                 "trade_duration": context.trade_duration,
                 "idle_duration": context.idle_duration,
+                "next_pnl": next_context.current_pnl,
+                "next_trade_duration": next_context.trade_duration,
+                "next_position": float(next_context.position.value),
+                "terminated": _ == num_samples - 1,
                 "duration_ratio": _compute_duration_ratio(
                     context.trade_duration, max_trade_duration_candles
                 ),
@@ -1718,42 +1811,6 @@ def simulate_samples(
                 "pbrs_invariant": bool(pbrs_invariant),
             }
         )
-
-        # Transition state
-        if position == Positions.Neutral:
-            if action == Actions.Long_enter:
-                position = Positions.Long
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Long,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
-            elif action == Actions.Short_enter and short_allowed:
-                position = Positions.Short
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Short,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
-        else:
-            idle_duration = 0
-            if action in (Actions.Long_exit, Actions.Short_exit):
-                position = Positions.Neutral
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
 
     df = pd.DataFrame(samples)
     df.attrs["reward_params"] = dict(params)
@@ -2376,27 +2433,22 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
         if opt_col not in df.columns:
             df[opt_col] = np.nan
 
-    # Drop exact duplicates (rare but can appear after flattening)
-    before_dupes = len(df)
-    df = df.drop_duplicates()
-    if len(df) != before_dupes:
-        warnings.warn(
-            f"Data: dropped {before_dupes - len(df)} duplicate row(s) when loading '{path}'",
-            RewardDiagnosticsWarning,
-            stacklevel=2,
-        )
-
     return df
 
 
 def compute_distribution_shift_metrics(
     synthetic_df: pd.DataFrame,
     real_df: pd.DataFrame,
+    *,
+    independent_observations: bool = False,
 ) -> dict[str, float]:
     """Compute distribution shift metrics between synthetic and real samples.
 
     Returns KL divergence, JS distance, Wasserstein distance, and KS test
     results for continuous features (pnl, trade_duration, idle_duration).
+    The inferential KS p-value is reported only with
+    ``independent_observations=True``; the descriptive KS statistic is always
+    reported. Constants yield exact zero distances and, inferentially, p=1.0.
     """
     metrics = {}
     continuous_features = ["pnl", "trade_duration", "idle_duration"]
@@ -2413,20 +2465,16 @@ def compute_distribution_shift_metrics(
         # Guard against degenerate distributions (all values identical)
         if not np.isfinite(min_val) or not np.isfinite(max_val):
             continue
-        if np.isclose(
-            max_val,
-            min_val,
-            rtol=0,
-            atol=float(INTERNAL_GUARDS.get("distribution_identity_epsilon", 1e-12)),
-        ):
+        if max_val == min_val:
             # All mass at a single point -> shift metrics are all zero by definition
             metrics[f"{feature}_kl_divergence"] = 0.0
             metrics[f"{feature}_js_distance"] = 0.0
             metrics[f"{feature}_wasserstein"] = 0.0
             metrics[f"{feature}_ks_statistic"] = 0.0
-            metrics[f"{feature}_ks_pvalue"] = 1.0
+            if independent_observations:
+                metrics[f"{feature}_ks_pvalue"] = 1.0
             continue
-        bins = np.linspace(min_val, max_val, 50)
+        bins = np.unique(np.linspace(min_val, max_val, 50))
 
         # Use density=False to get counts, then normalize to probabilities
         hist_synth, _ = np.histogram(synth_values, bins=bins, density=False)
@@ -2450,7 +2498,8 @@ def compute_distribution_shift_metrics(
 
         ks_stat, ks_pval = stats.ks_2samp(synth_values, real_values)
         metrics[f"{feature}_ks_statistic"] = float(ks_stat)
-        metrics[f"{feature}_ks_pvalue"] = float(ks_pval)
+        if independent_observations:
+            metrics[f"{feature}_ks_pvalue"] = float(ks_pval)
 
     # Validate distribution shift metrics bounds
     _validate_distribution_metrics(metrics)
@@ -2486,9 +2535,17 @@ def _validate_distribution_metrics(metrics: dict[str, float]) -> None:
 
 
 def statistical_hypothesis_tests(
-    df: pd.DataFrame, *, adjust_method: str = ADJUST_METHODS[0], seed: int = 42
+    df: pd.DataFrame,
+    *,
+    independent_observations: bool,
+    adjust_method: str = ADJUST_METHODS[0],
+    seed: int = 42,
 ) -> dict[str, Any]:
     """Statistical hypothesis tests (Spearman, Kruskal-Wallis, Mann-Whitney).
+
+    Requires ``independent_observations=True``; non-finite p-values become
+    explicitly non-applicable and are excluded from the finite-only
+    Benjamini-Hochberg family.
 
     Parameters
     ----------
@@ -2499,6 +2556,8 @@ def statistical_hypothesis_tests(
     seed : int
         Random seed for bootstrap resampling.
     """
+    if independent_observations is not True:
+        raise ValueError("Hypothesis tests require independent_observations=True")
     results = {}
     alpha = 0.05
 
@@ -2546,7 +2605,10 @@ def statistical_hypothesis_tests(
     position_groups = [g for g in position_groups if len(g) >= 10]
 
     if len(position_groups) >= 2:
-        h_stat, p_val = stats.kruskal(*position_groups)
+        if all(np.all(g == position_groups[0][0]) for g in position_groups):
+            h_stat, p_val = np.nan, np.nan
+        else:
+            h_stat, p_val = stats.kruskal(*position_groups)
         n_total = sum(len(g) for g in position_groups)
         epsilon_sq = h_stat / (n_total - 1) if n_total > 1 else 0.0
 
@@ -2586,6 +2648,13 @@ def statistical_hypothesis_tests(
             "effect_size_rank_biserial": float(rb) if np.isfinite(rb) else np.nan,
         }
 
+    for result in results.values():
+        result["applicable"] = bool(np.isfinite(result["p_value"]))
+        if not result["applicable"]:
+            result["significant"] = None
+            result["interpretation"] = "N/A (undefined test statistic)"
+            result["p_value_adj"] = np.nan
+            result["significant_adj"] = None
     # Optional multiple testing correction (Benjamini-Hochberg)
     _valid_adjust = set(ADJUST_METHODS) | _ADJUST_METHODS_ALIASES
     if adjust_method not in _valid_adjust:
@@ -2595,7 +2664,7 @@ def statistical_hypothesis_tests(
         )
     if adjust_method in _valid_adjust - {ADJUST_METHODS[0]} and results:
         # Collect p-values
-        items = list(results.items())
+        items = [(name, res) for name, res in results.items() if res["applicable"]]
         pvals = np.array([v[1]["p_value"] for v in items])
         m = len(pvals)
         order = np.argsort(pvals)
@@ -2621,6 +2690,8 @@ def statistical_hypothesis_tests(
 def _validate_hypothesis_test_results(results: dict[str, Any]) -> None:
     """Validate statistical properties of hypothesis test results."""
     for test_name, result in results.items():
+        if result.get("applicable") is False:
+            continue
         # All p-values must be in [0, 1] or NaN (for cases like constant input)
         if "p_value" in result:
             p_val = result["p_value"]
@@ -2681,12 +2752,18 @@ def bootstrap_confidence_intervals(
     confidence_level: float = 0.95,
     seed: int = 42,
     *,
+    independent_observations: bool,
     strict_diagnostics: bool = False,
 ) -> dict[str, tuple[float, float, float]]:
     """Compute bootstrap confidence intervals for metric means.
 
-    Returns percentile-based CIs, skipping metrics with <10 samples.
+    Requires ``independent_observations=True``; skips metrics with <10 samples.
+    Bounds are raw finite percentile estimates ordered low<=high and are not
+    forced to contain the point estimate; constant metrics retain their exact
+    degenerate interval in both strict and relaxed modes.
     """
+    if independent_observations is not True:
+        raise ValueError("Bootstrap intervals require independent_observations=True")
     alpha = 1 - confidence_level
     lower_percentile = 100 * alpha / 2
     upper_percentile = 100 * (1 - alpha / 2)
@@ -2721,10 +2798,6 @@ def bootstrap_confidence_intervals(
         if data_array.size == 0:
             continue
         if np.ptp(data_array) == 0:  # zero range -> constant
-            if strict_diagnostics:
-                # In strict mode, skip constant metrics entirely to avoid degenerate CI raise.
-                continue
-            # Graceful mode: record degenerate CI; validator will widen.
             results[metric] = (point_est, point_est, point_est)
             continue
 
@@ -2749,7 +2822,7 @@ def bootstrap_confidence_intervals(
 def _validate_bootstrap_results(
     results: dict[str, tuple[float, float, float]], *, strict_diagnostics: bool
 ) -> None:
-    """Validate each bootstrap CI: finite bounds, ordered, positive width (adjust or raise)."""
+    """Validate finite estimates and ordered percentile bounds without altering them."""
     for metric, (mean, ci_low, ci_high) in results.items():
         # CI bounds must be finite
         if not (np.isfinite(mean) and np.isfinite(ci_low) and np.isfinite(ci_high)):
@@ -2758,49 +2831,27 @@ def _validate_bootstrap_results(
                 f"(mean={mean}, ci_low={ci_low}, ci_high={ci_high})"
             )
 
-        # CI must be properly ordered
-        if not (ci_low <= mean <= ci_high):
+        # Percentile intervals need not contain the original sample mean.
+        if ci_low > ci_high:
             raise AssertionError(
                 f"Stats: bootstrap CI for {metric}: ordering violation "
-                f"({ci_low:.6f} <= {mean:.6f} <= {ci_high:.6f})"
-            )
-
-        # CI width should be positive (non-degenerate)
-        width = ci_high - ci_low
-        if width <= 0:
-            if strict_diagnostics:
-                raise AssertionError(
-                    f"Stats: bootstrap CI for {metric}: non-positive width {width:.6f}"
-                )
-            # Graceful mode: expand interval symmetrically
-            epsilon = INTERNAL_GUARDS["degenerate_ci_epsilon"] if width == 0 else abs(width) * 1e-06
-            center = mean
-            # Adjust only if current bounds are identical; otherwise enforce ordering minimally.
-            if ci_low == ci_high:
-                ci_low = center - epsilon
-                ci_high = center + epsilon
-            else:
-                # Ensure proper ordering if inverted or collapsed negatively.
-                lower = min(ci_low, ci_high) - epsilon
-                upper = max(ci_low, ci_high) + epsilon
-                ci_low, ci_high = lower, upper
-            results[metric] = (mean, ci_low, ci_high)
-            warnings.warn(
-                f"Stats: bootstrap_ci for '{metric}' degenerate (width={width:.6g}); falling back to epsilon={epsilon:.6g}",
-                RewardDiagnosticsWarning,
-                stacklevel=2,
+                f"({ci_low:.6f} > {ci_high:.6f})"
             )
 
 
 def distribution_diagnostics(
     df: pd.DataFrame,
     *,
+    independent_observations: bool = False,
     seed: int | None = None,
     strict_diagnostics: bool = False,
 ) -> dict[str, Any]:
-    """Return mapping col-> diagnostics (tests, moments, entropy, divergences).
+    """Return moments and normality diagnostics for available numeric columns.
 
-    Skips missing columns; selects Shapiro-Wilk when n<=5000 else K2; ignores non-finite intermediates.
+    Normality tests are inferential and only run with
+    ``independent_observations=True``; the Q-Q fit and higher moments are
+    descriptive. Constants retain exact mean/std, mark higher moments as N/A
+    and omit tests and Q-Q fits in both strict and relaxed modes.
     """
     diagnostics = {}
     _ = seed  # placeholder to keep signature for future reproducibility extensions
@@ -2809,12 +2860,17 @@ def distribution_diagnostics(
         if col not in df.columns:
             continue
 
-        data = df[col].dropna().values
+        data = df[col].dropna().to_numpy(dtype=float)
         if len(data) < 10:
             continue
 
         diagnostics[f"{col}_mean"] = float(np.mean(data))
         diagnostics[f"{col}_std"] = float(np.std(data, ddof=1))
+        if np.ptp(data) == 0:
+            diagnostics[f"{col}_skewness"] = None
+            diagnostics[f"{col}_kurtosis"] = None
+            diagnostics[f"{col}_constant"] = True
+            continue
         skew_v = float(stats.skew(data))
         kurt_v = float(stats.kurtosis(data, fisher=True))
         diagnostics[f"{col}_skewness"] = skew_v
@@ -2826,18 +2882,19 @@ def distribution_diagnostics(
                 raise AssertionError(msg)
             warnings.warn(msg, RewardDiagnosticsWarning, stacklevel=2)
 
-        if len(data) < 5000:
-            sw_stat, sw_pval = stats.shapiro(data)
-            diagnostics[f"{col}_shapiro_stat"] = float(sw_stat)
-            diagnostics[f"{col}_shapiro_pval"] = float(sw_pval)
-            diagnostics[f"{col}_is_normal_shapiro"] = bool(sw_pval > 0.05)
+        if independent_observations:
+            if len(data) < 5000:
+                sw_stat, sw_pval = stats.shapiro(data)
+                diagnostics[f"{col}_shapiro_stat"] = float(sw_stat)
+                diagnostics[f"{col}_shapiro_pval"] = float(sw_pval)
+                diagnostics[f"{col}_is_normal_shapiro"] = bool(sw_pval > 0.05)
 
-        ad_result = stats.anderson(data, dist="norm")
-        diagnostics[f"{col}_anderson_stat"] = float(ad_result.statistic)
-        diagnostics[f"{col}_anderson_critical_5pct"] = float(ad_result.critical_values[2])
-        diagnostics[f"{col}_is_normal_anderson"] = bool(
-            ad_result.statistic < ad_result.critical_values[2]
-        )
+            ad_result = stats.anderson(data, dist="norm")
+            diagnostics[f"{col}_anderson_stat"] = float(ad_result.statistic)
+            diagnostics[f"{col}_anderson_critical_5pct"] = float(ad_result.critical_values[2])
+            diagnostics[f"{col}_is_normal_anderson"] = bool(
+                ad_result.statistic < ad_result.critical_values[2]
+            )
 
         (_osm, _osr), (_slope, _intercept, r) = probplot(data, dist="norm", plot=None)
         diagnostics[f"{col}_qq_r_squared"] = float(r**2)
@@ -2847,68 +2904,18 @@ def distribution_diagnostics(
 
 
 def _validate_distribution_diagnostics(diag: dict[str, Any], *, strict_diagnostics: bool) -> None:
-    """Validate mathematical properties of distribution diagnostics.
-
-    Ensures all reported statistics are finite and within theoretical bounds where applicable.
-    Invoked automatically inside distribution_diagnostics(); raising AssertionError on violation
-    enforces fail-fast semantics consistent with other validation helpers.
-    """
-    # Pre-compute zero-variance flags to allow graceful handling of undefined higher moments.
-    zero_var_columns = set()
-    for k, v in diag.items():
-        if k.endswith("_std") and (not np.isfinite(v) or v == 0):
-            prefix = k[: -len("_std")]
-            zero_var_columns.add(prefix)
-
-    for key, value in list(diag.items()):
-        if any(suffix in key for suffix in ["_mean", "_std", "_skewness", "_kurtosis"]):  # noqa: SIM102
-            if not np.isfinite(value):
-                # Graceful degradation for constant distributions: skewness/kurtosis become NaN.
-                constant_problem = any(
-                    key.startswith(prefix)
-                    and (key.endswith("_skewness") or key.endswith("_kurtosis"))
-                    for prefix in zero_var_columns
-                )
-                if constant_problem and not strict_diagnostics:
-                    fallback = INTERNAL_GUARDS.get("distribution_constant_fallback_moment", 0.0)
-                    diag[key] = fallback
-                    warnings.warn(
-                        f"Stats: {key} undefined (constant distribution); falling back to {fallback}",
-                        RewardDiagnosticsWarning,
-                        stacklevel=2,
-                    )
-                else:
-                    raise AssertionError(
-                        f"Stats: distribution diagnostic {key} is not finite: {value}"
-                    )
+    """Validate reported diagnostics without fabricating undefined statistics."""
+    for key, value in diag.items():
+        if value is None and key.endswith(("_skewness", "_kurtosis")):
+            column = key.rsplit("_", 1)[0]
+            if diag.get(f"{column}_constant") is True:
+                continue
+        if value is None or not np.isfinite(value):
+            raise AssertionError(f"Stats: distribution diagnostic {key} is not finite: {value}")
         if key.endswith("_shapiro_pval") and not (0 <= value <= 1):
             raise AssertionError(f"Stats: Shapiro p-value {key} must be in [0,1], got {value}")
-        if key.endswith("_anderson_stat") or key.endswith("_anderson_critical_5pct"):  # noqa: SIM102
-            if not np.isfinite(value):
-                prefix = key.rsplit("_", 2)[0]
-                if prefix in zero_var_columns and not strict_diagnostics:
-                    fallback = INTERNAL_GUARDS.get("distribution_constant_fallback_moment", 0.0)
-                    diag[key] = fallback
-                    warnings.warn(
-                        f"Stats: {key} undefined (constant distribution); falling back to {fallback}",
-                        RewardDiagnosticsWarning,
-                        stacklevel=2,
-                    )
-                    continue
-                raise AssertionError(f"Stats: Anderson statistic {key} must be finite, got {value}")
-        if key.endswith("_qq_r_squared"):  # noqa: SIM102
-            if not (isinstance(value, (int, float)) and np.isfinite(value) and 0 <= value <= 1):
-                prefix = key[: -len("_qq_r_squared")]
-                if prefix in zero_var_columns and not strict_diagnostics:
-                    fallback_r2 = INTERNAL_GUARDS.get("distribution_constant_fallback_qq_r2", 1.0)
-                    diag[key] = fallback_r2
-                    warnings.warn(
-                        f"Stats: {key} undefined (constant distribution); falling back to {fallback_r2}",
-                        RewardDiagnosticsWarning,
-                        stacklevel=2,
-                    )
-                else:
-                    raise AssertionError(f"Stats: Q-Q R^2 {key} must be in [0,1], got {value}")
+        if key.endswith("_qq_r_squared") and not (0 <= value <= 1):
+            raise AssertionError(f"Stats: Q-Q R^2 {key} must be in [0,1], got {value}")
 
 
 """PBRS (Potential-Based Reward Shaping) transforms & helpers."""
@@ -2947,8 +2954,8 @@ def _apply_transform_sigmoid(value: float) -> float:
         return 1.0 if x > 0 else -1.0
 
 
-def _apply_transform_asinh(value: float) -> float:
-    """asinh: x / sqrt(1 + x^2) in (-1, 1)."""
+def _apply_transform_softsign_sqrt(value: float) -> float:
+    """softsign_sqrt: x / sqrt(1 + x^2) in (-1, 1)."""
     return float(value / math.hypot(1.0, value))
 
 
@@ -2964,7 +2971,7 @@ def apply_transform(transform_name: TransformFunction | str, value: float, **kwa
         "softsign": _apply_transform_softsign,
         "arctan": _apply_transform_arctan,
         "sigmoid": _apply_transform_sigmoid,
-        "asinh": _apply_transform_asinh,
+        "softsign_sqrt": _apply_transform_softsign_sqrt,
         "clip": _apply_transform_clip,
     }
 
@@ -3251,6 +3258,7 @@ def compute_pbrs_components(
     prev_potential: float,
     is_exit: bool = False,
     is_entry: bool = False,
+    entry_pnl: float = 0.0,
 ) -> tuple[float, float, float, float, float]:
     """Compute potential-based reward shaping (PBRS) components.
 
@@ -3279,6 +3287,8 @@ def compute_pbrs_components(
 
     Then:
         Φ_hold(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
+        Loss-side bound: |Φ_hold| <= scale * (1 + risk_reward_ratio) / 2.
+        Global bound uses scale * max(1, (1 + risk_reward_ratio) / 2).
 
     Returns
     -------
@@ -3330,9 +3340,7 @@ def compute_pbrs_components(
         entry_additive = 0.0
         exit_additive = 0.0
     else:
-        cand_entry_add = _compute_entry_additive(
-            next_pnl, pnl_target, next_duration_ratio, params, base_factor
-        )
+        cand_entry_add = _compute_entry_additive(entry_pnl, pnl_target, 0.0, params, base_factor)
         cand_exit_add = _compute_exit_additive(
             current_pnl, pnl_target, current_duration_ratio, params, base_factor
         )
@@ -3588,8 +3596,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--strict_diagnostics",
         action="store_true",
         help=(
-            "Enable fail-fast mode for statistical diagnostics: raise on zero-width bootstrap CIs or undefined "
-            "skewness/kurtosis/Anderson/Q-Q metrics produced by constant distributions instead of applying graceful replacements."
+            "Raise on extreme distribution moments instead of warning. Constant distributions retain "
+            "N/A diagnostics and exact zero-width bootstrap intervals in either mode."
         ),
     )
     parser.add_argument(
@@ -3617,6 +3625,56 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def verify_pbrs_trajectory(df: pd.DataFrame, gamma: float) -> dict[str, Any]:
+    """Verify complete ordered episodes, local shaping and discounted telescoping.
+
+    Evidence requires episode_id, zero-based contiguous transition_index,
+    terminated, prev_potential, next_potential and reward_shaping. Verification
+    concerns these observed trajectories, not a proof of policy invariance.
+    """
+    required = {
+        "episode_id",
+        "transition_index",
+        "terminated",
+        "prev_potential",
+        "next_potential",
+        "reward_shaping",
+    }
+    if not required.issubset(df.columns) or df.empty:
+        return {"verified": False, "reason": "Insufficient ordered trajectory evidence"}
+    if not np.isfinite(gamma) or not 0 <= gamma <= 1 or df["episode_id"].isna().any():
+        return {"verified": False, "reason": "Invalid discount or episode identity"}
+    max_residual = 0.0
+    for _, episode in df.groupby("episode_id", sort=False):
+        n = len(episode)
+        if n < 2 or not np.array_equal(episode["transition_index"], np.arange(n)):
+            return {"verified": False, "reason": "Missing, repeated or unordered transitions"}
+        terminal = episode["terminated"].to_numpy()
+        if not np.array_equal(terminal, np.arange(n) == n - 1):
+            return {"verified": False, "reason": "Incomplete episode boundaries"}
+        prev = episode["prev_potential"].to_numpy(dtype=float)
+        nxt = episode["next_potential"].to_numpy(dtype=float)
+        shaping = episode["reward_shaping"].to_numpy(dtype=float)
+        if not all(np.isfinite(x).all() for x in (prev, nxt, shaping)):
+            return {"verified": False, "reason": "Non-finite transition evidence"}
+        if not np.allclose(nxt[:-1], prev[1:], atol=PBRS_INVARIANCE_TOL, rtol=0):
+            return {"verified": False, "reason": "Potential discontinuity between transitions"}
+        if not np.allclose(shaping, gamma * nxt - prev, atol=PBRS_INVARIANCE_TOL, rtol=0):
+            return {"verified": False, "reason": "Local shaping identity violated"}
+        residual = float(np.dot(gamma ** np.arange(n), shaping) + prev[0] - gamma**n * nxt[-1])
+        max_residual = max(max_residual, abs(residual))
+        if abs(residual) > PBRS_INVARIANCE_TOL or abs(nxt[-1]) > PBRS_INVARIANCE_TOL:
+            return {
+                "verified": False,
+                "reason": "Discounted boundary or terminal potential violated",
+            }
+    return {
+        "verified": True,
+        "reason": "Local identity, continuity and discounted terminal boundary verified",
+        "max_discounted_residual": max_residual,
+    }
+
+
 def write_complete_statistical_analysis(
     df: pd.DataFrame,
     output_dir: Path,
@@ -3625,6 +3683,7 @@ def write_complete_statistical_analysis(
     seed: int,
     real_df: pd.DataFrame | None = None,
     *,
+    independent_observations: bool = False,
     adjust_method: str = ADJUST_METHODS[0],
     stats_seed: int | None = None,
     strict_diagnostics: bool = False,
@@ -3738,7 +3797,13 @@ def write_complete_statistical_analysis(
     test_seed = (
         stats_seed if isinstance(stats_seed, int) else (seed if isinstance(seed, int) else 42)
     )
-    hypothesis_tests = statistical_hypothesis_tests(df, adjust_method=adjust_method, seed=test_seed)
+    hypothesis_tests = (
+        statistical_hypothesis_tests(
+            df, independent_observations=True, adjust_method=adjust_method, seed=test_seed
+        )
+        if independent_observations
+        else {}
+    )
     metrics_for_ci = [
         "reward",
         "reward_idle",
@@ -3753,20 +3818,30 @@ def write_complete_statistical_analysis(
         if col in df.columns
     ]
     metrics_for_ci.extend(extra_ci_cols)
-    bootstrap_ci = bootstrap_confidence_intervals(
-        df,
-        metrics_for_ci,
-        n_bootstrap=int(bootstrap_resamples),
-        seed=test_seed,
-        strict_diagnostics=strict_diagnostics,
+    bootstrap_ci = (
+        bootstrap_confidence_intervals(
+            df,
+            metrics_for_ci,
+            independent_observations=True,
+            n_bootstrap=int(bootstrap_resamples),
+            seed=test_seed,
+            strict_diagnostics=strict_diagnostics,
+        )
+        if independent_observations
+        else {}
     )
     dist_diagnostics = distribution_diagnostics(
-        df, seed=test_seed, strict_diagnostics=strict_diagnostics
+        df,
+        seed=test_seed,
+        strict_diagnostics=strict_diagnostics,
+        independent_observations=independent_observations,
     )
 
     distribution_shift = None
     if real_df is not None:
-        distribution_shift = compute_distribution_shift_metrics(df, real_df)
+        distribution_shift = compute_distribution_shift_metrics(
+            df, real_df, independent_observations=independent_observations
+        )
 
     # Write comprehensive report
     with report_path.open("w", encoding="utf-8") as f:
@@ -4061,64 +4136,19 @@ def write_complete_statistical_analysis(
                 exit_additive_enabled_raw,
             )
 
-            # True PBRS invariance classification:
-            # - Canonical requires canonical mode AND no effective additives.
-            # - When `reward_invariance_correction` is present, we use it as the primary
-            #   diagnostic (reward_shaping - reward_pbrs_delta).
-            # - Otherwise, we fall back to the weaker heuristic |Σ shaping| ≈ 0.
-            is_theoretically_invariant = exit_potential_mode == "canonical" and not (
+            evidence = verify_pbrs_trajectory(df, _get_potential_gamma(reward_params))
+            canonical = exit_potential_mode == "canonical" and not (
                 entry_additive_effective or exit_additive_effective
             )
-
-            has_inv_correction = "reward_invariance_correction" in df.columns
-            max_abs_inv_correction: float | None
-            if has_inv_correction:
-                max_abs_inv_correction = float(df["reward_invariance_correction"].abs().max())
-                correction_near_zero = max_abs_inv_correction < PBRS_INVARIANCE_TOL
-            else:
-                max_abs_inv_correction = None
-                correction_near_zero = None
-            shaping_near_zero = abs(total_shaping) < PBRS_INVARIANCE_TOL
-
-            suppression_note = ""
-            if additives_suppressed:
-                suppression_note = (
-                    " Additives are suppressed in canonical mode"
-                    f" (requested entry_additive_enabled={bool(entry_additive_enabled_raw)},"
-                    f" exit_additive_enabled={bool(exit_additive_enabled_raw)})."
-                )
-
-            # Prepare invariance summary markdown block
-            if is_theoretically_invariant:
-                if correction_near_zero is True:
-                    invariance_status = "✅ Canonical"
-                    invariance_note = (
-                        "Theoretical invariance preserved (canonical mode, no additives, max|correction|≈0)."
-                        + suppression_note
-                    )
-                elif correction_near_zero is False:
-                    invariance_status = "⚠️ Canonical (with warning)"
-                    invariance_note = (
-                        "Canonical mode but invariance correction is non-zero"
-                        f" (max|correction|={max_abs_inv_correction:.6e})." + suppression_note
-                    )
-                else:
-                    # Fallback: without invariance correction, use Σ shaping as a heuristic.
-                    if shaping_near_zero:
-                        invariance_status = "✅ Canonical"
-                        invariance_note = (
-                            "Theoretical invariance preserved (canonical mode, no additives, Σ≈0)."
-                            + suppression_note
-                        )
-                    else:
-                        invariance_status = "⚠️ Canonical (with warning)"
-                        invariance_note = (
-                            "Canonical mode but Σ shaping is non-zero"
-                            f" (Σ={total_shaping:.6f}; correction column unavailable)."
-                            + suppression_note
-                        )
-            else:
-                invariance_status = "❌ Non-canonical"
+            invariance_status = (
+                "Canonical: observed PBRS verified"
+                if canonical and evidence["verified"]
+                else "Not verified"
+                if canonical
+                else "Non-canonical: not verified"
+            )
+            invariance_note = evidence["reason"] + ". Raw shaping sums do not certify invariance."
+            if not canonical:
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
@@ -4129,7 +4159,9 @@ def write_complete_statistical_analysis(
                     if exit_additive_effective:
                         additive_types.append("exit")
                     reasons.append(f"additives={additive_types}")
-                invariance_note = f"Modified for flexibility: {', '.join(reasons)}"
+                invariance_note += f" Modified for flexibility: {', '.join(reasons)}"
+            elif additives_suppressed:
+                invariance_note += " Additives are suppressed in canonical mode."
             # Summarize PBRS invariance
             f.write("**PBRS Invariance Summary:**\n\n")
             f.write("| Field | Value |\n")
@@ -4170,7 +4202,7 @@ def write_complete_statistical_analysis(
                 )
             else:
                 f.write(
-                    "Machine learning analysis to identify which features most influence total reward.\n\n"
+                    "Random Forest within-trajectory descriptive analysis, not independent generalization evidence.\n\n"
                 )
                 f.write("**Model:** Random Forest Regressor (400 trees)  \n")
                 f.write(f"**R² Score:** {analysis_stats['r2_score']:.4f}\n\n")
@@ -4196,63 +4228,33 @@ def write_complete_statistical_analysis(
                     )
 
         # Section 5: Statistical Validation
-        if hypothesis_tests:
+        if hypothesis_tests or bootstrap_ci or dist_diagnostics or distribution_shift:
             f.write("---\n\n")
             f.write("## 5. Statistical Validation\n\n")
-            f.write("Rigorous statistical tests to validate reward behavior and relationships.\n\n")
+            if not independent_observations:
+                f.write(
+                    "Descriptive trajectory analysis: inferential tests, p-values and confidence intervals are suppressed because independent observations were not declared.\n\n"
+                )
 
-            f.write("### 5.1 Hypothesis Tests\n\n")
-
-            if "idle_correlation" in hypothesis_tests:
-                h = hypothesis_tests["idle_correlation"]
-                f.write("#### 5.1.1 Idle Duration → Idle Penalty Correlation\n\n")
-                f.write(f"**Test Method:** {h['test']}\n\n")
-                f.write(f"- Spearman ρ: **{h['rho']:.4f}**\n")  # noqa: RUF001
-                f.write(f"- p-value: {h['p_value']:.4g}\n")
-                if "p_value_adj" in h:
-                    f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"  # noqa: RUF001
-                    )
-                f.write(f"- 95% CI: [{h['ci_95'][0]:.4f}, {h['ci_95'][1]:.4f}]\n")
-                f.write(f"- CI width: {(h['ci_95'][1] - h['ci_95'][0]):.4f}\n")
-                f.write(f"- Sample size: {h['n_samples']:,}\n")
-                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")  # noqa: RUF001
-                f.write(f"- **Interpretation:** {h['interpretation']}\n\n")
-
-            if "position_reward_difference" in hypothesis_tests:
-                h = hypothesis_tests["position_reward_difference"]
-                f.write("#### 5.1.2 Position-Based Reward Differences\n\n")
-                f.write(f"**Test Method:** {h['test']}\n\n")
-                f.write(f"- H-statistic: **{h['statistic']:.4f}**\n")
-                f.write(f"- p-value: {h['p_value']:.4g}\n")
-                if "p_value_adj" in h:
-                    f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"  # noqa: RUF001
-                    )
-                f.write(f"- Effect size (ε²): {h['effect_size_epsilon_sq']:.4f}\n")
-                f.write(f"- Number of groups: {h['n_groups']}\n")
-                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n")  # noqa: RUF001
-                f.write(f"- **Interpretation:** {h['interpretation']} effect\n\n")
-
-            if "pnl_sign_reward_difference" in hypothesis_tests:
-                h = hypothesis_tests["pnl_sign_reward_difference"]
-                f.write("#### 5.1.3 Positive vs Negative PnL Comparison\n\n")
-                f.write(f"**Test Method:** {h['test']}\n\n")
-                f.write(f"- U-statistic: **{h['statistic']:.4f}**\n")
-                f.write(f"- p-value: {h['p_value']:.4g}\n")
-                if "p_value_adj" in h:
-                    f.write(
-                        f"- p-value (adj BH): {h['p_value_adj']:.4g} -> {'✅ Yes' if h['significant_adj'] else '❌ No'} (α=0.05)\n"  # noqa: RUF001
-                    )
-                f.write(f"- Median (PnL+): {h['median_pnl_positive']:.4f}\n")
-                f.write(f"- Median (PnL-): {h['median_pnl_negative']:.4f}\n")
-                f.write(f"- Significant (α=0.05): {'✅ Yes' if h['significant'] else '❌ No'}\n\n")  # noqa: RUF001
+            if hypothesis_tests:
+                f.write("### 5.1 Hypothesis Tests\n\n")
+                for name, result in hypothesis_tests.items():
+                    f.write(f"#### {name.replace('_', ' ').title()}\n\n")
+                    if not result["applicable"]:
+                        f.write(
+                            "N/A (undefined test statistic); excluded from the correction family.\n\n"
+                        )
+                        continue
+                    f.write("| Metric | Value |\n|--------|-------|\n")
+                    for key, value in result.items():
+                        f.write(f"| {key} | {_fmt_val(value)} |\n")
+                    f.write("\n")
 
             # Bootstrap CI
             if bootstrap_ci:
                 f.write("### 5.2 Confidence Intervals\n\n")
                 f.write(
-                    "Bootstrap confidence intervals (95%, 10,000 resamples) for key metrics:\n\n"
+                    f"Bootstrap confidence intervals (95%, {bootstrap_resamples:,} resamples) for key metrics:\n\n"
                 )
                 f.write("| Metric | Mean | 95% CI Lower | 95% CI Upper | Width |\n")
                 f.write("|--------|------|--------------|--------------|-------|\n")
@@ -4265,8 +4267,10 @@ def write_complete_statistical_analysis(
 
             # Distribution diagnostics
             if dist_diagnostics:
-                f.write("### 5.3 Distribution Normality Tests\n\n")
-                f.write("Statistical tests for normality of key distributions:\n\n")
+                f.write("### 5.3 Distribution Diagnostics\n\n")
+                f.write(
+                    "Moments and descriptive Q-Q fit; normality tests require independent observations.\n\n"
+                )
                 for col in ["reward", "pnl", "trade_duration", "idle_duration"]:
                     if f"{col}_mean" in dist_diagnostics:
                         f.write(f"#### {col.replace('_', ' ').title()}\n\n")
@@ -4274,8 +4278,15 @@ def write_complete_statistical_analysis(
                         f.write("|--------|-------|\n")
                         f.write(f"| Mean | {dist_diagnostics[f'{col}_mean']:.4f} |\n")
                         f.write(f"| Std Dev | {dist_diagnostics[f'{col}_std']:.4f} |\n")
-                        f.write(f"| Skewness | {dist_diagnostics[f'{col}_skewness']:.4f} |\n")
-                        f.write(f"| Kurtosis | {dist_diagnostics[f'{col}_kurtosis']:.4f} |\n")
+                        for label, suffix in (("Skewness", "skewness"), ("Kurtosis", "kurtosis")):
+                            value = dist_diagnostics[f"{col}_{suffix}"]
+                            rendered = (
+                                "N/A (constant distribution)" if value is None else f"{value:.4f}"
+                            )
+                            f.write(f"| {label} | {rendered} |\n")
+                        if dist_diagnostics.get(f"{col}_constant", False):
+                            f.write("| Normality Tests | N/A (constant distribution) |\n")
+                            f.write("| Q-Q Plot R² | N/A (constant distribution) |\n")
                         if f"{col}_shapiro_pval" in dist_diagnostics:
                             is_normal = (
                                 "✅ Yes"
@@ -4318,10 +4329,11 @@ def write_complete_statistical_analysis(
                     js = distribution_shift.get(f"{feature}_js_distance", np.nan)
                     ws = distribution_shift.get(f"{feature}_wasserstein", np.nan)
                     ks_stat = distribution_shift.get(f"{feature}_ks_statistic", np.nan)
-                    ks_p = distribution_shift.get(f"{feature}_ks_pvalue", np.nan)
+                    ks_p = distribution_shift.get(f"{feature}_ks_pvalue")
+                    ks_p_text = "N/A" if ks_p is None else f"{ks_p:.4g}"
 
                     f.write(
-                        f"| {feature} | {kl:.4f} | {js:.4f} | {ws:.4f} | {ks_stat:.4f} | {ks_p:.4g} |\n"
+                        f"| {feature} | {kl:.4f} | {js:.4f} | {ws:.4f} | {ks_stat:.4f} | {ks_p_text} |\n"
                     )
                 f.write("\n")
                 f.write("**Interpretation Guide:**\n\n")
@@ -4329,7 +4341,10 @@ def write_complete_statistical_analysis(
                 f.write("|--------|-----------|--------|\n")
                 f.write("| KL Divergence | < 0.3 | ✅ Yes: Good representativeness |\n")
                 f.write("| JS Distance | < 0.2 | ✅ Yes: Similar distributions |\n")
-                f.write("| KS p-value | > 0.05 | ✅ Yes: No significant difference |\n\n")
+                if independent_observations:
+                    f.write(
+                        "| KS p-value | > 0.05 | Does not reject equality; not proof of equivalence |\n\n"
+                    )
             else:
                 # Placeholder keeps numbering stable and explicit
                 f.write("### 5.4 Distribution Shift Analysis\n\n")
@@ -4352,7 +4367,14 @@ def write_complete_statistical_analysis(
             )
         else:
             f.write("4. **Feature Importance** - Machine learning analysis of key drivers\n")
-        f.write("5. **Statistical Validation** - Hypothesis tests and confidence intervals\n")
+        f.write(
+            "5. **Statistical Validation** - "
+            + (
+                "Independent-observation tests and confidence intervals\n"
+                if independent_observations
+                else "Descriptive diagnostics only; inference suppressed\n"
+            )
+        )
         if distribution_shift:
             f.write("6. **Distribution Shift** - Comparison with real trading data\n")
         else:
