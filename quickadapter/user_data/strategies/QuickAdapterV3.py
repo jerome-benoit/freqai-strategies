@@ -1418,7 +1418,7 @@ class QuickAdapterV3(IStrategy):
         after_fill: bool,
         **kwargs,
     ) -> float | None:
-        # Partial exits must not refresh an acquired stop in either direction.
+        # Post-fill updates can widen the stop; preserve the existing stop instead.
         if after_fill:
             return None
 

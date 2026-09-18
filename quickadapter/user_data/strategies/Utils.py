@@ -3254,11 +3254,11 @@ def compute_label_weight_known_at_lookahead(
     ``i_{k+1} == known_at_positions[indices[k+1]]``; the terminal pivot has no
     closing swing (weight 0 via ``_impute_weights``) and never resolves in-frame
     -> ``n``. A uniform pivot instead has a unit weight at its own label
-    availability. Gaussian-filled rows additionally wait for the raw label
-    availability throughout their LOCAL band ``[row-fill_radius, row+fill_radius]``:
-    an as-yet-unconfirmed pivot can still change their weight. Actual pivot metric
-    dependencies are then spread separately, without dilating terminal weights.
-    Folded via ``max(label, weight)`` by the causal purge.
+    availability. With Gaussian fill, rows wait for label availability throughout
+    ``[row-fill_radius, row+fill_radius]`` because unconfirmed pivots can change
+    their weights. They also wait for contributing pivots' metric weights;
+    zero terminal-pivot weights add no dependency. The causal purge uses
+    ``max(label, weight)`` availability.
 
     For adaptive k-NN bandwidths a pivot's band additionally waits until every
     confirmable finite suffix of the frame yields the same clipped sigma --

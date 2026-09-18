@@ -2323,7 +2323,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _resolve_deployment_state(
         self, dk: FreqaiDataKitchen, pair: str
     ) -> tuple[Any, Pipeline, Pipeline] | None:
-        """Restore the model and its matching coordinate system as one unit."""
+        """Restore the deployed model with independent copies of its fitted pipelines."""
         if not self.continual_learning:
             return None
         if self.regressor == _REGRESSOR_SPECS.xgboost.name:
@@ -2357,8 +2357,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 feature_pipeline = cached[FEATURE_PIPELINE]
                 label_pipeline = cached[LABEL_PIPELINE]
             else:
-                # The current kitchen already points at the NEW training window.
-                # Canonical loading must target the previously deployed files.
+                # dk points to the current training window, not the deployed model's files.
                 previous_dk = copy.copy(dk)
                 previous_dk.data_path = Path(previous["data_path"])
                 previous_dk.model_filename = previous["model_filename"]
@@ -2737,10 +2736,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             _, dk.feature_pipeline, dk.label_pipeline = deployment_state
         pipeline_labels = labels
-        # Unique sentinel keys keep the smuggled vectors free of collisions
-        # with real label columns; they are initialized before use regardless
-        # of availability. ``__getitem__``/``drop`` handle non-string keys
-        # (DataFrame.pop's stub only accepts strings).
+        # Temporary label columns keep weights aligned through feature row filters;
+        # feature transforms must preserve label values. Object keys avoid collisions.
         base_weight_column = object()
         label_weight_column = object()
         if weight_inputs.label is not None:
@@ -3376,8 +3373,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             raw_label = pred_df.get(label_col)
             if raw_label is None:
                 continue
-            # Downtime zero-filling upcasts stored numeric columns to object;
-            # coerce instead of silently skipping post-downtime statistics.
+            # Downtime filling can leave numeric predictions in object-typed columns.
             pred_label = pd.to_numeric(raw_label, errors="coerce")
             if raw_label.dtype == object and pred_label.isna().all():
                 continue
