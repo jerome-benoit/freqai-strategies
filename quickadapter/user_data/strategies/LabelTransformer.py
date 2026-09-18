@@ -386,7 +386,7 @@ class LabelTransformer(BaseTransform):
             )
             if clipped_count:
                 logger.warning(
-                    "sigmoid_inverse_normalize: clipped %d value(s) outside the open (-1, 1) domain",
+                    "sigmoid_inverse_normalize: Clipped %d value(s) outside the open (-1, 1) domain",
                     clipped_count,
                 )
             out[mask] = sp.special.logit((clipped + 1.0) / 2.0) / scale
@@ -525,7 +525,7 @@ class LabelTransformer(BaseTransform):
         finite_values = values[np.isfinite(values)]
         if finite_values.size == 0:
             logger.warning(
-                f"Column {column_name!r}: no finite values found, using fallback [0.0, 1.0]"
+                f"Column {column_name!r}: No finite values found, using fallback [0.0, 1.0]"
             )
             fit_values = np.array([0.0, 1.0])
         else:
