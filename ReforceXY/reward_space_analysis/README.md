@@ -336,6 +336,10 @@ corresponding `*_additive_enabled` flags are set.
 Note: PBRS telescoping/zero-sum shaping is a property of coherent trajectories
 (episodes). `simulate_samples()` generates synthetic trajectories (state carried
 across samples) and does not apply any drift correction in post-processing.
+Trade duration is zero on entry and advances before each subsequent in-position
+reward, including an immediate exit on the next candle. The report summary uses
+the same canonical/non-canonical classification as the detailed PBRS section;
+a zero numerical correction alone does not establish canonical invariance.
 
 #### Hold Potential Transforms
 

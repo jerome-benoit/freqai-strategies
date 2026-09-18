@@ -1609,6 +1609,10 @@ def simulate_samples(
     entry_open = current_open
 
     for _ in range(num_samples):
+        if position in (Positions.Long, Positions.Short):
+            trade_duration = min(trade_duration + 1, max_trade_duration_cap)
+        else:
+            idle_duration = min(idle_duration + 1, max_idle_duration_candles)
         # Simulate synthetic open-price movement.
         duration_ratio = (
             _compute_duration_ratio(trade_duration, max_trade_duration_candles)
@@ -1717,9 +1721,7 @@ def simulate_samples(
 
         # Transition state
         if position == Positions.Neutral:
-            if action == Actions.Neutral:
-                idle_duration = min(idle_duration + 1, max_idle_duration_candles)
-            elif action == Actions.Long_enter:
+            if action == Actions.Long_enter:
                 position = Positions.Long
                 trade_duration = 0
                 idle_duration = 0
@@ -1747,9 +1749,7 @@ def simulate_samples(
                 min_unrealized_profit = pnl
         else:
             idle_duration = 0
-            if action == Actions.Neutral:
-                trade_duration = min(trade_duration + 1, max_trade_duration_cap)
-            elif action in (Actions.Long_exit, Actions.Short_exit):
+            if action in (Actions.Long_exit, Actions.Short_exit):
                 position = Positions.Neutral
                 trade_duration = 0
                 idle_duration = 0
@@ -3963,6 +3963,7 @@ def write_complete_statistical_analysis(
             "reward_exit_additive",
         ]
         pbrs_present = all(col in df.columns for col in pbrs_components)
+        invariance_status: str | None = None
 
         if pbrs_present:
             # PBRS activation rates
@@ -4356,25 +4357,8 @@ def write_complete_statistical_analysis(
             f.write("6. **Distribution Shift** - Comparison with real trading data\n")
         else:
             f.write("6. **Distribution Shift** - Not performed (no real episodes provided)\n")
-        if "reward_shaping" in df.columns:
-            _total_shaping = float(df["reward_shaping"].sum())
-            if "reward_invariance_correction" in df.columns:
-                _max_abs_corr = float(df["reward_invariance_correction"].abs().max())
-                _canonical = _max_abs_corr < PBRS_INVARIANCE_TOL
-                _pbrs_summary = (
-                    "Canonical (max|correction| ≈ 0)"
-                    if _canonical
-                    else f"Canonical (with warning; max|correction|={_max_abs_corr:.6e})"
-                )
-            else:
-                _canonical = abs(_total_shaping) < PBRS_INVARIANCE_TOL
-                _pbrs_summary = (
-                    "Canonical (Σ shaping ≈ 0)"
-                    if _canonical
-                    else f"Canonical (with warning; Σ shaping={_total_shaping:.6f})"
-                )
-
-            f.write("7. **PBRS Invariance** - " + _pbrs_summary + "\n")
+        if invariance_status is not None:
+            f.write("7. **PBRS Invariance** - " + invariance_status + "\n")
         f.write("\n")
         f.write("**Generated Files:**\n")
         f.write("- `reward_samples.csv` - Raw synthetic samples\n")

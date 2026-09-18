@@ -194,9 +194,12 @@ def _install_date_pred_dedup_patch() -> None:
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        self.model_return_values[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.model_return_values[pair]
-        )
+        predictions = _dedupe_historic_predictions_on_date_pred(self.model_return_values[pair])
+        if "date_pred" in predictions:
+            dates = pd.to_datetime(dataframe["date"], utc=True)
+            predictions = predictions.set_index("date_pred", drop=False).reindex(dates)
+            predictions.index = dataframe.index
+        self.model_return_values[pair] = predictions
         return original_attach(self, pair, dataframe)
 
     replacements = (
@@ -485,6 +488,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
         self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
         self._model_params_cache: dict[str, Any] | None = None
+        self._frame_buffers: dict[str, tuple[Any, deque[NDArray[np.float32]]]] = {}
         self._lstm_states_cache: dict[
             str,
             tuple[
@@ -643,11 +647,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: purge_period has no effect when continuous=True; defaulting to 0"
             )
             self.optuna_purge_period = 0
-        add_state_info = self.rl_config.get("add_state_info", False)
-        if not add_state_info:
+        hold_potential_enabled = self.rl_config.get("model_reward_parameters", {}).get(
+            "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
+        )
+        if MyRLEnv.is_unsupported_pbrs_config(
+            hold_potential_enabled, self.rl_config.get("add_state_info", False)
+        ):
+            logger.warning("Config [global]: hold potential requires add_state_info; enabling")
+            self.rl_config["add_state_info"] = True
+        if self.continual_learning and self.hyperopt:
             logger.warning(
-                "Config [global]: add_state_info=False may lead to desynchronized trade states after restart"
+                "Config [global]: continual_learning is incompatible with HPO; disabling continuation"
             )
+            self.continual_learning = False
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
@@ -671,33 +683,21 @@ class ReforceXY(BaseReinforcementLearningModel):
     def pack_env_dict(
         self, pair: str, model_params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        env_info = super().pack_env_dict(pair)
-
-        config = env_info.setdefault("config", {})
-        freqai_cfg = config.setdefault("freqai", {})
-        rl_cfg = freqai_cfg.setdefault("rl_config", {})
-        model_reward_parameters = rl_cfg.setdefault("model_reward_parameters", {})
-
-        gamma: float | None = None
-
-        if model_params and isinstance(model_params.get("gamma"), (int, float)):
-            gamma = float(model_params.get("gamma"))
-        elif self.hyperopt:
-            best_trial_params = self.load_best_trial_params(pair)
-            if best_trial_params and isinstance(best_trial_params.get("gamma"), (int, float)):
-                gamma = float(best_trial_params.get("gamma"))
-
-        if (
-            gamma is None
-            and hasattr(self.model, "gamma")
-            and isinstance(self.model.gamma, (int, float))
+        if not self.live and self.rl_config.get("model_reward_parameters", {}).get(
+            "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
         ):
-            gamma = float(self.model.gamma)
-
-        if gamma is None:
-            model_params_gamma = self.get_model_params().get("gamma")
-            if isinstance(model_params_gamma, (int, float)):
-                gamma = float(model_params_gamma)
+            raise ValueError(
+                "Hold potential requires state observations, unavailable in backtesting"
+            )
+        env_info = super().pack_env_dict(pair)
+        # Each environment owns its effective parameters; do not mutate global config.
+        config = copy.deepcopy(env_info["config"])
+        env_info["config"] = config
+        model_reward_parameters = config["freqai"]["rl_config"].setdefault(
+            "model_reward_parameters", {}
+        )
+        effective_params = self.get_model_params() if model_params is None else model_params
+        gamma = effective_params.get("gamma")
 
         if gamma is not None:
             model_reward_parameters["potential_gamma"] = gamma
@@ -712,18 +712,22 @@ class ReforceXY(BaseReinforcementLearningModel):
         prices_train: DataFrame,
         prices_test: DataFrame,
         dk: FreqaiDataKitchen,
+        model_params: dict[str, Any] | None = None,
     ) -> None:
         """
         Set training and evaluation environments
         """
+        data_dictionary["train_prices"] = prices_train
+        data_dictionary["test_prices"] = prices_test
         if self.train_env is not None or self.eval_env is not None:
             logger.info("Env [%s]: closing environments", dk.pair)
             self.close_envs()
 
         train_df = data_dictionary.get("train_features")
         test_df = data_dictionary.get("test_features")
-        env_dict = self.pack_env_dict(dk.pair)
-        seed = self.get_model_params().get("seed", 42)
+        env_dict = self.pack_env_dict(dk.pair, model_params)
+        effective_params = self.get_model_params() if model_params is None else model_params
+        seed = effective_params.get("seed", 42)
 
         if self.check_envs:
             logger.info("Env [%s]: checking environments", dk.pair)
@@ -1117,13 +1121,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        # Rebuild train and eval environments before training to sync model parameters
-        prices_train, prices_test = self.build_ohlc_price_dataframes(
-            dk.data_dictionary, dk.pair, dk
-        )
-        self.set_train_and_eval_environments(dk.data_dictionary, prices_train, prices_test, dk)
-
         model = self.get_init_model(dk.pair)
+        effective_params = dict(model_params)
+        if model is not None:
+            effective_params["gamma"] = model.gamma
+        # Reuse raw prices captured before the feature pipeline transformed the data.
+        self.set_train_and_eval_environments(
+            data_dictionary,
+            data_dictionary["train_prices"],
+            data_dictionary["test_prices"],
+            dk,
+            model_params=effective_params,
+        )
         if model is not None:
             logger.info(
                 "Training [%s]: continual training activated, starting from previously trained model state",
@@ -1157,15 +1166,20 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.close_envs()
             if hasattr(model, "env") and model.env is not None:
                 model.env.close()
+            self._frame_buffers.pop(dk.pair, None)
+            self._lstm_states_cache.pop(dk.pair, None)
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
 
-        model_filename = dk.model_filename if dk.model_filename else "best"
-        model_filepath = Path(dk.data_path / f"{model_filename}_model.zip")
-        if model_filepath.is_file():
+        model_filepath = Path(dk.data_path / "best_model.zip")
+        if (
+            self.eval_callback is not None
+            and self.eval_callback.best_mean_reward > -np.inf
+            and model_filepath.is_file()
+        ):
             logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
-                best_model = self.MODELCLASS.load(dk.data_path / f"{model_filename}_model")
+                best_model = self.MODELCLASS.load(model_filepath)
                 return best_model
             except Exception as e:
                 logger.error(
@@ -1195,7 +1209,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         add_state_info: bool = self.rl_config.get("add_state_info", False)
         virtual_position: Positions = Positions.Neutral
         virtual_trade_duration: int = 0
-        if add_state_info and self.live:
+        if self.live and (add_state_info or (self.action_masking and self.inference_masking)):
             position, _, trade_duration = self.get_state_info(dk.pair)
             virtual_position = ReforceXY._normalize_position(position)
             virtual_trade_duration = trade_duration
@@ -1234,14 +1248,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                     return current_virtual_trade_duration + 1
             return 0
 
-        frame_buffer: deque[np.float32] = deque(
+        frame_buffer: deque[NDArray[np.float32]] = deque(
             maxlen=frame_stacking if frame_stacking_enabled else None
         )
+        if self.live and frame_stacking_enabled:
+            cached_frames = self._frame_buffers.get(dk.pair)
+            if cached_frames is not None and cached_frames[0] is model and n == window_size:
+                frame_buffer = cached_frames[1]
         zero_frame: NDArray[np.float32] | None = None
         model_id = id(model)
         lstm_states_cache_valid = (
             self.live
             and self.recurrent
+            and n == window_size
             and dk.pair in self._lstm_states_cache
             and self._lstm_states_cache[dk.pair][0] == model_id
         )
@@ -1300,7 +1319,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 action_mask_position = virtual_position
 
             if frame_stacking_enabled:
-                frame_buffer.append(np_observation)
+                # Own only the retained window, not the full prediction dataframe.
+                frame_buffer.append(np_observation.copy())
                 if len(frame_buffer) < frame_stacking:
                     pad_count = frame_stacking - len(frame_buffer)
                     if zero_frame is None:
@@ -1379,6 +1399,8 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         if self.live and self.recurrent:
             self._lstm_states_cache[dk.pair] = (model_id, lstm_states, episode_start)
+        if self.live and frame_stacking_enabled:
+            self._frame_buffers[dk.pair] = (model, frame_buffer)
 
         return DataFrame(dict.fromkeys(dk.label_list, actions_df["action"]))
 
@@ -2039,12 +2061,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         trial: Trial | None = None,
         model_params: dict[str, Any] | None = None,
     ) -> tuple[VecEnv, VecEnv]:
-        if train_df is None or test_df is None or prices_train is None or prices_test is None:
+        if train_df is None:
             train_df = dk.data_dictionary["train_features"]
+        if test_df is None:
             test_df = dk.data_dictionary["test_features"]
-            prices_train, prices_test = self.build_ohlc_price_dataframes(
-                dk.data_dictionary, dk.pair, dk
-            )
+        if prices_train is None:
+            prices_train = dk.data_dictionary["train_prices"]
+        if prices_test is None:
+            prices_test = dk.data_dictionary["test_prices"]
         seed: int = self.get_model_params().get("seed", 42) if seed is None else seed
         if trial is not None:
             seed += trial.number
@@ -2484,12 +2508,9 @@ class MyRLEnv(Base5ActionRLEnv):
         if MyRLEnv.is_unsupported_pbrs_config(
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
-            logger.warning(
-                "PBRS [%s]: hold_potential_enabled=True requires add_state_info=True, enabling",
-                self.id,
+            raise ValueError(
+                "Hold potential requires add_state_info=True before environment construction"
             )
-            self.add_state_info = True
-            self._set_observation_space()
 
         # === PNL TARGET ===
         self._pnl_target = float(self.profit_aim * self.rr)
@@ -4896,8 +4917,9 @@ def convert_optuna_params_to_model_params(
                 "vf_coef": float(optuna_params.get("vf_coef")),
             }
         )
-        if optuna_params.get("target_kl") is not None:
-            model_params["target_kl"] = float(optuna_params.get("target_kl"))
+        if "target_kl" in optuna_params:
+            target_kl = optuna_params["target_kl"]
+            model_params["target_kl"] = None if target_kl is None else float(target_kl)
         if ReforceXY._MODEL_TYPES[1] in model_type:  # "RecurrentPPO"
             policy_kwargs["lstm_hidden_size"] = int(optuna_params.get("lstm_hidden_size"))
             policy_kwargs["n_lstm_layers"] = int(optuna_params.get("n_lstm_layers"))

@@ -48,6 +48,67 @@ from ..test_base import RewardSpaceTestBase
 pytestmark = pytest.mark.pbrs
 
 
+class TestSimulationParity(RewardSpaceTestBase):
+    """Synthetic durations and reports follow runtime transition semantics."""
+
+    def test_simulate_durations_match_runtime_step(self):
+        """Every in-position candle advances duration, including an immediate exit."""
+        df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
+            num_samples=200,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        expected_duration = 0
+        for row in df.itertuples():
+            if row.position != Positions.Neutral.value:
+                expected_duration += 1
+            else:
+                expected_duration = 0
+            self.assertEqual(row.trade_duration, expected_duration)
+
+    def test_non_canonical_report_classifies_both_outputs(self):
+        """Zero correction cannot certify a non-canonical potential mode."""
+        df = simulate_samples(
+            params=self.base_params(
+                exit_potential_mode="retain_previous",
+                hold_potential_enabled=True,
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+                max_trade_duration_candles=100,
+            ),
+            num_samples=200,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        out_dir = self.output_path / "non_canonical_classifies_both"
+        write_complete_statistical_analysis(
+            df=df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.SAMPLE_SIZE_SMALL,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        self.assertRegex(content, r"\| Invariance Status \| [^\n]*Non-canonical \|")
+        self.assertRegex(content, r"PBRS Invariance\*\* - [^\n]*Non-canonical")
+
+
 class TestPBRS(RewardSpaceTestBase):
     """PBRS mechanics tests (transforms, parameters, potentials, invariance)."""
 
@@ -665,7 +726,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
 
     def test_simulate_samples_initializes_pnl_on_entry(self):
-        """simulate_samples() sets in-position pnl to fee-aware entry estimate."""
+        """First in-position candle includes fees and its duration-dependent drift."""
         params = self.base_params(
             exit_potential_mode="non_canonical",
             hold_potential_enabled=True,
@@ -711,7 +772,7 @@ class TestPBRS(RewardSpaceTestBase):
         expected_pnl = _compute_unrealized_pnl_estimate(
             Positions.Long,
             entry_open=1.0,
-            current_open=1.0,
+            current_open=1.0 + 0.001 / params["max_trade_duration_candles"],
             params=params,
         )
         post_entry_pnl = float(enter_pos.iloc[next_pos]["pnl"])
@@ -719,7 +780,7 @@ class TestPBRS(RewardSpaceTestBase):
             post_entry_pnl,
             expected_pnl,
             tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Expected pnl after entry to match entry fee estimate",
+            msg="Expected first in-position PnL to include fees and the first candle move",
         )
 
     def test_calculate_reward_hold_uses_current_duration_ratio(self):
@@ -1049,42 +1110,6 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(k_base, k_scaled, tolerance=TOLERANCE.DISTRIB_SHAPE)
 
     # ---------------- Report classification / formatting ---------------- #
-
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101), robustness/test_robustness.py:127 (robustness-exit-pnl-only-117)
-    @pytest.mark.smoke
-    def test_pbrs_non_canonical_report_generation(self):
-        """Synthetic invariance section: Non-canonical classification formatting."""
-
-        df = pd.DataFrame(
-            {
-                "reward_shaping": [0.01, -0.002],
-                "reward_entry_additive": [0.0, 0.0],
-                "reward_exit_additive": [0.001, 0.0],
-            }
-        )
-        total_shaping = df["reward_shaping"].sum()
-        self.assertGreater(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        invariance_status = "❌ Non-canonical"
-        section = []
-        section.append("**PBRS Invariance Summary:**\n")
-        section.append("| Field | Value |\n")
-        section.append("|-------|-------|\n")
-        section.append(f"| Invariance | {invariance_status} |\n")
-        section.append(f"| Note | Total shaping = {total_shaping:.6f} (non-zero) |\n")
-        section.append(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
-        section.append(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
-        section.append(f"| Σ Entry Additive | {df['reward_entry_additive'].sum():.6f} |\n")
-        section.append(f"| Σ Exit Additive | {df['reward_exit_additive'].sum():.6f} |\n")
-        content = "".join(section)
-        assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=False
-        )
-        self.assertRegex(content, "Σ Shaping Reward \\| 0\\.008000 \\|")
-        m_abs = re.search("Abs Σ Shaping Reward \\| ([0-9.]+e[+-][0-9]{2}) \\|", content)
-        self.assertIsNotNone(m_abs)
-        if m_abs:
-            val = float(m_abs.group(1))
-            self.assertAlmostEqual(abs(total_shaping), val, places=TOLERANCE.DECIMAL_PLACES_STRICT)
 
     def test_potential_gamma_boundary_values_stability(self):
         """Potential gamma boundary values (0 and ≈1) produce bounded shaping."""

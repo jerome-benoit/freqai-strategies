@@ -434,6 +434,20 @@ The documented list of model tunables is at the top of the
 The rewarding logic and tunables are documented in the
 [reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
+With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
+constructing environments so training and inference use the same observations.
+Freqtrade does not support these state features in backtesting; disable hold
+potential and state features for backtests. Live action masks use the real open
+position even when state features are disabled. Live frame stacks persist per
+pair and model and reset after training or model replacement.
+
+Optuna HPO disables `continual_learning`: each fit uses the selected parameters
+instead of resuming a model with a different architecture or discount factor.
+An explicitly sampled `target_kl=null` disables the KL stopping threshold even
+when `model_training_parameters` specifies a numeric value. Environment prices
+remain raw regardless of `drop_ohlc_from_features`. Training returns the best
+checkpoint saved by the current evaluation run when available.
+
 Environment diagnostics `most_recent_return` (log return) and
 `most_recent_profit` (simple return) measure changes in liquidation equity,
 including unrealized PnL and Freqtrade's staking convention. Round-trip fees are
@@ -442,7 +456,7 @@ again. `portfolio_log_returns` stores the same log returns. Non-positive or
 non-finite equity produces NaN diagnostics rather than a zero return. These
 diagnostics do not change the training reward or realized capital.
 
-Run the runtime accounting regressions inside the ReforceXY QA image, with the
+Run the runtime training, inference and accounting regressions inside the ReforceXY QA image, with the
 repository mounted at `/workspace` and `/workspace` as the working directory:
 
 ```shell
