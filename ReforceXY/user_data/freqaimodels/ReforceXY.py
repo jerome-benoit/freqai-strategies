@@ -358,7 +358,8 @@ class ReforceXY(BaseReinforcementLearningModel):
     First training and continual_learning=false use fresh pipelines and policies.
     Hyperopt always uses fresh current-window pipelines and cold policies; final
     continuation uses the original raw split in the deployed coordinates. Selected
-    constructor/network parameters do not rebuild an existing policy's architecture.
+    constructor/network parameters do not rebuild an existing policy's architecture;
+    a resumed policy keeps its own discount gamma for environment reward shaping.
     Raw OHLC prices are preserved separately for every environment. Noise augments
     training features only, never evaluation or prediction features.
     Prediction uses the best checkpoint selected by the current fit's evaluation,
@@ -488,6 +489,8 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TAG: Final[str] = "corrupt"
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
+    # Bump on objective changes that make persisted trials or best params incompatible.
+    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "raw-market-prices-v1"
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -777,6 +780,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         prices_train: DataFrame,
         prices_test: DataFrame,
         dk: FreqaiDataKitchen,
+        model_params: dict[str, Any] | None = None,
     ) -> None:
         """
         Set training and evaluation environments
@@ -787,7 +791,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         train_df = data_dictionary["train_features"]
         test_df = data_dictionary["test_features"]
-        env_dict = self.pack_env_dict(dk.pair)
+        env_dict = self.pack_env_dict(dk.pair, model_params=model_params)
         seed = self.get_model_params().get("seed", 42)
 
         if self.check_envs:
@@ -1345,7 +1349,21 @@ class ReforceXY(BaseReinforcementLearningModel):
             tensorboard_log_path = None
 
         # Use preserved raw prices with the final policy's feature coordinates.
-        self.set_train_and_eval_environments(data_dictionary, prices_train, prices_test, dk)
+        # A disk-restored learner keeps its own discount gamma; the final
+        # environments must shape rewards with that same gamma instead of the
+        # configured or HPO-selected one.
+        resumed_gamma: dict[str, Any] | None = None
+        if deployment_state is not None:
+            learner_gamma = getattr(deployment_state[0], "gamma", None)
+            if isinstance(learner_gamma, (int, float)) and np.isfinite(learner_gamma):
+                resumed_gamma = {"gamma": float(learner_gamma)}
+        self.set_train_and_eval_environments(
+            data_dictionary,
+            prices_train,
+            prices_test,
+            dk,
+            model_params=resumed_gamma,
+        )
 
         model = deployment_state[0] if deployment_state is not None else None
         if model is not None:
@@ -1943,6 +1961,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     ) -> dict[str, Any] | None:
         """
         Runs hyperparameter optimization using Optuna and returns the best hyperparameters found merged with the user defined parameters
+        Only studies and best params from the current objective generation are reused.
         """
         identifier = self.freqai_info.get("identifier", "no_id_provided")
         study_name = f"{identifier}-{dk.pair}"
@@ -1985,6 +2004,25 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         direction = StudyDirection.MAXIMIZE
         load_if_exists = not continuous and not pair_purge_triggered
+        if load_if_exists:
+            try:
+                existing_study_id = storage.get_study_id_from_name(study_name)
+            except KeyError:
+                pass
+            else:
+                existing_identity = storage.get_study_user_attrs(existing_study_id).get(
+                    "objective_identity"
+                )
+                if existing_identity != ReforceXY._OPTUNA_OBJECTIVE_IDENTITY:
+                    logger.warning(
+                        "Hyperopt [%s]: objective identity %r incompatible with %r; resetting study",
+                        study_name,
+                        existing_identity,
+                        ReforceXY._OPTUNA_OBJECTIVE_IDENTITY,
+                    )
+                    ReforceXY.delete_study(study_name, storage)
+                    # Fail closed if deletion failed rather than reload incompatible trials.
+                    load_if_exists = False
         study: Study = create_study(
             study_name=study_name,
             sampler=self.create_sampler(),
@@ -1993,6 +2031,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             storage=storage,
             load_if_exists=load_if_exists,
         )
+        if study.user_attrs.get("objective_identity") != ReforceXY._OPTUNA_OBJECTIVE_IDENTITY:
+            study.set_user_attr("objective_identity", ReforceXY._OPTUNA_OBJECTIVE_IDENTITY)
         logger.info(
             "Hyperopt [%s]: study created (direction=%s, n_trials=%s, timeout=%s, continuous=%s, load_if_exists=%s)",
             study_name,
@@ -2197,7 +2237,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def save_best_trial_params(self, best_trial_params: dict[str, Any], pair: str) -> None:
         """
-        Save the best trial hyperparameters found during hyperparameter optimization
+        Save the best trial hyperparameters with the current objective identity.
         """
         best_trial_params_path = self._best_trial_params_path(pair)
         logger.info("Hyperopt [%s]: saving best params to %s", pair, best_trial_params_path)
@@ -2250,7 +2290,14 @@ class ReforceXY(BaseReinforcementLearningModel):
                             write_file.fileno(),
                             stat.S_IMODE(existing_metadata.st_mode),
                         )
-                    json.dump(best_trial_params, write_file, indent=4)
+                    json.dump(
+                        {
+                            "objective_identity": ReforceXY._OPTUNA_OBJECTIVE_IDENTITY,
+                            "params": best_trial_params,
+                        },
+                        write_file,
+                        indent=4,
+                    )
                     write_file.flush()
                     os.fsync(write_file.fileno())
                 temporary_path.replace(best_trial_params_path)
@@ -2279,7 +2326,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def load_best_trial_params(self, pair: str) -> dict[str, Any] | None:
         """
-        Load the best trial hyperparameters found and saved during hyperparameter optimization
+        Load saved best trial hyperparameters only for the current objective identity.
         """
         best_trial_params_path = self._best_trial_params_path(pair)
         if not best_trial_params_path.parent.is_dir():
@@ -2317,7 +2364,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                     if quarantined is None:
                         raise
                     return None
-        return best_trial_params
+        if (
+            not isinstance(best_trial_params, dict)
+            or best_trial_params.get("objective_identity") != ReforceXY._OPTUNA_OBJECTIVE_IDENTITY
+            or not isinstance(best_trial_params.get("params"), dict)
+        ):
+            logger.warning(
+                "Hyperopt [%s]: ignoring best params with missing or incompatible objective identity "
+                "(expected %r) or invalid params payload",
+                pair,
+                ReforceXY._OPTUNA_OBJECTIVE_IDENTITY,
+            )
+            return None
+        return best_trial_params["params"]
 
     def _get_train_and_eval_environments(
         self,

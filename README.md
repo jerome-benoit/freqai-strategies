@@ -343,7 +343,11 @@ coordinate system (`reforcexy_deployment_coordinates` marker, generation
 reset / new `freqai.identifier` instruction. First training, HPO trials and
 `continual_learning=false` stay cold-started; HPO trials use fresh candidate
 pipelines and only the final continuation reuses the frozen deployment
-pipeline. Optional `fit_live_predictions_candles` statistics count produced
+pipeline. The resumed policy's discount gamma also governs environment reward
+shaping. HPO studies and saved best parameters are reused only when their
+objective generation matches; missing or incompatible generations are excluded
+from study reuse, warm starts and failure fallback.
+Optional `fit_live_predictions_candles` statistics count produced
 observations per pair after session startup; restarts reset the warmup.
 Model docstrings remain the authoritative description.
 
