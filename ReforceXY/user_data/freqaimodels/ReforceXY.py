@@ -14,6 +14,7 @@ from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from functools import wraps
 from inspect import iscoroutinefunction, unwrap
+from io import BytesIO
 from pathlib import Path
 from typing import (
     Any,
@@ -393,7 +394,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _LOG_2: Final[float] = math.log(2.0)
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
-    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-v2"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
 
@@ -508,7 +509,9 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     # Bump on objective changes that make persisted trials or best params incompatible.
-    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "transition-aligned-final-policy-v2"
+    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = (
+        "terminal-liquidation-risk-normalized-trained-policy-v3"
+    )
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -583,6 +586,60 @@ class ReforceXY(BaseReinforcementLearningModel):
         ] = {}
         self.unset_unsupported()
         self._configure_gpu_memory()
+        self._install_replay_persistence()
+
+    def _install_replay_persistence(self) -> None:
+        save_data = self.dd.save_data
+        load_data = self.dd.load_data
+
+        @wraps(save_data)
+        def save_with_replay(model, coin, dk):
+            dk.data = dk.data.copy()
+            dk.data.pop("reforcexy_replay", None)
+            if hasattr(model, "save_replay_buffer"):
+                dk.data_path.mkdir(parents=True, exist_ok=True)
+                filename = f"{dk.model_filename}_replay_{uuid4().hex}.pkl"
+                destination = dk.data_path / filename
+                temporary = destination.with_suffix(".tmp")
+                try:
+                    model.save_replay_buffer(temporary)
+                    temporary.replace(destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                dk.data["reforcexy_replay"] = filename
+            return save_data(model, coin, dk)
+
+        @wraps(load_data)
+        def load_with_replay(coin, dk):
+            cached = self.dd.model_dictionary.get(coin) if dk.live else None
+            model = load_data(coin, dk)
+            if model is not None and model is not cached:
+                try:
+                    self._restore_replay(model, dk.data, dk.data_path)
+                except Exception:
+                    if self.dd.model_dictionary.get(coin) is model:
+                        self.dd.model_dictionary.pop(coin, None)
+                    raise
+            return model
+
+        self.dd.save_data = save_with_replay
+        self.dd.load_data = load_with_replay
+
+    @staticmethod
+    def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path) -> None:
+        if not hasattr(model, "load_replay_buffer"):
+            return
+        filename = metadata.get("reforcexy_replay")
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            raise DependencyException("Model replay metadata missing or incompatible; reset models")
+        model.load_replay_buffer(directory / filename)
+        replay = model.replay_buffer
+        if (
+            replay.observation_space != model.observation_space
+            or replay.action_space != model.action_space
+            or replay.n_envs != model.n_envs
+        ):
+            raise DependencyException("Model replay buffer is incompatible; reset models")
 
     def _configure_gpu_memory(self) -> None:
         """
@@ -757,6 +814,17 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: RecurrentPPO with frame_stacking=%d is redundant; "
                 "LSTM already captures temporal dependencies. Consider setting frame_stacking=0",
                 self.frame_stacking,
+            )
+
+    def unset_outlier_removal(self) -> None:
+        super().unset_outlier_removal()
+        # RL transitions, durations and rewards require chronological candles;
+        # a post-split shuffle would silently corrupt the learned trajectory.
+        if self.ft_params.get("shuffle_after_split", False):
+            self.ft_params.update({"shuffle_after_split": False})
+            logger.warning(
+                "Config [global]: shuffle_after_split=True reorders RL transitions; "
+                "setting shuffle_after_split to False"
             )
 
     def pack_env_dict(
@@ -1115,10 +1183,11 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _resolve_deployment_state(
         self, dk: FreqaiDataKitchen, pair: str
     ) -> tuple[Any, Pipeline] | None:
-        """Restore the deployed policy and an independent fitted feature pipeline."""
+        """Restore independent training copies of the deployed policy and feature pipeline."""
         if not self.continual_learning:
             return None
         model = self.dd.model_dictionary.get(pair)
+        cached_model = model
         previous = self.dd.pair_dict.get(pair, {})
         if model is None and not previous.get("model_filename"):
             return None
@@ -1140,6 +1209,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                         feature_pipeline = cloudpickle.load(fp)
                 if model is None:
                     model = self.MODELCLASS.load(Path(f"{prefix}_model"))
+                    self._restore_replay(model, metadata, previous_dk.data_path)
             if (
                 metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
                 != self._DEPLOYMENT_COORDINATE_GENERATION
@@ -1160,6 +1230,15 @@ class ReforceXY(BaseReinforcementLearningModel):
             ):
                 if list(expected) != list(actual):
                     raise ValueError(f"persisted {name} differ in names or order")
+            if cached_model is not None:
+                # SB3 archives preserve policy/optimizer state but exclude envs and loggers.
+                with BytesIO() as archive:
+                    model.save(archive)
+                    archive.seek(0)
+                    model = self.MODELCLASS.load(archive, device=cached_model.device)
+                # Off-policy experience is excluded from SB3 model archives.
+                if getattr(cached_model, "replay_buffer", None) is not None:
+                    model.replay_buffer = copy.deepcopy(cached_model.replay_buffer)
             state = model, copy.deepcopy(feature_pipeline)
         except Exception as exc:
             raise DependencyException(
@@ -1234,6 +1313,17 @@ class ReforceXY(BaseReinforcementLearningModel):
             unfiltered_df, dk.training_features_list, dk.label_list, training_filter=True
         )
         raw_data = dk.make_train_test_datasets(features_filtered, labels_filtered)
+        if (
+            not self.hyperopt
+            and self.data_split_parameters.get("test_size") == 0
+            and len(raw_data["train_features"]) > 0
+        ):
+            # A zero-size split keeps the schema but must yield no eval environment.
+            raw_data["test_features"] = raw_data["train_features"].iloc[:0].copy()
+            raw_data["test_labels"] = raw_data["train_labels"].iloc[:0].copy()
+            raw_data["test_weights"] = raw_data["train_weights"].iloc[:0].copy()
+            raw_data["train_dates"] = raw_data["train_dates"]
+            raw_data["test_dates"] = raw_data["train_dates"].iloc[:0]
         self.df_raw = copy.deepcopy(raw_data["train_features"])
         dk.fit_labels()
         # Capture prices once, before normalization and optional raw-OHLC removal.
@@ -1407,8 +1497,6 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.close_envs()
             if model is not None and hasattr(model, "env") and model.env is not None:
                 model.env.close()
-            self._frame_buffers.pop(dk.pair, None)
-            self._lstm_states_cache.pop(dk.pair, None)
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
 
@@ -1535,6 +1623,16 @@ class ReforceXY(BaseReinforcementLearningModel):
             market_side = 0 if trade.is_short else 1
         return market_side, current_profit, int(trade_duration)
 
+    def predict(
+        self, unfiltered_df: DataFrame, dk: FreqaiDataKitchen, **kwargs
+    ) -> tuple[DataFrame, NDArray[np.int_]]:
+        """Feed source dates to inference; parent predict performs the filtering."""
+        dk.data_dictionary["prediction_dates"] = unfiltered_df[["date"]]
+        try:
+            return super().predict(unfiltered_df, dk, **kwargs)
+        finally:
+            dk.data_dictionary.pop("prediction_dates", None)
+
     def rl_model_predict(
         self, dataframe: DataFrame, dk: FreqaiDataKitchen, model: Any
     ) -> DataFrame:
@@ -1557,6 +1655,35 @@ class ReforceXY(BaseReinforcementLearningModel):
         frame_stacking: int = self.frame_stacking
         frame_stacking_enabled: bool = bool(frame_stacking) and frame_stacking > 1
         inference_masking: bool = self.action_masking and self.inference_masking
+        source_valid = np.asarray(getattr(dk, "do_predict", np.ones(n))) == 1
+        source_valid = source_valid & np.isfinite(np_dataframe).all(axis=1)
+        dk.do_predict = np.zeros(n, dtype=np.int_)
+        dates = getattr(dk, "data_dictionary", {}).get("prediction_dates")
+        dates = (
+            pd.DatetimeIndex(pd.to_datetime(dates["date"], utc=True)).as_unit("ns")
+            if dates is not None
+            else None
+        )
+        if dates is not None and len(dates) != n:
+            raise ValueError("Prediction dates must align with feature rows")
+        step = pd.Timedelta(seconds=self.base_tf_seconds)
+        if not hasattr(self, "_observation_cache"):
+            self._observation_cache = {}
+        cached = self._observation_cache.get(dk.pair)
+        adjacent = (
+            dates is not None
+            and len(dates) == n
+            and n == window_size
+            and cached is not None
+            and cached[0] is model
+            and dates[-1] - cached[1] == step
+        )
+        frame_validity: deque[bool] = deque(
+            cached[2] if adjacent and cached is not None else (), maxlen=max(1, frame_stacking)
+        )
+        if not adjacent:
+            self._frame_buffers.pop(dk.pair, None)
+            self._lstm_states_cache.pop(dk.pair, None)
 
         if window_size <= 0 or n < window_size:
             return DataFrame(
@@ -1674,6 +1801,15 @@ class ReforceXY(BaseReinforcementLearningModel):
                 observations = np_observation.reshape(
                     1, np_observation.shape[0], np_observation.shape[1]
                 )
+            if not np.isfinite(observations).all():
+                dk.do_predict[end_idx - 1] = 0
+                lstm_states = None
+                episode_start = np.array([True], dtype=bool)
+                return Actions.Neutral.value
+            if self.recurrent and dk.do_predict[end_idx - 1] != 1:
+                lstm_states = None
+                episode_start = np.array([True], dtype=bool)
+                return Actions.Neutral.value
 
             if inference_masking:
                 action_masks_param["action_masks"] = ReforceXY.get_action_masks(
@@ -1721,6 +1857,24 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         predicted_actions: list[int] = []
         for start_idx in range(0, n - window_size + 1):
+            end = start_idx + window_size
+            contiguous = dates is None or (
+                not dates[start_idx:end].hasnans
+                and (
+                    np.diff(dates[start_idx:end].to_numpy(dtype="datetime64[ns]"))
+                    == step.to_timedelta64()
+                ).all()
+            )
+            if dates is not None and start_idx > 0 and dates[end - 1] - dates[end - 2] != step:
+                frame_buffer.clear()
+                frame_validity.clear()
+                lstm_states = None
+                episode_start = np.array([True], dtype=bool)
+            valid = bool(source_valid[start_idx:end].all() and contiguous)
+            frame_validity.append(valid)
+            dk.do_predict[end - 1] = int(
+                valid and (not frame_stacking_enabled or all(frame_validity))
+            )
             action = _predict(start_idx)
             predicted_actions.append(action)
             if not self.live:
@@ -1743,6 +1897,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             self._lstm_states_cache[dk.pair] = (model_id, lstm_states, episode_start)
         if self.live and frame_stacking_enabled:
             self._frame_buffers[dk.pair] = (model, frame_buffer)
+        if self.live and dates is not None and len(dates) == n:
+            self._observation_cache[dk.pair] = (model, dates[-1], tuple(frame_validity))
 
         return DataFrame(dict.fromkeys(dk.label_list, actions_df["action"]))
 
@@ -2654,10 +2810,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                 **params,
             )
             total_timesteps = self._align_model_budget(model, total_timesteps)
+            off_policy = hasattr(model, "replay_buffer")
+            if off_policy and model.learning_starts >= total_timesteps:
+                raise TrialPruned(
+                    f"Hyperopt [{study_name}]: learning_starts={model.learning_starts} "
+                    f"leaves no update within total_timesteps={total_timesteps}"
+                )
+            initial_updates = getattr(model, "_n_updates", 0)
 
             eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
             callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
+            if off_policy and model._n_updates <= initial_updates:
+                raise TrialPruned(f"Hyperopt [{study_name}]: trial completed without learning")
             if not self.optuna_eval_callback.is_pruned and eval_env is not None:
                 # Evaluate the trained policy after the last update and before
                 # env teardown so a single-rollout budget still compares the
@@ -3862,22 +4027,22 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
             )
             pnl_ratio = pnl / pnl_target
-
-            if abs(pnl_ratio) > 1.0:
-                base_pnl_target_coefficient = math.tanh(
-                    pnl_amplification_sensitivity * (abs(pnl_ratio) - 1.0)
+            win_reward_factor = float(
+                model_reward_parameters.get(
+                    "win_reward_factor", ReforceXY.DEFAULT_WIN_REWARD_FACTOR
                 )
-                win_reward_factor = float(
-                    model_reward_parameters.get(
-                        "win_reward_factor", ReforceXY.DEFAULT_WIN_REWARD_FACTOR
-                    )
-                )
+            )
 
-                if pnl_ratio > 1.0:
-                    pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
-                elif pnl_ratio < -(1.0 / self.rr):
+            if pnl_ratio > 1.0:
+                gain_coefficient = math.tanh(pnl_amplification_sensitivity * (pnl_ratio - 1.0))
+                pnl_target_coefficient = 1.0 + win_reward_factor * gain_coefficient
+            else:
+                loss_threshold = pnl_target / self.rr
+                if pnl < -loss_threshold:
+                    loss_ratio = (-pnl) / loss_threshold
+                    loss_coefficient = math.tanh(pnl_amplification_sensitivity * (loss_ratio - 1.0))
                     loss_penalty_factor = win_reward_factor * self.rr
-                    pnl_target_coefficient = 1.0 + loss_penalty_factor * base_pnl_target_coefficient
+                    pnl_target_coefficient = 1.0 + loss_penalty_factor * loss_coefficient
 
         return pnl_target_coefficient
 
@@ -4100,8 +4265,9 @@ class MyRLEnv(Base5ActionRLEnv):
 
         # Exit trade based on action
         if action in (Actions.Long_exit.value, Actions.Short_exit.value):
+            closed_position = self._position
             self._exit_trade()
-            return f"{self._last_closed_position.name}_exit"
+            return f"{closed_position.name}_exit"
 
         return None
 
@@ -4143,11 +4309,15 @@ class MyRLEnv(Base5ActionRLEnv):
         previous_position = self._position
         pre_trade_duration = self.get_trade_duration()
         pre_pnl = self.get_unrealized_profit()
+        execution_tick = self._current_tick
+        exit_pnl = None
         reward = self.calculate_reward(action)
         trade_type = self.execute_trade(action)
         entry_pnl = self.get_unrealized_profit() if previous_position == Positions.Neutral else 0.0
         if trade_type is not None:
             self.append_trade_history(trade_type, self.current_price(), pre_pnl)
+            if self._position == Positions.Neutral:
+                exit_pnl = pre_pnl
         elif action != Actions.Neutral.value:
             logger.warning(
                 "Env [%s]: invalid action=%s (%d) in position=%s at tick=%d",
@@ -4157,7 +4327,6 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._position.name,
                 self._current_tick,
             )
-        self._position_history.append(self._position)
         self._current_tick += 1
         self._update_unrealized_total_profit()
         base_factor = float(
@@ -4181,9 +4350,42 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         reward += shaping + entry_additive + exit_additive
         terminated = self.is_terminated()
+        terminal_liquidation = terminated and self._position in (Positions.Long, Positions.Short)
+        if terminal_liquidation:
+            terminal_pnl = self.get_unrealized_profit()
+            terminal_duration_ratio = self.get_trade_duration() / max(
+                1, self.max_trade_duration_candles
+            )
+            self._update_max_unrealized_profit(terminal_pnl)
+            self._update_min_unrealized_profit(terminal_pnl)
+            liquidation_reward = terminal_pnl * self._get_exit_factor(
+                base_factor,
+                terminal_pnl,
+                terminal_duration_ratio,
+                self.rl_config.get("model_reward_parameters", {}),
+            )
+            reward += liquidation_reward
+            self._last_exit_reward += liquidation_reward
+            if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
+                liquidation_additive = self._compute_exit_additive(
+                    terminal_pnl,
+                    self._pnl_target,
+                    terminal_duration_ratio,
+                    self._exit_additive_ratio * base_factor,
+                )
+                reward += liquidation_additive
+                self._last_exit_additive += liquidation_additive
+                self._total_exit_additive += liquidation_additive
+            exit_pnl = terminal_pnl
+            closed_position = self._position
+            self._exit_trade()
+            self.append_trade_history(
+                f"{closed_position.name}_exit", self.current_price(), terminal_pnl
+            )
         if terminated:
             reward = self._apply_terminal_pbrs_correction(reward)
             self._last_potential = 0.0
+        self._position_history.append(self._position)
         self.total_reward += reward
         pnl = self.get_unrealized_profit()
         self._update_portfolio_log_returns(previous_equity, self._get_portfolio_equity(pnl))
@@ -4195,6 +4397,9 @@ class MyRLEnv(Base5ActionRLEnv):
         trade_duration = self.get_trade_duration()
         info = {
             "tick": self._current_tick,
+            "execution_tick": execution_tick,
+            "terminal_liquidation": bool(terminal_liquidation),
+            "exit_pnl": exit_pnl,
             "position": float(self._position.value),
             "action": action,
             "pre_pnl": round(pre_pnl, 5),
@@ -4244,7 +4449,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
 
     def is_terminated(self) -> bool:
-        return (
+        return bool(
             self._current_tick == self._end_tick
             or self._total_profit < self.max_drawdown
             or self._total_unrealized_profit < self.max_drawdown
@@ -4404,7 +4609,14 @@ class MyRLEnv(Base5ActionRLEnv):
         if self.trade_history:
             _trade_history_df = DataFrame(self.trade_history)
             if "tick" in _trade_history_df.columns:
-                _rollout_history = merge(_rollout_history, _trade_history_df, on="tick", how="left")
+                _trade_history_df = _trade_history_df.rename(columns={"tick": "execution_tick"})
+                _rollout_history = merge(
+                    _rollout_history,
+                    _trade_history_df,
+                    on="execution_tick",
+                    how="left",
+                    validate="one_to_one",
+                )
 
         try:
             history = merge(
@@ -4468,8 +4680,13 @@ class MyRLEnv(Base5ActionRLEnv):
 
             axs[0].plot(ticks, history_open, linewidth=1, color="orchid", zorder=1)
 
-            history_type = history.get("type")
-            history_price = history.get("price")
+            trades = DataFrame(self.trade_history)
+            if not trades.empty:
+                trades = trades[
+                    trades["tick"].between(history["execution_tick"].min(), ticks.max())
+                ]
+            history_type = trades.get("type")
+            history_price = trades.get("price")
             if history_type is not None and history_price is not None:
                 trade_markers_config = [
                     ("long_enter", "^", "forestgreen", 5, -0.1, "Long enter"),
@@ -4491,8 +4708,8 @@ class MyRLEnv(Base5ActionRLEnv):
                 ) in trade_markers_config:
                     mask = history_type == type_name
                     if mask.any():
-                        xs = ticks[mask]
-                        ys = history.loc[mask, "price"]
+                        xs = trades.loc[mask, "tick"]
+                        ys = trades.loc[mask, "price"]
 
                         plot_markers(axs[0], xs, ys, marker, color, size, offset)
 

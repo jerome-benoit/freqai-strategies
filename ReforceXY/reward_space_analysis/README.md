@@ -306,7 +306,7 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | Parameter                    | Default | Description                |
 | ---------------------------- | ------- | -------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap         |
-| `max_idle_duration_candles`  | None    | Fallback 4× trade duration |
+| `max_idle_duration_candles`  | None    | Idle hazard threshold (4× trade duration fallback); the idle clock keeps counting past it |
 | `idle_penalty_ratio`         | 1.0     | Idle penalty ratio         |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent      |
 | `hold_penalty_ratio`         | 1.0     | Hold penalty ratio         |

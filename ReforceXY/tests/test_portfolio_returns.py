@@ -104,6 +104,72 @@ class PortfolioReturnsTest(unittest.TestCase):
                     self.assertEqual(env.get_most_recent_return(), 0.0)
                     self.assertEqual(env.get_most_recent_profit(), 0.0)
 
+    def test_terminal_liquidation_realizes_reward_and_equity_once(self):
+        for short in (False, True):
+            for compound in (False, True):
+                for drawdown in (False, True):
+                    with self.subTest(short=short, compound=compound, drawdown=drawdown):
+                        terminal_price = 110.0 if short else 90.0
+                        prices = [100.0, 100.0, 100.0, terminal_price]
+                        if drawdown:
+                            prices.append(terminal_price)
+                        env = self.make_env(prices, compound=compound)
+                        env.max_drawdown = 0.95 if drawdown else 0.01
+                        env.step((Actions.Short_enter if short else Actions.Long_enter).value)
+                        _, reward, terminated, _, info = env.step(Actions.Neutral.value)
+                        fee_factor = (1 + env.fee) ** 2
+                        expected_pnl = (
+                            1 - terminal_price / 100 * fee_factor
+                            if short
+                            else terminal_price / 100 / fee_factor - 1
+                        )
+                        self.assertTrue(terminated)
+                        self.assertEqual(env._position.name, "Neutral")
+                        self.assertEqual(env._position_history[-1].name, "Neutral")
+                        self.assertLess(reward, 0.0)
+                        self.assertAlmostEqual(env._total_profit, 1 + expected_pnl)
+                        self.assertAlmostEqual(
+                            np.expm1(env.portfolio_log_returns.sum()), expected_pnl
+                        )
+                        self.assertAlmostEqual(info["exit_pnl"], expected_pnl)
+                        self.assertTrue(info["terminal_liquidation"])
+                        self.assertEqual(len(env.trade_history), 2)
+                        self.assertEqual(env.trade_history[-1]["tick"], 3)
+                        self.assertEqual(env.trade_history[-1]["price"], terminal_price)
+                        self.assertAlmostEqual(env.trade_history[-1]["profit"], expected_pnl)
+                        self.assertAlmostEqual(
+                            reward,
+                            sum(
+                                info[key]
+                                for key in (
+                                    "reward_exit",
+                                    "reward_hold",
+                                    "reward_idle",
+                                    "reward_invalid",
+                                    "reward_shaping",
+                                    "reward_entry_additive",
+                                    "reward_exit_additive",
+                                )
+                            ),
+                            places=4,
+                        )
+
+    def test_history_joins_events_at_execution_tick(self):
+        env = self.make_env([100.0, 100.0, 110.0, 110.0])
+        _, _, _, _, entry_info = env.step(Actions.Long_enter.value)
+        _, _, _, _, exit_info = env.step(Actions.Long_exit.value)
+        history = env.get_env_history()
+        self.assertEqual(len(history), 2)
+        entry_row = history.loc[history["execution_tick"] == 1].iloc[0]
+        self.assertEqual(entry_row["type"], "long_enter")
+        self.assertEqual(entry_row["reward_exit"], entry_info["reward_exit"])
+        self.assertEqual(entry_row["reward_exit"], 0.0)
+        self.assertEqual(entry_row["action"], 1)
+        exit_row = history.loc[history["execution_tick"] == 2].iloc[0]
+        self.assertEqual(exit_row["type"], "long_exit")
+        self.assertGreater(exit_row["reward_exit"], 0.0)
+        self.assertEqual(exit_row["reward_exit"], exit_info["reward_exit"])
+
     def test_nonpositive_equity_is_not_reported_as_zero_return(self):
         env = self.make_env([100.0, 100.0, 100.0, 300.0, 300.0], fee=0.0)
         env.step(Actions.Short_enter.value)

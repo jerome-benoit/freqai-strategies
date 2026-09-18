@@ -1,5 +1,6 @@
 """Regressions for live observations, HPO options and historic prediction alignment."""
 
+import copy
 import tempfile
 import unittest
 from datetime import datetime as dt
@@ -16,6 +17,7 @@ from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from sb3_contrib import MaskablePPO
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import (
+    Actions,
     MyRLEnv,
     ReforceXY,
     convert_optuna_params_to_model_params,
@@ -168,17 +170,27 @@ class ReviewContractsTest(unittest.TestCase):
         model = self.model()
         model.frame_stacking = 2
         policy = RecordingPolicy()
-        dk = SimpleNamespace(pair="BTC/USDT", label_list=["&-action"])
+        dk = SimpleNamespace(pair="BTC/USDT", label_list=["&-action"], data_dictionary={})
+        dk.data_dictionary["prediction_dates"] = pd.DataFrame(
+            {"date": pd.date_range("2026-01-01", periods=1, tz="UTC")}
+        )
         model.rl_model_predict(pd.DataFrame({"f": [10.0]}), dk, policy)
+        dk.data_dictionary["prediction_dates"] += pd.Timedelta(minutes=5)
         model.rl_model_predict(pd.DataFrame({"f": [20.0]}), dk, policy)
         np.testing.assert_array_equal(policy.observations[-1], [[[10.0, 20.0]]])
         replacement = RecordingPolicy()
         model.rl_model_predict(pd.DataFrame({"f": [30.0]}), dk, replacement)
         np.testing.assert_array_equal(replacement.observations[-1], [[[0.0, 30.0]]])
+        dk.do_predict = np.ones(2, dtype=int)
+        dk.data_dictionary["prediction_dates"] = pd.DataFrame(
+            {"date": pd.date_range("2026-01-02", periods=2, freq="5min", tz="UTC")}
+        )
         model.rl_model_predict(pd.DataFrame({"f": [40.0, 50.0]}), dk, replacement)
         np.testing.assert_array_equal(replacement.observations[-2], [[[0.0, 40.0]]])
         np.testing.assert_array_equal(replacement.observations[-1], [[[40.0, 50.0]]])
         dk.pair = "ETH/USDT"
+        dk.do_predict = np.ones(1, dtype=int)
+        dk.data_dictionary["prediction_dates"] = dk.data_dictionary["prediction_dates"][-1:]
         model.rl_model_predict(pd.DataFrame({"f": [60.0]}), dk, replacement)
         np.testing.assert_array_equal(replacement.observations[-1], [[[0.0, 60.0]]])
 
@@ -313,7 +325,7 @@ class ReviewContractsTest(unittest.TestCase):
             self.assertIsNot(candidate["policy"], deployed)
             self.assertEqual(candidate["gamma"], 0.999)
             self.assertGreater(candidate["updates"], 0)
-            self.assertIs(resumed["policy"], deployed)
+            self.assertIsNot(resumed["policy"], deployed)
             self.assertEqual(resumed["gamma"], 0.91)
             self.assertGreater(resumed["updates"], deployed_updates)
             self.assertEqual(continued.gamma, 0.91)
@@ -337,6 +349,142 @@ class ReviewContractsTest(unittest.TestCase):
                 shifted[dk.training_features_list].copy()
             )
             np.testing.assert_allclose(frozen_after, expected_features)
+
+    def test_continuation_does_not_mutate_cached_deployment_on_success_or_failure(self):
+        from freqtrade.freqai.data_drawer import FEATURE_PIPELINE, METADATA
+        from sb3_contrib.common.maskable.evaluation import evaluate_policy
+
+        model = self.model()
+        model.continual_learning = True
+        model.can_short = False
+        frame = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-01-01", periods=64, freq="5min", tz="UTC"),
+                "%-feature": np.sin(np.arange(64)),
+                "&-action": np.zeros(64),
+            }
+        )
+        for column in ("open", "high", "low", "close"):
+            frame[f"%-raw_{column}"] = 100 + np.arange(64) * 0.1
+
+        def kitchen(window):
+            dk = FreqaiDataKitchen(model.config, live=True, pair="BTC/USDT")
+            dk.data_path = Path(model.config["user_data_dir"]) / window
+            dk.data_path.mkdir()
+            dk.model_filename = f"cb_btc_{window}"
+            dk.label_list = ["&-action"]
+            dk.training_features_list = [column for column in frame if column.startswith("%")]
+            return dk
+
+        previous_dk = kitchen("initial")
+        deployed = model.train(frame, previous_dk.pair, previous_dk)
+        deployed.save(previous_dk.data_path / "deployed.zip")
+        model.dd.model_dictionary[previous_dk.pair] = deployed
+        model.dd.meta_data_dictionary[previous_dk.pair] = {
+            METADATA: {
+                **previous_dk.data,
+                "training_features_list": previous_dk.training_features_list,
+                "label_list": previous_dk.label_list,
+            },
+            FEATURE_PIPELINE: previous_dk.feature_pipeline,
+        }
+        weights = copy.deepcopy(deployed.policy.state_dict())
+        optimizer = copy.deepcopy(deployed.policy.optimizer.state_dict())
+        updates, timesteps, environment = deployed._n_updates, deployed.num_timesteps, deployed.env
+        observation = previous_dk.data_dictionary["train_features"].iloc[:1].to_numpy()
+        prediction = deployed.predict(observation, deterministic=True)[0]
+
+        for fail in (True, False):
+            with self.subTest(failure_after_gradients=fail):
+                dk = kitchen("failed" if fail else "continued")
+                evaluated = []
+
+                def evaluate_final(policy, env, evaluated=evaluated, fail=fail, **kwargs):
+                    self.assertGreater(policy._n_updates, updates)
+                    self.assertTrue(
+                        any(
+                            not np.array_equal(value.cpu().numpy(), weights[name].cpu().numpy())
+                            for name, value in policy.policy.state_dict().items()
+                        )
+                    )
+                    evaluated.append(policy)
+                    if fail:
+                        raise RuntimeError("Final evaluation failed after gradients")
+                    return evaluate_policy(policy, env, **kwargs)
+
+                with mock.patch(
+                    "ReforceXY.user_data.freqaimodels.ReforceXY.evaluate_policy",
+                    side_effect=evaluate_final,
+                ):
+                    if fail:
+                        with self.assertRaises(RuntimeError):
+                            model.train(frame, dk.pair, dk)
+                    else:
+                        continued = model.train(frame, dk.pair, dk)
+                        self.assertIsNot(continued, deployed)
+                        self.assertGreater(continued._n_updates, updates)
+                self.assertEqual(len(evaluated), 1)
+                self.assertIsNot(evaluated[0], deployed)
+                self.assertIs(model.dd.model_dictionary[dk.pair], deployed)
+                self.assertIs(deployed.env, environment)
+                self.assertEqual(
+                    (deployed._n_updates, deployed.num_timesteps), (updates, timesteps)
+                )
+                np.testing.assert_array_equal(
+                    deployed.predict(observation, deterministic=True)[0], prediction
+                )
+                for name, value in deployed.policy.state_dict().items():
+                    np.testing.assert_array_equal(value.cpu().numpy(), weights[name].cpu().numpy())
+                current_optimizer = deployed.policy.optimizer.state_dict()
+                self.assertEqual(current_optimizer["param_groups"], optimizer["param_groups"])
+                for parameter, state in optimizer["state"].items():
+                    for name, value in state.items():
+                        np.testing.assert_array_equal(
+                            current_optimizer["state"][parameter][name].cpu().numpy(),
+                            value.cpu().numpy(),
+                        )
+                transformed, _, _ = previous_dk.feature_pipeline.transform(
+                    frame[previous_dk.training_features_list].copy()
+                )
+                np.testing.assert_allclose(
+                    transformed.iloc[:48], previous_dk.data_dictionary["train_features"]
+                )
+
+    def test_loss_amplification_starts_at_configured_risk_threshold(self):
+        model = self.model()
+        features = pd.DataFrame({"f": np.zeros(6)})
+        prices = pd.DataFrame({"open": np.full(6, 100.0)})
+        env = MyRLEnv(df=features, prices=prices, **model.pack_env_dict("BTC/USDT"))
+        self.addCleanup(env.close)
+        params = {"win_reward_factor": 2.0}
+        target = env._pnl_target
+        threshold = target / env.rr
+        self.assertEqual(env._compute_pnl_target_coefficient(-threshold, target, params), 1.0)
+        self.assertGreater(env._compute_pnl_target_coefficient(1.01 * target, target, params), 1.0)
+        slight = env._compute_pnl_target_coefficient(-(threshold * 1.001), target, params)
+        self.assertGreater(slight, 1.0)
+        self.assertLess(slight, 1.1)
+        deep = env._compute_pnl_target_coefficient(-target, target, params)
+        self.assertGreater(deep, slight)
+        self.assertEqual(env._compute_pnl_target_coefficient(-0.5 * threshold, target, params), 1.0)
+
+    def test_terminated_is_python_bool_for_all_comparison_sources(self):
+        model = self.model()
+        prices = pd.DataFrame({"open": np.full(6, 100.0, dtype=np.float64)})
+        env = MyRLEnv(
+            df=pd.DataFrame({"f": np.zeros(6)}),
+            prices=prices,
+            **model.pack_env_dict("BTC/USDT"),
+        )
+        self.addCleanup(env.close)
+        env.reset()
+        _, _, terminated, truncated, _ = env.step(Actions.Neutral.value)
+        self.assertIsInstance(terminated, bool)
+        self.assertIsInstance(truncated, bool)
+        self.assertFalse(terminated)
+        # All three comparisons are pandas/numpy-backed values.
+        self.assertIsInstance(env._current_tick == env._end_tick, (bool, np.bool_))
+        self.assertIsInstance(bool(env._total_profit < env.max_drawdown), bool)
 
     def test_null_target_kl_overrides_user_value(self):
         params = {
@@ -419,9 +567,10 @@ class ReviewContractsTest(unittest.TestCase):
         prediction = model.rl_model_predict(
             pd.DataFrame({"f": [10.0, 20.0, 30.0, 40.0]}, index=[11, 22, 33, 44]), dk, policy
         )
-        np.testing.assert_array_equal(prediction["&-action"].iloc[1:], [1, 1, 0])
+        np.testing.assert_array_equal(prediction["&-action"].iloc[1:], [1, 1, 1])
+        np.testing.assert_array_equal(dk.do_predict, [0, 0, 0, 1])
         self.assertTrue(policy.masks[1][1])
-        self.assertFalse(policy.masks[2][1])
+        self.assertTrue(policy.masks[2][1])
         np.testing.assert_array_equal(policy.observations[1], [[[20.0], [30.0]]])
 
     def test_execution_and_potential_match_returned_observation(self):

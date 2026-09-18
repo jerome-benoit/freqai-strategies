@@ -51,6 +51,94 @@ pytestmark = pytest.mark.pbrs
 class TestSimulationParity(RewardSpaceTestBase):
     """Synthetic durations and reports follow runtime transition semantics."""
 
+    def test_neutral_terminal_closes_stored_potential(self):
+        context = reward_space_analysis.RewardContext(
+            current_pnl=0.0,
+            trade_duration=0,
+            idle_duration=2,
+            max_unrealized_profit=0.0,
+            min_unrealized_profit=0.0,
+            position=Positions.Neutral,
+            action=Actions.Neutral,
+        )
+        for enabled in (False, True):
+            params = self.base_params(
+                hold_potential_enabled=enabled,
+                exit_potential_mode="retain_previous",
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+            )
+            ongoing = reward_space_analysis.calculate_reward(
+                context,
+                params,
+                100.0,
+                0.03,
+                2.0,
+                short_allowed=True,
+                action_masking=False,
+                prev_potential=0.25,
+                terminated=False,
+            )
+            terminal = reward_space_analysis.calculate_reward(
+                context,
+                params,
+                100.0,
+                0.03,
+                2.0,
+                short_allowed=True,
+                action_masking=False,
+                prev_potential=0.25,
+                terminated=True,
+            )
+            self.assertAlmostEqualFloat(
+                ongoing.next_potential, 0.25, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.next_potential, 0.0, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.reward_shaping, -0.25 if enabled else 0.0, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.pbrs_delta, terminal.reward_shaping, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.total - ongoing.total,
+                -0.25 if enabled else 0.0,
+                tolerance=TOLERANCE.GENERIC_EQ,
+            )
+            self.assertEqual(terminal.entry_additive + terminal.exit_additive, 0.0)
+
+    def test_idle_clock_runs_past_threshold_and_hazard_saturates(self):
+        from reward_space_analysis import _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY
+
+        params = self.base_params(max_trade_duration_candles=100, max_idle_duration_candles=2)
+        df = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        over = df[df["idle_duration"] > params["max_idle_duration_candles"]]
+        self.assertFalse(over.empty, "idle clock must keep counting past its threshold")
+        self.assertTrue(
+            (over["sample_entry_prob"] >= _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY - 1e-9).all(),
+            "entry hazard must saturate once the clock exceeds the threshold",
+        )
+        within = df[df["idle_duration"].between(1, params["max_idle_duration_candles"])]
+        self.assertTrue(
+            (within["sample_entry_prob"] < _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY - 1e-9).all()
+        )
+        stretched = df["idle_duration"] / params["max_idle_duration_candles"]
+        self.assertTrue((df["idle_ratio"] - stretched).abs().max() < 1e-12)
+        self.assertTrue((df["idle_ratio"] > 1.0).any())
+
     def test_simulate_durations_match_runtime_step(self):
         """Every in-position candle advances duration, including an immediate exit."""
         df = simulate_samples(
@@ -72,6 +160,46 @@ class TestSimulationParity(RewardSpaceTestBase):
             else:
                 expected_duration = 0
             self.assertEqual(row.trade_duration, expected_duration)
+
+    def test_unrealized_pnl_mode_shapes_hold_trajectory(self):
+        """The flag derives hold prices from a target PnL instead of only feeding Phi."""
+        params = self.base_params(
+            hold_potential_enabled=True,
+            exit_potential_mode="non_canonical",
+            max_trade_duration_candles=100,
+            unrealized_pnl=True,
+        )
+        df = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        holds = df[df["position"] != Positions.Neutral.value]
+        self.assertFalse(holds.empty)
+        derivable = holds[holds["next_pnl"].abs() > 0]
+        self.assertGreater(len(derivable), 0, "synthetic holds must accrue target PnL")
+        for row in derivable.itertuples():
+            self.assertTrue(abs(row.next_pnl) <= 0.15)
+        replay = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        self.assertTrue(replay["next_pnl"].equals(df["next_pnl"]))
 
     def test_non_canonical_report_classifies_both_outputs(self):
         """Zero correction cannot certify a non-canonical potential mode."""

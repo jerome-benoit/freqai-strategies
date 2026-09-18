@@ -18,7 +18,7 @@ import random
 import warnings
 from enum import Enum, IntEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -190,7 +190,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "idle_penalty_power": "Idle penalty exponent",
     "idle_penalty_ratio": "Idle penalty ratio",
     "max_trade_duration_candles": "Trade duration cap (candles)",
-    "max_idle_duration_candles": "Idle duration cap (candles)",
+    "max_idle_duration_candles": "Idle duration threshold (candles)",
     "hold_penalty_ratio": "Hold penalty ratio",
     "hold_penalty_power": "Hold penalty exponent",
     "exit_attenuation_mode": "Exit kernel (legacy|sqrt|linear|power|half_life)",
@@ -809,6 +809,8 @@ class RewardBreakdown:
     idle_penalty: float = 0.0
     hold_penalty: float = 0.0
     exit_component: float = 0.0
+    terminal_liquidation: bool = False
+    exit_pnl: float | None = None
     # PBRS components
     reward_shaping: float = 0.0
     entry_additive: float = 0.0
@@ -1025,15 +1027,17 @@ def _compute_pnl_target_coefficient(
         rr = risk_reward_ratio if risk_reward_ratio > 0 else RISK_REWARD_RATIO_DEFAULT
 
         pnl_ratio = pnl / pnl_target
-        if abs(pnl_ratio) > 1.0:
-            base_pnl_target_coefficient = math.tanh(
-                pnl_amplification_sensitivity * (abs(pnl_ratio) - 1.0)
-            )
-            if pnl_ratio > 1.0:
-                pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
-            elif pnl_ratio < -(1.0 / rr):
+
+        if pnl_ratio > 1.0:
+            gain_coefficient = math.tanh(pnl_amplification_sensitivity * (pnl_ratio - 1.0))
+            pnl_target_coefficient = 1.0 + win_reward_factor * gain_coefficient
+        else:
+            loss_threshold = pnl_target / rr
+            if pnl < -loss_threshold:
+                loss_ratio = (-pnl) / loss_threshold
+                loss_coefficient = math.tanh(pnl_amplification_sensitivity * (loss_ratio - 1.0))
                 loss_penalty_factor = win_reward_factor * rr
-                pnl_target_coefficient = 1.0 + loss_penalty_factor * base_pnl_target_coefficient
+                pnl_target_coefficient = 1.0 + loss_penalty_factor * loss_coefficient
 
     return pnl_target_coefficient
 
@@ -1322,6 +1326,7 @@ def calculate_reward(
                     risk_reward_ratio,
                 )
                 breakdown.exit_component = base_reward
+                breakdown.exit_pnl = context.current_pnl
             else:
                 base_reward = 0.0
 
@@ -1373,15 +1378,7 @@ def calculate_reward(
         next_duration_ratio = _compute_duration_ratio(
             context.trade_duration, max_trade_duration_candles
         )
-        # Optionally simulate unrealized PnL during holds to feed Φ(s)
-        if _get_bool_param(params, "unrealized_pnl", False):
-            center_unrealized = 0.5 * (
-                context.max_unrealized_profit + context.min_unrealized_profit
-            )
-            beta = _get_float_param(params, "pnl_amplification_sensitivity")
-            next_pnl = float(center_unrealized * math.tanh(beta * next_duration_ratio))
-        else:
-            next_pnl = current_pnl
+        next_pnl = current_pnl
     elif is_exit:
         next_pnl = 0.0
         next_duration_ratio = 0.0
@@ -1394,6 +1391,23 @@ def calculate_reward(
         next_duration_ratio = _compute_duration_ratio(
             next_context.trade_duration, max_trade_duration_candles
         )
+    terminal_context = next_context if next_context is not None else context
+    breakdown.terminal_liquidation = bool(
+        terminated and next_position in (Positions.Long, Positions.Short)
+    )
+    if breakdown.terminal_liquidation:
+        liquidation_reward = _compute_exit_reward(
+            base_factor,
+            pnl_target,
+            next_duration_ratio,
+            terminal_context,
+            params,
+            risk_reward_ratio,
+        )
+        base_reward += liquidation_reward
+        breakdown.base_reward = float(base_reward)
+        breakdown.exit_component += liquidation_reward
+        breakdown.exit_pnl = terminal_context.current_pnl
 
     # Apply PBRS only if enabled and not neutral self-loop
     exit_mode = _get_str_param(params, "exit_potential_mode")
@@ -1413,10 +1427,12 @@ def calculate_reward(
         prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
 
         if is_neutral:
-            # Neutral self-loop keeps stored potential unchanged.
+            # Neutral self-loops retain potential except at the terminal boundary.
             breakdown.prev_potential = prev_potential
-            breakdown.next_potential = prev_potential
-            breakdown.total = base_reward
+            breakdown.next_potential = 0.0 if terminated else prev_potential
+            breakdown.reward_shaping = -prev_potential if terminated else 0.0
+            breakdown.pbrs_delta = breakdown.reward_shaping
+            breakdown.total = base_reward + breakdown.reward_shaping
             return breakdown
 
         reward_shaping, next_potential, pbrs_delta, entry_additive, exit_additive = (
@@ -1439,6 +1455,10 @@ def calculate_reward(
                 else 0.0,
             )
         )
+        if breakdown.terminal_liquidation and exit_additive_enabled:
+            exit_additive += _compute_exit_additive(
+                terminal_context.current_pnl, pnl_target, next_duration_ratio, params, base_factor
+            )
         if terminated:
             next_potential = 0.0
             reward_shaping = -prev_potential
@@ -1456,7 +1476,7 @@ def calculate_reward(
 
     prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
     breakdown.prev_potential = prev_potential
-    breakdown.next_potential = prev_potential
+    breakdown.next_potential = 0.0 if terminated else prev_potential
     breakdown.total = base_reward
 
     return breakdown
@@ -1576,12 +1596,50 @@ def _sample_action(
     return action, entry_prob, exit_prob, neutral_prob
 
 
+_HYBRID_REWARD_KEYS: Final[frozenset[str]] = frozenset(
+    {"profit_aim", "risk_reward_ratio", "action_masking"}
+)
+_SIMULATION_ONLY_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "unrealized_pnl",
+        "num_samples",
+        "seed",
+        "trading_mode",
+        "max_duration_ratio",
+        "pnl_base_std",
+        "pnl_duration_vol_scale",
+        "real_episodes",
+        "out_dir",
+    }
+)
+
+
 def parse_overrides(overrides: Iterable[str]) -> RewardParams:
+    """Parse KEY=VALUE overrides restricted to supported reward parameters.
+
+    Only reward tunables (the canonical defaults) plus the hybrid simulation
+    scalars are accepted. The legacy alias 'rr' is normalized to
+    'risk_reward_ratio' with the last occurrence winning. Unknown keys,
+    empty keys, and simulation-only options are rejected before any artifact
+    is produced.
+    """
     parsed: RewardParams = {}
     for override in overrides:
         if "=" not in override:
             raise ValueError(f"CLI: invalid override format '{override}'. Expected 'key=value'")
         key, value = override.split("=", 1)
+        if not key:
+            raise ValueError(f"CLI: invalid override '{override}': empty parameter name")
+        if key == "rr":
+            key = "risk_reward_ratio"
+        elif key in _SIMULATION_ONLY_KEYS:
+            raise ValueError(
+                f"CLI: override '{key}' is simulation-only and cannot be set via --params"
+            )
+        elif key not in DEFAULT_MODEL_REWARD_PARAMETERS and key not in _HYBRID_REWARD_KEYS:
+            raise ValueError(
+                f"CLI: unknown or unsupported reward parameter '{key}' in override '{override}'"
+            )
         try:
             parsed[key] = float(value)
         except ValueError:
@@ -1635,7 +1693,7 @@ def simulate_samples(
     )
     max_trade_duration_cap = int(max_trade_duration_candles * max_duration_ratio)
 
-    samples: list[dict[str, float]] = []
+    samples: list[dict[str, float | None]] = []
     prev_potential: float = 0.0
 
     # Stateful trajectory variables
@@ -1709,7 +1767,7 @@ def simulate_samples(
         if position in (Positions.Long, Positions.Short):
             trade_duration = min(trade_duration + 1, max_trade_duration_cap)
         else:
-            idle_duration = min(idle_duration + 1, max_idle_duration_candles)
+            idle_duration += 1
         # Simulate synthetic open-price movement.
         duration_ratio = (
             _compute_duration_ratio(trade_duration, max_trade_duration_candles)
@@ -1731,8 +1789,11 @@ def simulate_samples(
         step_return = float(np.clip(step_return, -0.95, 0.95))
 
         current_open = float(max(1e-6, current_open * (1.0 + step_return)))
-
-        # Compute fee-aware unrealized PnL from (entry_open, current_open)
+        # Compute fee-aware unrealized PnL from (entry_open, current_open).
+        # The unrealized_pnl mode then replaces the random-walk hold price with
+        # a fee-aware open derived from a target PnL (center of the
+        # walk-informed extrema scaled by tanh(beta*ratio)), so the potential
+        # and later exits see one truth while the RNG stream stays identical.
         if position in (Positions.Long, Positions.Short):
             pnl = _compute_unrealized_pnl_estimate(
                 position,
@@ -1743,10 +1804,42 @@ def simulate_samples(
             pnl = float(np.clip(pnl, -0.15, 0.15))
             max_unrealized_profit = max(max_unrealized_profit, pnl)
             min_unrealized_profit = min(min_unrealized_profit, pnl)
+            if _get_bool_param(params, "unrealized_pnl", False):
+                center_unrealized = 0.5 * (max_unrealized_profit + min_unrealized_profit)
+                beta = _get_float_param(params, "pnl_amplification_sensitivity")
+                hold_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
+                target_pnl = float(
+                    np.clip(center_unrealized * math.tanh(beta * hold_ratio), -0.15, 0.15)
+                )
+                entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
+                if position == Positions.Long:
+                    current_open = (
+                        entry_open * (1 + entry_fee_rate) * (1 + exit_fee_rate) * (1 + target_pnl)
+                    )
+                else:
+                    current_open = (
+                        entry_open * (1 - target_pnl) / ((1 + entry_fee_rate) * (1 + exit_fee_rate))
+                    )
+                current_open = float(max(1e-6, current_open))
+                pnl = float(
+                    np.clip(
+                        _compute_unrealized_pnl_estimate(
+                            position,
+                            entry_open=entry_open,
+                            current_open=current_open,
+                            params=params,
+                        ),
+                        -0.15,
+                        0.15,
+                    )
+                )
+                max_unrealized_profit = max(max_unrealized_profit, pnl)
+                min_unrealized_profit = min(min_unrealized_profit, pnl)
         else:
             pnl = 0.0
             max_unrealized_profit = 0.0
             min_unrealized_profit = 0.0
+
         next_context = RewardContext(
             current_pnl=pnl,
             trade_duration=trade_duration,
@@ -1769,6 +1862,16 @@ def simulate_samples(
             terminated=_ == num_samples - 1,
         )
         prev_potential = breakdown.next_potential
+        if breakdown.terminal_liquidation:
+            next_context = dataclasses.replace(
+                next_context,
+                position=Positions.Neutral,
+                current_pnl=0.0,
+                trade_duration=0,
+                idle_duration=0,
+                max_unrealized_profit=0.0,
+                min_unrealized_profit=0.0,
+            )
 
         idle_ratio = context.idle_duration / max(1, max_idle_duration_candles)
         samples.append(
@@ -1782,6 +1885,8 @@ def simulate_samples(
                 "next_trade_duration": next_context.trade_duration,
                 "next_position": float(next_context.position.value),
                 "terminated": _ == num_samples - 1,
+                "terminal_liquidation": breakdown.terminal_liquidation,
+                "exit_pnl": breakdown.exit_pnl,
                 "duration_ratio": _compute_duration_ratio(
                     context.trade_duration, max_trade_duration_candles
                 ),
@@ -1865,9 +1970,27 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     if len(neutral_with_pnl) > 0:
         raise AssertionError(f"Sim: {len(neutral_with_pnl)} Neutral positions with non-zero pnl")
 
-    # INVARIANT 4: Exit rewards only appear on exit actions
+    # Economic exits belong to voluntary exits or a proven terminal liquidation.
+    liquidation = df.get("terminal_liquidation", pd.Series(False, index=df.index)).eq(True)
+    valid_liquidation = (
+        df.get("terminated", pd.Series(False, index=df.index)).eq(True)
+        & df.get("next_position", pd.Series(np.nan, index=df.index)).eq(Positions.Neutral.value)
+        & (
+            (
+                df["position"].isin([Positions.Long.value, Positions.Short.value])
+                & ~df["action"].isin([Actions.Long_exit.value, Actions.Short_exit.value])
+            )
+            | (
+                df["position"].eq(Positions.Neutral.value)
+                & df["action"].isin([Actions.Long_enter.value, Actions.Short_enter.value])
+            )
+        )
+        & np.isfinite(df.get("exit_pnl", pd.Series(np.nan, index=df.index)))
+    )
+    if (liquidation & ~valid_liquidation).any():
+        raise AssertionError("Sim: terminal liquidation lacks a terminal open-position transition")
     non_exit_with_exit_reward = df[
-        (~df["action"].isin([2.0, 4.0])) & (df["reward_exit"].abs() > eps_reward)
+        (~df["action"].isin([2.0, 4.0])) & ~liquidation & (df["reward_exit"].abs() > eps_reward)
     ]
     if len(non_exit_with_exit_reward) > 0:
         raise AssertionError(
@@ -1970,15 +2093,16 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
     idle_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
     trade_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
-    pnl_min = float(df["pnl"].min())
-    pnl_max = float(df["pnl"].max())
+    exit_pnl = df.get("exit_pnl", df["pnl"]).fillna(df["pnl"])
+    pnl_min = float(exit_pnl.min())
+    pnl_max = float(exit_pnl.max())
     if np.isclose(pnl_min, pnl_max):
         pnl_max = pnl_min + 1e-6
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
     idle_stats = _binned_stats(df, "idle_duration", "reward_idle", idle_bins)
     hold_stats = _binned_stats(df, "trade_duration", "reward_hold", trade_bins)
-    exit_stats = _binned_stats(df, "pnl", "reward_exit", pnl_bins)
+    exit_stats = _binned_stats(df.assign(exit_pnl=exit_pnl), "exit_pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
     hold_stats = hold_stats.round(6)
@@ -2376,6 +2500,9 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     # Keep optional list stable and explicit
     numeric_optional = {
         "reward_exit",
+        "exit_pnl",
+        "terminal_liquidation",
+        "execution_tick",
         "reward_idle",
         "reward_hold",
         "reward_invalid",
@@ -4383,7 +4510,6 @@ def write_complete_statistical_analysis(
             f.write("7. **PBRS Invariance** - " + invariance_status + "\n")
         f.write("\n")
         f.write("**Generated Files:**\n")
-        f.write("- `reward_samples.csv` - Raw synthetic samples\n")
         if not skip_feature_analysis and len(df) >= 4:
             f.write("- `feature_importance.csv` - Complete feature importance rankings\n")
             f.write("- `partial_dependence_*.csv` - Partial dependence data for visualization\n")
@@ -4414,26 +4540,20 @@ def main() -> None:
         ]
         print("CLI: Parameter adjustments applied\n" + "\n".join(adj_lines))
 
+    # Effective values: defaults < explicit flags < --params, resolved once.
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
-    risk_reward_ratio = _get_float_param(
-        params,
-        "risk_reward_ratio",
-        _get_float_param(params, "rr", float(args.risk_reward_ratio)),
-    )
-
-    cli_action_masking = _to_bool(args.action_masking)
-    if "action_masking" in params:
-        params["action_masking"] = _to_bool(params["action_masking"])
-    else:
-        params["action_masking"] = cli_action_masking
-    params["unrealized_pnl"] = bool(getattr(args, "unrealized_pnl", False))
-    # Propagate strict flag into params for downstream runtime guards
-    params["strict_validation"] = bool(getattr(args, "strict_validation", True))
+    risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
+    params["action_masking"] = _to_bool(params.get("action_masking", args.action_masking))
 
     # Deterministic seeds cascade
     random.seed(args.seed)
     np.random.seed(args.seed)
+    real_df = None
+    if args.real_episodes is not None:
+        # Fail before any artifact is written for an explicitly requested file.
+        print(f"CLI: Loading real episodes from {args.real_episodes}")
+        real_df = load_real_episodes(args.real_episodes)
 
     df = simulate_samples(
         num_samples=args.num_samples,
@@ -4523,12 +4643,6 @@ def main() -> None:
     df.to_csv(csv_path, index=False)
     sample_output_message = f"Samples saved to {csv_path}"
 
-    # Load real episodes if provided
-    real_df = None
-    if args.real_episodes and args.real_episodes.exists():
-        print(f"CLI: Loading real episodes from {args.real_episodes}")
-        real_df = load_real_episodes(args.real_episodes)
-
     # Generate consolidated statistical analysis report (with enhanced tests)
     print("CLI: Generating statistical analysis")
 
@@ -4563,6 +4677,11 @@ def main() -> None:
             "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
+            "effective": {
+                "base_factor": float(base_factor),
+                "profit_aim": float(profit_aim),
+                "risk_reward_ratio": float(risk_reward_ratio),
+            },
         }
         sim_params_dict = df.attrs.get("simulation_params", {})
         if not isinstance(sim_params_dict, dict):

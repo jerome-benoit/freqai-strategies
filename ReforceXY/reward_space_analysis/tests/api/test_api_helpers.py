@@ -83,14 +83,22 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
 
     def test_parse_overrides(self):
-        """Test parse overrides."""
-        overrides = ["alpha=1.5", "mode=linear", "limit=42"]
-        result = parse_overrides(overrides)
-        self.assertEqual(result["alpha"], 1.5)
-        self.assertEqual(result["mode"], "linear")
-        self.assertEqual(result["limit"], 42.0)
-        with self.assertRaises(ValueError):
-            parse_overrides(["badpair"])
+        """Overrides accept supported keys, alias rr, and reject the rest."""
+        result = parse_overrides(
+            ["win_reward_factor=4.0", "rr=1.5", "risk_reward_ratio=2.5", "exit_potential_mode=tanh"]
+        )
+        self.assertEqual(result["win_reward_factor"], 4.0)
+        self.assertEqual(result["risk_reward_ratio"], 2.5)
+        self.assertEqual(result["exit_potential_mode"], "tanh")
+        for invalid in (
+            ["alpha=1.5"],
+            ["num_samples=1"],
+            ["unrealized_pnl=true"],
+            ["=5"],
+            ["badpair"],
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_overrides(invalid)
 
     def test_api_simulation_and_reward_smoke(self):
         """Test api simulation and reward smoke."""
