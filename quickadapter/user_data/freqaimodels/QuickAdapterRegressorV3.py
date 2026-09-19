@@ -500,7 +500,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     _CATEGORY_DISTANCE, _CATEGORY_CLUSTER, _CATEGORY_DENSITY = _SELECTION_CATEGORIES
     _SUPPORT_POLICY_FALLBACK: Final[Literal["fallback"]] = LABEL_WEIGHT_SUPPORT_POLICIES[
         0
-    ]  # LABEL_WEIGHT_SUPPORT_POLICIES[0]='fallback'
+    ]  # "fallback"
     _SUPPORT_POLICY_RAISE: Final[Literal["raise"]] = LABEL_WEIGHT_SUPPORT_POLICIES[1]  # "raise"
 
     _SELECTION_METHODS: Final[tuple[SelectionMethod, ...]] = (
@@ -834,9 +834,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_weights,
                 logger=logger,
                 context=context,
-                on_collapse=LABEL_WEIGHT_SUPPORT_POLICIES[
-                    0
-                ],  # LABEL_WEIGHT_SUPPORT_POLICIES[0]='fallback'
+                on_collapse=LABEL_WEIGHT_SUPPORT_POLICIES[0],  # "fallback"
             )
         except LabelWeightSupportError as exc:
             logger.warning(
@@ -908,9 +906,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             # governs the contract -- ``raise`` raises, ``fallback``
             # warns. A direct return to base weights would bypass the
             # policy silently.
-            strategy = label_weighting_config.get(
-                "strategy", WEIGHT_STRATEGIES[0]
-            )  # WEIGHT_STRATEGIES[0]='none'
+            strategy = label_weighting_config.get("strategy", WEIGHT_STRATEGIES[0])  # "none"
             if strategy != WEIGHT_STRATEGIES[0]:  # "none"
                 return QuickAdapterRegressorV3._apply_support_policy(
                     base_weights,
@@ -2269,7 +2265,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``dk.set_weights_higher_recent`` when ``feature_parameters.weight_factor > 0``,
         else ones) with the label importance weight column produced by
         ``compute_label_weights`` and stored on ``unfiltered_df`` under
-        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before  # LABEL_COLUMNS[0]='&s-extrema'
+        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before  # "&s-extrema"
         any shuffle/split on ``features_filtered.index`` (a subset of
         ``unfiltered_df.index``) to avoid post-hoc reindex against shuffled
         data. The weight column is absent when ``label_weighting.strategy``
@@ -2287,9 +2283,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "unfiltered_df.index (filter_features should preserve original "
                 "row labels)"
             )
-        if LABEL_COLUMNS[0] not in dk.label_list:  # LABEL_COLUMNS[0]='&s-extrema'
+        if LABEL_COLUMNS[0] not in dk.label_list:  # "&s-extrema"
             raise ValueError(
-                f"LABEL_COLUMNS[0]={LABEL_COLUMNS[0]!r} is not in "  # LABEL_COLUMNS[0]='&s-extrema'
+                f"LABEL_COLUMNS[0]={LABEL_COLUMNS[0]!r} is not in "  # "&s-extrema"
                 f"dk.label_list={dk.label_list!r}: project label constant "
                 f"diverged from freqtrade's runtime label list"
             )
@@ -2309,9 +2305,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_weighting_config = get_label_column_config(
             LABEL_COLUMNS[0],
             label_weighting["default"],
-            label_weighting["columns"],  # LABEL_COLUMNS[0]='&s-extrema'
+            label_weighting["columns"],  # "&s-extrema"
         )
-        weight_col = label_weight_column_name(LABEL_COLUMNS[0])  # LABEL_COLUMNS[0]='&s-extrema'
+        weight_col = label_weight_column_name(LABEL_COLUMNS[0])  # "&s-extrema"
         if weight_col in unfiltered_df.columns:
             label_weights = unfiltered_df.loc[features_filtered.index, weight_col].to_numpy(
                 dtype=float

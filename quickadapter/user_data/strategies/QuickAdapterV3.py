@@ -470,8 +470,7 @@ class QuickAdapterV3(IStrategy):
                 )
                 if (
                     col_smoothing_config["method"] in SMOOTHING_METHOD_MODES
-                    and col_smoothing_config["mode"]
-                    == SMOOTHING_MODES[3]  # SMOOTHING_MODES[3]='wrap'
+                    and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
                 ):  # "wrap"
                     raise ValueError(
                         "label_smoothing.mode='wrap' is incompatible with "
@@ -1300,19 +1299,17 @@ class QuickAdapterV3(IStrategy):
     ) -> float | None:
         trade_natr_methods: dict[str, Callable[[], float | None]] = {
             # 0 - "moving_average"
-            TRADE_NATR_METHODS[0]: lambda: (
-                self.get_trade_moving_average_natr(  # TRADE_NATR_METHODS[0]='moving_average'
-                    df, trade.pair, trade_duration_candles
-                )
+            TRADE_NATR_METHODS[0]: lambda: self.get_trade_moving_average_natr(  # "moving_average"
+                df, trade.pair, trade_duration_candles
             ),
             # 1 - "quantile_interpolation"
             TRADE_NATR_METHODS[1]: lambda: self.get_trade_quantile_interpolation_natr(
                 df, trade
-            ),  # TRADE_NATR_METHODS[1]='quantile_interpolation'
+            ),  # "quantile_interpolation"
             # 2 - "weighted_average"
             TRADE_NATR_METHODS[2]: lambda: self.get_trade_weighted_average_natr(
                 df, trade
-            ),  # TRADE_NATR_METHODS[2]='weighted_average'
+            ),  # "weighted_average"
         }
         trade_natr_method_fn = trade_natr_methods.get(self.trade_natr_method)
         if trade_natr_method_fn is None:

@@ -847,16 +847,14 @@ def _generate_extrema_label(
         series.loc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
-        COMBINED_METRICS[0]: result.amplitudes,  # COMBINED_METRICS[0]='amplitude'
-        COMBINED_METRICS[
-            1
-        ]: result.amplitude_threshold_ratios,  # COMBINED_METRICS[1]='amplitude_threshold_ratio'
-        COMBINED_METRICS[2]: result.volume_rates,  # COMBINED_METRICS[2]='volume_rate'
-        COMBINED_METRICS[3]: result.speeds,  # COMBINED_METRICS[3]='speed'
-        COMBINED_METRICS[4]: result.efficiency_ratios,  # COMBINED_METRICS[4]='efficiency_ratio'
+        COMBINED_METRICS[0]: result.amplitudes,  # "amplitude"
+        COMBINED_METRICS[1]: result.amplitude_threshold_ratios,  # "amplitude_threshold_ratio"
+        COMBINED_METRICS[2]: result.volume_rates,  # "volume_rate"
+        COMBINED_METRICS[3]: result.speeds,  # "speed"
+        COMBINED_METRICS[4]: result.efficiency_ratios,  # "efficiency_ratio"
         COMBINED_METRICS[
             5
-        ]: result.volume_weighted_efficiency_ratios,  # COMBINED_METRICS[5]='volume_weighted_efficiency_ratio'
+        ]: result.volume_weighted_efficiency_ratios,  # "volume_weighted_efficiency_ratio"
     }
 
     known_at_lookahead = pd.Series(
@@ -936,7 +934,7 @@ def get_smoothing_kernel_half_width(
     (``smooth()`` top-level no-op), and for the filtfilt/savgol routes
     when their downstream short-series guards make smoothing a no-op.
     """
-    method = config.get("method", SMOOTHING_METHODS[0])  # SMOOTHING_METHODS[0]='none'
+    method = config.get("method", SMOOTHING_METHODS[0])  # "none"
     if method == SMOOTHING_METHODS[0]:  # "none"
         return 0
     raw_window = max(
@@ -953,7 +951,7 @@ def get_smoothing_kernel_half_width(
         polyorder = max(int(config.get("polyorder", DEFAULTS_LABEL_SMOOTHING["polyorder"])), 0)
         effective_window, _, _ = get_savgol_params(
             raw_window, polyorder, SMOOTHING_MODES[0]
-        )  # SMOOTHING_MODES[0]='mirror'
+        )  # "mirror"
     elif method == SMOOTHING_METHODS[3]:  # "kaiser_bessel_derived"
         effective_window = get_even_window(raw_window)
     else:
@@ -962,9 +960,7 @@ def get_smoothing_kernel_half_width(
         if series_length <= _filtfilt_default_padlen(effective_window, 1):
             return 0
         return effective_window - 1
-    if (
-        method == SMOOTHING_METHODS[7] and series_length < effective_window
-    ):  # SMOOTHING_METHODS[7]='savgol'
+    if method == SMOOTHING_METHODS[7] and series_length < effective_window:  # "savgol"
         return 0
     return effective_window // 2
 
@@ -1020,7 +1016,7 @@ def compose_label_lookahead(
     ).max()
     if (
         method == SMOOTHING_METHODS[7] and mode == SMOOTHING_MODES[4]
-    ):  # SMOOTHING_METHODS[7]='savgol'; SMOOTHING_MODES[4]='interp'
+    ):  # "savgol"; SMOOTHING_MODES[4]='interp'
         smoothed_known_at_positions.iloc[:kernel_half_width] = known_at_positions.iloc[
             : 2 * kernel_half_width + 1
         ].max()
@@ -1853,9 +1849,7 @@ def compose_sample_weights(
     *,
     logger: Logger,
     context: str,
-    on_collapse: Literal["raise", "fallback"] = LABEL_WEIGHT_SUPPORT_POLICIES[
-        1
-    ],  # LABEL_WEIGHT_SUPPORT_POLICIES[1]='raise'
+    on_collapse: Literal["raise", "fallback"] = LABEL_WEIGHT_SUPPORT_POLICIES[1],  # "raise"
 ) -> NDArray[np.floating]:
     """Combine base sample weights with the label importance weights.
 
@@ -2078,8 +2072,8 @@ _ZERO_PHASE_FILTER_DISPATCH: Final[
 ] = {
     SMOOTHING_METHODS[1]: (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"
     SMOOTHING_METHODS[2]: (SMOOTHING_KERNELS[1], get_odd_window),  # "kaiser"
-    SMOOTHING_METHODS[3]: (  # SMOOTHING_METHODS[3]='kaiser_bessel_derived'
-        SMOOTHING_KERNELS[2],  # SMOOTHING_KERNELS[2]='kaiser_bessel_derived'
+    SMOOTHING_METHODS[3]: (  # "kaiser_bessel_derived"
+        SMOOTHING_KERNELS[2],  # "kaiser_bessel_derived"
         get_even_window,
     ),  # "kaiser_bessel_derived"
     SMOOTHING_METHODS[4]: (SMOOTHING_KERNELS[3], get_odd_window),  # "triang"
@@ -2313,7 +2307,7 @@ def _gaussian_fill_weights(
     pivot_weights: NDArray[np.floating],
     sigma_candles: float,
     *,
-    bandwidth: str = FILL_BANDWIDTHS[0],  # FILL_BANDWIDTHS[0]='fixed'
+    bandwidth: str = FILL_BANDWIDTHS[0],  # "fixed"
     bandwidth_neighbors: int = 1,
     bandwidth_alpha: float = 1.0,
     sigma_min_candles: float = 0.5,
@@ -3348,7 +3342,7 @@ def compute_label_weight_known_at_lookahead(
             < float(label_weighting["fill_sigma_candles"])
         )
         uniform_gaussian = (
-            label_weighting["strategy"] == WEIGHT_STRATEGIES[1]  # WEIGHT_STRATEGIES[1]='uniform'
+            label_weighting["strategy"] == WEIGHT_STRATEGIES[1]  # "uniform"
             and label_weighting["fill_method"] == FILL_METHODS[2]  # "gaussian"
         )
         band_weight_availability = (
@@ -3762,16 +3756,16 @@ def get_ma_fn(
         str,
         Callable[[pd.Series | NDArray[np.floating], int], pd.Series | NDArray[np.floating]],
     ] = {
-        MA_MODES[0]: ta.SMA,  # MA_MODES[0]='sma'
-        MA_MODES[1]: ta.EMA,  # MA_MODES[1]='ema'
-        MA_MODES[2]: ta.WMA,  # MA_MODES[2]='wma'
-        MA_MODES[3]: ta.DEMA,  # MA_MODES[3]='dema'
-        MA_MODES[4]: ta.TEMA,  # MA_MODES[4]='tema'
-        MA_MODES[5]: ta.TRIMA,  # MA_MODES[5]='trima'
-        MA_MODES[6]: ta.KAMA,  # MA_MODES[6]='kama'
-        MA_MODES[7]: ta.T3,  # MA_MODES[7]='t3'
+        MA_MODES[0]: ta.SMA,  # "sma"
+        MA_MODES[1]: ta.EMA,  # "ema"
+        MA_MODES[2]: ta.WMA,  # "wma"
+        MA_MODES[3]: ta.DEMA,  # "dema"
+        MA_MODES[4]: ta.TEMA,  # "tema"
+        MA_MODES[5]: ta.TRIMA,  # "trima"
+        MA_MODES[6]: ta.KAMA,  # "kama"
+        MA_MODES[7]: ta.T3,  # "t3"
     }
-    return mamodes.get(mamode, mamodes[MA_MODES[0]])  # MA_MODES[0]='sma'
+    return mamodes.get(mamode, mamodes[MA_MODES[0]])  # "sma"
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
@@ -3888,21 +3882,21 @@ def smma(series: pd.Series, period: int, zero_lag=False, offset=0) -> pd.Series:
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_price_fn(pricemode: str) -> Callable[[pd.DataFrame], pd.Series]:
     pricemodes = {
-        PRICE_MODES[0]: ta.AVGPRICE,  # PRICE_MODES[0]='average'
-        PRICE_MODES[1]: ta.MEDPRICE,  # PRICE_MODES[1]='median'
-        PRICE_MODES[2]: ta.TYPPRICE,  # PRICE_MODES[2]='typical'
-        PRICE_MODES[3]: ta.WCLPRICE,  # PRICE_MODES[3]='weighted-close'
-        PRICE_MODES[4]: lambda df: df.get("close"),  # PRICE_MODES[4]='close'
+        PRICE_MODES[0]: ta.AVGPRICE,  # "average"
+        PRICE_MODES[1]: ta.MEDPRICE,  # "median"
+        PRICE_MODES[2]: ta.TYPPRICE,  # "typical"
+        PRICE_MODES[3]: ta.WCLPRICE,  # "weighted-close"
+        PRICE_MODES[4]: lambda df: df.get("close"),  # "close"
     }
-    return pricemodes.get(pricemode, pricemodes[PRICE_MODES[4]])  # PRICE_MODES[4]='close'
+    return pricemodes.get(pricemode, pricemodes[PRICE_MODES[4]])  # "close"
 
 
 def ewo(
     dataframe: pd.DataFrame,
     ma1_length: int = 5,
     ma2_length: int = 34,
-    pricemode: str = PRICE_MODES[4],  # PRICE_MODES[4]='close'
-    mamode: str = MA_MODES[0],  # MA_MODES[0]='sma'
+    pricemode: str = PRICE_MODES[4],  # "close"
+    mamode: str = MA_MODES[0],  # "sma"
     zero_lag: bool = False,
     normalize: bool = False,
     *,
@@ -3914,7 +3908,7 @@ def ewo(
     prices = get_price_fn(pricemode)(dataframe)
 
     if zero_lag:
-        if mamode == MA_MODES[1]:  # MA_MODES[1]='ema'
+        if mamode == MA_MODES[1]:  # "ema"
 
             def ma_fn(series, timeperiod):
                 return zlema(series, period=timeperiod)
@@ -3947,7 +3941,7 @@ def alligator(
     jaw_shift: int = 8,
     teeth_shift: int = 5,
     lips_shift: int = 3,
-    pricemode: str = PRICE_MODES[1],  # PRICE_MODES[1]='median'
+    pricemode: str = PRICE_MODES[1],  # "median"
     zero_lag: bool = False,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
