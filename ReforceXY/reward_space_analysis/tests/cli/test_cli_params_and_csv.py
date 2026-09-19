@@ -261,7 +261,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
                 "150.0",
                 "--params",
                 "profit_aim=0.02",
-                "rr=1.5",
+                "risk_reward_ratio=1.5",
             ],
         )
         _assert_cli_success(self, result)

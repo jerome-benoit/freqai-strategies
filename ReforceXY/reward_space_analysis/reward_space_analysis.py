@@ -80,7 +80,6 @@ RISK_REWARD_RATIO_DEFAULT: float = 2.0
 
 # Supported attenuation modes
 ATTENUATION_MODES: tuple[str, ...] = ("sqrt", "linear", "power", "half_life")
-ATTENUATION_MODES_WITH_LEGACY: tuple[str, ...] = ("legacy", *ATTENUATION_MODES)
 
 # Internal numeric guards and behavior toggles
 INTERNAL_GUARDS: dict[str, float] = {
@@ -117,8 +116,6 @@ TRADING_MODES: tuple[str, ...] = ("spot", "margin", "futures")
 
 # Supported p-value adjustment methods
 ADJUST_METHODS: tuple[str, ...] = ("none", "benjamini_hochberg")
-# Alias without underscore for convenience
-_ADJUST_METHODS_ALIASES: frozenset[str] = frozenset({"benjaminihochberg"})
 
 
 DEFAULT_MODEL_REWARD_PARAMETERS: RewardParams = {
@@ -187,7 +184,7 @@ DEFAULT_MODEL_REWARD_PARAMETERS_HELP: dict[str, str] = {
     "max_idle_duration_candles": "Idle duration threshold (candles)",
     "hold_penalty_ratio": "Hold penalty ratio",
     "hold_penalty_power": "Hold penalty exponent",
-    "exit_attenuation_mode": "Exit kernel (legacy|sqrt|linear|power|half_life)",
+    "exit_attenuation_mode": "Exit kernel (sqrt|linear|power|half_life)",
     "exit_plateau": "Use plateau before attenuation",
     "exit_plateau_grace": "Plateau grace duration ratio",
     "exit_linear_slope": "Linear kernel slope",
@@ -723,7 +720,7 @@ def add_tunable_cli_args(parser: argparse.ArgumentParser) -> None:
             parser.add_argument(
                 f"--{key}",
                 type=str,
-                choices=sorted(ATTENUATION_MODES_WITH_LEGACY),
+                choices=sorted(ATTENUATION_MODES),
                 default=None,
                 help=help_text,
             )
@@ -850,9 +847,6 @@ def _compute_time_attenuation_coefficient(
         )
         exit_linear_slope = 1.0
 
-    def _legacy_kernel(dr: float) -> float:
-        return 1.5 if dr <= 1.0 else 0.5
-
     def _sqrt_kernel(dr: float) -> float:
         return 1.0 / math.sqrt(1.0 + dr)
 
@@ -888,7 +882,6 @@ def _compute_time_attenuation_coefficient(
         return math.pow(2.0, -dr / hl)
 
     kernels = {
-        "legacy": _legacy_kernel,
         "sqrt": _sqrt_kernel,
         "linear": _linear_kernel,
         "power": _power_kernel,
@@ -907,7 +900,7 @@ def _compute_time_attenuation_coefficient(
         _warn_unknown_mode(
             "exit_attenuation_mode",
             exit_attenuation_mode,
-            ATTENUATION_MODES_WITH_LEGACY,
+            ATTENUATION_MODES,
             "linear",
             stacklevel=2,
         )
@@ -1613,10 +1606,8 @@ def parse_overrides(overrides: Iterable[str]) -> RewardParams:
     """Parse KEY=VALUE overrides restricted to supported reward parameters.
 
     Only reward tunables (the canonical defaults) plus the hybrid simulation
-    scalars are accepted. The 'rr' alias is normalized to 'risk_reward_ratio',
-    with the last occurrence winning. Unknown keys,
-    empty keys, and simulation-only options are rejected before any artifact
-    is produced.
+    scalars are accepted. Unknown keys, empty keys, and simulation-only options
+    are rejected before any artifact is produced.
     """
     parsed: RewardParams = {}
     for override in overrides:
@@ -1625,9 +1616,7 @@ def parse_overrides(overrides: Iterable[str]) -> RewardParams:
         key, value = override.split("=", 1)
         if not key:
             raise ValueError(f"CLI: invalid override '{override}': empty parameter name")
-        if key == "rr":
-            key = "risk_reward_ratio"
-        elif key in _SIMULATION_ONLY_KEYS:
+        if key in _SIMULATION_ONLY_KEYS:
             raise ValueError(
                 f"CLI: override '{key}' is simulation-only and cannot be set via --params"
             )
@@ -2772,7 +2761,7 @@ def statistical_hypothesis_tests(
             result["p_value_adj"] = np.nan
             result["significant_adj"] = None
     # Optional multiple testing correction (Benjamini-Hochberg)
-    _valid_adjust = set(ADJUST_METHODS) | _ADJUST_METHODS_ALIASES
+    _valid_adjust = set(ADJUST_METHODS)
     if adjust_method not in _valid_adjust:
         raise ValueError(
             f"Stats: unsupported adjust_method '{adjust_method}'. "
@@ -2796,7 +2785,6 @@ def statistical_hypothesis_tests(
             res["p_value_adj"] = float(p_adj)
             res["significant_adj"] = bool(p_adj < alpha)
             results[name] = res
-
     # Validate hypothesis test results
     _validate_hypothesis_test_results(results)
 

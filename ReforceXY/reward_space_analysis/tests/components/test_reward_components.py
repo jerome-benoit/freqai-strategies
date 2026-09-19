@@ -875,53 +875,6 @@ class TestRewardComponents(RewardSpaceTestBase):
             msg="invariance_correction should be ~0 in canonical mode",
         )
 
-    def test_rr_alias_matches_risk_reward_ratio(self):
-        """`rr` param alias matches `risk_reward_ratio` runtime naming."""
-        context = self.make_ctx(
-            pnl=0.02,
-            trade_duration=40,
-            idle_duration=0,
-            max_unrealized_profit=0.03,
-            min_unrealized_profit=0.01,
-            position=Positions.Long,
-            action=Actions.Long_exit,
-        )
-        rr_value = 1.75
-
-        # Canonical spelling
-        params_ratio = self.base_params(
-            exit_potential_mode="canonical",
-            risk_reward_ratio=rr_value,
-        )
-        params_ratio.pop("rr", None)
-
-        # Runtime spelling
-        params_rr = self.base_params(
-            exit_potential_mode="canonical",
-            rr=rr_value,
-        )
-        params_rr.pop("risk_reward_ratio", None)
-
-        br_ratio = calculate_reward_with_defaults(
-            context, params_ratio, risk_reward_ratio=PARAMS.RISK_REWARD_RATIO
-        )
-        br_rr = calculate_reward_with_defaults(
-            context, params_rr, risk_reward_ratio=PARAMS.RISK_REWARD_RATIO
-        )
-
-        self.assertAlmostEqualFloat(
-            br_rr.total,
-            br_ratio.total,
-            tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Total reward should match when using rr alias",
-        )
-        self.assertAlmostEqualFloat(
-            br_rr.exit_component,
-            br_ratio.exit_component,
-            tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Exit component should match when using rr alias",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

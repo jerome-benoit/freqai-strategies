@@ -364,7 +364,7 @@ def test_exit_factor_invariant_suite_grouped():
             "context": make_context(-0.02),
             "duration_ratio": 2.0,
             "params": {
-                "exit_attenuation_mode": "legacy",
+                "exit_attenuation_mode": "linear",
                 "exit_plateau": False,
                 "check_invariants": True,
             },

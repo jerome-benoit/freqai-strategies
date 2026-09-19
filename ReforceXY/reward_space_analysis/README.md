@@ -415,7 +415,6 @@ r* = r            if not exit_plateau
 
 | Mode      | Formula                       | Monotonic | Notes                                       | Use Case                             |
 | --------- | ----------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
-| legacy    | step: 1.5 if r\* ≤ 1 else 0.5 | Yes (non-increasing) | Discontinuous legacy step                   | Existing legacy configurations       |
 | sqrt      | 1 / √(1 + r\*)                | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
 | linear    | 1 / (1 + slope · r\*)         | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
 | power     | (1 + r\*)^(-alpha)            | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |

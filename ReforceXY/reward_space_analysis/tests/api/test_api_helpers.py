@@ -83,14 +83,15 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
 
     def test_parse_overrides(self):
-        """Overrides accept supported keys, alias rr, and reject the rest."""
+        """Overrides accept canonical keys and reject unsupported keys."""
         result = parse_overrides(
-            ["win_reward_factor=4.0", "rr=1.5", "risk_reward_ratio=2.5", "exit_potential_mode=tanh"]
+            ["win_reward_factor=4.0", "risk_reward_ratio=2.5", "exit_potential_mode=tanh"]
         )
         self.assertEqual(result["win_reward_factor"], 4.0)
         self.assertEqual(result["risk_reward_ratio"], 2.5)
         self.assertEqual(result["exit_potential_mode"], "tanh")
         for invalid in (
+            ["rr=1.5"],
             ["alpha=1.5"],
             ["num_samples=1"],
             ["unrealized_pnl=true"],

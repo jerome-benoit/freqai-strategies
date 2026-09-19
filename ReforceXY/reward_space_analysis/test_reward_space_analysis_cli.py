@@ -111,7 +111,7 @@ def build_arg_matrix(
         "spike_cancel",
         "retain_previous",
     ]
-    exit_attenuation_modes = ["sqrt", "linear", "power", "half_life", "legacy"]
+    exit_attenuation_modes = ["sqrt", "linear", "power", "half_life"]
     potential_gammas = [0.0, 0.5, 0.95, 0.999]
     hold_enabled = [0, 1]
     entry_additive_enabled = [0, 1]

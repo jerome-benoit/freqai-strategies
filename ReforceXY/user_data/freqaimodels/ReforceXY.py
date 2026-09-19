@@ -136,7 +136,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
     prediction status. Those rows must not replace recorded predictions, including
     zero predictions and rejected predictions (do_predict == 0 with a candle close).
-    Indistinguishable legacy rows use last-write-wins; label magnitudes never rank rows.
+    Indistinguishable rows use last-write-wins; label magnitudes never rank rows.
     Invalid dates cannot match a candle and are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
@@ -179,12 +179,11 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Repair persisted history and duplicates produced by older Freqtrade writers.
+    """Normalize persisted history and duplicate predictions before upstream writes.
 
-    Normalize before upstream positional writes and after legacy duplicate writes.
-    Normalize before upstream disk repair can discard a recorded duplicate.
-    Already-clean upstream results are preserved. Recheck these synchronous
-    method contracts on Freqtrade upgrades.
+    Normalize before upstream positional writes and before disk repair can discard
+    a recorded duplicate. Already-clean upstream results are preserved. Recheck
+    these synchronous method contracts on Freqtrade upgrades.
     """
     names = (
         "set_initial_return_values",
@@ -235,7 +234,7 @@ def _install_date_pred_dedup_patch() -> None:
             self.historic_predictions[pair]
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
-            # Legacy append requires an initialized row; let upstream construct it.
+            # Append requires an initialized row; let upstream construct it.
             original_set_initial(
                 self,
                 pair,
@@ -289,7 +288,7 @@ ExitPotentialMode = Literal[
     "retain_previous",
 ]
 TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "softsign_sqrt", "clip"]
-ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
+ExitAttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
 ActivationFunction = Literal["relu", "tanh", "elu", "leaky_relu"]
 OptimizerClassOptuna = Literal["adamw", "rmsprop"]
 OptimizerClass = OptimizerClassOptuna | Literal["adam"]
@@ -369,7 +368,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     Continual learning keeps the deployed policy's fitted feature coordinates frozen,
     including feature selection and scaling. Reset trained models or use a new
-    freqai.identifier to change those coordinates or migrate legacy artifacts.
+    freqai.identifier to change those coordinates.
     First training and continual_learning=false use fresh pipelines and policies.
     Hyperopt always uses fresh current-window pipelines and cold policies; final
     continuation uses the original raw split in the deployed coordinates. Selected
@@ -463,7 +462,6 @@ class ReforceXY(BaseReinforcementLearningModel):
     )
     _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(_TRANSFORM_FUNCTIONS)
     _EXIT_ATTENUATION_MODES: Final[tuple[ExitAttenuationMode, ...]] = (
-        "legacy",
         "sqrt",
         "linear",
         "power",
@@ -2391,28 +2389,6 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _best_trial_params_path(self, pair: str) -> Path:
         return self.full_path / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
 
-    def _resolve_legacy_best_trial_params(
-        self, pair: str, best_trial_params_path: Path
-    ) -> Path | None:
-        base = pair.split("/")[0]
-        legacy_path = self.full_path / f"hyperopt-best-params-{base}.json"
-        if (
-            legacy_path == best_trial_params_path
-            or legacy_path.is_symlink()
-            or not legacy_path.is_file()
-        ):
-            return None
-        base_pair_count = sum(1 for configured in self.pairs if configured.split("/")[0] == base)
-        if base_pair_count == 1:
-            return legacy_path
-        logger.warning(
-            "Hyperopt [%s]: ignoring ambiguous legacy best params at %s: "
-            "filename does not encode the complete pair identity",
-            pair,
-            legacy_path,
-        )
-        return None
-
     @staticmethod
     @contextmanager
     def _locked_best_trial_params(
@@ -2581,10 +2557,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
             self._reject_best_trial_params_symlink(best_trial_params_path)
             if not best_trial_params_path.is_file():
-                legacy_path = self._resolve_legacy_best_trial_params(pair, best_trial_params_path)
-                if legacy_path is None:
-                    return None
-                best_trial_params_path = legacy_path
+                return None
             logger.info(
                 "Hyperopt [%s]: loading best params from %s",
                 pair,
@@ -3595,14 +3568,14 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """
         Calculate time-based attenuation coefficient using configurable strategy
-        (legacy/sqrt/linear/power/half_life). Optionally apply plateau grace period.
+        (sqrt/linear/power/half_life). Optionally apply plateau grace period.
         """
         if duration_ratio < 0.0:
             duration_ratio = 0.0
 
         exit_attenuation_mode = str(
             model_reward_parameters.get(
-                "exit_attenuation_mode", ReforceXY._EXIT_ATTENUATION_MODES[2]
+                "exit_attenuation_mode", ReforceXY._EXIT_ATTENUATION_MODES[1]
             )  # "linear"
         )
         exit_plateau = bool(
@@ -3618,9 +3591,6 @@ class MyRLEnv(Base5ActionRLEnv):
                 exit_plateau_grace,
             )
             exit_plateau_grace = 0.0
-
-        def _legacy(dr: float, p: Mapping[str, Any]) -> float:
-            return 1.5 if dr <= 1.0 else 0.5
 
         def _sqrt(dr: float, p: Mapping[str, Any]) -> float:
             return 1.0 / math.sqrt(1.0 + dr)
@@ -3652,11 +3622,10 @@ class MyRLEnv(Base5ActionRLEnv):
             return math.pow(2.0, -dr / hl)
 
         strategies: dict[str, Callable[[float, Mapping[str, Any]], float]] = {
-            ReforceXY._EXIT_ATTENUATION_MODES[0]: _legacy,
-            ReforceXY._EXIT_ATTENUATION_MODES[1]: _sqrt,
-            ReforceXY._EXIT_ATTENUATION_MODES[2]: _linear,
-            ReforceXY._EXIT_ATTENUATION_MODES[3]: _power,
-            ReforceXY._EXIT_ATTENUATION_MODES[4]: _half_life,
+            ReforceXY._EXIT_ATTENUATION_MODES[0]: _sqrt,
+            ReforceXY._EXIT_ATTENUATION_MODES[1]: _linear,
+            ReforceXY._EXIT_ATTENUATION_MODES[2]: _power,
+            ReforceXY._EXIT_ATTENUATION_MODES[3]: _half_life,
         }
 
         if exit_plateau:
@@ -3673,7 +3642,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 "PBRS [%s]: exit_attenuation_mode=%r invalid; defaulting to %r. Valid: %s",
                 self.id,
                 exit_attenuation_mode,
-                ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
+                ReforceXY._EXIT_ATTENUATION_MODES[1],  # "linear"
                 ", ".join(ReforceXY._EXIT_ATTENUATION_MODES),
             )
             strategy_fn = _linear
@@ -3686,7 +3655,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 self.id,
                 exit_attenuation_mode,
                 e,
-                ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
+                ReforceXY._EXIT_ATTENUATION_MODES[1],  # "linear"
                 effective_dr,
                 exc_info=True,
             )
