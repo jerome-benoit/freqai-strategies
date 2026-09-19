@@ -92,11 +92,7 @@ from stable_baselines3.common.vec_env import (
 
 
 def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> None:
-    """Track the final-policy reward and save the checkpoint when it improves.
-
-    Plain-fit counterpart of MaskableTrialEvalCallback.update_best_reward:
-    bookkeeping only, no fake on_step and no Optuna report.
-    """
+    """Update plain-fit final-policy bookkeeping and save an improved checkpoint."""
     if not np.isfinite(mean_reward):
         return
     callback.last_mean_reward = mean_reward
@@ -631,7 +627,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             return
         filename = metadata.get("reforcexy_replay")
         if not isinstance(filename, str) or Path(filename).name != filename:
-            raise DependencyException("Model replay metadata missing or incompatible; reset models")
+            raise DependencyException(
+                "DQN/QRDQN replay metadata is missing or incompatible; reset trained "
+                "models or use a new freqai.identifier"
+            )
         model.load_replay_buffer(directory / filename)
         replay = model.replay_buffer
         if (
@@ -639,7 +638,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             or replay.action_space != model.action_space
             or replay.n_envs != model.n_envs
         ):
-            raise DependencyException("Model replay buffer is incompatible; reset models")
+            raise DependencyException(
+                "DQN/QRDQN replay buffer is incompatible; reset trained models or use "
+                "a new freqai.identifier"
+            )
 
     def _configure_gpu_memory(self) -> None:
         """
@@ -794,7 +796,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         if MyRLEnv.is_unsupported_pbrs_config(
             hold_potential_enabled, self.rl_config.get("add_state_info", False)
         ):
-            logger.warning("Config [global]: hold potential requires add_state_info; enabling")
+            logger.warning(
+                "Config [global]: hold_potential_enabled=True requires add_state_info=True; "
+                "enabling add_state_info"
+            )
             self.rl_config["add_state_info"] = True
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
@@ -834,7 +839,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
         ):
             raise ValueError(
-                "Hold potential requires state observations, unavailable in backtesting"
+                "Backtesting does not support hold_potential_enabled=True because "
+                "add_state_info is unavailable"
             )
         env_info = super().pack_env_dict(pair)
         # Each environment owns its effective parameters; do not mutate global config.
@@ -1450,10 +1456,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 model_params=effective_params,
             )
             if model is not None:
-                logger.info(
-                    "Training [%s]: continual training activated, starting from previously trained model state",
-                    dk.pair,
-                )
+                logger.info("Training [%s]: continuing from deployed model state", dk.pair)
                 model.tb_logger = getattr(self, "tb_logger", None)
                 model.set_env(self.train_env)
             else:
@@ -1476,10 +1479,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
             logger.debug("Training [%s]: model.learn completed", dk.pair)
             if self.eval_env is not None and self.eval_callback is not None:
-                # Evaluate the trained policy after the last gradient update and
-                # before env teardown so a budget that fits in a single rollout
-                # still compares the final weights; no fake on_step, no duplicated
-                # Optuna report (plain fit has no trial).
+                # Evaluate final weights before teardown; the periodic callback may not run
+                # within a single-rollout budget.
                 use_masking = self.eval_callback.use_masking
                 final_mean_reward, _ = evaluate_policy(
                     model,
@@ -1592,13 +1593,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
 
     def get_state_info(self, pair: str) -> tuple[float, float, int]:
-        """
-        Read the live market side, leveraged profit ratio and candle duration
-        for the pair from the real open trade. The PnL observation is the
-        leveraged ratio produced by ``Trade.calc_profit_ratio`` (divided by the
-        trade's effective leverage when finite and positive), consistent with
-        the environment's unlevered proxy; no configured leverage value is
-        involved.
+        """Read the live market side, unlevered profit ratio and candle duration.
+
+        ``Trade.calc_profit_ratio`` includes effective leverage. Dividing by a
+        finite positive leverage matches the environment's unlevered PnL proxy.
         """
         market_side = 0.5
         current_profit = 0.0
@@ -1606,21 +1604,24 @@ class ReforceXY(BaseReinforcementLearningModel):
         for trade in Trade.get_trades_proxy(is_open=True):
             if trade.pair != pair:
                 continue
+            market_side = 0 if trade.is_short else 1
+            now = datetime.now(timezone.utc).timestamp()
+            trade_duration = int((now - trade.open_date_utc.timestamp()) / self.base_tf_seconds)
             if self.data_provider is None or self.data_provider._exchange is None:
-                logger.error("State info [%s]: no exchange available", pair)
-                return 0, 0, 0
+                logger.warning(
+                    "StateInfo [%s]: data provider or exchange unavailable; using profit=0",
+                    pair,
+                )
+                return market_side, 0.0, trade_duration
             current_rate = self.data_provider._exchange.get_rate(
                 pair, refresh=False, side="exit", is_short=trade.is_short
             )
-            now = datetime.now(timezone.utc).timestamp()
-            trade_duration = int((now - trade.open_date_utc.timestamp()) / self.base_tf_seconds)
             profit_ratio = trade.calc_profit_ratio(current_rate)
             leverage = float(trade.leverage)
             if np.isfinite(leverage) and leverage > 0.0:
                 current_profit = profit_ratio / leverage
             else:
                 current_profit = profit_ratio
-            market_side = 0 if trade.is_short else 1
         return market_side, current_profit, int(trade_duration)
 
     def predict(
@@ -1665,7 +1666,9 @@ class ReforceXY(BaseReinforcementLearningModel):
             else None
         )
         if dates is not None and len(dates) != n:
-            raise ValueError("Prediction dates must align with feature rows")
+            raise ValueError(
+                f"Prediction dates must align with feature rows: expected {n}, got {len(dates)}"
+            )
         step = pd.Timedelta(seconds=self.base_tf_seconds)
         if not hasattr(self, "_observation_cache"):
             self._observation_cache = {}
@@ -2824,10 +2827,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             if off_policy and model._n_updates <= initial_updates:
                 raise TrialPruned(f"Hyperopt [{study_name}]: trial completed without learning")
             if not self.optuna_eval_callback.is_pruned and eval_env is not None:
-                # Evaluate the trained policy after the last update and before
-                # env teardown so a single-rollout budget still compares the
-                # final weights, without a fake on_step or a duplicated Optuna
-                # report from the eval callback.
+                # Evaluate final weights before teardown; the periodic callback may not run
+                # within a single-rollout budget.
                 use_masking = self.optuna_eval_callback.use_masking
                 final_mean_reward, _ = evaluate_policy(
                     model,
@@ -3136,7 +3137,8 @@ class MyRLEnv(Base5ActionRLEnv):
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
             raise ValueError(
-                "Hold potential requires add_state_info=True before environment construction"
+                "hold_potential_enabled=True requires add_state_info=True before "
+                "environment construction"
             )
 
         # === PNL TARGET ===
@@ -4315,7 +4317,9 @@ class MyRLEnv(Base5ActionRLEnv):
         trade_type = self.execute_trade(action)
         entry_pnl = self.get_unrealized_profit() if previous_position == Positions.Neutral else 0.0
         if trade_type is not None:
-            self.append_trade_history(trade_type, self.current_price(), pre_pnl)
+            self.append_trade_history(
+                trade_type, self.current_price(), pre_pnl, execution_tick=execution_tick
+            )
             if self._position == Positions.Neutral:
                 exit_pnl = pre_pnl
         elif action != Actions.Neutral.value:
@@ -4380,7 +4384,10 @@ class MyRLEnv(Base5ActionRLEnv):
             closed_position = self._position
             self._exit_trade()
             self.append_trade_history(
-                f"{closed_position.name}_exit", self.current_price(), terminal_pnl
+                f"{closed_position.name}_exit",
+                self.current_price(),
+                terminal_pnl,
+                execution_tick=execution_tick,
             )
         if terminated:
             reward = self._apply_terminal_pbrs_correction(reward)
@@ -4438,10 +4445,12 @@ class MyRLEnv(Base5ActionRLEnv):
             info,
         )
 
-    def append_trade_history(self, trade_type: str, price: float, profit: float) -> None:
+    def append_trade_history(
+        self, trade_type: str, price: float, profit: float, *, execution_tick: int
+    ) -> None:
         self.trade_history.append(
             {
-                "tick": self._current_tick,
+                "tick": execution_tick,
                 "type": trade_type.lower(),
                 "price": price,
                 "profit": profit,
@@ -5385,10 +5394,9 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
 
 class SimpleLinearSchedule:
     """
-    Linear schedule (from initial value to zero), simpler than sb3
-    LinearSchedule. The progress factor is clamped to [0, 1] so overshooting
-    the aligned training budget never produces a negative learning rate or
-    clip range.
+    Linear schedule from the initial value to zero. Unlike SB3's LinearSchedule,
+    the progress factor is clamped to [0, 1] so overshooting the aligned training
+    budget never produces a negative learning rate or clip range.
 
     :param initial_value: (float or str) The initial value for the schedule
     """

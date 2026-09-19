@@ -340,71 +340,84 @@ docker compose up -d --build
 PPO, MaskablePPO, RecurrentPPO, DQN, QRDQN
 
 ### Configuration tunables
-
 The documented list of model tunables is at the top of the
 [ReforceXY.py](./ReforceXY/user_data/freqaimodels/ReforceXY.py) file.
 
+### Continual learning
+
 Continual learning trains an independent copy of the deployed policy with its
-fitted feature pipeline. DQN/QRDQN deployments persist their replay buffer;
+fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
 missing or incompatible replay data prevents continuation. Reset trained models
 or use a new `freqai.identifier` to migrate incompatible artifacts, including
 deployments without the chronological training marker. Training disables
 `shuffle_after_split`. HPO studies and saved best parameters are reused only
 when their objective identity matches.
 
+### Live inference
+
 Optional `fit_live_predictions_candles` statistics count produced observations
 per pair after session startup; restarts reset the warmup. See the model
 docstrings for continuation, HPO and statistics details.
 
-The rewarding logic and tunables are documented in the
-[reward space analysis](./ReforceXY/reward_space_analysis/README.md).
-
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.
-Freqtrade does not support these state features in backtesting; disable hold
-potential and state features for backtests. Live action masks use the real open
-position even when state features are disabled. Live frame stacks and recurrent
-states persist per pair and model only across adjacent candles. Gaps, repeated
-candles and model replacement start a new sequence; historical live position
-features are not reconstructed. Prediction validity covers every source row in
-the observation and every retained frame, not just the final candle.
+Freqtrade does not support these state observations in backtesting; disable hold
+potential and state observations for backtests. Live action masks use the real
+open position even when state observations are disabled. Live frame stacks and
+recurrent states persist per pair and model only across adjacent candles. Gaps,
+repeated candles and model replacement start a new sequence; historical live
+position features are not reconstructed. Prediction validity covers every source
+row in the observation and every retained frame, not only the final candle.
 
-Optuna HPO trains fresh candidates with the selected parameters; after
-selection the fit resumes the deployed model in its frozen feature
-coordinates, including its discount factor, instead of rebuilding it.
-An explicitly sampled `target_kl=null` disables the KL stopping threshold even
-when `model_training_parameters` specifies a numeric value. Environment prices
-remain raw regardless of `drop_ohlc_from_features`. Training returns the best
-checkpoint saved by the current evaluation run when available.
-DQN/QRDQN HPO rejects warmup budgets that leave no gradient update and trials
-that finish without learning. A zero-sized holdout remains supported when HPO
-is disabled, including with raw OHLC feature removal.
+### Training and HPO
+
+Optuna HPO trains fresh candidates with the selected parameters. With continual
+learning, the final fit resumes the deployed model in its frozen feature
+coordinates, including its discount factor. Otherwise, it trains a fresh model
+with the selected parameters. An explicitly sampled `target_kl=null` disables
+the KL stopping threshold even when `model_training_parameters` specifies a
+numeric value. Environment prices remain raw regardless of
+`drop_ohlc_from_features`. Training returns the best checkpoint saved by the
+current evaluation run when available. DQN/QRDQN HPO rejects warmup budgets that
+leave no gradient update and trials that finish without learning. A zero-sized
+holdout remains supported when HPO is disabled, including with raw OHLC feature
+removal.
+
+### Reward and portfolio accounting
+
+The reward logic and tunables are documented in the
+[reward space analysis](./ReforceXY/reward_space_analysis/README.md).
 
 Environment diagnostics `most_recent_return` (log return) and
 `most_recent_profit` (simple return) measure changes in liquidation equity,
 including unrealized PnL and Freqtrade's staking convention. Actions fill at
 `open[t]` while the observation window ends at candle `t-1`; equity marks, PnL
 features and trade durations in the returned observation refer to candle `t+1`.
-Round-trip fees are provisioned at entry; exits realize at the fill price
-without charging fees again. `portfolio_log_returns` stores the same log
-returns. Non-positive or non-finite equity produces NaN diagnostics rather than
-a zero return. These diagnostics do not change the training reward or realized
-capital. Rewards combine the fill-time base components with a potential-based
-shaping delta over the returned next observation. Termination liquidates any
-remaining position once and clears the terminal potential. History uses
-`execution_tick` to attach entry/exit events to their fill-time transition;
-`terminal_liquidation` and `exit_pnl` also identify forced exits.
+Round-trip fees are provisioned at entry; exits realize at the fill price without
+charging fees again. `portfolio_log_returns` stores the same log returns.
+Non-positive or non-finite equity produces NaN diagnostics rather than a zero
+return. These diagnostics do not change the training reward or realized capital.
+Rewards combine the fill-time base components with a potential-based shaping
+delta over the returned next observation. Termination liquidates any remaining
+position once and clears the terminal potential. History uses `execution_tick` to
+attach entry/exit events to their fill-time transition; `terminal_liquidation`
+and `exit_pnl` also identify forced exits.
 
-Run the runtime training, inference and accounting regressions inside the ReforceXY QA image, with the
-repository mounted at `/workspace` and `/workspace` as the working directory:
+## Development
+
+### Runtime regressions
+
+Run the runtime training, inference and accounting regressions inside the
+ReforceXY QA image, with the repository mounted at `/workspace` and `/workspace`
+as the working directory:
 
 ```shell
 python -m unittest discover -s ReforceXY/tests -v
 ```
 
-## Development
+### Quality checks
 
-**Run repository quality checks from the repository root:**
+Run repository quality checks from the repository root:
 
 Ruff does not need the Freqtrade runtime or project dependencies:
 

@@ -281,6 +281,35 @@ class TestParamsPropagation(RewardSpaceTestBase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(out_dir.exists())
 
+    def test_unrealized_pnl_flag_changes_simulated_trajectory(self):
+        common_args = [
+            "--num_samples",
+            str(SCENARIOS.CLI_NUM_SAMPLES_STANDARD),
+            "--seed",
+            str(SEEDS.BASE),
+            "--skip_feature_analysis",
+            "--skip_partial_dependence",
+        ]
+        default_dir = self.output_path / "unrealized_default"
+        enabled_dir = self.output_path / "unrealized_enabled"
+        default_result = _run_cli(out_dir=default_dir, args=common_args)
+        enabled_result = _run_cli(out_dir=enabled_dir, args=[*common_args, "--unrealized_pnl"])
+        _assert_cli_success(self, default_result)
+        _assert_cli_success(self, enabled_result)
+        default_pnl = pd.read_csv(default_dir / "reward_samples.csv")["pnl"]
+        enabled_pnl = pd.read_csv(enabled_dir / "reward_samples.csv")["pnl"]
+        self.assertFalse(default_pnl.equals(enabled_pnl))
+
+    def test_inferential_options_rejected_for_dependent_trajectory(self):
+        for option, value in (
+            ("--bootstrap_resamples", "200"),
+            ("--pvalue_adjust", "benjamini_hochberg"),
+        ):
+            out_dir = self.output_path / option.removeprefix("--")
+            result = _run_cli(out_dir=out_dir, args=[option, value])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(out_dir.exists())
+
     def test_unknown_params_rejected_before_artifacts(self):
         """Unknown keys fail the run before any artifact is written."""
         out_dir = self.output_path / "rejected_unknown"

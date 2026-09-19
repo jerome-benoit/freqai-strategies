@@ -134,7 +134,7 @@ class PortfolioReturnsTest(unittest.TestCase):
                         self.assertAlmostEqual(info["exit_pnl"], expected_pnl)
                         self.assertTrue(info["terminal_liquidation"])
                         self.assertEqual(len(env.trade_history), 2)
-                        self.assertEqual(env.trade_history[-1]["tick"], 3)
+                        self.assertEqual(env.trade_history[-1]["tick"], info["execution_tick"])
                         self.assertEqual(env.trade_history[-1]["price"], terminal_price)
                         self.assertAlmostEqual(env.trade_history[-1]["profit"], expected_pnl)
                         self.assertAlmostEqual(
@@ -153,6 +153,14 @@ class PortfolioReturnsTest(unittest.TestCase):
                             ),
                             places=4,
                         )
+                        history = env.get_env_history()
+                        terminal_row = history.loc[
+                            history["execution_tick"] == info["execution_tick"]
+                        ].iloc[0]
+                        self.assertEqual(
+                            terminal_row["type"], "short_exit" if short else "long_exit"
+                        )
+                        self.assertTrue(terminal_row["terminal_liquidation"])
 
     def test_history_joins_events_at_execution_tick(self):
         env = self.make_env([100.0, 100.0, 110.0, 110.0])

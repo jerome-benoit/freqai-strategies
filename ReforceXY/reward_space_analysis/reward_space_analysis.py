@@ -678,19 +678,18 @@ def validate_reward_parameters(
                 "validation_mode": "strict" if strict else "relaxed",
             }
 
-    # Joint nonnegativity guard: weight*(1-center) > 1 can flip a losing exit's
-    # penalty into a reward (efficiency coefficient < 0). Reject the combination
-    # explicitly instead of relying on the runtime clamp.
+    # The coefficient must stay non-negative at both boundaries of the normalized
+    # efficiency interval [0, 1]. Reject combinations that require a runtime clamp.
     if "efficiency_weight" in sanitized or "efficiency_center" in sanitized:
         weight_value = sanitized.get("efficiency_weight", 1.0)
         center_value = sanitized.get("efficiency_center", 0.5)
         weight = float(weight_value) if isinstance(weight_value, (int, float)) else 1.0
         center = float(center_value) if isinstance(center_value, (int, float)) else 0.5
-        if weight * (1.0 - center) > 1.0:
+        if weight * max(center, 1.0 - center) > 1.0:
             message = (
-                "Param: efficiency combination weight="
-                f"{weight} * (1 - center={center}) > 1 can make the efficiency "
-                "coefficient negative on losing exits"
+                f"Param: efficiency_weight={weight} violates efficiency_weight * "
+                "max(efficiency_center, 1 - efficiency_center) <= 1 for "
+                f"efficiency_center={center}"
             )
             if strict:
                 raise ValueError(message)
@@ -1618,8 +1617,8 @@ def parse_overrides(overrides: Iterable[str]) -> RewardParams:
     """Parse KEY=VALUE overrides restricted to supported reward parameters.
 
     Only reward tunables (the canonical defaults) plus the hybrid simulation
-    scalars are accepted. The legacy alias 'rr' is normalized to
-    'risk_reward_ratio' with the last occurrence winning. Unknown keys,
+    scalars are accepted. The 'rr' alias is normalized to 'risk_reward_ratio',
+    with the last occurrence winning. Unknown keys,
     empty keys, and simulation-only options are rejected before any artifact
     is produced.
     """
@@ -1729,7 +1728,6 @@ def simulate_samples(
             action=action,
         )
 
-        # Transition state
         if position == Positions.Neutral:
             if action == Actions.Long_enter:
                 position = Positions.Long
@@ -1789,11 +1787,9 @@ def simulate_samples(
         step_return = float(np.clip(step_return, -0.95, 0.95))
 
         current_open = float(max(1e-6, current_open * (1.0 + step_return)))
-        # Compute fee-aware unrealized PnL from (entry_open, current_open).
-        # The unrealized_pnl mode then replaces the random-walk hold price with
-        # a fee-aware open derived from a target PnL (center of the
-        # walk-informed extrema scaled by tanh(beta*ratio)), so the potential
-        # and later exits see one truth while the RNG stream stays identical.
+        # Always sample the random-walk price so both modes consume the same RNG stream.
+        # Unrealized-PnL mode replaces it below with the fee-aware price implied by
+        # the target PnL before reward calculation.
         if position in (Positions.Long, Positions.Short):
             pnl = _compute_unrealized_pnl_estimate(
                 position,
@@ -3040,9 +3036,9 @@ def _validate_distribution_diagnostics(diag: dict[str, Any], *, strict_diagnosti
         if value is None or not np.isfinite(value):
             raise AssertionError(f"Stats: distribution diagnostic {key} is not finite: {value}")
         if key.endswith("_shapiro_pval") and not (0 <= value <= 1):
-            raise AssertionError(f"Stats: Shapiro p-value {key} must be in [0,1], got {value}")
+            raise AssertionError(f"Stats: Shapiro p-value {key} must be in [0, 1], got {value}")
         if key.endswith("_qq_r_squared") and not (0 <= value <= 1):
-            raise AssertionError(f"Stats: Q-Q R^2 {key} must be in [0,1], got {value}")
+            raise AssertionError(f"Stats: Q-Q R^2 {key} must be in [0, 1], got {value}")
 
 
 """PBRS (Potential-Based Reward Shaping) transforms & helpers."""
@@ -3713,18 +3709,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Path to real episodes pickle for distribution shift analysis (optional).",
     )
     parser.add_argument(
-        "--pvalue_adjust",
-        type=str.lower,
-        choices=list(ADJUST_METHODS),
-        default=ADJUST_METHODS[0],
-        help="Multiple testing correction method for hypothesis tests (default: none).",
-    )
-    parser.add_argument(
         "--strict_diagnostics",
         action="store_true",
         help=(
-            "Raise on extreme distribution moments instead of warning. Constant distributions retain "
-            "N/A diagnostics and exact zero-width bootstrap intervals in either mode."
+            "Raise on extreme distribution moments instead of warning. Constant distributions "
+            "retain N/A diagnostics in either mode."
         ),
     )
     parser.add_argument(
@@ -3733,16 +3722,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=True,
         help="Enable strict parameter validation (raise on out-of-bounds or non-finite reward parameters). Default: enabled.",
-    )
-    parser.add_argument(
-        "--bootstrap_resamples",
-        type=int,
-        default=10000,
-        metavar="N",
-        help=(
-            "Number of bootstrap resamples for confidence intervals (default: 10000). "
-            "Lower this (e.g. 200-1000) for faster smoke tests; increase for more stable CI width estimates."
-        ),
     )
     parser.add_argument(
         "--unrealized_pnl",
@@ -4003,9 +3982,9 @@ def write_complete_statistical_analysis(
         f.write(f"| skip_partial_dependence | {skip_partial_dependence} |\n")
         f.write(f"| rf_n_jobs | {rf_n_jobs} |\n")
         f.write(f"| perm_n_jobs | {perm_n_jobs} |\n")
-        f.write(f"| bootstrap_resamples | {bootstrap_resamples} |\n")
-        f.write(f"| pvalue_adjust_method | {adjust_method} |\n")
-        # Blank separator before overrides block
+        if independent_observations:
+            f.write(f"| bootstrap_resamples | {bootstrap_resamples} |\n")
+            f.write(f"| pvalue_adjust_method | {adjust_method} |\n")
         f.write("|  |  |\n")
 
         overrides_pairs: list[str] = []
@@ -4354,10 +4333,10 @@ def write_complete_statistical_analysis(
                         "- Partial dependence plots: (skipped via --skip_partial_dependence)\n\n"
                     )
 
-        # Section 5: Statistical Validation
+        # Section 5: Statistical Analysis
         if hypothesis_tests or bootstrap_ci or dist_diagnostics or distribution_shift:
             f.write("---\n\n")
-            f.write("## 5. Statistical Validation\n\n")
+            f.write("## 5. Statistical Analysis\n\n")
             if not independent_observations:
                 f.write(
                     "Descriptive trajectory analysis: inferential tests, p-values and confidence intervals are suppressed because independent observations were not declared.\n\n"
@@ -4495,7 +4474,7 @@ def write_complete_statistical_analysis(
         else:
             f.write("4. **Feature Importance** - Machine learning analysis of key drivers\n")
         f.write(
-            "5. **Statistical Validation** - "
+            "5. **Statistical Analysis** - "
             + (
                 "Independent-observation tests and confidence intervals\n"
                 if independent_observations
@@ -4545,7 +4524,7 @@ def main() -> None:
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
     risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
     params["action_masking"] = _to_bool(params.get("action_masking", args.action_masking))
-
+    params["unrealized_pnl"] = bool(args.unrealized_pnl)
     # Deterministic seeds cascade
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -4613,8 +4592,6 @@ def main() -> None:
         "skip_partial_dependence",
         "stats_seed",
         "strict_diagnostics",
-        "bootstrap_resamples",
-        "pvalue_adjust",
         "real_episodes",
         "unrealized_pnl",
         "action_masking",
@@ -4653,10 +4630,8 @@ def main() -> None:
         risk_reward_ratio=risk_reward_ratio,
         seed=args.seed,
         real_df=real_df,
-        adjust_method=args.pvalue_adjust,
         stats_seed=(args.stats_seed if getattr(args, "stats_seed", None) is not None else None),
         strict_diagnostics=bool(getattr(args, "strict_diagnostics", False)),
-        bootstrap_resamples=getattr(args, "bootstrap_resamples", 10000),
         skip_partial_dependence=bool(getattr(args, "skip_partial_dependence", False)),
         skip_feature_analysis=bool(getattr(args, "skip_feature_analysis", False)),
         rf_n_jobs=int(getattr(args, "rf_n_jobs", -1)),
@@ -4674,7 +4649,6 @@ def main() -> None:
             "num_samples": len(df),
             "seed": int(args.seed),
             "pnl_target": float(profit_aim * risk_reward_ratio),
-            "pvalue_adjust_method": args.pvalue_adjust,
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
             "effective": {

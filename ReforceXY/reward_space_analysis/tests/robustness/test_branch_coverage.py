@@ -51,6 +51,7 @@ def test_validate_reward_parameters_strict_failure_batch():
         {"exit_power_tau": 1.5},
         {"exit_half_life": 0.0},
         {"exit_half_life": float("nan")},
+        {"efficiency_weight": 2.0, "efficiency_center": 0.75},
     ]
     run_strict_validation_failure_cases(adapter, failure_params, validate_reward_parameters)
 
@@ -62,6 +63,14 @@ def test_validate_reward_parameters_relaxed_adjustment_batch():
         ({"exit_linear_slope": "not_a_number", "strict_validation": False}, ["non_numeric_reset"]),
         ({"exit_power_tau": float("inf"), "strict_validation": False}, ["non_numeric_reset"]),
         ({"max_idle_duration_candles": "bad", "strict_validation": False}, ["derived_default"]),
+        (
+            {
+                "efficiency_weight": 2.0,
+                "efficiency_center": 0.75,
+                "strict_validation": False,
+            },
+            ["negative_efficiency_guard"],
+        ),
     ]
     run_relaxed_validation_adjustment_cases(
         _PyTestAdapter(), relaxed_cases, validate_reward_parameters

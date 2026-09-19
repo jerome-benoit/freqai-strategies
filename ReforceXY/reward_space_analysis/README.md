@@ -200,20 +200,19 @@ be overridden via `--params`.
   finite checks; raises instead of silent clamp/discard when enabled.
 - **`--strict_diagnostics`** (flag, default: false) – Raise on extreme distribution
   moments instead of warning. In both modes, constants retain exact mean/std,
-  higher moments are N/A, and normality tests and Q-Q fits are not applicable.
-  Bootstrap percentile intervals retain their computed finite, ordered bounds,
-  including zero-width intervals; they need not contain the sample mean.
+  while undefined higher moments, normality tests and Q-Q fits remain N/A.
 - **`--exit_factor_threshold`** (float, default: 1000.0) – Emits a warning if
   the absolute value of the exit factor exceeds the threshold.
-- **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple
-  testing p-value adjustment method.
-- **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for
-  confidence intervals; lower for speed (e.g. 500) during smoke tests.
 - **`--skip_feature_analysis`** / **`--skip_partial_dependence`** – Skip feature
   importance or PD grids (see Skipping Feature Analysis section); influence
   runtime only.
 - **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker
   counts for RandomForest and permutation importance (-1 = all cores).
+
+Inferential helpers are available through the programmatic API only and require
+`independent_observations=True`. In that mode, bootstrap percentile intervals
+retain finite ordered bounds, including exact zero-width intervals for constants;
+the interval need not contain the original sample mean.
 
 ### Overrides
 
@@ -474,9 +473,8 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 **Simulation** (not allowed in `--params`): `num_samples`, `seed`,
 `trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`,
 `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`,
-`strict_diagnostics`, `strict_validation`, `bootstrap_resamples`,
-`skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`,
-`pvalue_adjust`.
+`strict_diagnostics`, `strict_validation`, `skip_feature_analysis`,
+`skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`.
 
 **Hybrid simulation/params** allowed in `--params`: `profit_aim`,
 `risk_reward_ratio`, `action_masking`.
@@ -495,7 +493,6 @@ uv run python reward_space_analysis.py \
   --num_samples 50000 \
   --profit_aim 0.05 \
   --trading_mode futures \
-  --bootstrap_resamples 5000 \
   --out_dir custom_analysis
 # PBRS potential shaping analysis
 uv run python reward_space_analysis.py \
@@ -536,7 +533,6 @@ metrics, summary.
 | `num_samples`           | int               | Synthetic samples count           |
 | `seed`                  | int               | Master random seed                |
 | `pnl_target`            | float             | Profit target                     |
-| `pvalue_adjust_method`  | string            | Multiple testing correction mode  |
 | `parameter_adjustments` | object            | Bound clamp adjustments (if any)  |
 | `reward_params`         | object            | Final reward params               |
 | `simulation_params`     | object            | All simulation inputs             |

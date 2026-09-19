@@ -4,7 +4,7 @@ import copy
 import tempfile
 import unittest
 from datetime import datetime as dt
-from datetime import timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -622,7 +622,7 @@ class ReviewContractsTest(unittest.TestCase):
         other_pair = SimpleNamespace(pair="ETH/USDT", is_short=False, leverage=1.0)
 
         model = self.model()
-        # The shared fixture stubs get_state_info; the class override is the contract here.
+        # Exercise the class implementation instead of the fixture's instance stub.
         del model.get_state_info
         model.data_provider = SimpleNamespace(_exchange=exchange)
         with mock.patch(
@@ -635,6 +635,24 @@ class ReviewContractsTest(unittest.TestCase):
         # calc_profit_ratio includes leverage (2x): 4% / leverage 2 -> normalized 2%.
         self.assertAlmostEqual(profit, 0.02, places=10)
         self.assertEqual(duration, 0)
+
+    def test_state_info_preserves_long_side_without_exchange(self):
+        trade = SimpleNamespace(
+            pair="BTC/USDT",
+            is_short=False,
+            open_date_utc=dt.now(timezone.utc) - timedelta(minutes=10),
+        )
+        model = self.model()
+        del model.get_state_info
+        model.data_provider = None
+        with mock.patch(
+            "ReforceXY.user_data.freqaimodels.ReforceXY.Trade.get_trades_proxy",
+            return_value=[trade],
+        ):
+            side, profit, duration = model.get_state_info("BTC/USDT")
+        self.assertEqual(side, 1.0)
+        self.assertEqual(profit, 0.0)
+        self.assertEqual(duration, 2)
 
     def test_negative_efficiency_coefficient_is_clamped(self):
         features = pd.DataFrame({"f": np.zeros(6)})

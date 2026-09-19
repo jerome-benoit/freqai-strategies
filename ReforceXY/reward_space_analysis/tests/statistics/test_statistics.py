@@ -629,6 +629,19 @@ class TestStatistics(RewardSpaceTestBase):
                     )
                 self.assertEqual(res["reward"], (4.5, 3.7, 3.7))
 
+    def test_inference_helpers_require_independent_observations(self):
+        """Inferential helpers reject dependent trajectory observations."""
+        df = pd.DataFrame({"reward": np.arange(10, dtype=float)})
+        with self.assertRaisesRegex(ValueError, "independent_observations=True"):
+            statistical_hypothesis_tests(df, independent_observations=False)
+        with self.assertRaisesRegex(ValueError, "independent_observations=True"):
+            bootstrap_confidence_intervals(
+                df,
+                ["reward"],
+                n_bootstrap=200,
+                independent_observations=False,
+            )
+
     def test_stats_bootstrap_rejects_invalid_bounds(self):
         """Non-finite or reversed bounds are errors, never repaired by the validator."""
         for bounds in (
