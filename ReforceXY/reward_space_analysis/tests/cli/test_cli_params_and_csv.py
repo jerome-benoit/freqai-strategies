@@ -143,7 +143,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertIn("PBRS Invariance", content)
 
     def test_strict_diagnostics_constant_distribution_succeeds(self):
-        """Run with --strict_diagnostics and low num_samples; expect success, exercising assertion branches before graceful fallback paths."""
+        """Strict diagnostics accepts constant distributions without fabricated statistics."""
         out_dir = self.output_path / "strict_diagnostics"
         result = _run_cli(
             out_dir=out_dir,
@@ -155,7 +155,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
                 "--strict_diagnostics",
             ],
         )
-        # Should not raise; if constant distributions occur they should assert before graceful fallback paths, exercising assertion branches.
+        # Constant distributions remain valid in strict mode.
         self.assertEqual(
             result.returncode,
             0,
@@ -190,6 +190,132 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertEqual(
             int(rp["max_trade_duration_candles"]), SCENARIOS.CLI_MAX_TRADE_DURATION_PARAMS
         )
+
+    def test_missing_real_episodes_fails_before_artifacts(self):
+        """An explicitly requested but missing episodes file fails the run with no artifacts."""
+        out_dir = self.output_path / "missing_real"
+        missing = self.output_path / "no_such_episodes.pkl"
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--num_samples", "50", "--real_episodes", str(missing)],
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(missing), result.stderr + result.stdout)
+        self.assertFalse(out_dir.exists())
+
+    def test_invalid_real_episodes_pickle_fails_before_artifacts(self):
+        """A corrupt episodes pickle fails the run with a diagnosed path and no artifacts."""
+        out_dir = self.output_path / "invalid_real"
+        invalid = self.output_path / "corrupt.pkl"
+        invalid.write_bytes(b"not a pickle")
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--num_samples", "50", "--real_episodes", str(invalid)],
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(invalid), result.stderr + result.stdout)
+        self.assertFalse(out_dir.exists())
+
+    def test_valid_real_episodes_produce_real_metrics(self):
+        """A valid episodes pickle loads before simulation and enables real metrics."""
+        out_dir = self.output_path / "valid_real"
+        import pickle
+
+        episodes = [
+            {
+                "transitions": [
+                    {
+                        "pnl": 0.01 * (1 if index % 2 else -1),
+                        "trade_duration": 2 + index % 4,
+                        "idle_duration": index % 5,
+                        "position": 1.0 if index % 2 else 0.5,
+                        "action": 0,
+                        "reward": 0.5 - 0.05 * index,
+                    }
+                    for index in range(20)
+                ]
+            }
+        ]
+        episodes_path = self.output_path / "episodes.pkl"
+        with episodes_path.open("wb") as fh:
+            pickle.dump(episodes, fh)
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--num_samples", "50", "--real_episodes", str(episodes_path)],
+        )
+        _assert_cli_success(self, result)
+        report = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        self.assertNotIn("Not performed (no real episodes provided)", report)
+
+    def test_params_override_flags_and_manifest_reflects_effective(self):
+        """--params beats explicit flags; manifest effective values follow resolution."""
+        out_dir = self.output_path / "params_beat_flags"
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
+                "--profit_aim",
+                "0.05",
+                "--base_factor",
+                "150.0",
+                "--params",
+                "profit_aim=0.02",
+                "risk_reward_ratio=1.5",
+            ],
+        )
+        _assert_cli_success(self, result)
+        with (out_dir / "manifest.json").open() as f:
+            manifest = json.load(f)
+        effective = manifest["effective"]
+        self.assertEqual(effective["profit_aim"], 0.02)
+        self.assertEqual(effective["risk_reward_ratio"], 1.5)
+        self.assertEqual(effective["base_factor"], 150.0)
+        self.assertAlmostEqual(manifest["pnl_target"], 0.03)
+
+    def test_simulation_only_params_rejected_before_artifacts(self):
+        """Simulation-only keys fail the run before any artifact is written."""
+        for key, value in (("num_samples", "1"), ("unrealized_pnl", "true")):
+            out_dir = self.output_path / f"rejected_{key}"
+            result = _run_cli(out_dir=out_dir, args=["--params", f"{key}={value}"])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(out_dir.exists())
+
+    def test_unrealized_pnl_flag_changes_simulated_trajectory(self):
+        common_args = [
+            "--num_samples",
+            str(SCENARIOS.CLI_NUM_SAMPLES_STANDARD),
+            "--seed",
+            str(SEEDS.BASE),
+            "--skip_feature_analysis",
+            "--skip_partial_dependence",
+        ]
+        default_dir = self.output_path / "unrealized_default"
+        enabled_dir = self.output_path / "unrealized_enabled"
+        default_result = _run_cli(out_dir=default_dir, args=common_args)
+        enabled_result = _run_cli(out_dir=enabled_dir, args=[*common_args, "--unrealized_pnl"])
+        _assert_cli_success(self, default_result)
+        _assert_cli_success(self, enabled_result)
+        default_pnl = pd.read_csv(default_dir / "reward_samples.csv")["pnl"]
+        enabled_pnl = pd.read_csv(enabled_dir / "reward_samples.csv")["pnl"]
+        self.assertFalse(default_pnl.equals(enabled_pnl))
+
+    def test_inferential_options_rejected_for_dependent_trajectory(self):
+        for option, value in (
+            ("--bootstrap_resamples", "200"),
+            ("--pvalue_adjust", "benjamini_hochberg"),
+        ):
+            out_dir = self.output_path / option.removeprefix("--")
+            result = _run_cli(out_dir=out_dir, args=[option, value])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(out_dir.exists())
+
+    def test_unknown_params_rejected_before_artifacts(self):
+        """Unknown keys fail the run before any artifact is written."""
+        out_dir = self.output_path / "rejected_unknown"
+        result = _run_cli(out_dir=out_dir, args=["--params", "win_reward_factr=2.0"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(out_dir.exists())
 
     def test_max_trade_duration_candles_propagation_flag(self):
         """Dynamic flag --max_trade_duration_candles X propagates identically."""

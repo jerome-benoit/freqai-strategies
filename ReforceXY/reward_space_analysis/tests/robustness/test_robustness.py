@@ -9,7 +9,6 @@ import pytest
 
 from reward_space_analysis import (
     ATTENUATION_MODES,
-    ATTENUATION_MODES_WITH_LEGACY,
     Actions,
     Positions,
     RewardContext,
@@ -301,7 +300,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             self.assertFinite(observed_ratio, name="observed_ratio")
             self.assertLess(
                 abs(observed_ratio - expected_ratio),
-                5e-12 if tau == 1.0 else 5e-09,
+                TOLERANCE.ALPHA_ATTENUATION_STRICT
+                if tau == 1.0
+                else TOLERANCE.ALPHA_ATTENUATION_RELAXED,
                 f"Alpha attenuation mismatch tau={tau} alpha={alpha} obs_ratio={observed_ratio} exp_ratio={expected_ratio}",
             )
 
@@ -339,12 +340,12 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
     def test_exit_attenuation_modes_enumeration(self):
         """All exit attenuation modes produce finite rewards without errors.
 
-        Smoke test ensuring each exit attenuation mode (including legacy modes)
-        executes successfully and produces finite reward components. This validates
-        that mode enumeration is complete and all modes are correctly implemented.
+        Smoke test ensuring each canonical exit attenuation mode executes
+        successfully and produces finite reward components. This validates that
+        mode enumeration is complete and all modes are correctly implemented.
 
         **Setup:**
-        - Modes tested: All values in ATTENUATION_MODES_WITH_LEGACY
+        - Modes tested: All values in ATTENUATION_MODES
         - Context: Long exit with pnl=0.02, duration=50, profit extrema=[0.01, 0.03]
         - Uses subTest for mode-specific failure isolation
 
@@ -355,7 +356,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
         **Tolerance rationale:**
         - Uses assertFinite which checks for non-NaN, non-Inf values only
         """
-        modes = ATTENUATION_MODES_WITH_LEGACY
+        modes = ATTENUATION_MODES
         for mode in modes:
             with self.subTest(mode=mode):
                 test_params = self.base_params(exit_attenuation_mode=mode)

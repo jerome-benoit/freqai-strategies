@@ -27,7 +27,7 @@ def _ensure_datetime_series(series: pd.Series | None) -> pd.Series:
     """Ensure a date series is datetime64[ms, UTC], following freqtrade's data handler pattern."""
     if series is None:
         raise ValueError(
-            "Expected a date Series but received None. "
+            "Data: expected a date Series but received None. "
             "The 'date' column is missing from the dataframe."
         )
     if pd.api.types.is_integer_dtype(series):
@@ -37,7 +37,7 @@ def _ensure_datetime_series(series: pd.Series | None) -> pd.Series:
         probe = int(sample.iat[0])
         if not (_EPOCH_MS_MIN <= probe <= _EPOCH_MS_MAX):
             raise ValueError(
-                f"Integer date column value {probe} is outside the expected epoch-ms "
+                f"Data: integer date column value {probe} is outside the expected epoch-ms "
                 f"range [{_EPOCH_MS_MIN}, {_EPOCH_MS_MAX}]. "
                 "Data is likely corrupted or uses a different unit."
             )

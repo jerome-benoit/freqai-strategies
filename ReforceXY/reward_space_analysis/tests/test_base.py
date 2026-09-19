@@ -145,6 +145,7 @@ class RewardSpaceTestBase(unittest.TestCase):
                     pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
+                    entry_pnl=0.0,
                     next_duration_ratio=next_dur,
                     base_factor=PARAMS.BASE_FACTOR,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,

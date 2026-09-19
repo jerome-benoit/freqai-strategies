@@ -1,41 +1,24 @@
-"""Helpers package for reward_space_analysis tests.
-
-Exposes shared assertion utilities, configuration dataclasses, and warning
-capture helpers, centralizing test infrastructure and reducing duplication.
-"""
+"""Helpers package for reward_space_analysis tests."""
 
 from .assertions import (
-    assert_adjustment_reason_contains,
-    assert_almost_equal_list,
     assert_component_sum_integrity,
     assert_exit_factor_attenuation_modes,
     assert_exit_factor_invariant_suite,
-    assert_exit_factor_kernel_fallback,
     assert_exit_factor_plateau_behavior,
     assert_exit_mode_mathematical_validation,
-    assert_finite,
     assert_hold_penalty_threshold_behavior,
-    assert_monotonic_nonincreasing,
-    assert_monotonic_nonnegative,
-    assert_multi_parameter_sensitivity,
-    assert_non_canonical_shaping_exceeds,
-    assert_parameter_sensitivity_behavior,
-    assert_pbrs_canonical_sum_within_tolerance,
     assert_pbrs_invariance_report_classification,
     assert_progressive_scaling_behavior,
     assert_relaxed_multi_reason_aggregation,
     assert_reward_calculation_scenarios,
     assert_single_active_component,
     assert_single_active_component_with_additives,
-    assert_trend,
     build_validation_case,
     calculate_reward_with_defaults,
     execute_validation_batch,
-    get_exit_factor_with_defaults,
     make_idle_penalty_test_contexts,
     run_relaxed_validation_adjustment_cases,
     run_strict_validation_failure_cases,
-    safe_float,
     simulate_samples_with_defaults,
 )
 from .configs import (
@@ -52,12 +35,7 @@ from .configs import (
     ValidationConfig,
     WarningCaptureConfig,
 )
-from .warnings import (
-    assert_diagnostic_warning,
-    assert_no_warnings,
-    capture_warnings,
-    validate_warning_content,
-)
+from .warnings import assert_diagnostic_warning, capture_warnings
 
 __all__ = [
     "DEFAULT_REWARD_CONFIG",
@@ -72,40 +50,25 @@ __all__ = [
     "ValidationCallback",
     "ValidationConfig",
     "WarningCaptureConfig",
-    "assert_adjustment_reason_contains",
-    "assert_almost_equal_list",
     "assert_component_sum_integrity",
     "assert_diagnostic_warning",
     "assert_exit_factor_attenuation_modes",
     "assert_exit_factor_invariant_suite",
-    "assert_exit_factor_kernel_fallback",
     "assert_exit_factor_plateau_behavior",
     "assert_exit_mode_mathematical_validation",
-    "assert_finite",
     "assert_hold_penalty_threshold_behavior",
-    "assert_monotonic_nonincreasing",
-    "assert_monotonic_nonnegative",
-    "assert_multi_parameter_sensitivity",
-    "assert_no_warnings",
-    "assert_non_canonical_shaping_exceeds",
-    "assert_parameter_sensitivity_behavior",
-    "assert_pbrs_canonical_sum_within_tolerance",
     "assert_pbrs_invariance_report_classification",
     "assert_progressive_scaling_behavior",
     "assert_relaxed_multi_reason_aggregation",
     "assert_reward_calculation_scenarios",
     "assert_single_active_component",
     "assert_single_active_component_with_additives",
-    "assert_trend",
     "build_validation_case",
     "calculate_reward_with_defaults",
     "capture_warnings",
     "execute_validation_batch",
-    "get_exit_factor_with_defaults",
     "make_idle_penalty_test_contexts",
     "run_relaxed_validation_adjustment_cases",
     "run_strict_validation_failure_cases",
-    "safe_float",
     "simulate_samples_with_defaults",
-    "validate_warning_content",
 ]

@@ -16,7 +16,6 @@ Usage:
 
 import warnings
 from contextlib import contextmanager
-from typing import Any
 
 import reward_space_analysis
 
@@ -115,85 +114,7 @@ def assert_diagnostic_warning(
             )
 
 
-@contextmanager
-def assert_no_warnings(warning_category: type[Warning] = Warning):
-    """Context manager that asserts no warnings are raised.
-
-    Useful for validating that clean code paths don't emit unexpected warnings.
-
-    Args:
-        warning_category: Warning category to check (default: all warnings)
-
-    Yields:
-        None
-
-    Raises:
-        AssertionError: If any warnings of the specified category are captured
-
-    Example:
-        with assert_no_warnings(RewardDiagnosticsWarning):
-            result = function_that_should_not_warn()
-    """
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", warning_category)
-        yield
-
-    filtered = [w for w in caught if issubclass(w.category, warning_category)]
-    if filtered:
-        messages = [str(w.message) for w in filtered]
-        raise AssertionError(
-            f"Expected no {warning_category.__name__} but {len(filtered)} were raised: {messages}"
-        )
-
-
-def validate_warning_content(
-    caught_warnings: list[Any],
-    warning_category: type[Warning],
-    expected_substrings: list[str],
-    strict_mode: bool = True,
-) -> None:
-    """Validate captured warnings contain expected content.
-
-    Helper function for manual validation of warning content when using
-    a standard catch_warnings context.
-
-    Args:
-        caught_warnings: List of captured warning objects from catch_warnings
-        warning_category: Expected warning category
-        expected_substrings: List of substrings that should appear in messages
-        strict_mode: If True, all substrings must be present; if False, at least one
-
-    Raises:
-        AssertionError: If validation fails
-    """
-    filtered = [w for w in caught_warnings if issubclass(w.category, warning_category)]
-
-    if not filtered:
-        raise AssertionError(
-            f"No warnings of type {warning_category.__name__} captured. "
-            f"Total warnings: {len(caught_warnings)}"
-        )
-
-    all_messages = " ".join(str(w.message) for w in filtered)
-
-    if strict_mode:
-        missing = [s for s in expected_substrings if s not in all_messages]
-        if missing:
-            raise AssertionError(
-                f"Missing expected substrings: {missing}. Captured messages: {all_messages}"
-            )
-    else:
-        found = any(s in all_messages for s in expected_substrings)
-        if not found:
-            raise AssertionError(
-                f"None of the expected substrings {expected_substrings} found. "
-                f"Captured messages: {all_messages}"
-            )
-
-
 __all__ = [
     "assert_diagnostic_warning",
-    "assert_no_warnings",
     "capture_warnings",
-    "validate_warning_content",
 ]
