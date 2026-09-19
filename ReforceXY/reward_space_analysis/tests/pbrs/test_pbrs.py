@@ -3,6 +3,7 @@
 
 import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -168,6 +169,125 @@ class TestSimulationParity(RewardSpaceTestBase):
                 expected_duration = 0
             self.assertEqual(row.trade_duration, expected_duration)
 
+    def test_first_retained_pnl_is_only_exit_extremum(self):
+        """A first-candle exit excludes the fill-time PnL from its extrema."""
+        params = self.base_params(
+            unrealized_pnl=False,
+            max_trade_duration_candles=100,
+            entry_fee_rate=0.0,
+            exit_fee_rate=0.0,
+            hold_potential_enabled=False,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        actions = [
+            (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Long_exit, 0.0, 1.0, 0.0),
+        ]
+        with (
+            patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
+            patch.object(
+                reward_space_analysis.random.Random,
+                "gauss",
+                side_effect=[0.02, 0.0],
+            ),
+        ):
+            df = simulate_samples(
+                params=params,
+                num_samples=2,
+                seed=SEEDS.BASE,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                max_duration_ratio=2.0,
+                trading_mode="futures",
+                pnl_base_std=PARAMS.PNL_STD,
+                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+            )
+
+        exit_row = df.iloc[1]
+        pnl = float(exit_row["pnl"])
+        self.assertGreater(pnl, 0.0)
+        runtime_context = reward_space_analysis.RewardContext(
+            current_pnl=pnl,
+            trade_duration=int(exit_row["trade_duration"]),
+            idle_duration=0,
+            max_unrealized_profit=pnl,
+            min_unrealized_profit=pnl,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        expected_exit = reward_space_analysis.calculate_reward(
+            runtime_context,
+            params,
+            PARAMS.BASE_FACTOR,
+            PARAMS.PROFIT_AIM,
+            PARAMS.RISK_REWARD_RATIO,
+            short_allowed=True,
+            action_masking=True,
+        ).exit_component
+        self.assertAlmostEqualFloat(
+            float(exit_row["reward_exit"]),
+            expected_exit,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            rtol=TOLERANCE.RELATIVE,
+        )
+
+    def test_unrealized_pnl_uses_each_sampled_market_move(self):
+        """Later Gaussian innovations affect later retained PnL without becoming extrema."""
+        params = self.base_params(
+            unrealized_pnl=True,
+            max_trade_duration_candles=100,
+            entry_fee_rate=0.0,
+            exit_fee_rate=0.0,
+        )
+        actions = [
+            (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 0.0),
+            (Actions.Long_exit, 0.0, 1.0, 0.0),
+        ]
+
+        def run(second_return: float) -> pd.DataFrame:
+            with (
+                patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
+                patch.object(
+                    reward_space_analysis.random.Random,
+                    "gauss",
+                    side_effect=[0.02, second_return, 0.0, 0.0],
+                ),
+            ):
+                return simulate_samples(
+                    params=params,
+                    num_samples=4,
+                    seed=SEEDS.BASE,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    max_duration_ratio=2.0,
+                    trading_mode="futures",
+                    pnl_base_std=PARAMS.PNL_STD,
+                    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                )
+
+        baseline = run(0.0)
+        changed = run(0.03)
+        for column in ("action", "position", "trade_duration"):
+            self.assertTrue(baseline[column].equals(changed[column]))
+        self.assertAlmostEqualFloat(
+            float(baseline.iloc[0]["next_pnl"]),
+            float(changed.iloc[0]["next_pnl"]),
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+        )
+        self.assertFalse(
+            np.isclose(
+                float(baseline.iloc[1]["next_pnl"]),
+                float(changed.iloc[1]["next_pnl"]),
+                atol=TOLERANCE.IDENTITY_STRICT,
+                rtol=0.0,
+            )
+        )
+
     def test_unrealized_pnl_mode_shapes_hold_trajectory(self):
         """The flag derives hold prices from a target PnL instead of only feeding Phi."""
         params = self.base_params(
@@ -190,12 +310,16 @@ class TestSimulationParity(RewardSpaceTestBase):
             pnl_base_std=PARAMS.PNL_STD,
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
-        holds = df[df["position"] != Positions.Neutral.value]
-        self.assertFalse(holds.empty)
-        derivable = holds[holds["next_pnl"].abs() > 0]
+        retained = df.loc[
+            df["next_position"].isin([Positions.Long.value, Positions.Short.value]),
+            "next_pnl",
+        ]
+        self.assertFalse(retained.empty)
+        derivable = retained[retained.abs() > TOLERANCE.IDENTITY_STRICT]
         self.assertGreater(len(derivable), 0, "synthetic holds must accrue target PnL")
-        for row in derivable.itertuples():
-            self.assertTrue(abs(row.next_pnl) <= 0.15)
+        self.assertTrue((derivable > 0.0).any(), "market innovations must permit profitable PnL")
+        self.assertTrue((derivable < 0.0).any(), "market innovations must permit losing PnL")
+        self.assertTrue((derivable.abs() <= 0.15).all())
         replay = simulate_samples(
             params=params,
             num_samples=400,
@@ -234,9 +358,9 @@ class TestSimulationParity(RewardSpaceTestBase):
             pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
         )
 
-        max_unrealized = min_unrealized = 0.0
+        max_unrealized = -np.inf
+        min_unrealized = np.inf
         checked_exits = 0
-        fee_product = (1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])
         risk_reward_ratio = float(
             params.get("risk_reward_ratio", params.get("rr", PARAMS.RISK_REWARD_RATIO))
         )
@@ -254,10 +378,8 @@ class TestSimulationParity(RewardSpaceTestBase):
                 Actions.Long_enter,
                 Actions.Short_enter,
             ):
-                entry_pnl = 1.0 / fee_product - 1.0
-                if action == Actions.Short_enter:
-                    entry_pnl = 1.0 - fee_product
-                max_unrealized = min_unrealized = entry_pnl
+                max_unrealized = -np.inf
+                min_unrealized = np.inf
 
             if position in (Positions.Long, Positions.Short) and action in (
                 Actions.Long_exit,

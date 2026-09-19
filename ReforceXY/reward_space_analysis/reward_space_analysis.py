@@ -1730,27 +1730,15 @@ def simulate_samples(
                 trade_duration = 0
                 idle_duration = 0
                 entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Long,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
+                max_unrealized_profit = -np.inf
+                min_unrealized_profit = np.inf
             elif action == Actions.Short_enter and short_allowed:
                 position = Positions.Short
                 trade_duration = 0
                 idle_duration = 0
                 entry_open = current_open
-                pnl = _compute_unrealized_pnl_estimate(
-                    Positions.Short,
-                    entry_open=entry_open,
-                    current_open=current_open,
-                    params=params,
-                )
-                max_unrealized_profit = pnl
-                min_unrealized_profit = pnl
+                max_unrealized_profit = -np.inf
+                min_unrealized_profit = np.inf
         else:
             idle_duration = 0
             if action in (Actions.Long_exit, Actions.Short_exit):
@@ -1800,7 +1788,11 @@ def simulate_samples(
                 )
             )
             if _get_bool_param(params, "unrealized_pnl", False):
-                center_unrealized = 0.5 * (max_unrealized_profit + min_unrealized_profit)
+                # Let the sampled market move shape the next retained PnL without
+                # storing the discarded candidate in exit-efficiency extrema.
+                prospective_max = max(max_unrealized_profit, candidate_pnl)
+                prospective_min = min(min_unrealized_profit, candidate_pnl)
+                center_unrealized = 0.5 * (prospective_max + prospective_min)
                 beta = _get_float_param(params, "pnl_amplification_sensitivity")
                 hold_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
                 target_pnl = float(
