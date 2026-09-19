@@ -1883,7 +1883,7 @@ def simulate_samples(
                 "next_position": float(next_context.position.value),
                 "terminated": _ == num_samples - 1,
                 "terminal_liquidation": breakdown.terminal_liquidation,
-                "exit_pnl": breakdown.exit_pnl,
+                "exit_pnl": (np.nan if breakdown.exit_pnl is None else breakdown.exit_pnl),
                 "duration_ratio": _compute_duration_ratio(
                     context.trade_duration, max_trade_duration_candles
                 ),

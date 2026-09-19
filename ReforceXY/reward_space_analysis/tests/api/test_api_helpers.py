@@ -126,6 +126,22 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             breakdown = calculate_reward_with_defaults(ctx, self.DEFAULT_PARAMS)
             self.assertFinite(breakdown.total)
 
+    def test_simulate_samples_singleton_terminal_neutral_transition(self):
+        """Return a valid terminal neutral row for a singleton simulation."""
+        df = simulate_samples_with_defaults(
+            self.base_params(),
+            num_samples=SCENARIOS.SAMPLE_SIZE_SINGLETON,
+            seed=SEEDS.BASE,
+            trading_mode="spot",
+        )
+
+        self.assertEqual(len(df), SCENARIOS.SAMPLE_SIZE_SINGLETON)
+        row = df.iloc[0]
+        self.assertTrue(row["terminated"])
+        self.assertFalse(row["terminal_liquidation"])
+        self.assertTrue(pd.isna(row["exit_pnl"]))
+        self.assertEqual(row["next_position"], Positions.Neutral.value)
+
     def test_simulate_samples_trading_modes_spot_vs_margin(self):
         """simulate_samples coverage: spot should forbid shorts, margin should allow them."""
         df_spot = simulate_samples_with_defaults(

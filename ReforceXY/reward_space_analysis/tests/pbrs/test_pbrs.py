@@ -1637,7 +1637,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("| Entry Additive Effective | False |", content)
         self.assertIn("| Exit Additive Effective | False |", content)
 
-    # Non-owning boundary; ownership: pbrs/test_pbrs.py:1511
+    # Non-owning boundary; ownership: pbrs/test_pbrs.py:1509
     # Invariant: pbrs-canonical-near-zero-report-116
     def test_singleton_terminal_canonical_report_is_verified(self):
         """A complete one-transition terminal episode is sufficient PBRS evidence."""
@@ -1696,6 +1696,7 @@ class TestPBRS(RewardSpaceTestBase):
             "Local identity, continuity and discounted terminal boundary verified", content
         )
 
+    # Owns invariant: pbrs-discounted-evidence-125
     def test_pbrs_canonical_discontinuous_potentials_report(self):
         """Potential discontinuity is sufficient to reject otherwise local PBRS evidence."""
 

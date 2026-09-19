@@ -319,6 +319,7 @@ class TestScenarios:
         DURATION_MEDIUM: Medium duration scenario (200)
         DURATION_LONG: Long duration scenario (300)
         DURATION_SCENARIOS: Standard duration test sequence
+        SAMPLE_SIZE_SINGLETON: Single-row sample size for boundary tests (1)
         SAMPLE_SIZE_TINY: Tiny sample size for smoke tests (50)
         SAMPLE_SIZE_SMALL: Small sample size for quick tests (100)
         SAMPLE_SIZE_MEDIUM: Medium sample size for standard tests (400)
@@ -359,6 +360,7 @@ class TestScenarios:
     DURATION_LONG: int = 300
     DURATION_SCENARIOS: tuple[int, ...] = (DURATION_SHORT, DURATION_MEDIUM, DURATION_LONG)
 
+    SAMPLE_SIZE_SINGLETON: int = 1
     SAMPLE_SIZE_TINY: int = 50
     SAMPLE_SIZE_SMALL: int = 100
     SAMPLE_SIZE_MEDIUM: int = 400

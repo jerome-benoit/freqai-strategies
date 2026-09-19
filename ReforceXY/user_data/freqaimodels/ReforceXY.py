@@ -2966,7 +2966,6 @@ class MyRLEnv(Base5ActionRLEnv):
         self.action_masking: bool = self.rl_config.get("action_masking", False)
 
         # === INTERNAL STATE ===
-        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
         self._min_unrealized_profit: float = np.inf
@@ -3564,7 +3563,6 @@ class MyRLEnv(Base5ActionRLEnv):
         Reset is called at the beginning of every episode
         """
         observation, history = super().reset(seed, **kwargs)
-        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
@@ -3992,7 +3990,6 @@ class MyRLEnv(Base5ActionRLEnv):
 
     def _exit_trade(self) -> None:
         self._update_total_profit()
-        self._last_closed_position = self._position
         self._position = Positions.Neutral
         self._last_trade_tick = None
         self._last_closed_trade_tick = self._current_tick

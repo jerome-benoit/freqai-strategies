@@ -196,19 +196,19 @@ Columns:
 | statistics-binned-stats-min-edges-110         | statistics  | <2 bin edges raises ValueError                                                       | statistics/test_statistics.py:60          | Docstring line                                                                                              |
 | statistics-constant-cols-exclusion-111        | statistics  | Constant columns excluded & listed                                                   | statistics/test_statistics.py:71          | Docstring line                                                                                              |
 | statistics-degenerate-distribution-shift-112  | statistics  | Constants: zero distances; KS p only with declared independent observations          | statistics/test_statistics.py:87          | Docstring line                                                                                              |
-| statistics-constant-dist-exact-ci-113a        | statistics  | Both modes retain exact constant CI bounds                                           | statistics/test_statistics.py:602         |                                                                                                             |
-| statistics-percentile-outside-mean-113b       | statistics  | Percentile bounds need not contain the sample mean                                   | statistics/test_statistics.py:616         |                                                                                                             |
-| statistics-constant-diagnostics-115           | statistics  | Constants have N/A higher moments, normality tests and Q-Q fits in both modes         | statistics/test_statistics.py:193         |                                                                                                             |
-| pbrs-canonical-near-zero-report-116           | pbrs        | Canonical trajectories with valid evidence are classified as verified                | pbrs/test_pbrs.py:1511                    | Requires local identity, continuity, discounted terminal boundary, and zero observed additives; the non-owning boundary test also covers a complete singleton terminal episode |
+| statistics-constant-dist-exact-ci-113a        | statistics  | Both modes retain exact constant CI bounds                                           | statistics/test_statistics.py:606         |                                                                                                             |
+| statistics-percentile-outside-mean-113b       | statistics  | Percentile bounds need not contain the sample mean                                   | statistics/test_statistics.py:620         |                                                                                                             |
+| statistics-constant-diagnostics-115           | statistics  | Constants have N/A higher moments, normality tests and Q-Q fits in both modes         | statistics/test_statistics.py:194         |                                                                                                             |
+| pbrs-canonical-near-zero-report-116           | pbrs        | Canonical trajectories with valid evidence are classified as verified                | pbrs/test_pbrs.py:1509                    | Requires local identity, continuity, discounted terminal boundary, and zero observed additives; the non-owning boundary test also covers a complete singleton terminal episode |
 | robustness-exit-pnl-only-117                  | robustness  | Only exit actions have non-zero PnL                                                  | robustness/test_robustness.py:127         | Comment line                                                                                                |
-| pbrs-absence-shift-placeholder-118            | pbrs        | Placeholder shift line present when shaping shift is absent                          | pbrs/test_pbrs.py:1523                    |                                                                                                             |
-| components-pbrs-breakdown-fields-119          | components  | PBRS breakdown fields finite and mathematically aligned                              | components/test_reward_components.py:783  | Tests base_reward, pbrs_delta and invariance_correction alignment                                           |
-| integration-pbrs-metrics-section-120          | integration | PBRS Metrics section present in report with tracing metrics                          | integration/test_report_formatting.py:155 |                                                                                                             |
-| cli-pbrs-csv-columns-121                      | cli         | PBRS columns in reward_samples.csv when shaping enabled                              | cli/test_cli_params_and_csv.py:221        | Verifies finite reward_base, reward_pbrs_delta and reward_invariance_correction values                       |
+| pbrs-absence-shift-placeholder-118            | pbrs        | Placeholder shift line present when shaping shift is absent                          | pbrs/test_pbrs.py:1877                    |                                                                                                             |
+| components-pbrs-breakdown-fields-119          | components  | PBRS breakdown fields finite and mathematically aligned                              | components/test_reward_components.py:830  | Tests base_reward, pbrs_delta and invariance_correction alignment                                           |
+| integration-pbrs-metrics-section-120          | integration | PBRS Metrics section present in report with tracing metrics                          | integration/test_report_formatting.py:137 |                                                                                                             |
+| cli-pbrs-csv-columns-121                      | cli         | PBRS columns in reward_samples.csv when shaping enabled                              | cli/test_cli_params_and_csv.py:347        | Verifies finite reward_base, reward_pbrs_delta and reward_invariance_correction values                       |
 | statistics-bh-finite-family-122               | statistics  | Undefined tests excluded from finite-only BH family; marked non-applicable           | statistics/test_statistics.py:499         |                                                                                                             |
-| statistics-independence-contract-123          | statistics  | Inferential helpers require independent_observations=True                            | statistics/test_statistics.py:632         | Covers hypothesis tests and bootstrap intervals                                                             |
+| statistics-independence-contract-123          | statistics  | Inferential helpers require independent_observations=True                            | statistics/test_statistics.py:636         | Covers hypothesis tests and bootstrap intervals                                                             |
 | report-independent-sections-124               | integration | CI, diagnostics and shift sections do not depend on hypothesis-test output           | integration/test_report_formatting.py:28  | Also verifies the reported bootstrap resample count                                                         |
-| pbrs-discounted-evidence-125                  | pbrs        | Verification requires local identity, continuity and discounted terminal boundary    | pbrs/test_pbrs.py:1521                    | Discontinuous potentials are not verified                                                                   |
+| pbrs-discounted-evidence-125                  | pbrs        | Verification requires local identity, continuity and discounted terminal boundary    | pbrs/test_pbrs.py:1699                    | Discontinuous potentials are not verified                                                                   |
 
 ### Non-Owning Smoke / Reference Checks
 
@@ -306,8 +306,8 @@ grep -R "pbrs_delta" -n .
 ## Coverage Parity Notes
 
 Detailed assertions reside in targeted directories (components, robustness)
-while integration tests focus on report formatting. Ownership IDs (e.g.
-091–095, 106) reflect current scope (multi-path when noted).
+while integration tests focus on report formatting. The mapping above defines
+current ownership; multi-path and non-owning references are called out explicitly.
 
 ## When to Run Tests
 
@@ -321,8 +321,7 @@ before publishing analysis reliant on invariants.
   examples for minimal, standard, and complex tests
 - **`constants.py`** - Single source of truth for all test constants (frozen
   dataclasses with comprehensive documentation)
-- **`helpers/assertions.py`** - 20+ custom assertion functions for invariant
-  validation
+- **`helpers/assertions.py`** - Custom assertion helpers for invariant validation
 - **`test_base.py`** - Base class with common utilities (`make_ctx`, `seed_all`,
   etc.)
 
