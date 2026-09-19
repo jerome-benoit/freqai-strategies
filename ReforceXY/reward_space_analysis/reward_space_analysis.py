@@ -3752,7 +3752,7 @@ def verify_pbrs_trajectory(df: pd.DataFrame, gamma: float) -> dict[str, Any]:
     max_residual = 0.0
     for _, episode in df.groupby("episode_id", sort=False):
         n = len(episode)
-        if n < 2 or not np.array_equal(episode["transition_index"], np.arange(n)):
+        if not np.array_equal(episode["transition_index"], np.arange(n)):
             return {"verified": False, "reason": "Missing, repeated or unordered transitions"}
         terminal = episode["terminated"].to_numpy()
         if not np.array_equal(terminal, np.arange(n) == n - 1):

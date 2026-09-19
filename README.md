@@ -399,9 +399,13 @@ Non-positive or non-finite equity produces NaN diagnostics rather than a zero
 return. These diagnostics do not change the training reward or realized capital.
 Rewards combine the fill-time base components with a potential-based shaping
 delta over the returned next observation. Termination liquidates any remaining
-position once and clears the terminal potential. History uses `execution_tick` to
-attach entry/exit events to their fill-time transition; `terminal_liquidation`
-and `exit_pnl` also identify forced exits.
+position once and clears the terminal potential. `get_env_history()` returns one
+metrics/price row per transition. Its `execution_tick` is the transition/action/fill
+key before the tick increment; its `tick` is the returned post-increment price and
+observation row (normally `execution_tick + 1`). Ordered trade events remain
+separate in `trade_history`, where each event's `tick` equals the history row's
+`execution_tick`; multiple events may share that key. `terminal_liquidation` and
+`exit_pnl` remain on the transition history row.
 
 ## Development
 

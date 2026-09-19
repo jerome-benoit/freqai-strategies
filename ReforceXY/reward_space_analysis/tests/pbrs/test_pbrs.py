@@ -1637,6 +1637,65 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("| Entry Additive Effective | False |", content)
         self.assertIn("| Exit Additive Effective | False |", content)
 
+    # Non-owning boundary; ownership: pbrs/test_pbrs.py:1511
+    # Invariant: pbrs-canonical-near-zero-report-116
+    def test_singleton_terminal_canonical_report_is_verified(self):
+        """A complete one-transition terminal episode is sufficient PBRS evidence."""
+        params = self.base_params(
+            exit_potential_mode="canonical",
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        previous_potential = 0.25
+        shaping = -previous_potential
+        df = pd.DataFrame(
+            {
+                "reward": [shaping],
+                "reward_base": [0.0],
+                "reward_pbrs_delta": [shaping],
+                "reward_shaping": [shaping],
+                "reward_invariance_correction": [0.0],
+                "reward_invalid": [0.0],
+                "reward_idle": [0.0],
+                "reward_hold": [0.0],
+                "reward_exit": [0.0],
+                "reward_entry_additive": [0.0],
+                "reward_exit_additive": [0.0],
+                "pnl": [0.0],
+                "exit_pnl": [0.0],
+                "trade_duration": [0],
+                "idle_duration": [0],
+                "duration_ratio": [0.0],
+                "idle_ratio": [0.0],
+                "position": [0.0],
+                "action": [0],
+                "episode_id": [0],
+                "transition_index": [0],
+                "terminated": [True],
+                "prev_potential": [previous_potential],
+                "next_potential": [0.0],
+            }
+        )
+        df.attrs["reward_params"] = params
+        out_dir = self.output_path / "canonical_singleton_terminal"
+        write_complete_statistical_analysis(
+            df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.SMOKE_TEST,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        assert_pbrs_invariance_report_classification(
+            self, content, "Canonical: observed PBRS verified", expect_additives=False
+        )
+        self.assertIn(
+            "Local identity, continuity and discounted terminal boundary verified", content
+        )
+
     def test_pbrs_canonical_discontinuous_potentials_report(self):
         """Potential discontinuity is sufficient to reject otherwise local PBRS evidence."""
 
