@@ -14,6 +14,7 @@ from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from functools import wraps
 from inspect import iscoroutinefunction, unwrap
+from io import BytesIO
 from pathlib import Path
 from typing import (
     Any,
@@ -49,6 +50,7 @@ from freqtrade.freqai.RL.BaseReinforcementLearningModel import (
     BaseReinforcementLearningModel,
 )
 from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
+from freqtrade.persistence import Trade
 from freqtrade.strategy import timeframe_to_minutes
 from gymnasium.spaces import Box
 from joblib.externals import cloudpickle
@@ -69,6 +71,7 @@ from optuna.study import Study, StudyDirection
 from optuna.trial import TrialState
 from pandas import DataFrame, merge
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from sb3_contrib.common.maskable.evaluation import evaluate_policy
 from sb3_contrib.common.maskable.utils import is_masking_supported
 from stable_baselines3.common.callbacks import (
     BaseCallback,
@@ -86,6 +89,18 @@ from stable_baselines3.common.vec_env import (
     VecFrameStack,
     VecMonitor,
 )
+
+
+def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> None:
+    """Update plain-fit final-policy bookkeeping and save an improved checkpoint."""
+    if not np.isfinite(mean_reward):
+        return
+    callback.last_mean_reward = mean_reward
+    if not hasattr(callback, "best_mean_reward") or mean_reward > callback.best_mean_reward:
+        callback.best_mean_reward = mean_reward
+        if callback.best_model_save_path is not None and model is not None:
+            model.save(Path(callback.best_model_save_path) / "best_model.zip")
+
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 
@@ -121,7 +136,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
     prediction status. Those rows must not replace recorded predictions, including
     zero predictions and rejected predictions (do_predict == 0 with a candle close).
-    Indistinguishable legacy rows use last-write-wins; label magnitudes never rank rows.
+    Indistinguishable rows use last-write-wins; label magnitudes never rank rows.
     Invalid dates cannot match a candle and are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
@@ -164,12 +179,11 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Repair persisted history and duplicates produced by older Freqtrade writers.
+    """Normalize persisted history and duplicate predictions before upstream writes.
 
-    Normalize before upstream positional writes and after legacy duplicate writes.
-    Normalize before upstream disk repair can discard a recorded duplicate.
-    Already-clean upstream results are preserved. Recheck these synchronous
-    method contracts on Freqtrade upgrades.
+    Normalize before upstream positional writes and before disk repair can discard
+    a recorded duplicate. Already-clean upstream results are preserved. Recheck
+    these synchronous method contracts on Freqtrade upgrades.
     """
     names = (
         "set_initial_return_values",
@@ -220,7 +234,7 @@ def _install_date_pred_dedup_patch() -> None:
             self.historic_predictions[pair]
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
-            # Legacy append requires an initialized row; let upstream construct it.
+            # Append requires an initialized row; let upstream construct it.
             original_set_initial(
                 self,
                 pair,
@@ -273,8 +287,8 @@ ExitPotentialMode = Literal[
     "spike_cancel",
     "retain_previous",
 ]
-TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "asinh", "clip"]
-ExitAttenuationMode = Literal["legacy", "sqrt", "linear", "power", "half_life"]
+TransformFunction = Literal["tanh", "softsign", "arctan", "sigmoid", "softsign_sqrt", "clip"]
+ExitAttenuationMode = Literal["sqrt", "linear", "power", "half_life"]
 ActivationFunction = Literal["relu", "tanh", "elu", "leaky_relu"]
 OptimizerClassOptuna = Literal["adamw", "rmsprop"]
 OptimizerClass = OptimizerClassOptuna | Literal["adam"]
@@ -354,7 +368,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     Continual learning keeps the deployed policy's fitted feature coordinates frozen,
     including feature selection and scaling. Reset trained models or use a new
-    freqai.identifier to change those coordinates or migrate legacy artifacts.
+    freqai.identifier to change those coordinates.
     First training and continual_learning=false use fresh pipelines and policies.
     Hyperopt always uses fresh current-window pipelines and cold policies; final
     continuation uses the original raw split in the deployed coordinates. Selected
@@ -375,7 +389,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _LOG_2: Final[float] = math.log(2.0)
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
-    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-v2"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
 
@@ -443,12 +457,11 @@ class ReforceXY(BaseReinforcementLearningModel):
         "softsign",
         "arctan",
         "sigmoid",
-        "asinh",
+        "softsign_sqrt",
         "clip",
     )
     _TRANSFORM_FUNCTIONS_SET: Final[frozenset[TransformFunction]] = frozenset(_TRANSFORM_FUNCTIONS)
     _EXIT_ATTENUATION_MODES: Final[tuple[ExitAttenuationMode, ...]] = (
-        "legacy",
         "sqrt",
         "linear",
         "power",
@@ -490,10 +503,13 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     # Bump on objective changes that make persisted trials or best params incompatible.
-    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "raw-market-prices-v1"
+    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = (
+        "terminal-liquidation-risk-normalized-trained-policy-v3"
+    )
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
+    _DQN_TRAIN_FREQS: Final[tuple[int, ...]] = (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
     _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR: Final[float] = 4.0
 
     _action_masks_cache: ClassVar[dict[tuple[bool, float], NDArray[np.bool_]]] = {}
@@ -553,6 +569,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
         self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
         self._model_params_cache: dict[str, Any] | None = None
+        self._frame_buffers: dict[str, tuple[Any, deque[NDArray[np.float32]]]] = {}
         self._lstm_states_cache: dict[
             str,
             tuple[
@@ -563,6 +580,66 @@ class ReforceXY(BaseReinforcementLearningModel):
         ] = {}
         self.unset_unsupported()
         self._configure_gpu_memory()
+        self._install_replay_persistence()
+
+    def _install_replay_persistence(self) -> None:
+        save_data = self.dd.save_data
+        load_data = self.dd.load_data
+
+        @wraps(save_data)
+        def save_with_replay(model, coin, dk):
+            dk.data = dk.data.copy()
+            dk.data.pop("reforcexy_replay", None)
+            if hasattr(model, "save_replay_buffer"):
+                dk.data_path.mkdir(parents=True, exist_ok=True)
+                filename = f"{dk.model_filename}_replay_{uuid4().hex}.pkl"
+                destination = dk.data_path / filename
+                temporary = destination.with_suffix(".tmp")
+                try:
+                    model.save_replay_buffer(temporary)
+                    temporary.replace(destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                dk.data["reforcexy_replay"] = filename
+            return save_data(model, coin, dk)
+
+        @wraps(load_data)
+        def load_with_replay(coin, dk):
+            cached = self.dd.model_dictionary.get(coin) if dk.live else None
+            model = load_data(coin, dk)
+            if model is not None and model is not cached:
+                try:
+                    self._restore_replay(model, dk.data, dk.data_path, coin)
+                except Exception:
+                    if self.dd.model_dictionary.get(coin) is model:
+                        self.dd.model_dictionary.pop(coin, None)
+                    raise
+            return model
+
+        self.dd.save_data = save_with_replay
+        self.dd.load_data = load_with_replay
+
+    @staticmethod
+    def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path, pair: str) -> None:
+        if not hasattr(model, "load_replay_buffer"):
+            return
+        filename = metadata.get("reforcexy_replay")
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            raise DependencyException(
+                f"Training [{pair}]: DQN/QRDQN replay metadata is missing or incompatible; "
+                "reset trained models or use a new freqai.identifier"
+            )
+        model.load_replay_buffer(directory / filename)
+        replay = model.replay_buffer
+        if (
+            replay.observation_space != model.observation_space
+            or replay.action_space != model.action_space
+            or replay.n_envs != model.n_envs
+        ):
+            raise DependencyException(
+                f"Training [{pair}]: DQN/QRDQN replay buffer is incompatible; reset trained "
+                "models or use a new freqai.identifier"
+            )
 
     def _configure_gpu_memory(self) -> None:
         """
@@ -711,11 +788,17 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Config [global]: purge_period has no effect when continuous=True; defaulting to 0"
             )
             self.optuna_purge_period = 0
-        add_state_info = self.rl_config.get("add_state_info", False)
-        if not add_state_info:
+        hold_potential_enabled = self.rl_config.get("model_reward_parameters", {}).get(
+            "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
+        )
+        if MyRLEnv.is_unsupported_pbrs_config(
+            hold_potential_enabled, self.rl_config.get("add_state_info", False)
+        ):
             logger.warning(
-                "Config [global]: add_state_info=False may lead to desynchronized trade states after restart"
+                "Config [global]: hold_potential_enabled=True requires add_state_info=True; "
+                "enabling add_state_info"
             )
+            self.rl_config["add_state_info"] = True
         tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
@@ -736,36 +819,36 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.frame_stacking,
             )
 
+    def unset_outlier_removal(self) -> None:
+        super().unset_outlier_removal()
+        # RL transitions, durations and rewards require chronological candles;
+        # a post-split shuffle would silently corrupt the learned trajectory.
+        if self.ft_params.get("shuffle_after_split", False):
+            self.ft_params.update({"shuffle_after_split": False})
+            logger.warning(
+                "Config [global]: shuffle_after_split=True reorders RL transitions; "
+                "setting shuffle_after_split to False"
+            )
+
     def pack_env_dict(
         self, pair: str, model_params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        env_info = super().pack_env_dict(pair)
-
-        config = env_info.setdefault("config", {})
-        freqai_cfg = config.setdefault("freqai", {})
-        rl_cfg = freqai_cfg.setdefault("rl_config", {})
-        model_reward_parameters = rl_cfg.setdefault("model_reward_parameters", {})
-
-        gamma: float | None = None
-
-        if model_params and isinstance(model_params.get("gamma"), (int, float)):
-            gamma = float(model_params["gamma"])
-        elif self.hyperopt:
-            best_trial_params = self.load_best_trial_params(pair)
-            if best_trial_params and isinstance(best_trial_params.get("gamma"), (int, float)):
-                gamma = float(best_trial_params.get("gamma"))
-
-        if (
-            gamma is None
-            and hasattr(self.model, "gamma")
-            and isinstance(self.model.gamma, (int, float))
+        if not self.live and self.rl_config.get("model_reward_parameters", {}).get(
+            "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
         ):
-            gamma = float(self.model.gamma)
-
-        if gamma is None:
-            model_params_gamma = self.get_model_params().get("gamma")
-            if isinstance(model_params_gamma, (int, float)):
-                gamma = float(model_params_gamma)
+            raise ValueError(
+                f"Config [{pair}]: backtesting does not support hold_potential_enabled=True "
+                "because add_state_info is unavailable"
+            )
+        env_info = super().pack_env_dict(pair)
+        # Each environment owns its effective parameters; do not mutate global config.
+        config = copy.deepcopy(env_info["config"])
+        env_info["config"] = config
+        model_reward_parameters = config["freqai"]["rl_config"].setdefault(
+            "model_reward_parameters", {}
+        )
+        effective_params = self.get_model_params() if model_params is None else model_params
+        gamma = effective_params.get("gamma")
 
         if gamma is not None:
             model_reward_parameters["potential_gamma"] = gamma
@@ -785,14 +868,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         """
         Set training and evaluation environments
         """
+        data_dictionary["train_prices"] = prices_train
+        data_dictionary["test_prices"] = prices_test
         if self.train_env is not None or self.eval_env is not None:
             logger.info("Env [%s]: closing environments", dk.pair)
             self.close_envs()
 
         train_df = data_dictionary["train_features"]
         test_df = data_dictionary["test_features"]
-        env_dict = self.pack_env_dict(dk.pair, model_params=model_params)
-        seed = self.get_model_params().get("seed", 42)
+        env_dict = self.pack_env_dict(dk.pair, model_params)
+        effective_params = self.get_model_params() if model_params is None else model_params
+        seed = effective_params.get("seed", 42)
 
         if self.check_envs:
             logger.info("Env [%s]: checking environments", dk.pair)
@@ -807,17 +893,18 @@ class ReforceXY(BaseReinforcementLearningModel):
                 check_env(_train_env_check)
             finally:
                 _train_env_check.close()
-            _eval_env_check = MyRLEnv(
-                df=test_df,
-                prices=prices_test,
-                id="eval_env_check",
-                seed=seed + 10_000,
-                **env_dict,
-            )
-            try:
-                check_env(_eval_env_check)
-            finally:
-                _eval_env_check.close()
+            if self.data_split_parameters.get("test_size", 0.1) > 0:
+                _eval_env_check = MyRLEnv(
+                    df=test_df,
+                    prices=prices_test,
+                    id="eval_env_check",
+                    seed=seed + 10_000,
+                    **env_dict,
+                )
+                try:
+                    check_env(_eval_env_check)
+                finally:
+                    _eval_env_check.close()
 
         logger.info(
             "Env [%s]: populating %s train and %s eval environments",
@@ -1026,7 +1113,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def get_callbacks(
         self,
-        eval_env: BaseEnvironment,
+        eval_env: VecEnv | None,
         eval_freq: int,
         data_path: str,
         trial: Trial | None = None,
@@ -1035,6 +1122,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         Get the model specific callbacks
         """
         callbacks: list[BaseCallback] = []
+        self.eval_callback = None
+        self.optuna_eval_callback = None
+        self.progressbar_callback = None
         no_improvement_callback = None
         rollout_plot_callback = None
         verbose = self.get_model_params().get("verbose", 0)
@@ -1059,6 +1149,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         if self.rl_config.get("progress_bar", False):
             self.progressbar_callback = ProgressBarCallback()
             callbacks.append(self.progressbar_callback)
+
+        if eval_env is None:
+            return callbacks
 
         use_masking = self.action_masking and is_masking_supported(eval_env)
         if not trial:
@@ -1094,10 +1187,11 @@ class ReforceXY(BaseReinforcementLearningModel):
     def _resolve_deployment_state(
         self, dk: FreqaiDataKitchen, pair: str
     ) -> tuple[Any, Pipeline] | None:
-        """Restore the deployed policy and an independent fitted feature pipeline."""
+        """Restore independent training copies of the deployed policy and feature pipeline."""
         if not self.continual_learning:
             return None
         model = self.dd.model_dictionary.get(pair)
+        cached_model = model
         previous = self.dd.pair_dict.get(pair, {})
         if model is None and not previous.get("model_filename"):
             return None
@@ -1119,6 +1213,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                         feature_pipeline = cloudpickle.load(fp)
                 if model is None:
                     model = self.MODELCLASS.load(Path(f"{prefix}_model"))
+                    self._restore_replay(model, metadata, previous_dk.data_path, pair)
             if (
                 metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
                 != self._DEPLOYMENT_COORDINATE_GENERATION
@@ -1139,6 +1234,15 @@ class ReforceXY(BaseReinforcementLearningModel):
             ):
                 if list(expected) != list(actual):
                     raise ValueError(f"persisted {name} differ in names or order")
+            if cached_model is not None:
+                # SB3 archives preserve policy/optimizer state but exclude envs and loggers.
+                with BytesIO() as archive:
+                    model.save(archive)
+                    archive.seek(0)
+                    model = self.MODELCLASS.load(archive, device=cached_model.device)
+                # Off-policy experience is excluded from SB3 model archives.
+                if getattr(cached_model, "replay_buffer", None) is not None:
+                    model.replay_buffer = copy.deepcopy(cached_model.replay_buffer)
             state = model, copy.deepcopy(feature_pipeline)
         except Exception as exc:
             raise DependencyException(
@@ -1146,8 +1250,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Reset trained models or use a new freqai.identifier."
             ) from exc
         logger.info(
-            f"Training [{pair}]: continuing deployment in the persisted feature coordinate system; "
-            "reset trained models to change pipeline configuration"
+            "Training [%s]: continuing deployment in the persisted feature coordinate system; "
+            "reset trained models to change pipeline configuration",
+            pair,
         )
         return state
 
@@ -1213,6 +1318,17 @@ class ReforceXY(BaseReinforcementLearningModel):
             unfiltered_df, dk.training_features_list, dk.label_list, training_filter=True
         )
         raw_data = dk.make_train_test_datasets(features_filtered, labels_filtered)
+        if (
+            not self.hyperopt
+            and self.data_split_parameters.get("test_size") == 0
+            and len(raw_data["train_features"]) > 0
+        ):
+            # A zero-size split keeps the schema but must yield no eval environment.
+            raw_data["test_features"] = raw_data["train_features"].iloc[:0].copy()
+            raw_data["test_labels"] = raw_data["train_labels"].iloc[:0].copy()
+            raw_data["test_weights"] = np.asarray(raw_data["train_weights"])[:0].copy()
+            raw_data["train_dates"] = raw_data["train_dates"]
+            raw_data["test_dates"] = raw_data["train_dates"].iloc[:0]
         self.df_raw = copy.deepcopy(raw_data["train_features"])
         dk.fit_labels()
         # Capture prices once, before normalization and optional raw-OHLC removal.
@@ -1222,8 +1338,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             raw_data, dk, deployment_state=None if self.hyperopt else deployment_state
         )
         logger.info(
-            f"Training [{pair}]: model on {len(dd['train_features'].columns)}"
-            f" features and {len(dd['train_features'])} data points"
+            "Training [%s]: model on %d features and %d data points",
+            pair,
+            len(dd["train_features"].columns),
+            len(dd["train_features"]),
         )
         model = self.fit(
             dd,
@@ -1318,70 +1436,41 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         logger.info("Model [%s]: %s params: %s", dk.pair, self.model_type, model_params)
 
-        # "PPO"
-        if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            n_steps = model_params.get("n_steps", 0)
-            min_timesteps = 2 * n_steps * self.n_envs
-            if total_timesteps <= min_timesteps:
-                logger.warning(
-                    "Training [%s]: total_timesteps=%s is less than or equal to 2*n_steps*n_envs=%s. This may lead to suboptimal training results for model %s",
-                    dk.pair,
-                    total_timesteps,
-                    min_timesteps,
-                    self.model_type,
-                )
-            if n_steps > 0:
-                rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
-                if aligned_total_timesteps != total_timesteps:
-                    total_timesteps = aligned_total_timesteps
-                    logger.info(
-                        "Training [%s]: aligned total %s steps (%s days) for model %s",
-                        dk.pair,
-                        total_timesteps,
-                        steps_to_days(total_timesteps, self.config.get("timeframe")),
-                        self.model_type,
-                    )
-
         if self.activate_tensorboard:
             tensorboard_log_path = Path(self.full_path / "tensorboard" / Path(dk.data_path).name)
         else:
             tensorboard_log_path = None
 
-        # Reward shaping must use the resumed policy's discount gamma,
-        # not the configured or HPO-selected value.
-        resumed_gamma: dict[str, Any] | None = None
-        if deployment_state is not None:
-            learner_gamma = getattr(deployment_state[0], "gamma", None)
-            if isinstance(learner_gamma, (int, float)) and np.isfinite(learner_gamma):
-                resumed_gamma = {"gamma": float(learner_gamma)}
-        self.set_train_and_eval_environments(
-            data_dictionary,
-            prices_train,
-            prices_test,
-            dk,
-            model_params=resumed_gamma,
-        )
-
         model = deployment_state[0] if deployment_state is not None else None
+        effective_params = dict(model_params)
         if model is not None:
-            logger.info(
-                "Training [%s]: continual training activated, starting from previously trained model state",
-                dk.pair,
-            )
-            model.tb_logger = getattr(self, "tb_logger", None)
-            model.set_env(self.train_env)
-        else:
-            model = self.MODELCLASS(
-                self.policy_type,
-                self.train_env,
-                tensorboard_log=tensorboard_log_path,
-                **model_params,
-            )
-
-        eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
-        callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
+            learner_gamma = getattr(model, "gamma", None)
+            if isinstance(learner_gamma, (int, float)) and np.isfinite(learner_gamma):
+                effective_params["gamma"] = float(learner_gamma)
+        # Preserve raw prices and the resumed learner's discount in its environments.
         try:
+            self.set_train_and_eval_environments(
+                data_dictionary,
+                prices_train,
+                prices_test,
+                dk,
+                model_params=effective_params,
+            )
+            if model is not None:
+                logger.info("Training [%s]: continuing from deployed model state", dk.pair)
+                model.tb_logger = getattr(self, "tb_logger", None)
+                model.set_env(self.train_env)
+            else:
+                model = self.MODELCLASS(
+                    self.policy_type,
+                    self.train_env,
+                    tensorboard_log=tensorboard_log_path,
+                    **model_params,
+                )
+            total_timesteps = self._align_model_budget(model, total_timesteps)
+
+            eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
+            callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
             logger.debug(
                 "Training [%s]: starting model.learn with total_timesteps=%d, eval_freq=%d",
                 dk.pair,
@@ -1390,13 +1479,25 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
             logger.debug("Training [%s]: model.learn completed", dk.pair)
+            if self.eval_env is not None and self.eval_callback is not None:
+                # Evaluate final weights before teardown; the periodic callback may not run
+                # within a single-rollout budget.
+                use_masking = self.eval_callback.use_masking
+                final_mean_reward, _ = evaluate_policy(
+                    model,
+                    self.eval_env,
+                    n_eval_episodes=self.n_eval_episodes,
+                    warn=False,
+                    use_masking=use_masking,
+                )
+                _update_eval_best_reward(self.eval_callback, float(final_mean_reward), model)
         except KeyboardInterrupt:
             pass
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
             self.close_envs()
-            if hasattr(model, "env") and model.env is not None:
+            if model is not None and hasattr(model, "env") and model.env is not None:
                 model.env.close()
         time_spent = time.time() - start_time
         self.dd.update_metric_tracker("fit_time", time_spent, dk.pair)
@@ -1407,10 +1508,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             logger.info("Model [%s]: found best model at %s", dk.pair, model_filepath)
             try:
                 best_model = self.MODELCLASS.load(model_filepath)
-                # SB3 archives exclude replay buffers; restore the final buffer so
-                # the next cached retrain keeps the experience accumulated this fit.
+                # SB3 archives exclude replay buffers; preserve experience for continuation.
                 if (
-                    hasattr(model, "replay_buffer")
+                    model is not None
+                    and hasattr(model, "replay_buffer")
                     and getattr(best_model, "replay_buffer", None) is not None
                 ):
                     best_model.replay_buffer = model.replay_buffer
@@ -1460,7 +1561,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             warmed_up = remaining <= 0
             if not warmed_up:
                 logger.warning(
-                    f"Predict [{pair}]: fit live predictions not warmed up; {remaining} produced observations until warmup completion"
+                    "Predict [%s]: fit live predictions not warmed up; "
+                    "%d more produced observations required for warmup completion",
+                    pair,
+                    remaining,
                 )
         pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
@@ -1492,6 +1596,48 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f[1],
             )
 
+    def get_state_info(self, pair: str) -> tuple[float, float, int]:
+        """Read the live market side, unlevered profit ratio and candle duration.
+
+        ``Trade.calc_profit_ratio`` includes effective leverage. Dividing by a
+        finite positive leverage matches the environment's unlevered PnL proxy.
+        """
+        market_side = 0.5
+        current_profit = 0.0
+        trade_duration = 0
+        for trade in Trade.get_trades_proxy(is_open=True):
+            if trade.pair != pair:
+                continue
+            market_side = 0 if trade.is_short else 1
+            now = datetime.now(timezone.utc).timestamp()
+            trade_duration = int((now - trade.open_date_utc.timestamp()) / self.base_tf_seconds)
+            if self.data_provider is None or self.data_provider._exchange is None:
+                logger.warning(
+                    "StateInfo [%s]: data provider or exchange unavailable; using profit=0",
+                    pair,
+                )
+                return market_side, 0.0, trade_duration
+            current_rate = self.data_provider._exchange.get_rate(
+                pair, refresh=False, side="exit", is_short=trade.is_short
+            )
+            profit_ratio = trade.calc_profit_ratio(current_rate)
+            leverage = float(trade.leverage)
+            if np.isfinite(leverage) and leverage > 0.0:
+                current_profit = profit_ratio / leverage
+            else:
+                current_profit = profit_ratio
+        return market_side, current_profit, int(trade_duration)
+
+    def predict(
+        self, unfiltered_df: DataFrame, dk: FreqaiDataKitchen, **kwargs
+    ) -> tuple[DataFrame, NDArray[np.int_]]:
+        """Feed source dates to inference; parent predict performs the filtering."""
+        dk.data_dictionary["prediction_dates"] = unfiltered_df[["date"]]
+        try:
+            return super().predict(unfiltered_df, dk, **kwargs)
+        finally:
+            dk.data_dictionary.pop("prediction_dates", None)
+
     def rl_model_predict(
         self, dataframe: DataFrame, dk: FreqaiDataKitchen, model: Any
     ) -> DataFrame:
@@ -1504,7 +1650,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         add_state_info: bool = self.rl_config.get("add_state_info", False)
         virtual_position: Positions = Positions.Neutral
         virtual_trade_duration: int = 0
-        if add_state_info and self.live:
+        if self.live and (add_state_info or (self.action_masking and self.inference_masking)):
             position, _, trade_duration = self.get_state_info(dk.pair)
             virtual_position = ReforceXY._normalize_position(position)
             virtual_trade_duration = trade_duration
@@ -1514,6 +1660,38 @@ class ReforceXY(BaseReinforcementLearningModel):
         frame_stacking: int = self.frame_stacking
         frame_stacking_enabled: bool = bool(frame_stacking) and frame_stacking > 1
         inference_masking: bool = self.action_masking and self.inference_masking
+        source_valid = np.asarray(getattr(dk, "do_predict", np.ones(n))) == 1
+        source_valid = source_valid & np.isfinite(np_dataframe).all(axis=1)
+        dk.do_predict = np.zeros(n, dtype=np.int_)
+        dates = getattr(dk, "data_dictionary", {}).get("prediction_dates")
+        dates = (
+            pd.DatetimeIndex(pd.to_datetime(dates["date"], utc=True)).as_unit("ns")
+            if dates is not None
+            else None
+        )
+        if dates is not None and len(dates) != n:
+            raise ValueError(
+                f"Predict [{dk.pair}]: prediction dates must align with feature rows: "
+                f"expected {n}, got {len(dates)}"
+            )
+        step = pd.Timedelta(seconds=self.base_tf_seconds)
+        if not hasattr(self, "_observation_cache"):
+            self._observation_cache = {}
+        cached = self._observation_cache.get(dk.pair)
+        adjacent = (
+            dates is not None
+            and len(dates) == n
+            and n == window_size
+            and cached is not None
+            and cached[0] is model
+            and dates[-1] - cached[1] == step
+        )
+        frame_validity: deque[bool] = deque(
+            cached[2] if adjacent and cached is not None else (), maxlen=max(1, frame_stacking)
+        )
+        if not adjacent:
+            self._frame_buffers.pop(dk.pair, None)
+            self._lstm_states_cache.pop(dk.pair, None)
 
         if window_size <= 0 or n < window_size:
             return DataFrame(
@@ -1543,14 +1721,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                     return current_virtual_trade_duration + 1
             return 0
 
-        frame_buffer: deque[np.float32] = deque(
+        frame_buffer: deque[NDArray[np.float32]] = deque(
             maxlen=frame_stacking if frame_stacking_enabled else None
         )
+        if self.live and frame_stacking_enabled:
+            cached_frames = self._frame_buffers.get(dk.pair)
+            if cached_frames is not None and cached_frames[0] is model and n == window_size:
+                frame_buffer = cached_frames[1]
         zero_frame: NDArray[np.float32] | None = None
         model_id = id(model)
         lstm_states_cache_valid = (
             self.live
             and self.recurrent
+            and n == window_size
             and dk.pair in self._lstm_states_cache
             and self._lstm_states_cache[dk.pair][0] == model_id
         )
@@ -1609,7 +1792,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 action_mask_position = virtual_position
 
             if frame_stacking_enabled:
-                frame_buffer.append(np_observation)
+                # Own only the retained window, not the full prediction dataframe.
+                frame_buffer.append(np_observation.copy())
                 if len(frame_buffer) < frame_stacking:
                     pad_count = frame_stacking - len(frame_buffer)
                     if zero_frame is None:
@@ -1625,6 +1809,15 @@ class ReforceXY(BaseReinforcementLearningModel):
                 observations = np_observation.reshape(
                     1, np_observation.shape[0], np_observation.shape[1]
                 )
+            if not np.isfinite(observations).all():
+                dk.do_predict[end_idx - 1] = 0
+                lstm_states = None
+                episode_start = np.array([True], dtype=bool)
+                return Actions.Neutral.value
+            if self.recurrent and dk.do_predict[end_idx - 1] != 1:
+                lstm_states = None
+                episode_start = np.array([True], dtype=bool)
+                return Actions.Neutral.value
 
             if inference_masking:
                 action_masks_param["action_masks"] = ReforceXY.get_action_masks(
@@ -1672,15 +1865,37 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         predicted_actions: list[int] = []
         for start_idx in range(0, n - window_size + 1):
+            end = start_idx + window_size
+            contiguous = dates is None or (
+                not dates[start_idx:end].hasnans
+                and (
+                    np.diff(dates[start_idx:end].to_numpy(dtype="datetime64[ns]"))
+                    == step.to_timedelta64()
+                ).all()
+            )
+            if dates is not None and start_idx > 0 and dates[end - 1] - dates[end - 2] != step:
+                frame_buffer.clear()
+                frame_validity.clear()
+                lstm_states = None
+                episode_start = np.array([True], dtype=bool)
+            valid = bool(source_valid[start_idx:end].all() and contiguous)
+            frame_validity.append(valid)
+            dk.do_predict[end - 1] = int(
+                valid and (not frame_stacking_enabled or all(frame_validity))
+            )
             action = _predict(start_idx)
             predicted_actions.append(action)
-            previous_virtual_position = virtual_position
-            virtual_position = _update_virtual_position(action, virtual_position)
-            virtual_trade_duration = _update_virtual_trade_duration(
-                virtual_position,
-                previous_virtual_position,
-                virtual_trade_duration,
-            )
+            if not self.live:
+                previous_virtual_position = virtual_position
+                prediction_index = start_idx + window_size - 1
+                do_predict = getattr(dk, "do_predict", None)
+                if do_predict is None or do_predict[prediction_index] == 1:
+                    virtual_position = _update_virtual_position(action, virtual_position)
+                virtual_trade_duration = _update_virtual_trade_duration(
+                    virtual_position,
+                    previous_virtual_position,
+                    virtual_trade_duration,
+                )
 
         pad_count = max(0, n - len(predicted_actions))
         actions_list = ([np.nan] * pad_count) + predicted_actions
@@ -1688,6 +1903,10 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         if self.live and self.recurrent:
             self._lstm_states_cache[dk.pair] = (model_id, lstm_states, episode_start)
+        if self.live and frame_stacking_enabled:
+            self._frame_buffers[dk.pair] = (model, frame_buffer)
+        if self.live and dates is not None and len(dates) == n:
+            self._observation_cache[dk.pair] = (model, dates[-1], tuple(frame_validity))
 
         return DataFrame(dict.fromkeys(dk.label_list, actions_df["action"]))
 
@@ -1944,6 +2163,18 @@ class ReforceXY(BaseReinforcementLearningModel):
         return ((value + multiple - 1) // multiple) * multiple
 
     @staticmethod
+    def _align_model_budget(model: Any, total_timesteps: int) -> int:
+        """Use the constructed algorithm's collection window, including defaults."""
+        if hasattr(model, "train_freq"):
+            frequency = model.train_freq
+            if frequency.unit.value != "step":
+                return total_timesteps
+            steps = frequency.frequency
+        else:
+            steps = model.n_steps
+        return ReforceXY._ceil_to_multiple(total_timesteps, steps * model.n_envs)
+
+    @staticmethod
     def _ppo_resources(total_timesteps: int, n_envs: int, reduction_factor: int) -> tuple[int, int]:
         min_n_steps = ReforceXY._PPO_N_STEPS_MIN
         max_n_steps = ReforceXY._PPO_N_STEPS_MAX
@@ -2000,12 +2231,16 @@ class ReforceXY(BaseReinforcementLearningModel):
             min_resource, max_resource = ReforceXY._ppo_resources(
                 total_timesteps, n_envs, reduction_factor
             )
-        else:
+        else:  # "DQN"/"QRDQN": gradient windows of train_freq * n_envs
+            window = max(ReforceXY._DQN_TRAIN_FREQS)
             min_resource = max(
                 2 * reduction_factor,
                 self.get_eval_freq(total_timesteps, hyperopt=True) * n_envs,
             )
-            max_resource = max(min_resource, total_timesteps + (n_envs - 1))
+            max_resource = max(
+                min_resource,
+                ReforceXY._ceil_to_multiple(total_timesteps, window * n_envs),
+            )
 
         direction = StudyDirection.MAXIMIZE
         load_if_exists = not continuous and not pair_purge_triggered
@@ -2138,6 +2373,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 study.best_trial.number,
                 study.best_trial.value,
             )
+        if self.model_type == ReforceXY._MODEL_TYPES[1] and self.get_model_params().get(
+            "policy_kwargs", {}
+        ).get("shared_lstm", False):
+            best_trial_params = {**best_trial_params, "enable_critic_lstm": False}
         logger.info("Hyperopt [%s]: best params: %s", study_name, best_trial_params)
 
         self.save_best_trial_params(best_trial_params, dk.pair)
@@ -2149,28 +2388,6 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def _best_trial_params_path(self, pair: str) -> Path:
         return self.full_path / f"hyperopt-best-params-{ReforceXY._sanitize_pair(pair)}.json"
-
-    def _resolve_legacy_best_trial_params(
-        self, pair: str, best_trial_params_path: Path
-    ) -> Path | None:
-        base = pair.split("/")[0]
-        legacy_path = self.full_path / f"hyperopt-best-params-{base}.json"
-        if (
-            legacy_path == best_trial_params_path
-            or legacy_path.is_symlink()
-            or not legacy_path.is_file()
-        ):
-            return None
-        base_pair_count = sum(1 for configured in self.pairs if configured.split("/")[0] == base)
-        if base_pair_count == 1:
-            return legacy_path
-        logger.warning(
-            "Hyperopt [%s]: ignoring ambiguous legacy best params at %s: "
-            "filename does not encode the complete pair identity",
-            pair,
-            legacy_path,
-        )
-        return None
 
     @staticmethod
     @contextmanager
@@ -2340,10 +2557,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         with self._locked_best_trial_params(best_trial_params_path, exclusive=False):
             self._reject_best_trial_params_symlink(best_trial_params_path)
             if not best_trial_params_path.is_file():
-                legacy_path = self._resolve_legacy_best_trial_params(pair, best_trial_params_path)
-                if legacy_path is None:
-                    return None
-                best_trial_params_path = legacy_path
+                return None
             logger.info(
                 "Hyperopt [%s]: loading best params from %s",
                 pair,
@@ -2394,7 +2608,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         env_info: dict[str, Any] | None = None,
         trial: Trial | None = None,
         model_params: dict[str, Any] | None = None,
-    ) -> tuple[VecEnv, VecEnv]:
+    ) -> tuple[VecEnv, VecEnv | None]:
         seed: int = self.get_model_params().get("seed", 42) if seed is None else seed
         if trial is not None:
             seed += trial.number
@@ -2426,31 +2640,50 @@ class ReforceXY(BaseReinforcementLearningModel):
                 prices_test,
                 env_info=env_info,
             )
-            for i in range(self.n_eval_envs)
+            for i in range(
+                self.n_eval_envs if self.data_split_parameters.get("test_size", 0.1) > 0 else 0
+            )
         ]
 
-        if self.multiprocessing and self.n_envs > 1:
-            train_env = SubprocVecEnv(train_fns, start_method="spawn")
-        else:
-            train_env = DummyVecEnv(train_fns)
-        if self.eval_multiprocessing and self.n_eval_envs > 1:
-            eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
-        else:
-            eval_env = DummyVecEnv(eval_fns)
+        train_env = eval_env = None
+        try:
+            if self.multiprocessing and self.n_envs > 1:
+                train_env = SubprocVecEnv(train_fns, start_method="spawn")
+            else:
+                train_env = _make_dummy_vec_env(train_fns)
+            eval_env = None
+            if eval_fns:
+                if self.eval_multiprocessing and self.n_eval_envs > 1:
+                    eval_env = SubprocVecEnv(eval_fns, start_method="spawn")
+                else:
+                    eval_env = _make_dummy_vec_env(eval_fns)
 
-        if bool(self.frame_stacking) and self.frame_stacking > 1:
-            train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
-            eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
+            if bool(self.frame_stacking) and self.frame_stacking > 1:
+                train_env = VecFrameStack(train_env, n_stack=self.frame_stacking)
+                if eval_env is not None:
+                    eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
 
-        train_env = VecMonitor(train_env)
-        eval_env = VecMonitor(eval_env)
+            train_env = VecMonitor(train_env)
+            if eval_env is not None:
+                eval_env = VecMonitor(eval_env)
 
-        return train_env, eval_env
+            return train_env, eval_env
+        except BaseException:
+            if train_env is not None:
+                train_env.close()
+            if eval_env is not None:
+                eval_env.close()
+            raise
 
     def get_optuna_params(self, trial: Trial) -> dict[str, Any]:
         # "RecurrentPPO"
         if ReforceXY._MODEL_TYPES[1] in self.model_type:
-            return sample_params_recurrentppo(trial)
+            return sample_params_recurrentppo(
+                trial,
+                shared_lstm=self.get_model_params()
+                .get("policy_kwargs", {})
+                .get("shared_lstm", False),
+            )
         # "PPO"
         elif ReforceXY._MODEL_TYPES[0] in self.model_type:
             return sample_params_ppo(trial)
@@ -2518,16 +2751,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         params["seed"] = params.get("seed", 42) + trial.number
         logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
 
-        # "PPO"
-        if ReforceXY._MODEL_TYPES[0] in self.model_type:
-            n_steps = params.get("n_steps", 0)
-            if n_steps > 0:
-                rollout = n_steps * self.n_envs
-                aligned_total_timesteps = ReforceXY._ceil_to_multiple(total_timesteps, rollout)
-                if aligned_total_timesteps != total_timesteps:
-                    total_timesteps = aligned_total_timesteps
-
         nan_encountered = False
+
+        # shared_lstm=True forbids a separate critic LSTM; sampling
+        # enable_critic_lstm=True would crash RecurrentPPO at construction
+        # before any pruning logic can run, so the merged trial parameters
+        # never carry the incompatible pair.
+        if (
+            ReforceXY._MODEL_TYPES[1] in self.model_type  # "RecurrentPPO"
+            and bool((params.get("policy_kwargs") or {}).get("shared_lstm", False))
+        ):
+            params.setdefault("policy_kwargs", {})["enable_critic_lstm"] = False
 
         if self.activate_tensorboard:
             tensorboard_log_path = Path(
@@ -2540,27 +2774,50 @@ class ReforceXY(BaseReinforcementLearningModel):
         else:
             tensorboard_log_path = None
 
-        train_env, eval_env = self._get_train_and_eval_environments(
-            dk,
-            train_df=dk.data_dictionary["train_features"],
-            test_df=dk.data_dictionary["test_features"],
-            prices_train=prices_train,
-            prices_test=prices_test,
-            trial=trial,
-            model_params=params,
-        )
-
-        model = self.MODELCLASS(
-            self.policy_type,
-            train_env,
-            tensorboard_log=tensorboard_log_path,
-            **params,
-        )
-
-        eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
-        callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
+        train_env = eval_env = model = None
         try:
+            train_env, eval_env = self._get_train_and_eval_environments(
+                dk,
+                train_df=dk.data_dictionary["train_features"],
+                test_df=dk.data_dictionary["test_features"],
+                prices_train=prices_train,
+                prices_test=prices_test,
+                trial=trial,
+                model_params=params,
+            )
+
+            model = self.MODELCLASS(
+                self.policy_type,
+                train_env,
+                tensorboard_log=tensorboard_log_path,
+                **params,
+            )
+            total_timesteps = self._align_model_budget(model, total_timesteps)
+            off_policy = hasattr(model, "replay_buffer")
+            if off_policy and model.learning_starts >= total_timesteps:
+                raise TrialPruned(
+                    f"Hyperopt [{study_name}]: learning_starts={model.learning_starts} "
+                    f"leaves no update within total_timesteps={total_timesteps}"
+                )
+            initial_updates = getattr(model, "_n_updates", 0)
+
+            eval_freq = self.get_eval_freq(total_timesteps, hyperopt=True, model_params=params)
+            callbacks = self.get_callbacks(eval_env, eval_freq, str(dk.data_path), trial)
             model.learn(total_timesteps=total_timesteps, callback=callbacks)
+            if off_policy and model._n_updates <= initial_updates:
+                raise TrialPruned(f"Hyperopt [{study_name}]: trial completed without learning")
+            if not self.optuna_eval_callback.is_pruned and eval_env is not None:
+                # Evaluate final weights before teardown; the periodic callback may not run
+                # within a single-rollout budget.
+                use_masking = self.optuna_eval_callback.use_masking
+                final_mean_reward, _ = evaluate_policy(
+                    model,
+                    eval_env,
+                    n_eval_episodes=self.n_eval_episodes,
+                    warn=False,
+                    use_masking=use_masking,
+                )
+                self.optuna_eval_callback.update_best_reward(float(final_mean_reward), model)
         except AssertionError as e:
             logger.warning(
                 "Hyperopt [%s]: trial #%d encountered NaN (AssertionError): %r",
@@ -2606,11 +2863,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
-            train_env.close()
-            eval_env.close()
-            if hasattr(model, "env") and model.env is not None:
-                model.env.close()
-            del model, train_env, eval_env
+            if train_env is not None:
+                train_env.close()
+            if eval_env is not None:
+                eval_env.close()
 
         if nan_encountered:
             raise TrialPruned(f"Hyperopt [{study_name}]: NaN encountered during training")
@@ -2634,6 +2890,19 @@ class ReforceXY(BaseReinforcementLearningModel):
                 self.eval_env.close()
             finally:
                 self.eval_env = None
+
+
+def _make_dummy_vec_env(env_fns: list[Callable[[], BaseEnvironment]]) -> DummyVecEnv:
+    """Release already-created environments if a later factory or wrapper fails."""
+    environments = []
+    try:
+        for factory in env_fns:
+            environments.append(factory())
+        return DummyVecEnv([lambda env=env: env for env in environments])
+    except BaseException:
+        for environment in environments:
+            environment.close()
+        raise
 
 
 def make_env(
@@ -2677,7 +2946,6 @@ class MyRLEnv(Base5ActionRLEnv):
         self.action_masking: bool = self.rl_config.get("action_masking", False)
 
         # === INTERNAL STATE ===
-        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit: float = -np.inf
         self._min_unrealized_profit: float = np.inf
@@ -2847,12 +3115,10 @@ class MyRLEnv(Base5ActionRLEnv):
         if MyRLEnv.is_unsupported_pbrs_config(
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
-            logger.warning(
-                "PBRS [%s]: hold_potential_enabled=True requires add_state_info=True, enabling",
-                self.id,
+            raise ValueError(
+                f"PBRS [{self.id}]: hold_potential_enabled=True requires add_state_info=True "
+                "before environment construction"
             )
-            self.add_state_info = True
-            self._set_observation_space()
 
         # === PNL TARGET ===
         self._pnl_target = float(self.profit_aim * self.rr)
@@ -2866,90 +3132,6 @@ class MyRLEnv(Base5ActionRLEnv):
                 self.rr,
             )
             self._pnl_target = 0.01
-
-    def _get_next_position(self, action: int) -> Positions:
-        if action == Actions.Long_enter.value and self._position == Positions.Neutral:
-            return Positions.Long
-        if (
-            action == Actions.Short_enter.value
-            and self._position == Positions.Neutral
-            and self.can_short
-        ):
-            return Positions.Short
-        if action == Actions.Long_exit.value and self._position == Positions.Long:
-            return Positions.Neutral
-        if action == Actions.Short_exit.value and self._position == Positions.Short:
-            return Positions.Neutral
-        return self._position
-
-    def _get_entry_unrealized_profit(self, next_position: Positions) -> float:
-        current_open = self.prices.iloc[self._current_tick].open
-        if not isinstance(current_open, (int, float, np.floating)) or not np.isfinite(current_open):
-            return 0.0
-
-        next_pnl = 0.0
-        if next_position == Positions.Long:
-            current_price = self.add_exit_fee(current_open)
-            last_trade_price = self.add_entry_fee(current_open)
-            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
-                next_pnl = (current_price - last_trade_price) / last_trade_price
-        elif next_position == Positions.Short:
-            current_price = self.add_entry_fee(current_open)
-            last_trade_price = self.add_exit_fee(current_open)
-            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
-                next_pnl = (last_trade_price - current_price) / last_trade_price
-
-        if not np.isfinite(next_pnl):
-            return 0.0
-        return float(next_pnl)
-
-    def _get_next_transition_state(
-        self,
-        action: int,
-        trade_duration: float,
-        current_pnl: float,
-    ) -> tuple[Positions, int, float]:
-        """Compute next transition state tuple (next_position, next_duration, next_pnl).
-
-        Parameters
-        ----------
-        action : int
-            Action taken by the agent.
-        trade_duration : float
-            Trade duration at current tick.
-        current_pnl : float
-            Unrealized PnL at current tick.
-
-        Returns
-        -------
-        tuple[Positions, int, float]
-            (next_position, next_trade_duration, next_pnl) for the transition s -> s'.
-        """
-        next_position = self._get_next_position(action)
-
-        # Entry: Neutral -> Long/Short
-        if self._position == Positions.Neutral and next_position in (
-            Positions.Long,
-            Positions.Short,
-        ):
-            return next_position, 0, self._get_entry_unrealized_profit(next_position)
-
-        # Exit: Long/Short -> Neutral
-        if (
-            self._position in (Positions.Long, Positions.Short)
-            and next_position == Positions.Neutral
-        ):
-            return next_position, 0, 0.0
-
-        # Hold: Long/Short -> Long/Short
-        if self._position in (Positions.Long, Positions.Short) and next_position in (
-            Positions.Long,
-            Positions.Short,
-        ):
-            return next_position, int(trade_duration), current_pnl
-
-        # Neutral self-loop
-        return next_position, 0, 0.0
 
     @staticmethod
     def _loss_duration_multiplier(pnl_ratio: float, risk_reward_ratio: float) -> float:
@@ -3117,7 +3299,7 @@ class MyRLEnv(Base5ActionRLEnv):
             except OverflowError:
                 return 1.0 if x > 0 else -1.0
 
-        if name == ReforceXY._TRANSFORM_FUNCTIONS[4]:  # "asinh"
+        if name == ReforceXY._TRANSFORM_FUNCTIONS[4]:  # "softsign_sqrt"
             return x / math.hypot(1.0, x)
 
         if name == ReforceXY._TRANSFORM_FUNCTIONS[5]:  # "clip"
@@ -3196,7 +3378,11 @@ class MyRLEnv(Base5ActionRLEnv):
     def _compute_pbrs_components(
         self,
         *,
-        action: int,
+        previous_position: Positions,
+        next_position: Positions,
+        next_trade_duration: float,
+        next_pnl: float,
+        entry_pnl: float,
         trade_duration: float,
         max_trade_duration: float,
         current_pnl: float,
@@ -3205,186 +3391,27 @@ class MyRLEnv(Base5ActionRLEnv):
         entry_additive_scale: float,
         exit_additive_scale: float,
     ) -> tuple[float, float, float]:
-        """Compute potential-based reward shaping (PBRS) components.
+        """Compute PBRS and optional additive components for one transition.
 
-        This method computes the PBRS shaping terms.
+        ``previous_position`` and ``next_position`` identify entry, hold, exit,
+        or neutral self-loop transitions. ``next_pnl`` and
+        ``next_trade_duration`` describe the returned observation s', while
+        ``current_pnl`` and ``trade_duration`` describe s at the fill.
+        ``entry_pnl`` is the fee-aware PnL provisioned on an entry fill.
 
-        Canonical PBRS Formula
-        ----------------------
-        R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
-
-        Non-Canonical PBRS Formula
-        --------------------------
-        R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-        where:
-            Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
-
-        Notation
-        --------
-        **States & Actions:**
-            s     : current state
-            s'    : next state
-            a     : action
-
-        **Reward Components:**
-            R(s,a,s')     : base reward
-            R'(s,a,s')    : shaped reward
-            Δ(s,a,s')     : PBRS shaping term = γ·Φ(s') - Φ(s)
-
-        **Potential Function:**
-            Φ(s)          : potential at state s
-            γ             : discount factor for shaping (gamma)
-
-        **State Variables:**
-            r_pnl         : pnl / pnl_target (PnL ratio)
-            r_dur         : duration / max_duration (duration ratio, max 0)
-            scale         : scale parameter
-            g             : gain parameter
-            T_x           : transform function (tanh, softsign, etc.)
-
-        **Hold Potential Formula:**
-            m_dur = 1.0 if r_pnl >= 0 else loss_duration_multiplier(r_pnl, rr)
-            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
-
-        PBRS Theory & Compliance
-        ------------------------
-        - Ng et al. 1999: potential-based shaping preserves optimal policy
-        - Wiewiora et al. 2003: terminal states must have Φ(terminal) = 0
-        - Invariance holds ONLY in canonical mode with additives disabled
-        - Theorem: Canonical + no additives ⇒ Σ_t γ^t·Δ_t = 0 over episodes
-
-        Architecture & Transitions
-        --------------------------
-        **Three mutually exclusive transition types:**
-
-        1. **Entry** (Neutral → Long/Short):
-           - Φ(s) = 0 (neutral state has no potential)
-           - Φ(s') = hold_potential(s')
-           - Δ(s,a,s') = γ·Φ(s') - 0 = γ·Φ(s')
-           - Optional entry additive (breaks invariance)
-
-        2. **Hold** (Long/Short → Long/Short):
-           - Φ(s) = hold_potential(s)
-           - Φ(s') = hold_potential(s')
-           - Δ(s,a,s') = γ·Φ(s') - Φ(s)
-           - Φ(s') reflects updated PnL and duration
-
-        3. **Exit** (Long/Short → Neutral):
-           - Φ(s) = hold_potential(s)
-           - Φ(s') depends on exit_potential_mode:
-             * **canonical**: Φ(s') = 0 → Δ = -Φ(s)
-             * **heuristic**: Φ(s') = f(Φ(s)) → Δ = γ·Φ(s') - Φ(s)
-           - Optional exit additive (breaks invariance)
-
-        Exit Potential Modes
-        --------------------
-        **canonical** (PBRS-compliant):
-            Φ(s') = 0
-            Δ = γ·0 - Φ(s) = -Φ(s)
-            Additives disabled automatically
-
-        **non_canonical**:
-            Φ(s') = 0
-            Δ = -Φ(s)
-            Additives allowed (breaks invariance)
-
-        **progressive_release** (heuristic):
-            Φ(s') = Φ(s)·(1 - d)  where d = decay_factor
-            Δ = γ·Φ(s)·(1-d) - Φ(s)
-
-        **spike_cancel** (heuristic):
-            Φ(s') = Φ(s)/γ
-            Δ = γ·(Φ(s)/γ) - Φ(s) = 0
-
-        **retain_previous** (heuristic):
-            Φ(s') = Φ(s)
-            Δ = γ·Φ(s) - Φ(s) = (γ-1)·Φ(s)
-
-        Additive Terms (Non-PBRS)
-        --------------------------
-        Entry and exit additives are **optional bonuses** that break PBRS invariance:
-        - Entry additive: applied on Neutral→Long/Short transitions
-        - Exit additive: applied on Long/Short→Neutral transitions
-        - These do NOT persist in Φ(s) storage
-
-        Invariance & Validation
-        -----------------------
-        **Theoretical Guarantee:**
-            Canonical + no additives ⇒ Σ_t γ^t·Δ_t = 0
-            (Φ(start) = Φ(end) = 0)
-
-        **Deviations from Theory:**
-            - Heuristic exit modes violate invariance
-            - Entry/exit additives break policy invariance
-            - Non-canonical modes introduce path dependence
-
-        **Robustness:**
-            - All transforms bounded: |T_x| ≤ 1
-            - Validation: |Φ(s)| ≤ scale
-            - Bounds: |Δ(s,a,s')| ≤ (1+γ)·scale
-            - Terminal enforcement: Φ(s) = 0 when terminated
-
-        Implementation Details
-        ----------------------
-        This method wraps the core PBRS logic for use in the RL environment:
-        - Reads Φ(s) from self._last_potential (previous state potential)
-        - Reads γ from self._potential_gamma
-        - Reads configuration from self._exit_potential_mode, self._entry_additive_enabled, etc.
-        - Computes next_position, next_duration_ratio, is_entry, is_exit internally
-        - Stores Φ(s') to self._last_potential for next step
-        - Updates diagnostic accumulators (_total_reward_shaping, _total_entry_additive, etc.)
-
-        Parameters
-        ----------
-        action : int
-            Action taken: determines transition type (entry/hold/exit)
-        trade_duration : float
-            Trade duration at current tick.
-            This is the duration for state s'.
-        max_trade_duration : float
-            Maximum allowed trade duration (for normalization)
-        current_pnl : float
-            Unrealized PnL at current tick.
-            This is the PnL for state s'.
-        pnl_target : float
-            Target PnL for ratio normalization: r_pnl = pnl / pnl_target
-        hold_potential_scale : float
-            Magnitude scale for hold potential (= hold_potential_ratio * base_factor)
-        entry_additive_scale : float
-            Magnitude scale for entry additive (= entry_additive_ratio * base_factor)
-        exit_additive_scale : float
-            Magnitude scale for exit additive (= exit_additive_ratio * base_factor)
+        The shaping component is Δ = γ·Φ(s') - Φ(s). In canonical mode,
+        ``step()`` enforces a zero terminal potential. Therefore an observed
+        trajectory satisfies Σ γ^t·Δ_t = -Φ(s_0) + γ^T·Φ(s_T), which is zero
+        only when both boundary potentials are zero. Entry and exit additives
+        are returned separately and are not PBRS terms.
 
         Returns
         -------
         tuple[float, float, float]
-            (reward_shaping, entry_additive, exit_additive)
-
-            - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
-            - entry_additive: optional non-PBRS entry bonus (0.0 if disabled or not entry)
-            - exit_additive: optional non-PBRS exit bonus (0.0 if disabled or not exit)
-
-        Notes
-        -----
-        **State Management:**
-        - Current Φ(s): read from self._last_potential
-        - Next Φ(s'): computed and stored to self._last_potential
-        - Transition type: inferred from self._position and action
-
-        **Configuration Sources:**
-        - γ: self._potential_gamma
-        - Exit mode: self._exit_potential_mode
-        - Additives: self._entry_additive_enabled, self._exit_additive_enabled
-        - Transforms: self._hold_potential_transform_pnl, etc.
-
-        **Recommendations:**
-        - Use canonical mode for policy-invariant shaping
-        - Monitor Σ_t γ^t·Δ_t ≈ 0 per episode in canonical mode
-        - Disable additives to preserve theoretical PBRS guarantees
+            ``(reward_shaping, entry_additive, exit_additive)``.
         """
-        prev_potential = float(self._last_potential)
 
+        prev_potential = float(self._last_potential)
         if not self._hold_potential_enabled and not (
             self._entry_additive_enabled or self._exit_additive_enabled
         ):
@@ -3396,23 +3423,20 @@ class MyRLEnv(Base5ActionRLEnv):
             self._last_reward_shaping = 0.0
             return 0.0, 0.0, 0.0
 
-        next_position, next_trade_duration, next_pnl = self._get_next_transition_state(
-            action=action, trade_duration=trade_duration, current_pnl=current_pnl
-        )
         if max_trade_duration <= 0:
             next_duration_ratio = 0.0
         else:
             next_duration_ratio = next_trade_duration / max_trade_duration
 
-        is_entry = self._position == Positions.Neutral and next_position in (
+        is_entry = previous_position == Positions.Neutral and next_position in (
             Positions.Long,
             Positions.Short,
         )
         is_exit = (
-            self._position in (Positions.Long, Positions.Short)
+            previous_position in (Positions.Long, Positions.Short)
             and next_position == Positions.Neutral
         )
-        is_hold = self._position in (
+        is_hold = previous_position in (
             Positions.Long,
             Positions.Short,
         ) and next_position in (Positions.Long, Positions.Short)
@@ -3440,9 +3464,9 @@ class MyRLEnv(Base5ActionRLEnv):
 
             if is_entry and self._entry_additive_enabled and not self.is_pbrs_invariant_mode():
                 entry_additive = self._compute_entry_additive(
-                    next_pnl,
+                    entry_pnl,
                     pnl_target,
-                    next_duration_ratio,
+                    0.0,
                     entry_additive_scale,
                 )
                 self._total_entry_additive += float(entry_additive)
@@ -3519,7 +3543,6 @@ class MyRLEnv(Base5ActionRLEnv):
         Reset is called at the beginning of every episode
         """
         observation, history = super().reset(seed, **kwargs)
-        self._last_closed_position: Positions | None = None
         self._last_closed_trade_tick: int = 0
         self._max_unrealized_profit = -np.inf
         self._min_unrealized_profit = np.inf
@@ -3545,14 +3568,14 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """
         Calculate time-based attenuation coefficient using configurable strategy
-        (legacy/sqrt/linear/power/half_life). Optionally apply plateau grace period.
+        (sqrt/linear/power/half_life). Optionally apply plateau grace period.
         """
         if duration_ratio < 0.0:
             duration_ratio = 0.0
 
         exit_attenuation_mode = str(
             model_reward_parameters.get(
-                "exit_attenuation_mode", ReforceXY._EXIT_ATTENUATION_MODES[2]
+                "exit_attenuation_mode", ReforceXY._EXIT_ATTENUATION_MODES[1]
             )  # "linear"
         )
         exit_plateau = bool(
@@ -3568,9 +3591,6 @@ class MyRLEnv(Base5ActionRLEnv):
                 exit_plateau_grace,
             )
             exit_plateau_grace = 0.0
-
-        def _legacy(dr: float, p: Mapping[str, Any]) -> float:
-            return 1.5 if dr <= 1.0 else 0.5
 
         def _sqrt(dr: float, p: Mapping[str, Any]) -> float:
             return 1.0 / math.sqrt(1.0 + dr)
@@ -3602,11 +3622,10 @@ class MyRLEnv(Base5ActionRLEnv):
             return math.pow(2.0, -dr / hl)
 
         strategies: dict[str, Callable[[float, Mapping[str, Any]], float]] = {
-            ReforceXY._EXIT_ATTENUATION_MODES[0]: _legacy,
-            ReforceXY._EXIT_ATTENUATION_MODES[1]: _sqrt,
-            ReforceXY._EXIT_ATTENUATION_MODES[2]: _linear,
-            ReforceXY._EXIT_ATTENUATION_MODES[3]: _power,
-            ReforceXY._EXIT_ATTENUATION_MODES[4]: _half_life,
+            ReforceXY._EXIT_ATTENUATION_MODES[0]: _sqrt,
+            ReforceXY._EXIT_ATTENUATION_MODES[1]: _linear,
+            ReforceXY._EXIT_ATTENUATION_MODES[2]: _power,
+            ReforceXY._EXIT_ATTENUATION_MODES[3]: _half_life,
         }
 
         if exit_plateau:
@@ -3623,7 +3642,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 "PBRS [%s]: exit_attenuation_mode=%r invalid; defaulting to %r. Valid: %s",
                 self.id,
                 exit_attenuation_mode,
-                ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
+                ReforceXY._EXIT_ATTENUATION_MODES[1],  # "linear"
                 ", ".join(ReforceXY._EXIT_ATTENUATION_MODES),
             )
             strategy_fn = _linear
@@ -3636,7 +3655,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 self.id,
                 exit_attenuation_mode,
                 e,
-                ReforceXY._EXIT_ATTENUATION_MODES[2],  # "linear"
+                ReforceXY._EXIT_ATTENUATION_MODES[1],  # "linear"
                 effective_dr,
                 exc_info=True,
             )
@@ -3730,22 +3749,22 @@ class MyRLEnv(Base5ActionRLEnv):
                 )
             )
             pnl_ratio = pnl / pnl_target
-
-            if abs(pnl_ratio) > 1.0:
-                base_pnl_target_coefficient = math.tanh(
-                    pnl_amplification_sensitivity * (abs(pnl_ratio) - 1.0)
+            win_reward_factor = float(
+                model_reward_parameters.get(
+                    "win_reward_factor", ReforceXY.DEFAULT_WIN_REWARD_FACTOR
                 )
-                win_reward_factor = float(
-                    model_reward_parameters.get(
-                        "win_reward_factor", ReforceXY.DEFAULT_WIN_REWARD_FACTOR
-                    )
-                )
+            )
 
-                if pnl_ratio > 1.0:
-                    pnl_target_coefficient = 1.0 + win_reward_factor * base_pnl_target_coefficient
-                elif pnl_ratio < -(1.0 / self.rr):
+            if pnl_ratio > 1.0:
+                gain_coefficient = math.tanh(pnl_amplification_sensitivity * (pnl_ratio - 1.0))
+                pnl_target_coefficient = 1.0 + win_reward_factor * gain_coefficient
+            else:
+                loss_threshold = pnl_target / self.rr
+                if pnl < -loss_threshold:
+                    loss_ratio = (-pnl) / loss_threshold
+                    loss_coefficient = math.tanh(pnl_amplification_sensitivity * (loss_ratio - 1.0))
                     loss_penalty_factor = win_reward_factor * self.rr
-                    pnl_target_coefficient = 1.0 + loss_penalty_factor * base_pnl_target_coefficient
+                    pnl_target_coefficient = 1.0 + loss_penalty_factor * loss_coefficient
 
         return pnl_target_coefficient
 
@@ -3754,6 +3773,9 @@ class MyRLEnv(Base5ActionRLEnv):
     ) -> float:
         """
         Compute exit efficiency coefficient (typically 0.5-1.5) based on exit timing quality.
+
+        The coefficient is clamped to be nonnegative so an aggressive weight or
+        center can never flip the sign of a losing exit's penalty.
         """
         efficiency_weight = float(
             model_reward_parameters.get("efficiency_weight", ReforceXY.DEFAULT_EFFICIENCY_WEIGHT)
@@ -3782,41 +3804,21 @@ class MyRLEnv(Base5ActionRLEnv):
                     efficiency_coefficient = 1.0 + efficiency_weight * (
                         efficiency_center - efficiency_ratio
                     )
+        if efficiency_coefficient < 0.0:
+            logger.warning(
+                "PBRS [%s]: efficiency_coefficient=%.5f < 0; clamping to 0",
+                self.id,
+                efficiency_coefficient,
+            )
+            efficiency_coefficient = 0.0
 
         return efficiency_coefficient
 
     def calculate_reward(self, action: int) -> float:
-        """Compute per-step reward and apply potential-based reward shaping (PBRS).
+        """Compute base reward at the current action's execution price.
 
-        Reward Pipeline:
-            1. Invalid action penalty
-            2. Idle penalty
-            3. Hold overtime penalty
-            4. Exit reward
-            5. Default fallback (0.0 if no specific reward)
-            6. PBRS computation and application: R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-        The final shaped reward is what the RL agent receives for learning.
-        In canonical PBRS mode, the learned policy is theoretically equivalent
-        to training on base rewards only (policy invariance).
-
-        Parameters
-        ----------
-        action : int
-            Action index taken by the agent
-
-        Returns
-        -------
-        float
-            Shaped reward R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-            Implementation: base_reward + reward_shaping + entry_additive + exit_additive
-
-            where:
-            - R(s,a,s') / base_reward: Base reward (invalid/idle/hold penalty or exit reward)
-            - Δ(s,a,s') / reward_shaping: PBRS delta term = γ·Φ(s') - Φ(s)
-            - entry_additive: Optional entry bonus (breaks PBRS invariance)
-            - exit_additive: Optional exit bonus (breaks PBRS invariance)
+        Shaping is applied by step after execution and advancement, when the
+        actual next observation's position, duration and PnL are available.
         """
         model_reward_parameters = self.rl_config.get("model_reward_parameters", {})
         base_reward: float | None = None
@@ -3916,26 +3918,10 @@ class MyRLEnv(Base5ActionRLEnv):
         if base_reward is None:
             base_reward = 0.0
 
-        # 6. Potential-based reward shaping
-        hold_potential_scale = self._hold_potential_ratio * base_factor
-        entry_additive_scale = self._entry_additive_ratio * base_factor
-        exit_additive_scale = self._exit_additive_ratio * base_factor
-
-        reward_shaping, entry_additive, exit_additive = self._compute_pbrs_components(
-            action=action,
-            trade_duration=trade_duration,
-            max_trade_duration=max_trade_duration,
-            current_pnl=pnl,
-            pnl_target=self._pnl_target,
-            hold_potential_scale=hold_potential_scale,
-            entry_additive_scale=entry_additive_scale,
-            exit_additive_scale=exit_additive_scale,
-        )
-
-        return base_reward + reward_shaping + entry_additive + exit_additive
+        return base_reward
 
     def _get_observation(self) -> NDArray[np.float32]:
-        start_idx = max(self._start_tick, self._current_tick - self.window_size)
+        start_idx = max(0, self._current_tick - self.window_size)
         end_idx = min(self._current_tick, len(self.signal_features))
         features_window = self.signal_features.iloc[start_idx:end_idx]
         features_window_array = features_window.to_numpy(dtype=np.float32, copy=False)
@@ -3980,7 +3966,6 @@ class MyRLEnv(Base5ActionRLEnv):
 
     def _exit_trade(self) -> None:
         self._update_total_profit()
-        self._last_closed_position = self._position
         self._position = Positions.Neutral
         self._last_trade_tick = None
         self._last_closed_trade_tick = self._current_tick
@@ -4001,8 +3986,9 @@ class MyRLEnv(Base5ActionRLEnv):
 
         # Exit trade based on action
         if action in (Actions.Long_exit.value, Actions.Short_exit.value):
+            closed_position = self._position
             self._exit_trade()
-            return f"{self._last_closed_position.name}_exit"
+            return f"{closed_position.name}_exit"
 
         return None
 
@@ -4040,14 +4026,21 @@ class MyRLEnv(Base5ActionRLEnv):
         """
         Take a step in the environment based on the provided action
         """
-        self._current_tick += 1
-        self._update_unrealized_total_profit()
+        previous_equity = self._get_portfolio_equity(self.get_unrealized_profit())
+        previous_position = self._position
+        pre_trade_duration = self.get_trade_duration()
         pre_pnl = self.get_unrealized_profit()
-        self._update_portfolio_log_returns()
+        execution_tick = self._current_tick
+        exit_pnl = None
         reward = self.calculate_reward(action)
         trade_type = self.execute_trade(action)
+        entry_pnl = self.get_unrealized_profit() if previous_position == Positions.Neutral else 0.0
         if trade_type is not None:
-            self.append_trade_history(trade_type, self.current_price(), pre_pnl)
+            self.append_trade_history(
+                trade_type, self.current_price(), pre_pnl, execution_tick=execution_tick
+            )
+            if self._position == Positions.Neutral:
+                exit_pnl = pre_pnl
         elif action != Actions.Neutral.value:
             logger.warning(
                 "Env [%s]: invalid action=%s (%d) in position=%s at tick=%d",
@@ -4057,13 +4050,71 @@ class MyRLEnv(Base5ActionRLEnv):
                 self._position.name,
                 self._current_tick,
             )
-        self._position_history.append(self._position)
+        self._current_tick += 1
+        self._update_unrealized_total_profit()
+        base_factor = float(
+            self.rl_config.get("model_reward_parameters", {}).get(
+                "base_factor", ReforceXY.DEFAULT_BASE_FACTOR
+            )
+        )
+        shaping, entry_additive, exit_additive = self._compute_pbrs_components(
+            previous_position=previous_position,
+            next_position=self._position,
+            next_trade_duration=self.get_trade_duration(),
+            next_pnl=self.get_unrealized_profit(),
+            entry_pnl=entry_pnl,
+            trade_duration=pre_trade_duration,
+            max_trade_duration=max(1, self.max_trade_duration_candles),
+            current_pnl=pre_pnl,
+            pnl_target=self._pnl_target,
+            hold_potential_scale=self._hold_potential_ratio * base_factor,
+            entry_additive_scale=self._entry_additive_ratio * base_factor,
+            exit_additive_scale=self._exit_additive_ratio * base_factor,
+        )
+        reward += shaping + entry_additive + exit_additive
         terminated = self.is_terminated()
+        terminal_liquidation = terminated and self._position in (Positions.Long, Positions.Short)
+        if terminal_liquidation:
+            terminal_pnl = self.get_unrealized_profit()
+            terminal_duration_ratio = self.get_trade_duration() / max(
+                1, self.max_trade_duration_candles
+            )
+            self._update_max_unrealized_profit(terminal_pnl)
+            self._update_min_unrealized_profit(terminal_pnl)
+            liquidation_reward = terminal_pnl * self._get_exit_factor(
+                base_factor,
+                terminal_pnl,
+                terminal_duration_ratio,
+                self.rl_config.get("model_reward_parameters", {}),
+            )
+            reward += liquidation_reward
+            self._last_exit_reward += liquidation_reward
+            if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
+                liquidation_additive = self._compute_exit_additive(
+                    terminal_pnl,
+                    self._pnl_target,
+                    terminal_duration_ratio,
+                    self._exit_additive_ratio * base_factor,
+                )
+                reward += liquidation_additive
+                self._last_exit_additive += liquidation_additive
+                self._total_exit_additive += liquidation_additive
+            exit_pnl = terminal_pnl
+            closed_position = self._position
+            self._exit_trade()
+            self.append_trade_history(
+                f"{closed_position.name}_exit",
+                self.current_price(),
+                terminal_pnl,
+                execution_tick=execution_tick,
+            )
         if terminated:
             reward = self._apply_terminal_pbrs_correction(reward)
             self._last_potential = 0.0
+        self._position_history.append(self._position)
         self.total_reward += reward
         pnl = self.get_unrealized_profit()
+        self._update_portfolio_log_returns(previous_equity, self._get_portfolio_equity(pnl))
         self._update_max_unrealized_profit(pnl)
         self._update_min_unrealized_profit(pnl)
         delta_pnl = pnl - pre_pnl
@@ -4072,6 +4123,9 @@ class MyRLEnv(Base5ActionRLEnv):
         trade_duration = self.get_trade_duration()
         info = {
             "tick": self._current_tick,
+            "execution_tick": execution_tick,
+            "terminal_liquidation": bool(terminal_liquidation),
+            "exit_pnl": exit_pnl,
             "position": float(self._position.value),
             "action": action,
             "pre_pnl": round(pre_pnl, 5),
@@ -4082,11 +4136,11 @@ class MyRLEnv(Base5ActionRLEnv):
             "most_recent_return": round(self.get_most_recent_return(), 5),
             "most_recent_profit": round(self.get_most_recent_profit(), 5),
             "total_profit": round(self._total_profit, 5),
-            "prev_potential": round(self._last_prev_potential, 5),
-            "next_potential": round(self._last_next_potential, 5),
+            "prev_potential": self._last_prev_potential,
+            "next_potential": self._last_next_potential,
             "reward_entry_additive": round(self._last_entry_additive, 5),
             "reward_exit_additive": round(self._last_exit_additive, 5),
-            "reward_shaping": round(self._last_reward_shaping, 5),
+            "reward_shaping": self._last_reward_shaping,
             "total_reward_shaping": round(self._total_reward_shaping, 5),
             "reward_invalid": round(self._last_invalid_penalty, 5),
             "reward_idle": round(self._last_idle_penalty, 5),
@@ -4110,10 +4164,12 @@ class MyRLEnv(Base5ActionRLEnv):
             info,
         )
 
-    def append_trade_history(self, trade_type: str, price: float, profit: float) -> None:
+    def append_trade_history(
+        self, trade_type: str, price: float, profit: float, *, execution_tick: int
+    ) -> None:
         self.trade_history.append(
             {
-                "tick": self._current_tick,
+                "tick": execution_tick,
                 "type": trade_type.lower(),
                 "price": price,
                 "profit": profit,
@@ -4121,7 +4177,7 @@ class MyRLEnv(Base5ActionRLEnv):
         )
 
     def is_terminated(self) -> bool:
-        return (
+        return bool(
             self._current_tick == self._end_tick
             or self._total_profit < self.max_drawdown
             or self._total_unrealized_profit < self.max_drawdown
@@ -4224,129 +4280,51 @@ class MyRLEnv(Base5ActionRLEnv):
         ):
             self._min_unrealized_profit = pnl
 
+    def _get_portfolio_equity(self, pnl: float) -> float:
+        """Mark equity to liquidation using the upstream fee and staking conventions."""
+        if self.compound_trades:
+            return self._total_profit * (1.0 + pnl)
+        return self._total_profit + pnl
+
     def get_most_recent_return(self) -> float:
+        """Return the stored log equity change for the last completed transition."""
+        return float(self.portfolio_log_returns[self._current_tick])
+
+    def _update_portfolio_log_returns(self, previous_equity: float, current_equity: float) -> None:
+        """Record log(E_after / E_before), provisioning round-trip fees at entry.
+
+        Equity includes unrealized liquidation PnL while a position is open and
+        realized capital after exit. This accounts for the final price move
+        without charging liquidation fees twice. Non-positive or non-finite
+        equity has no finite log return and is reported as NaN, not zero.
         """
-        Calculate tick-to-tick log-return for the current position.
-
-        Entry fees are applied on position transitions only (Neutral/opposite → current).
-
-        Returns
-        -------
-        float
-            Log-return: ln(current/previous)
-            - Long: positive when price rises
-            - Short: positive when price falls
-            - 0.0 if no trade, neutral position, or invalid prices
-        """
-        if self._last_trade_tick is None:
-            return 0.0
-        if self._position == Positions.Neutral:
-            return 0.0
-
-        elif self._position == Positions.Long:
-            current_price = self.current_price()
-            previous_price = self.previous_price()
-            previous_tick = self.previous_tick()
-            if (
-                self._position_history[previous_tick] == Positions.Short
-                or self._position_history[previous_tick] == Positions.Neutral
-            ):
-                previous_price = self.add_entry_fee(previous_price)
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return np.log(current_price) - np.log(previous_price)
-
-        elif self._position == Positions.Short:
-            current_price = self.current_price()
-            previous_price = self.previous_price()
-            previous_tick = self.previous_tick()
-            if (
-                self._position_history[previous_tick] == Positions.Long
-                or self._position_history[previous_tick] == Positions.Neutral
-            ):
-                previous_price = self.add_exit_fee(previous_price)
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return np.log(previous_price) - np.log(current_price)
-
-        return 0.0
-
-    def _update_portfolio_log_returns(self):
-        self.portfolio_log_returns[self._current_tick] = self.get_most_recent_return()
+        if (
+            not np.isfinite(previous_equity)
+            or not np.isfinite(current_equity)
+            or previous_equity <= 0.0
+            or current_equity <= 0.0
+        ):
+            value = np.nan
+            logger.warning(
+                "Env [%s]: undefined portfolio log return at tick=%d: equity %s -> %s",
+                self.id,
+                self._current_tick,
+                previous_equity,
+                current_equity,
+            )
+        else:
+            value = math.log(current_equity) - math.log(previous_equity)
+        self.portfolio_log_returns[self._current_tick] = value
 
     def get_most_recent_profit(self) -> float:
-        """
-        Calculate tick-to-tick unrealized profit ratio with fees.
-
-        Returns simple return: (current - previous) / previous
-        Entry/exit fees are always applied to simulate closing the position.
-
-        Returns
-        -------
-        float
-            Profit ratio (not log-return)
-            - Long: (current_with_exit_fee - previous_with_entry_fee) / previous
-            - Short: (previous_with_exit_fee - current_with_entry_fee) / previous
-            - 0.0 if no trade, neutral position, or invalid prices
-        """
-        if self._last_trade_tick is None:
-            return 0.0
-        if self._position == Positions.Neutral:
-            return 0.0
-
-        elif self._position == Positions.Long:
-            current_price = self.add_exit_fee(self.current_price())
-            previous_price = self.add_entry_fee(self.previous_price())
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return (current_price - previous_price) / previous_price
-
-        elif self._position == Positions.Short:
-            current_price = self.add_entry_fee(self.current_price())
-            previous_price = self.add_exit_fee(self.previous_price())
-
-            if (
-                previous_price <= 0.0
-                or not np.isfinite(previous_price)
-                or current_price <= 0.0
-                or not np.isfinite(current_price)
-            ):
-                return 0.0
-
-            return (previous_price - current_price) / previous_price
-
-        return 0.0
-
-    def previous_tick(self) -> int:
-        return max(self._current_tick - 1, self._start_tick)
-
-    def previous_price(self) -> float:
-        return self.prices.iloc[self.previous_tick()].get("open")
+        """Return the simple equity change corresponding to the stored log return."""
+        return float(np.expm1(self.get_most_recent_return()))
 
     def get_env_history(self) -> DataFrame:
-        """
-        Get environment data aligned on ticks, including optional trade events
+        """Return one metrics row per transition, joined only with price data.
+
+        Trade events remain normalized in ``trade_history``. It contains one
+        row per economic event, and ordered events may share an execution tick.
         """
         if not self.history:
             logger.warning("Env [%s]: history is empty", self.id)
@@ -4357,15 +4335,9 @@ class MyRLEnv(Base5ActionRLEnv):
             logger.warning("Env [%s]: 'tick' column missing from history", self.id)
             return DataFrame()
 
-        _rollout_history = _history_df.copy()
-        if self.trade_history:
-            _trade_history_df = DataFrame(self.trade_history)
-            if "tick" in _trade_history_df.columns:
-                _rollout_history = merge(_rollout_history, _trade_history_df, on="tick", how="left")
-
         try:
             history = merge(
-                _rollout_history,
+                _history_df,
                 self.prices,
                 left_on="tick",
                 right_index=True,
@@ -4425,8 +4397,13 @@ class MyRLEnv(Base5ActionRLEnv):
 
             axs[0].plot(ticks, history_open, linewidth=1, color="orchid", zorder=1)
 
-            history_type = history.get("type")
-            history_price = history.get("price")
+            trades = DataFrame(self.trade_history)
+            if not trades.empty:
+                trades = trades[
+                    trades["tick"].between(history["execution_tick"].min(), ticks.max())
+                ]
+            history_type = trades.get("type")
+            history_price = trades.get("price")
             if history_type is not None and history_price is not None:
                 trade_markers_config = [
                     ("long_enter", "^", "forestgreen", 5, -0.1, "Long enter"),
@@ -4448,8 +4425,8 @@ class MyRLEnv(Base5ActionRLEnv):
                 ) in trade_markers_config:
                     mask = history_type == type_name
                     if mask.any():
-                        xs = ticks[mask]
-                        ys = history.loc[mask, "price"]
+                        xs = trades.loc[mask, "tick"]
+                        ys = trades.loc[mask, "price"]
 
                         plot_markers(axs[0], xs, ys, marker, color, size, offset)
 
@@ -5116,14 +5093,18 @@ class MaskableTrialEvalCallback(MaskableEvalCallback):
                 )
                 self.is_pruned = True
                 return False
-
         return True
+
+    def update_best_reward(self, mean_reward: float, model: Any) -> None:
+        """Update final-policy bookkeeping without reporting another trial step."""
+        _update_eval_best_reward(self, mean_reward, model)
 
 
 class SimpleLinearSchedule:
     """
-    Linear schedule (from initial value to zero),
-    simpler than sb3 LinearSchedule.
+    Linear schedule from the initial value to zero. Unlike SB3's LinearSchedule,
+    the progress factor is clamped to [0, 1] so overshooting the aligned training
+    budget never produces a negative learning rate or clip range.
 
     :param initial_value: (float or str) The initial value for the schedule
     """
@@ -5133,7 +5114,10 @@ class SimpleLinearSchedule:
         self.initial_value = float(initial_value)
 
     def __call__(self, progress_remaining: float) -> float:
-        return progress_remaining * self.initial_value
+        # SB3 can request negative progress when overshooting the aligned
+        # budget (e.g. DQN finishing its train_freq); never emit a negative
+        # learning rate or clip range.
+        return min(1.0, max(0.0, float(progress_remaining))) * self.initial_value
 
     def __repr__(self) -> str:
         return f"SimpleLinearSchedule(initial_value={self.initial_value})"
@@ -5338,8 +5322,9 @@ def convert_optuna_params_to_model_params(
                 "vf_coef": float(optuna_params.get("vf_coef")),
             }
         )
-        if optuna_params.get("target_kl") is not None:
-            model_params["target_kl"] = float(optuna_params.get("target_kl"))
+        if "target_kl" in optuna_params:
+            target_kl = optuna_params["target_kl"]
+            model_params["target_kl"] = None if target_kl is None else float(target_kl)
         if ReforceXY._MODEL_TYPES[1] in model_type:  # "RecurrentPPO"
             policy_kwargs["lstm_hidden_size"] = int(optuna_params.get("lstm_hidden_size"))
             policy_kwargs["n_lstm_layers"] = int(optuna_params.get("n_lstm_layers"))
@@ -5456,7 +5441,7 @@ def sample_params_ppo(trial: Trial) -> dict[str, Any]:
     )
 
 
-def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
+def sample_params_recurrentppo(trial: Trial, *, shared_lstm: bool = False) -> dict[str, Any]:
     """
     Sampler for RecurrentPPO hyperparams
     """
@@ -5465,10 +5450,12 @@ def sample_params_recurrentppo(trial: Trial) -> dict[str, Any]:
         {
             "n_lstm_layers": trial.suggest_int("n_lstm_layers", 1, 2),
             "lstm_hidden_size": trial.suggest_categorical("lstm_hidden_size", [64, 128, 256, 512]),
-            "enable_critic_lstm": trial.suggest_categorical("enable_critic_lstm", [True, False]),
+            "enable_critic_lstm": False
+            if shared_lstm
+            else trial.suggest_categorical("enable_critic_lstm", [True, False]),
         }
     )
-    return convert_optuna_params_to_model_params("RecurrentPPO", ppo_optuna_params)
+    return convert_optuna_params_to_model_params(ReforceXY._MODEL_TYPES[1], ppo_optuna_params)
 
 
 def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
@@ -5483,9 +5470,7 @@ def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:
     else:
         min_fraction = 0.05
     return {
-        "train_freq": trial.suggest_categorical(
-            "train_freq", [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-        ),
+        "train_freq": trial.suggest_categorical("train_freq", ReforceXY._DQN_TRAIN_FREQS),
         "subsample_steps": trial.suggest_categorical("subsample_steps", [2, 4, 8, 16]),
         "gamma": trial.suggest_categorical(
             "gamma", [0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.997, 0.999, 0.9999]

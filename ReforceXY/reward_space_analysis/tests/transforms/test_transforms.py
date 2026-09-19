@@ -31,8 +31,8 @@ class TestTransforms(RewardSpaceTestBase):
             ("tanh", [0.0, 1.0, -1.0], [0.0, math.tanh(1.0), math.tanh(-1.0)]),
             # softsign transform: x / (1 + |x|) in (-1, 1)
             ("softsign", [0.0, 1.0, -1.0], [0.0, 0.5, -0.5]),
-            # asinh transform: x / sqrt(1 + x^2) in (-1, 1)
-            ("asinh", [0.0], [0.0]),  # More complex calculations tested separately
+            # softsign_sqrt: x / sqrt(1 + x^2) in (-1, 1)
+            ("softsign_sqrt", [0.0, 1.0, -1.0], [0.0, 1 / math.sqrt(2), -1 / math.sqrt(2)]),
             # arctan transform: (2/π) · arctan(x) in (-1, 1)
             ("arctan", [0.0, 1.0], [0.0, 2.0 / math.pi * math.atan(1.0)]),
             # sigmoid transform: 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) in (-1, 1)
@@ -124,19 +124,19 @@ class TestTransforms(RewardSpaceTestBase):
                     msg=f"{transform_name}(0.0) should equal 0.0",
                 )
 
-    def test_transform_asinh_symmetry(self):
-        """Test asinh transform symmetry: asinh(x) = -asinh(-x)."""
+    def test_transform_softsign_sqrt_symmetry(self):
+        """The bounded square-root softsign transform is odd."""
         test_values = [1.2345, 2.0, 5.0, 0.1]
 
         for test_val in test_values:
             with self.subTest(input=test_val):
-                pos_result = apply_transform("asinh", test_val)
-                neg_result = apply_transform("asinh", -test_val)
+                pos_result = apply_transform("softsign_sqrt", test_val)
+                neg_result = apply_transform("softsign_sqrt", -test_val)
                 self.assertAlmostEqualFloat(
                     pos_result,
                     -neg_result,
                     tolerance=TOLERANCE.IDENTITY_STRICT,
-                    msg=f"asinh({test_val}) should equal -asinh({-test_val})",
+                    msg=f"softsign_sqrt({test_val}) should equal -softsign_sqrt({-test_val})",
                 )
 
     def test_transform_sigmoid_extreme_behavior(self):
@@ -189,7 +189,7 @@ class TestTransforms(RewardSpaceTestBase):
         transform_descriptions = [
             ("tanh", "Hyperbolic tangent"),
             ("softsign", "Softsign activation"),
-            ("asinh", "Inverse hyperbolic sine normalized"),
+            ("softsign_sqrt", "Square-root softsign"),
             ("arctan", "Scaled arctangent"),
             ("sigmoid", "Scaled sigmoid"),
             ("clip", "Hard clipping"),

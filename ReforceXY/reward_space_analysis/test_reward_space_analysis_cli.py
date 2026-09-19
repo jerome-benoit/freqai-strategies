@@ -11,12 +11,11 @@ Key features
 * Per-scenario timing and aggregate statistics (mean / min / max / median / p95 seconds).
 * Warning counting based on header lines plus a breakdown of distinct warning headers.
 * Log tail truncation controlled via `--tail_chars` (characters) or full logs via `--full_logs`.
-* Direct CLI forwarding of bootstrap resample count to the child process.
 
 Usage
 -----
 python test_reward_space_analysis_cli.py --num_samples 50 --out_dir ../sample_run_output \
-    --shuffle_seed 123 --strict_sample 3 --bootstrap_resamples 200
+    --shuffle_seed 123 --strict_sample 3
 
 JSON Summary fields
 -------------------
@@ -112,7 +111,7 @@ def build_arg_matrix(
         "spike_cancel",
         "retain_previous",
     ]
-    exit_attenuation_modes = ["sqrt", "linear", "power", "half_life", "legacy"]
+    exit_attenuation_modes = ["sqrt", "linear", "power", "half_life"]
     potential_gammas = [0.0, 0.5, 0.95, 0.999]
     hold_enabled = [0, 1]
     entry_additive_enabled = [0, 1]
@@ -172,7 +171,6 @@ def run_scenario(
     num_samples: int,
     conf: ConfigTuple,
     strict: bool,
-    bootstrap_resamples: int,
     timeout: int,
     skip_feature_analysis: bool = False,
     skip_partial_dependence: bool = False,
@@ -213,8 +211,6 @@ def run_scenario(
         "--seed",
         str(100 + idx),
     ]
-    # Forward bootstrap resamples explicitly
-    cmd += ["--bootstrap_resamples", str(bootstrap_resamples)]
     if skip_feature_analysis:
         cmd.append("--skip_feature_analysis")
     if skip_partial_dependence:
@@ -315,12 +311,6 @@ def main():
         help="Maximum number of (non-strict) scenarios before strict duplication",
     )
     parser.add_argument(
-        "--bootstrap_resamples",
-        type=int,
-        default=120,
-        help="Number of bootstrap resamples to pass to child processes (speed/perf tradeoff)",
-    )
-    parser.add_argument(
         "--per_scenario_timeout",
         type=int,
         default=600,
@@ -334,7 +324,10 @@ def main():
     parser.add_argument(
         "--unrealized_pnl",
         action="store_true",
-        help="Forward --unrealized_pnl to child process to exercise hold Φ(s) path.",
+        help=(
+            "Forward --unrealized_pnl so the retained fee-aware PnL trajectory affects "
+            "extrema and PnL-dependent rewards."
+        ),
     )
     parser.add_argument(
         "--params",
@@ -358,8 +351,6 @@ def main():
         parser.error("--num_samples must be >= 4 unless --skip_feature_analysis is set")
     if args.strict_sample < 0:
         parser.error("--strict_sample must be >= 0")
-    if args.bootstrap_resamples <= 0:
-        parser.error("--bootstrap_resamples must be > 0")
     if args.tail_chars < 0:
         parser.error("--tail_chars must be >= 0")
     if args.per_scenario_timeout <= 0:
@@ -405,7 +396,6 @@ def main():
                 num_samples=args.num_samples,
                 conf=conf,
                 strict=strict,
-                bootstrap_resamples=args.bootstrap_resamples,
                 timeout=args.per_scenario_timeout,
                 skip_feature_analysis=args.skip_feature_analysis,
                 skip_partial_dependence=args.skip_partial_dependence,
@@ -489,7 +479,6 @@ def main():
                 "shuffle_seed": args.shuffle_seed,
                 "strict_sample": args.strict_sample,
                 "max_scenarios": args.max_scenarios,
-                "bootstrap_resamples": args.bootstrap_resamples,
             },
             "metadata": {
                 "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

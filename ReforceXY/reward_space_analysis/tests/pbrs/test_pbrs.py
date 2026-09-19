@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Tests for Potential-Based Reward Shaping (PBRS) mechanics."""
 
-import re
+import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ import reward_space_analysis
 from reward_space_analysis import (
     DEFAULT_IDLE_DURATION_MULTIPLIER,
     DEFAULT_MODEL_REWARD_PARAMETERS,
+    INTERNAL_GUARDS,
     PBRS_INVARIANCE_TOL,
     Actions,
     Positions,
@@ -20,7 +22,7 @@ from reward_space_analysis import (
     _compute_exit_potential,
     _compute_hold_potential,
     _compute_unrealized_pnl_estimate,
-    _get_float_param,
+    _get_potential_gamma,
     apply_potential_shaping,
     get_max_idle_duration_candles,
     simulate_samples,
@@ -46,6 +48,465 @@ from ..helpers import (
 from ..test_base import RewardSpaceTestBase
 
 pytestmark = pytest.mark.pbrs
+
+
+class TestSimulationParity(RewardSpaceTestBase):
+    """Synthetic durations and reports follow runtime transition semantics."""
+
+    def test_neutral_terminal_closes_stored_potential(self):
+        context = reward_space_analysis.RewardContext(
+            current_pnl=0.0,
+            trade_duration=0,
+            idle_duration=2,
+            max_unrealized_profit=0.0,
+            min_unrealized_profit=0.0,
+            position=Positions.Neutral,
+            action=Actions.Neutral,
+        )
+        for enabled in (False, True):
+            params = self.base_params(
+                hold_potential_enabled=enabled,
+                exit_potential_mode="retain_previous",
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+            )
+            ongoing = reward_space_analysis.calculate_reward(
+                context,
+                params,
+                100.0,
+                0.03,
+                2.0,
+                short_allowed=True,
+                action_masking=False,
+                prev_potential=0.25,
+                terminated=False,
+            )
+            terminal = reward_space_analysis.calculate_reward(
+                context,
+                params,
+                100.0,
+                0.03,
+                2.0,
+                short_allowed=True,
+                action_masking=False,
+                prev_potential=0.25,
+                terminated=True,
+            )
+            self.assertAlmostEqualFloat(
+                ongoing.next_potential, 0.25, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.next_potential, 0.0, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.reward_shaping, -0.25 if enabled else 0.0, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.pbrs_delta, terminal.reward_shaping, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                terminal.total - ongoing.total,
+                -0.25 if enabled else 0.0,
+                tolerance=TOLERANCE.GENERIC_EQ,
+            )
+            self.assertEqual(terminal.entry_additive + terminal.exit_additive, 0.0)
+
+    def test_idle_clock_runs_past_threshold_and_hazard_saturates(self):
+        from reward_space_analysis import _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY
+
+        params = self.base_params(max_trade_duration_candles=100, max_idle_duration_candles=2)
+        df = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        over = df[df["idle_duration"] > params["max_idle_duration_candles"]]
+        self.assertFalse(over.empty, "idle clock must keep counting past its threshold")
+        self.assertTrue(
+            (
+                over["sample_entry_prob"]
+                >= _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY - TOLERANCE.IDENTITY_RELAXED
+            ).all(),
+            "entry hazard must saturate once the clock exceeds the threshold",
+        )
+        within = df[df["idle_duration"].between(1, params["max_idle_duration_candles"])]
+        self.assertTrue(
+            (
+                within["sample_entry_prob"]
+                < _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY - TOLERANCE.IDENTITY_RELAXED
+            ).all()
+        )
+        stretched = df["idle_duration"] / params["max_idle_duration_candles"]
+        self.assertTrue((df["idle_ratio"] - stretched).abs().max() < TOLERANCE.IDENTITY_STRICT)
+        self.assertTrue((df["idle_ratio"] > 1.0).any())
+
+    def test_simulate_durations_match_runtime_step(self):
+        """Every in-position candle advances duration, including an immediate exit."""
+        df = simulate_samples(
+            params=self.base_params(max_trade_duration_candles=100),
+            num_samples=200,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        expected_duration = 0
+        for row in df.itertuples():
+            if row.position != Positions.Neutral.value:
+                expected_duration += 1
+            else:
+                expected_duration = 0
+            self.assertEqual(row.trade_duration, expected_duration)
+
+    def test_first_retained_pnl_is_only_exit_extremum(self):
+        """A first-candle exit excludes the fill-time PnL from its extrema."""
+        params = self.base_params(
+            unrealized_pnl=False,
+            max_trade_duration_candles=100,
+            entry_fee_rate=0.0,
+            exit_fee_rate=0.0,
+            hold_potential_enabled=False,
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        actions = [
+            (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Long_exit, 0.0, 1.0, 0.0),
+        ]
+        with (
+            patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
+            patch.object(
+                reward_space_analysis.random.Random,
+                "gauss",
+                side_effect=[0.02, 0.0],
+            ),
+        ):
+            df = simulate_samples(
+                params=params,
+                num_samples=2,
+                seed=SEEDS.BASE,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                max_duration_ratio=2.0,
+                trading_mode="futures",
+                pnl_base_std=PARAMS.PNL_STD,
+                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+            )
+
+        exit_row = df.iloc[1]
+        pnl = float(exit_row["pnl"])
+        self.assertGreater(pnl, 0.0)
+        runtime_context = reward_space_analysis.RewardContext(
+            current_pnl=pnl,
+            trade_duration=int(exit_row["trade_duration"]),
+            idle_duration=0,
+            max_unrealized_profit=pnl,
+            min_unrealized_profit=pnl,
+            position=Positions.Long,
+            action=Actions.Long_exit,
+        )
+        expected_exit = reward_space_analysis.calculate_reward(
+            runtime_context,
+            params,
+            PARAMS.BASE_FACTOR,
+            PARAMS.PROFIT_AIM,
+            PARAMS.RISK_REWARD_RATIO,
+            short_allowed=True,
+            action_masking=True,
+        ).exit_component
+        self.assertAlmostEqualFloat(
+            float(exit_row["reward_exit"]),
+            expected_exit,
+            tolerance=TOLERANCE.IDENTITY_RELAXED,
+            rtol=TOLERANCE.RELATIVE,
+        )
+
+    def test_unrealized_pnl_uses_each_sampled_market_move(self):
+        """Later Gaussian innovations affect later retained PnL without becoming extrema."""
+        params = self.base_params(
+            unrealized_pnl=True,
+            max_trade_duration_candles=100,
+            entry_fee_rate=0.0,
+            exit_fee_rate=0.0,
+        )
+        actions = [
+            (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 0.0),
+            (Actions.Long_exit, 0.0, 1.0, 0.0),
+        ]
+
+        def run(second_return: float) -> pd.DataFrame:
+            with (
+                patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
+                patch.object(
+                    reward_space_analysis.random.Random,
+                    "gauss",
+                    side_effect=[0.02, second_return, 0.0, 0.0],
+                ),
+            ):
+                return simulate_samples(
+                    params=params,
+                    num_samples=4,
+                    seed=SEEDS.BASE,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    max_duration_ratio=2.0,
+                    trading_mode="futures",
+                    pnl_base_std=PARAMS.PNL_STD,
+                    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                )
+
+        baseline = run(0.0)
+        changed = run(0.03)
+        for column in ("action", "position", "trade_duration"):
+            self.assertTrue(baseline[column].equals(changed[column]))
+        self.assertAlmostEqualFloat(
+            float(baseline.iloc[0]["next_pnl"]),
+            float(changed.iloc[0]["next_pnl"]),
+            tolerance=TOLERANCE.IDENTITY_STRICT,
+        )
+        self.assertFalse(
+            np.isclose(
+                float(baseline.iloc[1]["next_pnl"]),
+                float(changed.iloc[1]["next_pnl"]),
+                atol=TOLERANCE.IDENTITY_STRICT,
+                rtol=0.0,
+            )
+        )
+
+    def test_unrealized_pnl_mode_shapes_hold_trajectory(self):
+        """The flag derives hold prices from a target PnL instead of only feeding Phi."""
+        params = self.base_params(
+            hold_potential_enabled=True,
+            exit_potential_mode="non_canonical",
+            max_trade_duration_candles=100,
+            unrealized_pnl=True,
+            entry_fee_rate=0.0015,
+            exit_fee_rate=0.0015,
+        )
+        df = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        retained = df.loc[
+            df["next_position"].isin([Positions.Long.value, Positions.Short.value]),
+            "next_pnl",
+        ]
+        self.assertFalse(retained.empty)
+        derivable = retained[retained.abs() > TOLERANCE.IDENTITY_STRICT]
+        self.assertGreater(len(derivable), 0, "synthetic holds must accrue target PnL")
+        self.assertTrue((derivable > 0.0).any(), "market innovations must permit profitable PnL")
+        self.assertTrue((derivable < 0.0).any(), "market innovations must permit losing PnL")
+        self.assertTrue((derivable.abs() <= 0.15).all())
+        replay = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        self.assertTrue(replay["next_pnl"].equals(df["next_pnl"]))
+
+    def test_unrealized_pnl_exit_rewards_use_only_retained_extrema(self):
+        """Exit rewards use extrema reconstructed from the retained PnL trajectory."""
+        params = self.base_params(
+            unrealized_pnl=True,
+            max_trade_duration_candles=100,
+            entry_fee_rate=0.0015,
+            exit_fee_rate=0.0015,
+            exit_attenuation_mode="linear",
+            exit_plateau=False,
+            hold_potential_enabled=False,
+        )
+        df = simulate_samples(
+            params=params,
+            num_samples=400,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+
+        max_unrealized = -np.inf
+        min_unrealized = np.inf
+        checked_exits = 0
+        risk_reward_ratio = float(
+            params.get("risk_reward_ratio", params.get("rr", PARAMS.RISK_REWARD_RATIO))
+        )
+        pnl_target = float(params.get("profit_aim", PARAMS.PROFIT_AIM)) * risk_reward_ratio
+        base_factor = float(params.get("base_factor", PARAMS.BASE_FACTOR))
+        min_range = max(
+            INTERNAL_GUARDS["efficiency_min_range_epsilon"],
+            INTERNAL_GUARDS["efficiency_min_range_fraction"] * pnl_target,
+        )
+
+        for row in df.itertuples():
+            position = Positions(row.position)
+            action = Actions(row.action)
+            if position == Positions.Neutral and action in (
+                Actions.Long_enter,
+                Actions.Short_enter,
+            ):
+                max_unrealized = -np.inf
+                min_unrealized = np.inf
+
+            if position in (Positions.Long, Positions.Short) and action in (
+                Actions.Long_exit,
+                Actions.Short_exit,
+            ):
+                pnl = float(row.pnl)
+                duration_ratio = row.trade_duration / params["max_trade_duration_candles"]
+                time_coefficient = 1.0 / (1.0 + params["exit_linear_slope"] * duration_ratio)
+                pnl_coefficient = 1.0
+                pnl_ratio = pnl / pnl_target
+                if pnl_ratio > 1.0:
+                    pnl_coefficient += params["win_reward_factor"] * math.tanh(
+                        params["pnl_amplification_sensitivity"] * (pnl_ratio - 1.0)
+                    )
+                else:
+                    loss_threshold = pnl_target / risk_reward_ratio
+                    if pnl < -loss_threshold:
+                        loss_ratio = abs(pnl) / loss_threshold
+                        pnl_coefficient += (
+                            params["win_reward_factor"]
+                            * risk_reward_ratio
+                            * math.tanh(
+                                params["pnl_amplification_sensitivity"] * (loss_ratio - 1.0)
+                            )
+                        )
+
+                high = max(max_unrealized, pnl)
+                low = min(min_unrealized, pnl)
+                efficiency = 1.0
+                if high - low >= min_range and not np.isclose(pnl, 0.0):
+                    ratio = (pnl - low) / (high - low)
+                    if pnl > 0.0:
+                        efficiency += params["efficiency_weight"] * (
+                            ratio - params["efficiency_center"]
+                        )
+                    else:
+                        efficiency += params["efficiency_weight"] * (
+                            params["efficiency_center"] - ratio
+                        )
+                expected = pnl * base_factor * time_coefficient * pnl_coefficient * efficiency
+                self.assertAlmostEqualFloat(
+                    row.reward_exit,
+                    expected,
+                    tolerance=TOLERANCE.IDENTITY_RELAXED,
+                    rtol=TOLERANCE.RELATIVE,
+                )
+                checked_exits += 1
+
+            next_position = Positions(row.next_position)
+            if next_position in (Positions.Long, Positions.Short):
+                max_unrealized = max(max_unrealized, row.next_pnl)
+                min_unrealized = min(min_unrealized, row.next_pnl)
+            else:
+                max_unrealized = min_unrealized = 0.0
+
+        self.assertGreater(checked_exits, 0)
+
+    def test_canonical_report_rejects_offsetting_observed_additives(self):
+        """Offsetting non-zero additives cannot certify a canonical trajectory."""
+        df = simulate_samples(
+            params=self.base_params(
+                exit_potential_mode="canonical",
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+                hold_potential_enabled=True,
+            ),
+            num_samples=40,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        df["reward_entry_additive"] = np.tile([1.0, -1.0], len(df) // 2)
+        out_dir = self.output_path / "canonical_observed_additives"
+        write_complete_statistical_analysis(
+            df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        self.assertIn("| Invariance Status | Not verified |", content)
+        self.assertIn("reward_entry_additive contains non-zero values", content)
+        self.assertIn("| Σ Entry Additive | 0.000000 |", content)
+
+    def test_non_canonical_report_classifies_both_outputs(self):
+        """Zero correction cannot certify a non-canonical potential mode."""
+        df = simulate_samples(
+            params=self.base_params(
+                exit_potential_mode="retain_previous",
+                hold_potential_enabled=True,
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+                max_trade_duration_candles=100,
+            ),
+            num_samples=200,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        out_dir = self.output_path / "non_canonical_classifies_both"
+        write_complete_statistical_analysis(
+            df=df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.SAMPLE_SIZE_SMALL,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        self.assertRegex(content, r"\| Invariance Status \| [^\n]*Non-canonical")
+        self.assertRegex(content, r"PBRS Invariance\*\* - [^\n]*Non-canonical")
 
 
 class TestPBRS(RewardSpaceTestBase):
@@ -94,6 +555,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
+            entry_pnl=0.0,
             next_duration_ratio=0.0,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -131,11 +593,7 @@ class TestPBRS(RewardSpaceTestBase):
             PARAMS.BASE_FACTOR,
         )
 
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
+        gamma = _get_potential_gamma(params)
         expected_next_potential = (
             prev_potential / gamma if gamma not in (0.0, None) else prev_potential
         )
@@ -152,6 +610,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
+            entry_pnl=0.0,
             next_duration_ratio=0.0,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -275,6 +734,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.0,
             next_pnl=0.01,
+            entry_pnl=0.01,
             next_duration_ratio=0.0,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -317,6 +777,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.4,
             next_pnl=0.02,
+            entry_pnl=0.02,
             next_duration_ratio=0.41,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -393,6 +854,7 @@ class TestPBRS(RewardSpaceTestBase):
                 pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                 current_duration_ratio=current_duration_ratio,
                 next_pnl=next_pnl,
+                entry_pnl=next_pnl,
                 next_duration_ratio=next_duration_ratio,
                 risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 base_factor=PARAMS.BASE_FACTOR,
@@ -434,6 +896,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.0,
             next_pnl=0.02,
+            entry_pnl=0.02,
             next_duration_ratio=0.0,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -470,6 +933,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
+            entry_pnl=0.0,
             next_duration_ratio=0.0,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -513,6 +977,7 @@ class TestPBRS(RewardSpaceTestBase):
                 pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                 current_duration_ratio=0.0,
                 next_pnl=0.0,
+                entry_pnl=0.0,
                 next_duration_ratio=0.0,
                 risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                 base_factor=PARAMS.BASE_FACTOR,
@@ -524,12 +989,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertPlacesEqual(
             next_potential, prev_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
         )
-        raw_gamma = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
-        gamma_fallback = 0.95 if raw_gamma is None else raw_gamma
-        try:
-            gamma = float(gamma_fallback)
-        except Exception:
-            gamma = 0.95
+        gamma = _get_potential_gamma(params)
         # PBRS shaping Δ = γ·Φ(next) - Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.
         self.assertLessEqual(
             abs(shaping - ((gamma - 1.0) * prev_potential)),
@@ -540,7 +1000,7 @@ class TestPBRS(RewardSpaceTestBase):
     def test_potential_gamma_nan_fallback(self):
         """Verifies potential_gamma=NaN fallback to default value."""
         base_params_dict = self.base_params()
-        default_gamma = base_params_dict.get("potential_gamma", 0.95)
+        default_gamma = _get_potential_gamma(base_params_dict)
         params_nan = self.base_params(potential_gamma=np.nan, hold_potential_enabled=True)
         res_nan = apply_potential_shaping(
             base_reward=0.1,
@@ -548,6 +1008,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.2,
             next_pnl=0.035,
+            entry_pnl=0.035,
             next_duration_ratio=0.25,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -562,6 +1023,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=0.2,
             next_pnl=0.035,
+            entry_pnl=0.035,
             next_duration_ratio=0.25,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -665,7 +1127,7 @@ class TestPBRS(RewardSpaceTestBase):
         )
 
     def test_simulate_samples_initializes_pnl_on_entry(self):
-        """simulate_samples() sets in-position pnl to fee-aware entry estimate."""
+        """First in-position candle includes fees and its duration-dependent drift."""
         params = self.base_params(
             exit_potential_mode="non_canonical",
             hold_potential_enabled=True,
@@ -711,7 +1173,7 @@ class TestPBRS(RewardSpaceTestBase):
         expected_pnl = _compute_unrealized_pnl_estimate(
             Positions.Long,
             entry_open=1.0,
-            current_open=1.0,
+            current_open=1.0 + 0.001 / params["max_trade_duration_candles"],
             params=params,
         )
         post_entry_pnl = float(enter_pos.iloc[next_pos]["pnl"])
@@ -719,7 +1181,7 @@ class TestPBRS(RewardSpaceTestBase):
             post_entry_pnl,
             expected_pnl,
             tolerance=TOLERANCE.IDENTITY_STRICT,
-            msg="Expected pnl after entry to match entry fee estimate",
+            msg="Expected first in-position PnL to include fees and the first candle move",
         )
 
     def test_calculate_reward_hold_uses_current_duration_ratio(self):
@@ -836,7 +1298,7 @@ class TestPBRS(RewardSpaceTestBase):
             PARAMS.BASE_FACTOR,
         )
         self.assertFinite(prev_phi, name="prev_phi")
-        next_phi_can = _compute_exit_potential(prev_phi, params_can)
+        next_phi_can = _compute_exit_potential(prev_phi, params_can, gamma)
         self.assertAlmostEqualFloat(
             next_phi_can,
             0.0,
@@ -851,7 +1313,7 @@ class TestPBRS(RewardSpaceTestBase):
             msg="Canonical delta mismatch",
         )
         params_spike = self.base_params(exit_potential_mode="spike_cancel", **base_common)
-        next_phi_spike = _compute_exit_potential(prev_phi, params_spike)
+        next_phi_spike = _compute_exit_potential(prev_phi, params_spike, gamma)
         shaping_spike = gamma * next_phi_spike - prev_phi
         self.assertNearZero(
             shaping_spike,
@@ -873,12 +1335,8 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=False,
             potential_gamma=0.9,
         )
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
-        rng = np.random.default_rng(555)
+        gamma = _get_potential_gamma(params)
+        rng = np.random.default_rng(SEEDS.ALTERNATE_1)
         potentials = rng.uniform(0.05, 0.85, size=220)
         deltas = [gamma * p - p for p in potentials]
         cumulative = float(np.sum(deltas))
@@ -915,6 +1373,7 @@ class TestPBRS(RewardSpaceTestBase):
             pnl_target=profit_aim * PARAMS.RISK_REWARD_RATIO,
             current_duration_ratio=current_dur,
             next_pnl=0.0,
+            entry_pnl=0.0,
             next_duration_ratio=0.0,
             base_factor=PARAMS.BASE_FACTOR,
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
@@ -1029,7 +1488,7 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_normality_invariance_under_scaling(self):
         """Skewness & excess kurtosis invariant under positive scaling of normal sample."""
-        rng = np.random.default_rng(808)
+        rng = np.random.default_rng(SEEDS.ALTERNATE_2)
         base = rng.normal(0.0, 1.0, size=7000)
         scaled = 5.0 * base
 
@@ -1050,42 +1509,6 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Report classification / formatting ---------------- #
 
-    # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101), robustness/test_robustness.py:127 (robustness-exit-pnl-only-117)
-    @pytest.mark.smoke
-    def test_pbrs_non_canonical_report_generation(self):
-        """Synthetic invariance section: Non-canonical classification formatting."""
-
-        df = pd.DataFrame(
-            {
-                "reward_shaping": [0.01, -0.002],
-                "reward_entry_additive": [0.0, 0.0],
-                "reward_exit_additive": [0.001, 0.0],
-            }
-        )
-        total_shaping = df["reward_shaping"].sum()
-        self.assertGreater(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        invariance_status = "❌ Non-canonical"
-        section = []
-        section.append("**PBRS Invariance Summary:**\n")
-        section.append("| Field | Value |\n")
-        section.append("|-------|-------|\n")
-        section.append(f"| Invariance | {invariance_status} |\n")
-        section.append(f"| Note | Total shaping = {total_shaping:.6f} (non-zero) |\n")
-        section.append(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
-        section.append(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
-        section.append(f"| Σ Entry Additive | {df['reward_entry_additive'].sum():.6f} |\n")
-        section.append(f"| Σ Exit Additive | {df['reward_exit_additive'].sum():.6f} |\n")
-        content = "".join(section)
-        assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=False
-        )
-        self.assertRegex(content, "Σ Shaping Reward \\| 0\\.008000 \\|")
-        m_abs = re.search("Abs Σ Shaping Reward \\| ([0-9.]+e[+-][0-9]{2}) \\|", content)
-        self.assertIsNotNone(m_abs)
-        if m_abs:
-            val = float(m_abs.group(1))
-            self.assertAlmostEqual(abs(total_shaping), val, places=TOLERANCE.DECIMAL_PLACES_STRICT)
-
     def test_potential_gamma_boundary_values_stability(self):
         """Potential gamma boundary values (0 and ≈1) produce bounded shaping."""
         for gamma in [0.0, 0.999999]:
@@ -1104,6 +1527,7 @@ class TestPBRS(RewardSpaceTestBase):
                     pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=0.3,
                     next_pnl=0.025,
+                    entry_pnl=0.025,
                     next_duration_ratio=0.35,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     base_factor=PARAMS.BASE_FACTOR,
@@ -1129,12 +1553,8 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=False,
             exit_potential_mode="canonical",
         )
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
-        rng = np.random.default_rng(321)
+        gamma = _get_potential_gamma(params)
+        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
         prev_potential = 0.0
         telescoping_sum = 0.0
         max_abs_step = 0.0
@@ -1152,6 +1572,7 @@ class TestPBRS(RewardSpaceTestBase):
                     pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=current_dur,
                     next_pnl=next_pnl,
+                    entry_pnl=next_pnl,
                     next_duration_ratio=next_dur,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     base_factor=PARAMS.BASE_FACTOR,
@@ -1188,7 +1609,7 @@ class TestPBRS(RewardSpaceTestBase):
             exit_potential_mode="progressive_release",
             exit_potential_decay=0.25,
         )
-        rng = np.random.default_rng(321)
+        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
         prev_potential = 0.0
         shaping_sum = 0.0
 
@@ -1203,6 +1624,7 @@ class TestPBRS(RewardSpaceTestBase):
                     pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
                     current_duration_ratio=float(rng.uniform(0, 1)),
                     next_pnl=next_pnl,
+                    entry_pnl=next_pnl,
                     next_duration_ratio=next_dur,
                     risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
                     base_factor=PARAMS.BASE_FACTOR,
@@ -1223,18 +1645,13 @@ class TestPBRS(RewardSpaceTestBase):
     # Owns invariant: pbrs-canonical-near-zero-report-116
     @pytest.mark.smoke
     def test_pbrs_canonical_near_zero_report(self):
-        """Invariant 116: canonical near-zero cumulative shaping classified in full report."""
+        """Canonical trajectories with valid PBRS evidence are classified as verified."""
 
-        small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
-        total_shaping = float(sum(small_vals))
-        self.assertLess(
-            abs(total_shaping),
-            PBRS_INVARIANCE_TOL,
-            f"Total shaping {total_shaping} exceeds invariance tolerance",
-        )
-        inv_corr_vals = [1.0e-7, -1.0e-7, 2.0e-7]
-        max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
-        self.assertLess(max_abs_corr, PBRS_INVARIANCE_TOL)
+        gamma = DEFAULT_MODEL_REWARD_PARAMETERS["potential_gamma"]
+        prev_potentials = np.array([0.0, -1e-7, 1e-7])
+        next_potentials = np.array([-1e-7, 1e-7, 0.0])
+        small_vals = (gamma * next_potentials - prev_potentials).tolist()
+        inv_corr_vals = [0.0] * len(small_vals)
 
         n = len(small_vals)
         df = pd.DataFrame(
@@ -1255,6 +1672,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(n),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": prev_potentials,
+                "next_potential": next_potentials,
             }
         )
         df.attrs["reward_params"] = {
@@ -1277,17 +1699,9 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical near-zero test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical", expect_additives=False
+            self, content, "Canonical: observed PBRS verified", expect_additives=False
         )
-        self.assertRegex(content, r"\| Σ Shaping Reward \| 0\.000000 \|")
-        m_abs = re.search(r"\| Abs Σ Shaping Reward \| ([0-9.]+e[+-][0-9]{2}) \|", content)
-        self.assertIsNotNone(m_abs)
-        if m_abs:
-            val_abs = float(m_abs.group(1))
-            self.assertAlmostEqual(
-                abs(total_shaping), val_abs, places=TOLERANCE.DECIMAL_PLACES_STRICT
-            )
-        self.assertIn("max|correction|≈0", content)
+        self.assertIn("Raw shaping sums do not certify invariance", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
@@ -1299,12 +1713,11 @@ class TestPBRS(RewardSpaceTestBase):
         non-canonical additives involvement.
         """
 
-        small_vals = [1.0e-7, -2.0e-7, 3.0e-7]  # sum = 2.0e-7 < tolerance
-        total_shaping = float(sum(small_vals))
-        self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        inv_corr_vals = [1.0e-7, -1.0e-7, 2.0e-7]
-        max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
-        self.assertLess(max_abs_corr, PBRS_INVARIANCE_TOL)
+        gamma = DEFAULT_MODEL_REWARD_PARAMETERS["potential_gamma"]
+        prev_potentials = np.array([0.0, -1e-7, 1e-7])
+        next_potentials = np.array([-1e-7, 1e-7, 0.0])
+        small_vals = (gamma * next_potentials - prev_potentials).tolist()
+        inv_corr_vals = [0.0] * len(small_vals)
 
         n = len(small_vals)
         df = pd.DataFrame(
@@ -1325,6 +1738,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.0, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(3),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": prev_potentials,
+                "next_potential": next_potentials,
             }
         )
         df.attrs["reward_params"] = {
@@ -1347,7 +1765,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical additives test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical", expect_additives=False
+            self, content, "Canonical: observed PBRS verified", expect_additives=False
         )
         self.assertIn("Additives are suppressed in canonical mode", content)
         self.assertIn("| Entry Additive Enabled | True |", content)
@@ -1355,17 +1773,134 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertIn("| Entry Additive Effective | False |", content)
         self.assertIn("| Exit Additive Effective | False |", content)
 
-    def test_pbrs_canonical_warning_report(self):
-        """Canonical mode + no additives but max|invariance_correction| > tolerance -> warning."""
+    # Non-owning boundary; ownership: pbrs/test_pbrs.py:1509
+    # Invariant: pbrs-canonical-near-zero-report-116
+    def test_singleton_terminal_canonical_report_is_verified(self):
+        """A complete one-transition terminal episode is sufficient PBRS evidence."""
+        params = self.base_params(
+            exit_potential_mode="canonical",
+            entry_additive_enabled=False,
+            exit_additive_enabled=False,
+        )
+        previous_potential = 0.25
+        shaping = -previous_potential
+        df = pd.DataFrame(
+            {
+                "reward": [shaping],
+                "reward_base": [0.0],
+                "reward_pbrs_delta": [shaping],
+                "reward_shaping": [shaping],
+                "reward_invariance_correction": [0.0],
+                "reward_invalid": [0.0],
+                "reward_idle": [0.0],
+                "reward_hold": [0.0],
+                "reward_exit": [0.0],
+                "reward_entry_additive": [0.0],
+                "reward_exit_additive": [0.0],
+                "pnl": [0.0],
+                "exit_pnl": [0.0],
+                "trade_duration": [0],
+                "idle_duration": [0],
+                "duration_ratio": [0.0],
+                "idle_ratio": [0.0],
+                "position": [0.0],
+                "action": [0],
+                "episode_id": [0],
+                "transition_index": [0],
+                "terminated": [True],
+                "prev_potential": [previous_potential],
+                "next_potential": [0.0],
+            }
+        )
+        df.attrs["reward_params"] = params
+        out_dir = self.output_path / "canonical_singleton_terminal"
+        write_complete_statistical_analysis(
+            df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.SMOKE_TEST,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        assert_pbrs_invariance_report_classification(
+            self, content, "Canonical: observed PBRS verified", expect_additives=False
+        )
+        self.assertIn(
+            "Local identity, continuity and discounted terminal boundary verified", content
+        )
 
-        shaping_vals = [1.2e-4, 1.3e-4, 8.0e-5, -2.0e-5, 1.4e-4]  # Σ not near 0
-        total_shaping = float(sum(shaping_vals))
-        self.assertGreater(abs(total_shaping), PBRS_INVARIANCE_TOL)
+    def test_report_without_reward_params_is_not_canonical(self):
+        """Canonical certification requires explicit reward configuration evidence."""
+        previous_potential = 0.25
+        source = pd.DataFrame(
+            {
+                "reward": [-previous_potential],
+                "reward_base": [0.0],
+                "reward_pbrs_delta": [-previous_potential],
+                "reward_shaping": [-previous_potential],
+                "reward_invariance_correction": [0.0],
+                "reward_invalid": [0.0],
+                "reward_idle": [0.0],
+                "reward_hold": [0.0],
+                "reward_exit": [0.0],
+                "reward_entry_additive": [0.0],
+                "reward_exit_additive": [0.0],
+                "pnl": [0.0],
+                "exit_pnl": [0.0],
+                "trade_duration": [0],
+                "idle_duration": [0],
+                "duration_ratio": [0.0],
+                "idle_ratio": [0.0],
+                "position": [0.0],
+                "action": [0],
+                "episode_id": [0],
+                "transition_index": [0],
+                "terminated": [True],
+                "prev_potential": [previous_potential],
+                "next_potential": [0.0],
+            }
+        )
+        source.attrs["reward_params"] = {
+            "exit_potential_mode": "non_canonical",
+            "entry_additive_enabled": False,
+            "exit_additive_enabled": False,
+        }
+        csv_path = self.output_path / "noncanonical_trajectory.csv"
+        source.to_csv(csv_path, index=False)
+        reloaded = pd.read_csv(csv_path)
+        self.assertEqual(reloaded.attrs, {})
 
-        inv_corr_vals = [1.0e-4, -2.0e-4, 1.5e-4, -1.2e-4, 7.0e-5]
-        max_abs_corr = float(np.max(np.abs(inv_corr_vals)))
-        self.assertGreater(max_abs_corr, PBRS_INVARIANCE_TOL)
+        out_dir = self.output_path / "missing_reward_params"
+        write_complete_statistical_analysis(
+            reloaded,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.SMOKE_TEST,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        assert_pbrs_invariance_report_classification(
+            self, content, "Not verified", expect_additives=False
+        )
+        self.assertIn("Reward configuration evidence is missing or incomplete", content)
+        self.assertIn("| Exit Potential Mode | unknown |", content)
+        self.assertNotIn("Canonical: observed PBRS verified", content)
 
+    # Owns invariant: pbrs-discounted-evidence-125
+    def test_pbrs_canonical_discontinuous_potentials_report(self):
+        """Potential discontinuity is sufficient to reject otherwise local PBRS evidence."""
+
+        gamma = DEFAULT_MODEL_REWARD_PARAMETERS["potential_gamma"]
+        prev_potentials = np.zeros(5)
+        next_potentials = np.array([-1.2e-4, 1.0e-4, -2.0e-4, 1.5e-4, 0.0])
+        shaping_vals = (gamma * next_potentials - prev_potentials).tolist()
+        inv_corr_vals = [0.0] * len(shaping_vals)
         n = len(shaping_vals)
         df = pd.DataFrame(
             {
@@ -1385,6 +1920,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.2, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(5),
+                "terminated": np.array([False, False, False, False, True]),
+                "prev_potential": prev_potentials,
+                "next_potential": next_potentials,
             }
         )
         df.attrs["reward_params"] = {
@@ -1407,15 +1947,15 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertTrue(report_path.exists(), "Report file missing for canonical warning test")
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Canonical (with warning)", expect_additives=False
+            self, content, "Not verified", expect_additives=False
         )
-        expected_corr_fragment = f"{max_abs_corr:.6e}"
-        self.assertIn(expected_corr_fragment, content)
+        self.assertIn("Raw shaping sums do not certify invariance", content)
+        self.assertIn("Potential discontinuity between transitions", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_full_report_reason_aggregation(self):
-        """Full report: Non-canonical classification aggregates mode + additives reasons."""
+        """Non-canonical configurations never certify observed PBRS."""
 
         shaping_vals = [0.02, -0.005, 0.007]
         entry_add_vals = [0.003, 0.0, 0.004]
@@ -1438,6 +1978,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.1, 1.0, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(3),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": np.array([0.0, 0.02, -0.005]),
+                "next_potential": np.array([0.02, -0.005, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1462,14 +2007,14 @@ class TestPBRS(RewardSpaceTestBase):
         )
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=True
+            self, content, "Non-canonical: not verified", expect_additives=True
         )
-        self.assertIn("exit_potential_mode='progressive_release'", content)
+        self.assertIn("| Exit Potential Mode | progressive_release |", content)
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     @pytest.mark.smoke
     def test_pbrs_non_canonical_mode_only_reason(self):
-        """Non-canonical exit mode with additives disabled -> reason excludes additive list."""
+        """Non-canonical exit mode with additives disabled -> not verified."""
 
         shaping_vals = [0.002, -0.0005, 0.0012]
         total_shaping = sum(shaping_vals)
@@ -1492,6 +2037,11 @@ class TestPBRS(RewardSpaceTestBase):
                 "reward_invalid": np.zeros(n),
                 "duration_ratio": np.random.uniform(0.2, 1.2, n),
                 "idle_ratio": np.zeros(n),
+                "episode_id": 0,
+                "transition_index": np.arange(n),
+                "terminated": np.array([False, False, True]),
+                "prev_potential": np.array([0.0, 0.002, -0.0005]),
+                "next_potential": np.array([0.002, -0.0005, 0.0]),
             }
         )
         df.attrs["reward_params"] = {
@@ -1516,9 +2066,9 @@ class TestPBRS(RewardSpaceTestBase):
         )
         content = report_path.read_text(encoding="utf-8")
         assert_pbrs_invariance_report_classification(
-            self, content, "Non-canonical", expect_additives=False
+            self, content, "Non-canonical: not verified", expect_additives=False
         )
-        self.assertIn("exit_potential_mode='retain_previous'", content)
+        self.assertIn("| Exit Potential Mode | retain_previous |", content)
 
     # Owns invariant: pbrs-absence-shift-placeholder-118
     def test_pbrs_absence_and_distribution_shift_placeholder(self):
