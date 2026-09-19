@@ -38,7 +38,8 @@ from pandas import DataFrame, Series, isna, to_numeric
 from technical.pivots_points import pivots_points
 from Utils import (
     _CACHE_MAXSIZE_LARGE,
-    _FORMAT_STYLES,
+    _FORMAT_STYLE_DICT,
+    _FORMAT_STYLE_PARAMS,
     _OPTUNA_NAMESPACES,
     EXTREMA_COLUMN,
     EXTREMA_DIRECTION_COLUMN,
@@ -188,29 +189,29 @@ class QuickAdapterV3(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
-    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]
-    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]
+    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]  # "long"
+    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]  # "short"
     _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(_TRADE_DIRECTIONS)
     _INTERPOLATION_DIRECTIONS: Final[tuple[InterpolationDirection, ...]] = (
         "direct",
         "inverse",
     )
-    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]
-    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]
+    _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]  # "direct"
+    _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]  # "inverse"
     _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
-    _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]
-    _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]
+    _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]  # "entry"
+    _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]  # "exit"
     _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
-    _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]
-    _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]
-    _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]
-    _SMOOTHING_SMM: Final[str] = SMOOTHING_METHODS[5]
-    _SMOOTHING_SAVGOL: Final[str] = SMOOTHING_METHODS[7]
-    _FILL_EPSILON: Final[str] = FILL_METHODS[1]
-    _FILL_GAUSSIAN: Final[str] = FILL_METHODS[2]
-    _FILL_EPSILON_GAUSSIAN: Final[str] = FILL_METHODS[3]
-    _WEIGHT_NONE: Final[str] = WEIGHT_STRATEGIES[0]
+    _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]  # "spot"
+    _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]  # "margin"
+    _TRADING_MODE_FUTURES: Final[str] = _TRADING_MODES[2]  # "futures"
+    _SMOOTHING_SMM: Final[str] = SMOOTHING_METHODS[5]  # "smm"
+    _SMOOTHING_SAVGOL: Final[str] = SMOOTHING_METHODS[7]  # "savgol"
+    _FILL_EPSILON: Final[str] = FILL_METHODS[1]  # "epsilon"
+    _FILL_GAUSSIAN: Final[str] = FILL_METHODS[2]  # "gaussian"
+    _FILL_EPSILON_GAUSSIAN: Final[str] = FILL_METHODS[3]  # "epsilon_gaussian"
+    _WEIGHT_NONE: Final[str] = WEIGHT_STRATEGIES[0]  # "none"
 
     _CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION: Final[float] = 0.7860
 
@@ -469,8 +470,8 @@ class QuickAdapterV3(IStrategy):
                 )
                 if (
                     col_smoothing_config["method"] in SMOOTHING_METHOD_MODES
-                    and col_smoothing_config["mode"] == SMOOTHING_MODES[3]
-                ):  # "wrap"
+                    and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
+                ):
                     raise ValueError(
                         "label_smoothing.mode='wrap' is incompatible with "
                         "feature_parameters.causal_mode=true"
@@ -525,7 +526,7 @@ class QuickAdapterV3(IStrategy):
             logger.info("  Weighting:")
             logger.info(f"    strategy: {col_weighting['strategy']}")
             logger.info(
-                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLES[0])}"
+                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLE_DICT)}"
             )
             logger.info(f"    aggregation: {col_weighting['aggregation']}")
             if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
@@ -642,7 +643,7 @@ class QuickAdapterV3(IStrategy):
                 method = protection.get("method", "Unknown")
                 protection_params = {k: v for k, v in protection.items() if k != "method"}
                 logger.info(
-                    f"  {method}: {format_dict(protection_params, style=_FORMAT_STYLES[0])}"
+                    f"  {method}: {format_dict(protection_params, style=_FORMAT_STYLE_DICT)}"
                 )
         else:
             logger.info("  No protections enabled")
@@ -740,8 +741,8 @@ class QuickAdapterV3(IStrategy):
         )
         dataframe["%-ewo"] = ewo(
             dataframe=dataframe,
-            pricemode=PRICE_MODES[4],
-            mamode=MA_MODES[1],
+            pricemode=PRICE_MODES[4],  # "close"
+            mamode=MA_MODES[1],  # "ema"
             zero_lag=True,
             normalize=True,
             logger=logger,
@@ -781,7 +782,9 @@ class QuickAdapterV3(IStrategy):
         )
         dataframe["%-ibs"] = (closes - lows) / non_zero_diff(highs, lows)
         dataframe["jaw"], dataframe["teeth"], dataframe["lips"] = alligator(
-            dataframe, pricemode=PRICE_MODES[1], zero_lag=True
+            dataframe,
+            pricemode=PRICE_MODES[1],  # "median"
+            zero_lag=True,
         )
         dataframe["%-dist_to_jaw"] = get_distance(closes, dataframe["jaw"])
         dataframe["%-dist_to_teeth"] = get_distance(closes, dataframe["teeth"])
@@ -973,11 +976,11 @@ class QuickAdapterV3(IStrategy):
 
             if len(label_data.indices) == 0:
                 logger.warning(
-                    f"[{pair}] No {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style=_FORMAT_STYLES[1])}"
+                    f"[{pair}] No {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style=_FORMAT_STYLE_PARAMS)}"
                 )
             else:
                 logger.info(
-                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style=_FORMAT_STYLES[1])}"
+                    f"[{pair}] {len(label_data.indices)} {label_col!r} labels | series_duration: {QuickAdapterV3._td_format(series_duration)} | params: {format_dict(label_params, style=_FORMAT_STYLE_PARAMS)}"
                 )
 
             col_weighting_config = get_label_column_config(
@@ -1276,7 +1279,7 @@ class QuickAdapterV3(IStrategy):
         if label_natr is None or label_natr.empty:
             return None
         if trade_duration_candles >= 2:
-            kama = get_ma_fn(MA_MODES[6])
+            kama = get_ma_fn(MA_MODES[6])  # "kama"
             try:
                 trade_kama_natr_values = np.asarray(
                     kama(label_natr, timeperiod=trade_duration_candles), dtype=float
@@ -1967,7 +1970,7 @@ class QuickAdapterV3(IStrategy):
         min_natr_multiplier_fraction: float,
         max_natr_multiplier_fraction: float,
         candle_idx: int = -1,
-        interpolation_direction: InterpolationDirection = _INTERPOLATION_DIRECTIONS[0],
+        interpolation_direction: InterpolationDirection = _INTERPOLATION_DIRECTIONS[0],  # "direct"
         quantile_exponent: float = 1.5,
     ) -> float:
         df_signature = QuickAdapterV3._df_signature(df)
