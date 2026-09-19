@@ -2283,9 +2283,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "unfiltered_df.index (filter_features should preserve original "
                 "row labels)"
             )
-        if LABEL_COLUMNS[0] not in dk.label_list:  # "&s-extrema"
+        label_column = LABEL_COLUMNS[0]  # "&s-extrema"
+        if label_column not in dk.label_list:
             raise ValueError(
-                f"LABEL_COLUMNS[0]={LABEL_COLUMNS[0]!r} is not in "  # "&s-extrema"
+                f"LABEL_COLUMNS[0]={label_column!r} is not in "
                 f"dk.label_list={dk.label_list!r}: project label constant "
                 f"diverged from freqtrade's runtime label list"
             )
@@ -2303,11 +2304,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         label_weighting = self.label_weighting
         label_weighting_config = get_label_column_config(
-            LABEL_COLUMNS[0],
+            label_column,
             label_weighting["default"],
-            label_weighting["columns"],  # "&s-extrema"
+            label_weighting["columns"],
         )
-        weight_col = label_weight_column_name(LABEL_COLUMNS[0])  # "&s-extrema"
+        weight_col = label_weight_column_name(label_column)
         if weight_col in unfiltered_df.columns:
             label_weights = unfiltered_df.loc[features_filtered.index, weight_col].to_numpy(
                 dtype=float
