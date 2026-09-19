@@ -19,19 +19,19 @@ PBRS invariance.
 ```shell
 # Install
 cd ReforceXY/reward_space_analysis
-uv sync --all-groups
+uv sync --locked --extra dev
 
 # Run a default analysis
 uv run python reward_space_analysis.py --num_samples 20000 --out_dir out
 
 # Run test suite (coverage ≥85% enforced)
-uv run pytest
+uv run --locked --extra dev pytest
 ```
 
 Minimal selective test example:
 
 ```shell
-uv run pytest -m pbrs -q
+uv run --locked --extra dev pytest -m pbrs -q
 ```
 
 Full test documentation: [tests/README.md](./tests/README.md).
@@ -88,7 +88,7 @@ Setup with uv:
 
 ```shell
 cd ReforceXY/reward_space_analysis
-uv sync --all-groups
+uv sync --locked --extra dev
 ```
 
 Run:
@@ -307,14 +307,14 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 
 #### Duration Penalties
 
-| Parameter                    | Default | Description                |
-| ---------------------------- | ------- | -------------------------- |
-| `max_trade_duration_candles` | 128     | Trade duration cap         |
+| Parameter                    | Default | Description                                                                               |
+| ---------------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `max_trade_duration_candles` | 128     | Trade duration cap                                                                        |
 | `max_idle_duration_candles`  | None    | Idle hazard threshold (4× trade duration fallback); the idle clock keeps counting past it |
-| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio         |
-| `idle_penalty_power`         | 1.025   | Idle penalty exponent      |
-| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio         |
-| `hold_penalty_power`         | 1.025   | Hold penalty exponent      |
+| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                        |
+| `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                     |
+| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                        |
+| `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                                     |
 
 #### Validation
 
@@ -413,23 +413,23 @@ r* = r - grace    if exit_plateau and r > grace
 r* = r            if not exit_plateau
 ```
 
-| Mode      | Formula                       | Monotonic | Notes                                       | Use Case                             |
-| --------- | ----------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
-| sqrt      | 1 / √(1 + r\*)                | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
-| linear    | 1 / (1 + slope · r\*)         | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
-| power     | (1 + r\*)^(-alpha)            | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
-| half_life | 2^(-r\* / hl)                 | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor 0.5  | Time-based exponential discount      |
+| Mode      | Formula               | Monotonic | Notes                                      | Use Case                             |
+| --------- | --------------------- | --------- | ------------------------------------------ | ------------------------------------ |
+| sqrt      | 1 / √(1 + r\*)        | Yes       | Sub-linear decay                           | Gentle long-trade penalty            |
+| linear    | 1 / (1 + slope · r\*) | Yes       | slope = `exit_linear_slope`                | Balanced duration penalty (default)  |
+| power     | (1 + r\*)^(-alpha)    | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0    | Tunable decay rate via tau parameter |
+| half_life | 2^(-r\* / hl)         | Yes       | hl = `exit_half_life`; r\*=hl ⇒ factor 0.5 | Time-based exponential discount      |
 
 ### Transform Functions
 
-| Transform  | Formula                          | Range   | Characteristics   | Use Case                      |
-| ---------- | -------------------------------- | ------- | ----------------- | ----------------------------- |
-| `tanh`     | tanh(x)                          | (-1, 1) | Smooth sigmoid    | Balanced transforms (default) |
-| `softsign` | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
-| `arctan`   | (2/π) · arctan(x)                | (-1, 1) | Slower saturation | Wide dynamic range            |
-| `sigmoid`  | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
-| `softsign_sqrt` | x / √(1 + x²)             | (-1, 1) | Outlier robust    | Extreme stability             |
-| `clip`     | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |
+| Transform       | Formula                          | Range   | Characteristics   | Use Case                      |
+| --------------- | -------------------------------- | ------- | ----------------- | ----------------------------- |
+| `tanh`          | tanh(x)                          | (-1, 1) | Smooth sigmoid    | Balanced transforms (default) |
+| `softsign`      | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
+| `arctan`        | (2/π) · arctan(x)                | (-1, 1) | Slower saturation | Wide dynamic range            |
+| `sigmoid`       | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
+| `softsign_sqrt` | x / √(1 + x²)                    | (-1, 1) | Outlier robust    | Extreme stability             |
+| `clip`          | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |
 
 ### Skipping Feature Analysis
 
@@ -537,20 +537,21 @@ descriptive.
 | `seed`                  | int               | Master random seed                |
 | `pnl_target`            | float             | Profit target                     |
 | `parameter_adjustments` | object            | Bound clamp adjustments (if any)  |
-| `reward_params`         | object            | Final reward params               |
-| `simulation_params`     | object            | All simulation inputs             |
-| `params_hash`           | string (sha256)   | Deterministic run hash            |
+| `reward_params`         | object            | Final reward parameters                                          |
+| `effective`             | object            | Resolved base factor, profit aim, and risk/reward ratio           |
+| `simulation_params`     | object            | Resolved simulation controls and optional real-data SHA-256       |
+| `params_hash`           | string (sha256)   | Hash of effective inputs, excluding output and real-data paths    |
 
-Two runs match iff `params_hash` identical.
+Within the same analyzer revision, identical `params_hash` values mean the resolved configuration and real-episode bytes match. Equivalent flag and `--params` inputs therefore share one hash.
 
 ### Distribution Shift Metrics
 
-| Metric            | Definition                            | Notes                         |
-| ----------------- | ------------------------------------- | ----------------------------- |
-| `*_kl_divergence` | KL(synth‖real) = Σ p_s log(p_s / p_r) | 0 ⇒ identical histograms      |
-| `*_js_distance`   | √(0.5 KL(p_s‖m) + 0.5 KL(p_r‖m))      | Symmetric, [0,1]              |
-| `*_wasserstein`   | 1D Earth Mover's Distance             | Units of feature              |
-| `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence    |
+| Metric            | Definition                            | Notes                                                                         |
+| ----------------- | ------------------------------------- | ----------------------------------------------------------------------------- |
+| `*_kl_divergence` | KL(synth‖real) = Σ p_s log(p_s / p_r) | 0 ⇒ identical histograms                                                      |
+| `*_js_distance`   | √(0.5 KL(p_s‖m) + 0.5 KL(p_r‖m))      | Symmetric, [0,1]                                                              |
+| `*_wasserstein`   | 1D Earth Mover's Distance             | Units of feature                                                              |
+| `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence                                                    |
 | `*_ks_pvalue`     | KS test p-value                       | API-only with `independent_observations=True`; omitted by the descriptive CLI |
 
 Implementation: 50-bin histograms with ε=1e-10; constants have zero divergence.
@@ -620,13 +621,13 @@ EOF
 Quick validation:
 
 ```shell
-uv run pytest
+uv run --locked --extra dev pytest
 ```
 
 Selective example:
 
 ```shell
-uv run pytest -m pbrs -q
+uv run --locked --extra dev pytest -m pbrs -q
 ```
 
 Coverage threshold enforced: 85% (`--cov-fail-under=85` in `pyproject.toml`).

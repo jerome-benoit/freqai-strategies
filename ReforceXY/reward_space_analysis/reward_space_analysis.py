@@ -576,27 +576,25 @@ def validate_reward_parameters(
     adjustments: dict[str, dict[str, Any]] = {}
 
     # Boolean parameter coercion
-    _bool_keys = [
+    bool_keys = (
         "check_invariants",
+        "exit_plateau",
         "hold_potential_enabled",
         "entry_additive_enabled",
         "exit_additive_enabled",
-    ]
-    for bkey in _bool_keys:
-        if bkey in sanitized:
-            original_val = sanitized[bkey]
-            coerced_val = _to_bool(original_val)
-            if coerced_val is not original_val:
-                sanitized[bkey] = coerced_val
-            adjustments.setdefault(
-                bkey,
-                {
-                    "original": original_val,
-                    "adjusted": coerced_val,
+    )
+    for key in bool_keys:
+        if key in sanitized:
+            original_value = sanitized[key]
+            coerced_value = _to_bool(original_value)
+            if coerced_value is not original_value:
+                sanitized[key] = coerced_value
+                adjustments[key] = {
+                    "original": original_value,
+                    "adjusted": coerced_value,
                     "reason": "bool_coerce",
                     "validation_mode": "strict" if strict else "relaxed",
-                },
-            )
+                }
 
     # Coerce and clamp numeric-bounded parameters
     for key, bounds in _PARAMETER_BOUNDS.items():
@@ -698,6 +696,9 @@ def validate_reward_parameters(
                 "reason": "negative_efficiency_guard",
                 "validation_mode": "relaxed",
             }
+    for key in ("max_trade_duration_candles", "max_idle_duration_candles"):
+        if key in sanitized:
+            sanitized[key] = int(_get_float_param(sanitized, key))
 
     return sanitized, adjustments
 
@@ -2384,15 +2385,22 @@ def _perform_feature_analysis(
     return importance_df, analysis_stats, partial_deps, model
 
 
-def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFrame:
+def load_real_episodes(
+    path: Path,
+    *,
+    enforce_columns: bool = True,
+    artifact_bytes: bytes | None = None,
+) -> pd.DataFrame:
     """Load serialized episodes into normalized DataFrame.
 
     Parameters
     ----------
     path : Path
-        Pickle file path.
+        Pickle file path used for diagnostics.
     enforce_columns : bool, default True
         Require all expected columns (raise on missing) or fill with NaN.
+    artifact_bytes : bytes, optional
+        Exact artifact bytes to deserialize instead of reading the path.
 
     Returns
     -------
@@ -2401,10 +2409,10 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     """
 
     try:
-        with path.open("rb") as f:
-            episodes_data = pickle.load(f)
-    except Exception as e:
-        raise ValueError(f"Data: failed to unpickle '{path}': {e!r}") from e
+        serialized = path.read_bytes() if artifact_bytes is None else artifact_bytes
+        episodes_data = pickle.loads(serialized)
+    except Exception as exc:
+        raise ValueError(f"Data: failed to unpickle '{path}': {exc!r}") from exc
 
     # Top-level dict with 'transitions'
     if isinstance(episodes_data, dict) and "transitions" in episodes_data:
@@ -4572,16 +4580,20 @@ def main() -> None:
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
     risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
+    params["max_idle_duration_candles"] = get_max_idle_duration_candles(params)
     params["action_masking"] = _to_bool(params.get("action_masking", args.action_masking))
     params["unrealized_pnl"] = bool(args.unrealized_pnl)
     # Deterministic seeds cascade
     random.seed(args.seed)
     np.random.seed(args.seed)
     real_df = None
+    real_episodes_sha256 = None
     if args.real_episodes is not None:
         # Fail before any artifact is written for an explicitly requested file.
         print(f"CLI: Loading real episodes from {args.real_episodes}")
-        real_df = load_real_episodes(args.real_episodes)
+        real_episode_bytes = args.real_episodes.read_bytes()
+        real_df = load_real_episodes(args.real_episodes, artifact_bytes=real_episode_bytes)
+        real_episodes_sha256 = hashlib.sha256(real_episode_bytes).hexdigest()
 
     df = simulate_samples(
         num_samples=args.num_samples,
@@ -4616,22 +4628,13 @@ def main() -> None:
             "Sim: NaN values detected in critical simulated columns: "
             + ", ".join(f"{k}={v}" for k, v in nan_issues.items())
         )
-    # Attach simulation parameters for downstream manifest
-    try:
-        defaults = {
-            a.dest: getattr(a, "default", None) for a in parser._actions if hasattr(a, "dest")
-        }
-    except Exception:
-        defaults = {}
+    # Record every resolved simulation input; reward parameters remain in their own map.
     args_dict = vars(args)
-
-    candidate_keys = [
+    simulation_parameter_keys = (
         "num_samples",
         "seed",
         "out_dir",
         "trading_mode",
-        "risk_reward_ratio",
-        "profit_aim",
         "max_duration_ratio",
         "pnl_base_std",
         "pnl_duration_vol_scale",
@@ -4643,22 +4646,14 @@ def main() -> None:
         "real_episodes",
         "unrealized_pnl",
         "action_masking",
-    ]
-
-    sim_params: dict[str, Any] = {}
-    for k in candidate_keys:
-        if k in args_dict:
-            v = args_dict[k]
-            v_norm = str(v) if isinstance(v, Path) else v
-            d = defaults.get(k)
-            d_norm = str(d) if isinstance(d, Path) else d
-            if d_norm != v_norm:
-                sim_params[k] = v_norm
-
-    # Deduplicate any keys that overlap with reward_params (single source of truth)
-    for k in list(sim_params.keys()):
-        if k in params:
-            sim_params.pop(k)
+    )
+    sim_params: dict[str, Any] = {
+        key: str(args_dict[key]) if isinstance(args_dict[key], Path) else args_dict[key]
+        for key in simulation_parameter_keys
+    }
+    sim_params["action_masking"] = params["action_masking"]
+    sim_params["unrealized_pnl"] = params["unrealized_pnl"]
+    sim_params["real_episodes_sha256"] = real_episodes_sha256
 
     df.attrs["simulation_params"] = sim_params
     df.attrs["reward_params"] = dict(params)
@@ -4688,9 +4683,14 @@ def main() -> None:
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
-        resolved_reward_params: dict[str, Any] = dict(
-            params
-        )  # already validated/normalized upstream
+        effective_params: dict[str, float] = {
+            "base_factor": float(base_factor),
+            "profit_aim": float(profit_aim),
+            "risk_reward_ratio": float(risk_reward_ratio),
+        }
+        resolved_reward_params: dict[str, Any] = {
+            key: value for key, value in params.items() if key not in effective_params
+        }
         manifest: dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": len(df),
@@ -4698,36 +4698,32 @@ def main() -> None:
             "pnl_target": float(profit_aim * risk_reward_ratio),
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
-            "effective": {
-                "base_factor": float(base_factor),
-                "profit_aim": float(profit_aim),
-                "risk_reward_ratio": float(risk_reward_ratio),
-            },
+            "effective": effective_params,
         }
         sim_params_dict = df.attrs.get("simulation_params", {})
         if not isinstance(sim_params_dict, dict):
             sim_params_dict = {}
         sim_params: dict[str, Any] = dict(sim_params_dict)
-        if sim_params:
-            excluded_for_hash = {"out_dir", "real_episodes"}
-            sim_params_for_hash: dict[str, Any] = {
-                k: sim_params[k] for k in sim_params if k not in excluded_for_hash
-            }
-            _hash_source: dict[str, Any] = {
-                **{f"sim::{k}": sim_params_for_hash[k] for k in sorted(sim_params_for_hash)},
-                **{
-                    f"reward::{k}": resolved_reward_params[k]
-                    for k in sorted(resolved_reward_params)
-                },
-            }
-            _hash_source_str = json.dumps(_hash_source, sort_keys=True)
-            manifest["params_hash"] = hashlib.sha256(_hash_source_str.encode("utf-8")).hexdigest()
-            manifest["simulation_params"] = sim_params
+        excluded_for_hash = {"out_dir", "real_episodes"}
+        sim_params_for_hash: dict[str, Any] = {
+            key: sim_params[key] for key in sim_params if key not in excluded_for_hash
+        }
+        hash_source: dict[str, Any] = {
+            **{f"sim::{key}": sim_params_for_hash[key] for key in sorted(sim_params_for_hash)},
+            **{
+                f"reward::{key}": resolved_reward_params[key]
+                for key in sorted(resolved_reward_params)
+            },
+            **{f"effective::{key}": effective_params[key] for key in sorted(effective_params)},
+        }
+        hash_source_json = json.dumps(hash_source, sort_keys=True)
+        manifest["params_hash"] = hashlib.sha256(hash_source_json.encode("utf-8")).hexdigest()
+        manifest["simulation_params"] = sim_params
         with manifest_path.open("w", encoding="utf-8") as mh:
             json.dump(manifest, mh, indent=2)
         print(f"CLI: Manifest saved to {manifest_path}")
-    except Exception as e:
-        print(f"CLI: Manifest generation failed; {e}")
+    except Exception as exc:
+        raise RuntimeError(f"CLI: Manifest generation failed: {exc}") from exc
 
     print(f"CLI: Generated {len(df):,} synthetic samples")
     print(f"CLI: {sample_output_message}")
