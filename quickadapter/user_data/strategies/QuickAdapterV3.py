@@ -471,7 +471,7 @@ class QuickAdapterV3(IStrategy):
                 if (
                     col_smoothing_config["method"] in SMOOTHING_METHOD_MODES
                     and col_smoothing_config["mode"] == SMOOTHING_MODES[3]  # "wrap"
-                ):  # "wrap"
+                ):
                     raise ValueError(
                         "label_smoothing.mode='wrap' is incompatible with "
                         "feature_parameters.causal_mode=true"
