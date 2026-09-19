@@ -1015,8 +1015,9 @@ def compose_label_lookahead(
         min_periods=1,
     ).max()
     if (
-        method == SMOOTHING_METHODS[7] and mode == SMOOTHING_MODES[4]  # "interp"
-    ):  # "savgol"; SMOOTHING_MODES[4]='interp'
+        method == SMOOTHING_METHODS[7]  # "savgol"
+        and mode == SMOOTHING_MODES[4]  # "interp"
+    ):
         smoothed_known_at_positions.iloc[:kernel_half_width] = known_at_positions.iloc[
             : 2 * kernel_half_width + 1
         ].max()
