@@ -2072,8 +2072,8 @@ _ZERO_PHASE_FILTER_DISPATCH: Final[
 ] = {
     SMOOTHING_METHODS[1]: (SMOOTHING_KERNELS[0], get_odd_window),  # "gaussian"
     SMOOTHING_METHODS[2]: (SMOOTHING_KERNELS[1], get_odd_window),  # "kaiser"
-    SMOOTHING_METHODS[3]: (  # "kaiser_bessel_derived"
-        SMOOTHING_KERNELS[2],  # "kaiser_bessel_derived"
+    SMOOTHING_METHODS[3]: (
+        SMOOTHING_KERNELS[2],
         get_even_window,
     ),  # "kaiser_bessel_derived"
     SMOOTHING_METHODS[4]: (SMOOTHING_KERNELS[3], get_odd_window),  # "triang"
