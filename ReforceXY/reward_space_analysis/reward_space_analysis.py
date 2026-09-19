@@ -2681,7 +2681,7 @@ def statistical_hypothesis_tests(
         Random seed for bootstrap resampling.
     """
     if independent_observations is not True:
-        raise ValueError("Hypothesis tests require independent_observations=True")
+        raise ValueError("Stats: hypothesis tests require independent_observations=True")
     results = {}
     alpha = 0.05
 
@@ -2887,7 +2887,7 @@ def bootstrap_confidence_intervals(
     degenerate interval in both strict and relaxed modes.
     """
     if independent_observations is not True:
-        raise ValueError("Bootstrap intervals require independent_observations=True")
+        raise ValueError("Stats: bootstrap intervals require independent_observations=True")
     alpha = 1 - confidence_level
     lower_percentile = 100 * alpha / 2
     upper_percentile = 100 * (1 - alpha / 2)

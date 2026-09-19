@@ -611,7 +611,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             model = load_data(coin, dk)
             if model is not None and model is not cached:
                 try:
-                    self._restore_replay(model, dk.data, dk.data_path)
+                    self._restore_replay(model, dk.data, dk.data_path, coin)
                 except Exception:
                     if self.dd.model_dictionary.get(coin) is model:
                         self.dd.model_dictionary.pop(coin, None)
@@ -622,14 +622,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.dd.load_data = load_with_replay
 
     @staticmethod
-    def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path) -> None:
+    def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path, coin: str) -> None:
         if not hasattr(model, "load_replay_buffer"):
             return
         filename = metadata.get("reforcexy_replay")
         if not isinstance(filename, str) or Path(filename).name != filename:
             raise DependencyException(
-                "DQN/QRDQN replay metadata is missing or incompatible; reset trained "
-                "models or use a new freqai.identifier"
+                f"Training [{coin}]: DQN/QRDQN replay metadata is missing or incompatible; "
+                "reset trained models or use a new freqai.identifier"
             )
         model.load_replay_buffer(directory / filename)
         replay = model.replay_buffer
@@ -639,8 +639,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             or replay.n_envs != model.n_envs
         ):
             raise DependencyException(
-                "DQN/QRDQN replay buffer is incompatible; reset trained models or use "
-                "a new freqai.identifier"
+                f"Training [{coin}]: DQN/QRDQN replay buffer is incompatible; reset trained "
+                "models or use a new freqai.identifier"
             )
 
     def _configure_gpu_memory(self) -> None:
@@ -839,8 +839,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             "hold_potential_enabled", ReforceXY.DEFAULT_HOLD_POTENTIAL_ENABLED
         ):
             raise ValueError(
-                "Backtesting does not support hold_potential_enabled=True because "
-                "add_state_info is unavailable"
+                f"Config [{pair}]: backtesting does not support hold_potential_enabled=True "
+                "because add_state_info is unavailable"
             )
         env_info = super().pack_env_dict(pair)
         # Each environment owns its effective parameters; do not mutate global config.
@@ -1215,7 +1215,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                         feature_pipeline = cloudpickle.load(fp)
                 if model is None:
                     model = self.MODELCLASS.load(Path(f"{prefix}_model"))
-                    self._restore_replay(model, metadata, previous_dk.data_path)
+                    self._restore_replay(model, metadata, previous_dk.data_path, pair)
             if (
                 metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
                 != self._DEPLOYMENT_COORDINATE_GENERATION
@@ -1667,7 +1667,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if dates is not None and len(dates) != n:
             raise ValueError(
-                f"Prediction dates must align with feature rows: expected {n}, got {len(dates)}"
+                f"Predict [{dk.pair}]: prediction dates must align with feature rows: "
+                f"expected {n}, got {len(dates)}"
             )
         step = pd.Timedelta(seconds=self.base_tf_seconds)
         if not hasattr(self, "_observation_cache"):
@@ -3136,8 +3137,8 @@ class MyRLEnv(Base5ActionRLEnv):
             self._hold_potential_enabled, getattr(self, "add_state_info", False)
         ):
             raise ValueError(
-                "hold_potential_enabled=True requires add_state_info=True before "
-                "environment construction"
+                f"PBRS [{self.id}]: hold_potential_enabled=True requires add_state_info=True "
+                "before environment construction"
             )
 
         # === PNL TARGET ===
