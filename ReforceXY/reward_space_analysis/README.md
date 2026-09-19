@@ -10,8 +10,8 @@ PBRS invariance.
 - PBRS modes: canonical, non_canonical, progressive_release, spike_cancel,
   retain_previous
 - Feature importance & optional partial dependence
-- Statistical tests (hypothesis, bootstrap CIs, distribution diagnostics)
-- Real vs synthetic shift metrics
+- Descriptive distribution diagnostics and real-vs-synthetic shift metrics;
+  inferential tests and bootstrap intervals are API-only for explicitly independent observations
 - Manifest + parameter hash
 
 ## Quick Start
@@ -165,9 +165,10 @@ Generates shift metrics for comparison (see Outputs section).
 - **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic
   distribution shift metrics. (Simulation-only; triggers additional outputs when
   provided).
-- **`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL
-  accrual during holds for potential Φ. (Simulation-only; affects PBRS
-  components).
+- **`--unrealized_pnl`** (flag, default: false) – Transform the retained
+  in-position synthetic price/PnL trajectory using fee-aware unrealized PnL.
+  This affects extrema and all enabled base, PBRS, and additive reward terms
+  that depend on PnL. (Simulation-only.)
 
 ### Hybrid Simulation Scalars
 
@@ -210,9 +211,11 @@ be overridden via `--params`.
   counts for RandomForest and permutation importance (-1 = all cores).
 
 Inferential helpers are available through the programmatic API only and require
-`independent_observations=True`. In that mode, bootstrap percentile intervals
-retain finite ordered bounds, including exact zero-width intervals for constants;
-the interval need not contain the original sample mean.
+`independent_observations=True`. Programmatic callers may pass `stats_seed`
+to isolate bootstrap resampling from the simulation seed; the descriptive CLI
+does not expose this option. In that mode, bootstrap percentile intervals retain
+finite ordered bounds, including exact zero-width intervals for constants; the
+interval need not contain the original sample mean.
 
 ### Overrides
 
@@ -251,14 +254,16 @@ The exit factor is computed as:
 
 **Formula:**
 
-Let `pnl_target = profit_aim · risk_reward_ratio`,
-`pnl_ratio = pnl / pnl_target`.
+Let `pnl_target = profit_aim · risk_reward_ratio` and
+`pnl_ratio = pnl / pnl_target`. On the loss branch,
+`loss_threshold = pnl_target / risk_reward_ratio` and
+`loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · risk_reward_ratio`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
   `pnl_target_coefficient = 1.0 + win_reward_factor · tanh(pnl_amplification_sensitivity · (pnl_ratio - 1.0))`
-- If `pnl_ratio < -(1.0 / risk_reward_ratio)`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (|pnl_ratio| - 1.0))`
+- If `pnl < -loss_threshold`:
+  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (loss_ratio - 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -410,7 +415,7 @@ r* = r            if not exit_plateau
 
 | Mode      | Formula                       | Monotonic | Notes                                       | Use Case                             |
 | --------- | ----------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
-| legacy    | step: 1.5 if r\* ≤ 1 else 0.5 | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
+| legacy    | step: 1.5 if r\* ≤ 1 else 0.5 | Yes (non-increasing) | Discontinuous legacy step                   | Existing legacy configurations       |
 | sqrt      | 1 / √(1 + r\*)                | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
 | linear    | 1 / (1 + slope · r\*)         | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
 | power     | (1 + r\*)^(-alpha)            | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
@@ -442,19 +447,15 @@ Auto-skip if `num_samples < 4`.
 
 ### Reproducibility
 
-| Component                             | Controlled By                      | Notes                               |
-| ------------------------------------- | ---------------------------------- | ----------------------------------- |
-| Sample simulation                     | `--seed`                           | Drives action sampling & PnL noise  |
-| Statistical tests / bootstrap         | `--stats_seed` (fallback `--seed`) | Isolated RNG                        |
-| RandomForest & permutation importance | `--seed`                           | Identical splits and trees          |
-| Partial dependence grids              | Deterministic                      | Depends only on fitted model & data |
+| Component                             | Controlled By | Notes                                      |
+| ------------------------------------- | ------------- | ------------------------------------------ |
+| Synthetic sampling                    | `--seed`      | Drives action sampling and PnL noise       |
+| RandomForest & permutation importance | `--seed`      | Reproducible splits, trees, and importance |
+| Partial dependence grids              | Deterministic | Depends only on fitted model and data      |
 
-Patterns:
+The CLI uses `--seed` for every randomized analysis it exposes.
 
 ```shell
-uv run python reward_space_analysis.py --num_samples 50000 --seed 123 --stats_seed 9001 --out_dir run_stats1
-uv run python reward_space_analysis.py --num_samples 50000 --seed 123 --stats_seed 9002 --out_dir run_stats2
-# Fully deterministic
 uv run python reward_space_analysis.py --num_samples 50000 --seed 777
 ```
 
@@ -471,7 +472,7 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 `--params` wins on conflicts.
 
 **Simulation** (not allowed in `--params`): `num_samples`, `seed`,
-`trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`,
+`trading_mode`, `max_duration_ratio`, `out_dir`, `pnl_base_std`,
 `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`,
 `strict_diagnostics`, `strict_validation`, `skip_feature_analysis`,
 `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`.
@@ -512,9 +513,12 @@ uv run python reward_space_analysis.py \
 
 ### Main Report (`statistical_analysis.md`)
 
-Includes: global stats, representativity, component + PBRS analysis, feature
-importance/PD, statistical validation (tests, CIs, diagnostics), optional shift
-metrics, summary.
+Includes run configuration, global and component statistics, PBRS trajectory
+diagnostics, feature importance/partial dependence, descriptive distribution
+diagnostics, optional distribution-shift metrics, and a summary. Hypothesis
+tests, bootstrap confidence intervals, and inferential p-values appear only for
+programmatic calls with `independent_observations=True`; the CLI report is
+descriptive.
 
 ### Data Exports
 
@@ -548,10 +552,10 @@ Two runs match iff `params_hash` identical.
 | `*_js_distance`   | √(0.5 KL(p_s‖m) + 0.5 KL(p_r‖m))      | Symmetric, [0,1]              |
 | `*_wasserstein`   | 1D Earth Mover's Distance             | Units of feature              |
 | `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence    |
-| `*_ks_pvalue`     | KS test p-value                       | High ⇒ cannot reject equality |
+| `*_ks_pvalue`     | KS test p-value                       | API-only with `independent_observations=True`; omitted by the descriptive CLI |
 
-Implementation: 50-bin hist; add ε=1e-10; constants ⇒ zero divergence & KS
-p=1.0.
+Implementation: 50-bin histograms with ε=1e-10; constants have zero divergence.
+Inferential KS p-values are available only under the programmatic independence contract.
 
 ---
 

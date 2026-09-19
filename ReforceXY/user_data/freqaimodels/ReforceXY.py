@@ -1327,7 +1327,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             # A zero-size split keeps the schema but must yield no eval environment.
             raw_data["test_features"] = raw_data["train_features"].iloc[:0].copy()
             raw_data["test_labels"] = raw_data["train_labels"].iloc[:0].copy()
-            raw_data["test_weights"] = raw_data["train_weights"].iloc[:0].copy()
+            raw_data["test_weights"] = np.asarray(raw_data["train_weights"])[:0].copy()
             raw_data["train_dates"] = raw_data["train_dates"]
             raw_data["test_dates"] = raw_data["train_dates"].iloc[:0]
         self.df_raw = copy.deepcopy(raw_data["train_features"])
@@ -3154,90 +3154,6 @@ class MyRLEnv(Base5ActionRLEnv):
             )
             self._pnl_target = 0.01
 
-    def _get_next_position(self, action: int) -> Positions:
-        if action == Actions.Long_enter.value and self._position == Positions.Neutral:
-            return Positions.Long
-        if (
-            action == Actions.Short_enter.value
-            and self._position == Positions.Neutral
-            and self.can_short
-        ):
-            return Positions.Short
-        if action == Actions.Long_exit.value and self._position == Positions.Long:
-            return Positions.Neutral
-        if action == Actions.Short_exit.value and self._position == Positions.Short:
-            return Positions.Neutral
-        return self._position
-
-    def _get_entry_unrealized_profit(self, next_position: Positions) -> float:
-        current_open = self.prices.iloc[self._current_tick].open
-        if not isinstance(current_open, (int, float, np.floating)) or not np.isfinite(current_open):
-            return 0.0
-
-        next_pnl = 0.0
-        if next_position == Positions.Long:
-            current_price = self.add_exit_fee(current_open)
-            last_trade_price = self.add_entry_fee(current_open)
-            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
-                next_pnl = (current_price - last_trade_price) / last_trade_price
-        elif next_position == Positions.Short:
-            current_price = self.add_entry_fee(current_open)
-            last_trade_price = self.add_exit_fee(current_open)
-            if not np.isclose(last_trade_price, 0.0) and np.isfinite(last_trade_price):
-                next_pnl = (last_trade_price - current_price) / last_trade_price
-
-        if not np.isfinite(next_pnl):
-            return 0.0
-        return float(next_pnl)
-
-    def _get_next_transition_state(
-        self,
-        action: int,
-        trade_duration: float,
-        current_pnl: float,
-    ) -> tuple[Positions, int, float]:
-        """Compute next transition state tuple (next_position, next_duration, next_pnl).
-
-        Parameters
-        ----------
-        action : int
-            Action taken by the agent.
-        trade_duration : float
-            Trade duration at current tick.
-        current_pnl : float
-            Unrealized PnL at current tick.
-
-        Returns
-        -------
-        tuple[Positions, int, float]
-            (next_position, next_trade_duration, next_pnl) for the transition s -> s'.
-        """
-        next_position = self._get_next_position(action)
-
-        # Entry: Neutral -> Long/Short
-        if self._position == Positions.Neutral and next_position in (
-            Positions.Long,
-            Positions.Short,
-        ):
-            return next_position, 0, self._get_entry_unrealized_profit(next_position)
-
-        # Exit: Long/Short -> Neutral
-        if (
-            self._position in (Positions.Long, Positions.Short)
-            and next_position == Positions.Neutral
-        ):
-            return next_position, 0, 0.0
-
-        # Hold: Long/Short -> Long/Short
-        if self._position in (Positions.Long, Positions.Short) and next_position in (
-            Positions.Long,
-            Positions.Short,
-        ):
-            return next_position, int(trade_duration), current_pnl
-
-        # Neutral self-loop
-        return next_position, 0, 0.0
-
     @staticmethod
     def _loss_duration_multiplier(pnl_ratio: float, risk_reward_ratio: float) -> float:
         if not np.isfinite(pnl_ratio) or pnl_ratio >= 0.0:
@@ -3496,194 +3412,24 @@ class MyRLEnv(Base5ActionRLEnv):
         entry_additive_scale: float,
         exit_additive_scale: float,
     ) -> tuple[float, float, float]:
-        """Compute potential-based reward shaping (PBRS) components.
+        """Compute PBRS and optional additive components for one transition.
 
-        This method computes the PBRS shaping terms.
+        ``previous_position`` and ``next_position`` identify entry, hold, exit,
+        or neutral self-loop transitions. ``next_pnl`` and
+        ``next_trade_duration`` describe the returned observation s', while
+        ``current_pnl`` and ``trade_duration`` describe s at the fill.
+        ``entry_pnl`` is the fee-aware PnL provisioned on an entry fill.
 
-        Canonical PBRS Formula
-        ----------------------
-        R'(s,a,s') = R(s,a,s') + Δ(s,a,s')
-
-        Non-Canonical PBRS Formula
-        --------------------------
-        R'(s,a,s') = R(s,a,s') + Δ(s,a,s') + entry_additive + exit_additive
-
-        where:
-            Δ(s,a,s') = γ·Φ(s') - Φ(s)  (PBRS shaping term)
-
-        Notation
-        --------
-        **States & Actions:**
-            s     : current state
-            s'    : next state
-            a     : action
-
-        **Reward Components:**
-            R(s,a,s')     : base reward
-            R'(s,a,s')    : shaped reward
-            Δ(s,a,s')     : PBRS shaping term = γ·Φ(s') - Φ(s)
-
-        **Potential Function:**
-            Φ(s)          : potential at state s
-            γ             : discount factor for shaping (gamma)
-
-        **State Variables:**
-            r_pnl         : pnl / pnl_target (PnL ratio)
-            r_dur         : duration / max_duration (duration ratio, max 0)
-            scale         : scale parameter
-            g             : gain parameter
-            T_x           : transform function (tanh, softsign, etc.)
-
-        **Hold Potential Formula:**
-            m_dur = 1.0 if r_pnl >= 0 else loss_duration_multiplier(r_pnl, rr)
-            Φ(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
-
-        PBRS Theory & Compliance
-        ------------------------
-        - Ng et al. 1999: potential-based shaping preserves optimal policy
-        - Wiewiora et al. 2003: terminal states must have Φ(terminal) = 0
-        - Invariance holds ONLY in canonical mode with additives disabled
-        - Theorem: Canonical + no additives ⇒ Σ_t γ^t·Δ_t = 0 over episodes
-
-        Architecture & Transitions
-        --------------------------
-        **Three mutually exclusive transition types:**
-
-        1. **Entry** (Neutral → Long/Short):
-           - Φ(s) = 0 (neutral state has no potential)
-           - Φ(s') = hold_potential(s')
-           - Δ(s,a,s') = γ·Φ(s') - 0 = γ·Φ(s')
-           - Optional entry additive (breaks invariance)
-
-        2. **Hold** (Long/Short → Long/Short):
-           - Φ(s) = hold_potential(s)
-           - Φ(s') = hold_potential(s')
-           - Δ(s,a,s') = γ·Φ(s') - Φ(s)
-           - Φ(s') reflects updated PnL and duration
-
-        3. **Exit** (Long/Short → Neutral):
-           - Φ(s) = hold_potential(s)
-           - Φ(s') depends on exit_potential_mode:
-             * **canonical**: Φ(s') = 0 → Δ = -Φ(s)
-             * **heuristic**: Φ(s') = f(Φ(s)) → Δ = γ·Φ(s') - Φ(s)
-           - Optional exit additive (breaks invariance)
-
-        Exit Potential Modes
-        --------------------
-        **canonical** (PBRS-compliant):
-            Φ(s') = 0
-            Δ = γ·0 - Φ(s) = -Φ(s)
-            Additives disabled automatically
-
-        **non_canonical**:
-            Φ(s') = 0
-            Δ = -Φ(s)
-            Additives allowed (breaks invariance)
-
-        **progressive_release** (heuristic):
-            Φ(s') = Φ(s)·(1 - d)  where d = decay_factor
-            Δ = γ·Φ(s)·(1-d) - Φ(s)
-
-        **spike_cancel** (heuristic):
-            Φ(s') = Φ(s)/γ
-            Δ = γ·(Φ(s)/γ) - Φ(s) = 0
-
-        **retain_previous** (heuristic):
-            Φ(s') = Φ(s)
-            Δ = γ·Φ(s) - Φ(s) = (γ-1)·Φ(s)
-
-        Additive Terms (Non-PBRS)
-        --------------------------
-        Entry and exit additives are **optional bonuses** that break PBRS invariance:
-        - Entry additive: applied on Neutral→Long/Short transitions
-        - Exit additive: applied on Long/Short→Neutral transitions
-        - These do NOT persist in Φ(s) storage
-
-        Invariance & Validation
-        -----------------------
-        **Theoretical Guarantee:**
-            Canonical + no additives ⇒ Σ_t γ^t·Δ_t = 0
-            (Φ(start) = Φ(end) = 0)
-
-        **Deviations from Theory:**
-            - Heuristic exit modes violate invariance
-            - Entry/exit additives break policy invariance
-            - Non-canonical modes introduce path dependence
-
-        **Robustness:**
-            - All transforms bounded: |T_x| ≤ 1
-            - Loss-side bound: |Φ(s)| ≤ scale·(1+risk_reward_ratio)/2
-            - Global bound B = scale·max(1, (1+risk_reward_ratio)/2): |Δ| ≤ (1+γ)·B
-            - Terminal enforcement: Φ(s) = 0 when terminated
-
-        Implementation Details
-        ----------------------
-        This method wraps the core PBRS logic for use in the RL environment:
-        - Reads Φ(s) from self._last_potential (previous state potential)
-        - Reads γ from self._potential_gamma
-        - Reads configuration from self._exit_potential_mode, self._entry_additive_enabled, etc.
-        - Classifies entry/exit/hold from the supplied previous and next positions
-        - Stores Φ(s') to self._last_potential for next step
-        - Updates diagnostic accumulators (_total_reward_shaping, _total_entry_additive, etc.)
-
-        Parameters
-        ----------
-        action : int
-            Action taken: determines transition type (entry/hold/exit)
-        trade_duration : float
-            Trade duration at current tick.
-            This is the duration for state s'.
-        previous_position : Positions
-            Position held before the action executed (state s in O_t).
-        next_position : Positions
-            Position after execution and advancement (state s' in O_(t+1)).
-        next_trade_duration : float
-            Trade duration in the next observation, state s'.
-        next_pnl : float
-            Unrealized PnL in the next observation, state s'.
-        entry_pnl : float
-            Fee-aware entry PnL provisioned at the fill open (state s).
-        trade_duration : float
-            Trade duration at the fill (state s), for the exit additive.
-        max_trade_duration : float
-            Maximum allowed trade duration (for normalization)
-        current_pnl : float
-            Unrealized PnL at the fill (state s), for the exit additive.
-        pnl_target : float
-            Target PnL for ratio normalization: r_pnl = pnl / pnl_target
-        hold_potential_scale : float
-            Magnitude scale for hold potential (= hold_potential_ratio * base_factor)
-        entry_additive_scale : float
-            Magnitude scale for entry additive (= entry_additive_ratio * base_factor)
-        exit_additive_scale : float
-            Magnitude scale for exit additive (= exit_additive_ratio * base_factor)
+        The shaping component is Δ = γ·Φ(s') - Φ(s). In canonical mode,
+        ``step()`` enforces a zero terminal potential. Therefore an observed
+        trajectory satisfies Σ γ^t·Δ_t = -Φ(s_0) + γ^T·Φ(s_T), which is zero
+        only when both boundary potentials are zero. Entry and exit additives
+        are returned separately and are not PBRS terms.
 
         Returns
         -------
         tuple[float, float, float]
-            (reward_shaping, entry_additive, exit_additive)
-
-            - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
-            - entry_additive: optional non-PBRS entry bonus (0.0 if disabled or not entry)
-            - exit_additive: optional non-PBRS exit bonus (0.0 if disabled or not exit)
-
-        Notes
-        -----
-        **State Management:**
-        - Current Φ(s): read from self._last_potential
-        - Next Φ(s'): computed and stored to self._last_potential
-        - Transition type: inferred from self._position and action
-
-        **Configuration Sources:**
-        - γ: self._potential_gamma
-        - Exit mode: self._exit_potential_mode
-        - Additives: self._entry_additive_enabled, self._exit_additive_enabled
-        - Transforms: self._hold_potential_transform_pnl, etc.
-
-        **Recommendations:**
-        - Use canonical mode for policy-invariant shaping
-        - Monitor Σ_t γ^t·Δ_t ≈ 0 per episode in canonical mode
-        - Disable additives to preserve theoretical PBRS guarantees
+            ``(reward_shaping, entry_additive, exit_additive)``.
         """
 
         prev_potential = float(self._last_potential)
@@ -4602,8 +4348,10 @@ class MyRLEnv(Base5ActionRLEnv):
         return float(np.expm1(self.get_most_recent_return()))
 
     def get_env_history(self) -> DataFrame:
-        """
-        Get environment data aligned on ticks, including optional trade events
+        """Return one metrics row per transition, joined only with price data.
+
+        Trade events remain normalized in ``trade_history``. It contains one
+        row per economic event, and ordered events may share an execution tick.
         """
         if not self.history:
             logger.warning("Env [%s]: history is empty", self.id)
@@ -4614,22 +4362,9 @@ class MyRLEnv(Base5ActionRLEnv):
             logger.warning("Env [%s]: 'tick' column missing from history", self.id)
             return DataFrame()
 
-        _rollout_history = _history_df.copy()
-        if self.trade_history:
-            _trade_history_df = DataFrame(self.trade_history)
-            if "tick" in _trade_history_df.columns:
-                _trade_history_df = _trade_history_df.rename(columns={"tick": "execution_tick"})
-                _rollout_history = merge(
-                    _rollout_history,
-                    _trade_history_df,
-                    on="execution_tick",
-                    how="left",
-                    validate="one_to_one",
-                )
-
         try:
             history = merge(
-                _rollout_history,
+                _history_df,
                 self.prices,
                 left_on="tick",
                 right_index=True,

@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Report formatting focused tests moved from helpers/test_utilities.py.
-
-Owns invariant: report-abs-shaping-line-091 (integration category)
-"""
+"""Report formatting focused tests moved from helpers/test_utilities.py."""
 
 import re
 import unittest
@@ -17,7 +14,6 @@ from ..constants import (
     PARAMS,
     SCENARIOS,
     SEEDS,
-    TOLERANCE,
 )
 from ..test_base import RewardSpaceTestBase
 
@@ -94,25 +90,6 @@ class TestReportFormatting(RewardSpaceTestBase):
         )
         report_path = out_dir / "statistical_analysis.md"
         return report_path.read_text(encoding="utf-8")
-
-    def test_abs_shaping_line_present_and_constant(self):
-        """Abs Σ Shaping Reward line present, formatted, uses constant not literal."""
-        df = pd.DataFrame(
-            {
-                "reward_shaping": [TOLERANCE.IDENTITY_STRICT, -TOLERANCE.IDENTITY_STRICT],
-                "reward_entry_additive": [0.0, 0.0],
-                "reward_exit_additive": [0.0, 0.0],
-            }
-        )
-        total_shaping = df["reward_shaping"].sum()
-        self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        lines = [f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |"]
-        content = "\n".join(lines)
-        m = re.search("\\| Abs Σ Shaping Reward \\| ([0-9]+\\.[0-9]{6}e[+-][0-9]{2}) \\|", content)
-        self.assertIsNotNone(m, "Abs Σ Shaping Reward line missing or misformatted")
-        val = float(m.group(1)) if m else None
-        if val is not None:
-            self.assertLess(val, TOLERANCE.NEGLIGIBLE + TOLERANCE.IDENTITY_STRICT)
 
     def test_distribution_shift_section_present_with_real_episodes(self):
         """Distribution Shift section renders metrics table when real episodes provided."""

@@ -70,13 +70,7 @@ _LOG_2 = math.log(2.0)
 
 DEFAULT_IDLE_DURATION_MULTIPLIER = 4
 
-# Tolerance for PBRS invariance classification.
-#
-# When `reward_invariance_correction` is available (reward_shaping - reward_pbrs_delta),
-# canonical PBRS should satisfy max|correction| < PBRS_INVARIANCE_TOL.
-#
-# When that diagnostic column is not available (e.g., reporting from partial datasets),
-# we fall back to the weaker heuristic |Σ shaping| < PBRS_INVARIANCE_TOL.
+# Tolerance for observed PBRS identities, boundaries, and zero additive components.
 PBRS_INVARIANCE_TOL: float = 1e-6
 # Default discount factor γ for potential-based reward shaping
 POTENTIAL_GAMMA_DEFAULT: float = 0.95
@@ -681,10 +675,12 @@ def validate_reward_parameters(
     # The coefficient must stay non-negative at both boundaries of the normalized
     # efficiency interval [0, 1]. Reject combinations that require a runtime clamp.
     if "efficiency_weight" in sanitized or "efficiency_center" in sanitized:
-        weight_value = sanitized.get("efficiency_weight", 1.0)
-        center_value = sanitized.get("efficiency_center", 0.5)
-        weight = float(weight_value) if isinstance(weight_value, (int, float)) else 1.0
-        center = float(center_value) if isinstance(center_value, (int, float)) else 0.5
+        default_weight = _get_float_param(DEFAULT_MODEL_REWARD_PARAMETERS, "efficiency_weight")
+        default_center = _get_float_param(DEFAULT_MODEL_REWARD_PARAMETERS, "efficiency_center")
+        weight_value = sanitized.get("efficiency_weight", default_weight)
+        center_value = sanitized.get("efficiency_center", default_center)
+        weight = float(weight_value) if isinstance(weight_value, (int, float)) else default_weight
+        center = float(center_value) if isinstance(center_value, (int, float)) else default_center
         if weight * max(center, 1.0 - center) > 1.0:
             message = (
                 f"Param: efficiency_weight={weight} violates efficiency_weight * "
@@ -1791,15 +1787,18 @@ def simulate_samples(
         # Unrealized-PnL mode replaces it below with the fee-aware price implied by
         # the target PnL before reward calculation.
         if position in (Positions.Long, Positions.Short):
-            pnl = _compute_unrealized_pnl_estimate(
-                position,
-                entry_open=entry_open,
-                current_open=current_open,
-                params=params,
+            candidate_pnl = float(
+                np.clip(
+                    _compute_unrealized_pnl_estimate(
+                        position,
+                        entry_open=entry_open,
+                        current_open=current_open,
+                        params=params,
+                    ),
+                    -0.15,
+                    0.15,
+                )
             )
-            pnl = float(np.clip(pnl, -0.15, 0.15))
-            max_unrealized_profit = max(max_unrealized_profit, pnl)
-            min_unrealized_profit = min(min_unrealized_profit, pnl)
             if _get_bool_param(params, "unrealized_pnl", False):
                 center_unrealized = 0.5 * (max_unrealized_profit + min_unrealized_profit)
                 beta = _get_float_param(params, "pnl_amplification_sensitivity")
@@ -1829,8 +1828,10 @@ def simulate_samples(
                         0.15,
                     )
                 )
-                max_unrealized_profit = max(max_unrealized_profit, pnl)
-                min_unrealized_profit = min(min_unrealized_profit, pnl)
+            else:
+                pnl = candidate_pnl
+            max_unrealized_profit = max(max_unrealized_profit, pnl)
+            min_unrealized_profit = min(min_unrealized_profit, pnl)
         else:
             pnl = 0.0
             max_unrealized_profit = 0.0
@@ -3632,12 +3633,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Number of parallel jobs for permutation_importance (default: -1 for all CPUs).",
     )
     parser.add_argument(
-        "--stats_seed",
-        type=int,
-        default=None,
-        help="Optional separate seed for statistical analyses (default: same as --seed).",
-    )
-    parser.add_argument(
         "--base_factor",
         type=float,
         default=100.0,
@@ -3726,7 +3721,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--unrealized_pnl",
         action="store_true",
-        help="Simulate unrealized PnL during holds to feed Φ(s) (optional; default: disabled).",
+        help=(
+            "Simulate fee-aware unrealized PnL while a position is open. This transforms the "
+            "retained synthetic price/PnL trajectory and affects unrealized extrema, base and "
+            "PBRS rewards when enabled. Simulation-only; disabled by default."
+        ),
     )
     return parser
 
@@ -4243,18 +4242,30 @@ def write_complete_statistical_analysis(
             )
 
             evidence = verify_pbrs_trajectory(df, _get_potential_gamma(reward_params))
-            canonical = exit_potential_mode == "canonical" and not (
+            canonical_configuration = exit_potential_mode == "canonical" and not (
                 entry_additive_effective or exit_additive_effective
             )
-            invariance_status = (
-                "Canonical: observed PBRS verified"
-                if canonical and evidence["verified"]
-                else "Not verified"
-                if canonical
-                else "Non-canonical: not verified"
-            )
+            observed_additive_issues = []
+            for column in ("reward_entry_additive", "reward_exit_additive"):
+                if column not in df.columns:
+                    observed_additive_issues.append(f"{column} is missing")
+                    continue
+                observed = pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+                if not np.isfinite(observed).all():
+                    observed_additive_issues.append(f"{column} contains non-finite values")
+                elif not np.allclose(observed, 0.0, atol=PBRS_INVARIANCE_TOL, rtol=0):
+                    observed_additive_issues.append(f"{column} contains non-zero values")
+            canonical_observations = not observed_additive_issues
+
+            if not canonical_configuration:
+                invariance_status = "Non-canonical: not verified"
+            elif evidence["verified"] and canonical_observations:
+                invariance_status = "Canonical: observed PBRS verified"
+            else:
+                invariance_status = "Not verified"
+
             invariance_note = evidence["reason"] + ". Raw shaping sums do not certify invariance."
-            if not canonical:
+            if not canonical_configuration:
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
@@ -4266,6 +4277,12 @@ def write_complete_statistical_analysis(
                         additive_types.append("exit")
                     reasons.append(f"additives={additive_types}")
                 invariance_note += f" Modified for flexibility: {', '.join(reasons)}"
+            elif observed_additive_issues:
+                invariance_note += (
+                    " Observed additive components invalid: "
+                    + "; ".join(observed_additive_issues)
+                    + "."
+                )
             elif additives_suppressed:
                 invariance_note += " Additives are suppressed in canonical mode."
             # Summarize PBRS invariance
@@ -4590,7 +4607,6 @@ def main() -> None:
         "perm_n_jobs",
         "skip_feature_analysis",
         "skip_partial_dependence",
-        "stats_seed",
         "strict_diagnostics",
         "real_episodes",
         "unrealized_pnl",
@@ -4630,7 +4646,6 @@ def main() -> None:
         risk_reward_ratio=risk_reward_ratio,
         seed=args.seed,
         real_df=real_df,
-        stats_seed=(args.stats_seed if getattr(args, "stats_seed", None) is not None else None),
         strict_diagnostics=bool(getattr(args, "strict_diagnostics", False)),
         skip_partial_dependence=bool(getattr(args, "skip_partial_dependence", False)),
         skip_feature_analysis=bool(getattr(args, "skip_feature_analysis", False)),

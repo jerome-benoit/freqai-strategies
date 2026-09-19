@@ -20,6 +20,7 @@ from reward_space_analysis import (
 )
 
 from ..constants import (
+    CONTINUITY,
     PARAMS,
     SCENARIOS,
     SEEDS,
@@ -337,7 +338,7 @@ class TestStatistics(RewardSpaceTestBase):
         y_noisy = y + rng.normal(0, 0.0001, len(y))
         window = 5
         y_smooth = np.convolve(y_noisy, np.ones(window) / window, mode="valid")
-        self.assertMonotonic(y_smooth, non_increasing=True, tolerance=1e-05)
+        self.assertMonotonic(y_smooth, non_increasing=True, tolerance=CONTINUITY.EPS_LARGE)
 
     def test_stats_hypothesis_seed_reproducibility(self):
         """Seed reproducibility for statistical_hypothesis_tests + bootstrap."""

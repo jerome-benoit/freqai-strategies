@@ -68,6 +68,12 @@ class TrainingObservationsTest(unittest.TestCase):
                 clone, _ = model._resolve_deployment_state(dk, dk.pair)
                 self.assertEqual(clone.replay_buffer.size(), size)
                 self.assertIsNot(clone.replay_buffer, restored.replay_buffer)
+                clone.replay_buffer.observations.flat[0] += 123.0
+                self.assertNotEqual(
+                    clone.replay_buffer.observations.flat[0],
+                    restored.replay_buffer.observations.flat[0],
+                )
+                np.testing.assert_array_equal(restored.replay_buffer.observations, replay)
                 self.assertIs(model.dd.load_data(dk.pair, dk), restored)
                 model.dd.model_dictionary.clear()
                 (dk.data_path / dk.data["reforcexy_replay"]).unlink()

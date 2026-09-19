@@ -134,6 +134,10 @@ class PortfolioReturnsTest(unittest.TestCase):
                         self.assertAlmostEqual(info["exit_pnl"], expected_pnl)
                         self.assertTrue(info["terminal_liquidation"])
                         self.assertEqual(len(env.trade_history), 2)
+                        self.assertEqual(
+                            env.trade_history[-1]["type"],
+                            "short_exit" if short else "long_exit",
+                        )
                         self.assertEqual(env.trade_history[-1]["tick"], info["execution_tick"])
                         self.assertEqual(env.trade_history[-1]["price"], terminal_price)
                         self.assertAlmostEqual(env.trade_history[-1]["profit"], expected_pnl)
@@ -157,26 +161,62 @@ class PortfolioReturnsTest(unittest.TestCase):
                         terminal_row = history.loc[
                             history["execution_tick"] == info["execution_tick"]
                         ].iloc[0]
-                        self.assertEqual(
-                            terminal_row["type"], "short_exit" if short else "long_exit"
-                        )
+                        self.assertEqual(terminal_row["reward_exit"], info["reward_exit"])
                         self.assertTrue(terminal_row["terminal_liquidation"])
 
-    def test_history_joins_events_at_execution_tick(self):
+    def test_history_keeps_transitions_separate_from_trade_events(self):
         env = self.make_env([100.0, 100.0, 110.0, 110.0])
         _, _, _, _, entry_info = env.step(Actions.Long_enter.value)
         _, _, _, _, exit_info = env.step(Actions.Long_exit.value)
         history = env.get_env_history()
         self.assertEqual(len(history), 2)
+        self.assertNotIn("type", history.columns)
+        self.assertNotIn("profit", history.columns)
         entry_row = history.loc[history["execution_tick"] == 1].iloc[0]
-        self.assertEqual(entry_row["type"], "long_enter")
         self.assertEqual(entry_row["reward_exit"], entry_info["reward_exit"])
         self.assertEqual(entry_row["reward_exit"], 0.0)
-        self.assertEqual(entry_row["action"], 1)
+        self.assertEqual(entry_row["action"], Actions.Long_enter.value)
         exit_row = history.loc[history["execution_tick"] == 2].iloc[0]
-        self.assertEqual(exit_row["type"], "long_exit")
         self.assertGreater(exit_row["reward_exit"], 0.0)
         self.assertEqual(exit_row["reward_exit"], exit_info["reward_exit"])
+        self.assertEqual(
+            [(event["tick"], event["type"]) for event in env.trade_history],
+            [(1, "long_enter"), (2, "long_exit")],
+        )
+
+    def test_terminal_entry_preserves_two_events_and_plot_markers(self):
+        env = self.make_env([100.0, 100.0, 90.0])
+        _, _, terminated, truncated, info = env.step(Actions.Long_enter.value)
+        expected_pnl = 90.0 / 100.0 / (1.0 + env.fee) ** 2 - 1.0
+
+        self.assertTrue(terminated)
+        self.assertFalse(truncated)
+        self.assertTrue(info["terminal_liquidation"])
+        history = env.get_env_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history.iloc[0]["execution_tick"], info["execution_tick"])
+        self.assertEqual(history.iloc[0]["open"], 90.0)
+
+        self.assertEqual(len(env.trade_history), 2)
+        self.assertEqual(
+            [(event["tick"], event["type"]) for event in env.trade_history],
+            [(info["execution_tick"], "long_enter"), (info["execution_tick"], "long_exit")],
+        )
+        self.assertEqual(
+            [event["price"] for event in env.trade_history],
+            [100.0, 90.0],
+        )
+        self.assertEqual(env.trade_history[0]["profit"], 0.0)
+        self.assertAlmostEqual(env.trade_history[1]["profit"], expected_pnl)
+
+        figure = env.get_env_plot()
+        marker_lines = [
+            line
+            for line in figure.axes[0].lines
+            if line.get_linestyle() == "None" and len(line.get_xdata()) == 1
+        ]
+        self.assertEqual([line.get_marker() for line in marker_lines], ["^", "."])
+        self.assertEqual([line.get_xdata()[0] for line in marker_lines], [1, 1])
 
     def test_nonpositive_equity_is_not_reported_as_zero_return(self):
         env = self.make_env([100.0, 100.0, 100.0, 300.0, 300.0], fee=0.0)

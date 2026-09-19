@@ -1,6 +1,7 @@
 """Regressions for live observations, HPO options and historic prediction alignment."""
 
 import copy
+import math
 import tempfile
 import unittest
 from datetime import datetime as dt
@@ -165,6 +166,38 @@ class ReviewContractsTest(unittest.TestCase):
                 finally:
                     train_env.close()
                     eval_env.close()
+
+    def test_training_without_holdout_keeps_all_rows_and_no_eval_environment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            config["freqai"]["data_split_parameters"]["test_size"] = 0
+            model = ReforceXY(config=config)
+            model.live = True
+            model.can_short = False
+            model.get_state_info = lambda pair: (0.5, 0.0, 0)
+            self.addCleanup(model.close_envs)
+            dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+            dk.data_path = Path(temp) / "fit"
+            dk.data_path.mkdir()
+            dk.model_filename = "cb_btc_no_holdout"
+            dk.label_list = ["&-action"]
+            frame = pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-01-01", periods=64, freq="5min", tz="UTC"),
+                    "%-feature": np.sin(np.arange(64)),
+                    "&-action": np.zeros(64),
+                }
+            )
+            for column in ("open", "high", "low", "close"):
+                frame[f"%-raw_{column}"] = 100 + np.arange(64) * 0.1
+            dk.training_features_list = [column for column in frame if column.startswith("%")]
+
+            trained = model.train(frame, dk.pair, dk)
+
+            self.assertIsNotNone(trained)
+            self.assertEqual(len(dk.data_dictionary["train_features"]), len(frame))
+            self.assertEqual(len(dk.data_dictionary["test_features"]), 0)
+            self.assertIsNone(model.eval_env)
 
     def test_live_stacking_preserves_frames_and_resets_for_new_model(self):
         model = self.model()
@@ -468,23 +501,49 @@ class ReviewContractsTest(unittest.TestCase):
         self.assertGreater(deep, slight)
         self.assertEqual(env._compute_pnl_target_coefficient(-0.5 * threshold, target, params), 1.0)
 
-    def test_terminated_is_python_bool_for_all_comparison_sources(self):
+    def test_step_returns_python_bools_for_each_termination_path(self):
         model = self.model()
-        prices = pd.DataFrame({"open": np.full(6, 100.0, dtype=np.float64)})
-        env = MyRLEnv(
-            df=pd.DataFrame({"f": np.zeros(6)}),
-            prices=prices,
-            **model.pack_env_dict("BTC/USDT"),
-        )
-        self.addCleanup(env.close)
-        env.reset()
-        _, _, terminated, truncated, _ = env.step(Actions.Neutral.value)
-        self.assertIsInstance(terminated, bool)
-        self.assertIsInstance(truncated, bool)
-        self.assertFalse(terminated)
-        # All three comparisons are pandas/numpy-backed values.
-        self.assertIsInstance(env._current_tick == env._end_tick, (bool, np.bool_))
-        self.assertIsInstance(bool(env._total_profit < env.max_drawdown), bool)
+
+        def make_env(prices):
+            frame = pd.DataFrame({"open": prices})
+            env = MyRLEnv(df=frame.copy(), prices=frame, **model.pack_env_dict("BTC/USDT"))
+            env.fee = 0.0
+            self.addCleanup(env.close)
+            env.reset()
+            return env
+
+        candle_env = make_env([100.0, 100.0, 100.0])
+        _, _, terminated, truncated, candle_info = candle_env.step(Actions.Neutral.value)
+        self.assertIs(type(terminated), bool)
+        self.assertTrue(terminated)
+        self.assertIs(type(truncated), bool)
+        self.assertFalse(truncated)
+        self.assertFalse(candle_info["terminal_liquidation"])
+
+        realized_env = make_env([100.0, 100.0, 100.0, 50.0, 50.0, 50.0])
+        realized_env.max_drawdown = -10.0
+        realized_env.step(Actions.Long_enter.value)
+        realized_env.step(Actions.Neutral.value)
+        realized_env.max_drawdown = 0.75
+        _, _, terminated, truncated, realized_info = realized_env.step(Actions.Long_exit.value)
+        self.assertIs(type(terminated), bool)
+        self.assertTrue(terminated)
+        self.assertIs(type(truncated), bool)
+        self.assertFalse(truncated)
+        self.assertLess(realized_env._total_profit, realized_env.max_drawdown)
+        self.assertFalse(realized_info["terminal_liquidation"])
+
+        unrealized_env = make_env([100.0, 100.0, 100.0, 50.0, 50.0, 50.0])
+        unrealized_env.max_drawdown = 0.75
+        _, _, first_terminated, first_truncated, _ = unrealized_env.step(Actions.Long_enter.value)
+        self.assertFalse(first_terminated)
+        self.assertFalse(first_truncated)
+        _, _, terminated, truncated, unrealized_info = unrealized_env.step(Actions.Neutral.value)
+        self.assertIs(type(terminated), bool)
+        self.assertTrue(terminated)
+        self.assertIs(type(truncated), bool)
+        self.assertFalse(truncated)
+        self.assertTrue(unrealized_info["terminal_liquidation"])
 
     def test_null_target_kl_overrides_user_value(self):
         params = {
@@ -583,31 +642,48 @@ class ReviewContractsTest(unittest.TestCase):
         self.addCleanup(env.close)
         observation, _ = env.reset()
         np.testing.assert_array_equal(observation[:, 0], [10.0, 11.0])
-        observation, _, done, _, _ = env.step(1)
+        observation, entry_reward, done, truncated, _ = env.step(1)
         self.assertFalse(done)
+        self.assertFalse(truncated)
         self.assertEqual(env.trade_history[-1]["tick"], 2)
         self.assertEqual(env.trade_history[-1]["price"], 100.0)
         np.testing.assert_array_equal(observation[:, 0], [11.0, 12.0])
-        self.assertAlmostEqual(float(observation[-1, 1]), 0.1)
-        self.assertEqual(float(observation[-1, 3]), 1.0)
-        expected_potential = env._compute_hold_potential(
-            env._position,
-            env.get_unrealized_profit(),
-            env._pnl_target,
-            env.get_trade_duration() / max(1, env.max_trade_duration_candles),
-            env._hold_potential_ratio * float(model.reward_params.get("base_factor", 100)),
+        observed_pnl = float(observation[-1, 1])
+        observed_duration = float(observation[-1, 3])
+        self.assertAlmostEqual(observed_pnl, 0.1)
+        self.assertEqual(observed_duration, 1.0)
+        hold_scale = ReforceXY.DEFAULT_HOLD_POTENTIAL_RATIO * ReforceXY.DEFAULT_BASE_FACTOR
+        expected_potential = (
+            hold_scale
+            * 0.5
+            * (
+                math.tanh(ReforceXY.DEFAULT_HOLD_POTENTIAL_GAIN * observed_pnl / env._pnl_target)
+                + math.tanh(
+                    ReforceXY.DEFAULT_HOLD_POTENTIAL_GAIN
+                    * observed_duration
+                    / env.max_trade_duration_candles
+                )
+            )
         )
-        self.assertAlmostEqual(env._last_next_potential, expected_potential)
-        self.assertAlmostEqual(env._last_reward_shaping, env._potential_gamma * expected_potential)
-        env.step(2)
+        self.assertAlmostEqual(entry_reward, env._potential_gamma * expected_potential)
+
+        _, exit_reward, exit_done, exit_truncated, _ = env.step(2)
+        self.assertFalse(exit_done)
+        self.assertFalse(exit_truncated)
         self.assertEqual(env.trade_history[-1]["tick"], 3)
         self.assertEqual(env.trade_history[-1]["price"], 110.0)
-        self.assertAlmostEqual(env._last_reward_shaping, -expected_potential)
+        pnl_coefficient = 1.0 + 2.0 * math.tanh(2.0 * (observed_pnl / env._pnl_target - 1.0))
+        # The entry transition retains one PnL observation, so max equals min
+        # and the independent efficiency formula remains at its neutral value 1.0.
+        expected_base_exit = observed_pnl * ReforceXY.DEFAULT_BASE_FACTOR * pnl_coefficient
+        self.assertAlmostEqual(exit_reward, expected_base_exit - expected_potential, places=5)
+
         env.step(1)
-        _, _, done, _, _ = env.step(0)
+        _, _, done, truncated, info = env.step(0)
         self.assertTrue(done)
+        self.assertFalse(truncated)
         self.assertEqual(env._current_tick, 6)
-        self.assertEqual(env._last_next_potential, 0.0)
+        self.assertEqual(info["next_potential"], 0.0)
 
     def test_state_info_normalizes_leveraged_profit_ratio(self):
         trade = SimpleNamespace(

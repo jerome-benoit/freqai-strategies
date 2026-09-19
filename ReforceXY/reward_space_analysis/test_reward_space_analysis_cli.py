@@ -324,7 +324,10 @@ def main():
     parser.add_argument(
         "--unrealized_pnl",
         action="store_true",
-        help="Forward --unrealized_pnl to child process to exercise hold Φ(s) path.",
+        help=(
+            "Forward --unrealized_pnl so the retained fee-aware PnL trajectory affects "
+            "extrema and PnL-dependent rewards."
+        ),
     )
     parser.add_argument(
         "--params",
