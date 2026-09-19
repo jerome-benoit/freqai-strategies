@@ -1252,8 +1252,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "Reset trained models or use a new freqai.identifier."
             ) from exc
         logger.info(
-            f"Training [{pair}]: continuing deployment in the persisted feature coordinate system; "
-            "reset trained models to change pipeline configuration"
+            "Training [%s]: continuing deployment in the persisted feature coordinate system; "
+            "reset trained models to change pipeline configuration",
+            pair,
         )
         return state
 
@@ -1339,8 +1340,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             raw_data, dk, deployment_state=None if self.hyperopt else deployment_state
         )
         logger.info(
-            f"Training [{pair}]: model on {len(dd['train_features'].columns)}"
-            f" features and {len(dd['train_features'])} data points"
+            "Training [%s]: model on %d features and %d data points",
+            pair,
+            len(dd["train_features"].columns),
+            len(dd["train_features"]),
         )
         model = self.fit(
             dd,
@@ -1560,7 +1563,10 @@ class ReforceXY(BaseReinforcementLearningModel):
             warmed_up = remaining <= 0
             if not warmed_up:
                 logger.warning(
-                    f"Predict [{pair}]: fit live predictions not warmed up; {remaining} produced observations until warmup completion"
+                    "Predict [%s]: fit live predictions not warmed up; "
+                    "%d more produced observations required for warmup completion",
+                    pair,
+                    remaining,
                 )
         pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 

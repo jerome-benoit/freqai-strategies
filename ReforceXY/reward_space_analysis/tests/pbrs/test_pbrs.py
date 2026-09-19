@@ -1166,7 +1166,7 @@ class TestPBRS(RewardSpaceTestBase):
             PARAMS.BASE_FACTOR,
         )
         self.assertFinite(prev_phi, name="prev_phi")
-        next_phi_can = _compute_exit_potential(prev_phi, params_can)
+        next_phi_can = _compute_exit_potential(prev_phi, params_can, gamma)
         self.assertAlmostEqualFloat(
             next_phi_can,
             0.0,
@@ -1181,7 +1181,7 @@ class TestPBRS(RewardSpaceTestBase):
             msg="Canonical delta mismatch",
         )
         params_spike = self.base_params(exit_potential_mode="spike_cancel", **base_common)
-        next_phi_spike = _compute_exit_potential(prev_phi, params_spike)
+        next_phi_spike = _compute_exit_potential(prev_phi, params_spike, gamma)
         shaping_spike = gamma * next_phi_spike - prev_phi
         self.assertNearZero(
             shaping_spike,

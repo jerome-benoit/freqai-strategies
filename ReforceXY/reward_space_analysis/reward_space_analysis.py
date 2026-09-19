@@ -3118,14 +3118,24 @@ def _get_potential_gamma(params: RewardParams) -> float:
     """Return validated potential_gamma.
 
     Process:
-    - If NaN -> default POTENTIAL_GAMMA_DEFAULT with warning (missing or unparsable).
+    - If missing, unparsable, or non-finite -> POTENTIAL_GAMMA_DEFAULT with warning.
     - If outside [0,1] -> clamp + warning including original value.
     - Guarantee returned float ∈ [0,1].
     """
+    raw_gamma = params.get("potential_gamma")
     gamma = _get_float_param(params, "potential_gamma", np.nan)
     if not np.isfinite(gamma):
+        if "potential_gamma" in params:
+            message = (
+                f"PBRS: potential_gamma={raw_gamma!r} is invalid or non-finite; "
+                f"using default {POTENTIAL_GAMMA_DEFAULT}"
+            )
+        else:
+            message = (
+                f"PBRS: potential_gamma not specified; using default {POTENTIAL_GAMMA_DEFAULT}"
+            )
         warnings.warn(
-            f"PBRS: potential_gamma not specified; falling back to {POTENTIAL_GAMMA_DEFAULT}",
+            message,
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -3135,7 +3145,7 @@ def _get_potential_gamma(params: RewardParams) -> float:
     gamma, reason_parts = _clamp_float_to_bounds("potential_gamma", raw_gamma, strict=False)
     if reason_parts:
         warnings.warn(
-            f"PBRS: potential_gamma={raw_gamma} outside [0,1]; falling back to {gamma}",
+            f"PBRS: potential_gamma={raw_gamma} outside [0,1]; clamped to {gamma}",
             RewardDiagnosticsWarning,
             stacklevel=2,
         )
@@ -3323,31 +3333,41 @@ def _compute_exit_additive(
     )
 
 
-def _compute_exit_potential(prev_potential: float, params: RewardParams) -> float:
-    """Exit potential per mode (canonical/non_canonical -> 0; others transform Φ(prev))."""
+def _compute_exit_potential(
+    prev_potential: float,
+    params: RewardParams,
+    gamma: float,
+) -> float:
+    """Return exit potential using the selected mode and validated PBRS gamma."""
     mode = _get_str_param(params, "exit_potential_mode")
     if mode == "canonical" or mode == "non_canonical":
         return _fail_safely("canonical_exit_potential")
 
     if mode == "progressive_release":
         decay = _get_float_param(params, "exit_potential_decay")
-        if not np.isfinite(decay) or decay < 0.0:
+        if not np.isfinite(decay):
             warnings.warn(
-                f"PBRS: exit_potential_decay={decay} invalid or < 0; falling back to 0.0",
+                f"PBRS: exit_potential_decay={decay} is non-finite; using 0.0",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            decay = 0.0
+        elif decay < 0.0:
+            warnings.warn(
+                f"PBRS: exit_potential_decay={decay} below 0; clamped to 0.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
             decay = 0.0
         if decay > 1.0:
             warnings.warn(
-                f"PBRS: exit_potential_decay={decay} > 1; falling back to 1.0",
+                f"PBRS: exit_potential_decay={decay} above 1; clamped to 1.0",
                 RewardDiagnosticsWarning,
                 stacklevel=2,
             )
             decay = 1.0
         next_potential = prev_potential * (1.0 - decay)
     elif mode == "spike_cancel":
-        gamma = _get_potential_gamma(params)
         if gamma <= 0.0 or not np.isfinite(gamma):
             next_potential = prev_potential
         else:
@@ -3440,7 +3460,7 @@ def compute_pbrs_components(
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
 
     if is_exit:
-        next_potential = _compute_exit_potential(prev_potential, params)
+        next_potential = _compute_exit_potential(prev_potential, params, gamma)
         pbrs_delta = gamma * next_potential - prev_potential
         reward_shaping = pbrs_delta
     else:
