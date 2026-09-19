@@ -622,13 +622,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.dd.load_data = load_with_replay
 
     @staticmethod
-    def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path, coin: str) -> None:
+    def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path, pair: str) -> None:
         if not hasattr(model, "load_replay_buffer"):
             return
         filename = metadata.get("reforcexy_replay")
         if not isinstance(filename, str) or Path(filename).name != filename:
             raise DependencyException(
-                f"Training [{coin}]: DQN/QRDQN replay metadata is missing or incompatible; "
+                f"Training [{pair}]: DQN/QRDQN replay metadata is missing or incompatible; "
                 "reset trained models or use a new freqai.identifier"
             )
         model.load_replay_buffer(directory / filename)
@@ -639,7 +639,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             or replay.n_envs != model.n_envs
         ):
             raise DependencyException(
-                f"Training [{coin}]: DQN/QRDQN replay buffer is incompatible; reset trained "
+                f"Training [{pair}]: DQN/QRDQN replay buffer is incompatible; reset trained "
                 "models or use a new freqai.identifier"
             )
 
