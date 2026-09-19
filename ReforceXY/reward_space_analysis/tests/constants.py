@@ -194,8 +194,6 @@ class TestSeeds:
         CANONICAL_SWEEP: Seed for canonical sweep tests (123)
 
         # PBRS-specific seeds
-        PBRS_INVARIANCE_1: Seed for PBRS invariance test case 1 (913)
-        PBRS_INVARIANCE_2: Seed for PBRS invariance test case 2 (515)
         PBRS_TERMINAL: Seed for PBRS terminal potential tests (777)
 
         # Feature analysis failure seeds
@@ -226,8 +224,6 @@ class TestSeeds:
     CANONICAL_SWEEP: int = 123
 
     # PBRS-specific seeds
-    PBRS_INVARIANCE_1: int = 913
-    PBRS_INVARIANCE_2: int = 515
     PBRS_TERMINAL: int = 777
 
     # Feature analysis failure seeds
@@ -270,7 +266,6 @@ class TestParameters:
         PNL_SMALL: Small profit/loss value (0.02)
         PNL_SHORT_PROFIT: Short profit/loss value (0.03)
         PNL_MEDIUM: Medium profit/loss value (0.05)
-        PNL_LARGE: Large profit/loss value (0.10)
 
         # Common duration values
         TRADE_DURATION_SHORT: Short trade duration in steps (50)
@@ -284,8 +279,6 @@ class TestParameters:
         ADDITIVE_RATIO_DEFAULT: Default additive ratio (0.0625)
         ADDITIVE_GAIN_DEFAULT: Default additive gain (1.0)
 
-        # PBRS hold potential parameters
-        HOLD_POTENTIAL_RATIO_DEFAULT: Default hold potential ratio (0.001)
     """
 
     BASE_FACTOR: float = 90.0
@@ -300,7 +293,6 @@ class TestParameters:
     PNL_SMALL: float = 0.02
     PNL_SHORT_PROFIT: float = 0.03
     PNL_MEDIUM: float = 0.05
-    PNL_LARGE: float = 0.10
 
     # Common duration values
     TRADE_DURATION_SHORT: int = 50
@@ -313,9 +305,6 @@ class TestParameters:
     # Additive parameters
     ADDITIVE_RATIO_DEFAULT: float = 0.0625
     ADDITIVE_GAIN_DEFAULT: float = 1.0
-
-    # PBRS hold potential parameters
-    HOLD_POTENTIAL_RATIO_DEFAULT: float = 0.001
 
 
 @dataclass(frozen=True)
@@ -368,7 +357,7 @@ class TestScenarios:
     DURATION_SHORT: int = 150
     DURATION_MEDIUM: int = 200
     DURATION_LONG: int = 300
-    DURATION_SCENARIOS: tuple[int, ...] = (150, 200, 300)
+    DURATION_SCENARIOS: tuple[int, ...] = (DURATION_SHORT, DURATION_MEDIUM, DURATION_LONG)
 
     SAMPLE_SIZE_TINY: int = 50
     SAMPLE_SIZE_SMALL: int = 100

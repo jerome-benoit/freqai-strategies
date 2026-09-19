@@ -1073,8 +1073,8 @@ def _compute_efficiency_coefficient(
         min_pnl = min(context.min_unrealized_profit, pnl)
         range_pnl = max_pnl - min_pnl
         # Guard against division explosion when max_pnl ≈ min_pnl
-        eps = float(INTERNAL_GUARDS.get("efficiency_min_range_epsilon", 1e-6))
-        frac = float(INTERNAL_GUARDS.get("efficiency_min_range_fraction", 0.01))
+        eps = float(INTERNAL_GUARDS["efficiency_min_range_epsilon"])
+        frac = float(INTERNAL_GUARDS["efficiency_min_range_fraction"])
         min_meaningful_range = max(eps, frac * pnl_target)
         if np.isfinite(range_pnl) and range_pnl >= min_meaningful_range:
             efficiency_ratio = (pnl - min_pnl) / range_pnl
@@ -1925,9 +1925,9 @@ def simulate_samples(
 def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     """Fail fast if simulation violates action/state invariants."""
 
-    eps_pnl = float(INTERNAL_GUARDS.get("sim_zero_pnl_epsilon", 1e-12))
-    eps_reward = float(INTERNAL_GUARDS.get("sim_zero_reward_epsilon", 1e-12))
-    thr_extreme = float(INTERNAL_GUARDS.get("sim_extreme_pnl_threshold", 0.2))
+    eps_pnl = float(INTERNAL_GUARDS["sim_zero_pnl_epsilon"])
+    eps_reward = float(INTERNAL_GUARDS["sim_zero_reward_epsilon"])
+    thr_extreme = float(INTERNAL_GUARDS["sim_extreme_pnl_threshold"])
 
     # INVARIANT 1: Action-position compatibility
     long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
@@ -2604,7 +2604,7 @@ def compute_distribution_shift_metrics(
         hist_real, _ = np.histogram(real_values, bins=bins, density=False)
 
         # Add small epsilon to avoid log(0) in KL divergence
-        epsilon = float(INTERNAL_GUARDS.get("histogram_epsilon", 1e-10))
+        epsilon = float(INTERNAL_GUARDS["histogram_epsilon"])
         hist_synth = hist_synth + epsilon
         hist_real = hist_real + epsilon
         # Normalize to create probability distributions (sum to 1)
@@ -2894,7 +2894,7 @@ def bootstrap_confidence_intervals(
     results = {}
 
     # Advisory: very low bootstrap counts produce unstable CI widths
-    min_rec = int(INTERNAL_GUARDS.get("bootstrap_min_recommended", 200))
+    min_rec = int(INTERNAL_GUARDS["bootstrap_min_recommended"])
     if n_bootstrap < min_rec:
         warnings.warn(
             f"Stats: n_bootstrap={n_bootstrap} < {min_rec}; confidence intervals may be unstable",
@@ -2998,7 +2998,7 @@ def distribution_diagnostics(
         kurt_v = float(stats.kurtosis(data, fisher=True))
         diagnostics[f"{col}_skewness"] = skew_v
         diagnostics[f"{col}_kurtosis"] = kurt_v
-        thr = INTERNAL_GUARDS.get("moment_extreme_threshold", 1e4)
+        thr = INTERNAL_GUARDS["moment_extreme_threshold"]
         if abs(skew_v) > thr or abs(kurt_v) > thr:
             msg = f"Stats: extreme moment(s) for {col}: skew={skew_v:.3e}, kurtosis={kurt_v:.3e} exceeds threshold {thr}"
             if strict_diagnostics:

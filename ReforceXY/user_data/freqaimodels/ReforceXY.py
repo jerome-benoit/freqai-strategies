@@ -2368,7 +2368,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 study.best_trial.number,
                 study.best_trial.value,
             )
-        if self.model_type == "RecurrentPPO" and self.get_model_params().get(
+        if self.model_type == ReforceXY._MODEL_TYPES[1] and self.get_model_params().get(
             "policy_kwargs", {}
         ).get("shared_lstm", False):
             best_trial_params = {**best_trial_params, "enable_critic_lstm": False}
@@ -5747,7 +5747,7 @@ def sample_params_recurrentppo(trial: Trial, *, shared_lstm: bool = False) -> di
             else trial.suggest_categorical("enable_critic_lstm", [True, False]),
         }
     )
-    return convert_optuna_params_to_model_params("RecurrentPPO", ppo_optuna_params)
+    return convert_optuna_params_to_model_params(ReforceXY._MODEL_TYPES[1], ppo_optuna_params)
 
 
 def get_common_dqn_optuna_params(trial: Trial) -> dict[str, Any]:

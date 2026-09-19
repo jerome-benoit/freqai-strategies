@@ -570,9 +570,12 @@ class TestStatistics(RewardSpaceTestBase):
 
     def test_bootstrap_confidence_intervals_bounds_ordering(self):
         """Test bootstrap confidence intervals return ordered finite bounds."""
-        test_data = self.make_stats_df(n=100, seed=SEEDS.BASE)
+        test_data = self.make_stats_df(n=SCENARIOS.SAMPLE_SIZE_SMALL, seed=SEEDS.BASE)
         results = bootstrap_confidence_intervals(
-            test_data, ["reward", "pnl"], n_bootstrap=100, independent_observations=True
+            test_data,
+            ["reward", "pnl"],
+            n_bootstrap=STATISTICAL.BOOTSTRAP_DEFAULT_ITERATIONS,
+            independent_observations=True,
         )
         for metric, (mean, ci_low, ci_high) in results.items():
             self.assertFinite(mean, name=f"mean[{metric}]")
@@ -607,7 +610,7 @@ class TestStatistics(RewardSpaceTestBase):
                 res = bootstrap_confidence_intervals(
                     df,
                     ["reward"],
-                    n_bootstrap=200,
+                    n_bootstrap=SCENARIOS.BOOTSTRAP_EXTENDED_ITERATIONS,
                     strict_diagnostics=strict,
                     independent_observations=True,
                 )
@@ -623,7 +626,7 @@ class TestStatistics(RewardSpaceTestBase):
                         df,
                         ["reward"],
                         n_bootstrap=1,
-                        seed=42,
+                        seed=SEEDS.BASE,
                         strict_diagnostics=strict,
                         independent_observations=True,
                     )
@@ -638,7 +641,7 @@ class TestStatistics(RewardSpaceTestBase):
             bootstrap_confidence_intervals(
                 df,
                 ["reward"],
-                n_bootstrap=200,
+                n_bootstrap=SCENARIOS.BOOTSTRAP_EXTENDED_ITERATIONS,
                 independent_observations=False,
             )
 

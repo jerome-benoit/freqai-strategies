@@ -301,7 +301,9 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
             self.assertFinite(observed_ratio, name="observed_ratio")
             self.assertLess(
                 abs(observed_ratio - expected_ratio),
-                5e-12 if tau == 1.0 else 5e-09,
+                TOLERANCE.ALPHA_ATTENUATION_STRICT
+                if tau == 1.0
+                else TOLERANCE.ALPHA_ATTENUATION_RELAXED,
                 f"Alpha attenuation mismatch tau={tau} alpha={alpha} obs_ratio={observed_ratio} exp_ratio={expected_ratio}",
             )
 

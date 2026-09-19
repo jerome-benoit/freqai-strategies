@@ -20,7 +20,7 @@ from reward_space_analysis import (
     _compute_exit_potential,
     _compute_hold_potential,
     _compute_unrealized_pnl_estimate,
-    _get_float_param,
+    _get_potential_gamma,
     apply_potential_shaping,
     get_max_idle_duration_candles,
     simulate_samples,
@@ -320,11 +320,7 @@ class TestPBRS(RewardSpaceTestBase):
             PARAMS.BASE_FACTOR,
         )
 
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
+        gamma = _get_potential_gamma(params)
         expected_next_potential = (
             prev_potential / gamma if gamma not in (0.0, None) else prev_potential
         )
@@ -713,12 +709,7 @@ class TestPBRS(RewardSpaceTestBase):
         self.assertPlacesEqual(
             next_potential, prev_potential, places=TOLERANCE.DECIMAL_PLACES_STRICT
         )
-        raw_gamma = DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95)
-        gamma_fallback = 0.95 if raw_gamma is None else raw_gamma
-        try:
-            gamma = float(gamma_fallback)
-        except Exception:
-            gamma = 0.95
+        gamma = _get_potential_gamma(params)
         # PBRS shaping Δ = γ·Φ(next) - Φ(prev). Here Φ(next)=Φ(prev) since decay clamps to 0.
         self.assertLessEqual(
             abs(shaping - ((gamma - 1.0) * prev_potential)),
@@ -729,7 +720,7 @@ class TestPBRS(RewardSpaceTestBase):
     def test_potential_gamma_nan_fallback(self):
         """Verifies potential_gamma=NaN fallback to default value."""
         base_params_dict = self.base_params()
-        default_gamma = base_params_dict.get("potential_gamma", 0.95)
+        default_gamma = _get_potential_gamma(base_params_dict)
         params_nan = self.base_params(potential_gamma=np.nan, hold_potential_enabled=True)
         res_nan = apply_potential_shaping(
             base_reward=0.1,
@@ -1062,12 +1053,8 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=False,
             potential_gamma=0.9,
         )
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
-        rng = np.random.default_rng(555)
+        gamma = _get_potential_gamma(params)
+        rng = np.random.default_rng(SEEDS.ALTERNATE_1)
         potentials = rng.uniform(0.05, 0.85, size=220)
         deltas = [gamma * p - p for p in potentials]
         cumulative = float(np.sum(deltas))
@@ -1218,7 +1205,7 @@ class TestPBRS(RewardSpaceTestBase):
 
     def test_normality_invariance_under_scaling(self):
         """Skewness & excess kurtosis invariant under positive scaling of normal sample."""
-        rng = np.random.default_rng(808)
+        rng = np.random.default_rng(SEEDS.ALTERNATE_2)
         base = rng.normal(0.0, 1.0, size=7000)
         scaled = 5.0 * base
 
@@ -1282,12 +1269,8 @@ class TestPBRS(RewardSpaceTestBase):
             exit_additive_enabled=False,
             exit_potential_mode="canonical",
         )
-        gamma = _get_float_param(
-            params,
-            "potential_gamma",
-            DEFAULT_MODEL_REWARD_PARAMETERS.get("potential_gamma", 0.95),
-        )
-        rng = np.random.default_rng(321)
+        gamma = _get_potential_gamma(params)
+        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
         prev_potential = 0.0
         telescoping_sum = 0.0
         max_abs_step = 0.0
@@ -1341,7 +1324,7 @@ class TestPBRS(RewardSpaceTestBase):
             exit_potential_mode="progressive_release",
             exit_potential_decay=0.25,
         )
-        rng = np.random.default_rng(321)
+        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
         prev_potential = 0.0
         shaping_sum = 0.0
 
