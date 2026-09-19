@@ -342,16 +342,6 @@
       "startLine": 2912
     },
     {
-      "endCharacter": 17,
-      "endLine": 3799,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Declaration \"reward_params\" is obscured by a declaration of the same name",
-      "rule": "reportRedeclaration",
-      "severity": "error",
-      "startCharacter": 4,
-      "startLine": 3799
-    },
-    {
       "endCharacter": 5,
       "endLine": 3803,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
@@ -382,44 +372,14 @@
       "startLine": 3800
     },
     {
-      "endCharacter": 9,
-      "endLine": 3962,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
-      "rule": "reportAssignmentType",
-      "severity": "error",
-      "startCharacter": 38,
-      "startLine": 3958
-    },
-    {
-      "endCharacter": 47,
-      "endLine": 3959,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "No overloads for \"__init__\" match the provided arguments",
-      "rule": "reportCallIssue",
-      "severity": "error",
-      "startCharacter": 12,
-      "startLine": 3959
-    },
-    {
-      "endCharacter": 46,
-      "endLine": 3959,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 17,
-      "startLine": 3959
-    },
-    {
       "endCharacter": 14,
-      "endLine": 4610,
+      "endLine": 4647,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Declaration \"sim_params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 4,
-      "startLine": 4610
+      "startLine": 4647
     },
     {
       "endCharacter": 22,

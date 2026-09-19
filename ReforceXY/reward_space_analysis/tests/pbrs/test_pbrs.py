@@ -1832,6 +1832,66 @@ class TestPBRS(RewardSpaceTestBase):
             "Local identity, continuity and discounted terminal boundary verified", content
         )
 
+    def test_report_without_reward_params_is_not_canonical(self):
+        """Canonical certification requires explicit reward configuration evidence."""
+        previous_potential = 0.25
+        source = pd.DataFrame(
+            {
+                "reward": [-previous_potential],
+                "reward_base": [0.0],
+                "reward_pbrs_delta": [-previous_potential],
+                "reward_shaping": [-previous_potential],
+                "reward_invariance_correction": [0.0],
+                "reward_invalid": [0.0],
+                "reward_idle": [0.0],
+                "reward_hold": [0.0],
+                "reward_exit": [0.0],
+                "reward_entry_additive": [0.0],
+                "reward_exit_additive": [0.0],
+                "pnl": [0.0],
+                "exit_pnl": [0.0],
+                "trade_duration": [0],
+                "idle_duration": [0],
+                "duration_ratio": [0.0],
+                "idle_ratio": [0.0],
+                "position": [0.0],
+                "action": [0],
+                "episode_id": [0],
+                "transition_index": [0],
+                "terminated": [True],
+                "prev_potential": [previous_potential],
+                "next_potential": [0.0],
+            }
+        )
+        source.attrs["reward_params"] = {
+            "exit_potential_mode": "non_canonical",
+            "entry_additive_enabled": False,
+            "exit_additive_enabled": False,
+        }
+        csv_path = self.output_path / "noncanonical_trajectory.csv"
+        source.to_csv(csv_path, index=False)
+        reloaded = pd.read_csv(csv_path)
+        self.assertEqual(reloaded.attrs, {})
+
+        out_dir = self.output_path / "missing_reward_params"
+        write_complete_statistical_analysis(
+            reloaded,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.SMOKE_TEST,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        assert_pbrs_invariance_report_classification(
+            self, content, "Not verified", expect_additives=False
+        )
+        self.assertIn("Reward configuration evidence is missing or incomplete", content)
+        self.assertIn("| Exit Potential Mode | unknown |", content)
+        self.assertNotIn("Canonical: observed PBRS verified", content)
+
     # Owns invariant: pbrs-discounted-evidence-125
     def test_pbrs_canonical_discontinuous_potentials_report(self):
         """Potential discontinuity is sufficient to reject otherwise local PBRS evidence."""

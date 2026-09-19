@@ -685,6 +685,24 @@ class ReviewContractsTest(unittest.TestCase):
         self.assertEqual(env._current_tick, 6)
         self.assertEqual(info["next_potential"], 0.0)
 
+    def test_pbrs_history_preserves_verifier_precision(self):
+        model = self.model(hold=True)
+        model.CONV_WIDTH = 2
+        features = pd.DataFrame({"f": np.arange(5, dtype=float)})
+        prices = pd.DataFrame({"open": np.full(5, 100.0)})
+        env = MyRLEnv(df=features, prices=prices, **model.pack_env_dict("BTC/USDT"))
+        env.fee = 0.0
+        self.addCleanup(env.close)
+        env.reset()
+
+        with mock.patch.object(env, "_compute_hold_potential", return_value=0.123456):
+            env.step(Actions.Long_enter.value)
+
+        row = env.get_env_history().iloc[-1]
+        expected_shaping = env._potential_gamma * row["next_potential"] - row["prev_potential"]
+        self.assertLessEqual(abs(row["reward_shaping"] - expected_shaping), 1e-6)
+        self.assertEqual(row["next_potential"], 0.123456)
+
     def test_state_info_normalizes_leveraged_profit_ratio(self):
         trade = SimpleNamespace(
             pair="BTC/USDT",

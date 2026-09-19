@@ -3802,6 +3802,12 @@ def write_complete_statistical_analysis(
         if isinstance(df.attrs.get("reward_params"), dict)
         else {}
     )
+    classification_keys = {
+        "exit_potential_mode",
+        "entry_additive_enabled",
+        "exit_additive_enabled",
+    }
+    classification_metadata_available = classification_keys.issubset(reward_params)
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
 
     # Helpers: consistent Markdown table renderers
@@ -3956,13 +3962,14 @@ def write_complete_statistical_analysis(
         # Blank separator to visually group core simulation vs PBRS parameters
         f.write("|  |  |\n")
         # Core PBRS parameters exposed in run configuration if present
-        reward_params: RewardParams = (
-            dict(df.attrs.get("reward_params"))
-            if isinstance(df.attrs.get("reward_params"), dict)
-            else {}
+        exit_mode = (
+            _get_str_param(reward_params, "exit_potential_mode")
+            if "exit_potential_mode" in reward_params
+            else "unknown"
         )
-        exit_mode = _get_str_param(reward_params, "exit_potential_mode")
-        potential_gamma = _get_potential_gamma(reward_params)
+        potential_gamma: float | str = (
+            _get_potential_gamma(reward_params) if "potential_gamma" in reward_params else "unknown"
+        )
         f.write(f"| exit_potential_mode | {exit_mode} |\n")
         f.write(f"| potential_gamma | {potential_gamma} |\n")
         # Additional configuration details
@@ -4217,28 +4224,44 @@ def write_complete_statistical_analysis(
             exit_add_total = df.get("reward_exit_additive", pd.Series([0])).sum()
 
             # Get configuration for proper invariance assessment
-            reward_params = df.attrs.get("reward_params", {}) if hasattr(df, "attrs") else {}
-            exit_potential_mode = _get_str_param(reward_params, "exit_potential_mode", "canonical")
-            entry_additive_enabled_raw = _get_bool_param(
-                reward_params, "entry_additive_enabled", False
-            )
-            exit_additive_enabled_raw = _get_bool_param(
-                reward_params, "exit_additive_enabled", False
-            )
+            if classification_metadata_available:
+                exit_potential_mode: str | None = _get_str_param(
+                    reward_params, "exit_potential_mode"
+                )
+                entry_additive_enabled_raw: bool | None = _get_bool_param(
+                    reward_params, "entry_additive_enabled", False
+                )
+                exit_additive_enabled_raw: bool | None = _get_bool_param(
+                    reward_params, "exit_additive_enabled", False
+                )
+                (
+                    entry_additive_effective,
+                    exit_additive_effective,
+                    additives_suppressed,
+                ) = _resolve_additive_enablement(
+                    exit_potential_mode,
+                    entry_additive_enabled_raw,
+                    exit_additive_enabled_raw,
+                )
+            else:
+                exit_potential_mode = None
+                entry_additive_enabled_raw = None
+                exit_additive_enabled_raw = None
+                entry_additive_effective = False
+                exit_additive_effective = False
+                additives_suppressed = False
 
-            (
-                entry_additive_effective,
-                exit_additive_effective,
-                additives_suppressed,
-            ) = _resolve_additive_enablement(
-                exit_potential_mode,
-                entry_additive_enabled_raw,
-                exit_additive_enabled_raw,
+            evidence = (
+                verify_pbrs_trajectory(df, _get_potential_gamma(reward_params))
+                if classification_metadata_available
+                else {
+                    "verified": False,
+                    "reason": "Trajectory verification skipped without reward configuration evidence",
+                }
             )
-
-            evidence = verify_pbrs_trajectory(df, _get_potential_gamma(reward_params))
-            canonical_configuration = exit_potential_mode == "canonical" and not (
-                entry_additive_effective or exit_additive_effective
+            canonical_configuration = classification_metadata_available and (
+                exit_potential_mode == "canonical"
+                and not (entry_additive_effective or exit_additive_effective)
             )
             observed_additive_issues = []
             for column in ("reward_entry_additive", "reward_exit_additive"):
@@ -4252,7 +4275,9 @@ def write_complete_statistical_analysis(
                     observed_additive_issues.append(f"{column} contains non-zero values")
             canonical_observations = not observed_additive_issues
 
-            if not canonical_configuration:
+            if not classification_metadata_available:
+                invariance_status = "Not verified"
+            elif not canonical_configuration:
                 invariance_status = "Non-canonical: not verified"
             elif evidence["verified"] and canonical_observations:
                 invariance_status = "Canonical: observed PBRS verified"
@@ -4260,7 +4285,9 @@ def write_complete_statistical_analysis(
                 invariance_status = "Not verified"
 
             invariance_note = evidence["reason"] + ". Raw shaping sums do not certify invariance."
-            if not canonical_configuration:
+            if not classification_metadata_available:
+                invariance_note += " Reward configuration evidence is missing or incomplete."
+            elif not canonical_configuration:
                 reasons = []
                 if exit_potential_mode != "canonical":
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
@@ -4286,11 +4313,21 @@ def write_complete_statistical_analysis(
             f.write("|-------|-------|\n")
             f.write(f"| Invariance Status | {invariance_status} |\n")
             f.write(f"| Analysis Note | {invariance_note} |\n")
-            f.write(f"| Exit Potential Mode | {exit_potential_mode} |\n")
-            f.write(f"| Entry Additive Enabled | {bool(entry_additive_enabled_raw)} |\n")
-            f.write(f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw)} |\n")
-            f.write(f"| Entry Additive Effective | {bool(entry_additive_effective)} |\n")
-            f.write(f"| Exit Additive Effective | {bool(exit_additive_effective)} |\n")
+            f.write(
+                f"| Exit Potential Mode | {exit_potential_mode if exit_potential_mode is not None else 'unknown'} |\n"
+            )
+            f.write(
+                f"| Entry Additive Enabled | {bool(entry_additive_enabled_raw) if entry_additive_enabled_raw is not None else 'unknown'} |\n"
+            )
+            f.write(
+                f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw) if exit_additive_enabled_raw is not None else 'unknown'} |\n"
+            )
+            f.write(
+                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+            )
+            f.write(
+                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+            )
             f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
             f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
             f.write(f"| Σ Entry Additive | {entry_add_total:.6f} |\n")
