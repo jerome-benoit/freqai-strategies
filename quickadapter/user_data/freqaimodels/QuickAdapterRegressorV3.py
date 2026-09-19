@@ -2265,7 +2265,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``dk.set_weights_higher_recent`` when ``feature_parameters.weight_factor > 0``,
         else ones) with the label importance weight column produced by
         ``compute_label_weights`` and stored on ``unfiltered_df`` under
-        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before  # "&s-extrema"
+        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before
         any shuffle/split on ``features_filtered.index`` (a subset of
         ``unfiltered_df.index``) to avoid post-hoc reindex against shuffled
         data. The weight column is absent when ``label_weighting.strategy``
