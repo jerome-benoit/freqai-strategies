@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Report formatting focused tests moved from helpers/test_utilities.py.
-
-Owns invariant: report-abs-shaping-line-091 (integration category)
-"""
+"""Report formatting focused tests moved from helpers/test_utilities.py."""
 
 import re
 import unittest
@@ -17,7 +14,6 @@ from ..constants import (
     PARAMS,
     SCENARIOS,
     SEEDS,
-    TOLERANCE,
 )
 from ..test_base import RewardSpaceTestBase
 
@@ -25,8 +21,8 @@ pytestmark = pytest.mark.integration
 
 
 class TestReportFormatting(RewardSpaceTestBase):
-    def test_statistical_validation_section_absent_when_no_hypothesis_tests(self):
-        """Section 5 omitted entirely when no hypothesis tests qualify (idle<30, groups<2, pnl sign groups<30)."""
+    def test_statistical_sections_do_not_depend_on_hypothesis_tests(self):
+        """Diagnostics and bootstrap sections survive when no hypothesis tests qualify."""
         # Construct df with idle_duration always zero -> reward_idle all zeros so idle_mask.sum()==0
         # Position has only one unique value -> groups<2
         # pnl all zeros so no positive/negative groups with >=30 each
@@ -43,14 +39,18 @@ class TestReportFormatting(RewardSpaceTestBase):
                 "position": np.zeros(n),
             }
         )
-        content = self._write_report(df, real_df=None)
-        # Hypothesis section header should be absent
-        self.assertNotIn("## 5. Statistical Validation", content)
-        # Summary numbering still includes Statistical Validation line (always written)
-        self.assertIn("5. **Statistical Validation**", content)
-        # Distribution shift subsection appears only inside Section 5; since Section 5 omitted it should be absent.
-        self.assertNotIn("### 5.4 Distribution Shift Analysis", content)
-        self.assertNotIn("_Not performed (no real episodes provided)._", content)
+        content = self._write_report(df, independent_observations=True, skip_feature_analysis=True)
+        self.assertNotIn("### 5.1 Hypothesis Tests", content)
+        self.assertIn("### 5.2 Confidence Intervals", content)
+        self.assertIn("### 5.3 Distribution Diagnostics", content)
+        self.assertIn("N/A (constant distribution)", content)
+        self.assertIn(f"{SCENARIOS.SAMPLE_SIZE_SMALL:,} resamples", content)
+        descriptive = self._write_report(df, real_df=df.copy(), skip_feature_analysis=True)
+        self.assertNotIn("### 5.2 Confidence Intervals", descriptive)
+        self.assertNotIn("Normal? (Shapiro-Wilk)", descriptive)
+        self.assertIn("### 5.4 Distribution Shift Analysis", descriptive)
+        self.assertNotIn("_Not performed (no real episodes provided)._", descriptive)
+        self.assertIn("inference suppressed", descriptive)
 
     def _write_report(
         self, df: pd.DataFrame, *, real_df: pd.DataFrame | None = None, **kwargs
@@ -81,6 +81,7 @@ class TestReportFormatting(RewardSpaceTestBase):
             risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
             seed=SEEDS.BASE,
             real_df=real_df,
+            independent_observations=kwargs.get("independent_observations", False),
             adjust_method="none",
             strict_diagnostics=False,
             bootstrap_resamples=SCENARIOS.SAMPLE_SIZE_SMALL,  # keep test fast
@@ -89,25 +90,6 @@ class TestReportFormatting(RewardSpaceTestBase):
         )
         report_path = out_dir / "statistical_analysis.md"
         return report_path.read_text(encoding="utf-8")
-
-    def test_abs_shaping_line_present_and_constant(self):
-        """Abs Σ Shaping Reward line present, formatted, uses constant not literal."""
-        df = pd.DataFrame(
-            {
-                "reward_shaping": [TOLERANCE.IDENTITY_STRICT, -TOLERANCE.IDENTITY_STRICT],
-                "reward_entry_additive": [0.0, 0.0],
-                "reward_exit_additive": [0.0, 0.0],
-            }
-        )
-        total_shaping = df["reward_shaping"].sum()
-        self.assertLess(abs(total_shaping), PBRS_INVARIANCE_TOL)
-        lines = [f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |"]
-        content = "\n".join(lines)
-        m = re.search("\\| Abs Σ Shaping Reward \\| ([0-9]+\\.[0-9]{6}e[+-][0-9]{2}) \\|", content)
-        self.assertIsNotNone(m, "Abs Σ Shaping Reward line missing or misformatted")
-        val = float(m.group(1)) if m else None
-        if val is not None:
-            self.assertLess(val, TOLERANCE.NEGLIGIBLE + TOLERANCE.IDENTITY_STRICT)
 
     def test_distribution_shift_section_present_with_real_episodes(self):
         """Distribution Shift section renders metrics table when real episodes provided."""

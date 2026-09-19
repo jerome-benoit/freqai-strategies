@@ -10,8 +10,8 @@ PBRS invariance.
 - PBRS modes: canonical, non_canonical, progressive_release, spike_cancel,
   retain_previous
 - Feature importance & optional partial dependence
-- Statistical tests (hypothesis, bootstrap CIs, distribution diagnostics)
-- Real vs synthetic shift metrics
+- Descriptive distribution diagnostics and real-vs-synthetic shift metrics;
+  inferential tests and bootstrap intervals are API-only for explicitly independent observations
 - Manifest + parameter hash
 
 ## Quick Start
@@ -165,9 +165,10 @@ Generates shift metrics for comparison (see Outputs section).
 - **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic
   distribution shift metrics. (Simulation-only; triggers additional outputs when
   provided).
-- **`--unrealized_pnl`** (flag, default: false) – Simulate unrealized PnL
-  accrual during holds for potential Φ. (Simulation-only; affects PBRS
-  components).
+- **`--unrealized_pnl`** (flag, default: false) – Transform the retained
+  in-position synthetic price/PnL trajectory using fee-aware unrealized PnL.
+  This affects extrema and all enabled base, PBRS, and additive reward terms
+  that depend on PnL. (Simulation-only.)
 
 ### Hybrid Simulation Scalars
 
@@ -198,20 +199,23 @@ be overridden via `--params`.
   hide reward drift or invariance violations.
 - **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and
   finite checks; raises instead of silent clamp/discard when enabled.
-- **`--strict_diagnostics`** (flag, default: false) – Fail-fast on degenerate
-  statistical diagnostics (zero-width CIs, undefined distribution metrics)
-  instead of graceful fallbacks.
+- **`--strict_diagnostics`** (flag, default: false) – Raise on extreme distribution
+  moments instead of warning. In both modes, constants retain exact mean/std,
+  while undefined higher moments, normality tests and Q-Q fits remain N/A.
 - **`--exit_factor_threshold`** (float, default: 1000.0) – Emits a warning if
   the absolute value of the exit factor exceeds the threshold.
-- **`--pvalue_adjust`** (none|benjamini_hochberg, default: none) – Multiple
-  testing p-value adjustment method.
-- **`--bootstrap_resamples`** (int, default: 10000) – Bootstrap iterations for
-  confidence intervals; lower for speed (e.g. 500) during smoke tests.
 - **`--skip_feature_analysis`** / **`--skip_partial_dependence`** – Skip feature
   importance or PD grids (see Skipping Feature Analysis section); influence
   runtime only.
 - **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker
   counts for RandomForest and permutation importance (-1 = all cores).
+
+Inferential helpers are available through the programmatic API only and require
+`independent_observations=True`. Programmatic callers may pass `stats_seed`
+to isolate bootstrap resampling from the simulation seed; the descriptive CLI
+does not expose this option. In that mode, bootstrap percentile intervals retain
+finite ordered bounds, including exact zero-width intervals for constants; the
+interval need not contain the original sample mean.
 
 ### Overrides
 
@@ -250,14 +254,16 @@ The exit factor is computed as:
 
 **Formula:**
 
-Let `pnl_target = profit_aim · risk_reward_ratio`,
-`pnl_ratio = pnl / pnl_target`.
+Let `pnl_target = profit_aim · risk_reward_ratio` and
+`pnl_ratio = pnl / pnl_target`. On the loss branch,
+`loss_threshold = pnl_target / risk_reward_ratio` and
+`loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · risk_reward_ratio`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
   `pnl_target_coefficient = 1.0 + win_reward_factor · tanh(pnl_amplification_sensitivity · (pnl_ratio - 1.0))`
-- If `pnl_ratio < -(1.0 / risk_reward_ratio)`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (|pnl_ratio| - 1.0))`
+- If `pnl < -loss_threshold`:
+  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (loss_ratio - 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -304,7 +310,7 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | Parameter                    | Default | Description                |
 | ---------------------------- | ------- | -------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap         |
-| `max_idle_duration_candles`  | None    | Fallback 4× trade duration |
+| `max_idle_duration_candles`  | None    | Idle hazard threshold (4× trade duration fallback); the idle clock keeps counting past it |
 | `idle_penalty_ratio`         | 1.0     | Idle penalty ratio         |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent      |
 | `hold_penalty_ratio`         | 1.0     | Hold penalty ratio         |
@@ -328,14 +334,22 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | `entry_fee_rate`         | 0.0       | Entry fee rate (`price · (1 + fee)`) |
 | `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
-PBRS invariance holds when: `exit_potential_mode=canonical`.
+PBRS verification is evidence-based, never a raw shaping sum: complete ordered
+episodes (contiguous `transition_index`, single terminal), the local identity
+`reward_shaping = gamma * next_potential - prev_potential`, temporal potential
+continuity, and the discounted terminal boundary residual must all hold with
+sufficient ordered data; otherwise the report classifies the observed PBRS as
+"Not verified" even in canonical configuration.
 
 In canonical mode, the entry/exit additive terms are suppressed even if the
 corresponding `*_additive_enabled` flags are set.
 
-Note: PBRS telescoping/zero-sum shaping is a property of coherent trajectories
-(episodes). `simulate_samples()` generates synthetic trajectories (state carried
+Note: `simulate_samples()` generates synthetic trajectories (state carried
 across samples) and does not apply any drift correction in post-processing.
+Trade duration is zero on entry and advances before each subsequent in-position
+reward, including an immediate exit on the next candle. The report summary uses
+the same verified/not-verified classification as the detailed PBRS section;
+a zero numerical correction alone does not establish canonical invariance.
 
 #### Hold Potential Transforms
 
@@ -401,7 +415,7 @@ r* = r            if not exit_plateau
 
 | Mode      | Formula                       | Monotonic | Notes                                       | Use Case                             |
 | --------- | ----------------------------- | --------- | ------------------------------------------- | ------------------------------------ |
-| legacy    | step: 1.5 if r\* ≤ 1 else 0.5 | No        | Non-monotonic legacy mode (not recommended) | Backward compatibility only          |
+| legacy    | step: 1.5 if r\* ≤ 1 else 0.5 | Yes (non-increasing) | Discontinuous legacy step                   | Existing legacy configurations       |
 | sqrt      | 1 / √(1 + r\*)                | Yes       | Sub-linear decay                            | Gentle long-trade penalty            |
 | linear    | 1 / (1 + slope · r\*)         | Yes       | slope = `exit_linear_slope`                 | Balanced duration penalty (default)  |
 | power     | (1 + r\*)^(-alpha)            | Yes       | alpha = -ln(tau)/ln(2); tau=1 ⇒ alpha=0     | Tunable decay rate via tau parameter |
@@ -415,7 +429,7 @@ r* = r            if not exit_plateau
 | `softsign` | x / (1 + \|x\|)                  | (-1, 1) | Linear near 0     | Less aggressive saturation    |
 | `arctan`   | (2/π) · arctan(x)                | (-1, 1) | Slower saturation | Wide dynamic range            |
 | `sigmoid`  | 2σ(x) - 1, σ(x) = 1/(1 + e^(-x)) | (-1, 1) | Standard sigmoid  | Generic shaping               |
-| `asinh`    | x / √(1 + x²)                    | (-1, 1) | Outlier robust    | Extreme stability             |
+| `softsign_sqrt` | x / √(1 + x²)             | (-1, 1) | Outlier robust    | Extreme stability             |
 | `clip`     | clip(x, -1, 1)                   | [-1, 1] | Hard clipping     | Preserve linearity            |
 
 ### Skipping Feature Analysis
@@ -433,19 +447,15 @@ Auto-skip if `num_samples < 4`.
 
 ### Reproducibility
 
-| Component                             | Controlled By                      | Notes                               |
-| ------------------------------------- | ---------------------------------- | ----------------------------------- |
-| Sample simulation                     | `--seed`                           | Drives action sampling & PnL noise  |
-| Statistical tests / bootstrap         | `--stats_seed` (fallback `--seed`) | Isolated RNG                        |
-| RandomForest & permutation importance | `--seed`                           | Identical splits and trees          |
-| Partial dependence grids              | Deterministic                      | Depends only on fitted model & data |
+| Component                             | Controlled By | Notes                                      |
+| ------------------------------------- | ------------- | ------------------------------------------ |
+| Synthetic sampling                    | `--seed`      | Drives action sampling and PnL noise       |
+| RandomForest & permutation importance | `--seed`      | Reproducible splits, trees, and importance |
+| Partial dependence grids              | Deterministic | Depends only on fitted model and data      |
 
-Patterns:
+The CLI uses `--seed` for every randomized analysis it exposes.
 
 ```shell
-uv run python reward_space_analysis.py --num_samples 50000 --seed 123 --stats_seed 9001 --out_dir run_stats1
-uv run python reward_space_analysis.py --num_samples 50000 --seed 123 --stats_seed 9002 --out_dir run_stats2
-# Fully deterministic
 uv run python reward_space_analysis.py --num_samples 50000 --seed 777
 ```
 
@@ -462,11 +472,10 @@ uv run python reward_space_analysis.py --params win_reward_factor=3.0 idle_penal
 `--params` wins on conflicts.
 
 **Simulation** (not allowed in `--params`): `num_samples`, `seed`,
-`trading_mode`, `max_duration_ratio`, `out_dir`, `stats_seed`, `pnl_base_std`,
+`trading_mode`, `max_duration_ratio`, `out_dir`, `pnl_base_std`,
 `pnl_duration_vol_scale`, `real_episodes`, `unrealized_pnl`,
-`strict_diagnostics`, `strict_validation`, `bootstrap_resamples`,
-`skip_feature_analysis`, `skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`,
-`pvalue_adjust`.
+`strict_diagnostics`, `strict_validation`, `skip_feature_analysis`,
+`skip_partial_dependence`, `rf_n_jobs`, `perm_n_jobs`.
 
 **Hybrid simulation/params** allowed in `--params`: `profit_aim`,
 `risk_reward_ratio`, `action_masking`.
@@ -485,7 +494,6 @@ uv run python reward_space_analysis.py \
   --num_samples 50000 \
   --profit_aim 0.05 \
   --trading_mode futures \
-  --bootstrap_resamples 5000 \
   --out_dir custom_analysis
 # PBRS potential shaping analysis
 uv run python reward_space_analysis.py \
@@ -505,9 +513,12 @@ uv run python reward_space_analysis.py \
 
 ### Main Report (`statistical_analysis.md`)
 
-Includes: global stats, representativity, component + PBRS analysis, feature
-importance/PD, statistical validation (tests, CIs, diagnostics), optional shift
-metrics, summary.
+Includes run configuration, global and component statistics, PBRS trajectory
+diagnostics, feature importance/partial dependence, descriptive distribution
+diagnostics, optional distribution-shift metrics, and a summary. Hypothesis
+tests, bootstrap confidence intervals, and inferential p-values appear only for
+programmatic calls with `independent_observations=True`; the CLI report is
+descriptive.
 
 ### Data Exports
 
@@ -526,7 +537,6 @@ metrics, summary.
 | `num_samples`           | int               | Synthetic samples count           |
 | `seed`                  | int               | Master random seed                |
 | `pnl_target`            | float             | Profit target                     |
-| `pvalue_adjust_method`  | string            | Multiple testing correction mode  |
 | `parameter_adjustments` | object            | Bound clamp adjustments (if any)  |
 | `reward_params`         | object            | Final reward params               |
 | `simulation_params`     | object            | All simulation inputs             |
@@ -542,10 +552,10 @@ Two runs match iff `params_hash` identical.
 | `*_js_distance`   | √(0.5 KL(p_s‖m) + 0.5 KL(p_r‖m))      | Symmetric, [0,1]              |
 | `*_wasserstein`   | 1D Earth Mover's Distance             | Units of feature              |
 | `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence    |
-| `*_ks_pvalue`     | KS test p-value                       | High ⇒ cannot reject equality |
+| `*_ks_pvalue`     | KS test p-value                       | API-only with `independent_observations=True`; omitted by the descriptive CLI |
 
-Implementation: 50-bin hist; add ε=1e-10; constants ⇒ zero divergence & KS
-p=1.0.
+Implementation: 50-bin histograms with ε=1e-10; constants have zero divergence.
+Inferential KS p-values are available only under the programmatic independence contract.
 
 ---
 

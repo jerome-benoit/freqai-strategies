@@ -83,14 +83,22 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
 
     def test_parse_overrides(self):
-        """Test parse overrides."""
-        overrides = ["alpha=1.5", "mode=linear", "limit=42"]
-        result = parse_overrides(overrides)
-        self.assertEqual(result["alpha"], 1.5)
-        self.assertEqual(result["mode"], "linear")
-        self.assertEqual(result["limit"], 42.0)
-        with self.assertRaises(ValueError):
-            parse_overrides(["badpair"])
+        """Overrides accept supported keys, alias rr, and reject the rest."""
+        result = parse_overrides(
+            ["win_reward_factor=4.0", "rr=1.5", "risk_reward_ratio=2.5", "exit_potential_mode=tanh"]
+        )
+        self.assertEqual(result["win_reward_factor"], 4.0)
+        self.assertEqual(result["risk_reward_ratio"], 2.5)
+        self.assertEqual(result["exit_potential_mode"], "tanh")
+        for invalid in (
+            ["alpha=1.5"],
+            ["num_samples=1"],
+            ["unrealized_pnl=true"],
+            ["=5"],
+            ["badpair"],
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_overrides(invalid)
 
     def test_api_simulation_and_reward_smoke(self):
         """Test api simulation and reward smoke."""
@@ -117,6 +125,22 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             )
             breakdown = calculate_reward_with_defaults(ctx, self.DEFAULT_PARAMS)
             self.assertFinite(breakdown.total)
+
+    def test_simulate_samples_singleton_terminal_neutral_transition(self):
+        """Return a valid terminal neutral row for a singleton simulation."""
+        df = simulate_samples_with_defaults(
+            self.base_params(),
+            num_samples=SCENARIOS.SAMPLE_SIZE_SINGLETON,
+            seed=SEEDS.BASE,
+            trading_mode="spot",
+        )
+
+        self.assertEqual(len(df), SCENARIOS.SAMPLE_SIZE_SINGLETON)
+        row = df.iloc[0]
+        self.assertTrue(row["terminated"])
+        self.assertFalse(row["terminal_liquidation"])
+        self.assertTrue(pd.isna(row["exit_pnl"]))
+        self.assertEqual(row["next_position"], Positions.Neutral.value)
 
     def test_simulate_samples_trading_modes_spot_vs_margin(self):
         """simulate_samples coverage: spot should forbid shorts, margin should allow them."""

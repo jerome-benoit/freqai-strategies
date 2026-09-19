@@ -246,14 +246,15 @@ class TestRewardComponents(RewardSpaceTestBase):
     def test_pnl_target_coefficient_below_loss_threshold(self):
         """PnL target coefficient amplifies penalty for excessive losses.
 
-        Validates that losses exceeding risk-adjusted threshold produce
-        coefficient > 1.0 to amplify negative reward signal. Penalty applies
-        when BOTH conditions met: abs(pnl_ratio) > 1.0 AND pnl_ratio < -(1/rr).
+        Validates that losses exceeding the risk-adjusted threshold
+        (pnl_target / risk_reward_ratio) produce coefficient > 1.0 to
+        amplify the negative reward signal, with the loss progression
+        normalized by that threshold.
 
         **Setup:**
         - PnL: -0.06 (exceeds pnl_target magnitude)
         - pnl_target: 0.045 (profit_aim=0.03 * risk_reward_ratio=1.5)
-        - Penalty threshold: pnl < -pnl_target = -0.045
+        - Penalty threshold: pnl < -pnl_target / 1.5 = -0.03
         - Parameters: win_reward_factor=2.0, pnl_amplification_sensitivity=0.5
 
         **Assertions:**
@@ -276,6 +277,44 @@ class TestRewardComponents(RewardSpaceTestBase):
         self.assertGreater(
             coefficient, 1.0, "Excessive loss should amplify penalty with coefficient > 1.0"
         )
+
+    def test_pnl_target_coefficient_amplifies_between_gain_and_loss_thresholds(self):
+        """Losses past the risk threshold amplify before reaching the gain target magnitude.
+
+        With profit_aim=0.03 and risk_reward_ratio=1.5: target=0.045,
+        risk threshold=0.03. A -0.04 loss sits between both thresholds and
+        must already be amplified; the coefficient stays continuous (1.0) at
+        the exact threshold and grows with loss depth.
+        """
+        params = self.base_params(win_reward_factor=2.0, pnl_amplification_sensitivity=0.5)
+        profit_aim = 0.03
+        risk_reward_ratio = 1.5
+        pnl_target = profit_aim * risk_reward_ratio
+        threshold = pnl_target / risk_reward_ratio
+
+        at_threshold = _compute_pnl_target_coefficient(
+            params, pnl=-threshold, pnl_target=pnl_target, risk_reward_ratio=risk_reward_ratio
+        )
+        between = _compute_pnl_target_coefficient(
+            params,
+            pnl=-(threshold * 1.2),
+            pnl_target=pnl_target,
+            risk_reward_ratio=risk_reward_ratio,
+        )
+        deep = _compute_pnl_target_coefficient(
+            params, pnl=-(threshold * 4), pnl_target=pnl_target, risk_reward_ratio=risk_reward_ratio
+        )
+        inside = _compute_pnl_target_coefficient(
+            params,
+            pnl=-(threshold * 0.5),
+            pnl_target=pnl_target,
+            risk_reward_ratio=risk_reward_ratio,
+        )
+
+        self.assertAlmostEqualFloat(at_threshold, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
+        self.assertGreater(between, 1.0)
+        self.assertGreater(deep, between)
+        self.assertAlmostEqualFloat(inside, 1.0, tolerance=TOLERANCE.GENERIC_EQ)
 
     def test_efficiency_coefficient_zero_weight(self):
         """Efficiency coefficient returns neutral value when efficiency disabled.

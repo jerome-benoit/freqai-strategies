@@ -23,8 +23,8 @@ from ..test_base import RewardSpaceTestBase
 class TestLoadRealEpisodes(RewardSpaceTestBase):
     """Unit tests for load_real_episodes."""
 
-    def test_drop_exact_duplicates_warns(self):
-        """Invariant 108: duplicate rows dropped with warning showing count removed."""
+    def test_repeated_transitions_preserve_multiplicity(self):
+        """Repeated values can be distinct transitions and must retain empirical weight."""
         df = pd.DataFrame(
             {
                 "pnl": [0.01, 0.01, -0.02],  # first two duplicate
@@ -37,15 +37,8 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         )
         p = Path(self.temp_dir) / "dupes.pkl"
         self.write_pickle(df, p)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            loaded = load_real_episodes(p)
-        self.assertEqual(len(loaded), 2, "Expected duplicate row removal to reduce length")
-        msgs = [str(warning.message) for warning in w]
-        dup_msgs = [m for m in msgs if "duplicate" in m.lower()]
-        self.assertTrue(
-            any("dropped" in m for m in dup_msgs), f"No duplicate removal warning found in: {msgs}"
-        )
+        loaded = load_real_episodes(p)
+        pd.testing.assert_frame_equal(loaded[df.columns], df)
 
     def test_missing_multiple_required_columns_single_warning(self):
         """Invariant 109: enforce_columns=False fills all missing required cols with NaN and single warning."""
