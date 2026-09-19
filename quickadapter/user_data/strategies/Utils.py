@@ -1912,27 +1912,25 @@ def compose_sample_weights(
             logger=logger,
             context=f"{context}:label_weighted",
         )
-    match on_collapse:
-        case "raise":
-            raise LabelWeightSupportError(
-                f"{context}: composed weights collapsed on surviving rows "
-                f"(survivor_total={survivor_total:.6g})"
-            )
-        case "fallback":
-            logger.warning(
-                "%s: Composed weights collapsed on surviving rows "
-                "(survivor_total=%.6g); falling back to base weights",
-                context,
-                survivor_total,
-            )
-            return sanitize_and_renormalize(
-                base_weights,
-                drop_mask=drop_mask,
-                logger=logger,
-                context=f"{context}:base_fallback",
-            )
-        case _:
-            assert_never(on_collapse)
+    if on_collapse == LABEL_WEIGHT_SUPPORT_POLICIES[1]:  # "raise"
+        raise LabelWeightSupportError(
+            f"{context}: composed weights collapsed on surviving rows "
+            f"(survivor_total={survivor_total:.6g})"
+        )
+    if on_collapse == LABEL_WEIGHT_SUPPORT_POLICIES[0]:  # "fallback"
+        logger.warning(
+            "%s: Composed weights collapsed on surviving rows "
+            "(survivor_total=%.6g); falling back to base weights",
+            context,
+            survivor_total,
+        )
+        return sanitize_and_renormalize(
+            base_weights,
+            drop_mask=drop_mask,
+            logger=logger,
+            context=f"{context}:base_fallback",
+        )
+    assert_never(on_collapse)
 
 
 def nan_average(

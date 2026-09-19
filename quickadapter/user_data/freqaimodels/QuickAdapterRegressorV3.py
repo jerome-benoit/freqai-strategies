@@ -50,13 +50,10 @@ from LabelTransformer import (
     LABEL_WEIGHT_SUPPORT_POLICIES,
     PREDICTION_METHODS,
     SKIMAGE_THRESHOLD_METHODS,
-    THRESHOLD_METHODS,
-    CustomThresholdMethod,
     ExtremaSelectionMethod,
     LabelTransformer,
     LabelWeightSupportPolicy,
     SkimageThresholdMethod,
-    ThresholdMethod,
     get_label_column_config,
 )
 from numpy.typing import NDArray
@@ -666,17 +663,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
 
-    _EXTREMA_SELECTION_METHODS_SET: Final[frozenset[ExtremaSelectionMethod]] = frozenset(
-        EXTREMA_SELECTION_METHODS
-    )
-    _CUSTOM_THRESHOLD_METHODS_SET: Final[frozenset[CustomThresholdMethod]] = frozenset(
-        CUSTOM_THRESHOLD_METHODS
-    )
     _SKIMAGE_THRESHOLD_METHODS_SET: Final[frozenset[SkimageThresholdMethod]] = frozenset(
         SKIMAGE_THRESHOLD_METHODS
     )
-    _THRESHOLD_METHODS_SET: Final[frozenset[ThresholdMethod]] = frozenset(THRESHOLD_METHODS)
-    _OPTUNA_NAMESPACES_SET: Final[frozenset[OptunaNamespace]] = frozenset(_OPTUNA_NAMESPACES)
 
     @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
