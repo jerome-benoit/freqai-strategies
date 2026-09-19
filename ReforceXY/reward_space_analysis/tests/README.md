@@ -48,7 +48,6 @@ This design provides:
   `assertFinite`, `assertLess`, etc.)
 - **Custom assertions**: Project-specific helpers (e.g.,
   `assert_component_sum_integrity`) built on unittest base
-- **Backward compatibility**: Gradual migration path from pure unittest
 
 ### Base Class
 

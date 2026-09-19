@@ -62,6 +62,8 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             }
         )
         base_reward = 0.05
+        # Entry additives consume fill-time PnL, not the next observation PnL.
+        entry_pnl = 0.012
         ctx = {
             "current_pnl": 0.01,
             "pnl_target": PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
@@ -71,13 +73,12 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             "risk_reward_ratio": PARAMS.RISK_REWARD_RATIO,
             "is_entry": True,
             "is_exit": False,
-            # The entry additive consumes the fill-time entry PnL, not O_(t+1).
-            "entry_pnl": 0.012,
         }
         s0, _n0, _pbrs0, _entry0, _exit0 = compute_pbrs_components(
             params=base,
             base_factor=PARAMS.BASE_FACTOR,
             prev_potential=0.0,
+            entry_pnl=entry_pnl,
             **ctx,
         )
         t0 = base_reward + s0 + _entry0 + _exit0
@@ -85,6 +86,7 @@ class TestAdditivesDeterministicContribution(RewardSpaceTestBase):
             params=with_add,
             base_factor=PARAMS.BASE_FACTOR,
             prev_potential=0.0,
+            entry_pnl=entry_pnl,
             **ctx,
         )
         t1 = base_reward + s1 + _entry1 + _exit1

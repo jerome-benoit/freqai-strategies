@@ -3392,9 +3392,9 @@ def compute_pbrs_components(
     base_factor: float,
     risk_reward_ratio: float,
     prev_potential: float,
+    entry_pnl: float,
     is_exit: bool = False,
     is_entry: bool = False,
-    entry_pnl: float = 0.0,
 ) -> tuple[float, float, float, float, float]:
     """Compute potential-based reward shaping (PBRS) components.
 
@@ -3433,7 +3433,7 @@ def compute_pbrs_components(
 
         - reward_shaping: Δ(s,a,s') = γ·Φ(s') - Φ(s), the PBRS shaping term
         - next_potential: Φ(s'), the potential function value for next state
-        - pbrs_delta: Same as reward_shaping (kept for backward compatibility)
+        - pbrs_delta: Same as reward_shaping
         - entry_additive: Optional non-PBRS entry bonus (0.0 if disabled or not entry)
         - exit_additive: Optional non-PBRS exit bonus (0.0 if disabled or not exit)
 
@@ -3513,17 +3513,11 @@ def apply_potential_shaping(
     base_factor: float,
     risk_reward_ratio: float,
     prev_potential: float,
+    entry_pnl: float,
     is_exit: bool = False,
     is_entry: bool = False,
 ) -> tuple[float, float, float, float, float, float]:
-    """Compute shaped reward and PBRS diagnostics.
-
-    .. deprecated::
-        This function exists only for backward compatibility with existing tests.
-        New code should use :func:`compute_pbrs_components` and compute the total reward manually.
-
-    This is a thin wrapper around `compute_pbrs_components()` that adds PBRS and
-    optional additive terms to the provided `base_reward`.
+    """Compute total shaped reward and its PBRS/additive components.
 
     Returns
     -------
@@ -3544,6 +3538,7 @@ def apply_potential_shaping(
             prev_potential=prev_potential,
             is_exit=is_exit,
             is_entry=is_entry,
+            entry_pnl=entry_pnl,
         )
     )
 
