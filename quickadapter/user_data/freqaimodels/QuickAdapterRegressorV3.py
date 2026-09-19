@@ -72,7 +72,8 @@ from sklearn.preprocessing import (
 )
 from Utils import (
     _CATBOOST_TASK_TYPES,
-    _FORMAT_STYLES,
+    _FORMAT_STYLE_DICT,
+    _FORMAT_STYLE_PARAMS,
     _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
     _OPTUNA_NAMESPACES,
     _REGRESSOR_SPECS,
@@ -436,8 +437,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         optuna.study.StudyDirection.MAXIMIZE,
     ) * _OPTUNA_LABEL_N_OBJECTIVES
     _OPTUNA_STORAGE_BACKENDS: Final[tuple[str, ...]] = ("file", "sqlite")
-    _STORAGE_FILE: Final[str] = _OPTUNA_STORAGE_BACKENDS[0]
-    _STORAGE_SQLITE: Final[str] = _OPTUNA_STORAGE_BACKENDS[1]
+    _STORAGE_FILE: Final[str] = _OPTUNA_STORAGE_BACKENDS[0]  # "file"
+    _STORAGE_SQLITE: Final[str] = _OPTUNA_STORAGE_BACKENDS[1]  # "sqlite"
 
     _OPTUNA_JOURNAL_QUARANTINE_TAG: Final[str] = "corrupt"
     _OPTUNA_JOURNAL_RECOVERABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
@@ -464,9 +465,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "robust",
     )
     SCALER_DEFAULT: Final[ScalerType] = _SCALER_TYPES[0]  # "minmax"
-    _SCALER_MAXABS: Final[str] = _SCALER_TYPES[1]
-    _SCALER_STANDARD: Final[str] = _SCALER_TYPES[2]
-    _SCALER_ROBUST: Final[str] = _SCALER_TYPES[3]
+    _SCALER_MAXABS: Final[str] = _SCALER_TYPES[1]  # "maxabs"
+    _SCALER_STANDARD: Final[str] = _SCALER_TYPES[2]  # "standard"
+    _SCALER_ROBUST: Final[str] = _SCALER_TYPES[3]  # "robust"
     _SCALER_TYPES_SET: Final[frozenset[ScalerType]] = frozenset(_SCALER_TYPES)
 
     RANGE_DEFAULT: Final[tuple[float, float]] = (-1.0, 1.0)
@@ -475,21 +476,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "compromise_programming",
         "topsis",
     )
-    _METHOD_COMPROMISE_PROGRAMMING: Final[str] = _DISTANCE_METHODS[0]
-    _METHOD_TOPSIS: Final[str] = _DISTANCE_METHODS[1]
+    _METHOD_COMPROMISE_PROGRAMMING: Final[str] = _DISTANCE_METHODS[0]  # "compromise_programming"
+    _METHOD_TOPSIS: Final[str] = _DISTANCE_METHODS[1]  # "topsis"
     _DISTANCE_METHODS_SET: Final[frozenset[DistanceMethod]] = frozenset(_DISTANCE_METHODS)
     _CLUSTER_METHODS: Final[tuple[ClusterMethod, ...]] = (
         "kmeans",
         "kmeans2",
         "kmedoids",
     )
-    _CLUSTER_KMEANS: Final[str] = _CLUSTER_METHODS[0]
-    _CLUSTER_KMEANS2: Final[str] = _CLUSTER_METHODS[1]
-    _CLUSTER_KMEDOIDS: Final[str] = _CLUSTER_METHODS[2]
+    _CLUSTER_KMEANS: Final[str] = _CLUSTER_METHODS[0]  # "kmeans"
+    _CLUSTER_KMEANS2: Final[str] = _CLUSTER_METHODS[1]  # "kmeans2"
+    _CLUSTER_KMEDOIDS: Final[str] = _CLUSTER_METHODS[2]  # "kmedoids"
 
     _DENSITY_METHODS: Final[tuple[DensityMethod, ...]] = ("knn", "medoid")
-    _DENSITY_KNN: Final[str] = _DENSITY_METHODS[0]
-    _DENSITY_MEDOID: Final[str] = _DENSITY_METHODS[1]
+    _DENSITY_KNN: Final[str] = _DENSITY_METHODS[0]  # "knn"
+    _DENSITY_MEDOID: Final[str] = _DENSITY_METHODS[1]  # "medoid"
 
     _SELECTION_CATEGORIES: Final[dict[str, tuple[SelectionMethod, ...]]] = {
         "distance": _DISTANCE_METHODS,
@@ -497,19 +498,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "density": _DENSITY_METHODS,
     }
     _CATEGORY_DISTANCE, _CATEGORY_CLUSTER, _CATEGORY_DENSITY = _SELECTION_CATEGORIES
-    _SUPPORT_POLICY_FALLBACK: Final[Literal["fallback"]] = LABEL_WEIGHT_SUPPORT_POLICIES[0]
-    _SUPPORT_POLICY_RAISE: Final[Literal["raise"]] = LABEL_WEIGHT_SUPPORT_POLICIES[1]
+    _SUPPORT_POLICY_FALLBACK: Final[Literal["fallback"]] = LABEL_WEIGHT_SUPPORT_POLICIES[
+        0
+    ]  # LABEL_WEIGHT_SUPPORT_POLICIES[0]='fallback'
+    _SUPPORT_POLICY_RAISE: Final[Literal["raise"]] = LABEL_WEIGHT_SUPPORT_POLICIES[1]  # "raise"
 
     _SELECTION_METHODS: Final[tuple[SelectionMethod, ...]] = (
         *_DISTANCE_METHODS,
         *_CLUSTER_METHODS,
         *_DENSITY_METHODS,
     )
-    _SELECTION_KMEANS: Final[str] = _SELECTION_METHODS[2]
-    _SELECTION_KMEANS2: Final[str] = _SELECTION_METHODS[3]
-    _SELECTION_KMEDOIDS: Final[str] = _SELECTION_METHODS[4]
-    _SELECTION_KNN: Final[str] = _SELECTION_METHODS[5]
-    _SELECTION_MEDOID: Final[str] = _SELECTION_METHODS[6]
+    _SELECTION_KMEANS: Final[str] = _SELECTION_METHODS[2]  # "kmeans"
+    _SELECTION_KMEANS2: Final[str] = _SELECTION_METHODS[3]  # "kmeans2"
+    _SELECTION_KMEDOIDS: Final[str] = _SELECTION_METHODS[4]  # "kmedoids"
+    _SELECTION_KNN: Final[str] = _SELECTION_METHODS[5]  # "knn"
+    _SELECTION_MEDOID: Final[str] = _SELECTION_METHODS[6]  # "medoid"
     _SELECTION_METHODS_SET: Final[frozenset[SelectionMethod]] = frozenset(_SELECTION_METHODS)
 
     _DISTANCE_METRICS: Final[tuple[str, ...]] = (
@@ -531,12 +534,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "power_mean",
         "weighted_sum",
     )
-    _METRIC_EUCLIDEAN: Final[str] = _DISTANCE_METRICS[0]
-    _METRIC_MINKOWSKI: Final[str] = _DISTANCE_METRICS[1]
-    _METRIC_HELLINGER: Final[str] = _DISTANCE_METRICS[8]
-    _METRIC_SHELLINGER: Final[str] = _DISTANCE_METRICS[9]
-    _METRIC_POWER_MEAN: Final[str] = _DISTANCE_METRICS[15]
-    _METRIC_WEIGHTED_SUM: Final[str] = _DISTANCE_METRICS[16]
+    _METRIC_EUCLIDEAN: Final[str] = _DISTANCE_METRICS[0]  # "euclidean"
+    _METRIC_MINKOWSKI: Final[str] = _DISTANCE_METRICS[1]  # "minkowski"
+    _METRIC_HELLINGER: Final[str] = _DISTANCE_METRICS[8]  # "hellinger"
+    _METRIC_SHELLINGER: Final[str] = _DISTANCE_METRICS[9]  # "shellinger"
+    _METRIC_POWER_MEAN: Final[str] = _DISTANCE_METRICS[15]  # "power_mean"
+    _METRIC_WEIGHTED_SUM: Final[str] = _DISTANCE_METRICS[16]  # "weighted_sum"
     _DISTANCE_METRICS_SET: Final[frozenset[str]] = frozenset(_DISTANCE_METRICS)
     # SciPy-compatible distance metrics: the first 8 entries of
     # ``_DISTANCE_METRICS`` route to ``scipy.spatial.distance.cdist``.
@@ -553,7 +556,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     )
 
     _PROBABILITY_DISTANCE_METRICS: Final[tuple[str, ...]] = (
-        _DISTANCE_METRICS[7],
+        _DISTANCE_METRICS[7],  # "jensenshannon"
         _METRIC_HELLINGER,
         _METRIC_SHELLINGER,
     )
@@ -584,20 +587,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "min",
         "max",
     )
-    _DENSITY_AGG_POWER_MEAN: Final[str] = _DENSITY_AGGREGATIONS[0]
-    _DENSITY_AGG_QUANTILE: Final[str] = _DENSITY_AGGREGATIONS[1]
-    _DENSITY_AGG_MIN: Final[str] = _DENSITY_AGGREGATIONS[2]
-    _DENSITY_AGG_MAX: Final[str] = _DENSITY_AGGREGATIONS[3]
+    _DENSITY_AGG_POWER_MEAN: Final[str] = _DENSITY_AGGREGATIONS[0]  # "power_mean"
+    _DENSITY_AGG_QUANTILE: Final[str] = _DENSITY_AGGREGATIONS[1]  # "quantile"
+    _DENSITY_AGG_MIN: Final[str] = _DENSITY_AGGREGATIONS[2]  # "min"
+    _DENSITY_AGG_MAX: Final[str] = _DENSITY_AGGREGATIONS[3]  # "max"
     _DENSITY_AGGREGATIONS_SET: Final[frozenset[DensityAggregation]] = frozenset(
         _DENSITY_AGGREGATIONS
     )
 
     _POWER_MEAN_MAP: Final[dict[str, float]] = {
-        _DISTANCE_METRICS[10]: -1.0,
-        _DISTANCE_METRICS[11]: 0.0,
-        _DISTANCE_METRICS[12]: 1.0,
-        _DISTANCE_METRICS[13]: 2.0,
-        _DISTANCE_METRICS[14]: 3.0,
+        _DISTANCE_METRICS[10]: -1.0,  # "harmonic_mean"
+        _DISTANCE_METRICS[11]: 0.0,  # "geometric_mean"
+        _DISTANCE_METRICS[12]: 1.0,  # "arithmetic_mean"
+        _DISTANCE_METRICS[13]: 2.0,  # "quadratic_mean"
+        _DISTANCE_METRICS[14]: 3.0,  # "cubic_mean"
     }
     _POWER_MEAN_METRICS_SET: Final[frozenset[str]] = frozenset(_POWER_MEAN_MAP)
 
@@ -657,8 +660,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         "train_test_split",
         "timeseries_split",
     )
-    DATA_SPLIT_METHOD_DEFAULT: Final[str] = _DATA_SPLIT_METHODS[0]
-    _DATA_SPLIT_TIMESERIES: Final[str] = _DATA_SPLIT_METHODS[1]
+    DATA_SPLIT_METHOD_DEFAULT: Final[str] = _DATA_SPLIT_METHODS[0]  # "train_test_split"
+    _DATA_SPLIT_TIMESERIES: Final[str] = _DATA_SPLIT_METHODS[1]  # "timeseries_split"
     TIMESERIES_N_SPLITS_DEFAULT: Final[int] = 5
     TIMESERIES_GAP_DEFAULT: Final[int] = 0
     TIMESERIES_MAX_TRAIN_SIZE_DEFAULT: Final[int | None] = None
@@ -831,7 +834,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 label_weights,
                 logger=logger,
                 context=context,
-                on_collapse=LABEL_WEIGHT_SUPPORT_POLICIES[0],
+                on_collapse=LABEL_WEIGHT_SUPPORT_POLICIES[
+                    0
+                ],  # LABEL_WEIGHT_SUPPORT_POLICIES[0]='fallback'
             )
         except LabelWeightSupportError as exc:
             logger.warning(
@@ -903,7 +908,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             # governs the contract -- ``raise`` raises, ``fallback``
             # warns. A direct return to base weights would bypass the
             # policy silently.
-            strategy = label_weighting_config.get("strategy", WEIGHT_STRATEGIES[0])
+            strategy = label_weighting_config.get(
+                "strategy", WEIGHT_STRATEGIES[0]
+            )  # WEIGHT_STRATEGIES[0]='none'
             if strategy != WEIGHT_STRATEGIES[0]:  # "none"
                 return QuickAdapterRegressorV3._apply_support_policy(
                     base_weights,
@@ -2262,7 +2269,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ``dk.set_weights_higher_recent`` when ``feature_parameters.weight_factor > 0``,
         else ones) with the label importance weight column produced by
         ``compute_label_weights`` and stored on ``unfiltered_df`` under
-        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before
+        ``label_weight_column_name(LABEL_COLUMNS[0])``. Alignment runs before  # LABEL_COLUMNS[0]='&s-extrema'
         any shuffle/split on ``features_filtered.index`` (a subset of
         ``unfiltered_df.index``) to avoid post-hoc reindex against shuffled
         data. The weight column is absent when ``label_weighting.strategy``
@@ -2280,9 +2287,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 "unfiltered_df.index (filter_features should preserve original "
                 "row labels)"
             )
-        if LABEL_COLUMNS[0] not in dk.label_list:
+        if LABEL_COLUMNS[0] not in dk.label_list:  # LABEL_COLUMNS[0]='&s-extrema'
             raise ValueError(
-                f"LABEL_COLUMNS[0]={LABEL_COLUMNS[0]!r} is not in "
+                f"LABEL_COLUMNS[0]={LABEL_COLUMNS[0]!r} is not in "  # LABEL_COLUMNS[0]='&s-extrema'
                 f"dk.label_list={dk.label_list!r}: project label constant "
                 f"diverged from freqtrade's runtime label list"
             )
@@ -2300,9 +2307,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         label_weighting = self.label_weighting
         label_weighting_config = get_label_column_config(
-            LABEL_COLUMNS[0], label_weighting["default"], label_weighting["columns"]
+            LABEL_COLUMNS[0],
+            label_weighting["default"],
+            label_weighting["columns"],  # LABEL_COLUMNS[0]='&s-extrema'
         )
-        weight_col = label_weight_column_name(LABEL_COLUMNS[0])
+        weight_col = label_weight_column_name(LABEL_COLUMNS[0])  # LABEL_COLUMNS[0]='&s-extrema'
         if weight_col in unfiltered_df.columns:
             label_weights = unfiltered_df.loc[features_filtered.index, weight_col].to_numpy(
                 dtype=float
@@ -4770,14 +4779,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_config = self._resolve_label_method_config(
                 self.ft_params.get("label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT)
             )
-            metric_log_msg = f" ({format_dict(label_config, style=_FORMAT_STYLES[1])})"
+            metric_log_msg = f" ({format_dict(label_config, style=_FORMAT_STYLE_PARAMS)})"
         logger.info(
             f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt completed"
             f"{metric_log_msg} ({time_spent:.2f} secs)"
         )
         if study_best_results:
             logger.info(
-                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params: {format_dict(study_best_results, style=_FORMAT_STYLES[0])}"
+                f"[{pair}] Optuna {namespace} {objective_type} objective hyperopt best params: {format_dict(study_best_results, style=_FORMAT_STYLE_DICT)}"
             )
         if not self.optuna_validate_params(pair, namespace, study):
             logger.warning(
