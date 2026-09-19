@@ -1299,17 +1299,13 @@ class QuickAdapterV3(IStrategy):
     ) -> float | None:
         trade_natr_methods: dict[str, Callable[[], float | None]] = {
             # 0 - "moving_average"
-            TRADE_NATR_METHODS[0]: lambda: self.get_trade_moving_average_natr(  # "moving_average"
+            TRADE_NATR_METHODS[0]: lambda: self.get_trade_moving_average_natr(
                 df, trade.pair, trade_duration_candles
             ),
             # 1 - "quantile_interpolation"
-            TRADE_NATR_METHODS[1]: lambda: self.get_trade_quantile_interpolation_natr(
-                df, trade
-            ),  # "quantile_interpolation"
+            TRADE_NATR_METHODS[1]: lambda: self.get_trade_quantile_interpolation_natr(df, trade),
             # 2 - "weighted_average"
-            TRADE_NATR_METHODS[2]: lambda: self.get_trade_weighted_average_natr(
-                df, trade
-            ),  # "weighted_average"
+            TRADE_NATR_METHODS[2]: lambda: self.get_trade_weighted_average_natr(df, trade),
         }
         trade_natr_method_fn = trade_natr_methods.get(self.trade_natr_method)
         if trade_natr_method_fn is None:
