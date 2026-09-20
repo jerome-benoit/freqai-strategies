@@ -3884,6 +3884,14 @@ def write_complete_statistical_analysis(
         "exit_additive_enabled",
     }
     classification_metadata_available = classification_keys.issubset(reward_params)
+    raw_exit_potential_mode = (
+        reward_params.get("exit_potential_mode") if classification_metadata_available else None
+    )
+    classification_metadata_valid = (
+        classification_metadata_available
+        and isinstance(raw_exit_potential_mode, str)
+        and raw_exit_potential_mode in ALLOWED_EXIT_POTENTIAL_MODES
+    )
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
 
     # Helpers: consistent Markdown table renderers
@@ -4301,11 +4309,10 @@ def write_complete_statistical_analysis(
 
             # Get configuration for proper invariance assessment
             if classification_metadata_available:
-                exit_potential_mode: str | None = _resolve_exit_potential_mode(
-                    reward_params.get(
-                        "exit_potential_mode",
-                        DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"],
-                    )
+                exit_potential_mode: str | None = (
+                    raw_exit_potential_mode
+                    if isinstance(raw_exit_potential_mode, str)
+                    else repr(raw_exit_potential_mode)
                 )
                 entry_additive_enabled_raw: bool | None = _get_bool_param(
                     reward_params, "entry_additive_enabled", False
@@ -4313,15 +4320,20 @@ def write_complete_statistical_analysis(
                 exit_additive_enabled_raw: bool | None = _get_bool_param(
                     reward_params, "exit_additive_enabled", False
                 )
-                (
-                    entry_additive_effective,
-                    exit_additive_effective,
-                    additives_suppressed,
-                ) = _resolve_additive_enablement(
-                    exit_potential_mode,
-                    entry_additive_enabled_raw,
-                    exit_additive_enabled_raw,
-                )
+                if classification_metadata_valid:
+                    (
+                        entry_additive_effective,
+                        exit_additive_effective,
+                        additives_suppressed,
+                    ) = _resolve_additive_enablement(
+                        exit_potential_mode,
+                        entry_additive_enabled_raw,
+                        exit_additive_enabled_raw,
+                    )
+                else:
+                    entry_additive_effective = False
+                    exit_additive_effective = False
+                    additives_suppressed = False
             else:
                 exit_potential_mode = None
                 entry_additive_enabled_raw = None
@@ -4338,7 +4350,7 @@ def write_complete_statistical_analysis(
                     "reason": "Trajectory verification skipped without reward configuration evidence",
                 }
             )
-            canonical_configuration = classification_metadata_available and (
+            canonical_configuration = classification_metadata_valid and (
                 exit_potential_mode == "canonical"
                 and not (entry_additive_effective or exit_additive_effective)
             )
@@ -4354,7 +4366,7 @@ def write_complete_statistical_analysis(
                     observed_additive_issues.append(f"{column} contains non-zero values")
             canonical_observations = not observed_additive_issues
 
-            if not classification_metadata_available:
+            if not classification_metadata_available or not classification_metadata_valid:
                 invariance_status = "Not verified"
             elif not canonical_configuration:
                 invariance_status = "Non-canonical: not verified"
@@ -4366,6 +4378,11 @@ def write_complete_statistical_analysis(
             invariance_note = evidence["reason"] + ". Raw shaping sums do not certify invariance."
             if not classification_metadata_available:
                 invariance_note += " Reward configuration evidence is missing or incomplete."
+            elif not classification_metadata_valid:
+                invariance_note += (
+                    " Reward configuration evidence is invalid: "
+                    f"invalid exit_potential_mode={raw_exit_potential_mode!r}."
+                )
             elif not canonical_configuration:
                 reasons = []
                 if exit_potential_mode != "canonical":
@@ -4402,10 +4419,10 @@ def write_complete_statistical_analysis(
                 f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw) if exit_additive_enabled_raw is not None else 'unknown'} |\n"
             )
             f.write(
-                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_valid else 'unknown'} |\n"
             )
             f.write(
-                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_valid else 'unknown'} |\n"
             )
             f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
             f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")

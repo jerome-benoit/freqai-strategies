@@ -213,6 +213,7 @@ Columns:
 | pbrs-exit-mode-validation-128                 | pbrs        | Exit-potential choices are strict or canonicalized; direct calls fail safe           | pbrs/test_pbrs.py:1296                     | Direct invalid calls warn and suppress additives                                                                                                                               |
 | cli-invalid-exit-mode-129                     | cli         | Invalid `--params exit_potential_mode` fails before artifacts                       | cli/test_cli_params_and_csv.py:322         | Strict CLI validation                                                                                                                                                          |
 | cli-warning-header-recognition-130            | cli         | Warning counts accept only anchored Python warning header formats                    | cli/test_cli_params_and_csv.py:49          | Covers POSIX, relative, synthetic and Windows source locations                                                                                                                 |
+| pbrs-invalid-mode-provenance-131              | pbrs        | Invalid imported exit-mode metadata cannot certify canonical invariance              | pbrs/test_pbrs.py:475                      | Preserves the invalid raw value and reports effective additive settings as unknown                                                                                             |
 
 ### Non-Owning Smoke / Reference Checks
 

@@ -342,6 +342,8 @@ episodes (contiguous `transition_index`, single terminal), the local identity
 continuity, and the discounted terminal boundary residual must all hold with
 sufficient ordered data; otherwise the report classifies the observed PBRS as
 "Not verified" even in canonical configuration.
+Imported or API-created data with an invalid `exit_potential_mode` is reported with
+its original value and cannot receive canonical verification.
 
 In canonical mode, the entry/exit additive terms are suppressed even if the
 corresponding `*_additive_enabled` flags are set.

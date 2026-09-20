@@ -473,6 +473,44 @@ class TestSimulationParity(RewardSpaceTestBase):
         self.assertIn("reward_entry_additive contains non-zero values", content)
         self.assertIn("| Σ Entry Additive | 0.000000 |", content)
 
+    def test_report_rejects_invalid_exit_mode_provenance(self):
+        """Invalid imported mode metadata cannot certify canonical invariance."""
+        df = simulate_samples(
+            params=self.base_params(
+                exit_potential_mode="canonical",
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+                hold_potential_enabled=True,
+            ),
+            num_samples=40,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        df.attrs["reward_params"]["exit_potential_mode"] = "canoncial"
+        out_dir = self.output_path / "invalid_exit_mode_provenance"
+        write_complete_statistical_analysis(
+            df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        self.assertIn("| Invariance Status | Not verified |", content)
+        self.assertIn("invalid exit_potential_mode='canoncial'", content)
+        self.assertIn("| Exit Potential Mode | canoncial |", content)
+        self.assertIn("| Entry Additive Effective | unknown |", content)
+        self.assertNotIn("Canonical: observed PBRS verified", content)
+
     def test_non_canonical_report_classifies_both_outputs(self):
         """Zero correction cannot certify a non-canonical potential mode."""
         df = simulate_samples(
