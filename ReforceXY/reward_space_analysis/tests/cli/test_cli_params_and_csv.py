@@ -12,7 +12,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from reward_space_analysis import Actions
+from reward_space_analysis import (
+    DEFAULT_MODEL_REWARD_PARAMETERS,
+    Actions,
+    get_max_idle_duration_candles,
+)
 
 from ..constants import SCENARIOS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
@@ -108,6 +112,8 @@ class TestParamsPropagation(RewardSpaceTestBase):
         explicit_defaults_dir = self.output_path / "explicit_defaults"
         different_idle_dir = self.output_path / "different_idle"
         different_seed_dir = self.output_path / "different_seed"
+        default_duration = DEFAULT_MODEL_REWARD_PARAMETERS["max_trade_duration_candles"]
+        default_idle = get_max_idle_duration_candles(DEFAULT_MODEL_REWARD_PARAMETERS)
         common_args = [
             "--num_samples",
             str(SCENARIOS.CLI_NUM_SAMPLES_HASH),
@@ -124,16 +130,16 @@ class TestParamsPropagation(RewardSpaceTestBase):
             args=[
                 *common_args,
                 "--max_trade_duration_candles",
-                "128",
+                str(default_duration),
                 "--max_idle_duration_candles",
-                "512",
+                str(default_idle),
                 "--exit_plateau",
-                "1",
+                str(int(DEFAULT_MODEL_REWARD_PARAMETERS["exit_plateau"])),
             ],
         )
         different_result = _run_cli(
             out_dir=different_idle_dir,
-            args=[*common_args, "--max_idle_duration_candles", "513"],
+            args=[*common_args, "--max_idle_duration_candles", str(default_idle + 1)],
         )
         different_seed_result = _run_cli(
             out_dir=different_seed_dir,
@@ -146,48 +152,29 @@ class TestParamsPropagation(RewardSpaceTestBase):
         different_manifest = json.loads((different_idle_dir / "manifest.json").read_text())
         different_seed_manifest = json.loads((different_seed_dir / "manifest.json").read_text())
         simulation_params = manifest["simulation_params"]
-        self.assertRegex(manifest["params_hash"], r"^[0-9a-f]{64}$")
-        self.assertEqual(
-            set(simulation_params),
-            {
-                "action_masking",
-                "max_duration_ratio",
-                "num_samples",
-                "out_dir",
-                "perm_n_jobs",
-                "pnl_base_std",
-                "pnl_duration_vol_scale",
-                "real_episodes",
-                "real_episodes_sha256",
-                "rf_n_jobs",
-                "seed",
-                "skip_feature_analysis",
-                "skip_partial_dependence",
-                "strict_diagnostics",
-                "trading_mode",
-                "unrealized_pnl",
-            },
-        )
         self.assertEqual(simulation_params["out_dir"], str(out_dir))
-        self.assertEqual(simulation_params["trading_mode"], "spot")
-        self.assertEqual(simulation_params["max_duration_ratio"], 2.5)
         self.assertEqual(
             manifest["effective"]["risk_reward_ratio"],
             SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT,
         )
-        self.assertEqual(manifest["reward_params"]["max_idle_duration_candles"], 512)
+        self.assertEqual(manifest["reward_params"]["max_idle_duration_candles"], default_idle)
         self.assertIsNone(simulation_params["real_episodes_sha256"])
         boolean_keys = {
-            "check_invariants",
-            "exit_plateau",
-            "hold_potential_enabled",
-            "entry_additive_enabled",
-            "exit_additive_enabled",
+            key for key, value in DEFAULT_MODEL_REWARD_PARAMETERS.items() if isinstance(value, bool)
         }
         self.assertTrue(boolean_keys.isdisjoint(manifest["parameter_adjustments"]))
-        self.assertEqual(
-            explicit_manifest["parameter_adjustments"]["exit_plateau"]["reason"],
-            "bool_coerce",
+        plateau_adjustment = explicit_manifest["parameter_adjustments"]["exit_plateau"]
+        self.assertIs(
+            plateau_adjustment["adjusted"], DEFAULT_MODEL_REWARD_PARAMETERS["exit_plateau"]
+        )
+        reward_keys = set(manifest["reward_params"])
+        effective_keys = set(manifest["effective"])
+        self.assertTrue(reward_keys.isdisjoint(simulation_params))
+        self.assertTrue(effective_keys.isdisjoint(simulation_params))
+        self.assertTrue(reward_keys.isdisjoint(effective_keys))
+        pd.testing.assert_frame_equal(
+            pd.read_csv(out_dir / "reward_samples.csv"),
+            pd.read_csv(explicit_defaults_dir / "reward_samples.csv"),
         )
         self.assertEqual(manifest["params_hash"], explicit_manifest["params_hash"])
         self.assertNotEqual(manifest["params_hash"], different_manifest["params_hash"])
@@ -366,7 +353,7 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertNotEqual(manifest["params_hash"], synthetic_manifest["params_hash"])
 
     def test_hybrid_parameter_routes_have_one_canonical_hash(self):
-        """Equivalent flag and --params inputs produce the same manifest identity."""
+        """Overrides beat conflicting flags and match equivalent direct inputs."""
         params_out_dir = self.output_path / "params_route"
         flags_out_dir = self.output_path / "flags_route"
         common_args = [
@@ -381,6 +368,10 @@ class TestParamsPropagation(RewardSpaceTestBase):
             out_dir=params_out_dir,
             args=[
                 *common_args,
+                "--profit_aim",
+                "0.04",
+                "--risk_reward_ratio",
+                "3.0",
                 "--params",
                 "profit_aim=0.02",
                 "risk_reward_ratio=1.5",

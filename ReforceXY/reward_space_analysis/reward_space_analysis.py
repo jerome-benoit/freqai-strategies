@@ -4580,6 +4580,11 @@ def main() -> None:
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
     risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
+    effective_params = {
+        "base_factor": base_factor,
+        "profit_aim": profit_aim,
+        "risk_reward_ratio": risk_reward_ratio,
+    }
     params["max_idle_duration_candles"] = get_max_idle_duration_candles(params)
     params["action_masking"] = _to_bool(params.get("action_masking", args.action_masking))
     params["unrealized_pnl"] = bool(args.unrealized_pnl)
@@ -4628,28 +4633,13 @@ def main() -> None:
             "Sim: NaN values detected in critical simulated columns: "
             + ", ".join(f"{k}={v}" for k, v in nan_issues.items())
         )
-    # Record every resolved simulation input; reward parameters remain in their own map.
-    args_dict = vars(args)
-    simulation_parameter_keys = (
-        "num_samples",
-        "seed",
-        "out_dir",
-        "trading_mode",
-        "max_duration_ratio",
-        "pnl_base_std",
-        "pnl_duration_vol_scale",
-        "rf_n_jobs",
-        "perm_n_jobs",
-        "skip_feature_analysis",
-        "skip_partial_dependence",
-        "strict_diagnostics",
-        "real_episodes",
-        "unrealized_pnl",
-        "action_masking",
-    )
+    # Derive simulation controls from parsed options, not a parallel option inventory.
     sim_params: dict[str, Any] = {
-        key: str(args_dict[key]) if isinstance(args_dict[key], Path) else args_dict[key]
-        for key in simulation_parameter_keys
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+        if key not in DEFAULT_MODEL_REWARD_PARAMETERS
+        and key not in effective_params
+        and key not in {"params", "strict_validation"}
     }
     sim_params["action_masking"] = params["action_masking"]
     sim_params["unrealized_pnl"] = params["unrealized_pnl"]
@@ -4683,13 +4673,10 @@ def main() -> None:
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
-        effective_params: dict[str, float] = {
-            "base_factor": float(base_factor),
-            "profit_aim": float(profit_aim),
-            "risk_reward_ratio": float(risk_reward_ratio),
-        }
         resolved_reward_params: dict[str, Any] = {
-            key: value for key, value in params.items() if key not in effective_params
+            key: value
+            for key, value in params.items()
+            if key not in effective_params and key not in sim_params
         }
         manifest: dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
@@ -4700,10 +4687,6 @@ def main() -> None:
             "reward_params": resolved_reward_params,
             "effective": effective_params,
         }
-        sim_params_dict = df.attrs.get("simulation_params", {})
-        if not isinstance(sim_params_dict, dict):
-            sim_params_dict = {}
-        sim_params: dict[str, Any] = dict(sim_params_dict)
         excluded_for_hash = {"out_dir", "real_episodes"}
         sim_params_for_hash: dict[str, Any] = {
             key: sim_params[key] for key in sim_params if key not in excluded_for_hash

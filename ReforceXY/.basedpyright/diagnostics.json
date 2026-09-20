@@ -372,16 +372,6 @@
       "startLine": 3808
     },
     {
-      "endCharacter": 14,
-      "endLine": 4649,
-      "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
-      "message": "Declaration \"sim_params\" is obscured by a declaration of the same name",
-      "rule": "reportRedeclaration",
-      "severity": "error",
-      "startCharacter": 4,
-      "startLine": 4649
-    },
-    {
       "endCharacter": 22,
       "endLine": 914,
       "file": "ReforceXY/user_data/freqaimodels/ReforceXY.py",
