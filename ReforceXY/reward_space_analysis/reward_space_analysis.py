@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.spatial.distance import jensenshannon
 from scipy.stats import entropy, probplot
 
 if TYPE_CHECKING:
@@ -271,7 +270,7 @@ class RewardDiagnosticsWarning(RuntimeWarning):
 
 def _warn_unknown_mode(
     mode_type: str,
-    provided_value: str,
+    provided_value: Any,
     valid_values: Iterable[str],
     fallback_value: str,
     stacklevel: int = 2,
@@ -344,16 +343,37 @@ def _resolve_additive_enablement(
         (entry_additive_effective, exit_additive_effective, additives_suppressed)
     """
 
+    resolved_mode = _resolve_exit_potential_mode(exit_potential_mode)
     entry_additive_effective = (
-        bool(entry_additive_enabled_raw) if exit_potential_mode != "canonical" else False
+        bool(entry_additive_enabled_raw) if resolved_mode != "canonical" else False
     )
     exit_additive_effective = (
-        bool(exit_additive_enabled_raw) if exit_potential_mode != "canonical" else False
+        bool(exit_additive_enabled_raw) if resolved_mode != "canonical" else False
     )
-    additives_suppressed = exit_potential_mode == "canonical" and bool(
+    additives_suppressed = resolved_mode == "canonical" and bool(
         entry_additive_enabled_raw or exit_additive_enabled_raw
     )
     return entry_additive_effective, exit_additive_effective, additives_suppressed
+
+
+def _resolve_exit_potential_mode(
+    value: Any,
+    *,
+    warn_invalid: bool = False,
+    stacklevel: int = 2,
+) -> str:
+    """Return a supported exit-potential mode, defaulting invalid values to canonical."""
+    if isinstance(value, str) and value in ALLOWED_EXIT_POTENTIAL_MODES:
+        return value
+    if warn_invalid:
+        _warn_unknown_mode(
+            "exit_potential_mode",
+            value,
+            sorted(ALLOWED_EXIT_POTENTIAL_MODES),
+            "canonical",
+            stacklevel=stacklevel,
+        )
+    return "canonical"
 
 
 def _get_float_param(
@@ -576,27 +596,41 @@ def validate_reward_parameters(
     adjustments: dict[str, dict[str, Any]] = {}
 
     # Boolean parameter coercion
-    _bool_keys = [
+    bool_keys = (
         "check_invariants",
+        "exit_plateau",
         "hold_potential_enabled",
         "entry_additive_enabled",
         "exit_additive_enabled",
-    ]
-    for bkey in _bool_keys:
-        if bkey in sanitized:
-            original_val = sanitized[bkey]
-            coerced_val = _to_bool(original_val)
-            if coerced_val is not original_val:
-                sanitized[bkey] = coerced_val
-            adjustments.setdefault(
-                bkey,
-                {
-                    "original": original_val,
-                    "adjusted": coerced_val,
+    )
+    for key in bool_keys:
+        if key in sanitized:
+            original_value = sanitized[key]
+            coerced_value = _to_bool(original_value)
+            if coerced_value is not original_value:
+                sanitized[key] = coerced_value
+                adjustments[key] = {
+                    "original": original_value,
+                    "adjusted": coerced_value,
                     "reason": "bool_coerce",
                     "validation_mode": "strict" if strict else "relaxed",
-                },
-            )
+                }
+    if "exit_potential_mode" in sanitized:
+        original_mode = sanitized["exit_potential_mode"]
+        resolved_mode = _resolve_exit_potential_mode(original_mode)
+        if resolved_mode != original_mode:
+            if strict:
+                raise ValueError(
+                    "Param: 'exit_potential_mode'="
+                    f"{original_mode!r} must be one of {sorted(ALLOWED_EXIT_POTENTIAL_MODES)}"
+                )
+            sanitized["exit_potential_mode"] = resolved_mode
+            adjustments["exit_potential_mode"] = {
+                "original": original_mode,
+                "adjusted": resolved_mode,
+                "reason": "invalid_choice",
+                "validation_mode": "relaxed",
+            }
 
     # Coerce and clamp numeric-bounded parameters
     for key, bounds in _PARAMETER_BOUNDS.items():
@@ -654,7 +688,7 @@ def validate_reward_parameters(
             strict=strict,
         )
 
-        if not np.isclose(adjusted, original_numeric):
+        if reason_parts:
             sanitized[key] = adjusted
             prev_reason = adjustments.get(key, {}).get("reason")
             reason: list[str] = []
@@ -698,6 +732,9 @@ def validate_reward_parameters(
                 "reason": "negative_efficiency_guard",
                 "validation_mode": "relaxed",
             }
+    for key in ("max_trade_duration_candles", "max_idle_duration_candles"):
+        if key in sanitized:
+            sanitized[key] = int(_get_float_param(sanitized, key))
 
     return sanitized, adjustments
 
@@ -1398,7 +1435,11 @@ def calculate_reward(
         breakdown.exit_pnl = terminal_context.current_pnl
 
     # Apply PBRS only if enabled and not neutral self-loop
-    exit_mode = _get_str_param(params, "exit_potential_mode")
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
     entry_additive_enabled = (
@@ -1655,13 +1696,20 @@ def simulate_samples(
     - Realized PnL appears on the exit step (position still Long/Short).
     """
 
+    source_params = dict(params)
+    params = dict(source_params)
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
+    params["exit_potential_mode"] = exit_mode
     rng = random.Random(seed)
     max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
 
     # Theoretical PBRS invariance flag
-    exit_mode = _get_str_param(params, "exit_potential_mode")
     entry_enabled_raw = _get_bool_param(params, "entry_additive_enabled")
     exit_enabled_raw = _get_bool_param(params, "exit_additive_enabled")
 
@@ -1896,7 +1944,7 @@ def simulate_samples(
         )
 
     df = pd.DataFrame(samples)
-    df.attrs["reward_params"] = dict(params)
+    df.attrs["reward_params"] = source_params
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
@@ -2384,15 +2432,22 @@ def _perform_feature_analysis(
     return importance_df, analysis_stats, partial_deps, model
 
 
-def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFrame:
+def load_real_episodes(
+    path: Path,
+    *,
+    enforce_columns: bool = True,
+    artifact_bytes: bytes | None = None,
+) -> pd.DataFrame:
     """Load serialized episodes into normalized DataFrame.
 
     Parameters
     ----------
     path : Path
-        Pickle file path.
+        Pickle file path used for diagnostics.
     enforce_columns : bool, default True
         Require all expected columns (raise on missing) or fill with NaN.
+    artifact_bytes : bytes, optional
+        Exact artifact bytes to deserialize instead of reading the path.
 
     Returns
     -------
@@ -2401,10 +2456,10 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     """
 
     try:
-        with path.open("rb") as f:
-            episodes_data = pickle.load(f)
-    except Exception as e:
-        raise ValueError(f"Data: failed to unpickle '{path}': {e!r}") from e
+        serialized = path.read_bytes() if artifact_bytes is None else artifact_bytes
+        episodes_data = pickle.loads(serialized)
+    except Exception as exc:
+        raise ValueError(f"Data: failed to unpickle '{path}': {exc!r}") from exc
 
     # Top-level dict with 'transitions'
     if isinstance(episodes_data, dict) and "transitions" in episodes_data:
@@ -2541,6 +2596,16 @@ def load_real_episodes(path: Path, *, enforce_columns: bool = True) -> pd.DataFr
     return df
 
 
+def _stabilize_divergence(value: float, *, bin_count: int, metric_name: str) -> float:
+    """Clamp only roundoff-sized negative divergences to their exact lower bound."""
+    if value < 0.0:
+        tolerance = 8.0 * np.finfo(float).eps * bin_count
+        if value >= -tolerance:
+            return 0.0
+        raise AssertionError(f"Stats: {metric_name} must be >= 0, got {value:.17g}")
+    return value
+
+
 def compute_distribution_shift_metrics(
     synthetic_df: pd.DataFrame,
     real_df: pd.DataFrame,
@@ -2581,22 +2646,35 @@ def compute_distribution_shift_metrics(
             continue
         bins = np.unique(np.linspace(min_val, max_val, 50))
 
-        # Use density=False to get counts, then normalize to probabilities
+        # Normalize counts before smoothing so proportional histograms stay identical.
         hist_synth, _ = np.histogram(synth_values, bins=bins, density=False)
         hist_real, _ = np.histogram(real_values, bins=bins, density=False)
+        hist_synth = hist_synth / hist_synth.sum()
+        hist_real = hist_real / hist_real.sum()
 
-        # Add small epsilon to avoid log(0) in KL divergence
+        # Add a common epsilon to avoid log(0), then restore unit mass.
         epsilon = float(INTERNAL_GUARDS["histogram_epsilon"])
         hist_synth = hist_synth + epsilon
         hist_real = hist_real + epsilon
-        # Normalize to create probability distributions (sum to 1)
         hist_synth = hist_synth / hist_synth.sum()
         hist_real = hist_real / hist_real.sum()
 
         # KL(synthetic||real): measures how much synthetic diverges from real
-        metrics[f"{feature}_kl_divergence"] = float(entropy(hist_synth, hist_real))
-        # JS distance (square root of JS divergence) is symmetric
-        metrics[f"{feature}_js_distance"] = float(jensenshannon(hist_synth, hist_real))
+        bin_count = len(hist_synth)
+        kl_divergence = _stabilize_divergence(
+            float(entropy(hist_synth, hist_real)),
+            bin_count=bin_count,
+            metric_name=f"{feature} KL divergence",
+        )
+        metrics[f"{feature}_kl_divergence"] = kl_divergence
+        # JS distance is the square root of the symmetric JS divergence.
+        mixture = 0.5 * (hist_synth + hist_real)
+        js_divergence = _stabilize_divergence(
+            0.5 * (float(entropy(hist_synth, mixture)) + float(entropy(hist_real, mixture))),
+            bin_count=bin_count,
+            metric_name=f"{feature} JS divergence",
+        )
+        metrics[f"{feature}_js_distance"] = math.sqrt(js_divergence)
         metrics[f"{feature}_wasserstein"] = float(
             stats.wasserstein_distance(synth_values, real_values)
         )
@@ -3317,9 +3395,17 @@ def _compute_exit_potential(
     prev_potential: float,
     params: RewardParams,
     gamma: float,
+    *,
+    mode: str | None = None,
 ) -> float:
     """Return exit potential using the selected mode and validated PBRS gamma."""
-    mode = _get_str_param(params, "exit_potential_mode")
+    mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"])
+        if mode is None
+        else mode,
+        warn_invalid=True,
+        stacklevel=3,
+    )
     if mode == "canonical" or mode == "non_canonical":
         return _fail_safely("canonical_exit_potential")
 
@@ -3355,14 +3441,7 @@ def _compute_exit_potential(
     elif mode == "retain_previous":
         next_potential = prev_potential
     else:
-        _warn_unknown_mode(
-            "exit_potential_mode",
-            mode,
-            sorted(ALLOWED_EXIT_POTENTIAL_MODES),
-            "canonical (via _fail_safely)",
-            stacklevel=2,
-        )
-        next_potential = _fail_safely("invalid_exit_potential_mode")
+        return _fail_safely("invalid_exit_potential_mode")
 
     if not np.isfinite(next_potential):
         next_potential = _fail_safely("non_finite_next_exit_potential")
@@ -3434,13 +3513,17 @@ def compute_pbrs_components(
 
     prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
 
-    exit_mode = _get_str_param(params, "exit_potential_mode")
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
     canonical_mode = exit_mode == "canonical"
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
 
     if is_exit:
-        next_potential = _compute_exit_potential(prev_potential, params, gamma)
+        next_potential = _compute_exit_potential(prev_potential, params, gamma, mode=exit_mode)
         pbrs_delta = gamma * next_potential - prev_potential
         reward_shaping = pbrs_delta
     else:
@@ -3808,6 +3891,14 @@ def write_complete_statistical_analysis(
         "exit_additive_enabled",
     }
     classification_metadata_available = classification_keys.issubset(reward_params)
+    raw_exit_potential_mode = (
+        reward_params.get("exit_potential_mode") if classification_metadata_available else None
+    )
+    classification_metadata_valid = (
+        classification_metadata_available
+        and isinstance(raw_exit_potential_mode, str)
+        and raw_exit_potential_mode in ALLOWED_EXIT_POTENTIAL_MODES
+    )
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
 
     # Helpers: consistent Markdown table renderers
@@ -4225,8 +4316,10 @@ def write_complete_statistical_analysis(
 
             # Get configuration for proper invariance assessment
             if classification_metadata_available:
-                exit_potential_mode: str | None = _get_str_param(
-                    reward_params, "exit_potential_mode"
+                exit_potential_mode: str | None = (
+                    raw_exit_potential_mode
+                    if isinstance(raw_exit_potential_mode, str)
+                    else repr(raw_exit_potential_mode)
                 )
                 entry_additive_enabled_raw: bool | None = _get_bool_param(
                     reward_params, "entry_additive_enabled", False
@@ -4234,15 +4327,20 @@ def write_complete_statistical_analysis(
                 exit_additive_enabled_raw: bool | None = _get_bool_param(
                     reward_params, "exit_additive_enabled", False
                 )
-                (
-                    entry_additive_effective,
-                    exit_additive_effective,
-                    additives_suppressed,
-                ) = _resolve_additive_enablement(
-                    exit_potential_mode,
-                    entry_additive_enabled_raw,
-                    exit_additive_enabled_raw,
-                )
+                if classification_metadata_valid:
+                    (
+                        entry_additive_effective,
+                        exit_additive_effective,
+                        additives_suppressed,
+                    ) = _resolve_additive_enablement(
+                        exit_potential_mode,
+                        entry_additive_enabled_raw,
+                        exit_additive_enabled_raw,
+                    )
+                else:
+                    entry_additive_effective = False
+                    exit_additive_effective = False
+                    additives_suppressed = False
             else:
                 exit_potential_mode = None
                 entry_additive_enabled_raw = None
@@ -4259,7 +4357,7 @@ def write_complete_statistical_analysis(
                     "reason": "Trajectory verification skipped without reward configuration evidence",
                 }
             )
-            canonical_configuration = classification_metadata_available and (
+            canonical_configuration = classification_metadata_valid and (
                 exit_potential_mode == "canonical"
                 and not (entry_additive_effective or exit_additive_effective)
             )
@@ -4275,7 +4373,7 @@ def write_complete_statistical_analysis(
                     observed_additive_issues.append(f"{column} contains non-zero values")
             canonical_observations = not observed_additive_issues
 
-            if not classification_metadata_available:
+            if not classification_metadata_available or not classification_metadata_valid:
                 invariance_status = "Not verified"
             elif not canonical_configuration:
                 invariance_status = "Non-canonical: not verified"
@@ -4287,6 +4385,11 @@ def write_complete_statistical_analysis(
             invariance_note = evidence["reason"] + ". Raw shaping sums do not certify invariance."
             if not classification_metadata_available:
                 invariance_note += " Reward configuration evidence is missing or incomplete."
+            elif not classification_metadata_valid:
+                invariance_note += (
+                    " Reward configuration evidence is invalid: "
+                    f"invalid exit_potential_mode={raw_exit_potential_mode!r}."
+                )
             elif not canonical_configuration:
                 reasons = []
                 if exit_potential_mode != "canonical":
@@ -4323,10 +4426,10 @@ def write_complete_statistical_analysis(
                 f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw) if exit_additive_enabled_raw is not None else 'unknown'} |\n"
             )
             f.write(
-                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_valid else 'unknown'} |\n"
             )
             f.write(
-                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_valid else 'unknown'} |\n"
             )
             f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
             f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")
@@ -4572,16 +4675,25 @@ def main() -> None:
     base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
     risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
+    effective_params = {
+        "base_factor": base_factor,
+        "profit_aim": profit_aim,
+        "risk_reward_ratio": risk_reward_ratio,
+    }
+    params["max_idle_duration_candles"] = get_max_idle_duration_candles(params)
     params["action_masking"] = _to_bool(params.get("action_masking", args.action_masking))
     params["unrealized_pnl"] = bool(args.unrealized_pnl)
     # Deterministic seeds cascade
     random.seed(args.seed)
     np.random.seed(args.seed)
     real_df = None
+    real_episodes_sha256 = None
     if args.real_episodes is not None:
         # Fail before any artifact is written for an explicitly requested file.
         print(f"CLI: Loading real episodes from {args.real_episodes}")
-        real_df = load_real_episodes(args.real_episodes)
+        real_episode_bytes = args.real_episodes.read_bytes()
+        real_df = load_real_episodes(args.real_episodes, artifact_bytes=real_episode_bytes)
+        real_episodes_sha256 = hashlib.sha256(real_episode_bytes).hexdigest()
 
     df = simulate_samples(
         num_samples=args.num_samples,
@@ -4616,49 +4728,17 @@ def main() -> None:
             "Sim: NaN values detected in critical simulated columns: "
             + ", ".join(f"{k}={v}" for k, v in nan_issues.items())
         )
-    # Attach simulation parameters for downstream manifest
-    try:
-        defaults = {
-            a.dest: getattr(a, "default", None) for a in parser._actions if hasattr(a, "dest")
-        }
-    except Exception:
-        defaults = {}
-    args_dict = vars(args)
-
-    candidate_keys = [
-        "num_samples",
-        "seed",
-        "out_dir",
-        "trading_mode",
-        "risk_reward_ratio",
-        "profit_aim",
-        "max_duration_ratio",
-        "pnl_base_std",
-        "pnl_duration_vol_scale",
-        "rf_n_jobs",
-        "perm_n_jobs",
-        "skip_feature_analysis",
-        "skip_partial_dependence",
-        "strict_diagnostics",
-        "real_episodes",
-        "unrealized_pnl",
-        "action_masking",
-    ]
-
-    sim_params: dict[str, Any] = {}
-    for k in candidate_keys:
-        if k in args_dict:
-            v = args_dict[k]
-            v_norm = str(v) if isinstance(v, Path) else v
-            d = defaults.get(k)
-            d_norm = str(d) if isinstance(d, Path) else d
-            if d_norm != v_norm:
-                sim_params[k] = v_norm
-
-    # Deduplicate any keys that overlap with reward_params (single source of truth)
-    for k in list(sim_params.keys()):
-        if k in params:
-            sim_params.pop(k)
+    # Derive simulation controls from parsed options, not a parallel option inventory.
+    sim_params: dict[str, Any] = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+        if key not in DEFAULT_MODEL_REWARD_PARAMETERS
+        and key not in effective_params
+        and key not in {"params", "strict_validation"}
+    }
+    sim_params["action_masking"] = params["action_masking"]
+    sim_params["unrealized_pnl"] = params["unrealized_pnl"]
+    sim_params["real_episodes_sha256"] = real_episodes_sha256
 
     df.attrs["simulation_params"] = sim_params
     df.attrs["reward_params"] = dict(params)
@@ -4688,9 +4768,11 @@ def main() -> None:
     # Generate manifest summarizing key metrics
     try:
         manifest_path = args.out_dir / "manifest.json"
-        resolved_reward_params: dict[str, Any] = dict(
-            params
-        )  # already validated/normalized upstream
+        resolved_reward_params: dict[str, Any] = {
+            key: value
+            for key, value in params.items()
+            if key not in effective_params and key not in sim_params
+        }
         manifest: dict[str, Any] = {
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": len(df),
@@ -4698,36 +4780,28 @@ def main() -> None:
             "pnl_target": float(profit_aim * risk_reward_ratio),
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
-            "effective": {
-                "base_factor": float(base_factor),
-                "profit_aim": float(profit_aim),
-                "risk_reward_ratio": float(risk_reward_ratio),
-            },
+            "effective": effective_params,
         }
-        sim_params_dict = df.attrs.get("simulation_params", {})
-        if not isinstance(sim_params_dict, dict):
-            sim_params_dict = {}
-        sim_params: dict[str, Any] = dict(sim_params_dict)
-        if sim_params:
-            excluded_for_hash = {"out_dir", "real_episodes"}
-            sim_params_for_hash: dict[str, Any] = {
-                k: sim_params[k] for k in sim_params if k not in excluded_for_hash
-            }
-            _hash_source: dict[str, Any] = {
-                **{f"sim::{k}": sim_params_for_hash[k] for k in sorted(sim_params_for_hash)},
-                **{
-                    f"reward::{k}": resolved_reward_params[k]
-                    for k in sorted(resolved_reward_params)
-                },
-            }
-            _hash_source_str = json.dumps(_hash_source, sort_keys=True)
-            manifest["params_hash"] = hashlib.sha256(_hash_source_str.encode("utf-8")).hexdigest()
-            manifest["simulation_params"] = sim_params
+        excluded_for_hash = {"out_dir", "real_episodes"}
+        sim_params_for_hash: dict[str, Any] = {
+            key: sim_params[key] for key in sim_params if key not in excluded_for_hash
+        }
+        hash_source: dict[str, Any] = {
+            **{f"sim::{key}": sim_params_for_hash[key] for key in sorted(sim_params_for_hash)},
+            **{
+                f"reward::{key}": resolved_reward_params[key]
+                for key in sorted(resolved_reward_params)
+            },
+            **{f"effective::{key}": effective_params[key] for key in sorted(effective_params)},
+        }
+        hash_source_json = json.dumps(hash_source, sort_keys=True)
+        manifest["params_hash"] = hashlib.sha256(hash_source_json.encode("utf-8")).hexdigest()
+        manifest["simulation_params"] = sim_params
         with manifest_path.open("w", encoding="utf-8") as mh:
             json.dump(manifest, mh, indent=2)
         print(f"CLI: Manifest saved to {manifest_path}")
-    except Exception as e:
-        print(f"CLI: Manifest generation failed; {e}")
+    except Exception as exc:
+        raise RuntimeError(f"CLI: Manifest generation failed: {exc}") from exc
 
     print(f"CLI: Generated {len(df):,} synthetic samples")
     print(f"CLI: {sample_output_message}")

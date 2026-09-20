@@ -117,6 +117,45 @@ class TestStatistics(RewardSpaceTestBase):
                     msg=f"Expected 1.0 for {p_key}",
                 )
 
+    def test_distribution_shift_proportional_histograms_ignore_sample_count(self):
+        """Proportional histograms of different sizes have finite, non-negative zero shift."""
+        values = np.repeat(np.arange(4, dtype=float), 10)
+        synthetic = pd.DataFrame(
+            {
+                "pnl": values,
+                "trade_duration": values + 10.0,
+                "idle_duration": values + 20.0,
+            }
+        )
+        real = pd.concat([synthetic, synthetic], ignore_index=True)
+
+        metrics = compute_distribution_shift_metrics(synthetic, real)
+
+        for feature in ("pnl", "trade_duration", "idle_duration"):
+            for suffix in ("kl_divergence", "js_distance"):
+                value = metrics[f"{feature}_{suffix}"]
+                self.assertTrue(np.isfinite(value))
+                self.assertGreaterEqual(value, 0.0)
+                self.assertLessEqual(value, TOLERANCE.GENERIC_EQ)
+
+    def test_distribution_shift_detects_one_observation_moved_between_bins(self):
+        """Moving one observation between occupied bins produces positive KL and JS shift."""
+        values = np.repeat(np.arange(4, dtype=float), 10)
+        synthetic = pd.DataFrame(
+            {
+                "pnl": values,
+                "trade_duration": values + 10.0,
+                "idle_duration": values + 20.0,
+            }
+        )
+        real = synthetic.copy()
+        real.loc[0, "pnl"] = 3.0
+
+        metrics = compute_distribution_shift_metrics(synthetic, real)
+
+        self.assertGreater(metrics["pnl_kl_divergence"], 0.0)
+        self.assertGreater(metrics["pnl_js_distance"], 0.0)
+
     def test_statistics_distribution_shift_metrics(self):
         """KL/JS/Wasserstein metrics."""
         df1 = self._make_idle_variance_df(100)

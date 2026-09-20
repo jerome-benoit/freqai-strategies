@@ -513,7 +513,10 @@ class LabelTransformer(BaseTransform):
             state.minmax_scaler = MinMaxScaler(feature_range=state.config["minmax_range"])
             state.minmax_scaler.fit(values.reshape(-1, 1))
             return
-        if method in (NORMALIZATION_TYPES[2], NORMALIZATION_TYPES[3]):  # sigmoid, none
+        if method in (
+            NORMALIZATION_TYPES[2],
+            NORMALIZATION_TYPES[3],
+        ):  # sigmoid, none
             return
 
         raise ValueError(enum_error_message("normalization", method, NORMALIZATION_TYPES))

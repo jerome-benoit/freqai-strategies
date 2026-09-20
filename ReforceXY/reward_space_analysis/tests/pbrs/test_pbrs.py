@@ -473,6 +473,44 @@ class TestSimulationParity(RewardSpaceTestBase):
         self.assertIn("reward_entry_additive contains non-zero values", content)
         self.assertIn("| Σ Entry Additive | 0.000000 |", content)
 
+    def test_report_rejects_invalid_exit_mode_provenance(self):
+        """Invalid imported mode metadata cannot certify canonical invariance."""
+        df = simulate_samples(
+            params=self.base_params(
+                exit_potential_mode="canonical",
+                entry_additive_enabled=False,
+                exit_additive_enabled=False,
+                hold_potential_enabled=True,
+            ),
+            num_samples=40,
+            seed=SEEDS.BASE,
+            base_factor=PARAMS.BASE_FACTOR,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            max_duration_ratio=2.0,
+            trading_mode="futures",
+            pnl_base_std=PARAMS.PNL_STD,
+            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+        )
+        df.attrs["reward_params"]["exit_potential_mode"] = "canoncial"
+        out_dir = self.output_path / "invalid_exit_mode_provenance"
+        write_complete_statistical_analysis(
+            df,
+            output_dir=out_dir,
+            profit_aim=PARAMS.PROFIT_AIM,
+            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+            seed=SEEDS.BASE,
+            skip_feature_analysis=True,
+            skip_partial_dependence=True,
+            bootstrap_resamples=SCENARIOS.BOOTSTRAP_MINIMAL_ITERATIONS,
+        )
+        content = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
+        self.assertIn("| Invariance Status | Not verified |", content)
+        self.assertIn("invalid exit_potential_mode='canoncial'", content)
+        self.assertIn("| Exit Potential Mode | canoncial |", content)
+        self.assertIn("| Entry Additive Effective | unknown |", content)
+        self.assertNotIn("Canonical: observed PBRS verified", content)
+
     def test_non_canonical_report_classifies_both_outputs(self):
         """Zero correction cannot certify a non-canonical potential mode."""
         df = simulate_samples(
@@ -831,6 +869,46 @@ class TestPBRS(RewardSpaceTestBase):
             tolerance=TOLERANCE.IDENTITY_STRICT,
             msg="PBRS disabled total must equal base_reward",
         )
+
+    def test_invalid_exit_mode_warns_at_direct_and_simulation_boundaries(self):
+        """Invalid direct modes warn once before canonical fallback can disable PBRS."""
+        params = self.base_params(
+            exit_potential_mode="unsupported",
+            hold_potential_enabled=False,
+            entry_additive_enabled=True,
+            exit_additive_enabled=True,
+        )
+        context = self.make_ctx(position=Positions.Neutral, action=Actions.Neutral)
+        warning_match = "unknown exit_potential_mode 'unsupported'.*falling back to 'canonical'"
+
+        with pytest.warns(
+            reward_space_analysis.RewardDiagnosticsWarning, match=warning_match
+        ) as direct_warnings:
+            breakdown = calculate_reward_with_defaults(context, params)
+
+        self.assertEqual(len(direct_warnings), 1)
+        self.assertNearZero(breakdown.reward_shaping, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(breakdown.entry_additive, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(breakdown.exit_additive, atol=TOLERANCE.IDENTITY_STRICT)
+
+        with pytest.warns(
+            reward_space_analysis.RewardDiagnosticsWarning, match=warning_match
+        ) as simulation_warnings:
+            simulated = simulate_samples(
+                params=params,
+                num_samples=4,
+                seed=SEEDS.BASE,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                max_duration_ratio=2.0,
+                trading_mode="futures",
+                pnl_base_std=PARAMS.PNL_STD,
+                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+            )
+
+        self.assertEqual(len(simulation_warnings), 1)
+        self.assertEqual(simulated.attrs["reward_params"]["exit_potential_mode"], "unsupported")
 
     def test_exit_potential_canonical(self):
         """Verifies canonical exit resets potential (no params mutation)."""
@@ -1273,6 +1351,78 @@ class TestPBRS(RewardSpaceTestBase):
                 "max_idle_duration_candles": ["derived_default"],
             },
         )
+
+    def test_validate_reward_parameters_records_near_bound_clamps_exactly(self):
+        """Relaxed validation applies near-bound clamps without approximate-equality suppression."""
+        cases = (
+            (-1e-12, 0.0, "min=0.0"),
+            (1.0 + 1e-12, 1.0, "max=1.0"),
+            ("-1e-12", 0.0, "numeric_coerce,min=0.0"),
+        )
+        for original, expected, expected_reason in cases:
+            with self.subTest(original=original):
+                params = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
+                params["potential_gamma"] = original
+
+                sanitized, adjustments = validate_reward_parameters(params, strict=False)
+
+                self.assertEqual(sanitized["potential_gamma"], expected)
+                self.assertEqual(adjustments["potential_gamma"]["original"], original)
+                self.assertEqual(adjustments["potential_gamma"]["adjusted"], expected)
+                self.assertEqual(adjustments["potential_gamma"]["reason"], expected_reason)
+                self.assertEqual(adjustments["potential_gamma"]["validation_mode"], "relaxed")
+
+    def test_validate_reward_parameters_enforces_exit_potential_mode_choice(self):
+        """Invalid exit-potential modes raise in strict mode and canonicalize in relaxed mode."""
+        params = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
+        params["exit_potential_mode"] = "Canonical"
+
+        with self.assertRaisesRegex(ValueError, "exit_potential_mode"):
+            validate_reward_parameters(params, strict=True)
+
+        sanitized, adjustments = validate_reward_parameters(params, strict=False)
+        self.assertEqual(sanitized["exit_potential_mode"], "canonical")
+        self.assertEqual(
+            adjustments["exit_potential_mode"],
+            {
+                "original": "Canonical",
+                "adjusted": "canonical",
+                "reason": "invalid_choice",
+                "validation_mode": "relaxed",
+            },
+        )
+
+    def test_compute_pbrs_components_invalid_mode_falls_back_to_canonical(self):
+        """Direct PBRS calls warn and suppress additives for an invalid mode."""
+        params = self.base_params(
+            exit_potential_mode="unsupported",
+            hold_potential_enabled=True,
+            entry_additive_enabled=True,
+            exit_additive_enabled=True,
+        )
+
+        with self.assertWarnsRegex(
+            reward_space_analysis.RewardDiagnosticsWarning,
+            "unknown exit_potential_mode 'unsupported'.*falling back to 'canonical'",
+        ):
+            components = reward_space_analysis.compute_pbrs_components(
+                current_pnl=0.02,
+                pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+                current_duration_ratio=0.5,
+                next_pnl=0.01,
+                next_duration_ratio=0.6,
+                params=params,
+                base_factor=PARAMS.BASE_FACTOR,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                prev_potential=0.25,
+                entry_pnl=0.0,
+                is_exit=True,
+                is_entry=True,
+            )
+
+        self.assertEqual(components[1], 0.0)
+        self.assertEqual(components[3], 0.0)
+        self.assertEqual(components[4], 0.0)
 
     # ---------------- Exit potential mode comparisons ---------------- #
 

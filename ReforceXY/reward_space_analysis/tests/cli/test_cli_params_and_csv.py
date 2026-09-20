@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """CLI-level tests: CSV encoding and parameter propagation."""
 
+import hashlib
 import json
+import pickle
 import subprocess
 import sys
 import unittest
@@ -10,7 +12,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from reward_space_analysis import Actions
+from reward_space_analysis import (
+    DEFAULT_MODEL_REWARD_PARAMETERS,
+    Actions,
+    get_max_idle_duration_candles,
+)
+from test_reward_space_analysis_cli import _is_warning_header, run_scenario
 
 from ..constants import SCENARIOS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
@@ -38,6 +45,66 @@ def _assert_cli_success(
     testcase: unittest.TestCase, result: subprocess.CompletedProcess[str]
 ) -> None:
     testcase.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+
+
+class TestWarningHeaderRecognition(RewardSpaceTestBase):
+    """Recognize only real Python warning header formats."""
+
+    def test_warning_header_positive_and_negative_formats(self):
+        positive = (
+            "WARNING: explicit header",
+            "Warning: base category header",
+            "UserWarning: category header",
+            "RewardDiagnosticsWarning: custom category",
+            "/tmp/pkg/file.py:12: UserWarning: POSIX path",
+            "/tmp/a.py:1: Warning: base category path",
+            "relative/file.py:1: RuntimeWarning: relative path",
+            "<string>:7: FutureWarning: synthetic source",
+            r"C:\work\file.py:42: DeprecationWarning: Windows path",
+        )
+        negative = (
+            "warning: wrong case",
+            "Some prose about UserWarning: not a header",
+            "warnings.warn('source code', UserWarning)",
+            "/tmp/file.py:0: UserWarning: zero line",
+            "/tmp/file.py:-1: UserWarning: negative line",
+            "/tmp/file.py:1: WarningExtra: wrong suffix",
+            "/tmp/file.py:1: UserWarningExtra: wrong suffix",
+            "UserWarningExtra: wrong suffix",
+            "WARNING without colon",
+            "prefix WARNING: embedded prose",
+        )
+
+        for line in positive:
+            with self.subTest(line=line):
+                self.assertTrue(_is_warning_header(line))
+        for line in negative:
+            with self.subTest(line=line):
+                self.assertFalse(_is_warning_header(line))
+
+    def test_run_scenario_counts_only_warning_headers(self):
+        """Scenario warning totals use the same strict header recognizer."""
+        script = self.output_path / "warning_emitter.py"
+        script.write_text(
+            "import sys\n"
+            "print('UserWarning: first')\n"
+            "print('ordinary prose mentioning Warning:')\n"
+            "print('<string>:2: RuntimeWarning: second', file=sys.stderr)\n",
+            encoding="utf-8",
+        )
+
+        result = run_scenario(
+            script=script,
+            out_dir=self.output_path / "warning_counter",
+            idx=0,
+            num_samples=1,
+            conf=("canonical", "linear", 0.95, 0, 0, 0),
+            strict=False,
+            timeout=10,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["warnings"], 2)
 
 
 class TestCsvEncoding(RewardSpaceTestBase):
@@ -100,27 +167,91 @@ class TestParamsPropagation(RewardSpaceTestBase):
         fi_path = out_dir / "feature_importance.csv"
         self.assertFalse(fi_path.exists(), "feature_importance.csv should be absent when skipped")
 
-    def test_manifest_params_hash_generation(self):
-        """Ensure params_hash appears when non-default simulation params differ (risk_reward_ratio altered)."""
+    def test_manifest_records_resolved_simulation_inputs(self):
+        """The manifest records and hashes resolved simulation inputs."""
         out_dir = self.output_path / "manifest_hash"
-        result = _run_cli(
-            out_dir=out_dir,
+        explicit_defaults_dir = self.output_path / "explicit_defaults"
+        different_idle_dir = self.output_path / "different_idle"
+        different_seed_dir = self.output_path / "different_seed"
+        default_duration = DEFAULT_MODEL_REWARD_PARAMETERS["max_trade_duration_candles"]
+        default_idle = get_max_idle_duration_candles(DEFAULT_MODEL_REWARD_PARAMETERS)
+        common_args = [
+            "--num_samples",
+            str(SCENARIOS.CLI_NUM_SAMPLES_HASH),
+            "--seed",
+            str(SEEDS.BASE),
+            "--risk_reward_ratio",
+            str(SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT),
+            "--skip_feature_analysis",
+            "--skip_partial_dependence",
+        ]
+        result = _run_cli(out_dir=out_dir, args=common_args)
+        explicit_result = _run_cli(
+            out_dir=explicit_defaults_dir,
             args=[
-                "--num_samples",
-                str(SCENARIOS.CLI_NUM_SAMPLES_HASH),
-                "--seed",
-                str(SEEDS.BASE),
-                "--risk_reward_ratio",
-                str(SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT),
+                *common_args,
+                "--max_trade_duration_candles",
+                str(default_duration),
+                "--max_idle_duration_candles",
+                str(default_idle),
+                "--exit_plateau",
+                str(int(DEFAULT_MODEL_REWARD_PARAMETERS["exit_plateau"])),
             ],
         )
-        _assert_cli_success(self, result)
-        manifest_path = out_dir / "manifest.json"
-        self.assertTrue(manifest_path.exists(), "Missing manifest.json")
-        manifest = json.loads(manifest_path.read_text())
-        self.assertIn("params_hash", manifest, "params_hash should be present when params differ")
-        self.assertIn("simulation_params", manifest)
-        self.assertIn("risk_reward_ratio", manifest["simulation_params"])
+        different_result = _run_cli(
+            out_dir=different_idle_dir,
+            args=[*common_args, "--max_idle_duration_candles", str(default_idle + 1)],
+        )
+        different_seed_result = _run_cli(
+            out_dir=different_seed_dir,
+            args=[*common_args, "--seed", str(SEEDS.BASE + 1)],
+        )
+        for cli_result in (result, explicit_result, different_result, different_seed_result):
+            _assert_cli_success(self, cli_result)
+        manifest = json.loads((out_dir / "manifest.json").read_text())
+        explicit_manifest = json.loads((explicit_defaults_dir / "manifest.json").read_text())
+        different_manifest = json.loads((different_idle_dir / "manifest.json").read_text())
+        different_seed_manifest = json.loads((different_seed_dir / "manifest.json").read_text())
+        simulation_params = manifest["simulation_params"]
+        self.assertEqual(simulation_params["out_dir"], str(out_dir))
+        self.assertEqual(
+            manifest["effective"]["risk_reward_ratio"],
+            SCENARIOS.CLI_RISK_REWARD_RATIO_NON_DEFAULT,
+        )
+        self.assertEqual(manifest["reward_params"]["max_idle_duration_candles"], default_idle)
+        self.assertIsNone(simulation_params["real_episodes_sha256"])
+        boolean_keys = {
+            key for key, value in DEFAULT_MODEL_REWARD_PARAMETERS.items() if isinstance(value, bool)
+        }
+        self.assertTrue(boolean_keys.isdisjoint(manifest["parameter_adjustments"]))
+        plateau_adjustment = explicit_manifest["parameter_adjustments"]["exit_plateau"]
+        self.assertIs(
+            plateau_adjustment["adjusted"], DEFAULT_MODEL_REWARD_PARAMETERS["exit_plateau"]
+        )
+        reward_keys = set(manifest["reward_params"])
+        effective_keys = set(manifest["effective"])
+        self.assertTrue(reward_keys.isdisjoint(simulation_params))
+        self.assertTrue(effective_keys.isdisjoint(simulation_params))
+        self.assertTrue(reward_keys.isdisjoint(effective_keys))
+        pd.testing.assert_frame_equal(
+            pd.read_csv(out_dir / "reward_samples.csv"),
+            pd.read_csv(explicit_defaults_dir / "reward_samples.csv"),
+        )
+        self.assertEqual(manifest["params_hash"], explicit_manifest["params_hash"])
+        self.assertNotEqual(manifest["params_hash"], different_manifest["params_hash"])
+        self.assertNotEqual(manifest["params_hash"], different_seed_manifest["params_hash"])
+
+    def test_manifest_write_failure_fails_cli(self):
+        """A required manifest write failure makes the CLI fail."""
+        out_dir = self.output_path / "invalid_manifest_target"
+        out_dir.mkdir()
+        (out_dir / "manifest.json").mkdir()
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--num_samples", "20", "--skip_feature_analysis", "--skip_partial_dependence"],
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Manifest generation failed", result.stderr + result.stdout)
 
     def test_pbrs_invariance_section_present(self):
         """When reward_shaping column exists, summary should include PBRS invariance section."""
@@ -191,6 +322,19 @@ class TestParamsPropagation(RewardSpaceTestBase):
             int(rp["max_trade_duration_candles"]), SCENARIOS.CLI_MAX_TRADE_DURATION_PARAMS
         )
 
+    def test_invalid_exit_potential_mode_params_fails_before_artifacts(self):
+        """An invalid --params exit-potential mode fails strict validation before output creation."""
+        out_dir = self.output_path / "invalid_exit_potential_mode"
+
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--params", "exit_potential_mode=unsupported"],
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exit_potential_mode", result.stderr + result.stdout)
+        self.assertFalse(out_dir.exists())
+
     def test_missing_real_episodes_fails_before_artifacts(self):
         """An explicitly requested but missing episodes file fails the run with no artifacts."""
         out_dir = self.output_path / "missing_real"
@@ -216,10 +360,12 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertIn(str(invalid), result.stderr + result.stdout)
         self.assertFalse(out_dir.exists())
 
-    def test_valid_real_episodes_produce_real_metrics(self):
-        """A valid episodes pickle loads before simulation and enables real metrics."""
+    def test_real_episode_content_identifies_manifest_hash(self):
+        """The hash identifies episode bytes, independently of their file path."""
         out_dir = self.output_path / "valid_real"
-        import pickle
+        copied_out_dir = self.output_path / "copied_real"
+        changed_out_dir = self.output_path / "changed_real"
+        synthetic_out_dir = self.output_path / "without_real"
 
         episodes = [
             {
@@ -237,41 +383,85 @@ class TestParamsPropagation(RewardSpaceTestBase):
             }
         ]
         episodes_path = self.output_path / "episodes.pkl"
-        with episodes_path.open("wb") as fh:
-            pickle.dump(episodes, fh)
-        result = _run_cli(
-            out_dir=out_dir,
-            args=["--num_samples", "50", "--real_episodes", str(episodes_path)],
+        episodes_path.write_bytes(pickle.dumps(episodes))
+        copied_episodes_path = self.output_path / "episodes_copy.pkl"
+        copied_episodes_path.write_bytes(episodes_path.read_bytes())
+        changed_episodes_path = self.output_path / "episodes_changed.pkl"
+        changed_episodes = pickle.loads(episodes_path.read_bytes())
+        changed_episodes[0]["transitions"][0]["reward"] = -1.0
+        changed_episodes_path.write_bytes(pickle.dumps(changed_episodes))
+
+        common_args = [
+            "--num_samples",
+            "50",
+            "--skip_feature_analysis",
+            "--skip_partial_dependence",
+        ]
+        runs = (
+            (out_dir, [*common_args, "--real_episodes", str(episodes_path)]),
+            (
+                copied_out_dir,
+                [*common_args, "--real_episodes", str(copied_episodes_path)],
+            ),
+            (
+                changed_out_dir,
+                [*common_args, "--real_episodes", str(changed_episodes_path)],
+            ),
+            (synthetic_out_dir, common_args),
         )
-        _assert_cli_success(self, result)
+        for run_out_dir, args in runs:
+            _assert_cli_success(self, _run_cli(out_dir=run_out_dir, args=args))
+
         report = (out_dir / "statistical_analysis.md").read_text(encoding="utf-8")
         self.assertNotIn("Not performed (no real episodes provided)", report)
+        manifest = json.loads((out_dir / "manifest.json").read_text())
+        copied_manifest = json.loads((copied_out_dir / "manifest.json").read_text())
+        changed_manifest = json.loads((changed_out_dir / "manifest.json").read_text())
+        synthetic_manifest = json.loads((synthetic_out_dir / "manifest.json").read_text())
+        simulation_params = manifest["simulation_params"]
+        expected_digest = hashlib.sha256(episodes_path.read_bytes()).hexdigest()
+        self.assertEqual(simulation_params["real_episodes"], str(episodes_path))
+        self.assertEqual(simulation_params["real_episodes_sha256"], expected_digest)
+        self.assertEqual(manifest["params_hash"], copied_manifest["params_hash"])
+        self.assertNotEqual(manifest["params_hash"], changed_manifest["params_hash"])
+        self.assertNotEqual(manifest["params_hash"], synthetic_manifest["params_hash"])
 
-    def test_params_override_flags_and_manifest_reflects_effective(self):
-        """--params beats explicit flags; manifest effective values follow resolution."""
-        out_dir = self.output_path / "params_beat_flags"
-        result = _run_cli(
-            out_dir=out_dir,
+    def test_hybrid_parameter_routes_have_one_canonical_hash(self):
+        """Overrides beat conflicting flags and match equivalent direct inputs."""
+        params_out_dir = self.output_path / "params_route"
+        flags_out_dir = self.output_path / "flags_route"
+        common_args = [
+            "--num_samples",
+            str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
+            "--base_factor",
+            "150.0",
+            "--skip_feature_analysis",
+            "--skip_partial_dependence",
+        ]
+        params_result = _run_cli(
+            out_dir=params_out_dir,
             args=[
-                "--num_samples",
-                str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
+                *common_args,
                 "--profit_aim",
-                "0.05",
-                "--base_factor",
-                "150.0",
+                "0.04",
+                "--risk_reward_ratio",
+                "3.0",
                 "--params",
                 "profit_aim=0.02",
                 "risk_reward_ratio=1.5",
             ],
         )
-        _assert_cli_success(self, result)
-        with (out_dir / "manifest.json").open() as f:
-            manifest = json.load(f)
-        effective = manifest["effective"]
-        self.assertEqual(effective["profit_aim"], 0.02)
-        self.assertEqual(effective["risk_reward_ratio"], 1.5)
-        self.assertEqual(effective["base_factor"], 150.0)
-        self.assertAlmostEqual(manifest["pnl_target"], 0.03)
+        flags_result = _run_cli(
+            out_dir=flags_out_dir,
+            args=[*common_args, "--profit_aim", "0.02", "--risk_reward_ratio", "1.5"],
+        )
+        _assert_cli_success(self, params_result)
+        _assert_cli_success(self, flags_result)
+        params_manifest = json.loads((params_out_dir / "manifest.json").read_text())
+        flags_manifest = json.loads((flags_out_dir / "manifest.json").read_text())
+        self.assertEqual(params_manifest["effective"], flags_manifest["effective"])
+        self.assertEqual(params_manifest["params_hash"], flags_manifest["params_hash"])
+        self.assertAlmostEqual(params_manifest["pnl_target"], 0.03)
 
     def test_simulation_only_params_rejected_before_artifacts(self):
         """Simulation-only keys fail the run before any artifact is written."""
