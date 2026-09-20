@@ -530,17 +530,17 @@ descriptive.
 
 ### Manifest (`manifest.json`)
 
-| Field                   | Type              | Description                       |
-| ----------------------- | ----------------- | --------------------------------- |
-| `generated_at`          | string (ISO 8601) | Generation timestamp (not hashed) |
-| `num_samples`           | int               | Synthetic samples count           |
-| `seed`                  | int               | Master random seed                |
-| `pnl_target`            | float             | Profit target                     |
-| `parameter_adjustments` | object            | Validation coercions, bound clamps, and derived-default adjustments |
-| `reward_params`         | object            | Resolved reward tunables, excluding the separate effective scalars |
-| `effective`             | object            | Resolved base factor, profit aim, and risk/reward ratio           |
+| Field                   | Type              | Description                                                                                             |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- |
+| `generated_at`          | string (ISO 8601) | Generation timestamp (not hashed)                                                                       |
+| `num_samples`           | int               | Synthetic samples count                                                                                 |
+| `seed`                  | int               | Master random seed                                                                                      |
+| `pnl_target`            | float             | Profit target                                                                                           |
+| `parameter_adjustments` | object            | Validation coercions, bound clamps, and derived-default adjustments                                     |
+| `reward_params`         | object            | Resolved reward tunables, excluding the separate effective scalars                                      |
+| `effective`             | object            | Resolved base factor, profit aim, and risk/reward ratio                                                 |
 | `simulation_params`     | object            | Resolved simulation/report controls, including action masking, unrealized PnL, and real-data provenance |
-| `params_hash`           | string (sha256)   | Hash of effective inputs, excluding output and real-data paths    |
+| `params_hash`           | string (sha256)   | Hash of effective inputs, excluding output and real-data paths                                          |
 
 The `reward_params`, `effective`, and `simulation_params` maps have disjoint keys. Simulation controls are derived from the parsed CLI options; the invocation-only `params` and `strict_validation` options are excluded. Their resolved effects are recorded in the parameter maps and validation adjustments.
 
