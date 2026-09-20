@@ -336,6 +336,9 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | `entry_fee_rate`         | 0.0       | Entry fee rate (`price · (1 + fee)`) |
 | `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
+Direct `calculate_reward()` calls warn on an invalid exit mode before applying the
+canonical fallback. `simulate_samples()` emits this warning once per simulation.
+
 PBRS verification is evidence-based, never a raw shaping sum: complete ordered
 episodes (contiguous `transition_index`, single terminal), the local identity
 `reward_shaping = gamma * next_potential - prev_potential`, temporal potential

@@ -870,6 +870,46 @@ class TestPBRS(RewardSpaceTestBase):
             msg="PBRS disabled total must equal base_reward",
         )
 
+    def test_invalid_exit_mode_warns_at_direct_and_simulation_boundaries(self):
+        """Invalid direct modes warn once before canonical fallback can disable PBRS."""
+        params = self.base_params(
+            exit_potential_mode="unsupported",
+            hold_potential_enabled=False,
+            entry_additive_enabled=True,
+            exit_additive_enabled=True,
+        )
+        context = self.make_ctx(position=Positions.Neutral, action=Actions.Neutral)
+        warning_match = "unknown exit_potential_mode 'unsupported'.*falling back to 'canonical'"
+
+        with pytest.warns(
+            reward_space_analysis.RewardDiagnosticsWarning, match=warning_match
+        ) as direct_warnings:
+            breakdown = calculate_reward_with_defaults(context, params)
+
+        self.assertEqual(len(direct_warnings), 1)
+        self.assertNearZero(breakdown.reward_shaping, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(breakdown.entry_additive, atol=TOLERANCE.IDENTITY_STRICT)
+        self.assertNearZero(breakdown.exit_additive, atol=TOLERANCE.IDENTITY_STRICT)
+
+        with pytest.warns(
+            reward_space_analysis.RewardDiagnosticsWarning, match=warning_match
+        ) as simulation_warnings:
+            simulated = simulate_samples(
+                params=params,
+                num_samples=4,
+                seed=SEEDS.BASE,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                max_duration_ratio=2.0,
+                trading_mode="futures",
+                pnl_base_std=PARAMS.PNL_STD,
+                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+            )
+
+        self.assertEqual(len(simulation_warnings), 1)
+        self.assertEqual(simulated.attrs["reward_params"]["exit_potential_mode"], "unsupported")
+
     def test_exit_potential_canonical(self):
         """Verifies canonical exit resets potential (no params mutation)."""
         params = self.base_params(

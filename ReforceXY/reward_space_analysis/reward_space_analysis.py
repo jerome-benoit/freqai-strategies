@@ -1436,7 +1436,9 @@ def calculate_reward(
 
     # Apply PBRS only if enabled and not neutral self-loop
     exit_mode = _resolve_exit_potential_mode(
-        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"])
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
     )
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
@@ -1694,15 +1696,20 @@ def simulate_samples(
     - Realized PnL appears on the exit step (position still Long/Short).
     """
 
+    source_params = dict(params)
+    params = dict(source_params)
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
+    params["exit_potential_mode"] = exit_mode
     rng = random.Random(seed)
     max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
 
     # Theoretical PBRS invariance flag
-    exit_mode = _resolve_exit_potential_mode(
-        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"])
-    )
     entry_enabled_raw = _get_bool_param(params, "entry_additive_enabled")
     exit_enabled_raw = _get_bool_param(params, "exit_additive_enabled")
 
@@ -1937,7 +1944,7 @@ def simulate_samples(
         )
 
     df = pd.DataFrame(samples)
-    df.attrs["reward_params"] = dict(params)
+    df.attrs["reward_params"] = source_params
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
