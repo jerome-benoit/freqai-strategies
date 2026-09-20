@@ -88,7 +88,9 @@ class SummaryResult(TypedDict, total=False):
     interrupted: NotRequired[bool]
 
 
-_WARN_HEADER_RE = re.compile(r"^\s*(?:[A-Za-z]+Warning|WARNING)\b:?", re.IGNORECASE)
+_WARN_HEADER_RE = re.compile(
+    r"^(?:WARNING:|(?:[A-Za-z_][A-Za-z0-9_]*)?Warning:|.+:[1-9]\d*: (?:[A-Za-z_][A-Za-z0-9_]*)?Warning:)"
+)
 
 
 def _is_warning_header(line: str) -> bool:
@@ -97,7 +99,7 @@ def _is_warning_header(line: str) -> bool:
         return False
     if "warnings.warn" in line_str.lower():
         return False
-    return bool(_WARN_HEADER_RE.search(line_str))
+    return bool(_WARN_HEADER_RE.match(line_str))
 
 
 def build_arg_matrix(

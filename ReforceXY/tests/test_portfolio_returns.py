@@ -10,8 +10,8 @@ from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv
 
 
 class PortfolioReturnsTest(unittest.TestCase):
-    def make_env(self, prices, *, compound=True, fee=0.0015):
-        frame = pd.DataFrame({"open": prices})
+    def make_env(self, prices, *, compound=True, fee=0.0015, price_index=None):
+        frame = pd.DataFrame({"open": prices}, index=price_index)
         env = MyRLEnv(
             df=frame.copy(),
             prices=frame,
@@ -183,6 +183,34 @@ class PortfolioReturnsTest(unittest.TestCase):
             [(event["tick"], event["type"]) for event in env.trade_history],
             [(1, "long_enter"), (2, "long_exit")],
         )
+
+    def test_history_joins_prices_by_position_without_mutating_price_index(self):
+        """Price labels never affect transition joins, including collisions and duplicates."""
+        prices = [100.0, 100.0, 110.0, 110.0]
+        index_cases = {
+            "zero_based": [0, 1, 2, 3],
+            "nonzero": [10, 11, 12, 13],
+            "collision": [1, 2, 1, 2],
+            "duplicated": [7, 7, 7, 7],
+        }
+        baseline = None
+
+        for name, price_index in index_cases.items():
+            with self.subTest(index=name):
+                env = self.make_env(prices, price_index=price_index)
+                original_index = env.prices.index.copy()
+                env.step(Actions.Long_enter.value)
+                env.step(Actions.Long_exit.value)
+
+                history = env.get_env_history()
+
+                self.assertEqual(len(history), 2)
+                self.assertEqual(history["open"].tolist(), [110.0, 110.0])
+                self.assertTrue(env.prices.index.equals(original_index))
+                if baseline is None:
+                    baseline = history
+                else:
+                    pd.testing.assert_frame_equal(history, baseline)
 
     def test_terminal_entry_preserves_two_events_and_plot_markers(self):
         env = self.make_env([100.0, 100.0, 90.0])

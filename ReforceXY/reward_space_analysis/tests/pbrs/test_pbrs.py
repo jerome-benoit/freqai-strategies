@@ -1274,6 +1274,78 @@ class TestPBRS(RewardSpaceTestBase):
             },
         )
 
+    def test_validate_reward_parameters_records_near_bound_clamps_exactly(self):
+        """Relaxed validation applies near-bound clamps without approximate-equality suppression."""
+        cases = (
+            (-1e-12, 0.0, "min=0.0"),
+            (1.0 + 1e-12, 1.0, "max=1.0"),
+            ("-1e-12", 0.0, "numeric_coerce,min=0.0"),
+        )
+        for original, expected, expected_reason in cases:
+            with self.subTest(original=original):
+                params = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
+                params["potential_gamma"] = original
+
+                sanitized, adjustments = validate_reward_parameters(params, strict=False)
+
+                self.assertEqual(sanitized["potential_gamma"], expected)
+                self.assertEqual(adjustments["potential_gamma"]["original"], original)
+                self.assertEqual(adjustments["potential_gamma"]["adjusted"], expected)
+                self.assertEqual(adjustments["potential_gamma"]["reason"], expected_reason)
+                self.assertEqual(adjustments["potential_gamma"]["validation_mode"], "relaxed")
+
+    def test_validate_reward_parameters_enforces_exit_potential_mode_choice(self):
+        """Invalid exit-potential modes raise in strict mode and canonicalize in relaxed mode."""
+        params = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
+        params["exit_potential_mode"] = "Canonical"
+
+        with self.assertRaisesRegex(ValueError, "exit_potential_mode"):
+            validate_reward_parameters(params, strict=True)
+
+        sanitized, adjustments = validate_reward_parameters(params, strict=False)
+        self.assertEqual(sanitized["exit_potential_mode"], "canonical")
+        self.assertEqual(
+            adjustments["exit_potential_mode"],
+            {
+                "original": "Canonical",
+                "adjusted": "canonical",
+                "reason": "invalid_choice",
+                "validation_mode": "relaxed",
+            },
+        )
+
+    def test_compute_pbrs_components_invalid_mode_falls_back_to_canonical(self):
+        """Direct PBRS calls warn and suppress additives for an invalid mode."""
+        params = self.base_params(
+            exit_potential_mode="unsupported",
+            hold_potential_enabled=True,
+            entry_additive_enabled=True,
+            exit_additive_enabled=True,
+        )
+
+        with self.assertWarnsRegex(
+            reward_space_analysis.RewardDiagnosticsWarning,
+            "unknown exit_potential_mode 'unsupported'.*falling back to 'canonical'",
+        ):
+            components = reward_space_analysis.compute_pbrs_components(
+                current_pnl=0.02,
+                pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
+                current_duration_ratio=0.5,
+                next_pnl=0.01,
+                next_duration_ratio=0.6,
+                params=params,
+                base_factor=PARAMS.BASE_FACTOR,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                prev_potential=0.25,
+                entry_pnl=0.0,
+                is_exit=True,
+                is_entry=True,
+            )
+
+        self.assertEqual(components[1], 0.0)
+        self.assertEqual(components[3], 0.0)
+        self.assertEqual(components[4], 0.0)
+
     # ---------------- Exit potential mode comparisons ---------------- #
 
     def test_compute_exit_potential_mode_differences(self):

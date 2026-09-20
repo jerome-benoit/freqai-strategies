@@ -197,8 +197,10 @@ be overridden via `--params`.
 - **`--check_invariants`** (bool, default: true) – Enable runtime invariant
   checks (diagnostics become advisory if disabled). Toggle rarely; disabling may
   hide reward drift or invariance violations.
-- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and
-  finite checks; raises instead of silent clamp/discard when enabled.
+- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds,
+  finite checks, and exact `exit_potential_mode` choices; raises when enabled.
+  Relaxed API validation clamps bounds and canonicalizes an invalid exit mode with
+  a recorded adjustment.
 - **`--strict_diagnostics`** (flag, default: false) – Raise on extreme distribution
   moments instead of warning. In both modes, constants retain exact mean/std,
   while undefined higher moments, normality tests and Q-Q fits remain N/A.

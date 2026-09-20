@@ -4338,10 +4338,11 @@ class MyRLEnv(Base5ActionRLEnv):
         try:
             history = merge(
                 _history_df,
-                self.prices,
+                self.prices.reset_index(drop=True),
                 left_on="tick",
                 right_index=True,
                 how="left",
+                sort=False,
             )
         except Exception as e:
             logger.warning(
