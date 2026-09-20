@@ -63,3 +63,34 @@ jobs:
             "${{ matrix.image }}" \
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
+
+  reforcexy-tests:
+    name: ReforceXY tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REFORCEXY_QA_IMAGE: freqai-strategies-reforcexy-qa:ci
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build QA image
+        run: >-
+          docker build --pull --target qa
+          --tag "${REFORCEXY_QA_IMAGE}"
+          ReforceXY
+      - name: Run runtime regressions
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
+            --workdir /workspace \
+            --entrypoint python \
+            "${REFORCEXY_QA_IMAGE}" \
+            -m unittest discover -s ReforceXY/tests -v
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: ReforceXY/reward_space_analysis/uv.lock
+      - name: Run analysis regressions
+        working-directory: ReforceXY/reward_space_analysis
+        run: uv run --locked --extra dev pytest

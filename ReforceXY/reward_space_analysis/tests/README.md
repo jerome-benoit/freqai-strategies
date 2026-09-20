@@ -143,29 +143,29 @@ def test_quick_check(self): ...
 Full suite (coverage ≥85% enforced):
 
 ```shell
-uv run pytest
+uv run --locked --extra dev pytest
 ```
 
 Selective markers:
 
 ```shell
-uv run pytest -m pbrs -q
-uv run pytest -m robustness -q
-uv run pytest -m "components or robustness" -q
-uv run pytest -m "not slow" -q
+uv run --locked --extra dev pytest -m pbrs -q
+uv run --locked --extra dev pytest -m robustness -q
+uv run --locked --extra dev pytest -m "components or robustness" -q
+uv run --locked --extra dev pytest -m "not slow" -q
 ```
 
 Coverage reports:
 
 ```shell
-uv run pytest --cov=reward_space_analysis --cov-report=term-missing
-uv run pytest --cov=reward_space_analysis --cov-report=html && open htmlcov/index.html
+uv run --locked --extra dev pytest --cov=reward_space_analysis --cov-report=term-missing
+uv run --locked --extra dev pytest --cov=reward_space_analysis --cov-report=html && open htmlcov/index.html
 ```
 
 Slow statistical tests:
 
 ```shell
-uv run pytest -m "statistics and slow" -q
+uv run --locked --extra dev pytest -m "statistics and slow" -q
 ```
 
 ## Coverage Mapping (Invariant Ownership)
@@ -180,34 +180,34 @@ Columns:
 - Notes: Clarifications (sub-modes, extensions, non-owning references elsewhere,
   line clusters for multi-path coverage).
 
-| ID                                           | Category    | Description                                                                         | Owning File                               | Notes                                                                                                        |
-| -------------------------------------------- | ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| report-additives-deterministic-092           | components  | Additives deterministic report section                                              | components/test_additives.py:4            | Integration/PBRS may reference outcome non-owning                                                            |
-| robustness-decomposition-integrity-101       | robustness  | Single active core component equals total reward under mutually exclusive scenarios | robustness/test_robustness.py:43          | Scenarios: idle, hold, exit, invalid; non-owning refs integration/test_reward_calculation.py                 |
-| robustness-exit-mode-fallback-102            | robustness  | Unknown exit_attenuation_mode falls back to linear w/ warning                       | robustness/test_robustness.py:654         | Comment line (function at :655)                                                                              |
-| robustness-negative-grace-clamp-103          | robustness  | Negative exit_plateau_grace clamps to 0.0 w/ warning                                | robustness/test_robustness.py:696         |                                                                                                              |
-| robustness-invalid-power-tau-104             | robustness  | Invalid power tau falls back alpha=1.0 w/ warning                                   | robustness/test_robustness.py:747         |                                                                                                              |
-| robustness-near-zero-half-life-105           | robustness  | Near-zero half life yields no attenuation (factor≈base)                             | robustness/test_robustness.py:792         |                                                                                                              |
-| pbrs-canonical-exit-semantic-106              | pbrs        | Canonical exit uses shaping=-prev_potential and next_potential=0.0                   | pbrs/test_pbrs.py:374                     | Uses stored potential across steps; no drift correction applied                                             |
-| statistics-partial-deps-skip-107              | statistics  | skip_partial_dependence => empty PD structures                                       | statistics/test_statistics.py:42          | Docstring line                                                                                              |
-| helpers-transitions-preserve-multiplicity-108 | helpers     | Repeated transitions retain their empirical multiplicity                            | helpers/test_utilities.py:26               |                                                                                                             |
-| helpers-missing-cols-fill-109                 | helpers     | Missing required columns filled with NaN + single warning                            | helpers/test_utilities.py:51               | Docstring line                                                                                              |
-| statistics-binned-stats-min-edges-110         | statistics  | <2 bin edges raises ValueError                                                       | statistics/test_statistics.py:60          | Docstring line                                                                                              |
-| statistics-constant-cols-exclusion-111        | statistics  | Constant columns excluded & listed                                                   | statistics/test_statistics.py:71          | Docstring line                                                                                              |
-| statistics-degenerate-distribution-shift-112  | statistics  | Constants: zero distances; KS p only with declared independent observations          | statistics/test_statistics.py:87          | Docstring line                                                                                              |
-| statistics-constant-dist-exact-ci-113a        | statistics  | Both modes retain exact constant CI bounds                                           | statistics/test_statistics.py:606         |                                                                                                             |
-| statistics-percentile-outside-mean-113b       | statistics  | Percentile bounds need not contain the sample mean                                   | statistics/test_statistics.py:620         |                                                                                                             |
-| statistics-constant-diagnostics-115           | statistics  | Constants have N/A higher moments, normality tests and Q-Q fits in both modes         | statistics/test_statistics.py:194         |                                                                                                             |
-| pbrs-canonical-near-zero-report-116           | pbrs        | Canonical trajectories with valid evidence are classified as verified                | pbrs/test_pbrs.py:1509                    | Requires local identity, continuity, discounted terminal boundary, and zero observed additives; the non-owning boundary test also covers a complete singleton terminal episode |
-| robustness-exit-pnl-only-117                  | robustness  | Only exit actions have non-zero PnL                                                  | robustness/test_robustness.py:127         | Comment line                                                                                                |
-| pbrs-absence-shift-placeholder-118            | pbrs        | Placeholder shift line present when shaping shift is absent                          | pbrs/test_pbrs.py:1877                    |                                                                                                             |
-| components-pbrs-breakdown-fields-119          | components  | PBRS breakdown fields finite and mathematically aligned                              | components/test_reward_components.py:830  | Tests base_reward, pbrs_delta and invariance_correction alignment                                           |
-| integration-pbrs-metrics-section-120          | integration | PBRS Metrics section present in report with tracing metrics                          | integration/test_report_formatting.py:137 |                                                                                                             |
-| cli-pbrs-csv-columns-121                      | cli         | PBRS columns in reward_samples.csv when shaping enabled                              | cli/test_cli_params_and_csv.py:347        | Verifies finite reward_base, reward_pbrs_delta and reward_invariance_correction values                       |
-| statistics-bh-finite-family-122               | statistics  | Undefined tests excluded from finite-only BH family; marked non-applicable           | statistics/test_statistics.py:499         |                                                                                                             |
-| statistics-independence-contract-123          | statistics  | Inferential helpers require independent_observations=True                            | statistics/test_statistics.py:636         | Covers hypothesis tests and bootstrap intervals                                                             |
-| report-independent-sections-124               | integration | CI, diagnostics and shift sections do not depend on hypothesis-test output           | integration/test_report_formatting.py:28  | Also verifies the reported bootstrap resample count                                                         |
-| pbrs-discounted-evidence-125                  | pbrs        | Verification requires local identity, continuity and discounted terminal boundary    | pbrs/test_pbrs.py:1699                    | Discontinuous potentials are not verified                                                                   |
+| ID                                            | Category    | Description                                                                         | Owning File                               | Notes                                                                                                                                                                          |
+| --------------------------------------------- | ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| report-additives-deterministic-092            | components  | Additives deterministic report section                                              | components/test_additives.py:4            | Integration/PBRS may reference outcome non-owning                                                                                                                              |
+| robustness-decomposition-integrity-101        | robustness  | Single active core component equals total reward under mutually exclusive scenarios | robustness/test_robustness.py:43          | Scenarios: idle, hold, exit, invalid; non-owning refs integration/test_reward_calculation.py                                                                                   |
+| robustness-exit-mode-fallback-102             | robustness  | Unknown exit_attenuation_mode falls back to linear w/ warning                       | robustness/test_robustness.py:654         | Comment line (function at :655)                                                                                                                                                |
+| robustness-negative-grace-clamp-103           | robustness  | Negative exit_plateau_grace clamps to 0.0 w/ warning                                | robustness/test_robustness.py:696         |                                                                                                                                                                                |
+| robustness-invalid-power-tau-104              | robustness  | Invalid power tau falls back alpha=1.0 w/ warning                                   | robustness/test_robustness.py:747         |                                                                                                                                                                                |
+| robustness-near-zero-half-life-105            | robustness  | Near-zero half life yields no attenuation (factor≈base)                             | robustness/test_robustness.py:792         |                                                                                                                                                                                |
+| pbrs-canonical-exit-semantic-106              | pbrs        | Canonical exit uses shaping=-prev_potential and next_potential=0.0                  | pbrs/test_pbrs.py:374                     | Uses stored potential across steps; no drift correction applied                                                                                                                |
+| statistics-partial-deps-skip-107              | statistics  | skip_partial_dependence => empty PD structures                                      | statistics/test_statistics.py:42          | Docstring line                                                                                                                                                                 |
+| helpers-transitions-preserve-multiplicity-108 | helpers     | Repeated transitions retain their empirical multiplicity                            | helpers/test_utilities.py:26              |                                                                                                                                                                                |
+| helpers-missing-cols-fill-109                 | helpers     | Missing required columns filled with NaN + single warning                           | helpers/test_utilities.py:51              | Docstring line                                                                                                                                                                 |
+| statistics-binned-stats-min-edges-110         | statistics  | <2 bin edges raises ValueError                                                      | statistics/test_statistics.py:60          | Docstring line                                                                                                                                                                 |
+| statistics-constant-cols-exclusion-111        | statistics  | Constant columns excluded & listed                                                  | statistics/test_statistics.py:71          | Docstring line                                                                                                                                                                 |
+| statistics-degenerate-distribution-shift-112  | statistics  | Constants: zero distances; KS p only with declared independent observations         | statistics/test_statistics.py:87          | Docstring line                                                                                                                                                                 |
+| statistics-constant-dist-exact-ci-113a        | statistics  | Both modes retain exact constant CI bounds                                          | statistics/test_statistics.py:606         |                                                                                                                                                                                |
+| statistics-percentile-outside-mean-113b       | statistics  | Percentile bounds need not contain the sample mean                                  | statistics/test_statistics.py:620         |                                                                                                                                                                                |
+| statistics-constant-diagnostics-115           | statistics  | Constants have N/A higher moments, normality tests and Q-Q fits in both modes       | statistics/test_statistics.py:194         |                                                                                                                                                                                |
+| pbrs-canonical-near-zero-report-116           | pbrs        | Canonical trajectories with valid evidence are classified as verified               | pbrs/test_pbrs.py:1509                    | Requires local identity, continuity, discounted terminal boundary, and zero observed additives; the non-owning boundary test also covers a complete singleton terminal episode |
+| robustness-exit-pnl-only-117                  | robustness  | Only exit actions have non-zero PnL                                                 | robustness/test_robustness.py:127         | Comment line                                                                                                                                                                   |
+| pbrs-absence-shift-placeholder-118            | pbrs        | Placeholder shift line present when shaping shift is absent                         | pbrs/test_pbrs.py:1877                    |                                                                                                                                                                                |
+| components-pbrs-breakdown-fields-119          | components  | PBRS breakdown fields finite and mathematically aligned                             | components/test_reward_components.py:830  | Tests base_reward, pbrs_delta and invariance_correction alignment                                                                                                              |
+| integration-pbrs-metrics-section-120          | integration | PBRS Metrics section present in report with tracing metrics                         | integration/test_report_formatting.py:137 |                                                                                                                                                                                |
+| cli-pbrs-csv-columns-121                      | cli         | PBRS columns in reward_samples.csv when shaping enabled                             | cli/test_cli_params_and_csv.py:347        | Verifies finite reward_base, reward_pbrs_delta and reward_invariance_correction values                                                                                         |
+| statistics-bh-finite-family-122               | statistics  | Undefined tests excluded from finite-only BH family; marked non-applicable          | statistics/test_statistics.py:499         |                                                                                                                                                                                |
+| statistics-independence-contract-123          | statistics  | Inferential helpers require independent_observations=True                           | statistics/test_statistics.py:636         | Covers hypothesis tests and bootstrap intervals                                                                                                                                |
+| report-independent-sections-124               | integration | CI, diagnostics and shift sections do not depend on hypothesis-test output          | integration/test_report_formatting.py:28  | Also verifies the reported bootstrap resample count                                                                                                                            |
+| pbrs-discounted-evidence-125                  | pbrs        | Verification requires local identity, continuity and discounted terminal boundary   | pbrs/test_pbrs.py:1699                    | Discontinuous potentials are not verified                                                                                                                                      |
 
 ### Non-Owning Smoke / Reference Checks
 
@@ -220,14 +220,14 @@ the invariant must include a leading comment:
 
 Table tracks approximate line ranges and source ownership:
 
-| File                                   | Lines (approx) | References                                               | Ownership Source                                                    |
-| -------------------------------------- | -------------- | -------------------------------------------------------- | ------------------------------------------------------------------- |
-| integration/test_reward_calculation.py | 44             | Decomposition identity (sum components)                  | robustness/test_robustness.py:43                                    |
-| components/test_reward_components.py   | 551            | Exit factor finiteness & plateau behavior                | robustness/test_robustness.py:43+                                   |
-| pbrs/test_pbrs.py                      | 1053           | Canonical vs non-canonical classification formatting     | robustness/test_robustness.py:43, robustness/test_robustness.py:127 |
-| pbrs/test_pbrs.py                      | 1415           | Non-canonical full report reason aggregation             | robustness/test_robustness.py:43                                    |
-| pbrs/test_pbrs.py                      | 1469           | Non-canonical mode-only reason (additives disabled)      | robustness/test_robustness.py:43                                    |
-| statistics/test_statistics.py          | 292            | Mean decomposition consistency                           | robustness/test_robustness.py:43                                    |
+| File                                   | Lines (approx) | References                                           | Ownership Source                                                    |
+| -------------------------------------- | -------------- | ---------------------------------------------------- | ------------------------------------------------------------------- |
+| integration/test_reward_calculation.py | 44             | Decomposition identity (sum components)              | robustness/test_robustness.py:43                                    |
+| components/test_reward_components.py   | 551            | Exit factor finiteness & plateau behavior            | robustness/test_robustness.py:43+                                   |
+| pbrs/test_pbrs.py                      | 1053           | Canonical vs non-canonical classification formatting | robustness/test_robustness.py:43, robustness/test_robustness.py:127 |
+| pbrs/test_pbrs.py                      | 1415           | Non-canonical full report reason aggregation         | robustness/test_robustness.py:43                                    |
+| pbrs/test_pbrs.py                      | 1469           | Non-canonical mode-only reason (additives disabled)  | robustness/test_robustness.py:43                                    |
+| statistics/test_statistics.py          | 292            | Mean decomposition consistency                       | robustness/test_robustness.py:43                                    |
 
 ### Deprecated / Reserved IDs
 
