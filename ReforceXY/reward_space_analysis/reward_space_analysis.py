@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.spatial.distance import jensenshannon
 from scipy.stats import entropy, probplot
 
 if TYPE_CHECKING:
@@ -271,7 +270,7 @@ class RewardDiagnosticsWarning(RuntimeWarning):
 
 def _warn_unknown_mode(
     mode_type: str,
-    provided_value: str,
+    provided_value: Any,
     valid_values: Iterable[str],
     fallback_value: str,
     stacklevel: int = 2,
@@ -344,16 +343,37 @@ def _resolve_additive_enablement(
         (entry_additive_effective, exit_additive_effective, additives_suppressed)
     """
 
+    resolved_mode = _resolve_exit_potential_mode(exit_potential_mode)
     entry_additive_effective = (
-        bool(entry_additive_enabled_raw) if exit_potential_mode != "canonical" else False
+        bool(entry_additive_enabled_raw) if resolved_mode != "canonical" else False
     )
     exit_additive_effective = (
-        bool(exit_additive_enabled_raw) if exit_potential_mode != "canonical" else False
+        bool(exit_additive_enabled_raw) if resolved_mode != "canonical" else False
     )
-    additives_suppressed = exit_potential_mode == "canonical" and bool(
+    additives_suppressed = resolved_mode == "canonical" and bool(
         entry_additive_enabled_raw or exit_additive_enabled_raw
     )
     return entry_additive_effective, exit_additive_effective, additives_suppressed
+
+
+def _resolve_exit_potential_mode(
+    value: Any,
+    *,
+    warn_invalid: bool = False,
+    stacklevel: int = 2,
+) -> str:
+    """Return a supported exit-potential mode, defaulting invalid values to canonical."""
+    if isinstance(value, str) and value in ALLOWED_EXIT_POTENTIAL_MODES:
+        return value
+    if warn_invalid:
+        _warn_unknown_mode(
+            "exit_potential_mode",
+            value,
+            sorted(ALLOWED_EXIT_POTENTIAL_MODES),
+            "canonical",
+            stacklevel=stacklevel,
+        )
+    return "canonical"
 
 
 def _get_float_param(
@@ -595,6 +615,22 @@ def validate_reward_parameters(
                     "reason": "bool_coerce",
                     "validation_mode": "strict" if strict else "relaxed",
                 }
+    if "exit_potential_mode" in sanitized:
+        original_mode = sanitized["exit_potential_mode"]
+        resolved_mode = _resolve_exit_potential_mode(original_mode)
+        if resolved_mode != original_mode:
+            if strict:
+                raise ValueError(
+                    "Param: 'exit_potential_mode'="
+                    f"{original_mode!r} must be one of {sorted(ALLOWED_EXIT_POTENTIAL_MODES)}"
+                )
+            sanitized["exit_potential_mode"] = resolved_mode
+            adjustments["exit_potential_mode"] = {
+                "original": original_mode,
+                "adjusted": resolved_mode,
+                "reason": "invalid_choice",
+                "validation_mode": "relaxed",
+            }
 
     # Coerce and clamp numeric-bounded parameters
     for key, bounds in _PARAMETER_BOUNDS.items():
@@ -652,7 +688,7 @@ def validate_reward_parameters(
             strict=strict,
         )
 
-        if not np.isclose(adjusted, original_numeric):
+        if reason_parts:
             sanitized[key] = adjusted
             prev_reason = adjustments.get(key, {}).get("reason")
             reason: list[str] = []
@@ -1399,7 +1435,11 @@ def calculate_reward(
         breakdown.exit_pnl = terminal_context.current_pnl
 
     # Apply PBRS only if enabled and not neutral self-loop
-    exit_mode = _get_str_param(params, "exit_potential_mode")
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
     entry_additive_enabled = (
@@ -1656,13 +1696,20 @@ def simulate_samples(
     - Realized PnL appears on the exit step (position still Long/Short).
     """
 
+    source_params = dict(params)
+    params = dict(source_params)
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
+    params["exit_potential_mode"] = exit_mode
     rng = random.Random(seed)
     max_trade_duration_candles = _get_int_param(params, "max_trade_duration_candles")
     short_allowed = _is_short_allowed(trading_mode)
     action_masking = _get_bool_param(params, "action_masking", True)
 
     # Theoretical PBRS invariance flag
-    exit_mode = _get_str_param(params, "exit_potential_mode")
     entry_enabled_raw = _get_bool_param(params, "entry_additive_enabled")
     exit_enabled_raw = _get_bool_param(params, "exit_additive_enabled")
 
@@ -1897,7 +1944,7 @@ def simulate_samples(
         )
 
     df = pd.DataFrame(samples)
-    df.attrs["reward_params"] = dict(params)
+    df.attrs["reward_params"] = source_params
 
     # Validate critical algorithmic invariants
     _validate_simulation_invariants(df)
@@ -2549,6 +2596,16 @@ def load_real_episodes(
     return df
 
 
+def _stabilize_divergence(value: float, *, bin_count: int, metric_name: str) -> float:
+    """Clamp only roundoff-sized negative divergences to their exact lower bound."""
+    if value < 0.0:
+        tolerance = 8.0 * np.finfo(float).eps * bin_count
+        if value >= -tolerance:
+            return 0.0
+        raise AssertionError(f"Stats: {metric_name} must be >= 0, got {value:.17g}")
+    return value
+
+
 def compute_distribution_shift_metrics(
     synthetic_df: pd.DataFrame,
     real_df: pd.DataFrame,
@@ -2589,22 +2646,35 @@ def compute_distribution_shift_metrics(
             continue
         bins = np.unique(np.linspace(min_val, max_val, 50))
 
-        # Use density=False to get counts, then normalize to probabilities
+        # Normalize counts before smoothing so proportional histograms stay identical.
         hist_synth, _ = np.histogram(synth_values, bins=bins, density=False)
         hist_real, _ = np.histogram(real_values, bins=bins, density=False)
+        hist_synth = hist_synth / hist_synth.sum()
+        hist_real = hist_real / hist_real.sum()
 
-        # Add small epsilon to avoid log(0) in KL divergence
+        # Add a common epsilon to avoid log(0), then restore unit mass.
         epsilon = float(INTERNAL_GUARDS["histogram_epsilon"])
         hist_synth = hist_synth + epsilon
         hist_real = hist_real + epsilon
-        # Normalize to create probability distributions (sum to 1)
         hist_synth = hist_synth / hist_synth.sum()
         hist_real = hist_real / hist_real.sum()
 
         # KL(synthetic||real): measures how much synthetic diverges from real
-        metrics[f"{feature}_kl_divergence"] = float(entropy(hist_synth, hist_real))
-        # JS distance (square root of JS divergence) is symmetric
-        metrics[f"{feature}_js_distance"] = float(jensenshannon(hist_synth, hist_real))
+        bin_count = len(hist_synth)
+        kl_divergence = _stabilize_divergence(
+            float(entropy(hist_synth, hist_real)),
+            bin_count=bin_count,
+            metric_name=f"{feature} KL divergence",
+        )
+        metrics[f"{feature}_kl_divergence"] = kl_divergence
+        # JS distance is the square root of the symmetric JS divergence.
+        mixture = 0.5 * (hist_synth + hist_real)
+        js_divergence = _stabilize_divergence(
+            0.5 * (float(entropy(hist_synth, mixture)) + float(entropy(hist_real, mixture))),
+            bin_count=bin_count,
+            metric_name=f"{feature} JS divergence",
+        )
+        metrics[f"{feature}_js_distance"] = math.sqrt(js_divergence)
         metrics[f"{feature}_wasserstein"] = float(
             stats.wasserstein_distance(synth_values, real_values)
         )
@@ -3325,9 +3395,17 @@ def _compute_exit_potential(
     prev_potential: float,
     params: RewardParams,
     gamma: float,
+    *,
+    mode: str | None = None,
 ) -> float:
     """Return exit potential using the selected mode and validated PBRS gamma."""
-    mode = _get_str_param(params, "exit_potential_mode")
+    mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"])
+        if mode is None
+        else mode,
+        warn_invalid=True,
+        stacklevel=3,
+    )
     if mode == "canonical" or mode == "non_canonical":
         return _fail_safely("canonical_exit_potential")
 
@@ -3363,14 +3441,7 @@ def _compute_exit_potential(
     elif mode == "retain_previous":
         next_potential = prev_potential
     else:
-        _warn_unknown_mode(
-            "exit_potential_mode",
-            mode,
-            sorted(ALLOWED_EXIT_POTENTIAL_MODES),
-            "canonical (via _fail_safely)",
-            stacklevel=2,
-        )
-        next_potential = _fail_safely("invalid_exit_potential_mode")
+        return _fail_safely("invalid_exit_potential_mode")
 
     if not np.isfinite(next_potential):
         next_potential = _fail_safely("non_finite_next_exit_potential")
@@ -3442,13 +3513,17 @@ def compute_pbrs_components(
 
     prev_potential = float(prev_potential) if np.isfinite(prev_potential) else 0.0
 
-    exit_mode = _get_str_param(params, "exit_potential_mode")
+    exit_mode = _resolve_exit_potential_mode(
+        params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
+        warn_invalid=True,
+        stacklevel=3,
+    )
     canonical_mode = exit_mode == "canonical"
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
 
     if is_exit:
-        next_potential = _compute_exit_potential(prev_potential, params, gamma)
+        next_potential = _compute_exit_potential(prev_potential, params, gamma, mode=exit_mode)
         pbrs_delta = gamma * next_potential - prev_potential
         reward_shaping = pbrs_delta
     else:
@@ -3816,6 +3891,14 @@ def write_complete_statistical_analysis(
         "exit_additive_enabled",
     }
     classification_metadata_available = classification_keys.issubset(reward_params)
+    raw_exit_potential_mode = (
+        reward_params.get("exit_potential_mode") if classification_metadata_available else None
+    )
+    classification_metadata_valid = (
+        classification_metadata_available
+        and isinstance(raw_exit_potential_mode, str)
+        and raw_exit_potential_mode in ALLOWED_EXIT_POTENTIAL_MODES
+    )
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
 
     # Helpers: consistent Markdown table renderers
@@ -4233,8 +4316,10 @@ def write_complete_statistical_analysis(
 
             # Get configuration for proper invariance assessment
             if classification_metadata_available:
-                exit_potential_mode: str | None = _get_str_param(
-                    reward_params, "exit_potential_mode"
+                exit_potential_mode: str | None = (
+                    raw_exit_potential_mode
+                    if isinstance(raw_exit_potential_mode, str)
+                    else repr(raw_exit_potential_mode)
                 )
                 entry_additive_enabled_raw: bool | None = _get_bool_param(
                     reward_params, "entry_additive_enabled", False
@@ -4242,15 +4327,20 @@ def write_complete_statistical_analysis(
                 exit_additive_enabled_raw: bool | None = _get_bool_param(
                     reward_params, "exit_additive_enabled", False
                 )
-                (
-                    entry_additive_effective,
-                    exit_additive_effective,
-                    additives_suppressed,
-                ) = _resolve_additive_enablement(
-                    exit_potential_mode,
-                    entry_additive_enabled_raw,
-                    exit_additive_enabled_raw,
-                )
+                if classification_metadata_valid:
+                    (
+                        entry_additive_effective,
+                        exit_additive_effective,
+                        additives_suppressed,
+                    ) = _resolve_additive_enablement(
+                        exit_potential_mode,
+                        entry_additive_enabled_raw,
+                        exit_additive_enabled_raw,
+                    )
+                else:
+                    entry_additive_effective = False
+                    exit_additive_effective = False
+                    additives_suppressed = False
             else:
                 exit_potential_mode = None
                 entry_additive_enabled_raw = None
@@ -4267,7 +4357,7 @@ def write_complete_statistical_analysis(
                     "reason": "Trajectory verification skipped without reward configuration evidence",
                 }
             )
-            canonical_configuration = classification_metadata_available and (
+            canonical_configuration = classification_metadata_valid and (
                 exit_potential_mode == "canonical"
                 and not (entry_additive_effective or exit_additive_effective)
             )
@@ -4283,7 +4373,7 @@ def write_complete_statistical_analysis(
                     observed_additive_issues.append(f"{column} contains non-zero values")
             canonical_observations = not observed_additive_issues
 
-            if not classification_metadata_available:
+            if not classification_metadata_available or not classification_metadata_valid:
                 invariance_status = "Not verified"
             elif not canonical_configuration:
                 invariance_status = "Non-canonical: not verified"
@@ -4295,6 +4385,11 @@ def write_complete_statistical_analysis(
             invariance_note = evidence["reason"] + ". Raw shaping sums do not certify invariance."
             if not classification_metadata_available:
                 invariance_note += " Reward configuration evidence is missing or incomplete."
+            elif not classification_metadata_valid:
+                invariance_note += (
+                    " Reward configuration evidence is invalid: "
+                    f"invalid exit_potential_mode={raw_exit_potential_mode!r}."
+                )
             elif not canonical_configuration:
                 reasons = []
                 if exit_potential_mode != "canonical":
@@ -4331,10 +4426,10 @@ def write_complete_statistical_analysis(
                 f"| Exit Additive Enabled | {bool(exit_additive_enabled_raw) if exit_additive_enabled_raw is not None else 'unknown'} |\n"
             )
             f.write(
-                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+                f"| Entry Additive Effective | {bool(entry_additive_effective) if classification_metadata_valid else 'unknown'} |\n"
             )
             f.write(
-                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_available else 'unknown'} |\n"
+                f"| Exit Additive Effective | {bool(exit_additive_effective) if classification_metadata_valid else 'unknown'} |\n"
             )
             f.write(f"| Σ Shaping Reward | {total_shaping:.6f} |\n")
             f.write(f"| Abs Σ Shaping Reward | {abs(total_shaping):.6e} |\n")

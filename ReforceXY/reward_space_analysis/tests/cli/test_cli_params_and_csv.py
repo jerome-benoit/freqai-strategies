@@ -17,6 +17,7 @@ from reward_space_analysis import (
     Actions,
     get_max_idle_duration_candles,
 )
+from test_reward_space_analysis_cli import _is_warning_header, run_scenario
 
 from ..constants import SCENARIOS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
@@ -44,6 +45,66 @@ def _assert_cli_success(
     testcase: unittest.TestCase, result: subprocess.CompletedProcess[str]
 ) -> None:
     testcase.assertEqual(result.returncode, 0, f"CLI failed: {result.stderr}")
+
+
+class TestWarningHeaderRecognition(RewardSpaceTestBase):
+    """Recognize only real Python warning header formats."""
+
+    def test_warning_header_positive_and_negative_formats(self):
+        positive = (
+            "WARNING: explicit header",
+            "Warning: base category header",
+            "UserWarning: category header",
+            "RewardDiagnosticsWarning: custom category",
+            "/tmp/pkg/file.py:12: UserWarning: POSIX path",
+            "/tmp/a.py:1: Warning: base category path",
+            "relative/file.py:1: RuntimeWarning: relative path",
+            "<string>:7: FutureWarning: synthetic source",
+            r"C:\work\file.py:42: DeprecationWarning: Windows path",
+        )
+        negative = (
+            "warning: wrong case",
+            "Some prose about UserWarning: not a header",
+            "warnings.warn('source code', UserWarning)",
+            "/tmp/file.py:0: UserWarning: zero line",
+            "/tmp/file.py:-1: UserWarning: negative line",
+            "/tmp/file.py:1: WarningExtra: wrong suffix",
+            "/tmp/file.py:1: UserWarningExtra: wrong suffix",
+            "UserWarningExtra: wrong suffix",
+            "WARNING without colon",
+            "prefix WARNING: embedded prose",
+        )
+
+        for line in positive:
+            with self.subTest(line=line):
+                self.assertTrue(_is_warning_header(line))
+        for line in negative:
+            with self.subTest(line=line):
+                self.assertFalse(_is_warning_header(line))
+
+    def test_run_scenario_counts_only_warning_headers(self):
+        """Scenario warning totals use the same strict header recognizer."""
+        script = self.output_path / "warning_emitter.py"
+        script.write_text(
+            "import sys\n"
+            "print('UserWarning: first')\n"
+            "print('ordinary prose mentioning Warning:')\n"
+            "print('<string>:2: RuntimeWarning: second', file=sys.stderr)\n",
+            encoding="utf-8",
+        )
+
+        result = run_scenario(
+            script=script,
+            out_dir=self.output_path / "warning_counter",
+            idx=0,
+            num_samples=1,
+            conf=("canonical", "linear", 0.95, 0, 0, 0),
+            strict=False,
+            timeout=10,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["warnings"], 2)
 
 
 class TestCsvEncoding(RewardSpaceTestBase):
@@ -260,6 +321,19 @@ class TestParamsPropagation(RewardSpaceTestBase):
         self.assertEqual(
             int(rp["max_trade_duration_candles"]), SCENARIOS.CLI_MAX_TRADE_DURATION_PARAMS
         )
+
+    def test_invalid_exit_potential_mode_params_fails_before_artifacts(self):
+        """An invalid --params exit-potential mode fails strict validation before output creation."""
+        out_dir = self.output_path / "invalid_exit_potential_mode"
+
+        result = _run_cli(
+            out_dir=out_dir,
+            args=["--params", "exit_potential_mode=unsupported"],
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exit_potential_mode", result.stderr + result.stdout)
+        self.assertFalse(out_dir.exists())
 
     def test_missing_real_episodes_fails_before_artifacts(self):
         """An explicitly requested but missing episodes file fails the run with no artifacts."""

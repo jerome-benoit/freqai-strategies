@@ -197,8 +197,10 @@ be overridden via `--params`.
 - **`--check_invariants`** (bool, default: true) – Enable runtime invariant
   checks (diagnostics become advisory if disabled). Toggle rarely; disabling may
   hide reward drift or invariance violations.
-- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds and
-  finite checks; raises instead of silent clamp/discard when enabled.
+- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds,
+  finite checks, and exact `exit_potential_mode` choices; raises when enabled.
+  Relaxed API validation clamps bounds and canonicalizes an invalid exit mode with
+  a recorded adjustment.
 - **`--strict_diagnostics`** (flag, default: false) – Raise on extreme distribution
   moments instead of warning. In both modes, constants retain exact mean/std,
   while undefined higher moments, normality tests and Q-Q fits remain N/A.
@@ -334,12 +336,17 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | `entry_fee_rate`         | 0.0       | Entry fee rate (`price · (1 + fee)`) |
 | `exit_fee_rate`          | 0.0       | Exit fee rate (`price / (1 + fee)`)  |
 
+Direct `calculate_reward()` calls warn on an invalid exit mode before applying the
+canonical fallback. `simulate_samples()` emits this warning once per simulation.
+
 PBRS verification is evidence-based, never a raw shaping sum: complete ordered
 episodes (contiguous `transition_index`, single terminal), the local identity
 `reward_shaping = gamma * next_potential - prev_potential`, temporal potential
 continuity, and the discounted terminal boundary residual must all hold with
 sufficient ordered data; otherwise the report classifies the observed PBRS as
 "Not verified" even in canonical configuration.
+Imported or API-created data with an invalid `exit_potential_mode` is reported with
+its original value and cannot receive canonical verification.
 
 In canonical mode, the entry/exit additive terms are suppressed even if the
 corresponding `*_additive_enabled` flags are set.
