@@ -3289,11 +3289,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self, pair: str, history: pd.DataFrame, decision_time: pd.Timestamp
     ) -> pd.Timestamp:
         """Adopt legacy live predictions without treating bootstrap rows as observations."""
-        status = pd.to_numeric(history["do_predict"], errors="coerce")
         produced = _produced_prediction_mask(history)
-        unambiguous = produced & status.ne(0).fillna(False).to_numpy(dtype=bool)
-        if unambiguous.any():
-            start = history.loc[unambiguous, "date_pred"].min()
+        if produced.any():
+            start = history.loc[produced, "date_pred"].min()
             logger.info("[%s] Resuming calibration from legacy prediction history", pair)
         else:
             start = decision_time + pd.Timedelta(1, unit="ns")
