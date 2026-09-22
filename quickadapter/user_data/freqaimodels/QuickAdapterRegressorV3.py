@@ -33,6 +33,7 @@ from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
 from freqtrade.enums import TRADE_MODES
 from freqtrade.exceptions import DependencyException
+from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_drawer import (
     FEATURE_PIPELINE,
@@ -407,8 +408,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.10"
+    version = "3.13.0-rc.11"
 
+    _CALIBRATION_START_KEY: Final[str] = "quickadapter_calibration_start"
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
     _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
 
@@ -3262,6 +3264,77 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if len(self._optuna_label_incremented_pairs) >= len(self.pairs):
             self._optuna_label_incremented_pairs = []
 
+    def _persist_calibration_start(self, pair: str, start: pd.Timestamp) -> None:
+        """Persist the first eligible calibration candle in FreqAI pair metadata."""
+        self.dd.get_pair_dict_info(pair)
+        extras = self.dd.pair_dict[pair].setdefault("extras", {})
+        value = start.isoformat()
+        if extras.get(self._CALIBRATION_START_KEY) == value:
+            return
+        extras[self._CALIBRATION_START_KEY] = value
+        self.dd.save_drawer_to_disk()
+
+    def _calibration_decision_time(
+        self, dk: FreqaiDataKitchen, history: pd.DataFrame
+    ) -> pd.Timestamp:
+        """Return the current point-in-time candle without using wall-clock time."""
+        full_df = getattr(dk, "full_df", None)
+        if isinstance(full_df, pd.DataFrame) and "date" in full_df:
+            dates = ensure_datetime_series(full_df["date"])
+            if not dates.empty and pd.notna(dates.max()):
+                return dates.max()
+        return history["date_pred"].max()
+
+    def _migrate_calibration_start(
+        self, pair: str, history: pd.DataFrame, decision_time: pd.Timestamp
+    ) -> pd.Timestamp:
+        """Adopt legacy live predictions without treating bootstrap rows as observations."""
+        status = pd.to_numeric(history["do_predict"], errors="coerce")
+        produced = _produced_prediction_mask(history)
+        unambiguous = produced & status.ne(0).fillna(False).to_numpy(dtype=bool)
+        if unambiguous.any():
+            start = history.loc[unambiguous, "date_pred"].min()
+            logger.info("[%s] Resuming calibration from legacy prediction history", pair)
+        else:
+            start = decision_time
+            logger.info("[%s] Starting calibration after FreqAI bootstrap history", pair)
+        self._persist_calibration_start(pair, start)
+        return start
+
+    def _calibration_history(
+        self,
+        dk: FreqaiDataKitchen,
+        pair: str,
+        history: pd.DataFrame,
+        sample_size: int,
+    ) -> pd.DataFrame:
+        """Select persisted observations for the current calibration period."""
+        decision_time = self._calibration_decision_time(dk, history)
+        self.dd.get_pair_dict_info(pair)
+        extras = self.dd.pair_dict[pair].setdefault("extras", {})
+        raw_start = extras.get(self._CALIBRATION_START_KEY)
+        try:
+            start = pd.Timestamp(raw_start) if isinstance(raw_start, str) else None
+        except ValueError:
+            start = None
+        if start is None:
+            start = self._migrate_calibration_start(pair, history, decision_time)
+
+        produced = _produced_prediction_mask(history)
+        eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
+        last_observation = eligible["date_pred"].max() if not eligible.empty else start
+        max_gap = pd.Timedelta(seconds=sample_size * timeframe_to_seconds(self.config["timeframe"]))
+        if decision_time - last_observation > max_gap:
+            logger.warning(
+                "[%s] Calibration observations are older than %s; starting a new warmup",
+                pair,
+                max_gap,
+            )
+            start = decision_time
+            self._persist_calibration_start(pair, start)
+            eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
+        return eligible
+
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         warmed_up = True
 
@@ -3281,21 +3354,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         history = self.dd.historic_predictions[pair]
         if self.live:
             history = _dedupe_historic_predictions_on_date_pred(history)
-            if not hasattr(self, "_prediction_session_cutoffs"):
-                self._prediction_session_cutoffs: dict[str, pd.Timestamp] = {}
-            if pair not in self._prediction_session_cutoffs:
-                initial_dates = pd.to_datetime(
-                    self.dd.model_return_values[pair]["date_pred"],
-                    utc=True,
-                    errors="coerce",
-                    format="mixed",
-                )
-                self._prediction_session_cutoffs[pair] = initial_dates.max()
-            cutoff = self._prediction_session_cutoffs[pair]
-            eligible = (
-                _produced_prediction_mask(history) & history["date_pred"].gt(cutoff).to_numpy()
-            )
-            history = history.loc[eligible]
+            history = self._calibration_history(dk, pair, history, fit_live_predictions_candles)
             remaining = fit_live_predictions_candles - len(history)
             warmed_up = remaining <= 0
             if not warmed_up:

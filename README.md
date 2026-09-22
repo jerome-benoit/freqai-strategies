@@ -170,8 +170,11 @@ specific; equally specific patterns follow declaration order, so the later one
 wins.
 
 In live and dry-run modes, each pair requires
-`freqai.fit_live_predictions_candles` model predictions after session startup
-before adaptive thresholds become available. Restarting requires a new warmup.
+`freqai.fit_live_predictions_candles` produced model predictions before
+adaptive thresholds become available. Warmup progress is restored with the
+FreqAI prediction history after a restart. If no produced observation is
+available for one complete calibration horizon
+(`fit_live_predictions_candles × timeframe`), the pair starts a new warmup.
 Downtime and expired-model rows are excluded; genuine zero and outlier-rejected
 predictions count. Predictions align to candle dates; candles without
 predictions have `do_predict=0` and downtime zeros display but never calibrate.
@@ -357,8 +360,9 @@ when their objective identity matches.
 ### Live inference
 
 Optional `fit_live_predictions_candles` statistics count produced observations
-per pair after session startup; restarts reset the warmup. See the model
-docstrings for continuation, HPO and statistics details.
+per pair from the persisted FreqAI prediction history. Restarts preserve complete
+and partial warmups; a gap longer than one calibration horizon starts a new one.
+See the model docstrings for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.
