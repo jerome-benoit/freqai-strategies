@@ -3265,7 +3265,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_incremented_pairs = []
 
     def _persist_calibration_start(self, pair: str, start: pd.Timestamp) -> None:
-        """Persist the first eligible calibration candle in FreqAI pair metadata."""
+        """Persist the lower timestamp boundary for eligible calibration rows."""
         self.dd.get_pair_dict_info(pair)
         extras = self.dd.pair_dict[pair].setdefault("extras", {})
         value = start.isoformat()
@@ -3296,7 +3296,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             start = history.loc[unambiguous, "date_pred"].min()
             logger.info("[%s] Resuming calibration from legacy prediction history", pair)
         else:
-            start = decision_time
+            start = decision_time + pd.Timedelta(1, unit="ns")
             logger.info("[%s] Starting calibration after FreqAI bootstrap history", pair)
         self._persist_calibration_start(pair, start)
         return start
@@ -3322,8 +3322,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         produced = _produced_prediction_mask(history)
         eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
-        last_observation = eligible["date_pred"].max() if not eligible.empty else start
         max_gap = pd.Timedelta(seconds=sample_size * timeframe_to_seconds(self.config["timeframe"]))
+        gap_starts = eligible.loc[eligible["date_pred"].diff().gt(max_gap), "date_pred"]
+        if not gap_starts.empty:
+            start = gap_starts.iloc[-1]
+            logger.warning(
+                "[%s] Calibration history contains a gap longer than %s; resuming warmup after the gap",
+                pair,
+                max_gap,
+            )
+            self._persist_calibration_start(pair, start)
+            eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
+
+        last_observation = eligible["date_pred"].max() if not eligible.empty else start
         if decision_time - last_observation > max_gap:
             logger.warning(
                 "[%s] Calibration observations are older than %s; starting a new warmup",

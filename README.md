@@ -360,9 +360,8 @@ when their objective identity matches.
 ### Live inference
 
 Optional `fit_live_predictions_candles` statistics count produced observations
-per pair from the persisted FreqAI prediction history. Restarts preserve complete
-and partial warmups; a gap longer than one calibration horizon starts a new one.
-See the model docstrings for continuation, HPO and statistics details.
+per pair after session startup; restarts reset the warmup. See the model
+docstrings for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.
