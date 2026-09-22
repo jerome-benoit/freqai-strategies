@@ -351,7 +351,8 @@ The documented list of model tunables is at the top of the
 
 Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
-missing or incompatible replay data prevents continuation. Reset trained models
+it is loaded only when continual training starts. Missing or incompatible replay
+data prevents continuation but does not prevent inference. Reset trained models
 or use a new `freqai.identifier` to migrate incompatible artifacts, including
 deployments without the chronological training marker. Training disables
 `shuffle_after_split`. HPO studies and saved best parameters are reused only
@@ -359,9 +360,10 @@ when their objective identity matches.
 
 ### Live inference
 
-Optional `fit_live_predictions_candles` statistics count produced observations
-per pair after session startup; restarts reset the warmup. See the model
-docstrings for continuation, HPO and statistics details.
+Optional `fit_live_predictions_candles` statistics use the latest persisted
+produced observations per pair, including immediately after restart. Available
+observations are used before a full window accumulates. See the model docstrings
+for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.

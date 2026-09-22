@@ -321,10 +321,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         "freqai": {
             ...
             "fit_live_predictions_candles": 0,      // Optional non-negative integer; omitted or 0 disables action statistics
-            // Live/dry-run: latest N produced observations per pair after session startup.
-            // Restart resets warmup; numeric mean/std are zero until N observations exist.
-            // Downtime and expired status 2 do not count; neutral/exit actions and recorded
-            // rejected predictions do. Backtests use the previous N rows, not the current row.
+            // Live/dry-run: latest N persisted produced observations per pair.
+            // Available observations are used immediately and survive restarts. Downtime and
+            // expired status 2 do not count; neutral/exit actions and recorded rejected
+            // predictions do. Backtests use the previous N rows, not the current row.
             // Numeric objects are coerced; non-finite samples are ignored. Empty finite
             // samples yield zeros; constants have zero spread; nonnumeric objects are skipped.
             // Statistics do not gate RL actions. Population standard deviation is used.
@@ -527,7 +527,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             raise ValueError(
                 f"Config [global]: fit_live_predictions_candles="
                 f"{fit_live_predictions_candles!r} invalid; "
-                "must be a non-negative integer (0 disables label statistics)"
+                "must be a non-negative integer (0 disables action statistics)"
             )
         self.freqai_info["fit_live_predictions_candles"] = fit_live_predictions_candles
 
@@ -584,7 +584,6 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     def _install_replay_persistence(self) -> None:
         save_data = self.dd.save_data
-        load_data = self.dd.load_data
 
         @wraps(save_data)
         def save_with_replay(model, coin, dk):
@@ -603,21 +602,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 dk.data["reforcexy_replay"] = filename
             return save_data(model, coin, dk)
 
-        @wraps(load_data)
-        def load_with_replay(coin, dk):
-            cached = self.dd.model_dictionary.get(coin) if dk.live else None
-            model = load_data(coin, dk)
-            if model is not None and model is not cached:
-                try:
-                    self._restore_replay(model, dk.data, dk.data_path, coin)
-                except Exception:
-                    if self.dd.model_dictionary.get(coin) is model:
-                        self.dd.model_dictionary.pop(coin, None)
-                    raise
-            return model
-
         self.dd.save_data = save_with_replay
-        self.dd.load_data = load_with_replay
 
     @staticmethod
     def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path, pair: str) -> None:
@@ -1241,8 +1226,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     archive.seek(0)
                     model = self.MODELCLASS.load(archive, device=cached_model.device)
                 # Off-policy experience is excluded from SB3 model archives.
-                if getattr(cached_model, "replay_buffer", None) is not None:
-                    model.replay_buffer = copy.deepcopy(cached_model.replay_buffer)
+                replay_buffer = getattr(cached_model, "replay_buffer", None)
+                if replay_buffer is not None and replay_buffer.size() > 0:
+                    model.replay_buffer = copy.deepcopy(replay_buffer)
+                elif hasattr(model, "load_replay_buffer"):
+                    self._restore_replay(model, metadata, Path(previous["data_path"]), pair)
             state = model, copy.deepcopy(feature_pipeline)
         except Exception as exc:
             raise DependencyException(
@@ -1538,34 +1526,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         if not fit_live_predictions_candles:
             return
 
-        warmed_up = True
         history = self.dd.historic_predictions[pair]
         if self.live:
             history = _dedupe_historic_predictions_on_date_pred(history)
-            if not hasattr(self, "_prediction_session_cutoffs"):
-                self._prediction_session_cutoffs: dict[str, pd.Timestamp] = {}
-            if pair not in self._prediction_session_cutoffs:
-                initial_dates = pd.to_datetime(
-                    self.dd.model_return_values[pair]["date_pred"],
-                    utc=True,
-                    errors="coerce",
-                    format="mixed",
-                )
-                self._prediction_session_cutoffs[pair] = initial_dates.max()
-            cutoff = self._prediction_session_cutoffs[pair]
-            eligible = (
-                _produced_prediction_mask(history) & history["date_pred"].gt(cutoff).to_numpy()
-            )
-            history = history.loc[eligible]
-            remaining = fit_live_predictions_candles - len(history)
-            warmed_up = remaining <= 0
-            if not warmed_up:
-                logger.warning(
-                    "Predict [%s]: fit live predictions not warmed up; "
-                    "%d more produced observations required for warmup completion",
-                    pair,
-                    remaining,
-                )
+            history = history.loc[_produced_prediction_mask(history)]
         pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
@@ -1577,20 +1541,17 @@ class ReforceXY(BaseReinforcementLearningModel):
             pred_label = pd.to_numeric(raw_label, errors="coerce")
             if raw_label.dtype == object and pred_label.isna().all():
                 continue
-            if not warmed_up:
-                f = [0.0, 0.0]
+            values = pred_label.to_numpy(dtype=float, na_value=np.nan)
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                f = (0.0, 0.0)
             else:
-                values = pred_label.to_numpy(dtype=float, na_value=np.nan)
-                values = values[np.isfinite(values)]
-                if values.size == 0:
-                    f = (0.0, 0.0)
-                else:
-                    sample_mean = float(np.mean(values))
-                    sample_std = float(np.std(values, ddof=0))
-                    f = (
-                        sample_mean if np.isfinite(sample_mean) else 0.0,
-                        sample_std if np.isfinite(sample_std) else 0.0,
-                    )
+                sample_mean = float(np.mean(values))
+                sample_std = float(np.std(values, ddof=0))
+                f = (
+                    sample_mean if np.isfinite(sample_mean) else 0.0,
+                    sample_std if np.isfinite(sample_std) else 0.0,
+                )
             dk.data["labels_mean"][label_col], dk.data["labels_std"][label_col] = (
                 f[0],
                 f[1],

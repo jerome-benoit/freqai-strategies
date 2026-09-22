@@ -8,6 +8,7 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
+from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
 
@@ -62,25 +63,25 @@ class TrainingObservationsTest(unittest.TestCase):
                 self.assertGreater(size, 0)
                 model.dd.model_dictionary.clear()
                 model.dd.meta_data_dictionary.clear()
+                direct_clone, _ = model._resolve_deployment_state(dk, dk.pair)
+                self.assertEqual(direct_clone.replay_buffer.size(), size)
+                np.testing.assert_array_equal(direct_clone.replay_buffer.observations, replay)
                 restored = model.dd.load_data(dk.pair, dk)
-                self.assertEqual(restored.replay_buffer.size(), size)
-                np.testing.assert_array_equal(restored.replay_buffer.observations, replay)
+                self.assertEqual(restored.replay_buffer.size(), 0)
                 clone, _ = model._resolve_deployment_state(dk, dk.pair)
                 self.assertEqual(clone.replay_buffer.size(), size)
-                self.assertIsNot(clone.replay_buffer, restored.replay_buffer)
-                clone.replay_buffer.observations.flat[0] += 123.0
-                self.assertNotEqual(
-                    clone.replay_buffer.observations.flat[0],
-                    restored.replay_buffer.observations.flat[0],
-                )
-                np.testing.assert_array_equal(restored.replay_buffer.observations, replay)
+                np.testing.assert_array_equal(clone.replay_buffer.observations, replay)
+                self.assertEqual(restored.replay_buffer.size(), 0)
                 self.assertIs(model.dd.load_data(dk.pair, dk), restored)
                 model.dd.model_dictionary.clear()
                 (dk.data_path / dk.data["reforcexy_replay"]).unlink()
-                for _ in range(2):
-                    with self.assertRaises(FileNotFoundError):
-                        model.dd.load_data(dk.pair, dk)
-                    self.assertNotIn(dk.pair, model.dd.model_dictionary)
+                inference_model = model.dd.load_data(dk.pair, dk)
+                self.assertIsNotNone(inference_model)
+                model.continual_learning = False
+                self.assertIsNone(model._resolve_deployment_state(dk, dk.pair))
+                model.continual_learning = True
+                with self.assertRaises(DependencyException):
+                    model._resolve_deployment_state(dk, dk.pair)
                 params = model.get_model_params()
                 trial = create_study(direction="maximize").ask()
                 for starts in (64, 50000):
@@ -112,6 +113,31 @@ class TrainingObservationsTest(unittest.TestCase):
                         dk.data_dictionary["test_prices"],
                     )
                 self.assertTrue(np.isfinite(score))
+
+    def test_live_action_statistics_resume_persisted_observations(self):
+        pair = "BTC/USDT"
+        dates = pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC")
+        history = pd.DataFrame(
+            {
+                "date_pred": dates,
+                "&-action": [1.0, 2.0, 3.0, 99.0],
+                "do_predict": [1, 1, 1, 2],
+                "close_price": [100.0, 101.0, 102.0, 103.0],
+            }
+        )
+        model = ReforceXY.__new__(ReforceXY)
+        model.live = True
+        model.freqai_info = {"fit_live_predictions_candles": 4}
+        model.dd = SimpleNamespace(
+            historic_predictions={pair: history},
+            model_return_values={pair: history.tail(1)},
+        )
+        dk = SimpleNamespace(data={}, label_list=["&-action"], unique_class_list=[])
+
+        model.fit_live_predictions(dk, pair)
+
+        self.assertEqual(dk.data["labels_mean"]["&-action"], 2.0)
+        self.assertAlmostEqual(dk.data["labels_std"]["&-action"], np.std([1.0, 2.0, 3.0]))
 
     def test_frame_validity_and_gap_reset(self):
         with tempfile.TemporaryDirectory() as temp:
