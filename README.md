@@ -17,6 +17,8 @@
   - [Training and HPO](#training-and-hpo)
   - [Reward and portfolio accounting](#reward-and-portfolio-accounting)
 - [Development](#development)
+  - [Runtime regressions](#runtime-regressions)
+  - [Quality checks](#quality-checks)
 - [Common workflows](#common-workflows)
 - [Note](#note)
 
