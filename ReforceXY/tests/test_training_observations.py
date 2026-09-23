@@ -239,13 +239,18 @@ class TrainingObservationsTest(unittest.TestCase):
             config["freqai"]["fit_live_predictions_candles"] = 4
             source = ReforceXY(config=config)
             self.addCleanup(source.close_envs)
+            dates = pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC")
             source.dd.historic_predictions[pair] = pd.DataFrame(
                 {
-                    "date_pred": pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC"),
+                    "date_pred": dates,
                     "&-action": [7.0, 9.0, 99.0, 1000.0],
+                    "&-action_mean": [0.0] * 4,
+                    "&-action_std": [0.0] * 4,
                     "close_price": [100.0] * 4,
+                    "high_price": [101.0] * 4,
+                    "low_price": [99.0] * 4,
                     "do_predict": [1, 0, 2, 1],
-                    marker: [None, True, None, False],
+                    marker: [np.nan, 1.0, np.nan, 0.0],
                 }
             )
             source.dd.save_historic_predictions_to_disk()
@@ -253,9 +258,42 @@ class TrainingObservationsTest(unittest.TestCase):
             restarted = ReforceXY(config=config)
             restarted.live = True
             self.addCleanup(restarted.close_envs)
-            dk = SimpleNamespace(data={}, label_list=["&-action"], unique_class_list=[])
+            dk = SimpleNamespace(
+                data={"extra_returns_per_train": {}},
+                label_list=["&-action"],
+                unique_class_list=[],
+                return_dataframe=pd.DataFrame(),
+            )
+            restarted.predict = lambda frame, kitchen, **kwargs: (
+                pd.DataFrame({"&-action": np.ones(len(frame))}),
+                np.ones(len(frame), dtype=int),
+            )
             restarted.fit_live_predictions(dk, pair)
             self.assertEqual(dk.data["labels_mean"]["&-action"], 8.0)
+
+            candles = pd.DataFrame(
+                {"date": dates, "high": [101.0] * 4, "low": [99.0] * 4, "close": [100.0] * 4}
+            )
+            restarted.build_strategy_return_arrays(candles, dk, pair, 0)
+            self.assertEqual(
+                restarted.dd.historic_predictions[pair][marker].tolist(), [True, True, False, False]
+            )
+
+            next_candle = pd.DataFrame(
+                {
+                    "date": [dates[-1] + pd.Timedelta(minutes=5)],
+                    "high": [101.0],
+                    "low": [99.0],
+                    "close": [100.0],
+                }
+            )
+            restarted.dk = SimpleNamespace(check_if_model_expired=lambda timestamp: False)
+            restarted.build_strategy_return_arrays(
+                pd.concat([candles, next_candle], ignore_index=True), dk, pair, 0
+            )
+            self.assertEqual(dk.return_dataframe["&-action_mean"].iloc[-1], 8.0)
+            self.assertEqual(dk.return_dataframe["&-action_std"].iloc[-1], 1.0)
+            self.assertNotIn(marker, dk.return_dataframe)
 
     def test_duplicate_date_keeps_provable_observation_after_restart(self):
         pair = "BTC/USDT"

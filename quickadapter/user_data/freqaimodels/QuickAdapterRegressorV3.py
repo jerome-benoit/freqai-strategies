@@ -177,10 +177,17 @@ def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
 
 
 def _ensure_produced_prediction_column(frame: pd.DataFrame) -> pd.DataFrame:
-    if _PRODUCED_PREDICTION_COLUMN in frame:
+    if _PRODUCED_PREDICTION_COLUMN not in frame:
+        result = frame.copy()
+        result[_PRODUCED_PREDICTION_COLUMN] = _legacy_produced_prediction_mask(frame)
+        return result
+    missing = frame[_PRODUCED_PREDICTION_COLUMN].isna()
+    if not missing.any():
         return frame
     result = frame.copy()
-    result[_PRODUCED_PREDICTION_COLUMN] = _legacy_produced_prediction_mask(frame)
+    result[_PRODUCED_PREDICTION_COLUMN] = frame[_PRODUCED_PREDICTION_COLUMN].where(
+        ~missing, _legacy_produced_prediction_mask(frame)
+    )
     return result
 
 

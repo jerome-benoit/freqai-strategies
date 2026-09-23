@@ -174,9 +174,10 @@ In live and dry-run modes, each pair requires
 thresholds become available. The Nth observation first affects the next
 prediction update, not the candle that produced it. FreqAI bootstrap
 predictions made from the initial training frame do not count. Warmup progress
-from recorded predictions is restored after a restart. Legacy rows without
-provenance count only when their nonzero prediction status distinguishes them
-from bootstrap; ambiguous rejected rows do not count.
+from recorded predictions is restored after a restart. Legacy rows missing
+provenance, including rows in partly marked histories, count only when their
+nonzero, nonexpired prediction status distinguishes them from bootstrap;
+ambiguous rejected rows and explicit false markers do not count.
 
 A pair starts a new warmup when the time since its last observation, or a gap
 within its observations, is greater than
@@ -371,9 +372,11 @@ Optional `fit_live_predictions_candles` statistics use the latest persisted real
 predictions per pair, excluding FreqAI bootstrap rows. Available observations
 are used before a full window accumulates and survive restarts. FreqAI returns
 the initial strategy frame before calculating live statistics; restored
-statistics appear on the next prediction update. In legacy histories without
-provenance, zero-status rows are excluded because bootstrap and rejected
-predictions cannot be distinguished; nonzero recorded statuses can still count.
+statistics appear on the next prediction update. Legacy rows missing provenance,
+including rows in partly marked histories, can count when their nonzero,
+nonexpired prediction status distinguishes them from bootstrap; zero-status rows
+remain excluded because bootstrap and rejected predictions cannot be
+distinguished. Explicit false markers remain excluded.
 On duplicate candle dates, a provable prediction takes precedence over an
 ambiguous close-bearing legacy row during history restoration.
 See the model docstrings for continuation, HPO and statistics details.
