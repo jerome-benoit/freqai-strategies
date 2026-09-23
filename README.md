@@ -481,6 +481,9 @@ PYTHONPATH=/workspace/quickadapter/user_data/strategies \
   python -m unittest discover -s quickadapter/tests -v
 ```
 
+CI runs type checks and runtime regressions in one QA matrix entry per strategy.
+The reward-space analysis suite runs separately with `uv`, without a Freqtrade image.
+
 ### Quality checks
 
 Run repository quality checks from the repository root:

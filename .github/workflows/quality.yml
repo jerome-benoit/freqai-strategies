@@ -31,8 +31,8 @@ jobs:
       - name: Check repository formatting
         run: uvx ruff@latest format --check .
 
-  type-check:
-    name: BasedPyright (${{ matrix.name }})
+  strategy-qa:
+    name: QA (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -63,39 +63,23 @@ jobs:
             "${{ matrix.image }}" \
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
-      - name: QuickAdapter runtime regressions
-        if: matrix.project == 'quickadapter'
-        run: |
-          docker run --rm \
-            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
-            --workdir /workspace \
-            --env PYTHONPATH=/workspace/quickadapter/user_data/strategies \
-            --entrypoint python \
-            "${{ matrix.image }}" \
-            -m unittest discover -s quickadapter/tests -v
-
-  reforcexy-tests:
-    name: ReforceXY tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      REFORCEXY_QA_IMAGE: freqai-strategies-reforcexy-qa:ci
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build QA image
-        run: >-
-          docker build --pull --target qa
-          --tag "${REFORCEXY_QA_IMAGE}"
-          ReforceXY
       - name: Run runtime regressions
         run: |
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
             --workdir /workspace \
+            --env PYTHONPATH=/workspace/${{ matrix.context }}/user_data/strategies \
             --entrypoint python \
-            "${REFORCEXY_QA_IMAGE}" \
-            -m unittest discover -s ReforceXY/tests -v
+            "${{ matrix.image }}" \
+            -m unittest discover -s "${{ matrix.context }}/tests" -v
+
+  reward-space-analysis:
+    name: Reward space analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
