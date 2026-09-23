@@ -715,6 +715,63 @@ class TestStatistics(RewardSpaceTestBase):
                         strict_diagnostics=strict,
                     )
 
+    def test_distribution_shift_uses_finite_observations(self):
+        """One infinite PnL cannot erase a distribution with enough finite samples."""
+        synthetic = pd.DataFrame(
+            {
+                "pnl": np.linspace(-0.1, 0.1, 20),
+                "trade_duration": np.arange(20),
+                "idle_duration": np.arange(20),
+            }
+        )
+        real = synthetic.copy()
+        real.loc[0, "pnl"] = np.inf
+        observed = compute_distribution_shift_metrics(synthetic, real)
+        finite_only = real.copy()
+        finite_only.loc[0, "pnl"] = np.nan
+        expected = compute_distribution_shift_metrics(synthetic, finite_only)
+        for key in ("pnl_kl_divergence", "pnl_js_distance", "pnl_wasserstein", "pnl_ks_statistic"):
+            self.assertIn(key, observed)
+            self.assertAlmostEqual(observed[key], expected[key])
+
+    def test_pnl_rank_biserial_direction_matches_named_first_group(self):
+        """A larger reward for pnl+ has a positive effect; reversing groups reverses it."""
+        df = pd.DataFrame(
+            {
+                "pnl": [1.0] * 30 + [-1.0] * 30,
+                "reward": [10.0] * 30 + [0.0] * 30,
+                "reward_idle": [0.0] * 60,
+                "position": [1.0] * 60,
+            }
+        )
+        for positive_reward, negative_reward, expected_u, expected_effect in (
+            (10.0, 0.0, 900.0, 1.0),
+            (0.0, 10.0, 0.0, -1.0),
+        ):
+            with self.subTest(positive_reward=positive_reward):
+                df.loc[:29, "reward"] = positive_reward
+                df.loc[30:, "reward"] = negative_reward
+                result = statistical_hypothesis_tests(df, independent_observations=True)[
+                    "pnl_sign_reward_difference"
+                ]
+                self.assertEqual(result["statistic"], expected_u)
+                self.assertEqual(result["effect_size_rank_biserial"], expected_effect)
+
+    def test_bootstrap_rejects_nonpositive_resample_count(self):
+        """Reject an absent bootstrap even when constant data take the fast path."""
+        for rewards in (np.arange(10, dtype=float), np.ones(10)):
+            for count in (0, -1):
+                with (
+                    self.subTest(constant=bool(rewards.min() == rewards.max()), count=count),
+                    self.assertRaisesRegex(ValueError, "n_bootstrap"),
+                ):
+                    bootstrap_confidence_intervals(
+                        pd.DataFrame({"reward": rewards}),
+                        ["reward"],
+                        n_bootstrap=count,
+                        independent_observations=True,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

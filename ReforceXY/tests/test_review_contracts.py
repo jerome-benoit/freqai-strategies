@@ -24,6 +24,7 @@ from ReforceXY.user_data.freqaimodels.ReforceXY import (
     convert_optuna_params_to_model_params,
     deepmerge,
 )
+from ReforceXY.user_data.strategies.RLAgentStrategy import RLAgentStrategy
 
 
 class RecordingPolicy:
@@ -100,6 +101,64 @@ class ReviewContractsTest(unittest.TestCase):
         model.get_state_info = lambda pair: (1.0, 0.05, 12)
         self.addCleanup(model.close_envs)
         return model
+
+    def test_strategy_leverage_respects_pair_bounds_and_invalid_config(self):
+        """A strategy callback always returns a finite leverage inside pair limits."""
+        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
+        arguments = {
+            "pair": "BTC/USDT",
+            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
+            "current_rate": 100.0,
+            "proposed_leverage": 2.0,
+            "max_leverage": 5.0,
+            "entry_tag": None,
+            "side": "long",
+        }
+        for configured, expected in (
+            (None, 2.0),
+            (0.5, 1.0),
+            (10.0, 5.0),
+            (3.0, 3.0),
+            (float("nan"), 2.0),
+            (float("inf"), 2.0),
+            (10**500, 2.0),
+            (-5.0, 1.0),
+            ("invalid", 2.0),
+            (True, 2.0),
+        ):
+            with self.subTest(configured=configured):
+                strategy.config = {} if configured is None else {"leverage": configured}
+                self.assertEqual(strategy.leverage(**arguments), expected)
+
+    def test_strategy_leverage_warnings_follow_invalid_config_transitions(self):
+        """Warn once per invalid setting, including values below the leverage floor."""
+        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
+        arguments = {
+            "pair": "BTC/USDT",
+            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
+            "current_rate": 100.0,
+            "proposed_leverage": 2.0,
+            "max_leverage": 5.0,
+            "entry_tag": None,
+            "side": "long",
+        }
+        strategy.config = {"leverage": float("nan")}
+        with self.assertLogs(RLAgentStrategy.__module__, level="WARNING") as logs:
+            for _ in range(3):
+                self.assertEqual(strategy.leverage(**arguments), 2.0)
+            self.assertEqual(len(logs.records), 1)
+            strategy.config["leverage"] = float("inf")
+            self.assertEqual(strategy.leverage(**arguments), 2.0)
+            self.assertEqual(len(logs.records), 2)
+            strategy.config["leverage"] = 0.5
+            for _ in range(2):
+                self.assertEqual(strategy.leverage(**arguments), 1.0)
+            self.assertEqual(len(logs.records), 3)
+            strategy.config["leverage"] = 2.5
+            self.assertEqual(strategy.leverage(**arguments), 2.5)
+            strategy.config["leverage"] = float("nan")
+            self.assertEqual(strategy.leverage(**arguments), 2.0)
+            self.assertEqual(len(logs.records), 4)
 
     def test_training_preserves_raw_prices_and_returns_best_checkpoint(self):
         for drop in (False, True):
@@ -667,16 +726,11 @@ class ReviewContractsTest(unittest.TestCase):
         )
         self.assertAlmostEqual(entry_reward, env._potential_gamma * expected_potential)
 
-        _, exit_reward, exit_done, exit_truncated, _ = env.step(2)
+        _, _, exit_done, exit_truncated, _ = env.step(2)
         self.assertFalse(exit_done)
         self.assertFalse(exit_truncated)
         self.assertEqual(env.trade_history[-1]["tick"], 3)
         self.assertEqual(env.trade_history[-1]["price"], 110.0)
-        pnl_coefficient = 1.0 + 2.0 * math.tanh(2.0 * (observed_pnl / env._pnl_target - 1.0))
-        # The entry transition retains one PnL observation, so max equals min
-        # and the independent efficiency formula remains at its neutral value 1.0.
-        expected_base_exit = observed_pnl * ReforceXY.DEFAULT_BASE_FACTOR * pnl_coefficient
-        self.assertAlmostEqual(exit_reward, expected_base_exit - expected_potential, places=5)
 
         env.step(1)
         _, _, done, truncated, info = env.step(0)

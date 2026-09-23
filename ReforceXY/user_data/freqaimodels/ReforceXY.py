@@ -36,6 +36,7 @@ import rapidjson
 import torch as th
 from datasieve.pipeline import Pipeline
 from freqtrade.exceptions import DependencyException
+from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import (
     FEATURE_PIPELINE,
     METADATA,
@@ -1281,7 +1282,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         return callbacks
 
     def _resolve_deployment_state(
-        self, dk: FreqaiDataKitchen, pair: str
+        self, dk: FreqaiDataKitchen, pair: str, *, as_of_ts: int | None = None
     ) -> tuple[Any, Pipeline] | None:
         """Restore independent training copies of the deployed policy and feature pipeline."""
         if not self.continual_learning:
@@ -1291,6 +1292,19 @@ class ReforceXY(BaseReinforcementLearningModel):
         previous = self.dd.pair_dict.get(pair, {})
         if model is None and not previous.get("model_filename"):
             return None
+        if not self.live:
+            # The drawer timestamp may advance without saving a new policy.
+            # Bound the actual artifact before loading policy, pipeline or replay.
+            name, separator, timestamp = previous.get("model_filename", "").rpartition("_")
+            if (
+                as_of_ts is None
+                or not previous.get("trained_timestamp")
+                or not separator
+                or name != f"cb_{pair.split('/')[0].lower()}"
+                or not timestamp.isdecimal()
+                or int(timestamp) >= as_of_ts
+            ):
+                return None
         try:
             cached = self.dd.meta_data_dictionary.get(pair, {})
             metadata = cached.get(METADATA)
@@ -1432,7 +1446,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         dk.fit_labels()
         # Capture prices once, before normalization and optional raw-OHLC removal.
         prices_train, prices_test = self.build_ohlc_price_dataframes(raw_data, pair, dk)
-        deployment_state = self._resolve_deployment_state(dk, pair)
+        as_of_ts = None
+        if self.continual_learning and not self.live:
+            latest_date = pd.to_datetime(unfiltered_df["date"], utc=True).max()
+            as_of_ts = int(latest_date.timestamp()) + timeframe_to_seconds(self.config["timeframe"])
+            training_timerange = getattr(self, "training_timerange", None)
+            if training_timerange is not None:
+                as_of_ts = min(as_of_ts, int(training_timerange.stopts))
+        deployment_state = self._resolve_deployment_state(dk, pair, as_of_ts=as_of_ts)
         dd = self._apply_training_pipeline(
             raw_data, dk, deployment_state=None if self.hyperopt else deployment_state
         )
@@ -4114,6 +4135,9 @@ class MyRLEnv(Base5ActionRLEnv):
         reward = self.calculate_reward(action)
         trade_type = self.execute_trade(action)
         entry_pnl = self.get_unrealized_profit() if previous_position == Positions.Neutral else 0.0
+        if trade_type is not None and self._position in (Positions.Long, Positions.Short):
+            self._update_max_unrealized_profit(entry_pnl)
+            self._update_min_unrealized_profit(entry_pnl)
         if trade_type is not None:
             self.append_trade_history(
                 trade_type, self.current_price(), pre_pnl, execution_tick=execution_tick
@@ -4189,7 +4213,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 f"{closed_position.name}_exit",
                 self.current_price(),
                 terminal_pnl,
-                execution_tick=execution_tick,
+                execution_tick=self._current_tick,
             )
         if terminated:
             reward = self._apply_terminal_pbrs_correction(reward)

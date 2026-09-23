@@ -5,12 +5,20 @@
 - [QuickAdapter](#quickadapter)
   - [Quick start](#quick-start)
   - [Configuration tunables](#configuration-tunables)
+  - [Continual learning](#continual-learning)
+  - [Live inference](#live-inference)
   - [Backtest evaluation protocol](#backtest-evaluation-protocol)
 - [ReforceXY](#reforcexy)
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
   - [Configuration tunables](#configuration-tunables-1)
+  - [Continual learning](#continual-learning-1)
+  - [Live inference](#live-inference-1)
+  - [Training and HPO](#training-and-hpo)
+  - [Reward and portfolio accounting](#reward-and-portfolio-accounting)
 - [Development](#development)
+  - [Runtime regressions](#runtime-regressions)
+  - [Quality checks](#quality-checks)
 - [Common workflows](#common-workflows)
 - [Note](#note)
 
@@ -168,6 +176,16 @@ one section: once `default` or `columns` is present, sibling flat keys are
 ignored with a warning. Matching column patterns are applied from least to most
 specific; equally specific patterns follow declaration order, so the later one
 wins.
+
+### Continual learning
+
+In backtests, continual training uses only a saved model whose training cutoff
+precedes the current window's end and its last available candle boundary. A
+later model left under the same identifier is not reused when a backtest is
+extended into the past. Live and dry-run restarts still restore compatible
+deployed models.
+
+### Live inference
 
 In live and dry-run modes, each pair requires
 `freqai.fit_live_predictions_candles` real model predictions before adaptive
@@ -358,6 +376,10 @@ PPO, MaskablePPO, RecurrentPPO, DQN, QRDQN
 The documented list of model tunables is at the top of the
 [ReforceXY.py](./ReforceXY/user_data/freqaimodels/ReforceXY.py) file.
 
+`RLAgentStrategy` clamps configured leverage to `[1, max_leverage]`. An omitted,
+non-finite, non-representable, Boolean or non-numeric value falls back to
+Freqtrade's `proposed_leverage` before clamping.
+
 ### Continual learning
 
 Continual learning trains an independent copy of the deployed policy with its
@@ -368,6 +390,12 @@ or use a new `freqai.identifier` to migrate incompatible artifacts, including
 deployments without the chronological training marker. Training disables
 `shuffle_after_split`. HPO studies and saved best parameters are reused only
 when their objective identity matches.
+
+Backtests continue only from a saved policy whose training cutoff precedes
+the current window's end and its last available candle boundary. A later
+deployment under the same identifier is not reused for an earlier window,
+even when FreqAI has saved only metadata for intervening windows. Live and
+dry-run restarts still restore compatible deployed policies.
 
 ### Live inference
 
@@ -430,22 +458,35 @@ delta over the returned next observation. Termination liquidates any remaining
 position once and clears the terminal potential. `get_env_history()` returns one
 metrics/price row per transition. Its `execution_tick` is the transition/action/fill
 key before the tick increment; its `tick` is the returned post-increment price and
-observation row (normally `execution_tick + 1`). Ordered trade events remain
-separate in `trade_history`, where each event's `tick` equals the history row's
-`execution_tick`; multiple events may share that key. `terminal_liquidation` and
-`exit_pnl` remain on the transition history row.
+observation row (normally `execution_tick + 1`). Exit-efficiency extrema include
+the fee-adjusted PnL at entry and subsequent retained market marks. Ordered
+trade events remain separate in `trade_history`: their tick identifies the
+candle whose price filled the event. Action fills use `execution_tick`;
+terminal liquidations use the returned post-increment tick. `terminal_liquidation`
+and `exit_pnl` remain on the transition history row.
 
 ## Development
 
 ### Runtime regressions
 
-Run the runtime training, inference and accounting regressions inside the
-ReforceXY QA image, with the repository mounted at `/workspace` and `/workspace`
-as the working directory:
+Run each suite in its matching Freqtrade QA image, with the repository mounted
+at `/workspace` and `/workspace` as the working directory:
 
 ```shell
+# ReforceXY
 python -m unittest discover -s ReforceXY/tests -v
+
+# QuickAdapter
+PYTHONPATH=/workspace/quickadapter/user_data/strategies \
+  python -m unittest discover -s quickadapter/tests -v
 ```
+
+CI runs type checks and runtime regressions in one QA matrix entry per strategy.
+The shared runtime step sets each strategy's `PYTHONPATH`. QuickAdapter needs
+this for direct `unittest` discovery because its model imports `LabelTransformer`
+and `Utils` by bare names; ReforceXY resolves its imports without it, so the
+setting is optional there. The reward-space analysis suite runs separately
+with `uv`, without a Freqtrade image.
 
 ### Quality checks
 
