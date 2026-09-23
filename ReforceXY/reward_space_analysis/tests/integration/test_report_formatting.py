@@ -7,6 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 import pytest
+
 from reward_space_analysis import PBRS_INVARIANCE_TOL, write_complete_statistical_analysis
 
 from ..constants import (
