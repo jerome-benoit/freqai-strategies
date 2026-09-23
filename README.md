@@ -174,7 +174,10 @@ In live and dry-run modes, each pair requires
 thresholds become available. The Nth observation first affects the next
 prediction update, not the candle that produced it. FreqAI bootstrap
 predictions made from the initial training frame do not count. Warmup progress
-from recorded predictions is restored after a restart. Legacy rows missing
+from persisted real predictions is restored after a restart. FreqAI saves
+prediction history after training attempts and on clean shutdown. After an
+abrupt stop or hard reboot, predictions since the last history save may be
+lost, so those observations must accumulate again. Legacy rows missing
 provenance, including rows in partly marked histories, count only when their
 nonzero, nonexpired prediction status distinguishes them from bootstrap;
 ambiguous rejected rows and explicit false markers do not count.
