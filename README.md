@@ -376,6 +376,10 @@ PPO, MaskablePPO, RecurrentPPO, DQN, QRDQN
 The documented list of model tunables is at the top of the
 [ReforceXY.py](./ReforceXY/user_data/freqaimodels/ReforceXY.py) file.
 
+`RLAgentStrategy` clamps configured leverage to `[1, max_leverage]`. An omitted,
+non-finite, non-representable, Boolean or non-numeric value falls back to
+Freqtrade's `proposed_leverage` before clamping.
+
 ### Continual learning
 
 Continual learning trains an independent copy of the deployed policy with its
