@@ -178,8 +178,10 @@ be overridden via `--params`.
 - **`--profit_aim`** (float, default: 0.03) – Profit target threshold (e.g.
   0.03=3%).
 - **`--risk_reward_ratio`** (float, default: 2.0) – Risk-reward multiplier.
-- **`--action_masking`** (bool, default: true) – Simulate environment action
-  masking. Invalid actions receive penalties only if masking disabled.
+- **`--action_masking`** (bool, default: true) – With masking enabled, sample
+  only valid actions. When disabled, sample an invalid action with 10% probability
+  and apply the configured invalid-action penalty. Invalid actions leave the held
+  position unchanged, except for an independent terminal liquidation.
 
 ### Reward & Shaping
 
@@ -218,6 +220,9 @@ to isolate bootstrap resampling from the simulation seed; the descriptive CLI
 does not expose this option. In that mode, bootstrap percentile intervals retain
 finite ordered bounds, including exact zero-width intervals for constants; the
 interval need not contain the original sample mean.
+
+Bootstrap counts must be positive. The PnL rank-biserial effect is positive when
+the first named group (`pnl+`) has higher rewards than the second (`pnl-`).
 
 ### Overrides
 
@@ -462,6 +467,10 @@ Flags hierarchy:
 
 Auto-skip if `num_samples < 4`.
 
+Reusing an output directory removes only stale analyzer-owned
+`feature_importance.csv` and the three `partial_dependence_{trade_duration,idle_duration,pnl}.csv`
+files before writing the new report; unrelated files are retained.
+
 ### Reproducibility
 
 | Component                             | Controlled By | Notes                                      |
@@ -576,6 +585,11 @@ Within the same analyzer revision, identical `params_hash` values mean the resol
 
 Implementation: up to 50 evenly spaced histogram edges (normally 49 bins) with
 ε=1e-10; constants have zero divergence.
+
+Non-finite numeric values in real episodes are marked missing. Each feature is
+compared only when both synthetic and real data contain at least 10 finite
+observations; otherwise it is omitted. If none qualify, the report distinguishes
+this from not supplying real episodes.
 
 ---
 

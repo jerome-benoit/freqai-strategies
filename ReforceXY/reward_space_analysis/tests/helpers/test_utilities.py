@@ -170,6 +170,29 @@ class TestLoadRealEpisodes(RewardSpaceTestBase):
         self.assertEqual(len(loaded_data), 3)
         self.assertIn("pnl", loaded_data.columns)
 
+    def test_nonfinite_numeric_episodes_are_marked_missing(self):
+        """Keep transition multiplicity but mark infinite numeric observations missing."""
+        episodes = pd.DataFrame(
+            {
+                "pnl": [0.01, float("inf"), -0.02],
+                "trade_duration": [1, 2, 3],
+                "idle_duration": [0, 0, 0],
+                "position": [1.0, 1.0, 1.0],
+                "action": [0.0, 0.0, 0.0],
+                "reward": [1.0, 1.0, 1.0],
+                "reward_exit": [0.0, float("-inf"), 0.0],
+            }
+        )
+        path = Path(self.temp_dir) / "nonfinite.pkl"
+        self.write_pickle(episodes, path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loaded = load_real_episodes(path)
+        self.assertEqual(len(loaded), len(episodes))
+        self.assertTrue(pd.isna(loaded.loc[1, "pnl"]))
+        self.assertTrue(pd.isna(loaded.loc[1, "reward_exit"]))
+        self.assertTrue(any("non-finite" in str(w.message) for w in caught))
+
 
 if __name__ == "__main__":
     unittest.main()

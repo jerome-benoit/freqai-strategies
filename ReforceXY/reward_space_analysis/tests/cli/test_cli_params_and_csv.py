@@ -167,6 +167,45 @@ class TestParamsPropagation(RewardSpaceTestBase):
         fi_path = out_dir / "feature_importance.csv"
         self.assertFalse(fi_path.exists(), "feature_importance.csv should be absent when skipped")
 
+    def test_skipped_analysis_removes_only_stale_generated_artifacts(self):
+        """A second run cannot expose the prior run's feature or PD conclusions."""
+        out_dir = self.output_path / "reused_analysis"
+        args = [
+            "--num_samples",
+            str(SCENARIOS.CLI_NUM_SAMPLES_FAST),
+            "--seed",
+            str(SEEDS.BASE),
+            "--rf_n_jobs",
+            "1",
+            "--perm_n_jobs",
+            "1",
+        ]
+        _assert_cli_success(self, _run_cli(out_dir=out_dir, args=args))
+        self.assertTrue((out_dir / "feature_importance.csv").exists())
+        generated_pd = list(out_dir.glob("partial_dependence_*.csv"))
+        self.assertGreater(len(generated_pd), 0)
+        user_file = out_dir / "notes.txt"
+        user_file.write_text("keep", encoding="utf-8")
+        custom_pd = out_dir / "partial_dependence_custom.csv"
+        custom_pd.write_text("keep", encoding="utf-8")
+
+        _assert_cli_success(
+            self,
+            _run_cli(
+                out_dir=out_dir,
+                args=[*args, "--skip_feature_analysis", "--skip_partial_dependence"],
+            ),
+        )
+        for artifact in (out_dir / "feature_importance.csv", *generated_pd):
+            self.assertFalse(artifact.exists(), artifact.name)
+        self.assertEqual(user_file.read_text(encoding="utf-8"), "keep")
+        self.assertEqual(custom_pd.read_text(encoding="utf-8"), "keep")
+        self.assertIn(
+            "Feature Importance - (skipped)", (out_dir / "statistical_analysis.md").read_text()
+        )
+        self.assertTrue((out_dir / "reward_samples.csv").exists())
+        self.assertTrue((out_dir / "manifest.json").exists())
+
     def test_manifest_records_resolved_simulation_inputs(self):
         """The manifest records and hashes resolved simulation inputs."""
         out_dir = self.output_path / "manifest_hash"

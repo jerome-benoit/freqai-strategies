@@ -91,6 +91,18 @@ class TestReportFormatting(RewardSpaceTestBase):
         report_path = out_dir / "statistical_analysis.md"
         return report_path.read_text(encoding="utf-8")
 
+    def test_report_distinguishes_missing_real_episodes_from_unusable_observations(self):
+        synth_df = self.make_stats_df(n=SCENARIOS.SAMPLE_SIZE_TINY, seed=SEEDS.REPORT_FORMAT_1)
+        real_df = synth_df.copy()
+        real_df[["pnl", "trade_duration", "idle_duration"]] = np.inf
+        content = self._write_report(synth_df, real_df=real_df, skip_feature_analysis=True)
+        self.assertIn("_Not performed (no comparable finite observations)._", content)
+        self.assertIn(
+            "6. **Distribution Shift** - Not performed (no comparable finite observations)",
+            content,
+        )
+        self.assertNotIn("no real episodes provided", content)
+
     def test_distribution_shift_section_present_with_real_episodes(self):
         """Distribution Shift section renders metrics table when real episodes provided."""
         # Synthetic df (ensure >=10 non-NaN per feature)

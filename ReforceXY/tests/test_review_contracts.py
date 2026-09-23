@@ -24,6 +24,7 @@ from ReforceXY.user_data.freqaimodels.ReforceXY import (
     convert_optuna_params_to_model_params,
     deepmerge,
 )
+from ReforceXY.user_data.strategies.RLAgentStrategy import RLAgentStrategy
 
 
 class RecordingPolicy:
@@ -100,6 +101,34 @@ class ReviewContractsTest(unittest.TestCase):
         model.get_state_info = lambda pair: (1.0, 0.05, 12)
         self.addCleanup(model.close_envs)
         return model
+
+    def test_strategy_leverage_respects_pair_bounds_and_invalid_config(self):
+        """A strategy callback always returns a finite leverage inside pair limits."""
+        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
+        arguments = {
+            "pair": "BTC/USDT",
+            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
+            "current_rate": 100.0,
+            "proposed_leverage": 2.0,
+            "max_leverage": 5.0,
+            "entry_tag": None,
+            "side": "long",
+        }
+        for configured, expected in (
+            (None, 2.0),
+            (0.5, 1.0),
+            (10.0, 5.0),
+            (3.0, 3.0),
+            (float("nan"), 2.0),
+            (float("inf"), 2.0),
+            (10**500, 2.0),
+            (-5.0, 1.0),
+            ("invalid", 2.0),
+            (True, 2.0),
+        ):
+            with self.subTest(configured=configured):
+                strategy.config = {} if configured is None else {"leverage": configured}
+                self.assertEqual(strategy.leverage(**arguments), expected)
 
     def test_training_preserves_raw_prices_and_returns_best_checkpoint(self):
         for drop in (False, True):

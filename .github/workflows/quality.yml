@@ -63,6 +63,16 @@ jobs:
             "${{ matrix.image }}" \
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
+      - name: QuickAdapter runtime regressions
+        if: matrix.project == 'quickadapter'
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
+            --workdir /workspace \
+            --env PYTHONPATH=/workspace/quickadapter/user_data/strategies \
+            --entrypoint python \
+            "${{ matrix.image }}" \
+            -m unittest discover -s quickadapter/tests -v
 
   reforcexy-tests:
     name: ReforceXY tests

@@ -465,12 +465,16 @@ and `exit_pnl` remain on the transition history row.
 
 ### Runtime regressions
 
-Run the runtime training, inference and accounting regressions inside the
-ReforceXY QA image, with the repository mounted at `/workspace` and `/workspace`
-as the working directory:
+Run each suite in its matching Freqtrade QA image, with the repository mounted
+at `/workspace` and `/workspace` as the working directory:
 
 ```shell
+# ReforceXY
 python -m unittest discover -s ReforceXY/tests -v
+
+# QuickAdapter
+PYTHONPATH=/workspace/quickadapter/user_data/strategies \
+  python -m unittest discover -s quickadapter/tests -v
 ```
 
 ### Quality checks

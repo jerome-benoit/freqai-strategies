@@ -188,7 +188,18 @@ class RLAgentStrategy(IStrategy):
         :param side: 'long' or 'short' - indicating the direction of the proposed trade
         :return: A leverage amount, which will be between 1.0 and max_leverage.
         """
-        return min(self.config.get("leverage", proposed_leverage), max_leverage)
+        configured = self.config.get("leverage")
+        if configured is None:
+            requested = proposed_leverage
+        else:
+            try:
+                requested = float(configured)
+            except (TypeError, ValueError, OverflowError):
+                requested = float("nan")
+            if isinstance(configured, bool) or not np.isfinite(requested):
+                logger.warning("Invalid leverage value %r; using proposed leverage", configured)
+                requested = proposed_leverage
+        return float(max(1.0, min(requested, max_leverage)))
 
     def is_short_allowed(self) -> bool:
         trading_mode = self.config.get("trading_mode")
