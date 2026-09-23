@@ -170,11 +170,25 @@ specific; equally specific patterns follow declaration order, so the later one
 wins.
 
 In live and dry-run modes, each pair requires
-`freqai.fit_live_predictions_candles` model predictions after session startup
-before adaptive thresholds become available. Restarting requires a new warmup.
-Downtime and expired-model rows are excluded; genuine zero and outlier-rejected
-predictions count. Predictions align to candle dates; candles without
-predictions have `do_predict=0` and downtime zeros display but never calibrate.
+`freqai.fit_live_predictions_candles` real model predictions before adaptive
+thresholds become available. The Nth observation first affects the next
+prediction update, not the candle that produced it. FreqAI bootstrap
+predictions made from the initial training frame do not count. Warmup progress
+from persisted real predictions is restored after a restart. FreqAI saves
+prediction history after training attempts and on clean shutdown. After an
+abrupt stop or hard reboot, predictions since the last history save may be
+lost, so those observations must accumulate again. Legacy rows missing
+provenance, including rows in partly marked histories, count only when their
+nonzero, nonexpired prediction status distinguishes them from bootstrap;
+ambiguous rejected rows and explicit false markers do not count.
+
+A pair starts a new warmup when the time since its last observation, or a gap
+within its observations, is greater than
+`fit_live_predictions_candles × timeframe`. An observation exactly one horizon
+old remains eligible. Downtime and expired-model rows are excluded; genuine
+zero and outlier-rejected predictions count. Predictions align to candle dates;
+candles without predictions have `do_predict=0` and downtime zeros display but
+never calibrate.
 
 ### Backtest evaluation protocol
 
@@ -348,7 +362,8 @@ The documented list of model tunables is at the top of the
 
 Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
-missing or incompatible replay data prevents continuation. Reset trained models
+it is loaded only when continual training starts. Missing or incompatible replay
+data prevents continuation but does not prevent inference. Reset trained models
 or use a new `freqai.identifier` to migrate incompatible artifacts, including
 deployments without the chronological training marker. Training disables
 `shuffle_after_split`. HPO studies and saved best parameters are reused only
@@ -356,9 +371,20 @@ when their objective identity matches.
 
 ### Live inference
 
-Optional `fit_live_predictions_candles` statistics count produced observations
-per pair after session startup; restarts reset the warmup. See the model
-docstrings for continuation, HPO and statistics details.
+Optional `fit_live_predictions_candles` statistics use the latest persisted real
+predictions per pair, excluding FreqAI bootstrap rows. Available observations
+are used before a full window accumulates and survive restarts. FreqAI returns
+the initial strategy frame before calculating live statistics; restored
+statistics appear on the next prediction update. Legacy rows missing provenance,
+including rows in partly marked histories, can count when their nonzero,
+nonexpired prediction status distinguishes them from bootstrap; zero-status rows
+remain excluded because bootstrap and rejected predictions cannot be
+distinguished. Explicit false markers remain excluded.
+On duplicate candle dates, a provable prediction takes precedence over an
+ambiguous close-bearing legacy row during history restoration.
+Rows with an invalid `date_pred` are discarded with a per-pair warning and the
+discarded-row count; valid duplicates retain the same precedence.
+See the model docstrings for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.
@@ -382,7 +408,8 @@ numeric value. Environment prices remain raw regardless of
 current evaluation run when available. DQN/QRDQN HPO rejects warmup budgets that
 leave no gradient update and trials that finish without learning. A zero-sized
 holdout remains supported when HPO is disabled, including with raw OHLC feature
-removal.
+removal. An interrupted ReforceXY fit is logged and still selects the best
+usable checkpoint when available, falling back to the final model otherwise.
 
 ### Reward and portfolio accounting
 

@@ -3,7 +3,6 @@ import json
 import logging
 import random
 import time
-import warnings
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -33,6 +32,7 @@ from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
 from freqtrade.enums import TRADE_MODES
 from freqtrade.exceptions import DependencyException
+from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
 from freqtrade.freqai.data_drawer import (
     FEATURE_PIPELINE,
@@ -123,11 +123,21 @@ from Utils import (
 )
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
+_PRODUCED_PREDICTION_COLUMN = "_freqai_strategies_produced"
 
 
-def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Identify recorded rows from metadata, never from prediction magnitudes."""
+def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Bootstrap has status 0; only nonzero, nonexpired statuses prove legacy production."""
+    if "do_predict" not in frame:
+        return np.zeros(len(frame), dtype=bool)
+    status = pd.to_numeric(frame["do_predict"], errors="coerce")
+    return (status.notna() & np.isfinite(status) & status.ne(0) & status.ne(2)).to_numpy(dtype=bool)
+
+
+def _recorded_prediction_rank(frame: pd.DataFrame) -> NDArray[np.int8]:
+    """Prefer provable predictions to ambiguous legacy rows and placeholders."""
     recorded = np.zeros(len(frame), dtype=bool)
+    status = None
     if "close_price" in frame:
         close = pd.to_numeric(frame["close_price"], errors="coerce")
         recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
@@ -138,44 +148,78 @@ def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
             .fillna(False)
             .to_numpy(dtype=bool)
         )
-    return recorded
+        recorded &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    rank = recorded.astype(np.int8)
+    rank[_legacy_produced_prediction_mask(frame)] = 2
+    if _PRODUCED_PREDICTION_COLUMN in frame:
+        marker = frame[_PRODUCED_PREDICTION_COLUMN]
+        proven = marker.eq(True).fillna(False).to_numpy(dtype=bool)
+        if status is not None:
+            proven = proven & status.ne(2).fillna(True).to_numpy(dtype=bool)
+        rank[marker.notna().to_numpy(dtype=bool)] = 0
+        rank[proven] = 2
+    return rank
 
 
 def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Exclude expired-model placeholders from recorded model observations."""
-    produced = _recorded_prediction_mask(frame)
+    """Select real model outputs, excluding bootstrap and expired-model placeholders."""
+    produced = _legacy_produced_prediction_mask(frame)
+    if _PRODUCED_PREDICTION_COLUMN in frame:
+        marker = frame[_PRODUCED_PREDICTION_COLUMN]
+        produced = np.where(
+            marker.notna(), marker.eq(True).fillna(False).to_numpy(dtype=bool), produced
+        )
     if "do_predict" in frame:
         status = pd.to_numeric(frame["do_predict"], errors="coerce")
-        produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+        produced = produced & status.ne(2).fillna(True).to_numpy(dtype=bool)
     return produced
 
 
-def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Normalize dates and retain the latest recorded row per candle, in date order.
+def _ensure_produced_prediction_column(frame: pd.DataFrame) -> pd.DataFrame:
+    if _PRODUCED_PREDICTION_COLUMN not in frame:
+        result = frame.copy()
+        result[_PRODUCED_PREDICTION_COLUMN] = _legacy_produced_prediction_mask(frame)
+        return result
+    missing = frame[_PRODUCED_PREDICTION_COLUMN].isna()
+    if not missing.any():
+        return frame
+    result = frame.copy()
+    result[_PRODUCED_PREDICTION_COLUMN] = frame[_PRODUCED_PREDICTION_COLUMN].where(
+        ~missing, _legacy_produced_prediction_mask(frame)
+    )
+    return result
 
-    Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
-    prediction status. Those rows must not replace recorded predictions, including
-    zero predictions and rejected predictions (do_predict == 0 with a candle close).
-    Indistinguishable legacy rows use last-write-wins; label magnitudes never rank rows.
-    Invalid dates cannot match a candle and are discarded.
+
+def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame, pair: str) -> pd.DataFrame:
+    """Retain the most provable prediction per candle, in date order.
+
+    Proven outputs (legacy nonzero statuses or explicit markers) outrank
+    ambiguous close-bearing rows, which outrank downtime and expired placeholders.
+    Equally ranked rows use last-write-wins; invalid dates are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
-    if valid.all() and date_pred.is_monotonic_increasing and date_pred.is_unique:
+    if not valid.all():
+        logger.warning(
+            "FreqAI prediction history [%s]: discarded invalid date_pred entries (count=%d)",
+            pair,
+            len(frame) - int(valid.sum()),
+        )
+    elif date_pred.is_monotonic_increasing and date_pred.is_unique:
         if date_pred.dtype == frame["date_pred"].dtype:
             return frame
         result = frame.copy()
         result["date_pred"] = date_pred
         return result
 
-    recorded = _recorded_prediction_mask(frame)
+    rank = _recorded_prediction_rank(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
-        {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
+        {"date_pred": date_pred.array, "rank": rank, "position": np.arange(len(frame))}
     )
     kept = (
         order.loc[valid.to_numpy()]
-        .sort_values(["date_pred", "recorded", "position"])
+        .sort_values(["date_pred", "rank", "position"])
         .drop_duplicates("date_pred", keep="last")
     )
     result = frame.iloc[kept.index].copy()
@@ -199,12 +243,11 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Repair persisted history and duplicates produced by older Freqtrade writers.
+    """Repair persisted prediction dates before Freqtrade's positional writes.
 
-    Normalize before upstream positional writes and after legacy duplicate writes.
-    Normalize before upstream disk repair can discard a recorded duplicate.
-    Already-clean upstream results are preserved. Recheck these synchronous
-    method contracts on Freqtrade upgrades.
+    Normalize before upstream disk repair discards a provable duplicate, and
+    align the returned candles after writes. Both model copies of this global
+    patch must have identical behavior regardless of import order.
     """
     names = (
         "set_initial_return_values",
@@ -233,12 +276,12 @@ def _install_date_pred_dedup_patch() -> None:
         self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         original_set_initial(
             self, pair, pred_df.reset_index(drop=True), dataframe.reset_index(drop=True)
         )
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
 
@@ -252,10 +295,10 @@ def _install_date_pred_dedup_patch() -> None:
         strat_df: pd.DataFrame,
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
-            # Legacy append requires an initialized row; let upstream construct it.
+            # Append requires an initialized row; let upstream construct it.
             original_set_initial(
                 self,
                 pair,
@@ -263,7 +306,7 @@ def _install_date_pred_dedup_patch() -> None:
                 strat_df.tail(1).reset_index(drop=True),
             )
         original_append(self, pair, predictions, do_preds, dk, strat_df)
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, strat_df)
 
@@ -271,7 +314,7 @@ def _install_date_pred_dedup_patch() -> None:
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
         return original_attach(self, pair, dataframe)
@@ -286,7 +329,7 @@ def _install_date_pred_dedup_patch() -> None:
         @wraps(original_repair)
         def repair_historic_predictions(self, pair: str, pair_df: pd.DataFrame) -> pd.DataFrame:
             if "date_pred" in pair_df:
-                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df)
+                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df, pair)
             return original_repair(self, pair, pair_df)
 
         replacements += (repair_historic_predictions,)
@@ -309,7 +352,7 @@ SelectionMethod = DistanceMethod | ClusterMethod | DensityMethod
 ValidationMode = Literal["warn", "raise", "none"]
 _VALIDATION_MODES: Final[tuple[ValidationMode, ...]] = get_args(ValidationMode)
 SplitFn = Callable[[pd.DataFrame, pd.DataFrame, "SampleWeightInputs", pd.DataFrame], dict[str, Any]]
-warnings.simplefilter(action="ignore", category=FutureWarning)
+
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +365,7 @@ def _log_known_at_none_once(pair: str, context: str) -> None:
         return
     _KNOWN_AT_NONE_LOGGED.add(key)
     logger.info(
-        f"[{pair}] {context}: No <label>_known_at_lookahead column present; "
+        f"[{pair}] {context}: No usable label/weight known-at-lookahead data; "
         "causal guards use position-based purge only (label-aware filtering disabled)"
     )
 
@@ -407,8 +450,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.10"
+    version = "3.13.0-rc.11"
 
+    _CALIBRATION_START_KEY: Final[str] = "quickadapter_calibration_start"
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
     _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
 
@@ -758,9 +802,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(f"{context}: Removed {removed} causal-unsafe train rows")
         if not keep_mask.any():
             raise ValueError(
-                f"{context}: causal guard removed all train rows "
-                f"(pivot-sparse training window; widen fit_live_predictions_candles "
-                f"or lower label_natr_multiplier)"
+                f"{context}: causal guard removed all train rows; "
+                "no train rows satisfy the causal availability cutoff"
             )
         return (
             train_features.loc[keep_mask],
@@ -1632,6 +1675,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hp_value: dict[str, float] = {}
         self._holdout_rmse: dict[str, float] = {}
         self._session_fitted_pairs: set[str] = set()
+        self._calibration_current_candles: dict[str, pd.Timestamp] = {}
         self._optuna_label_values: dict[str, list[float | int]] = {}
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
@@ -2586,9 +2630,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 data_dictionary["test_weights"] = data_dictionary["test_weights"][holdout_mask]
                 if data_dictionary["test_features"].empty:
                     logger.warning(
-                        f"[{pair}] Causal purge emptied the holdout (label horizon "
-                        f">= holdout span); skipping holdout evaluation "
-                        f"(holdout_rmse=inf)"
+                        f"[{pair}] No holdout rows passed the causal availability "
+                        "cutoff at the end of the data window; skipping holdout "
+                        "evaluation (holdout_rmse=inf)"
                     )
                     data_dictionary["holdout_purged_empty"] = True
 
@@ -3262,6 +3306,155 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if len(self._optuna_label_incremented_pairs) >= len(self.pairs):
             self._optuna_label_incremented_pairs = []
 
+    def set_initial_historic_predictions(
+        self, pred_df: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, strat_df: pd.DataFrame
+    ) -> None:
+        super().set_initial_historic_predictions(pred_df, dk, pair, strat_df)
+        if self.live:
+            self.dd.historic_predictions[pair] = _ensure_produced_prediction_column(
+                self.dd.historic_predictions[pair]
+            )
+
+    def build_strategy_return_arrays(
+        self, dataframe: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, trained_timestamp: int
+    ) -> None:
+        """Record real appends and use Freqtrade's current candle for calibration."""
+        had_returns = pair in self.dd.model_return_values
+        if self.live and pair in self.dd.historic_predictions:
+            self.dd.historic_predictions[pair] = _ensure_produced_prediction_column(
+                self.dd.historic_predictions[pair]
+            )
+        if not dataframe.empty:
+            self._calibration_current_candles[pair] = pd.to_datetime(
+                dataframe["date"].iloc[-1], utc=True, errors="coerce"
+            )
+        try:
+            super().build_strategy_return_arrays(dataframe, dk, pair, trained_timestamp)
+            if self.live and had_returns:
+                history = self.dd.historic_predictions[pair]
+                current = self._calibration_current_candles.get(pair)
+                # Native append overwrites the last row on the same date, but
+                # returns early if the strategy candle predates the saved one.
+                if (
+                    current is not None
+                    and pd.notna(current)
+                    and not history.empty
+                    and pd.to_datetime(history["date_pred"].iloc[-1], utc=True) == current
+                ):
+                    history.at[history.index[-1], _PRODUCED_PREDICTION_COLUMN] = True
+                    returned = self.dd.model_return_values[pair]
+                    if not returned.empty and _PRODUCED_PREDICTION_COLUMN in returned:
+                        returned.at[returned.index[-1], _PRODUCED_PREDICTION_COLUMN] = True
+            if _PRODUCED_PREDICTION_COLUMN in dk.return_dataframe:
+                dk.return_dataframe = dk.return_dataframe.drop(columns=_PRODUCED_PREDICTION_COLUMN)
+        finally:
+            self._calibration_current_candles.pop(pair, None)
+
+    def _persist_calibration_start(self, pair: str, start: pd.Timestamp) -> None:
+        """Persist a UTC boundary without mutating Freqtrade's shared empty extras."""
+        self.dd.get_pair_dict_info(pair)
+        pair_info = self.dd.pair_dict[pair]
+        extras = pair_info.get("extras", {})
+        value = start.isoformat()
+        if extras.get(self._CALIBRATION_START_KEY) == value:
+            return
+        self.dd.pair_dict[pair] = {
+            **pair_info,
+            "extras": {**extras, self._CALIBRATION_START_KEY: value},
+        }
+        self.dd.save_drawer_to_disk()
+
+    def _calibration_decision_time(
+        self, dk: FreqaiDataKitchen, pair: str, history: pd.DataFrame
+    ) -> pd.Timestamp | None:
+        """Use the live strategy candle; retain historical fallback for direct callers."""
+        if pair in self._calibration_current_candles:
+            current = self._calibration_current_candles[pair]
+            return current if pd.notna(current) else None
+        full_df = getattr(dk, "full_df", None)
+        if isinstance(full_df, pd.DataFrame) and "date" in full_df:
+            dates = pd.to_datetime(full_df["date"], utc=True, errors="coerce", format="mixed")
+            if not dates.empty and pd.notna(dates.max()):
+                return dates.max()
+        if not history.empty:
+            latest = pd.to_datetime(
+                history["date_pred"], utc=True, errors="coerce", format="mixed"
+            ).max()
+            if pd.notna(latest):
+                return latest
+        return None
+
+    def _migrate_calibration_start(
+        self, pair: str, history: pd.DataFrame, decision_time: pd.Timestamp
+    ) -> pd.Timestamp:
+        """Resume only provable legacy outputs; an ambiguous bootstrap starts cold."""
+        produced = (
+            _produced_prediction_mask(history) & history["date_pred"].le(decision_time).to_numpy()
+        )
+        if produced.any():
+            start = history.loc[produced, "date_pred"].min()
+            logger.info("[%s] Resuming calibration from prediction history", pair)
+        else:
+            start = decision_time
+            logger.info("[%s] Starting calibration after FreqAI bootstrap history", pair)
+        self._persist_calibration_start(pair, start)
+        return start
+
+    def _calibration_history(
+        self,
+        dk: FreqaiDataKitchen,
+        pair: str,
+        history: pd.DataFrame,
+        sample_size: int,
+    ) -> pd.DataFrame:
+        """Select persisted observations for the current calibration period."""
+        decision_time = self._calibration_decision_time(dk, pair, history)
+        if decision_time is None:
+            return history.iloc[:0]
+        self.dd.get_pair_dict_info(pair)
+        raw_start = self.dd.pair_dict[pair].get("extras", {}).get(self._CALIBRATION_START_KEY)
+        start = (
+            pd.to_datetime(raw_start, utc=True, errors="coerce")
+            if isinstance(raw_start, str)
+            else pd.NaT
+        )
+        if pd.isna(start) or start > decision_time:
+            start = self._migrate_calibration_start(pair, history, decision_time)
+        elif raw_start != start.isoformat():
+            self._persist_calibration_start(pair, start)
+
+        produced = (
+            _produced_prediction_mask(history) & history["date_pred"].le(decision_time).to_numpy()
+        )
+        eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
+        max_gap = pd.Timedelta(seconds=sample_size * timeframe_to_seconds(self.config["timeframe"]))
+        # Include the persisted boundary itself: history may have been rebuilt
+        # after a restart, leaving no rows from the preceding warmup segment.
+        gap_starts = eligible.loc[eligible["date_pred"].diff().gt(max_gap), "date_pred"]
+        if not eligible.empty and eligible["date_pred"].iloc[0] - start > max_gap:
+            gap_starts = pd.concat([eligible["date_pred"].iloc[:1], gap_starts])
+        if not gap_starts.empty:
+            start = gap_starts.iloc[-1]
+            logger.warning(
+                "[%s] Calibration history contains a gap longer than %s; resuming warmup after the gap",
+                pair,
+                max_gap,
+            )
+            self._persist_calibration_start(pair, start)
+            eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
+
+        last_observation = eligible["date_pred"].max() if not eligible.empty else start
+        if decision_time - last_observation > max_gap:
+            logger.warning(
+                "[%s] Calibration observations are older than %s; starting a new warmup",
+                pair,
+                max_gap,
+            )
+            start = decision_time
+            self._persist_calibration_start(pair, start)
+            eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
+        return eligible
+
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         warmed_up = True
 
@@ -3280,22 +3473,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         history = self.dd.historic_predictions[pair]
         if self.live:
-            history = _dedupe_historic_predictions_on_date_pred(history)
-            if not hasattr(self, "_prediction_session_cutoffs"):
-                self._prediction_session_cutoffs: dict[str, pd.Timestamp] = {}
-            if pair not in self._prediction_session_cutoffs:
-                initial_dates = pd.to_datetime(
-                    self.dd.model_return_values[pair]["date_pred"],
-                    utc=True,
-                    errors="coerce",
-                    format="mixed",
-                )
-                self._prediction_session_cutoffs[pair] = initial_dates.max()
-            cutoff = self._prediction_session_cutoffs[pair]
-            eligible = (
-                _produced_prediction_mask(history) & history["date_pred"].gt(cutoff).to_numpy()
-            )
-            history = history.loc[eligible]
+            history = _dedupe_historic_predictions_on_date_pred(history, pair)
+            history = self._calibration_history(dk, pair, history, fit_live_predictions_candles)
             remaining = fit_live_predictions_candles - len(history)
             warmed_up = remaining <= 0
             if not warmed_up:

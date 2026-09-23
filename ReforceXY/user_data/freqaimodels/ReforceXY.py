@@ -7,7 +7,6 @@ import math
 import os
 import stat
 import time
-import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -57,7 +56,6 @@ from joblib.externals import cloudpickle
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from optuna import Trial, TrialPruned, create_study, delete_study
-from optuna.exceptions import ExperimentalWarning
 from optuna.pruners import BasePruner, HyperbandPruner
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.storages import (
@@ -103,11 +101,21 @@ def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> N
 
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
+_PRODUCED_COLUMN = "_freqai_strategies_produced"
 
 
-def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Identify recorded rows from metadata, never from prediction magnitudes."""
+def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Bootstrap has status 0; only nonzero, nonexpired statuses prove legacy production."""
+    if "do_predict" not in frame:
+        return np.zeros(len(frame), dtype=bool)
+    status = pd.to_numeric(frame["do_predict"], errors="coerce")
+    return (status.notna() & np.isfinite(status) & status.ne(0) & status.ne(2)).to_numpy(dtype=bool)
+
+
+def _recorded_prediction_rank(frame: pd.DataFrame) -> NDArray[np.int8]:
+    """Prefer provable predictions to ambiguous legacy rows and placeholders."""
     recorded = np.zeros(len(frame), dtype=bool)
+    status = None
     if "close_price" in frame:
         close = pd.to_numeric(frame["close_price"], errors="coerce")
         recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
@@ -118,44 +126,79 @@ def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
             .fillna(False)
             .to_numpy(dtype=bool)
         )
-    return recorded
+        recorded &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    rank = recorded.astype(np.int8)
+    rank[_legacy_produced_prediction_mask(frame)] = 2
+    if _PRODUCED_COLUMN in frame:
+        marker = frame[_PRODUCED_COLUMN]
+        proven = marker.eq(True).fillna(False).to_numpy(dtype=bool)
+        if status is not None:
+            proven = proven & status.ne(2).fillna(True).to_numpy(dtype=bool)
+        rank[marker.notna().to_numpy(dtype=bool)] = 0
+        rank[proven] = 2
+    return rank
 
 
 def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Exclude expired-model placeholders from recorded model observations."""
-    produced = _recorded_prediction_mask(frame)
+    """Select real model outputs, excluding bootstrap and expired-model placeholders."""
+    produced = _legacy_produced_prediction_mask(frame)
+    if _PRODUCED_COLUMN in frame:
+        marker = frame[_PRODUCED_COLUMN]
+        produced = np.where(
+            marker.notna(), marker.eq(True).fillna(False).to_numpy(dtype=bool), produced
+        )
     if "do_predict" in frame:
         status = pd.to_numeric(frame["do_predict"], errors="coerce")
-        produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+        produced = produced & status.ne(2).fillna(True).to_numpy(dtype=bool)
     return produced
 
 
-def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Normalize dates and retain the latest recorded row per candle, in date order.
+def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
+    """Preserve explicit markers and infer only distinguishable legacy predictions."""
+    if _PRODUCED_COLUMN not in frame:
+        result = frame.copy()
+        result[_PRODUCED_COLUMN] = _legacy_produced_prediction_mask(frame)
+        return result
+    missing = frame[_PRODUCED_COLUMN].isna()
+    if not missing.any():
+        return frame
+    result = frame.copy()
+    result[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].where(
+        ~missing, _legacy_produced_prediction_mask(frame)
+    )
+    return result
 
-    Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
-    prediction status. Those rows must not replace recorded predictions, including
-    zero predictions and rejected predictions (do_predict == 0 with a candle close).
-    Indistinguishable rows use last-write-wins; label magnitudes never rank rows.
-    Invalid dates cannot match a candle and are discarded.
+
+def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame, pair: str) -> pd.DataFrame:
+    """Retain the most provable prediction per candle, in date order.
+
+    Proven outputs (legacy nonzero statuses or explicit markers) outrank
+    ambiguous close-bearing rows, which outrank downtime and expired placeholders.
+    Equally ranked rows use last-write-wins; invalid dates are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
-    if valid.all() and date_pred.is_monotonic_increasing and date_pred.is_unique:
+    if not valid.all():
+        logger.warning(
+            "FreqAI prediction history [%s]: discarded invalid date_pred entries (count=%d)",
+            pair,
+            len(frame) - int(valid.sum()),
+        )
+    elif date_pred.is_monotonic_increasing and date_pred.is_unique:
         if date_pred.dtype == frame["date_pred"].dtype:
             return frame
         result = frame.copy()
         result["date_pred"] = date_pred
         return result
 
-    recorded = _recorded_prediction_mask(frame)
+    rank = _recorded_prediction_rank(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
-        {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
+        {"date_pred": date_pred.array, "rank": rank, "position": np.arange(len(frame))}
     )
     kept = (
         order.loc[valid.to_numpy()]
-        .sort_values(["date_pred", "recorded", "position"])
+        .sort_values(["date_pred", "rank", "position"])
         .drop_duplicates("date_pred", keep="last")
     )
     result = frame.iloc[kept.index].copy()
@@ -179,11 +222,11 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Normalize persisted history and duplicate predictions before upstream writes.
+    """Repair persisted prediction dates before Freqtrade's positional writes.
 
-    Normalize before upstream positional writes and before disk repair can discard
-    a recorded duplicate. Already-clean upstream results are preserved. Recheck
-    these synchronous method contracts on Freqtrade upgrades.
+    Normalize before upstream disk repair discards a provable duplicate, and
+    align the returned candles after writes. Both model copies of this global
+    patch must have identical behavior regardless of import order.
     """
     names = (
         "set_initial_return_values",
@@ -202,7 +245,7 @@ def _install_date_pred_dedup_patch() -> None:
         )
         pending.append(not getattr(current, _DATE_PRED_DEDUP_SENTINEL, False))
         if iscoroutinefunction(original) or iscoroutinefunction(current):
-            raise RuntimeError("Repair [global]: requires synchronous drawer methods")
+            raise RuntimeError("FreqAI prediction repair requires synchronous drawer methods")
     if not any(pending):
         return
     original_set_initial, original_append, original_attach = originals[:3]
@@ -212,12 +255,12 @@ def _install_date_pred_dedup_patch() -> None:
         self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         original_set_initial(
             self, pair, pred_df.reset_index(drop=True), dataframe.reset_index(drop=True)
         )
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
 
@@ -231,7 +274,7 @@ def _install_date_pred_dedup_patch() -> None:
         strat_df: pd.DataFrame,
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
             # Append requires an initialized row; let upstream construct it.
@@ -242,7 +285,7 @@ def _install_date_pred_dedup_patch() -> None:
                 strat_df.tail(1).reset_index(drop=True),
             )
         original_append(self, pair, predictions, do_preds, dk, strat_df)
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, strat_df)
 
@@ -250,7 +293,7 @@ def _install_date_pred_dedup_patch() -> None:
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
         return original_attach(self, pair, dataframe)
@@ -265,7 +308,7 @@ def _install_date_pred_dedup_patch() -> None:
         @wraps(original_repair)
         def repair_historic_predictions(self, pair: str, pair_df: pd.DataFrame) -> pd.DataFrame:
             if "date_pred" in pair_df:
-                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df)
+                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df, pair)
             return original_repair(self, pair, pair_df)
 
         replacements += (repair_historic_predictions,)
@@ -304,9 +347,6 @@ class _Samplers(NamedTuple):
 
 
 matplotlib.use("Agg")
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=ExperimentalWarning)
 logger = logging.getLogger(__name__)
 
 
@@ -321,10 +361,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         "freqai": {
             ...
             "fit_live_predictions_candles": 0,      // Optional non-negative integer; omitted or 0 disables action statistics
-            // Live/dry-run: latest N produced observations per pair after session startup.
-            // Restart resets warmup; numeric mean/std are zero until N observations exist.
-            // Downtime and expired status 2 do not count; neutral/exit actions and recorded
-            // rejected predictions do. Backtests use the previous N rows, not the current row.
+            // Live/dry-run: latest N persisted produced observations per pair.
+            // Initial full-frame predictions are bootstrap samples, not observations.
+            // Available observations are used after the next actual prediction append
+            // and survive restarts. Downtime and expired status 2 do not count;
+            // neutral/exit actions and recorded rejected predictions do. Legacy history
+            // without provenance cannot distinguish bootstrap from rejected status 0:
+            // those ambiguous rows are excluded. Backtests use the previous N rows.
             // Numeric objects are coerced; non-finite samples are ignored. Empty finite
             // samples yield zeros; constants have zero spread; nonnumeric objects are skipped.
             // Statistics do not gate RL actions. Population standard deviation is used.
@@ -527,7 +570,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             raise ValueError(
                 f"Config [global]: fit_live_predictions_candles="
                 f"{fit_live_predictions_candles!r} invalid; "
-                "must be a non-negative integer (0 disables label statistics)"
+                "must be a non-negative integer (0 disables action statistics)"
             )
         self.freqai_info["fit_live_predictions_candles"] = fit_live_predictions_candles
 
@@ -581,10 +624,77 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.unset_unsupported()
         self._configure_gpu_memory()
         self._install_replay_persistence()
+        self._install_prediction_provenance()
+
+    def _install_prediction_provenance(self) -> None:
+        """Keep live observation metadata local to this model's drawer instance."""
+        drawer = self.dd
+        set_initial = drawer.set_initial_return_values
+        append = drawer.append_model_predictions
+        attach = drawer.attach_return_values_to_return_dataframe
+        load = drawer.load_historic_predictions_from_disk
+
+        def migrate() -> None:
+            for pair, history in drawer.historic_predictions.items():
+                if "date_pred" in history:
+                    drawer.historic_predictions[pair] = _ensure_prediction_provenance(history)
+
+        @wraps(load)
+        def load_with_provenance() -> bool:
+            loaded = load()
+            migrate()
+            return loaded
+
+        @wraps(set_initial)
+        def set_initial_with_provenance(
+            pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
+        ) -> None:
+            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
+                drawer.historic_predictions[pair]
+            )
+            set_initial(pair, pred_df, dataframe)
+            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
+                drawer.historic_predictions[pair]
+            )
+            drawer.model_return_values[pair] = _align_historic_predictions(
+                drawer.historic_predictions[pair], dataframe
+            )
+
+        @wraps(append)
+        def append_with_provenance(
+            pair: str,
+            predictions: pd.DataFrame,
+            do_preds: NDArray[np.int_],
+            dk: FreqaiDataKitchen,
+            strat_df: pd.DataFrame,
+        ) -> None:
+            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
+                drawer.historic_predictions[pair]
+            )
+            append(pair, predictions, do_preds, dk, strat_df)
+            history = drawer.historic_predictions[pair]
+            # The native writer may return without writing an older candle.
+            if (
+                not history.empty
+                and not strat_df.empty
+                and pd.to_datetime(history["date_pred"].iloc[-1], utc=True)
+                == pd.to_datetime(strat_df["date"].iloc[-1], utc=True)
+            ):
+                history.loc[history.index[-1], _PRODUCED_COLUMN] = True
+            drawer.model_return_values[pair] = _align_historic_predictions(history, strat_df)
+
+        @wraps(attach)
+        def attach_without_provenance(pair: str, dataframe: pd.DataFrame) -> pd.DataFrame:
+            return attach(pair, dataframe).drop(columns=_PRODUCED_COLUMN, errors="ignore")
+
+        migrate()
+        drawer.load_historic_predictions_from_disk = load_with_provenance
+        drawer.set_initial_return_values = set_initial_with_provenance
+        drawer.append_model_predictions = append_with_provenance
+        drawer.attach_return_values_to_return_dataframe = attach_without_provenance
 
     def _install_replay_persistence(self) -> None:
         save_data = self.dd.save_data
-        load_data = self.dd.load_data
 
         @wraps(save_data)
         def save_with_replay(model, coin, dk):
@@ -603,21 +713,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 dk.data["reforcexy_replay"] = filename
             return save_data(model, coin, dk)
 
-        @wraps(load_data)
-        def load_with_replay(coin, dk):
-            cached = self.dd.model_dictionary.get(coin) if dk.live else None
-            model = load_data(coin, dk)
-            if model is not None and model is not cached:
-                try:
-                    self._restore_replay(model, dk.data, dk.data_path, coin)
-                except Exception:
-                    if self.dd.model_dictionary.get(coin) is model:
-                        self.dd.model_dictionary.pop(coin, None)
-                    raise
-            return model
-
         self.dd.save_data = save_with_replay
-        self.dd.load_data = load_with_replay
 
     @staticmethod
     def _restore_replay(model: Any, metadata: dict[str, Any], directory: Path, pair: str) -> None:
@@ -1241,8 +1337,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     archive.seek(0)
                     model = self.MODELCLASS.load(archive, device=cached_model.device)
                 # Off-policy experience is excluded from SB3 model archives.
-                if getattr(cached_model, "replay_buffer", None) is not None:
-                    model.replay_buffer = copy.deepcopy(cached_model.replay_buffer)
+                replay_buffer = getattr(cached_model, "replay_buffer", None)
+                if replay_buffer is not None and replay_buffer.size() > 0:
+                    model.replay_buffer = copy.deepcopy(replay_buffer)
+                elif hasattr(model, "load_replay_buffer"):
+                    self._restore_replay(model, metadata, Path(previous["data_path"]), pair)
             state = model, copy.deepcopy(feature_pipeline)
         except Exception as exc:
             raise DependencyException(
@@ -1354,7 +1453,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if model is not None:
             dk.data[self._DEPLOYMENT_COORDINATE_MARKER_KEY] = self._DEPLOYMENT_COORDINATE_GENERATION
-        logger.info("Training [%s]: completed", pair)
+        logger.info("Training [%s]: model selection finished", pair)
         return model
 
     def fit(
@@ -1492,7 +1591,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
                 _update_eval_best_reward(self.eval_callback, float(final_mean_reward), model)
         except KeyboardInterrupt:
-            pass
+            logger.warning("Training [%s]: model fitting interrupted by user", dk.pair)
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
@@ -1532,40 +1631,23 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         return model
 
+    def set_initial_historic_predictions(
+        self, pred_df: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, strat_df: pd.DataFrame
+    ) -> None:
+        """Keep Freqtrade's full-frame bootstrap out of live prediction statistics."""
+        super().set_initial_historic_predictions(pred_df, dk, pair, strat_df)
+        self.dd.historic_predictions[pair][_PRODUCED_COLUMN] = False
+
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         """Compute optional action statistics from prior prediction observations."""
         fit_live_predictions_candles = self.freqai_info.get("fit_live_predictions_candles", 0)
         if not fit_live_predictions_candles:
             return
 
-        warmed_up = True
         history = self.dd.historic_predictions[pair]
         if self.live:
-            history = _dedupe_historic_predictions_on_date_pred(history)
-            if not hasattr(self, "_prediction_session_cutoffs"):
-                self._prediction_session_cutoffs: dict[str, pd.Timestamp] = {}
-            if pair not in self._prediction_session_cutoffs:
-                initial_dates = pd.to_datetime(
-                    self.dd.model_return_values[pair]["date_pred"],
-                    utc=True,
-                    errors="coerce",
-                    format="mixed",
-                )
-                self._prediction_session_cutoffs[pair] = initial_dates.max()
-            cutoff = self._prediction_session_cutoffs[pair]
-            eligible = (
-                _produced_prediction_mask(history) & history["date_pred"].gt(cutoff).to_numpy()
-            )
-            history = history.loc[eligible]
-            remaining = fit_live_predictions_candles - len(history)
-            warmed_up = remaining <= 0
-            if not warmed_up:
-                logger.warning(
-                    "Predict [%s]: fit live predictions not warmed up; "
-                    "%d more produced observations required for warmup completion",
-                    pair,
-                    remaining,
-                )
+            history = _dedupe_historic_predictions_on_date_pred(history, pair)
+            history = history.loc[_produced_prediction_mask(history)]
         pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
         dk.data["labels_mean"], dk.data["labels_std"] = {}, {}
@@ -1577,20 +1659,17 @@ class ReforceXY(BaseReinforcementLearningModel):
             pred_label = pd.to_numeric(raw_label, errors="coerce")
             if raw_label.dtype == object and pred_label.isna().all():
                 continue
-            if not warmed_up:
-                f = [0.0, 0.0]
+            values = pred_label.to_numpy(dtype=float, na_value=np.nan)
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                f = (0.0, 0.0)
             else:
-                values = pred_label.to_numpy(dtype=float, na_value=np.nan)
-                values = values[np.isfinite(values)]
-                if values.size == 0:
-                    f = (0.0, 0.0)
-                else:
-                    sample_mean = float(np.mean(values))
-                    sample_std = float(np.std(values, ddof=0))
-                    f = (
-                        sample_mean if np.isfinite(sample_mean) else 0.0,
-                        sample_std if np.isfinite(sample_std) else 0.0,
-                    )
+                sample_mean = float(np.mean(values))
+                sample_std = float(np.std(values, ddof=0))
+                f = (
+                    sample_mean if np.isfinite(sample_mean) else 0.0,
+                    sample_std if np.isfinite(sample_std) else 0.0,
+                )
             dk.data["labels_mean"][label_col], dk.data["labels_std"][label_col] = (
                 f[0],
                 f[1],
@@ -4042,10 +4121,14 @@ class MyRLEnv(Base5ActionRLEnv):
             if self._position == Positions.Neutral:
                 exit_pnl = pre_pnl
         elif action != Actions.Neutral.value:
+            try:
+                action_name = Actions(action).name
+            except ValueError:
+                action_name = "unknown"
             logger.warning(
                 "Env [%s]: invalid action=%s (%d) in position=%s at tick=%d",
                 self.id,
-                Actions(action).name,
+                action_name,
                 action,
                 self._position.name,
                 self._current_tick,
