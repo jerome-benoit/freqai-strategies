@@ -167,8 +167,8 @@ Generates shift metrics for comparison (see Outputs section).
   provided).
 - **`--unrealized_pnl`** (flag, default: false) – Transform the retained
   in-position synthetic price/PnL trajectory using fee-aware unrealized PnL.
-  This affects extrema and all enabled base, PBRS, and additive reward terms
-  that depend on PnL. (Simulation-only.)
+  This affects subsequent retained extrema and enabled reward terms that depend
+  on PnL. (Simulation-only.)
 
 ### Hybrid Simulation Scalars
 
@@ -280,7 +280,6 @@ Let `pnl_target = profit_aim · risk_reward_ratio` and
 Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 `range = max_u - min_u`, `ratio = (pnl - min_u)/range`,
 `min_range = max(1e-6, 0.01 · pnl_target)`. Then:
-
 - If `range < min_range`: `efficiency_coefficient = 1` (guard against division
   explosion)
 - If `pnl > 0`:
@@ -288,6 +287,10 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 - If `pnl < 0`:
   `efficiency_coefficient = 1 + efficiency_weight · (efficiency_center - ratio)`
 - Else: `efficiency_coefficient = 1`
+
+The extrema start with the fee-adjusted PnL at the entry fill and then include
+each retained market mark. In synthetic `unrealized_pnl` mode, a sampled
+candidate discarded by the transform is not an extremum.
 
 ##### Exit Attenuation
 

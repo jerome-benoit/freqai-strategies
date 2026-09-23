@@ -1767,15 +1767,16 @@ def simulate_samples(
                 trade_duration = 0
                 idle_duration = 0
                 entry_open = current_open
-                max_unrealized_profit = -np.inf
-                min_unrealized_profit = np.inf
             elif action == Actions.Short_enter and short_allowed:
                 position = Positions.Short
                 trade_duration = 0
                 idle_duration = 0
                 entry_open = current_open
-                max_unrealized_profit = -np.inf
-                min_unrealized_profit = np.inf
+            if position in (Positions.Long, Positions.Short):
+                entry_pnl = _compute_unrealized_pnl_estimate(
+                    position, entry_open=entry_open, current_open=entry_open, params=params
+                )
+                max_unrealized_profit = min_unrealized_profit = entry_pnl
         else:
             idle_duration = 0
             if action in (Actions.Long_exit, Actions.Short_exit):

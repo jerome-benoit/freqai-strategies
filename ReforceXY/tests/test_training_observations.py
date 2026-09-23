@@ -8,6 +8,7 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
+from freqtrade.enums import RunMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -119,6 +120,89 @@ class TrainingObservationsTest(unittest.TestCase):
                         dk.data_dictionary["test_prices"],
                     )
                 self.assertTrue(np.isfinite(score))
+
+    def test_backtest_rejects_future_archive_but_continues_from_earlier_saved_window(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            info = config["freqai"]
+            info["continual_learning"] = True
+            info["rl_config"]["model_type"] = "DQN"
+            info["model_training_parameters"] = {
+                "learning_starts": 0,
+                "buffer_size": 128,
+                "batch_size": 8,
+                "train_freq": 4,
+                "gradient_steps": 1,
+                "device": "cpu",
+                "policy_kwargs": {"net_arch": [8]},
+            }
+            pair = "BTC/USDT"
+
+            def frame(day, feature_offset):
+                values = np.arange(64)
+                data = pd.DataFrame(
+                    {
+                        "date": pd.date_range(day, periods=64, freq="5min", tz="UTC"),
+                        "%-feature": np.sin(values) + feature_offset,
+                        "&-action": np.zeros(64),
+                    }
+                )
+                for column in ("open", "high", "low", "close"):
+                    data[f"%-raw_{column}"] = 100.0 + values * 0.1
+                return data
+
+            def kitchen(settings, data, *, live):
+                dk = FreqaiDataKitchen(settings, live=live, pair=pair)
+                timestamp = int((data["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
+                dk.set_paths(pair, timestamp)
+                dk.set_new_model_names(pair, timestamp)
+                dk.data_path.mkdir(parents=True, exist_ok=True)
+                dk.label_list = ["&-action"]
+                dk.training_features_list = [column for column in data if column.startswith("%")]
+                return dk, timestamp
+
+            source = ReforceXY(config=config)
+            source.live = True
+            source.can_short = False
+            self.addCleanup(source.close_envs)
+            future = frame("2026-02-01", 1000.0)
+            future_dk, future_ts = kitchen(config, future, live=True)
+            deployed = source.train(future, pair, future_dk)
+            source.dd.get_pair_dict_info(pair)
+            source.dd.pair_dict[pair]["trained_timestamp"] = future_ts
+            source.dd.save_data(deployed, pair, future_dk)
+
+            backtest_config = dict(config)
+            backtest_config["runmode"] = RunMode.BACKTEST
+            backtest_config["timerange"] = "20260101-20260105"
+            backtest_config["config_files"] = [
+                "/workspace/ReforceXY/user_data/config-template.json"
+            ]
+            backtest = ReforceXY(config=backtest_config)
+            backtest.live = False
+            backtest.can_short = False
+            self.addCleanup(backtest.close_envs)
+            for day, offset, save_model in (
+                ("2026-01-01", 0.0, False),
+                ("2026-01-02", 10.0, True),
+                ("2026-01-03", 20.0, False),
+            ):
+                training_frame = frame(day, offset)
+                dk, timestamp = kitchen(backtest_config, training_frame, live=False)
+                self.assertLess(timestamp, future_ts)
+                self.assertFalse(backtest.model_exists(dk))
+                trained = backtest.train(training_frame, pair, dk)
+                transformed = dk.data_dictionary["train_features"]["%-feature"]
+                if offset < 20.0:
+                    self.assertAlmostEqual(transformed.min(), -1.0)
+                    self.assertAlmostEqual(transformed.max(), 1.0)
+                else:
+                    self.assertGreater(transformed.min(), 2.0)
+                backtest.dd.pair_dict[pair]["trained_timestamp"] = timestamp
+                if save_model:
+                    backtest.dd.save_data(trained, pair, dk)
+                else:
+                    backtest.dd.save_metadata(dk)
 
     def test_provenance_does_not_change_other_drawers(self):
         with tempfile.TemporaryDirectory() as temp:

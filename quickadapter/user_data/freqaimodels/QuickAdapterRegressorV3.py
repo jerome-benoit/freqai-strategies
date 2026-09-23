@@ -2372,7 +2372,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
 
     def _resolve_deployment_state(
-        self, dk: FreqaiDataKitchen, pair: str
+        self, dk: FreqaiDataKitchen, pair: str, *, as_of_ts: int | None = None
     ) -> tuple[Any, Pipeline, Pipeline] | None:
         """Restore the deployed model with independent copies of its fitted pipelines."""
         if not self.continual_learning:
@@ -2401,6 +2401,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         previous = self.dd.pair_dict.get(pair, {})
         if model is None and not previous.get("model_filename"):
             return None
+        if not self.live:
+            # The drawer timestamp can advance without saving a model. Bound the
+            # actual artifact instead, before reading cached or persisted state.
+            name, separator, timestamp = previous.get("model_filename", "").rpartition("_")
+            if (
+                as_of_ts is None
+                or not previous.get("trained_timestamp")
+                or not separator
+                or name != f"cb_{pair.split('/')[0].lower()}"
+                or not timestamp.isdecimal()
+                or int(timestamp) >= as_of_ts
+            ):
+                return None
         try:
             cached = self.dd.meta_data_dictionary.get(pair)
             if model is not None and cached is not None:
@@ -2499,7 +2512,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         )
         if not self.freqai_info.get("fit_live_predictions_candles", 0) or not self.live:
             dk.fit_labels()
-        deployment_state = self._resolve_deployment_state(dk, pair)
+        as_of_ts = None
+        if self.continual_learning and not self.live:
+            as_of_ts = int(dates.max().timestamp()) + timeframe_to_seconds(self.config["timeframe"])
+            training_timerange = getattr(self, "training_timerange", None)
+            if training_timerange is not None:
+                as_of_ts = min(as_of_ts, int(training_timerange.stopts))
+        deployment_state = self._resolve_deployment_state(dk, pair, as_of_ts=as_of_ts)
         dd = self._apply_pipelines(
             dd,
             train_weight_inputs,

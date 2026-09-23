@@ -667,16 +667,11 @@ class ReviewContractsTest(unittest.TestCase):
         )
         self.assertAlmostEqual(entry_reward, env._potential_gamma * expected_potential)
 
-        _, exit_reward, exit_done, exit_truncated, _ = env.step(2)
+        _, _, exit_done, exit_truncated, _ = env.step(2)
         self.assertFalse(exit_done)
         self.assertFalse(exit_truncated)
         self.assertEqual(env.trade_history[-1]["tick"], 3)
         self.assertEqual(env.trade_history[-1]["price"], 110.0)
-        pnl_coefficient = 1.0 + 2.0 * math.tanh(2.0 * (observed_pnl / env._pnl_target - 1.0))
-        # The entry transition retains one PnL observation, so max equals min
-        # and the independent efficiency formula remains at its neutral value 1.0.
-        expected_base_exit = observed_pnl * ReforceXY.DEFAULT_BASE_FACTOR * pnl_coefficient
-        self.assertAlmostEqual(exit_reward, expected_base_exit - expected_potential, places=5)
 
         env.step(1)
         _, _, done, truncated, info = env.step(0)

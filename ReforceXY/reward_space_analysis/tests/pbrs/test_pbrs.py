@@ -169,32 +169,32 @@ class TestSimulationParity(RewardSpaceTestBase):
                 expected_duration = 0
             self.assertEqual(row.trade_duration, expected_duration)
 
-    def test_first_retained_pnl_is_only_exit_extremum(self):
-        """A first-candle exit excludes the fill-time PnL from its extrema."""
+    def test_synthetic_exit_reward_includes_fee_adjusted_entry_pnl(self):
         params = self.base_params(
             unrealized_pnl=False,
             max_trade_duration_candles=100,
-            entry_fee_rate=0.0,
-            exit_fee_rate=0.0,
+            entry_fee_rate=0.0015,
+            exit_fee_rate=0.0015,
+            exit_attenuation_mode="linear",
+            exit_plateau=False,
             hold_potential_enabled=False,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
         )
         actions = [
             (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 1.0),
             (Actions.Long_exit, 0.0, 1.0, 0.0),
         ]
         with (
             patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
             patch.object(
-                reward_space_analysis.random.Random,
-                "gauss",
-                side_effect=[0.02, 0.0],
+                reward_space_analysis.random.Random, "gauss", side_effect=[0.02, -0.01, 0.0]
             ),
         ):
             df = simulate_samples(
                 params=params,
-                num_samples=2,
+                num_samples=3,
                 seed=SEEDS.BASE,
                 base_factor=PARAMS.BASE_FACTOR,
                 profit_aim=PARAMS.PROFIT_AIM,
@@ -205,30 +205,26 @@ class TestSimulationParity(RewardSpaceTestBase):
                 pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
             )
 
-        exit_row = df.iloc[1]
+        entry_pnl = 1.0 / ((1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])) - 1.0
+        peak_pnl = float(df.iloc[0]["next_pnl"])
+        exit_row = df.iloc[-1]
         pnl = float(exit_row["pnl"])
+        self.assertLess(entry_pnl, 0.0)
+        self.assertGreater(peak_pnl, pnl)
         self.assertGreater(pnl, 0.0)
-        runtime_context = reward_space_analysis.RewardContext(
-            current_pnl=pnl,
-            trade_duration=int(exit_row["trade_duration"]),
-            idle_duration=0,
-            max_unrealized_profit=pnl,
-            min_unrealized_profit=pnl,
-            position=Positions.Long,
-            action=Actions.Long_exit,
+        efficiency = 1.0 + params["efficiency_weight"] * (
+            (pnl - entry_pnl) / (peak_pnl - entry_pnl) - params["efficiency_center"]
         )
-        expected_exit = reward_space_analysis.calculate_reward(
-            runtime_context,
-            params,
-            PARAMS.BASE_FACTOR,
-            PARAMS.PROFIT_AIM,
-            PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        ).exit_component
+        duration_ratio = float(exit_row["trade_duration"]) / params["max_trade_duration_candles"]
+        expected = (
+            pnl
+            * params["base_factor"]
+            / (1.0 + params["exit_linear_slope"] * duration_ratio)
+            * efficiency
+        )
         self.assertAlmostEqualFloat(
             float(exit_row["reward_exit"]),
-            expected_exit,
+            expected,
             tolerance=TOLERANCE.IDENTITY_RELAXED,
             rtol=TOLERANCE.RELATIVE,
         )
@@ -334,8 +330,8 @@ class TestSimulationParity(RewardSpaceTestBase):
         )
         self.assertTrue(replay["next_pnl"].equals(df["next_pnl"]))
 
-    def test_unrealized_pnl_exit_rewards_use_only_retained_extrema(self):
-        """Exit rewards use extrema reconstructed from the retained PnL trajectory."""
+    def test_unrealized_pnl_exit_rewards_include_fill_and_retained_extrema(self):
+        """The fee-adjusted fill and retained prices determine exit efficiency."""
         params = self.base_params(
             unrealized_pnl=True,
             max_trade_duration_candles=100,
@@ -378,8 +374,11 @@ class TestSimulationParity(RewardSpaceTestBase):
                 Actions.Long_enter,
                 Actions.Short_enter,
             ):
-                max_unrealized = -np.inf
-                min_unrealized = np.inf
+                fee_factor = (1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])
+                entry_pnl = (
+                    1.0 / fee_factor - 1.0 if action == Actions.Long_enter else 1.0 - fee_factor
+                )
+                max_unrealized = min_unrealized = entry_pnl
 
             if position in (Positions.Long, Positions.Short) and action in (
                 Actions.Long_exit,

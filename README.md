@@ -161,6 +161,12 @@ below.
 | freqai.optuna_hyperopt.reset_label_study_on_schema_mismatch    | true                     | bool                                                                                                                                                                                                         | Reset a persisted `label` study when its selection schema is missing, invalid, or incompatible. `true` performs a destructive reset, deleting the study before recreating it; `false` preserves its trials and stored metadata, permits caller-managed reuse in memory, and does not persist selected params until the schema is reconciled. Both fail closed: an inspection error, or (under `true`) a deletion error, aborts study creation. Has no effect when `continuous=true` or outside live/dry-run modes, where studies are always reset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | freqai.optuna_hyperopt.vary_model_seed_by_trial                | true                     | bool                                                                                                                                                                                                         | Add `trial.number` to each regressor's configured model seed (or its default seed of `1`) during HPO. `true` samples model randomness across trials; `false` evaluates every trial and the final fit with the same model seed. This does not change `freqai.optuna_hyperopt.seed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
+In backtests, continual training uses only a saved model whose training cutoff
+precedes the current window's end and its last available candle boundary. A
+later model left under the same identifier is not reused when a backtest is
+extended into the past. Live and dry-run restarts still restore compatible
+deployed models.
+
 The `label_weighting`, `label_smoothing`, `label_pipeline` and
 `label_prediction` sections accept either the flat paths listed above or a
 per-label format using `default` and `columns.<glob>`. Do not mix both formats in
@@ -369,6 +375,12 @@ deployments without the chronological training marker. Training disables
 `shuffle_after_split`. HPO studies and saved best parameters are reused only
 when their objective identity matches.
 
+Backtests continue only from a saved policy whose training cutoff precedes
+the current window's end and its last available candle boundary. A later
+deployment under the same identifier is not reused for an earlier window,
+even when FreqAI has saved only metadata for intervening windows. Live and
+dry-run restarts still restore compatible deployed policies.
+
 ### Live inference
 
 Optional `fit_live_predictions_candles` statistics use the latest persisted real
@@ -430,10 +442,12 @@ delta over the returned next observation. Termination liquidates any remaining
 position once and clears the terminal potential. `get_env_history()` returns one
 metrics/price row per transition. Its `execution_tick` is the transition/action/fill
 key before the tick increment; its `tick` is the returned post-increment price and
-observation row (normally `execution_tick + 1`). Ordered trade events remain
-separate in `trade_history`, where each event's `tick` equals the history row's
-`execution_tick`; multiple events may share that key. `terminal_liquidation` and
-`exit_pnl` remain on the transition history row.
+observation row (normally `execution_tick + 1`). Exit-efficiency extrema include
+the fee-adjusted PnL at entry and subsequent retained market marks. Ordered
+trade events remain separate in `trade_history`: their tick identifies the
+candle whose price filled the event. Action fills use `execution_tick`;
+terminal liquidations use the returned post-increment tick. `terminal_liquidation`
+and `exit_pnl` remain on the transition history row.
 
 ## Development
 
