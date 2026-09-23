@@ -57,7 +57,7 @@ Full test documentation: [tests/README.md](./tests/README.md).
   - [Transform Functions](#transform-functions)
   - [Skipping Feature Analysis](#skipping-feature-analysis)
   - [Reproducibility](#reproducibility)
-  - [Overrides vs --params](#overrides-vs--params)
+  - [Overrides vs --params](#overrides-vs---params)
 - [Examples](#examples)
 - [Outputs](#outputs)
   - [Main Report (`statistical_analysis.md`)](#main-report-statistical_analysismd)
@@ -257,15 +257,16 @@ The exit factor is computed as:
 **Formula:**
 
 Let `pnl_target = profit_aim · risk_reward_ratio` and
-`pnl_ratio = pnl / pnl_target`. On the loss branch,
-`loss_threshold = pnl_target / risk_reward_ratio` and
-`loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · risk_reward_ratio`.
+`pnl_ratio = pnl / pnl_target` when `pnl_target > 0`. For losses, let
+`effective_rr = risk_reward_ratio` if positive, or `2.0` otherwise (the runtime
+fallback). Then `loss_threshold = pnl_target / effective_rr` and
+`loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · effective_rr`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
   `pnl_target_coefficient = 1.0 + win_reward_factor · tanh(pnl_amplification_sensitivity · (pnl_ratio - 1.0))`
 - If `pnl < -loss_threshold`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (loss_ratio - 1.0))`
+  `pnl_target_coefficient = 1.0 + (win_reward_factor · effective_rr) · tanh(pnl_amplification_sensitivity · (loss_ratio - 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -569,8 +570,8 @@ Within the same analyzer revision, identical `params_hash` values mean the resol
 | `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence                                                    |
 | `*_ks_pvalue`     | KS test p-value                       | API-only with `independent_observations=True`; omitted by the descriptive CLI |
 
-Implementation: 50-bin histograms with ε=1e-10; constants have zero divergence.
-Inferential KS p-values are available only under the programmatic independence contract.
+Implementation: up to 50 evenly spaced histogram edges (normally 49 bins) with
+ε=1e-10; constants have zero divergence.
 
 ---
 
@@ -609,8 +610,8 @@ uv run python reward_space_analysis.py \
   --out_dir real_vs_synthetic
 ```
 
-Shift metrics: lower divergence preferred (except p-value: higher ⇒ cannot
-reject equality).
+For the CLI's descriptive shift metrics, lower values indicate closer
+synthetic and real distributions.
 
 ### Batch Analysis
 

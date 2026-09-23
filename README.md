@@ -5,11 +5,17 @@
 - [QuickAdapter](#quickadapter)
   - [Quick start](#quick-start)
   - [Configuration tunables](#configuration-tunables)
+  - [Continual learning](#continual-learning)
+  - [Live inference](#live-inference)
   - [Backtest evaluation protocol](#backtest-evaluation-protocol)
 - [ReforceXY](#reforcexy)
   - [Quick start](#quick-start-1)
   - [Supported models](#supported-models)
   - [Configuration tunables](#configuration-tunables-1)
+  - [Continual learning](#continual-learning-1)
+  - [Live inference](#live-inference-1)
+  - [Training and HPO](#training-and-hpo)
+  - [Reward and portfolio accounting](#reward-and-portfolio-accounting)
 - [Development](#development)
 - [Common workflows](#common-workflows)
 - [Note](#note)
@@ -161,12 +167,6 @@ below.
 | freqai.optuna_hyperopt.reset_label_study_on_schema_mismatch    | true                     | bool                                                                                                                                                                                                         | Reset a persisted `label` study when its selection schema is missing, invalid, or incompatible. `true` performs a destructive reset, deleting the study before recreating it; `false` preserves its trials and stored metadata, permits caller-managed reuse in memory, and does not persist selected params until the schema is reconciled. Both fail closed: an inspection error, or (under `true`) a deletion error, aborts study creation. Has no effect when `continuous=true` or outside live/dry-run modes, where studies are always reset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | freqai.optuna_hyperopt.vary_model_seed_by_trial                | true                     | bool                                                                                                                                                                                                         | Add `trial.number` to each regressor's configured model seed (or its default seed of `1`) during HPO. `true` samples model randomness across trials; `false` evaluates every trial and the final fit with the same model seed. This does not change `freqai.optuna_hyperopt.seed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
-In backtests, continual training uses only a saved model whose training cutoff
-precedes the current window's end and its last available candle boundary. A
-later model left under the same identifier is not reused when a backtest is
-extended into the past. Live and dry-run restarts still restore compatible
-deployed models.
-
 The `label_weighting`, `label_smoothing`, `label_pipeline` and
 `label_prediction` sections accept either the flat paths listed above or a
 per-label format using `default` and `columns.<glob>`. Do not mix both formats in
@@ -174,6 +174,16 @@ one section: once `default` or `columns` is present, sibling flat keys are
 ignored with a warning. Matching column patterns are applied from least to most
 specific; equally specific patterns follow declaration order, so the later one
 wins.
+
+### Continual learning
+
+In backtests, continual training uses only a saved model whose training cutoff
+precedes the current window's end and its last available candle boundary. A
+later model left under the same identifier is not reused when a backtest is
+extended into the past. Live and dry-run restarts still restore compatible
+deployed models.
+
+### Live inference
 
 In live and dry-run modes, each pair requires
 `freqai.fit_live_predictions_candles` real model predictions before adaptive
