@@ -482,7 +482,11 @@ PYTHONPATH=/workspace/quickadapter/user_data/strategies \
 ```
 
 CI runs type checks and runtime regressions in one QA matrix entry per strategy.
-The reward-space analysis suite runs separately with `uv`, without a Freqtrade image.
+The shared runtime step sets each strategy's `PYTHONPATH`. QuickAdapter needs
+this for direct `unittest` discovery because its model imports `LabelTransformer`
+and `Utils` by bare names; ReforceXY resolves its imports without it, so the
+setting is optional there. The reward-space analysis suite runs separately
+with `uv`, without a Freqtrade image.
 
 ### Quality checks
 
