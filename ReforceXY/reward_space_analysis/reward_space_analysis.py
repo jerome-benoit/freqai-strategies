@@ -1633,6 +1633,9 @@ def _sample_action(
         weights.extend(
             [_SAMPLE_INVALID_ACTION_PROBABILITY / len(invalid_choices)] * len(invalid_choices)
         )
+        entry_prob *= valid_mass
+        exit_prob *= valid_mass
+        neutral_prob *= valid_mass
 
     action = rng.choices(choices, weights=weights, k=1)[0]
     return action, entry_prob, exit_prob, neutral_prob

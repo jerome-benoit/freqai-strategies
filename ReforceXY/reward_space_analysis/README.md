@@ -555,6 +555,11 @@ descriptive.
 | `partial_dependence_*.csv` | Partial dependence data                              |
 | `manifest.json`            | Runtime manifest (simulation + reward params + hash) |
 
+The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in
+`reward_samples.csv` report marginal probabilities of valid actions when applicable.
+With masking disabled, these probabilities include the 90% valid-action mass;
+they are not conditional on drawing a valid action.
+
 ### Manifest (`manifest.json`)
 
 | Field                   | Type              | Description                                                                                             |

@@ -83,6 +83,41 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         )
         self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
 
+    def test_unmasked_sampling_probabilities_match_action_frequencies(self):
+        """Reported probabilities describe valid actions, not their conditional hazards."""
+        draws = SCENARIOS.API_ENTRY_RATE_DRAWS
+        # Four standard errors using the maximum Bernoulli variance.
+        tolerance = 4 * math.sqrt(0.25 / draws)
+        cases = (
+            (Positions.Neutral, False, (Actions.Long_enter,), 1),
+            (Positions.Neutral, True, (Actions.Long_enter, Actions.Short_enter), 1),
+            (Positions.Long, True, (Actions.Long_exit,), 2),
+            (Positions.Short, True, (Actions.Short_exit,), 2),
+        )
+        for position, short_allowed, actions, probability_index in cases:
+            with self.subTest(position=position, short_allowed=short_allowed):
+                rng = random.Random(SEEDS.REPRODUCIBILITY)
+                samples = [
+                    _sample_action(
+                        position,
+                        rng,
+                        short_allowed=short_allowed,
+                        trade_duration=SCENARIOS.API_IDLE_DURATION_HIGH,
+                        max_trade_duration_candles=SCENARIOS.API_MAX_IDLE_DURATION_CANDLES,
+                        idle_duration=SCENARIOS.API_IDLE_DURATION_HIGH,
+                        max_idle_duration_candles=SCENARIOS.API_MAX_IDLE_DURATION_CANDLES,
+                        action_masking=False,
+                    )
+                    for _ in range(draws)
+                ]
+                observed = sum(sample[0] in actions for sample in samples) / draws
+                self.assertAlmostEqual(samples[0][probability_index], observed, delta=tolerance)
+                if position == Positions.Neutral:
+                    observed_neutral = (
+                        sum(sample[0] == Actions.Neutral for sample in samples) / draws
+                    )
+                    self.assertAlmostEqual(samples[0][3], observed_neutral, delta=tolerance)
+
     def test_parse_overrides(self):
         """Overrides accept canonical keys and reject unsupported keys."""
         result = parse_overrides(
