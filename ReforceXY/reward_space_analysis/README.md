@@ -165,10 +165,10 @@ Generates shift metrics for comparison (see Outputs section).
 - **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic
   distribution shift metrics. (Simulation-only; triggers additional outputs when
   provided).
-- **`--unrealized_pnl`** (flag, default: false) – Transform the retained
-  in-position synthetic price/PnL trajectory using fee-aware unrealized PnL.
-  This affects subsequent retained extrema and enabled reward terms that depend
-  on PnL. (Simulation-only.)
+- **`--unrealized_pnl`** (flag, default: false) – Track a sampled market
+  price separately from the retained price within each trade; map its fee-aware
+  PnL through duration-based tanh scaling before retaining the mark. Retained
+  marks affect exit-efficiency extrema and PnL-dependent rewards. (Simulation-only.)
 
 ### Hybrid Simulation Scalars
 
@@ -289,12 +289,15 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
   `efficiency_coefficient = 1 + efficiency_weight · (efficiency_center - ratio)`
 - Else: `efficiency_coefficient = 1`
 
-The extrema start with the fee-adjusted PnL at the entry fill and then include
-each retained market mark. In synthetic `unrealized_pnl` mode, a sampled
-candidate discarded by the transform is not an extremum.
-Synthetic marks are capped at +0.15; their lower bound is the lesser of -0.15
-and the fee-adjusted entry PnL. The extreme-PnL check also permits the
-configured fee loss, rather than rejecting a valid short entry at high fees.
+In synthetic `unrealized_pnl` mode, sampled market prices accumulate each
+candle's return independently of the transformed, retained price. The
+fee-aware sampled PnL is bounded, scaled by the duration-dependent tanh
+factor, and converted to the retained price. Exit-efficiency extrema start
+with the fee-adjusted PnL at the entry fill and then include each retained
+mark; a sampled candidate is never retained as an extremum. Synthetic marks
+are capped at +0.15; their lower bound is the lesser of -0.15 and the
+fee-adjusted entry PnL. The extreme-PnL check permits that fee loss and
+floating-point roundoff at its boundary, but rejects larger excursions.
 
 ##### Exit Attenuation
 

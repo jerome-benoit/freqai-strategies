@@ -1739,6 +1739,7 @@ def simulate_samples(
 
     # Synthetic market state
     current_open = 1.0
+    sampled_open = current_open
     entry_open = current_open
 
     for _ in range(num_samples):
@@ -1778,6 +1779,7 @@ def simulate_samples(
                     position, entry_open=entry_open, current_open=entry_open, params=params
                 )
                 max_unrealized_profit = min_unrealized_profit = entry_pnl
+                sampled_open = entry_open
                 pnl_floor = min(-0.15, entry_pnl)
         else:
             idle_duration = 0
@@ -1810,33 +1812,36 @@ def simulate_samples(
             step_return = 0.0
         step_return = float(np.clip(step_return, -0.95, 0.95))
 
-        current_open = float(max(1e-6, current_open * (1.0 + step_return)))
-        # Always sample the random-walk price so both modes consume the same RNG stream.
-        # Unrealized-PnL mode replaces it below with the fee-aware price implied by
-        # the target PnL before reward calculation.
+        # Sample once in both modes; keep the raw market path separate from the
+        # transformed price while a position is open.
+        transform_unrealized_pnl = position in (
+            Positions.Long,
+            Positions.Short,
+        ) and _get_bool_param(params, "unrealized_pnl", False)
+        if transform_unrealized_pnl:
+            sampled_open = float(max(1e-6, sampled_open * (1.0 + step_return)))
+            candidate_open = sampled_open
+        else:
+            current_open = float(max(1e-6, current_open * (1.0 + step_return)))
+            candidate_open = current_open
         if position in (Positions.Long, Positions.Short):
             candidate_pnl = float(
                 np.clip(
                     _compute_unrealized_pnl_estimate(
                         position,
                         entry_open=entry_open,
-                        current_open=current_open,
+                        current_open=candidate_open,
                         params=params,
                     ),
                     pnl_floor,
                     0.15,
                 )
             )
-            if _get_bool_param(params, "unrealized_pnl", False):
-                # Let the sampled market move shape the next retained PnL without
-                # storing the discarded candidate in exit-efficiency extrema.
-                prospective_max = max(max_unrealized_profit, candidate_pnl)
-                prospective_min = min(min_unrealized_profit, candidate_pnl)
-                center_unrealized = 0.5 * (prospective_max + prospective_min)
+            if transform_unrealized_pnl:
                 beta = _get_float_param(params, "pnl_amplification_sensitivity")
                 hold_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
                 target_pnl = float(
-                    np.clip(center_unrealized * math.tanh(beta * hold_ratio), pnl_floor, 0.15)
+                    np.clip(candidate_pnl * math.tanh(beta * hold_ratio), pnl_floor, 0.15)
                 )
                 entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
                 if position == Positions.Long:
@@ -2031,7 +2036,8 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
         )
 
     # INVARIANT 5: Bounded values
-    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]
+    # Fee-adjusted prices can differ from the nominal fee product by a few ULPs.
+    extreme_pnl = df[df["pnl"].abs() > thr_extreme + eps_pnl]
     if len(extreme_pnl) > 0:
         max_abs_pnl = float(df["pnl"].abs().max())
         raise AssertionError(
