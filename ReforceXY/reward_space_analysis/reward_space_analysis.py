@@ -1735,6 +1735,7 @@ def simulate_samples(
     pnl = 0.0
     max_unrealized_profit = 0.0
     min_unrealized_profit = 0.0
+    pnl_floor = -0.15
 
     # Synthetic market state
     current_open = 1.0
@@ -1777,6 +1778,7 @@ def simulate_samples(
                     position, entry_open=entry_open, current_open=entry_open, params=params
                 )
                 max_unrealized_profit = min_unrealized_profit = entry_pnl
+                pnl_floor = min(-0.15, entry_pnl)
         else:
             idle_duration = 0
             if action in (Actions.Long_exit, Actions.Short_exit):
@@ -1821,7 +1823,7 @@ def simulate_samples(
                         current_open=current_open,
                         params=params,
                     ),
-                    -0.15,
+                    pnl_floor,
                     0.15,
                 )
             )
@@ -1834,7 +1836,7 @@ def simulate_samples(
                 beta = _get_float_param(params, "pnl_amplification_sensitivity")
                 hold_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
                 target_pnl = float(
-                    np.clip(center_unrealized * math.tanh(beta * hold_ratio), -0.15, 0.15)
+                    np.clip(center_unrealized * math.tanh(beta * hold_ratio), pnl_floor, 0.15)
                 )
                 entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
                 if position == Positions.Long:
@@ -1854,7 +1856,7 @@ def simulate_samples(
                             current_open=current_open,
                             params=params,
                         ),
-                        -0.15,
+                        pnl_floor,
                         0.15,
                     )
                 )
@@ -1948,17 +1950,21 @@ def simulate_samples(
     df.attrs["reward_params"] = source_params
 
     # Validate critical algorithmic invariants
-    _validate_simulation_invariants(df)
+    _validate_simulation_invariants(df, params)
 
     return df
 
 
-def _validate_simulation_invariants(df: pd.DataFrame) -> None:
+def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> None:
     """Fail fast if simulation violates action/state invariants."""
 
     eps_pnl = float(INTERNAL_GUARDS["sim_zero_pnl_epsilon"])
     eps_reward = float(INTERNAL_GUARDS["sim_zero_reward_epsilon"])
-    thr_extreme = float(INTERNAL_GUARDS["sim_extreme_pnl_threshold"])
+    entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
+    thr_extreme = max(
+        float(INTERNAL_GUARDS["sim_extreme_pnl_threshold"]),
+        (1.0 + entry_fee_rate) * (1.0 + exit_fee_rate) - 1.0,
+    )
 
     # INVARIANT 1: Action-position compatibility
     long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]

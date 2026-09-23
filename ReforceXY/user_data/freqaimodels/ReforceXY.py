@@ -36,6 +36,7 @@ import rapidjson
 import torch as th
 from datasieve.pipeline import Pipeline
 from freqtrade.exceptions import DependencyException
+from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import (
     FEATURE_PIPELINE,
     METADATA,
@@ -1448,9 +1449,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         as_of_ts = None
         if self.continual_learning and not self.live:
             latest_date = pd.to_datetime(unfiltered_df["date"], utc=True).max()
-            as_of_ts = int(latest_date.timestamp()) + 60 * timeframe_to_minutes(
-                self.config["timeframe"]
-            )
+            as_of_ts = int(latest_date.timestamp()) + timeframe_to_seconds(self.config["timeframe"])
             training_timerange = getattr(self, "training_timerange", None)
             if training_timerange is not None:
                 as_of_ts = min(as_of_ts, int(training_timerange.stopts))

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from freqtrade.enums import RunMode
 from freqtrade.exceptions import DependencyException
+from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
@@ -153,7 +154,12 @@ class TrainingObservationsTest(unittest.TestCase):
 
             def kitchen(settings, data, *, live):
                 dk = FreqaiDataKitchen(settings, live=live, pair=pair)
-                timestamp = int((data["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
+                timestamp = int(
+                    (
+                        data["date"].iloc[-1]
+                        + pd.Timedelta(seconds=timeframe_to_seconds(settings["timeframe"]))
+                    ).timestamp()
+                )
                 dk.set_paths(pair, timestamp)
                 dk.set_new_model_names(pair, timestamp)
                 dk.data_path.mkdir(parents=True, exist_ok=True)
@@ -182,6 +188,7 @@ class TrainingObservationsTest(unittest.TestCase):
             backtest.live = False
             backtest.can_short = False
             self.addCleanup(backtest.close_envs)
+            saved_timestamp = 0
             for day, offset, save_model in (
                 ("2026-01-01", 0.0, False),
                 ("2026-01-02", 10.0, True),
@@ -201,8 +208,29 @@ class TrainingObservationsTest(unittest.TestCase):
                 backtest.dd.pair_dict[pair]["trained_timestamp"] = timestamp
                 if save_model:
                     backtest.dd.save_data(trained, pair, dk)
+                    saved_timestamp = timestamp
                 else:
                     backtest.dd.save_metadata(dk)
+
+            self.assertGreater(saved_timestamp, 0)
+            seconds_config = dict(backtest_config)
+            seconds_config["timeframe"] = "10s"
+            seconds = ReforceXY(config=seconds_config)
+            seconds.live = False
+            seconds.can_short = False
+            self.addCleanup(seconds.close_envs)
+            seconds.training_timerange = SimpleNamespace(stopts=saved_timestamp + 10)
+            boundary = frame("2026-01-02", 20.0)
+            boundary["date"] = pd.date_range(
+                end=pd.Timestamp(saved_timestamp, unit="s", tz="UTC"),
+                periods=len(boundary),
+                freq="10s",
+            )
+            boundary_dk, boundary_timestamp = kitchen(seconds_config, boundary, live=False)
+            self.assertEqual(boundary_timestamp, saved_timestamp + 10)
+            seconds.train(boundary, pair, boundary_dk)
+            transformed = boundary_dk.data_dictionary["train_features"]["%-feature"]
+            self.assertGreater(transformed.min(), 2.0)
 
     def test_provenance_does_not_change_other_drawers(self):
         with tempfile.TemporaryDirectory() as temp:

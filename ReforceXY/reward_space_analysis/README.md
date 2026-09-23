@@ -291,6 +291,9 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 The extrema start with the fee-adjusted PnL at the entry fill and then include
 each retained market mark. In synthetic `unrealized_pnl` mode, a sampled
 candidate discarded by the transform is not an extremum.
+Synthetic marks are capped at +0.15; their lower bound is the lesser of -0.15
+and the fee-adjusted entry PnL. The extreme-PnL check also permits the
+configured fee loss, rather than rejecting a valid short entry at high fees.
 
 ##### Exit Attenuation
 

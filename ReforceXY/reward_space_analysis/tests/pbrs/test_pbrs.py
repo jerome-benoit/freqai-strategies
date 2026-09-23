@@ -229,6 +229,73 @@ class TestSimulationParity(RewardSpaceTestBase):
             rtol=TOLERANCE.RELATIVE,
         )
 
+    def test_synthetic_fee_loss_extrema_match_retained_pnl(self):
+        for direction in ("long", "short"):
+            for transformed in (False, True):
+                with self.subTest(direction=direction, transformed=transformed):
+                    params = self.base_params(
+                        entry_fee_rate=0.1,
+                        exit_fee_rate=0.1,
+                        unrealized_pnl=transformed,
+                        max_trade_duration_candles=1,
+                        win_reward_factor=0.0,
+                        exit_plateau=False,
+                        hold_potential_enabled=False,
+                        exit_linear_slope=0.0,
+                        entry_additive_enabled=False,
+                        exit_additive_enabled=False,
+                    )
+                    enter = Actions.Long_enter if direction == "long" else Actions.Short_enter
+                    exit_action = Actions.Long_exit if direction == "long" else Actions.Short_exit
+                    # Cancel the simulator's directional drift to keep both marks flat.
+                    innovation = -0.001 if direction == "long" else 0.001
+                    with (
+                        patch.object(
+                            reward_space_analysis,
+                            "_sample_action",
+                            side_effect=[(enter, 1.0, 0.0, 0.0), (exit_action, 0.0, 1.0, 0.0)],
+                        ),
+                        patch.object(
+                            reward_space_analysis.random.Random,
+                            "gauss",
+                            side_effect=[innovation, 0.0],
+                        ),
+                    ):
+                        samples = simulate_samples(
+                            num_samples=2,
+                            seed=SEEDS.BASE,
+                            params=params,
+                            base_factor=PARAMS.BASE_FACTOR,
+                            profit_aim=PARAMS.PROFIT_AIM,
+                            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                            max_duration_ratio=2.0,
+                            trading_mode="futures",
+                            pnl_base_std=PARAMS.PNL_STD,
+                            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                        )
+
+                    fees = (1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])
+                    entry_pnl = 1.0 / fees - 1.0 if direction == "long" else 1.0 - fees
+                    expected_pnl = (
+                        entry_pnl * math.tanh(params["pnl_amplification_sensitivity"])
+                        if transformed
+                        else entry_pnl
+                    )
+                    self.assertLess(expected_pnl, -0.15)
+                    first, exit_row = samples.iloc[0], samples.iloc[1]
+                    self.assertAlmostEqual(float(first["next_pnl"]), expected_pnl, places=9)
+                    self.assertAlmostEqual(float(exit_row["exit_pnl"]), expected_pnl, places=9)
+                    efficiency = (
+                        1.0 + params["efficiency_weight"] * (params["efficiency_center"] - 1.0)
+                        if transformed
+                        else 1.0
+                    )
+                    self.assertAlmostEqual(
+                        float(exit_row["reward_exit"]),
+                        expected_pnl * params["base_factor"] * efficiency,
+                        places=8,
+                    )
+
     def test_unrealized_pnl_uses_each_sampled_market_move(self):
         """Later Gaussian innovations affect later retained PnL without becoming extrema."""
         params = self.base_params(
