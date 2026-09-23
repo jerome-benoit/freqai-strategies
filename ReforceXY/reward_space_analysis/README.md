@@ -593,8 +593,9 @@ Implementation: up to 50 evenly spaced histogram edges (normally 49 bins) with
 
 Non-finite numeric values in real episodes are marked missing. Each feature is
 compared only when both synthetic and real data contain at least 10 finite
-observations; otherwise it is omitted. If none qualify, the report distinguishes
-this from not supplying real episodes.
+observations; otherwise it is omitted. When none qualify, the report distinguishes
+missing episodes, no comparable finite data, and fewer than 10 finite observations
+per dataset and comparable feature.
 
 ---
 

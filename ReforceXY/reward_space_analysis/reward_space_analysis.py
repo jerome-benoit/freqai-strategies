@@ -1988,7 +1988,7 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
     )
 
     # INVARIANT 1: masked sampling must only emit legal actions; unmasked
-    # actions may be invalid but cannot alter an open position.
+    # actions may be invalid but cannot change position before terminal liquidation.
     if _get_bool_param(params, "action_masking", True):
         long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
         short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
@@ -2016,9 +2016,7 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
             & df["next_position"].ne(df["position"])
         ]
         if len(changed_on_invalid) > 0:
-            raise AssertionError(
-                f"Sim: {len(changed_on_invalid)} invalid actions changed open position"
-            )
+            raise AssertionError(f"Sim: {len(changed_on_invalid)} invalid actions changed position")
 
     # INVARIANT 2: Duration logic
     neutral_with_trade = df[(df["position"] == 0.5) & (df["trade_duration"] > 0)]
@@ -2658,6 +2656,10 @@ def _stabilize_divergence(value: float, *, bin_count: int, metric_name: str) -> 
     return value
 
 
+_DISTRIBUTION_SHIFT_FEATURES: Final[tuple[str, ...]] = ("pnl", "trade_duration", "idle_duration")
+_MIN_DISTRIBUTION_SHIFT_OBSERVATIONS: Final[int] = 10
+
+
 def compute_distribution_shift_metrics(
     synthetic_df: pd.DataFrame,
     real_df: pd.DataFrame,
@@ -2673,7 +2675,7 @@ def compute_distribution_shift_metrics(
     reported. Constants yield exact zero distances and, inferentially, p=1.0.
     """
     metrics = {}
-    continuous_features = ["pnl", "trade_duration", "idle_duration"]
+    continuous_features = _DISTRIBUTION_SHIFT_FEATURES
 
     for feature in continuous_features:
         synth_values = synthetic_df[feature].to_numpy(dtype=float, na_value=np.nan)
@@ -2685,7 +2687,7 @@ def compute_distribution_shift_metrics(
         if not real_finite.all():
             real_values = real_values[real_finite]
 
-        if len(synth_values) < 10 or len(real_values) < 10:
+        if min(len(synth_values), len(real_values)) < _MIN_DISTRIBUTION_SHIFT_OBSERVATIONS:
             continue
 
         min_val = min(synth_values.min(), real_values.min())
@@ -4106,6 +4108,20 @@ def write_complete_statistical_analysis(
     distribution_shift_unavailable = (
         "no real episodes provided" if real_df is None else "no comparable finite observations"
     )
+
+    if (
+        real_df is not None
+        and not distribution_shift
+        and any(
+            np.isfinite(df[feature].to_numpy(dtype=float, na_value=np.nan)).any()
+            and np.isfinite(real_df[feature].to_numpy(dtype=float, na_value=np.nan)).any()
+            for feature in _DISTRIBUTION_SHIFT_FEATURES
+        )
+    ):
+        distribution_shift_unavailable = (
+            "insufficient finite observations; "
+            f"at least {_MIN_DISTRIBUTION_SHIFT_OBSERVATIONS} per dataset and feature required"
+        )
 
     # Write comprehensive report
     with report_path.open("w", encoding="utf-8") as f:

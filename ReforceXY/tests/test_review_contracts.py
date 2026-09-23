@@ -130,6 +130,36 @@ class ReviewContractsTest(unittest.TestCase):
                 strategy.config = {} if configured is None else {"leverage": configured}
                 self.assertEqual(strategy.leverage(**arguments), expected)
 
+    def test_strategy_leverage_warnings_follow_invalid_config_transitions(self):
+        """Warn once per invalid setting, including values below the leverage floor."""
+        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
+        arguments = {
+            "pair": "BTC/USDT",
+            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
+            "current_rate": 100.0,
+            "proposed_leverage": 2.0,
+            "max_leverage": 5.0,
+            "entry_tag": None,
+            "side": "long",
+        }
+        strategy.config = {"leverage": float("nan")}
+        with self.assertLogs(RLAgentStrategy.__module__, level="WARNING") as logs:
+            for _ in range(3):
+                self.assertEqual(strategy.leverage(**arguments), 2.0)
+            self.assertEqual(len(logs.records), 1)
+            strategy.config["leverage"] = float("inf")
+            self.assertEqual(strategy.leverage(**arguments), 2.0)
+            self.assertEqual(len(logs.records), 2)
+            strategy.config["leverage"] = 0.5
+            for _ in range(2):
+                self.assertEqual(strategy.leverage(**arguments), 1.0)
+            self.assertEqual(len(logs.records), 3)
+            strategy.config["leverage"] = 2.5
+            self.assertEqual(strategy.leverage(**arguments), 2.5)
+            strategy.config["leverage"] = float("nan")
+            self.assertEqual(strategy.leverage(**arguments), 2.0)
+            self.assertEqual(len(logs.records), 4)
+
     def test_training_preserves_raw_prices_and_returns_best_checkpoint(self):
         for drop in (False, True):
             with self.subTest(drop_ohlc_from_features=drop), tempfile.TemporaryDirectory() as temp:

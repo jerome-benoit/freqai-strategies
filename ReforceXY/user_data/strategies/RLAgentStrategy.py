@@ -58,6 +58,7 @@ class RLAgentStrategy(IStrategy):
     _ACTION_EXIT_LONG: Final[int] = 2
     _ACTION_ENTER_SHORT: Final[int] = 3
     _ACTION_EXIT_SHORT: Final[int] = 4
+    _leverage_warning_state: tuple[str, str] | None = None
 
     @property
     def can_short(self) -> bool:
@@ -189,6 +190,7 @@ class RLAgentStrategy(IStrategy):
         :return: A leverage amount, which will be between 1.0 and max_leverage.
         """
         configured = self.config.get("leverage")
+        warning_kind: str | None = None
         if configured is None:
             requested = proposed_leverage
         else:
@@ -197,8 +199,20 @@ class RLAgentStrategy(IStrategy):
             except (TypeError, ValueError, OverflowError):
                 requested = float("nan")
             if isinstance(configured, bool) or not np.isfinite(requested):
-                logger.warning("Invalid leverage value %r; using proposed leverage", configured)
+                warning_kind = "invalid"
                 requested = proposed_leverage
+            elif requested < 1.0:
+                warning_kind = "below_minimum"
+
+        warning_state = (warning_kind, repr(configured)) if warning_kind else None
+        if warning_state is not None and warning_state != self._leverage_warning_state:
+            if warning_kind == "invalid":
+                logger.warning("Invalid leverage value %r; using proposed leverage", configured)
+            else:
+                logger.warning(
+                    "Invalid leverage value %r; must be >= 1.0, clamping to 1.0", configured
+                )
+        self._leverage_warning_state = warning_state
         return float(max(1.0, min(requested, max_leverage)))
 
     def is_short_allowed(self) -> bool:

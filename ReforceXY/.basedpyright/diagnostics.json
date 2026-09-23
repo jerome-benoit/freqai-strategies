@@ -33,173 +33,173 @@
     },
     {
       "endCharacter": 5,
-      "endLine": 2135,
+      "endLine": 2136,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"cut\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 17,
-      "startLine": 2130
+      "startLine": 2131
     },
     {
       "endCharacter": 21,
-      "endLine": 2132,
+      "endLine": 2133,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"_Array1D[Any]\" cannot be assigned to parameter \"bins\" of type \"int | Sequence[float] | Index[int] | Index[float] | IntervalIndex[Interval[Any]] | Series[Any]\" in function \"cut\"\n  Type \"_Array1D[Any]\" is not assignable to type \"int | Sequence[float] | Index[int] | Index[float] | IntervalIndex[Interval[Any]] | Series[Any]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"int\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Sequence[float]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Index[int]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Index[float]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"IntervalIndex[Interval[Any]]\"\n    \"ndarray[tuple[int], dtype[Any]]\" is not assignable to \"Series[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 2132
+      "startLine": 2133
     },
     {
       "endCharacter": 5,
-      "endLine": 2157,
+      "endLine": 2158,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 2153
+      "startLine": 2154
     },
     {
       "endCharacter": 43,
-      "endLine": 2154,
+      "endLine": 2155,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 2154
+      "startLine": 2155
     },
     {
       "endCharacter": 42,
-      "endLine": 2154,
+      "endLine": 2155,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 2154
+      "startLine": 2155
     },
     {
       "endCharacter": 60,
-      "endLine": 2414,
+      "endLine": 2415,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"importances_mean\" for class \"dict[Unknown, Bunch]\"\n  Attribute \"importances_mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 2414
+      "startLine": 2415
     },
     {
       "endCharacter": 58,
-      "endLine": 2415,
+      "endLine": 2416,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"importances_std\" for class \"dict[Unknown, Bunch]\"\n  Attribute \"importances_std\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 43,
-      "startLine": 2415
+      "startLine": 2416
     },
     {
       "endCharacter": 88,
-      "endLine": 2434,
+      "endLine": 2435,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"columns\" for class \"NDArray[Unknown]\"\n  Attribute \"columns\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 81,
-      "startLine": 2434
+      "startLine": 2435
     },
     {
       "endCharacter": 88,
-      "endLine": 2434,
+      "endLine": 2435,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"columns\" for class \"list[Unknown]\"\n  Attribute \"columns\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 81,
-      "startLine": 2434
+      "startLine": 2435
     },
     {
       "endCharacter": 17,
-      "endLine": 2443,
+      "endLine": 2444,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Object of type \"None\" cannot be called",
       "rule": "reportOptionalCall",
       "severity": "error",
       "startCharacter": 28,
-      "startLine": 2437
+      "startLine": 2438
     },
     {
       "endCharacter": 29,
-      "endLine": 3038,
+      "endLine": 3043,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"ptp\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 11,
-      "startLine": 3038
+      "startLine": 3043
     },
     {
       "endCharacter": 28,
-      "endLine": 3038,
+      "endLine": 3043,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"ptp\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 18,
-      "startLine": 3038
+      "startLine": 3043
     },
     {
       "endCharacter": 65,
-      "endLine": 3047,
+      "endLine": 3052,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"mean\" for class \"Categorical[object]\"\n  Attribute \"mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 61,
-      "startLine": 3047
+      "startLine": 3052
     },
     {
       "endCharacter": 65,
-      "endLine": 3047,
+      "endLine": 3052,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"mean\" for class \"ExtensionArray\"\n  Attribute \"mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 61,
-      "startLine": 3047
+      "startLine": 3052
     },
     {
       "endCharacter": 5,
-      "endLine": 3947,
+      "endLine": 3952,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 3943
+      "startLine": 3948
     },
     {
       "endCharacter": 43,
-      "endLine": 3944,
+      "endLine": 3949,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 3944
+      "startLine": 3949
     },
     {
       "endCharacter": 42,
-      "endLine": 3944,
+      "endLine": 3949,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 3944
+      "startLine": 3949
     },
     {
       "endCharacter": 22,
@@ -1143,43 +1143,43 @@
     },
     {
       "endCharacter": 17,
-      "endLine": 62,
+      "endLine": 63,
       "file": "ReforceXY/user_data/strategies/RLAgentStrategy.py",
       "message": "\"can_short\" overrides symbol of same name in class \"IStrategy\"\n  \"property\" is not assignable to \"bool\"",
       "rule": "reportIncompatibleVariableOverride",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 62
+      "startLine": 63
     },
     {
       "endCharacter": 19,
-      "endLine": 66,
+      "endLine": 67,
       "file": "ReforceXY/user_data/strategies/RLAgentStrategy.py",
       "message": "\"protections\" overrides symbol of same name in class \"IStrategy\"\n  \"property\" is not assignable to \"list[Unknown]\"",
       "rule": "reportIncompatibleVariableOverride",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 66
+      "startLine": 67
     },
     {
       "endCharacter": 72,
-      "endLine": 88,
+      "endLine": 89,
       "file": "ReforceXY/user_data/strategies/RLAgentStrategy.py",
       "message": "No overloads for \"__call__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 42,
-      "startLine": 88
+      "startLine": 89
     },
     {
       "endCharacter": 71,
-      "endLine": 88,
+      "endLine": 89,
       "file": "ReforceXY/user_data/strategies/RLAgentStrategy.py",
       "message": "Argument of type \"Series[Any] | None\" cannot be assigned to parameter \"x1\" of type \"_SupportsArrayUFunc\" in function \"__call__\"\n  Type \"Series[Any] | None\" is not assignable to type \"_SupportsArrayUFunc\"\n    \"None\" is incompatible with protocol \"_SupportsArrayUFunc\"\n      \"__array_ufunc__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 88
+      "startLine": 89
     }
   ],
   "filesAnalyzed": 3,
