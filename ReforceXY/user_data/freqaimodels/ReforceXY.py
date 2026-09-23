@@ -106,9 +106,18 @@ _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 _PRODUCED_COLUMN = "_freqai_strategies_produced"
 
 
-def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Identify recorded rows from metadata, never from prediction magnitudes."""
+def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Bootstrap has status 0; only nonzero, nonexpired statuses prove legacy production."""
+    if "do_predict" not in frame:
+        return np.zeros(len(frame), dtype=bool)
+    status = pd.to_numeric(frame["do_predict"], errors="coerce")
+    return (status.notna() & np.isfinite(status) & status.ne(0) & status.ne(2)).to_numpy(dtype=bool)
+
+
+def _recorded_prediction_rank(frame: pd.DataFrame) -> NDArray[np.int8]:
+    """Prefer provable predictions to ambiguous legacy rows and placeholders."""
     recorded = np.zeros(len(frame), dtype=bool)
+    status = None
     if "close_price" in frame:
         close = pd.to_numeric(frame["close_price"], errors="coerce")
         recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
@@ -119,46 +128,47 @@ def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
             .fillna(False)
             .to_numpy(dtype=bool)
         )
-    return recorded
+        recorded &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    rank = recorded.astype(np.int8)
+    rank[_legacy_produced_prediction_mask(frame)] = 2
+    if _PRODUCED_COLUMN in frame:
+        marker = frame[_PRODUCED_COLUMN]
+        proven = marker.eq(True).fillna(False).to_numpy(dtype=bool)
+        if status is not None:
+            proven = proven & status.ne(2).fillna(True).to_numpy(dtype=bool)
+        rank[marker.notna().to_numpy(dtype=bool)] = 0
+        rank[proven] = 2
+    return rank
 
 
 def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Select proven outputs, conservatively interpreting unmarked legacy history."""
-    produced = (
-        frame[_PRODUCED_COLUMN].eq(True).fillna(False).to_numpy(dtype=bool, copy=True)
-        if _PRODUCED_COLUMN in frame
-        else _recorded_prediction_mask(frame)
-    )
-    if "do_predict" not in frame:
-        return produced if _PRODUCED_COLUMN in frame else np.zeros(len(frame), dtype=bool)
-    status = pd.to_numeric(frame["do_predict"], errors="coerce")
-    produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
-    if _PRODUCED_COLUMN not in frame:
-        # Old bootstrap and rejected rows both have a close and status zero.
-        # Their origin cannot be reconstructed, so do not train on either.
-        legacy_status = status.to_numpy(dtype=float, na_value=np.nan)
-        produced &= np.isfinite(legacy_status) & (legacy_status != 0)
+    """Select real model outputs, excluding bootstrap and expired-model placeholders."""
+    produced = _legacy_produced_prediction_mask(frame)
+    if _PRODUCED_COLUMN in frame:
+        marker = frame[_PRODUCED_COLUMN]
+        produced = np.where(
+            marker.notna(), marker.eq(True).fillna(False).to_numpy(dtype=bool), produced
+        )
+    if "do_predict" in frame:
+        status = pd.to_numeric(frame["do_predict"], errors="coerce")
+        produced = produced & status.ne(2).fillna(True).to_numpy(dtype=bool)
     return produced
 
 
 def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
-    """Migrate legacy observations without guessing whether status-zero rows were real."""
+    """Preserve explicit markers and infer only distinguishable legacy predictions."""
     if _PRODUCED_COLUMN in frame:
-        if frame[_PRODUCED_COLUMN].isna().any():
-            frame = frame.copy()
-            frame[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].fillna(False).astype(bool)
         return frame
-    frame = frame.copy()
-    frame[_PRODUCED_COLUMN] = _produced_prediction_mask(frame)
-    return frame
+    result = frame.copy()
+    result[_PRODUCED_COLUMN] = _legacy_produced_prediction_mask(frame)
+    return result
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
     """Retain the most provable prediction per candle, in date order.
 
-    Proven outputs outrank ambiguous close-bearing rows, which outrank
-    placeholders. This matters before Freqtrade repairs legacy history on load:
-    a later bootstrap row must not replace a distinguishable real prediction.
+    Proven outputs (legacy nonzero statuses or explicit markers) outrank
+    ambiguous close-bearing rows, which outrank downtime and expired placeholders.
     Equally ranked rows use last-write-wins; invalid dates are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
@@ -170,12 +180,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         result["date_pred"] = date_pred
         return result
 
-    rank = _recorded_prediction_mask(frame).astype(np.int8)
-    produced = _produced_prediction_mask(frame)
-    rank[produced] = 2
-    if _PRODUCED_COLUMN in frame:
-        known = frame[_PRODUCED_COLUMN].notna().to_numpy(dtype=bool)
-        rank[known & ~produced] = 0
+    rank = _recorded_prediction_rank(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
         {"date_pred": date_pred.array, "rank": rank, "position": np.arange(len(frame))}
@@ -206,11 +211,11 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Normalize persisted history and duplicate predictions before upstream writes.
+    """Repair persisted prediction dates before Freqtrade's positional writes.
 
-    Normalize before upstream positional writes and before disk repair can discard
-    a recorded duplicate. Already-clean upstream results are preserved. Recheck
-    these synchronous method contracts on Freqtrade upgrades.
+    Normalize before upstream disk repair discards a provable duplicate, and
+    align the returned candles after writes. Both model copies of this global
+    patch must have identical behavior regardless of import order.
     """
     names = (
         "set_initial_return_values",
@@ -229,7 +234,7 @@ def _install_date_pred_dedup_patch() -> None:
         )
         pending.append(not getattr(current, _DATE_PRED_DEDUP_SENTINEL, False))
         if iscoroutinefunction(original) or iscoroutinefunction(current):
-            raise RuntimeError("Repair [global]: requires synchronous drawer methods")
+            raise RuntimeError("FreqAI prediction repair requires synchronous drawer methods")
     if not any(pending):
         return
     original_set_initial, original_append, original_attach = originals[:3]

@@ -171,12 +171,15 @@ wins.
 
 In live and dry-run modes, each pair requires
 `freqai.fit_live_predictions_candles` real model predictions before adaptive
-thresholds become available. FreqAI bootstrap predictions made from the initial
-training frame do not count. Warmup progress from recorded predictions is
-restored after a restart. Legacy rows without provenance can count only when
-their nonzero prediction status distinguishes them from bootstrap; ambiguous
-rejected rows do not count. A pair starts a new warmup when the time since
-its last observation, or a gap within its observations, is greater than
+thresholds become available. The Nth observation first affects the next
+prediction update, not the candle that produced it. FreqAI bootstrap
+predictions made from the initial training frame do not count. Warmup progress
+from recorded predictions is restored after a restart. Legacy rows without
+provenance count only when their nonzero prediction status distinguishes them
+from bootstrap; ambiguous rejected rows do not count.
+
+A pair starts a new warmup when the time since its last observation, or a gap
+within its observations, is greater than
 `fit_live_predictions_candles × timeframe`. An observation exactly one horizon
 old remains eligible. Downtime and expired-model rows are excluded; genuine
 zero and outlier-rejected predictions count. Predictions align to candle dates;

@@ -231,6 +231,32 @@ class TrainingObservationsTest(unittest.TestCase):
                 marker, restored.dd.attach_return_values_to_return_dataframe(pair, resumed)
             )
 
+    def test_partially_marked_history_restores_provable_observations(self):
+        pair = "BTC/USDT"
+        marker = "_freqai_strategies_produced"
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            config["freqai"]["fit_live_predictions_candles"] = 4
+            source = ReforceXY(config=config)
+            self.addCleanup(source.close_envs)
+            source.dd.historic_predictions[pair] = pd.DataFrame(
+                {
+                    "date_pred": pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC"),
+                    "&-action": [7.0, 9.0, 99.0, 1000.0],
+                    "close_price": [100.0] * 4,
+                    "do_predict": [1, 0, 2, 1],
+                    marker: [None, True, None, False],
+                }
+            )
+            source.dd.save_historic_predictions_to_disk()
+
+            restarted = ReforceXY(config=config)
+            restarted.live = True
+            self.addCleanup(restarted.close_envs)
+            dk = SimpleNamespace(data={}, label_list=["&-action"], unique_class_list=[])
+            restarted.fit_live_predictions(dk, pair)
+            self.assertEqual(dk.data["labels_mean"]["&-action"], 8.0)
+
     def test_duplicate_date_keeps_provable_observation_after_restart(self):
         pair = "BTC/USDT"
         marker = "_freqai_strategies_produced"

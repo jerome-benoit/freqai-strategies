@@ -136,7 +136,7 @@ def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
 
 
 def _recorded_prediction_rank(frame: pd.DataFrame) -> NDArray[np.int8]:
-    """Prefer proven real predictions to ambiguous legacy rows and placeholders."""
+    """Prefer provable predictions to ambiguous legacy rows and placeholders."""
     recorded = np.zeros(len(frame), dtype=bool)
     status = None
     if "close_price" in frame:
@@ -151,6 +151,7 @@ def _recorded_prediction_rank(frame: pd.DataFrame) -> NDArray[np.int8]:
         )
         recorded &= status.ne(2).fillna(True).to_numpy(dtype=bool)
     rank = recorded.astype(np.int8)
+    rank[_legacy_produced_prediction_mask(frame)] = 2
     if _PRODUCED_PREDICTION_COLUMN in frame:
         marker = frame[_PRODUCED_PREDICTION_COLUMN]
         proven = marker.eq(True).fillna(False).to_numpy(dtype=bool)
@@ -184,12 +185,11 @@ def _ensure_produced_prediction_column(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Keep the best-proven prediction per candle, in date order.
+    """Retain the most provable prediction per candle, in date order.
 
-    Explicitly produced rows outrank ambiguous legacy rows, which outrank
-    Freqtrade downtime and bootstrap placeholders. Equally ranked duplicates
-    use last-write-wins; prediction magnitudes never rank rows. Invalid dates
-    cannot match a candle and are discarded.
+    Proven outputs (legacy nonzero statuses or explicit markers) outrank
+    ambiguous close-bearing rows, which outrank downtime and expired placeholders.
+    Equally ranked rows use last-write-wins; invalid dates are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
@@ -200,14 +200,14 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         result["date_pred"] = date_pred
         return result
 
-    recorded = _recorded_prediction_rank(frame)
+    rank = _recorded_prediction_rank(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
-        {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
+        {"date_pred": date_pred.array, "rank": rank, "position": np.arange(len(frame))}
     )
     kept = (
         order.loc[valid.to_numpy()]
-        .sort_values(["date_pred", "recorded", "position"])
+        .sort_values(["date_pred", "rank", "position"])
         .drop_duplicates("date_pred", keep="last")
     )
     result = frame.iloc[kept.index].copy()
@@ -231,12 +231,11 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
 
 
 def _install_date_pred_dedup_patch() -> None:
-    """Repair persisted history and duplicates produced by older Freqtrade writers.
+    """Repair persisted prediction dates before Freqtrade's positional writes.
 
-    Normalize before upstream positional writes and after legacy duplicate writes.
-    Normalize before upstream disk repair can discard a recorded duplicate.
-    Already-clean upstream results are preserved. Recheck these synchronous
-    method contracts on Freqtrade upgrades.
+    Normalize before upstream disk repair discards a provable duplicate, and
+    align the returned candles after writes. Both model copies of this global
+    patch must have identical behavior regardless of import order.
     """
     names = (
         "set_initial_return_values",
@@ -287,7 +286,7 @@ def _install_date_pred_dedup_patch() -> None:
             self.historic_predictions[pair]
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
-            # Legacy append requires an initialized row; let upstream construct it.
+            # Append requires an initialized row; let upstream construct it.
             original_set_initial(
                 self,
                 pair,
