@@ -281,6 +281,7 @@ fallback). Then `loss_threshold = pnl_target / effective_rr` and
 Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 `range = max_u - min_u`, `ratio = (pnl - min_u)/range`,
 `min_range = max(1e-6, 0.01 · pnl_target)`. Then:
+
 - If `range < min_range`: `efficiency_coefficient = 1` (guard against division
   explosion)
 - If `pnl > 0`:
