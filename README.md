@@ -170,14 +170,18 @@ specific; equally specific patterns follow declaration order, so the later one
 wins.
 
 In live and dry-run modes, each pair requires
-`freqai.fit_live_predictions_candles` produced model predictions before
-adaptive thresholds become available. Warmup progress is restored with the
-FreqAI prediction history after a restart. If no produced observation is
-available for one complete calibration horizon
-(`fit_live_predictions_candles × timeframe`), the pair starts a new warmup.
-Downtime and expired-model rows are excluded; genuine zero and outlier-rejected
-predictions count. Predictions align to candle dates; candles without
-predictions have `do_predict=0` and downtime zeros display but never calibrate.
+`freqai.fit_live_predictions_candles` real model predictions before adaptive
+thresholds become available. FreqAI bootstrap predictions made from the initial
+training frame do not count. Warmup progress from recorded predictions is
+restored after a restart. Legacy rows without provenance can count only when
+their nonzero prediction status distinguishes them from bootstrap; ambiguous
+rejected rows do not count. A pair starts a new warmup when the time since
+its last observation, or a gap within its observations, is greater than
+`fit_live_predictions_candles × timeframe`. An observation exactly one horizon
+old remains eligible. Downtime and expired-model rows are excluded; genuine
+zero and outlier-rejected predictions count. Predictions align to candle dates;
+candles without predictions have `do_predict=0` and downtime zeros display but
+never calibrate.
 
 ### Backtest evaluation protocol
 
@@ -360,10 +364,14 @@ when their objective identity matches.
 
 ### Live inference
 
-Optional `fit_live_predictions_candles` statistics use the latest persisted
-produced observations per pair, including immediately after restart. Available
-observations are used before a full window accumulates. See the model docstrings
-for continuation, HPO and statistics details.
+Optional `fit_live_predictions_candles` statistics use the latest persisted real
+predictions per pair, excluding FreqAI bootstrap rows. Available observations
+are used before a full window accumulates and survive restarts. FreqAI returns
+the initial strategy frame before calculating live statistics; restored
+statistics appear on the next prediction update. In legacy histories without
+provenance, zero-status rows are excluded because bootstrap and rejected
+predictions cannot be distinguished; nonzero recorded statuses can still count.
+See the model docstrings for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.

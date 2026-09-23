@@ -103,6 +103,7 @@ def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> N
 
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
+_PRODUCED_COLUMN = "_freqai_strategies_produced"
 
 
 def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
@@ -122,12 +123,34 @@ def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
 
 
 def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Exclude expired-model placeholders from recorded model observations."""
-    produced = _recorded_prediction_mask(frame)
-    if "do_predict" in frame:
-        status = pd.to_numeric(frame["do_predict"], errors="coerce")
-        produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    """Select proven outputs, conservatively interpreting unmarked legacy history."""
+    produced = (
+        frame[_PRODUCED_COLUMN].eq(True).fillna(False).to_numpy(dtype=bool, copy=True)
+        if _PRODUCED_COLUMN in frame
+        else _recorded_prediction_mask(frame)
+    )
+    if "do_predict" not in frame:
+        return produced if _PRODUCED_COLUMN in frame else np.zeros(len(frame), dtype=bool)
+    status = pd.to_numeric(frame["do_predict"], errors="coerce")
+    produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    if _PRODUCED_COLUMN not in frame:
+        # Old bootstrap and rejected rows both have a close and status zero.
+        # Their origin cannot be reconstructed, so do not train on either.
+        legacy_status = status.to_numpy(dtype=float, na_value=np.nan)
+        produced &= np.isfinite(legacy_status) & (legacy_status != 0)
     return produced
+
+
+def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
+    """Migrate legacy observations without guessing whether status-zero rows were real."""
+    if _PRODUCED_COLUMN in frame:
+        if frame[_PRODUCED_COLUMN].isna().any():
+            frame = frame.copy()
+            frame[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].fillna(False).astype(bool)
+        return frame
+    frame = frame.copy()
+    frame[_PRODUCED_COLUMN] = _produced_prediction_mask(frame)
+    return frame
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
@@ -322,9 +345,12 @@ class ReforceXY(BaseReinforcementLearningModel):
             ...
             "fit_live_predictions_candles": 0,      // Optional non-negative integer; omitted or 0 disables action statistics
             // Live/dry-run: latest N persisted produced observations per pair.
-            // Available observations are used immediately and survive restarts. Downtime and
-            // expired status 2 do not count; neutral/exit actions and recorded rejected
-            // predictions do. Backtests use the previous N rows, not the current row.
+            // Initial full-frame predictions are bootstrap samples, not observations.
+            // Available observations are used after the next actual prediction append
+            // and survive restarts. Downtime and expired status 2 do not count;
+            // neutral/exit actions and recorded rejected predictions do. Legacy history
+            // without provenance cannot distinguish bootstrap from rejected status 0:
+            // those ambiguous rows are excluded. Backtests use the previous N rows.
             // Numeric objects are coerced; non-finite samples are ignored. Empty finite
             // samples yield zeros; constants have zero spread; nonnumeric objects are skipped.
             // Statistics do not gate RL actions. Population standard deviation is used.
@@ -581,6 +607,74 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.unset_unsupported()
         self._configure_gpu_memory()
         self._install_replay_persistence()
+        self._install_prediction_provenance()
+
+    def _install_prediction_provenance(self) -> None:
+        """Keep live observation metadata local to this model's drawer instance."""
+        drawer = self.dd
+        set_initial = drawer.set_initial_return_values
+        append = drawer.append_model_predictions
+        attach = drawer.attach_return_values_to_return_dataframe
+        load = drawer.load_historic_predictions_from_disk
+
+        def migrate() -> None:
+            for pair, history in drawer.historic_predictions.items():
+                if "date_pred" in history:
+                    drawer.historic_predictions[pair] = _ensure_prediction_provenance(history)
+
+        @wraps(load)
+        def load_with_provenance() -> bool:
+            loaded = load()
+            migrate()
+            return loaded
+
+        @wraps(set_initial)
+        def set_initial_with_provenance(
+            pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
+        ) -> None:
+            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
+                drawer.historic_predictions[pair]
+            )
+            set_initial(pair, pred_df, dataframe)
+            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
+                drawer.historic_predictions[pair]
+            )
+            drawer.model_return_values[pair] = _align_historic_predictions(
+                drawer.historic_predictions[pair], dataframe
+            )
+
+        @wraps(append)
+        def append_with_provenance(
+            pair: str,
+            predictions: pd.DataFrame,
+            do_preds: NDArray[np.int_],
+            dk: FreqaiDataKitchen,
+            strat_df: pd.DataFrame,
+        ) -> None:
+            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
+                drawer.historic_predictions[pair]
+            )
+            append(pair, predictions, do_preds, dk, strat_df)
+            history = drawer.historic_predictions[pair]
+            # The native writer may return without writing an older candle.
+            if (
+                not history.empty
+                and not strat_df.empty
+                and pd.to_datetime(history["date_pred"].iloc[-1], utc=True)
+                == pd.to_datetime(strat_df["date"].iloc[-1], utc=True)
+            ):
+                history.loc[history.index[-1], _PRODUCED_COLUMN] = True
+            drawer.model_return_values[pair] = _align_historic_predictions(history, strat_df)
+
+        @wraps(attach)
+        def attach_without_provenance(pair: str, dataframe: pd.DataFrame) -> pd.DataFrame:
+            return attach(pair, dataframe).drop(columns=_PRODUCED_COLUMN, errors="ignore")
+
+        migrate()
+        drawer.load_historic_predictions_from_disk = load_with_provenance
+        drawer.set_initial_return_values = set_initial_with_provenance
+        drawer.append_model_predictions = append_with_provenance
+        drawer.attach_return_values_to_return_dataframe = attach_without_provenance
 
     def _install_replay_persistence(self) -> None:
         save_data = self.dd.save_data
@@ -1519,6 +1613,13 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
 
         return model
+
+    def set_initial_historic_predictions(
+        self, pred_df: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, strat_df: pd.DataFrame
+    ) -> None:
+        """Keep Freqtrade's full-frame bootstrap out of live prediction statistics."""
+        super().set_initial_historic_predictions(pred_df, dk, pair, strat_df)
+        self.dd.historic_predictions[pair][_PRODUCED_COLUMN] = False
 
     def fit_live_predictions(self, dk: FreqaiDataKitchen, pair: str) -> None:
         """Compute optional action statistics from prior prediction observations."""

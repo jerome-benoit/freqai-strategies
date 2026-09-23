@@ -124,11 +124,21 @@ from Utils import (
 )
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
+_PRODUCED_PREDICTION_COLUMN = "_freqai_strategies_produced"
 
 
-def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Identify recorded rows from metadata, never from prediction magnitudes."""
+def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Bootstrap has status 0; only nonzero, nonexpired statuses prove legacy production."""
+    if "do_predict" not in frame:
+        return np.zeros(len(frame), dtype=bool)
+    status = pd.to_numeric(frame["do_predict"], errors="coerce")
+    return (status.notna() & np.isfinite(status) & status.ne(0) & status.ne(2)).to_numpy(dtype=bool)
+
+
+def _recorded_prediction_rank(frame: pd.DataFrame) -> NDArray[np.int8]:
+    """Prefer proven real predictions to ambiguous legacy rows and placeholders."""
     recorded = np.zeros(len(frame), dtype=bool)
+    status = None
     if "close_price" in frame:
         close = pd.to_numeric(frame["close_price"], errors="coerce")
         recorded |= (close.gt(0) & close.lt(np.inf)).fillna(False).to_numpy(dtype=bool)
@@ -139,26 +149,47 @@ def _recorded_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
             .fillna(False)
             .to_numpy(dtype=bool)
         )
-    return recorded
+        recorded &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+    rank = recorded.astype(np.int8)
+    if _PRODUCED_PREDICTION_COLUMN in frame:
+        marker = frame[_PRODUCED_PREDICTION_COLUMN]
+        proven = marker.eq(True).fillna(False).to_numpy(dtype=bool)
+        if status is not None:
+            proven = proven & status.ne(2).fillna(True).to_numpy(dtype=bool)
+        rank[marker.notna().to_numpy(dtype=bool)] = 0
+        rank[proven] = 2
+    return rank
 
 
 def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
-    """Exclude expired-model placeholders from recorded model observations."""
-    produced = _recorded_prediction_mask(frame)
+    """Select real model outputs, excluding bootstrap and expired-model placeholders."""
+    produced = _legacy_produced_prediction_mask(frame)
+    if _PRODUCED_PREDICTION_COLUMN in frame:
+        marker = frame[_PRODUCED_PREDICTION_COLUMN]
+        produced = np.where(
+            marker.notna(), marker.eq(True).fillna(False).to_numpy(dtype=bool), produced
+        )
     if "do_predict" in frame:
         status = pd.to_numeric(frame["do_predict"], errors="coerce")
-        produced &= status.ne(2).fillna(True).to_numpy(dtype=bool)
+        produced = produced & status.ne(2).fillna(True).to_numpy(dtype=bool)
     return produced
 
 
-def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Normalize dates and retain the latest recorded row per candle, in date order.
+def _ensure_produced_prediction_column(frame: pd.DataFrame) -> pd.DataFrame:
+    if _PRODUCED_PREDICTION_COLUMN in frame:
+        return frame
+    result = frame.copy()
+    result[_PRODUCED_PREDICTION_COLUMN] = _legacy_produced_prediction_mask(frame)
+    return result
 
-    Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
-    prediction status. Those rows must not replace recorded predictions, including
-    zero predictions and rejected predictions (do_predict == 0 with a candle close).
-    Indistinguishable legacy rows use last-write-wins; label magnitudes never rank rows.
-    Invalid dates cannot match a candle and are discarded.
+
+def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep the best-proven prediction per candle, in date order.
+
+    Explicitly produced rows outrank ambiguous legacy rows, which outrank
+    Freqtrade downtime and bootstrap placeholders. Equally ranked duplicates
+    use last-write-wins; prediction magnitudes never rank rows. Invalid dates
+    cannot match a candle and are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
@@ -169,7 +200,7 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         result["date_pred"] = date_pred
         return result
 
-    recorded = _recorded_prediction_mask(frame)
+    recorded = _recorded_prediction_rank(frame)
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
         {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
@@ -1634,6 +1665,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hp_value: dict[str, float] = {}
         self._holdout_rmse: dict[str, float] = {}
         self._session_fitted_pairs: set[str] = set()
+        self._calibration_current_candles: dict[str, pd.Timestamp] = {}
         self._optuna_label_values: dict[str, list[float | int]] = {}
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
         self._optuna_label_params: dict[str, dict[str, Any]] = {}
@@ -3264,37 +3296,96 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         if len(self._optuna_label_incremented_pairs) >= len(self.pairs):
             self._optuna_label_incremented_pairs = []
 
+    def set_initial_historic_predictions(
+        self, pred_df: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, strat_df: pd.DataFrame
+    ) -> None:
+        super().set_initial_historic_predictions(pred_df, dk, pair, strat_df)
+        if self.live:
+            self.dd.historic_predictions[pair] = _ensure_produced_prediction_column(
+                self.dd.historic_predictions[pair]
+            )
+
+    def build_strategy_return_arrays(
+        self, dataframe: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, trained_timestamp: int
+    ) -> None:
+        """Record real appends and use Freqtrade's current candle for calibration."""
+        had_returns = pair in self.dd.model_return_values
+        if self.live and pair in self.dd.historic_predictions:
+            self.dd.historic_predictions[pair] = _ensure_produced_prediction_column(
+                self.dd.historic_predictions[pair]
+            )
+        if not dataframe.empty:
+            self._calibration_current_candles[pair] = pd.to_datetime(
+                dataframe["date"].iloc[-1], utc=True, errors="coerce"
+            )
+        try:
+            super().build_strategy_return_arrays(dataframe, dk, pair, trained_timestamp)
+            if self.live and had_returns:
+                history = self.dd.historic_predictions[pair]
+                current = self._calibration_current_candles.get(pair)
+                # Native append overwrites the last row on the same date, but
+                # returns early if the strategy candle predates the saved one.
+                if (
+                    current is not None
+                    and pd.notna(current)
+                    and not history.empty
+                    and pd.to_datetime(history["date_pred"].iloc[-1], utc=True) == current
+                ):
+                    history.at[history.index[-1], _PRODUCED_PREDICTION_COLUMN] = True
+                    returned = self.dd.model_return_values[pair]
+                    if not returned.empty and _PRODUCED_PREDICTION_COLUMN in returned:
+                        returned.at[returned.index[-1], _PRODUCED_PREDICTION_COLUMN] = True
+            if _PRODUCED_PREDICTION_COLUMN in dk.return_dataframe:
+                dk.return_dataframe = dk.return_dataframe.drop(columns=_PRODUCED_PREDICTION_COLUMN)
+        finally:
+            self._calibration_current_candles.pop(pair, None)
+
     def _persist_calibration_start(self, pair: str, start: pd.Timestamp) -> None:
-        """Persist the lower timestamp boundary for eligible calibration rows."""
+        """Persist a UTC boundary without mutating Freqtrade's shared empty extras."""
         self.dd.get_pair_dict_info(pair)
-        extras = self.dd.pair_dict[pair].setdefault("extras", {})
+        pair_info = self.dd.pair_dict[pair]
+        extras = pair_info.get("extras", {})
         value = start.isoformat()
         if extras.get(self._CALIBRATION_START_KEY) == value:
             return
-        extras[self._CALIBRATION_START_KEY] = value
+        self.dd.pair_dict[pair] = {
+            **pair_info,
+            "extras": {**extras, self._CALIBRATION_START_KEY: value},
+        }
         self.dd.save_drawer_to_disk()
 
     def _calibration_decision_time(
-        self, dk: FreqaiDataKitchen, history: pd.DataFrame
-    ) -> pd.Timestamp:
-        """Return the current point-in-time candle without using wall-clock time."""
+        self, dk: FreqaiDataKitchen, pair: str, history: pd.DataFrame
+    ) -> pd.Timestamp | None:
+        """Use the live strategy candle; retain historical fallback for direct callers."""
+        if pair in self._calibration_current_candles:
+            current = self._calibration_current_candles[pair]
+            return current if pd.notna(current) else None
         full_df = getattr(dk, "full_df", None)
         if isinstance(full_df, pd.DataFrame) and "date" in full_df:
-            dates = ensure_datetime_series(full_df["date"])
+            dates = pd.to_datetime(full_df["date"], utc=True, errors="coerce", format="mixed")
             if not dates.empty and pd.notna(dates.max()):
                 return dates.max()
-        return history["date_pred"].max()
+        if not history.empty:
+            latest = pd.to_datetime(
+                history["date_pred"], utc=True, errors="coerce", format="mixed"
+            ).max()
+            if pd.notna(latest):
+                return latest
+        return None
 
     def _migrate_calibration_start(
         self, pair: str, history: pd.DataFrame, decision_time: pd.Timestamp
     ) -> pd.Timestamp:
-        """Adopt legacy live predictions without treating bootstrap rows as observations."""
-        produced = _produced_prediction_mask(history)
+        """Resume only provable legacy outputs; an ambiguous bootstrap starts cold."""
+        produced = (
+            _produced_prediction_mask(history) & history["date_pred"].le(decision_time).to_numpy()
+        )
         if produced.any():
             start = history.loc[produced, "date_pred"].min()
-            logger.info("[%s] Resuming calibration from legacy prediction history", pair)
+            logger.info("[%s] Resuming calibration from prediction history", pair)
         else:
-            start = decision_time + pd.Timedelta(1, unit="ns")
+            start = decision_time
             logger.info("[%s] Starting calibration after FreqAI bootstrap history", pair)
         self._persist_calibration_start(pair, start)
         return start
@@ -3307,21 +3398,31 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         sample_size: int,
     ) -> pd.DataFrame:
         """Select persisted observations for the current calibration period."""
-        decision_time = self._calibration_decision_time(dk, history)
+        decision_time = self._calibration_decision_time(dk, pair, history)
+        if decision_time is None:
+            return history.iloc[:0]
         self.dd.get_pair_dict_info(pair)
-        extras = self.dd.pair_dict[pair].setdefault("extras", {})
-        raw_start = extras.get(self._CALIBRATION_START_KEY)
-        try:
-            start = pd.Timestamp(raw_start) if isinstance(raw_start, str) else None
-        except ValueError:
-            start = None
-        if start is None:
+        raw_start = self.dd.pair_dict[pair].get("extras", {}).get(self._CALIBRATION_START_KEY)
+        start = (
+            pd.to_datetime(raw_start, utc=True, errors="coerce")
+            if isinstance(raw_start, str)
+            else pd.NaT
+        )
+        if pd.isna(start) or start > decision_time:
             start = self._migrate_calibration_start(pair, history, decision_time)
+        elif raw_start != start.isoformat():
+            self._persist_calibration_start(pair, start)
 
-        produced = _produced_prediction_mask(history)
+        produced = (
+            _produced_prediction_mask(history) & history["date_pred"].le(decision_time).to_numpy()
+        )
         eligible = history.loc[produced & history["date_pred"].ge(start).to_numpy()]
         max_gap = pd.Timedelta(seconds=sample_size * timeframe_to_seconds(self.config["timeframe"]))
+        # Include the persisted boundary itself: history may have been rebuilt
+        # after a restart, leaving no rows from the preceding warmup segment.
         gap_starts = eligible.loc[eligible["date_pred"].diff().gt(max_gap), "date_pred"]
+        if not eligible.empty and eligible["date_pred"].iloc[0] - start > max_gap:
+            gap_starts = pd.concat([eligible["date_pred"].iloc[:1], gap_starts])
         if not gap_starts.empty:
             start = gap_starts.iloc[-1]
             logger.warning(
