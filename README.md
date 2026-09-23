@@ -371,6 +371,8 @@ the initial strategy frame before calculating live statistics; restored
 statistics appear on the next prediction update. In legacy histories without
 provenance, zero-status rows are excluded because bootstrap and rejected
 predictions cannot be distinguished; nonzero recorded statuses can still count.
+On duplicate candle dates, a provable prediction takes precedence over an
+ambiguous close-bearing legacy row during history restoration.
 See the model docstrings for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before

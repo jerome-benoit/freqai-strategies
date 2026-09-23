@@ -231,6 +231,39 @@ class TrainingObservationsTest(unittest.TestCase):
                 marker, restored.dd.attach_return_values_to_return_dataframe(pair, resumed)
             )
 
+    def test_duplicate_date_keeps_provable_observation_after_restart(self):
+        pair = "BTC/USDT"
+        marker = "_freqai_strategies_produced"
+        date = pd.Timestamp("2026-01-01", tz="UTC")
+        for statuses, markers in (([1, 0], None), ([0, 0], [True, False])):
+            with self.subTest(markers=markers), tempfile.TemporaryDirectory() as temp:
+                config = model_config(temp)
+                config["freqai"]["fit_live_predictions_candles"] = 3
+                source = ReforceXY(config=config)
+                self.addCleanup(source.close_envs)
+                history = pd.DataFrame(
+                    {
+                        "date_pred": [date, date],
+                        "&-action": [7.0, 99.0],
+                        "close_price": [100.0, 100.0],
+                        "do_predict": statuses,
+                    }
+                )
+                if markers is not None:
+                    history[marker] = markers
+                source.dd.historic_predictions[pair] = history
+                source.dd.save_historic_predictions_to_disk()
+
+                restarted = ReforceXY(config=config)
+                restarted.live = True
+                self.addCleanup(restarted.close_envs)
+                restored = restarted.dd.historic_predictions[pair]
+                self.assertEqual(restored["&-action"].tolist(), [7.0])
+                self.assertEqual(restored[marker].tolist(), [True])
+                dk = SimpleNamespace(data={}, label_list=["&-action"], unique_class_list=[])
+                restarted.fit_live_predictions(dk, pair)
+                self.assertEqual(dk.data["labels_mean"]["&-action"], 7.0)
+
     def test_legacy_zero_status_is_ambiguous_but_expired_status_is_excluded(self):
         pair = "BTC/USDT"
         history = pd.DataFrame(

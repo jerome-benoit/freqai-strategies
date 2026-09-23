@@ -154,13 +154,12 @@ def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
-    """Normalize dates and retain the latest recorded row per candle, in date order.
+    """Retain the most provable prediction per candle, in date order.
 
-    Freqtrade fills downtime rows with zeros/NaNs, without a candle close or a
-    prediction status. Those rows must not replace recorded predictions, including
-    zero predictions and rejected predictions (do_predict == 0 with a candle close).
-    Indistinguishable rows use last-write-wins; label magnitudes never rank rows.
-    Invalid dates cannot match a candle and are discarded.
+    Proven outputs outrank ambiguous close-bearing rows, which outrank
+    placeholders. This matters before Freqtrade repairs legacy history on load:
+    a later bootstrap row must not replace a distinguishable real prediction.
+    Equally ranked rows use last-write-wins; invalid dates are discarded.
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
@@ -171,14 +170,19 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
         result["date_pred"] = date_pred
         return result
 
-    recorded = _recorded_prediction_mask(frame)
+    rank = _recorded_prediction_mask(frame).astype(np.int8)
+    produced = _produced_prediction_mask(frame)
+    rank[produced] = 2
+    if _PRODUCED_COLUMN in frame:
+        known = frame[_PRODUCED_COLUMN].notna().to_numpy(dtype=bool)
+        rank[known & ~produced] = 0
     # Rank only metadata, without copying or coercing all prediction columns.
     order = pd.DataFrame(
-        {"date_pred": date_pred.array, "recorded": recorded, "position": np.arange(len(frame))}
+        {"date_pred": date_pred.array, "rank": rank, "position": np.arange(len(frame))}
     )
     kept = (
         order.loc[valid.to_numpy()]
-        .sort_values(["date_pred", "recorded", "position"])
+        .sort_values(["date_pred", "rank", "position"])
         .drop_duplicates("date_pred", keep="last")
     )
     result = frame.iloc[kept.index].copy()
