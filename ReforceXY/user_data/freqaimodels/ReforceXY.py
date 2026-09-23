@@ -7,7 +7,6 @@ import math
 import os
 import stat
 import time
-import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -57,7 +56,6 @@ from joblib.externals import cloudpickle
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from optuna import Trial, TrialPruned, create_study, delete_study
-from optuna.exceptions import ExperimentalWarning
 from optuna.pruners import BasePruner, HyperbandPruner
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.storages import (
@@ -171,7 +169,7 @@ def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
+def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame, pair: str) -> pd.DataFrame:
     """Retain the most provable prediction per candle, in date order.
 
     Proven outputs (legacy nonzero statuses or explicit markers) outrank
@@ -180,7 +178,13 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
-    if valid.all() and date_pred.is_monotonic_increasing and date_pred.is_unique:
+    if not valid.all():
+        logger.warning(
+            "FreqAI prediction history [%s]: discarded invalid date_pred entries (count=%d)",
+            pair,
+            len(frame) - int(valid.sum()),
+        )
+    elif date_pred.is_monotonic_increasing and date_pred.is_unique:
         if date_pred.dtype == frame["date_pred"].dtype:
             return frame
         result = frame.copy()
@@ -251,12 +255,12 @@ def _install_date_pred_dedup_patch() -> None:
         self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         original_set_initial(
             self, pair, pred_df.reset_index(drop=True), dataframe.reset_index(drop=True)
         )
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
 
@@ -270,7 +274,7 @@ def _install_date_pred_dedup_patch() -> None:
         strat_df: pd.DataFrame,
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
             # Append requires an initialized row; let upstream construct it.
@@ -281,7 +285,7 @@ def _install_date_pred_dedup_patch() -> None:
                 strat_df.tail(1).reset_index(drop=True),
             )
         original_append(self, pair, predictions, do_preds, dk, strat_df)
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, strat_df)
 
@@ -289,7 +293,7 @@ def _install_date_pred_dedup_patch() -> None:
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
         return original_attach(self, pair, dataframe)
@@ -304,7 +308,7 @@ def _install_date_pred_dedup_patch() -> None:
         @wraps(original_repair)
         def repair_historic_predictions(self, pair: str, pair_df: pd.DataFrame) -> pd.DataFrame:
             if "date_pred" in pair_df:
-                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df)
+                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df, pair)
             return original_repair(self, pair, pair_df)
 
         replacements += (repair_historic_predictions,)
@@ -343,9 +347,6 @@ class _Samplers(NamedTuple):
 
 
 matplotlib.use("Agg")
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=ExperimentalWarning)
 logger = logging.getLogger(__name__)
 
 
@@ -1452,7 +1453,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         )
         if model is not None:
             dk.data[self._DEPLOYMENT_COORDINATE_MARKER_KEY] = self._DEPLOYMENT_COORDINATE_GENERATION
-        logger.info("Training [%s]: completed", pair)
+        logger.info("Training [%s]: model selection finished", pair)
         return model
 
     def fit(
@@ -1590,7 +1591,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 )
                 _update_eval_best_reward(self.eval_callback, float(final_mean_reward), model)
         except KeyboardInterrupt:
-            pass
+            logger.warning("Training [%s]: model fitting interrupted by user", dk.pair)
         finally:
             if self.progressbar_callback:
                 self.progressbar_callback.on_training_end()
@@ -1645,7 +1646,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         history = self.dd.historic_predictions[pair]
         if self.live:
-            history = _dedupe_historic_predictions_on_date_pred(history)
+            history = _dedupe_historic_predictions_on_date_pred(history, pair)
             history = history.loc[_produced_prediction_mask(history)]
         pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
@@ -4120,10 +4121,14 @@ class MyRLEnv(Base5ActionRLEnv):
             if self._position == Positions.Neutral:
                 exit_pnl = pre_pnl
         elif action != Actions.Neutral.value:
+            try:
+                action_name = Actions(action).name
+            except ValueError:
+                action_name = "unknown"
             logger.warning(
                 "Env [%s]: invalid action=%s (%d) in position=%s at tick=%d",
                 self.id,
-                Actions(action).name,
+                action_name,
                 action,
                 self._position.name,
                 self._current_tick,

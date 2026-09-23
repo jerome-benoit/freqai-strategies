@@ -379,6 +379,8 @@ remain excluded because bootstrap and rejected predictions cannot be
 distinguished. Explicit false markers remain excluded.
 On duplicate candle dates, a provable prediction takes precedence over an
 ambiguous close-bearing legacy row during history restoration.
+Rows with an invalid `date_pred` are discarded with a per-pair warning and the
+discarded-row count; valid duplicates retain the same precedence.
 See the model docstrings for continuation, HPO and statistics details.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
@@ -403,7 +405,8 @@ numeric value. Environment prices remain raw regardless of
 current evaluation run when available. DQN/QRDQN HPO rejects warmup budgets that
 leave no gradient update and trials that finish without learning. A zero-sized
 holdout remains supported when HPO is disabled, including with raw OHLC feature
-removal.
+removal. An interrupted ReforceXY fit is logged and still selects the best
+usable checkpoint when available, falling back to the final model otherwise.
 
 ### Reward and portfolio accounting
 

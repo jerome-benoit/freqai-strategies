@@ -3,7 +3,6 @@ import json
 import logging
 import random
 import time
-import warnings
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -191,7 +190,7 @@ def _ensure_produced_prediction_column(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFrame:
+def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame, pair: str) -> pd.DataFrame:
     """Retain the most provable prediction per candle, in date order.
 
     Proven outputs (legacy nonzero statuses or explicit markers) outrank
@@ -200,7 +199,13 @@ def _dedupe_historic_predictions_on_date_pred(frame: pd.DataFrame) -> pd.DataFra
     """
     date_pred = pd.to_datetime(frame["date_pred"], utc=True, errors="coerce", format="mixed")
     valid = date_pred.notna()
-    if valid.all() and date_pred.is_monotonic_increasing and date_pred.is_unique:
+    if not valid.all():
+        logger.warning(
+            "FreqAI prediction history [%s]: discarded invalid date_pred entries (count=%d)",
+            pair,
+            len(frame) - int(valid.sum()),
+        )
+    elif date_pred.is_monotonic_increasing and date_pred.is_unique:
         if date_pred.dtype == frame["date_pred"].dtype:
             return frame
         result = frame.copy()
@@ -271,12 +276,12 @@ def _install_date_pred_dedup_patch() -> None:
         self, pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         original_set_initial(
             self, pair, pred_df.reset_index(drop=True), dataframe.reset_index(drop=True)
         )
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
 
@@ -290,7 +295,7 @@ def _install_date_pred_dedup_patch() -> None:
         strat_df: pd.DataFrame,
     ) -> None:
         self.historic_predictions[pair] = _dedupe_historic_predictions_on_date_pred(
-            self.historic_predictions[pair]
+            self.historic_predictions[pair], pair
         )
         if self.historic_predictions[pair].empty and not strat_df.empty:
             # Append requires an initialized row; let upstream construct it.
@@ -301,7 +306,7 @@ def _install_date_pred_dedup_patch() -> None:
                 strat_df.tail(1).reset_index(drop=True),
             )
         original_append(self, pair, predictions, do_preds, dk, strat_df)
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, strat_df)
 
@@ -309,7 +314,7 @@ def _install_date_pred_dedup_patch() -> None:
     def attach_return_values_to_return_dataframe(
         self, pair: str, dataframe: pd.DataFrame
     ) -> pd.DataFrame:
-        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair])
+        repaired = _dedupe_historic_predictions_on_date_pred(self.historic_predictions[pair], pair)
         self.historic_predictions[pair] = repaired
         self.model_return_values[pair] = _align_historic_predictions(repaired, dataframe)
         return original_attach(self, pair, dataframe)
@@ -324,7 +329,7 @@ def _install_date_pred_dedup_patch() -> None:
         @wraps(original_repair)
         def repair_historic_predictions(self, pair: str, pair_df: pd.DataFrame) -> pd.DataFrame:
             if "date_pred" in pair_df:
-                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df)
+                pair_df = _dedupe_historic_predictions_on_date_pred(pair_df, pair)
             return original_repair(self, pair, pair_df)
 
         replacements += (repair_historic_predictions,)
@@ -347,7 +352,7 @@ SelectionMethod = DistanceMethod | ClusterMethod | DensityMethod
 ValidationMode = Literal["warn", "raise", "none"]
 _VALIDATION_MODES: Final[tuple[ValidationMode, ...]] = get_args(ValidationMode)
 SplitFn = Callable[[pd.DataFrame, pd.DataFrame, "SampleWeightInputs", pd.DataFrame], dict[str, Any]]
-warnings.simplefilter(action="ignore", category=FutureWarning)
+
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +365,7 @@ def _log_known_at_none_once(pair: str, context: str) -> None:
         return
     _KNOWN_AT_NONE_LOGGED.add(key)
     logger.info(
-        f"[{pair}] {context}: No <label>_known_at_lookahead column present; "
+        f"[{pair}] {context}: No usable label/weight known-at-lookahead data; "
         "causal guards use position-based purge only (label-aware filtering disabled)"
     )
 
@@ -797,9 +802,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             logger.info(f"{context}: Removed {removed} causal-unsafe train rows")
         if not keep_mask.any():
             raise ValueError(
-                f"{context}: causal guard removed all train rows "
-                f"(pivot-sparse training window; widen fit_live_predictions_candles "
-                f"or lower label_natr_multiplier)"
+                f"{context}: causal guard removed all train rows; "
+                "no train rows satisfy the causal availability cutoff"
             )
         return (
             train_features.loc[keep_mask],
@@ -2626,9 +2630,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 data_dictionary["test_weights"] = data_dictionary["test_weights"][holdout_mask]
                 if data_dictionary["test_features"].empty:
                     logger.warning(
-                        f"[{pair}] Causal purge emptied the holdout (label horizon "
-                        f">= holdout span); skipping holdout evaluation "
-                        f"(holdout_rmse=inf)"
+                        f"[{pair}] No holdout rows passed the causal availability "
+                        "cutoff at the end of the data window; skipping holdout "
+                        "evaluation (holdout_rmse=inf)"
                     )
                     data_dictionary["holdout_purged_empty"] = True
 
@@ -3469,7 +3473,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         history = self.dd.historic_predictions[pair]
         if self.live:
-            history = _dedupe_historic_predictions_on_date_pred(history)
+            history = _dedupe_historic_predictions_on_date_pred(history, pair)
             history = self._calibration_history(dk, pair, history, fit_live_predictions_candles)
             remaining = fit_live_predictions_candles - len(history)
             warmed_up = remaining <= 0
