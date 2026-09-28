@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, cast
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -81,6 +82,41 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
             idle_duration=idle_duration_high, short_allowed=False
         )
         self.assertGreater(high_idle_rate_spot, low_idle_rate_spot)
+
+    def test_unmasked_sampling_probabilities_match_action_frequencies(self):
+        """Reported probabilities describe valid actions, not their conditional hazards."""
+        draws = SCENARIOS.API_ENTRY_RATE_DRAWS
+        # Four standard errors using the maximum Bernoulli variance.
+        tolerance = 4 * math.sqrt(0.25 / draws)
+        cases = (
+            (Positions.Neutral, False, (Actions.Long_enter,), 1),
+            (Positions.Neutral, True, (Actions.Long_enter, Actions.Short_enter), 1),
+            (Positions.Long, True, (Actions.Long_exit,), 2),
+            (Positions.Short, True, (Actions.Short_exit,), 2),
+        )
+        for position, short_allowed, actions, probability_index in cases:
+            with self.subTest(position=position, short_allowed=short_allowed):
+                rng = random.Random(SEEDS.REPRODUCIBILITY)
+                samples = [
+                    _sample_action(
+                        position,
+                        rng,
+                        short_allowed=short_allowed,
+                        trade_duration=SCENARIOS.API_IDLE_DURATION_HIGH,
+                        max_trade_duration_candles=SCENARIOS.API_MAX_IDLE_DURATION_CANDLES,
+                        idle_duration=SCENARIOS.API_IDLE_DURATION_HIGH,
+                        max_idle_duration_candles=SCENARIOS.API_MAX_IDLE_DURATION_CANDLES,
+                        action_masking=False,
+                    )
+                    for _ in range(draws)
+                ]
+                observed = sum(sample[0] in actions for sample in samples) / draws
+                self.assertAlmostEqual(samples[0][probability_index], observed, delta=tolerance)
+                if position == Positions.Neutral:
+                    observed_neutral = (
+                        sum(sample[0] == Actions.Neutral for sample in samples) / draws
+                    )
+                    self.assertAlmostEqual(samples[0][3], observed_neutral, delta=tolerance)
 
     def test_parse_overrides(self):
         """Overrides accept canonical keys and reject unsupported keys."""
@@ -191,24 +227,88 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         prob_upper_bound = SCENARIOS.API_PROBABILITY_UPPER_BOUND
         self.assertTrue(((values >= 0.0) & (values <= prob_upper_bound)).all())
 
-    def test_simulate_samples_interprets_bool_string_params(self):
-        """Test simulate_samples correctly interprets string boolean params like action_masking."""
-        df1 = simulate_samples_with_defaults(
-            self.base_params(
-                action_masking="true", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
-            ),
-            num_samples=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL,
+    def test_unmasked_simulation_samples_invalid_actions_without_changing_position(self):
+        """Unmasked actions expose penalties without inventing trades or wrong-side exits."""
+        params = self.base_params(
+            action_masking="false", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
+        )
+        for mode in ("spot", "futures"):
+            with self.subTest(mode=mode):
+                df = simulate_samples_with_defaults(
+                    params,
+                    num_samples=SCENARIOS.SAMPLE_SIZE_LARGE,
+                    seed=SEEDS.BASE,
+                    trading_mode=mode,
+                )
+                invalid = df[df["is_invalid"] == 1.0]
+                self.assertGreater(len(invalid), 0)
+                self.assertLess(len(invalid), len(df))
+                self.assertTrue((invalid["reward_invalid"] == params["invalid_action"]).all())
+                self.assertTrue((invalid["reward_base"] == params["invalid_action"]).all())
+                wrong_exit = invalid.loc[
+                    (
+                        (
+                            (invalid["position"] == Positions.Long.value)
+                            & (invalid["action"] == Actions.Short_exit.value)
+                        )
+                        | (
+                            (invalid["position"] == Positions.Short.value)
+                            & (invalid["action"] == Actions.Long_exit.value)
+                        )
+                    )
+                    & ~invalid["terminated"]
+                ]
+                self.assertGreater(len(wrong_exit), 0)
+                self.assertTrue((wrong_exit["next_position"] == wrong_exit["position"]).all())
+                if mode == "spot":
+                    forbidden_entry = invalid.loc[
+                        (invalid["position"] == Positions.Neutral.value)
+                        & (invalid["action"] == Actions.Short_enter.value)
+                    ]
+                    self.assertGreater(len(forbidden_entry), 0)
+                    self.assertTrue(
+                        (forbidden_entry["next_position"] == Positions.Neutral.value).all()
+                    )
+                masked = simulate_samples_with_defaults(
+                    self.base_params(
+                        action_masking="true",
+                        max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT,
+                    ),
+                    num_samples=SCENARIOS.SAMPLE_SIZE_LARGE,
+                    seed=SEEDS.BASE,
+                    trading_mode=mode,
+                )
+                self.assertEqual(int(masked["is_invalid"].sum()), 0)
+
+        zero_penalty = simulate_samples_with_defaults(
+            self.base_params(action_masking="false", invalid_action=0.0),
+            num_samples=SCENARIOS.SAMPLE_SIZE_LARGE,
+            seed=SEEDS.BASE,
             trading_mode="spot",
         )
-        self.assertIsInstance(df1, pd.DataFrame)
-        df2 = simulate_samples_with_defaults(
-            self.base_params(
-                action_masking="false", max_trade_duration_candles=PARAMS.TRADE_DURATION_SHORT
-            ),
-            num_samples=SCENARIOS.SAMPLE_SIZE_REPORT_MINIMAL,
-            trading_mode="spot",
-        )
-        self.assertIsInstance(df2, pd.DataFrame)
+        self.assertGreater(int(zero_penalty["is_invalid"].sum()), 0)
+        self.assertTrue((zero_penalty["reward_invalid"] == 0.0).all())
+
+    def test_invalid_terminal_exit_liquidates_the_held_position(self):
+        """A wrong-side terminal exit keeps the held trade until its forced liquidation."""
+        sampled_actions = [
+            (Actions.Long_enter, 0.3, float("nan"), 0.7),
+            (Actions.Short_exit, float("nan"), 0.2, float("nan")),
+        ]
+        with mock.patch("reward_space_analysis._sample_action", side_effect=sampled_actions):
+            df = simulate_samples_with_defaults(
+                self.base_params(action_masking="false"),
+                num_samples=2,
+                seed=SEEDS.BASE,
+                trading_mode="spot",
+            )
+        terminal = df.iloc[-1]
+        self.assertEqual(terminal["position"], Positions.Long.value)
+        self.assertEqual(terminal["action"], Actions.Short_exit.value)
+        self.assertEqual(terminal["is_invalid"], 1.0)
+        self.assertTrue(terminal["terminal_liquidation"])
+        self.assertEqual(terminal["next_position"], Positions.Neutral.value)
+        self.assertTrue(np.isfinite(terminal["exit_pnl"]))
 
     def test_short_allowed_via_simulation(self):
         """Test _is_short_allowed via different trading modes."""

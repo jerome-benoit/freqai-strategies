@@ -169,32 +169,32 @@ class TestSimulationParity(RewardSpaceTestBase):
                 expected_duration = 0
             self.assertEqual(row.trade_duration, expected_duration)
 
-    def test_first_retained_pnl_is_only_exit_extremum(self):
-        """A first-candle exit excludes the fill-time PnL from its extrema."""
+    def test_synthetic_exit_reward_includes_fee_adjusted_entry_pnl(self):
         params = self.base_params(
             unrealized_pnl=False,
             max_trade_duration_candles=100,
-            entry_fee_rate=0.0,
-            exit_fee_rate=0.0,
+            entry_fee_rate=0.0015,
+            exit_fee_rate=0.0015,
+            exit_attenuation_mode="linear",
+            exit_plateau=False,
             hold_potential_enabled=False,
             entry_additive_enabled=False,
             exit_additive_enabled=False,
         )
         actions = [
             (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 1.0),
             (Actions.Long_exit, 0.0, 1.0, 0.0),
         ]
         with (
             patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
             patch.object(
-                reward_space_analysis.random.Random,
-                "gauss",
-                side_effect=[0.02, 0.0],
+                reward_space_analysis.random.Random, "gauss", side_effect=[0.02, -0.01, 0.0]
             ),
         ):
             df = simulate_samples(
                 params=params,
-                num_samples=2,
+                num_samples=3,
                 seed=SEEDS.BASE,
                 base_factor=PARAMS.BASE_FACTOR,
                 profit_aim=PARAMS.PROFIT_AIM,
@@ -205,32 +205,237 @@ class TestSimulationParity(RewardSpaceTestBase):
                 pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
             )
 
-        exit_row = df.iloc[1]
+        entry_pnl = 1.0 / ((1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])) - 1.0
+        peak_pnl = float(df.iloc[0]["next_pnl"])
+        exit_row = df.iloc[-1]
         pnl = float(exit_row["pnl"])
+        self.assertLess(entry_pnl, 0.0)
+        self.assertGreater(peak_pnl, pnl)
         self.assertGreater(pnl, 0.0)
-        runtime_context = reward_space_analysis.RewardContext(
-            current_pnl=pnl,
-            trade_duration=int(exit_row["trade_duration"]),
-            idle_duration=0,
-            max_unrealized_profit=pnl,
-            min_unrealized_profit=pnl,
-            position=Positions.Long,
-            action=Actions.Long_exit,
+        efficiency = 1.0 + params["efficiency_weight"] * (
+            (pnl - entry_pnl) / (peak_pnl - entry_pnl) - params["efficiency_center"]
         )
-        expected_exit = reward_space_analysis.calculate_reward(
-            runtime_context,
-            params,
-            PARAMS.BASE_FACTOR,
-            PARAMS.PROFIT_AIM,
-            PARAMS.RISK_REWARD_RATIO,
-            short_allowed=True,
-            action_masking=True,
-        ).exit_component
+        duration_ratio = float(exit_row["trade_duration"]) / params["max_trade_duration_candles"]
+        expected = (
+            pnl
+            * params["base_factor"]
+            / (1.0 + params["exit_linear_slope"] * duration_ratio)
+            * efficiency
+        )
         self.assertAlmostEqualFloat(
             float(exit_row["reward_exit"]),
-            expected_exit,
+            expected,
             tolerance=TOLERANCE.IDENTITY_RELAXED,
             rtol=TOLERANCE.RELATIVE,
+        )
+
+    def test_synthetic_fee_loss_extrema_match_retained_pnl(self):
+        for direction in ("long", "short"):
+            for transformed in (False, True):
+                with self.subTest(direction=direction, transformed=transformed):
+                    params = self.base_params(
+                        entry_fee_rate=0.1,
+                        exit_fee_rate=0.1,
+                        unrealized_pnl=transformed,
+                        max_trade_duration_candles=1,
+                        win_reward_factor=0.0,
+                        exit_plateau=False,
+                        hold_potential_enabled=False,
+                        exit_linear_slope=0.0,
+                        entry_additive_enabled=False,
+                        exit_additive_enabled=False,
+                    )
+                    enter = Actions.Long_enter if direction == "long" else Actions.Short_enter
+                    exit_action = Actions.Long_exit if direction == "long" else Actions.Short_exit
+                    # Cancel the simulator's directional drift to keep both marks flat.
+                    innovation = -0.001 if direction == "long" else 0.001
+                    with (
+                        patch.object(
+                            reward_space_analysis,
+                            "_sample_action",
+                            side_effect=[(enter, 1.0, 0.0, 0.0), (exit_action, 0.0, 1.0, 0.0)],
+                        ),
+                        patch.object(
+                            reward_space_analysis.random.Random,
+                            "gauss",
+                            side_effect=[innovation, 0.0],
+                        ),
+                    ):
+                        samples = simulate_samples(
+                            num_samples=2,
+                            seed=SEEDS.BASE,
+                            params=params,
+                            base_factor=PARAMS.BASE_FACTOR,
+                            profit_aim=PARAMS.PROFIT_AIM,
+                            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                            max_duration_ratio=2.0,
+                            trading_mode="futures",
+                            pnl_base_std=PARAMS.PNL_STD,
+                            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                        )
+
+                    fees = (1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])
+                    entry_pnl = 1.0 / fees - 1.0 if direction == "long" else 1.0 - fees
+                    expected_pnl = (
+                        entry_pnl * math.tanh(params["pnl_amplification_sensitivity"])
+                        if transformed
+                        else entry_pnl
+                    )
+                    self.assertLess(expected_pnl, -0.15)
+                    first, exit_row = samples.iloc[0], samples.iloc[1]
+                    self.assertAlmostEqual(float(first["next_pnl"]), expected_pnl, places=9)
+                    self.assertAlmostEqual(float(exit_row["exit_pnl"]), expected_pnl, places=9)
+                    efficiency = (
+                        1.0 + params["efficiency_weight"] * (params["efficiency_center"] - 1.0)
+                        if transformed
+                        else 1.0
+                    )
+                    self.assertAlmostEqual(
+                        float(exit_row["reward_exit"]),
+                        expected_pnl * params["base_factor"] * efficiency,
+                        places=8,
+                    )
+
+    def test_synthetic_high_fee_winner_retains_profitable_mark(self):
+        """Keep favorable retained PnL and exit reward positive with high fees.
+
+        **Invariant:** pbrs-synthetic-profitable-mark-133
+        """
+        for direction, innovation in (("long", 0.299), ("short", -0.299)):
+            for flat_first in (False, True):
+                with self.subTest(direction=direction, flat_first=flat_first):
+                    params = self.base_params(
+                        unrealized_pnl=True,
+                        entry_fee_rate=0.1,
+                        exit_fee_rate=0.1,
+                        max_trade_duration_candles=1,
+                    )
+                    enter = Actions.Long_enter if direction == "long" else Actions.Short_enter
+                    exit_action = Actions.Long_exit if direction == "long" else Actions.Short_exit
+                    actions = [(enter, 1.0, 0.0, 0.0)]
+                    # The directional drift completes a 30% favorable market move.
+                    innovations = [innovation]
+                    if flat_first:
+                        actions.append((Actions.Neutral, 0.0, 0.0, 1.0))
+                        innovations = [-0.001 if direction == "long" else 0.001, innovation]
+                    actions.append((exit_action, 0.0, 1.0, 0.0))
+                    innovations.append(0.0)
+                    with (
+                        patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
+                        patch.object(
+                            reward_space_analysis.random.Random,
+                            "gauss",
+                            side_effect=innovations,
+                        ),
+                    ):
+                        samples = simulate_samples(
+                            num_samples=len(actions),
+                            seed=SEEDS.BASE,
+                            params=params,
+                            base_factor=PARAMS.BASE_FACTOR,
+                            profit_aim=PARAMS.PROFIT_AIM,
+                            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                            max_duration_ratio=2.0,
+                            trading_mode="futures",
+                            pnl_base_std=PARAMS.PNL_STD,
+                            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                        )
+                    if flat_first:
+                        self.assertLess(float(samples.iloc[0]["next_pnl"]), 0.0)
+                    self.assertGreater(float(samples.iloc[-2]["next_pnl"]), 0.0)
+                    self.assertGreater(float(samples.iloc[-1]["exit_pnl"]), 0.0)
+                    self.assertGreater(float(samples.iloc[-1]["reward_exit"]), 0.0)
+
+    def test_synthetic_high_fee_short_boundary_rejects_real_excess(self):
+        """Accept rounding at the fee bound but reject a material loss beyond it.
+
+        **Invariant:** pbrs-synthetic-fee-boundary-134
+        """
+        params = self.base_params(
+            entry_fee_rate=0.1,
+            exit_fee_rate=0.1,
+            max_trade_duration_candles=1,
+        )
+        with (
+            patch.object(
+                reward_space_analysis,
+                "_sample_action",
+                side_effect=[
+                    (Actions.Neutral, 0.0, 0.0, 1.0),
+                    (Actions.Short_enter, 1.0, 0.0, 0.0),
+                    (Actions.Short_exit, 0.0, 1.0, 0.0),
+                ],
+            ),
+            patch.object(
+                reward_space_analysis.random.Random,
+                "gauss",
+                # Neutral move sets entry price to 1.03; next move cancels short drift.
+                side_effect=[0.03, 0.001, 0.0],
+            ),
+        ):
+            samples = simulate_samples(
+                num_samples=3,
+                seed=SEEDS.BASE,
+                params=params,
+                base_factor=PARAMS.BASE_FACTOR,
+                profit_aim=PARAMS.PROFIT_AIM,
+                risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                max_duration_ratio=2.0,
+                trading_mode="futures",
+                pnl_base_std=PARAMS.PNL_STD,
+                pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+            )
+        fee_factor = (1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])
+        self.assertAlmostEqual(float(samples.iloc[-1]["pnl"]), 1.0 - fee_factor, places=12)
+        beyond_bound = samples.copy()
+        beyond_bound.loc[beyond_bound.index[-1], "pnl"] = 1.0 - fee_factor - 0.001
+        with self.assertRaisesRegex(AssertionError, "extreme PnL"):
+            reward_space_analysis._validate_simulation_invariants(beyond_bound, params)
+
+    def test_unrealized_pnl_retains_sampled_market_path_after_candidate_cap(self):
+        """Keep distinct market paths after their first retained PnL is capped.
+
+        **Invariant:** pbrs-synthetic-latent-price-135
+        """
+        params = self.base_params(unrealized_pnl=True, max_trade_duration_candles=1)
+        actions = [
+            (Actions.Long_enter, 1.0, 0.0, 0.0),
+            (Actions.Neutral, 0.0, 0.0, 1.0),
+            (Actions.Long_exit, 0.0, 1.0, 0.0),
+        ]
+
+        def sample(first_return: float) -> pd.DataFrame:
+            with (
+                patch.object(reward_space_analysis, "_sample_action", side_effect=actions),
+                patch.object(
+                    reward_space_analysis.random.Random,
+                    "gauss",
+                    # Both first candidates clip at +0.15; the following move is -30%.
+                    side_effect=[first_return, -0.301, 0.0],
+                ),
+            ):
+                return simulate_samples(
+                    num_samples=len(actions),
+                    seed=SEEDS.BASE,
+                    params=params,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    max_duration_ratio=2.0,
+                    trading_mode="futures",
+                    pnl_base_std=PARAMS.PNL_STD,
+                    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                )
+
+        lower_price = sample(0.599)
+        higher_price = sample(0.949)
+        self.assertAlmostEqual(
+            float(lower_price.iloc[0]["next_pnl"]), float(higher_price.iloc[0]["next_pnl"])
+        )
+        self.assertGreater(float(lower_price.iloc[1]["next_pnl"]), 0.0)
+        self.assertGreater(
+            float(higher_price.iloc[1]["next_pnl"]),
+            float(lower_price.iloc[1]["next_pnl"]),
         )
 
     def test_unrealized_pnl_uses_each_sampled_market_move(self):
@@ -334,8 +539,8 @@ class TestSimulationParity(RewardSpaceTestBase):
         )
         self.assertTrue(replay["next_pnl"].equals(df["next_pnl"]))
 
-    def test_unrealized_pnl_exit_rewards_use_only_retained_extrema(self):
-        """Exit rewards use extrema reconstructed from the retained PnL trajectory."""
+    def test_unrealized_pnl_exit_rewards_include_fill_and_retained_extrema(self):
+        """The fee-adjusted fill and retained prices determine exit efficiency."""
         params = self.base_params(
             unrealized_pnl=True,
             max_trade_duration_candles=100,
@@ -378,8 +583,11 @@ class TestSimulationParity(RewardSpaceTestBase):
                 Actions.Long_enter,
                 Actions.Short_enter,
             ):
-                max_unrealized = -np.inf
-                min_unrealized = np.inf
+                fee_factor = (1.0 + params["entry_fee_rate"]) * (1.0 + params["exit_fee_rate"])
+                entry_pnl = (
+                    1.0 / fee_factor - 1.0 if action == Actions.Long_enter else 1.0 - fee_factor
+                )
+                max_unrealized = min_unrealized = entry_pnl
 
             if position in (Positions.Long, Positions.Short) and action in (
                 Actions.Long_exit,

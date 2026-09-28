@@ -1545,6 +1545,7 @@ _SAMPLE_DURATION_HAZARD_OVERTIME_MULTIPLIER = 4.0
 _SAMPLE_DURATION_HAZARD_MAX_PROBABILITY = 0.9
 _SAMPLE_EXIT_PROBABILITY_MIN = 0.002
 _SAMPLE_EXIT_PROBABILITY_MAX = 0.2
+_SAMPLE_INVALID_ACTION_PROBABILITY = 0.1
 
 
 def _sampling_probabilities(
@@ -1595,6 +1596,7 @@ def _sample_action(
     max_trade_duration_candles: int,
     idle_duration: int,
     max_idle_duration_candles: int,
+    action_masking: bool = True,
 ) -> tuple[Actions, float, float, float]:
     entry_prob, exit_prob, neutral_prob = _sampling_probabilities(
         position,
@@ -1612,15 +1614,29 @@ def _sample_action(
         else:
             choices = [Actions.Neutral, Actions.Long_enter]
             weights = [neutral_prob, entry_prob]
-        action = rng.choices(choices, weights=weights, k=1)[0]
-        return action, entry_prob, exit_prob, neutral_prob
-
-    if position == Positions.Long:
+    elif position == Positions.Long:
         choices = [Actions.Neutral, Actions.Long_exit]
+        weights = [1.0 - exit_prob, exit_prob]
     else:  # Positions.Short
         choices = [Actions.Neutral, Actions.Short_exit]
+        weights = [1.0 - exit_prob, exit_prob]
 
-    weights = [1.0 - exit_prob, exit_prob]
+    if not action_masking:
+        invalid_choices = [
+            candidate
+            for candidate in Actions
+            if not _is_valid_action(position, candidate, short_allowed=short_allowed)
+        ]
+        valid_mass = 1.0 - _SAMPLE_INVALID_ACTION_PROBABILITY
+        weights = [weight * valid_mass for weight in weights]
+        choices.extend(invalid_choices)
+        weights.extend(
+            [_SAMPLE_INVALID_ACTION_PROBABILITY / len(invalid_choices)] * len(invalid_choices)
+        )
+        entry_prob *= valid_mass
+        exit_prob *= valid_mass
+        neutral_prob *= valid_mass
+
     action = rng.choices(choices, weights=weights, k=1)[0]
     return action, entry_prob, exit_prob, neutral_prob
 
@@ -1735,9 +1751,11 @@ def simulate_samples(
     pnl = 0.0
     max_unrealized_profit = 0.0
     min_unrealized_profit = 0.0
+    pnl_floor = -0.15
 
     # Synthetic market state
     current_open = 1.0
+    sampled_open = current_open
     entry_open = current_open
 
     for _ in range(num_samples):
@@ -1749,6 +1767,7 @@ def simulate_samples(
             max_trade_duration_candles=max_trade_duration_candles,
             idle_duration=idle_duration,
             max_idle_duration_candles=max_idle_duration_candles,
+            action_masking=action_masking,
         )
 
         context = RewardContext(
@@ -1761,24 +1780,22 @@ def simulate_samples(
             action=action,
         )
 
+        next_position = _get_next_position(position, action, short_allowed=short_allowed)
         if position == Positions.Neutral:
-            if action == Actions.Long_enter:
-                position = Positions.Long
+            if next_position != Positions.Neutral:
+                position = next_position
                 trade_duration = 0
                 idle_duration = 0
                 entry_open = current_open
-                max_unrealized_profit = -np.inf
-                min_unrealized_profit = np.inf
-            elif action == Actions.Short_enter and short_allowed:
-                position = Positions.Short
-                trade_duration = 0
-                idle_duration = 0
-                entry_open = current_open
-                max_unrealized_profit = -np.inf
-                min_unrealized_profit = np.inf
+                entry_pnl = _compute_unrealized_pnl_estimate(
+                    position, entry_open=entry_open, current_open=entry_open, params=params
+                )
+                max_unrealized_profit = min_unrealized_profit = entry_pnl
+                sampled_open = entry_open
+                pnl_floor = min(-0.15, entry_pnl)
         else:
             idle_duration = 0
-            if action in (Actions.Long_exit, Actions.Short_exit):
+            if next_position == Positions.Neutral:
                 position = Positions.Neutral
                 trade_duration = 0
                 idle_duration = 0
@@ -1807,33 +1824,36 @@ def simulate_samples(
             step_return = 0.0
         step_return = float(np.clip(step_return, -0.95, 0.95))
 
-        current_open = float(max(1e-6, current_open * (1.0 + step_return)))
-        # Always sample the random-walk price so both modes consume the same RNG stream.
-        # Unrealized-PnL mode replaces it below with the fee-aware price implied by
-        # the target PnL before reward calculation.
+        # Sample once in both modes; keep the raw market path separate from the
+        # transformed price while a position is open.
+        transform_unrealized_pnl = position in (
+            Positions.Long,
+            Positions.Short,
+        ) and _get_bool_param(params, "unrealized_pnl", False)
+        if transform_unrealized_pnl:
+            sampled_open = float(max(1e-6, sampled_open * (1.0 + step_return)))
+            candidate_open = sampled_open
+        else:
+            current_open = float(max(1e-6, current_open * (1.0 + step_return)))
+            candidate_open = current_open
         if position in (Positions.Long, Positions.Short):
             candidate_pnl = float(
                 np.clip(
                     _compute_unrealized_pnl_estimate(
                         position,
                         entry_open=entry_open,
-                        current_open=current_open,
+                        current_open=candidate_open,
                         params=params,
                     ),
-                    -0.15,
+                    pnl_floor,
                     0.15,
                 )
             )
-            if _get_bool_param(params, "unrealized_pnl", False):
-                # Let the sampled market move shape the next retained PnL without
-                # storing the discarded candidate in exit-efficiency extrema.
-                prospective_max = max(max_unrealized_profit, candidate_pnl)
-                prospective_min = min(min_unrealized_profit, candidate_pnl)
-                center_unrealized = 0.5 * (prospective_max + prospective_min)
+            if transform_unrealized_pnl:
                 beta = _get_float_param(params, "pnl_amplification_sensitivity")
                 hold_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
                 target_pnl = float(
-                    np.clip(center_unrealized * math.tanh(beta * hold_ratio), -0.15, 0.15)
+                    np.clip(candidate_pnl * math.tanh(beta * hold_ratio), pnl_floor, 0.15)
                 )
                 entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
                 if position == Positions.Long:
@@ -1853,7 +1873,7 @@ def simulate_samples(
                             current_open=current_open,
                             params=params,
                         ),
-                        -0.15,
+                        pnl_floor,
                         0.15,
                     )
                 )
@@ -1938,7 +1958,11 @@ def simulate_samples(
                 "reward_base": breakdown.base_reward,
                 "reward_pbrs_delta": breakdown.pbrs_delta,
                 "reward_invariance_correction": breakdown.invariance_correction,
-                "is_invalid": float(breakdown.invalid_penalty != 0.0),
+                "is_invalid": float(
+                    not _is_valid_action(
+                        context.position, context.action, short_allowed=short_allowed
+                    )
+                ),
                 "pbrs_invariant": bool(pbrs_invariant),
             }
         )
@@ -1947,36 +1971,52 @@ def simulate_samples(
     df.attrs["reward_params"] = source_params
 
     # Validate critical algorithmic invariants
-    _validate_simulation_invariants(df)
+    _validate_simulation_invariants(df, params)
 
     return df
 
 
-def _validate_simulation_invariants(df: pd.DataFrame) -> None:
+def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> None:
     """Fail fast if simulation violates action/state invariants."""
 
     eps_pnl = float(INTERNAL_GUARDS["sim_zero_pnl_epsilon"])
     eps_reward = float(INTERNAL_GUARDS["sim_zero_reward_epsilon"])
-    thr_extreme = float(INTERNAL_GUARDS["sim_extreme_pnl_threshold"])
+    entry_fee_rate, exit_fee_rate = _get_fee_rates(params)
+    thr_extreme = max(
+        float(INTERNAL_GUARDS["sim_extreme_pnl_threshold"]),
+        (1.0 + entry_fee_rate) * (1.0 + exit_fee_rate) - 1.0,
+    )
 
-    # INVARIANT 1: Action-position compatibility
-    long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
-    short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
-    if len(long_exits) > 0:
-        raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
-    if len(short_exits) > 0:
-        raise AssertionError(f"Sim: {len(short_exits)} Short_exit actions without Short position")
+    # INVARIANT 1: masked sampling must only emit legal actions; unmasked
+    # actions may be invalid but cannot change position before terminal liquidation.
+    if _get_bool_param(params, "action_masking", True):
+        long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
+        short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
+        if len(long_exits) > 0:
+            raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
+        if len(short_exits) > 0:
+            raise AssertionError(
+                f"Sim: {len(short_exits)} Short_exit actions without Short position"
+            )
 
-    long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
-    short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
-    if len(long_entries) > 0:
-        raise AssertionError(
-            f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
-        )
-    if len(short_entries) > 0:
-        raise AssertionError(
-            f"Sim: {len(short_entries)} Short_enter actions without Neutral position"
-        )
+        long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
+        short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
+        if len(long_entries) > 0:
+            raise AssertionError(
+                f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
+            )
+        if len(short_entries) > 0:
+            raise AssertionError(
+                f"Sim: {len(short_entries)} Short_enter actions without Neutral position"
+            )
+    else:
+        changed_on_invalid = df[
+            df["is_invalid"].eq(1.0)
+            & ~df["terminated"].eq(True)
+            & df["next_position"].ne(df["position"])
+        ]
+        if len(changed_on_invalid) > 0:
+            raise AssertionError(f"Sim: {len(changed_on_invalid)} invalid actions changed position")
 
     # INVARIANT 2: Duration logic
     neutral_with_trade = df[(df["position"] == 0.5) & (df["trade_duration"] > 0)]
@@ -1997,15 +2037,15 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
         raise AssertionError(f"Sim: {len(neutral_with_pnl)} Neutral positions with non-zero pnl")
 
     # Economic exits belong to voluntary exits or a proven terminal liquidation.
+    voluntary_exit = (
+        df["position"].eq(Positions.Long.value) & df["action"].eq(Actions.Long_exit.value)
+    ) | (df["position"].eq(Positions.Short.value) & df["action"].eq(Actions.Short_exit.value))
     liquidation = df.get("terminal_liquidation", pd.Series(False, index=df.index)).eq(True)
     valid_liquidation = (
         df.get("terminated", pd.Series(False, index=df.index)).eq(True)
         & df.get("next_position", pd.Series(np.nan, index=df.index)).eq(Positions.Neutral.value)
         & (
-            (
-                df["position"].isin([Positions.Long.value, Positions.Short.value])
-                & ~df["action"].isin([Actions.Long_exit.value, Actions.Short_exit.value])
-            )
+            (df["position"].isin([Positions.Long.value, Positions.Short.value]) & ~voluntary_exit)
             | (
                 df["position"].eq(Positions.Neutral.value)
                 & df["action"].isin([Actions.Long_enter.value, Actions.Short_enter.value])
@@ -2016,7 +2056,7 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
     if (liquidation & ~valid_liquidation).any():
         raise AssertionError("Sim: terminal liquidation lacks a terminal open-position transition")
     non_exit_with_exit_reward = df[
-        (~df["action"].isin([2.0, 4.0])) & ~liquidation & (df["reward_exit"].abs() > eps_reward)
+        ~voluntary_exit & ~liquidation & (df["reward_exit"].abs() > eps_reward)
     ]
     if len(non_exit_with_exit_reward) > 0:
         raise AssertionError(
@@ -2024,7 +2064,8 @@ def _validate_simulation_invariants(df: pd.DataFrame) -> None:
         )
 
     # INVARIANT 5: Bounded values
-    extreme_pnl = df[(df["pnl"].abs() > thr_extreme)]
+    # Fee-adjusted prices can differ from the nominal fee product by a few ULPs.
+    extreme_pnl = df[df["pnl"].abs() > thr_extreme + eps_pnl]
     if len(extreme_pnl) > 0:
         max_abs_pnl = float(df["pnl"].abs().max())
         raise AssertionError(
@@ -2563,6 +2604,15 @@ def load_real_episodes(
                     RewardDiagnosticsWarning,
                     stacklevel=2,
                 )
+            infinite = df[col].isin((np.inf, -np.inf))
+            count_infinite = int(infinite.sum())
+            if count_infinite:
+                df.loc[infinite, col] = np.nan
+                warnings.warn(
+                    f"Data: replaced {count_infinite} non-finite value(s) in column '{col}' with NaN when loading '{path}'",
+                    RewardDiagnosticsWarning,
+                    stacklevel=2,
+                )
 
     # Ensure required columns exist (or fill with NaN if allowed)
     required = {
@@ -2606,6 +2656,10 @@ def _stabilize_divergence(value: float, *, bin_count: int, metric_name: str) -> 
     return value
 
 
+_DISTRIBUTION_SHIFT_FEATURES: Final[tuple[str, ...]] = ("pnl", "trade_duration", "idle_duration")
+_MIN_DISTRIBUTION_SHIFT_OBSERVATIONS: Final[int] = 10
+
+
 def compute_distribution_shift_metrics(
     synthetic_df: pd.DataFrame,
     real_df: pd.DataFrame,
@@ -2621,13 +2675,19 @@ def compute_distribution_shift_metrics(
     reported. Constants yield exact zero distances and, inferentially, p=1.0.
     """
     metrics = {}
-    continuous_features = ["pnl", "trade_duration", "idle_duration"]
+    continuous_features = _DISTRIBUTION_SHIFT_FEATURES
 
     for feature in continuous_features:
-        synth_values = synthetic_df[feature].dropna().values
-        real_values = real_df[feature].dropna().values
+        synth_values = synthetic_df[feature].to_numpy(dtype=float, na_value=np.nan)
+        real_values = real_df[feature].to_numpy(dtype=float, na_value=np.nan)
+        synth_finite = np.isfinite(synth_values)
+        real_finite = np.isfinite(real_values)
+        if not synth_finite.all():
+            synth_values = synth_values[synth_finite]
+        if not real_finite.all():
+            real_values = real_values[real_finite]
 
-        if len(synth_values) < 10 or len(real_values) < 10:
+        if min(len(synth_values), len(real_values)) < _MIN_DISTRIBUTION_SHIFT_OBSERVATIONS:
             continue
 
         min_val = min(synth_values.min(), real_values.min())
@@ -2817,7 +2877,7 @@ def statistical_hypothesis_tests(
         u_stat, p_val = stats.mannwhitneyu(pnl_positive, pnl_negative)
 
         n1, n2 = len(pnl_positive), len(pnl_negative)
-        rb = 1.0 - 2.0 * (float(u_stat) / float(n1 * n2)) if n1 > 0 and n2 > 0 else np.nan
+        rb = 2.0 * (float(u_stat) / float(n1 * n2)) - 1.0 if n1 > 0 and n2 > 0 else np.nan
         if np.isfinite(rb):
             rb = float(np.clip(rb, -1.0, 1.0))
 
@@ -2946,6 +3006,8 @@ def bootstrap_confidence_intervals(
     """
     if independent_observations is not True:
         raise ValueError("Stats: bootstrap intervals require independent_observations=True")
+    if n_bootstrap < 1:
+        raise ValueError("Stats: n_bootstrap must be positive")
     alpha = 1 - confidence_level
     lower_percentile = 100 * alpha / 2
     upper_percentile = 100 * (1 - alpha / 2)
@@ -3713,8 +3775,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base_factor",
         type=float,
-        default=100.0,
-        help="Base reward scaling factor (default: 100).",
+        default=None,
+        help=f"Base reward scaling factor (default: {DEFAULT_MODEL_REWARD_PARAMETERS['base_factor']:g}).",
     )
     parser.add_argument(
         "--profit_aim",
@@ -3878,6 +3940,10 @@ def write_complete_statistical_analysis(
 ) -> None:
     """Generate a single comprehensive statistical analysis report."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    # These names belong to this report; leave all other user files untouched.
+    (output_dir / "feature_importance.csv").unlink(missing_ok=True)
+    for feature in ("trade_duration", "idle_duration", "pnl"):
+        (output_dir / f"partial_dependence_{feature}.csv").unlink(missing_ok=True)
     report_path = output_dir / "statistical_analysis.md"
 
     reward_params: RewardParams = (
@@ -4038,6 +4104,23 @@ def write_complete_statistical_analysis(
     if real_df is not None:
         distribution_shift = compute_distribution_shift_metrics(
             df, real_df, independent_observations=independent_observations
+        )
+    distribution_shift_unavailable = (
+        "no real episodes provided" if real_df is None else "no comparable finite observations"
+    )
+
+    if (
+        real_df is not None
+        and not distribution_shift
+        and any(
+            np.isfinite(df[feature].to_numpy(dtype=float, na_value=np.nan)).any()
+            and np.isfinite(real_df[feature].to_numpy(dtype=float, na_value=np.nan)).any()
+            for feature in _DISTRIBUTION_SHIFT_FEATURES
+        )
+    ):
+        distribution_shift_unavailable = (
+            "insufficient finite observations; "
+            f"at least {_MIN_DISTRIBUTION_SHIFT_OBSERVATIONS} per dataset and feature required"
         )
 
     # Write comprehensive report
@@ -4606,7 +4689,7 @@ def write_complete_statistical_analysis(
             else:
                 # Placeholder keeps numbering stable and explicit
                 f.write("### 5.4 Distribution Shift Analysis\n\n")
-                f.write("_Not performed (no real episodes provided)._\n\n")
+                f.write(f"_Not performed ({distribution_shift_unavailable})._\n\n")
 
         # Footer
         f.write("---\n\n")
@@ -4636,7 +4719,9 @@ def write_complete_statistical_analysis(
         if distribution_shift:
             f.write("6. **Distribution Shift** - Comparison with real trading data\n")
         else:
-            f.write("6. **Distribution Shift** - Not performed (no real episodes provided)\n")
+            f.write(
+                f"6. **Distribution Shift** - Not performed ({distribution_shift_unavailable})\n"
+            )
         if invariance_status is not None:
             f.write("7. **PBRS Invariance** - " + invariance_status + "\n")
         f.write("\n")
@@ -4672,7 +4757,7 @@ def main() -> None:
         print("CLI: Parameter adjustments applied\n" + "\n".join(adj_lines))
 
     # Effective values: defaults < explicit flags < --params, resolved once.
-    base_factor = _get_float_param(params, "base_factor", float(args.base_factor))
+    base_factor = _get_float_param(params, "base_factor")
     profit_aim = _get_float_param(params, "profit_aim", float(args.profit_aim))
     risk_reward_ratio = _get_float_param(params, "risk_reward_ratio", float(args.risk_reward_ratio))
     effective_params = {

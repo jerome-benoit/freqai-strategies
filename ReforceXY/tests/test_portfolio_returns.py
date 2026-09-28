@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv
+from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv, ReforceXY
 
 
 class PortfolioReturnsTest(unittest.TestCase):
@@ -45,6 +45,46 @@ class PortfolioReturnsTest(unittest.TestCase):
             self.assertEqual(info["most_recent_return"], 0.0)
             self.assertEqual(info["most_recent_profit"], 0.0)
         self.assertAlmostEqual(np.expm1(env.portfolio_log_returns.sum()), env._total_profit - 1)
+
+    def test_exit_reward_includes_fee_adjusted_entry_extremum(self):
+        for short, mark in ((False, 110.0), (True, 90.0)):
+            with self.subTest(short=short):
+                env = self.make_env([100.0, 100.0, mark, mark, mark])
+                entry = Actions.Short_enter if short else Actions.Long_enter
+                exit_action = Actions.Short_exit if short else Actions.Long_exit
+                fee_factor = (1.0 + env.fee) ** 2
+                entry_pnl = 1.0 - fee_factor if short else 1.0 / fee_factor - 1.0
+                exit_pnl = (
+                    1.0 - mark / 100.0 * fee_factor if short else mark / 100.0 / fee_factor - 1.0
+                )
+
+                env.step(entry.value)
+                self.assertAlmostEqual(env.get_min_unrealized_profit(), entry_pnl)
+                self.assertAlmostEqual(env.get_max_unrealized_profit(), exit_pnl)
+                _, reward, _, _, _ = env.step(exit_action.value)
+
+                duration = 1.0 / env.max_trade_duration_candles
+                if ReforceXY.DEFAULT_EXIT_PLATEAU:
+                    duration = max(0.0, duration - ReforceXY.DEFAULT_EXIT_PLATEAU_GRACE)
+                attenuation = 1.0 / (1.0 + ReforceXY.DEFAULT_EXIT_LINEAR_SLOPE * duration)
+                target_coefficient = 1.0
+                if exit_pnl > env._pnl_target:
+                    target_coefficient += ReforceXY.DEFAULT_WIN_REWARD_FACTOR * math.tanh(
+                        ReforceXY.DEFAULT_PNL_AMPLIFICATION_SENSITIVITY
+                        * (exit_pnl / env._pnl_target - 1.0)
+                    )
+                efficiency = 1.0 + ReforceXY.DEFAULT_EFFICIENCY_WEIGHT * (
+                    1.0 - ReforceXY.DEFAULT_EFFICIENCY_CENTER
+                )
+                self.assertAlmostEqual(
+                    reward,
+                    exit_pnl
+                    * ReforceXY.DEFAULT_BASE_FACTOR
+                    * attenuation
+                    * target_coefficient
+                    * efficiency,
+                    places=9,
+                )
 
     def test_transitions_match_equity_for_both_staking_modes_and_directions(self):
         prices = [100.0, 100.0, 110.0, 105.0, 115.0, 120.0, 118.0, 117.0, 117.0]
@@ -138,7 +178,6 @@ class PortfolioReturnsTest(unittest.TestCase):
                             env.trade_history[-1]["type"],
                             "short_exit" if short else "long_exit",
                         )
-                        self.assertEqual(env.trade_history[-1]["tick"], info["execution_tick"])
                         self.assertEqual(env.trade_history[-1]["price"], terminal_price)
                         self.assertAlmostEqual(env.trade_history[-1]["profit"], expected_pnl)
                         self.assertAlmostEqual(
@@ -212,7 +251,7 @@ class PortfolioReturnsTest(unittest.TestCase):
                 else:
                     pd.testing.assert_frame_equal(history, baseline)
 
-    def test_terminal_entry_preserves_two_events_and_plot_markers(self):
+    def test_terminal_fill_events_and_plot_match_their_price_candles(self):
         env = self.make_env([100.0, 100.0, 90.0])
         _, _, terminated, truncated, info = env.step(Actions.Long_enter.value)
         expected_pnl = 90.0 / 100.0 / (1.0 + env.fee) ** 2 - 1.0
@@ -225,26 +264,29 @@ class PortfolioReturnsTest(unittest.TestCase):
         self.assertEqual(history.iloc[0]["execution_tick"], info["execution_tick"])
         self.assertEqual(history.iloc[0]["open"], 90.0)
 
-        self.assertEqual(len(env.trade_history), 2)
-        self.assertEqual(
-            [(event["tick"], event["type"]) for event in env.trade_history],
-            [(info["execution_tick"], "long_enter"), (info["execution_tick"], "long_exit")],
-        )
-        self.assertEqual(
-            [event["price"] for event in env.trade_history],
-            [100.0, 90.0],
-        )
-        self.assertEqual(env.trade_history[0]["profit"], 0.0)
-        self.assertAlmostEqual(env.trade_history[1]["profit"], expected_pnl)
+        events = env.trade_history
+        self.assertEqual([event["type"] for event in events], ["long_enter", "long_exit"])
+        for event in events:
+            self.assertAlmostEqual(event["price"], env.prices.iloc[event["tick"]]["open"])
+        self.assertEqual(events[0]["profit"], 0.0)
+        self.assertAlmostEqual(events[1]["profit"], expected_pnl)
 
         figure = env.get_env_plot()
-        marker_lines = [
+        curve = figure.axes[0].lines[0]
+        markers = [
             line
             for line in figure.axes[0].lines
             if line.get_linestyle() == "None" and len(line.get_xdata()) == 1
         ]
-        self.assertEqual([line.get_marker() for line in marker_lines], ["^", "."])
-        self.assertEqual([line.get_xdata()[0] for line in marker_lines], [1, 1])
+        self.assertEqual([line.get_marker() for line in markers], ["^", "."])
+        self.assertEqual(
+            [(line.get_xdata()[0], line.get_ydata()[0]) for line in markers],
+            [(event["tick"], event["price"]) for event in events],
+        )
+        self.assertEqual(
+            (markers[-1].get_xdata()[0], markers[-1].get_ydata()[0]),
+            (curve.get_xdata()[-1], curve.get_ydata()[-1]),
+        )
 
     def test_nonpositive_equity_is_not_reported_as_zero_return(self):
         env = self.make_env([100.0, 100.0, 100.0, 300.0, 300.0], fee=0.0)

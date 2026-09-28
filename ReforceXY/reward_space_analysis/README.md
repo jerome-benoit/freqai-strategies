@@ -57,7 +57,7 @@ Full test documentation: [tests/README.md](./tests/README.md).
   - [Transform Functions](#transform-functions)
   - [Skipping Feature Analysis](#skipping-feature-analysis)
   - [Reproducibility](#reproducibility)
-  - [Overrides vs --params](#overrides-vs--params)
+  - [Overrides vs --params](#overrides-vs---params)
 - [Examples](#examples)
 - [Outputs](#outputs)
   - [Main Report (`statistical_analysis.md`)](#main-report-statistical_analysismd)
@@ -165,10 +165,10 @@ Generates shift metrics for comparison (see Outputs section).
 - **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic
   distribution shift metrics. (Simulation-only; triggers additional outputs when
   provided).
-- **`--unrealized_pnl`** (flag, default: false) – Transform the retained
-  in-position synthetic price/PnL trajectory using fee-aware unrealized PnL.
-  This affects extrema and all enabled base, PBRS, and additive reward terms
-  that depend on PnL. (Simulation-only.)
+- **`--unrealized_pnl`** (flag, default: false) – Track a sampled market
+  price separately from the retained price within each trade; map its fee-aware
+  PnL through duration-based tanh scaling before retaining the mark. Retained
+  marks affect exit-efficiency extrema and PnL-dependent rewards. (Simulation-only.)
 
 ### Hybrid Simulation Scalars
 
@@ -178,8 +178,10 @@ be overridden via `--params`.
 - **`--profit_aim`** (float, default: 0.03) – Profit target threshold (e.g.
   0.03=3%).
 - **`--risk_reward_ratio`** (float, default: 2.0) – Risk-reward multiplier.
-- **`--action_masking`** (bool, default: true) – Simulate environment action
-  masking. Invalid actions receive penalties only if masking disabled.
+- **`--action_masking`** (bool, default: true) – With masking enabled, sample
+  only valid actions. When disabled, sample an invalid action with 10% probability
+  and apply the configured invalid-action penalty. Invalid actions leave the held
+  position unchanged, except for an independent terminal liquidation.
 
 ### Reward & Shaping
 
@@ -219,6 +221,9 @@ does not expose this option. In that mode, bootstrap percentile intervals retain
 finite ordered bounds, including exact zero-width intervals for constants; the
 interval need not contain the original sample mean.
 
+Bootstrap counts must be positive. The PnL rank-biserial effect is positive when
+the first named group (`pnl+`) has higher rewards than the second (`pnl-`).
+
 ### Overrides
 
 - **`--out_dir`** (path, default: reward_space_outputs) – Output directory
@@ -257,15 +262,16 @@ The exit factor is computed as:
 **Formula:**
 
 Let `pnl_target = profit_aim · risk_reward_ratio` and
-`pnl_ratio = pnl / pnl_target`. On the loss branch,
-`loss_threshold = pnl_target / risk_reward_ratio` and
-`loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · risk_reward_ratio`.
+`pnl_ratio = pnl / pnl_target` when `pnl_target > 0`. For losses, let
+`effective_rr = risk_reward_ratio` if positive, or `2.0` otherwise (the runtime
+fallback). Then `loss_threshold = pnl_target / effective_rr` and
+`loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · effective_rr`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
 - If `pnl_ratio > 1.0`:
   `pnl_target_coefficient = 1.0 + win_reward_factor · tanh(pnl_amplification_sensitivity · (pnl_ratio - 1.0))`
 - If `pnl < -loss_threshold`:
-  `pnl_target_coefficient = 1.0 + (win_reward_factor · risk_reward_ratio) · tanh(pnl_amplification_sensitivity · (loss_ratio - 1.0))`
+  `pnl_target_coefficient = 1.0 + (win_reward_factor · effective_rr) · tanh(pnl_amplification_sensitivity · (loss_ratio - 1.0))`
 - Else: `pnl_target_coefficient = 1.0`
 
 ##### Efficiency
@@ -288,6 +294,16 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 - If `pnl < 0`:
   `efficiency_coefficient = 1 + efficiency_weight · (efficiency_center - ratio)`
 - Else: `efficiency_coefficient = 1`
+
+In synthetic `unrealized_pnl` mode, sampled market prices accumulate each
+candle's return independently of the transformed, retained price. The
+fee-aware sampled PnL is bounded, scaled by the duration-dependent tanh
+factor, and converted to the retained price. Exit-efficiency extrema start
+with the fee-adjusted PnL at the entry fill and then include each retained
+mark; a sampled candidate is never retained as an extremum. Synthetic marks
+are capped at +0.15; their lower bound is the lesser of -0.15 and the
+fee-adjusted entry PnL. The extreme-PnL check permits that fee loss and
+floating-point roundoff at its boundary, but rejects larger excursions.
 
 ##### Exit Attenuation
 
@@ -451,6 +467,10 @@ Flags hierarchy:
 
 Auto-skip if `num_samples < 4`.
 
+Reusing an output directory removes only stale analyzer-owned
+`feature_importance.csv` and the three `partial_dependence_{trade_duration,idle_duration,pnl}.csv`
+files before writing the new report; unrelated files are retained.
+
 ### Reproducibility
 
 | Component                             | Controlled By | Notes                                      |
@@ -535,6 +555,11 @@ descriptive.
 | `partial_dependence_*.csv` | Partial dependence data                              |
 | `manifest.json`            | Runtime manifest (simulation + reward params + hash) |
 
+The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in
+`reward_samples.csv` report marginal probabilities of valid actions when applicable.
+With masking disabled, these probabilities include the 90% valid-action mass;
+they are not conditional on drawing a valid action.
+
 ### Manifest (`manifest.json`)
 
 | Field                   | Type              | Description                                                                                             |
@@ -563,8 +588,14 @@ Within the same analyzer revision, identical `params_hash` values mean the resol
 | `*_ks_statistic`  | KS two-sample statistic               | [0,1]; higher ⇒ divergence                                                    |
 | `*_ks_pvalue`     | KS test p-value                       | API-only with `independent_observations=True`; omitted by the descriptive CLI |
 
-Implementation: 50-bin histograms with ε=1e-10; constants have zero divergence.
-Inferential KS p-values are available only under the programmatic independence contract.
+Implementation: up to 50 evenly spaced histogram edges (normally 49 bins) with
+ε=1e-10; constants have zero divergence.
+
+Non-finite numeric values in real episodes are marked missing. Each feature is
+compared only when both synthetic and real data contain at least 10 finite
+observations; otherwise it is omitted. When none qualify, the report distinguishes
+missing episodes, no comparable finite data, and fewer than 10 finite observations
+per dataset and comparable feature.
 
 ---
 
@@ -603,8 +634,8 @@ uv run python reward_space_analysis.py \
   --out_dir real_vs_synthetic
 ```
 
-Shift metrics: lower divergence preferred (except p-value: higher ⇒ cannot
-reject equality).
+For the CLI's descriptive shift metrics, lower values indicate closer
+synthetic and real distributions.
 
 ### Batch Analysis
 
