@@ -488,6 +488,9 @@ and `Utils` by bare names; ReforceXY resolves its imports without it, so the
 setting is optional there. The reward-space analysis suite runs separately
 with `uv`, without a Freqtrade image.
 
+ReforceXY restores saved feature pipelines with the standalone `cloudpickle`
+package provided by the Freqtrade image; no `joblib` version pin is needed.
+
 ### Quality checks
 
 Run repository quality checks from the repository root:

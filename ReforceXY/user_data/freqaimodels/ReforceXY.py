@@ -26,6 +26,7 @@ from typing import (
 )
 from uuid import uuid4
 
+import cloudpickle
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
@@ -53,7 +54,6 @@ from freqtrade.freqai.tensorboard.TensorboardCallback import TensorboardCallback
 from freqtrade.persistence import Trade
 from freqtrade.strategy import timeframe_to_minutes
 from gymnasium.spaces import Box
-from joblib.externals import cloudpickle
 from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from optuna import Trial, TrialPruned, create_study, delete_study
