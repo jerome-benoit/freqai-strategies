@@ -76,8 +76,17 @@ def temporary_directory() -> Iterator[Path]:
         yield Path(path)
 
 
+# Captured once, after Utils finished its import-time registrations, so a test that
+# registers a fake generator is undone without destroying the real ones. Clearing would
+# look equivalent and silently break every later label generation.
+_LABEL_GENERATORS_AT_IMPORT = dict(Utils._LABEL_GENERATORS)
+_WARNED_CONFIG_DEPRECATIONS_AT_IMPORT = set(Utils._WARNED_CONFIG_DEPRECATIONS)
+_REGRESSOR_MODULE = importlib.import_module(REGRESSOR_MODULE)
+_KNOWN_AT_NONE_LOGGED_AT_IMPORT = set(_REGRESSOR_MODULE._KNOWN_AT_NONE_LOGGED)
+
+
 class QaTestCase(unittest.TestCase):
-    """Base case clearing the three process globals, in setUp and again in addCleanup."""
+    """Base case restoring the three process globals, in setUp and again in addCleanup."""
 
     def setUp(self):
         self._restore_process_globals()
@@ -86,5 +95,8 @@ class QaTestCase(unittest.TestCase):
     @staticmethod
     def _restore_process_globals() -> None:
         Utils._WARNED_CONFIG_DEPRECATIONS.clear()
+        Utils._WARNED_CONFIG_DEPRECATIONS.update(_WARNED_CONFIG_DEPRECATIONS_AT_IMPORT)
         Utils._LABEL_GENERATORS.clear()
-        importlib.import_module(REGRESSOR_MODULE)._KNOWN_AT_NONE_LOGGED.clear()
+        Utils._LABEL_GENERATORS.update(_LABEL_GENERATORS_AT_IMPORT)
+        _REGRESSOR_MODULE._KNOWN_AT_NONE_LOGGED.clear()
+        _REGRESSOR_MODULE._KNOWN_AT_NONE_LOGGED.update(_KNOWN_AT_NONE_LOGGED_AT_IMPORT)
