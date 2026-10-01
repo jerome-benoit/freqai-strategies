@@ -445,6 +445,11 @@ class StrategyFeaturesTest(QaTestCase):
                 self.assertTrue(
                     np.isnan(model._calculate_candle_threshold(flat, PAIR, side, 0.0, 1.0))
                 )
+                # Checked HERE, while this frame's signature is still the live one. Every
+                # probe below rotates the timestamp on purpose, so a refusal that memoised
+                # would be wiped by the next invalidation and never observable at the end.
+                # Inserting a memo into this branch left the suite green for that reason.
+                self.assertEqual(model._candle_threshold_cache, {})
 
         # Every probe below needs a signature the cache has not seen, because the memoised
         # entry of an earlier frame shadows the branch under test: same-signature frames

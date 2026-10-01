@@ -539,30 +539,43 @@ class TrainTestSplitCausalPurgeTest(QaTestCase):
         self.assertIn(24, kept)
 
     def test_the_horizon_and_the_availability_masks_are_combined_not_replaced(self):
-        # The two boundaries above are individually sound, and that is exactly the problem:
-        # one of them is exercised with no availability column and the other with a zero
-        # horizon, so `keep_mask &=` never runs with both constraints live. Rewriting the
-        # conjunction as an assignment — `keep_mask = train_known_at_position < ...` — threw
-        # the horizon mask away and left the suite green.
+        # Pinning the two boundaries one at a time proves nothing about how they combine,
+        # which is exactly how the first version of this class went wrong: the horizon case
+        # carried no availability column and the availability case used a zero horizon, so
+        # `keep_mask &=` never ran with both constraints live. Rewriting the conjunction as an
+        # assignment — `keep_mask = train_known_at_position < ...` — discards the horizon mask
+        # and left the suite green.
         #
-        # Here both fire. A horizon of 4 keeps only rows below 26; a lookahead of 6 on row 20
-        # makes that row available exactly at the first test row, so the availability mask must
-        # remove a row the horizon mask had kept. Under an assignment the horizon constraint
-        # would be dropped and row 25 — which the horizon mask excludes — would survive.
-        lookahead = [0] * self.ROWS
-        lookahead[20] = 6
-        unfiltered = frame(self.index, **{LOOKAHEAD: lookahead, WEIGHT_LOOKAHEAD: [0] * self.ROWS})
+        # Both directions are needed, because either one alone is satisfied by a mask that
+        # simply overwrites the other.
+        zero_lookahead = frame(
+            self.index, **{LOOKAHEAD: [0] * self.ROWS, WEIGHT_LOOKAHEAD: [0] * self.ROWS}
+        )
 
-        kept = list(self._split(unfiltered, horizon=4)["train_features"].index)
+        # Direction 1 — the horizon mask removes rows the availability mask would keep. With
+        # a horizon of 3 the horizon keeps rows below 27 while availability, at a zero
+        # lookahead, keeps everything below the first test row at 30. The conjunction must
+        # give 26; the assignment gives 29.
+        kept = list(self._split(zero_lookahead, horizon=3)["train_features"].index)
+        self.assertEqual(max(kept), 26)
+        for row in (27, 28, 29):
+            with self.subTest(discarded_by="horizon", row=row):
+                self.assertNotIn(row, kept)
 
-        self.assertNotIn(20, kept, "the availability mask must remove a row the horizon kept")
-        self.assertNotIn(25, kept, "the horizon mask must still apply when availability is present")
-        self.assertIn(19, kept)
-        self.assertIn(24, kept)
-        # With the horizon alone the same frame keeps 20, so the purge above is the
-        # availability mask's doing and not the horizon's.
-        horizon_only = list(self._split(unfiltered, horizon=0)["train_features"].index)
-        self.assertIn(20, horizon_only)
+        # Direction 2 — the availability mask removes a row the horizon kept. A lookahead of 6
+        # on row 20 makes it available at 26, inside the window, so it survives; a lookahead
+        # of 10 on row 20 makes it available exactly at 30 and it must go even though the
+        # horizon would have kept it.
+        for value, expected in ((6, True), (10, False)):
+            lookahead = [0] * self.ROWS
+            lookahead[20] = value
+            unfiltered = frame(
+                self.index, **{LOOKAHEAD: lookahead, WEIGHT_LOOKAHEAD: [0] * self.ROWS}
+            )
+            with self.subTest(discarded_by="availability", lookahead=value):
+                self.assertEqual(
+                    20 in self._split(unfiltered, horizon=0)["train_features"].index, expected
+                )
 
     def test_the_causal_guard_is_skipped_outside_causal_mode(self):
         # The counterpart, so the boundary tests above are not passing for the wrong reason:
