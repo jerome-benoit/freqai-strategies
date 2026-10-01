@@ -479,7 +479,7 @@ class UtilsIndicatorsTest(QaTestCase):
         self.assertTrue(np.isnan(result[:5]).all())
         assert_allclose(result[5:], np.full(15, 7.0), rtol=0.0, atol=0.0)
 
-    def test_frama_reproduces_close_because_the_dimension_is_always_one(self):
+    def test_frama_reproduces_close_because_the_dimension_is_one_up_to_rounding(self):
         # The real contract, asserted rather than implied. HL1 and HL2 each span a HALF of the
         # window while HL3 spans all of it, so HL1 + HL2 <= 2 * HL3, D <= 1, and the clip
         # returns exactly 1.0 on every path. alpha is therefore exp(-4.6 * 0) == 1.0 and
@@ -492,9 +492,12 @@ class UtilsIndicatorsTest(QaTestCase):
         assert_allclose(result[5], closes[:6].mean(), rtol=0.0, atol=1e-9)
         assert_allclose(result[6:], closes[6:], rtol=0.0, atol=1e-9)
 
-    def test_the_fractal_dimension_is_exactly_one_on_every_window(self):
-        # Asserted directly on the helper, so the clip's unreachable upper bound is a pinned
-        # fact. Measured here over trending, noisy and plateaued inputs alike.
+    def test_the_fractal_dimension_is_one_within_rounding_on_every_window(self):
+        # Asserted directly on the helper. The name says "within rounding" on purpose: the
+        # clip's lower bound is not a floor in practice, because `np.clip` is a no-op for
+        # values already at or above it, and the ratio lands on 1.0 + O(1e-16) for some
+        # windows. Asserting `== 1.0` here would be pinning a rounding accident of these
+        # three fixtures rather than the contract.
         trending_high = 100.0 + np.arange(16) * 0.5
         trending_low = trending_high - 0.8
         noisy = np.array([100.0 + i for i in range(16)])
@@ -507,7 +510,19 @@ class UtilsIndicatorsTest(QaTestCase):
             (plateaus, plateaus - 1.0),
         ):
             with self.subTest(highs=highs[:3].tolist()):
-                self.assertEqual(_fractal_dimension(highs, lows, 16), 1.0)
+                self.assertAlmostEqual(_fractal_dimension(highs, lows, 16), 1.0, places=12)
+
+    def test_the_fractal_dimension_can_exceed_one_by_rounding(self):
+        # The counterexample that makes the case above honest. This window is not synthetic:
+        # the ratio computes to 1.0000000000000002, the clip leaves it untouched because it is
+        # already above the lower bound, and alpha becomes 0.999999999999999. Anything that
+        # branches on `alpha == 1.0` or promises bit-exact `close` is wrong on this input.
+        highs = np.array([100.2, 101.2, 102.7, 101.6, 102.8, 102.5, 102.5, 102.8, 100.9, 100.3])
+        lows = np.array([99.9, 100.9, 101.6, 101.1, 102.4, 102.3, 101.6, 101.7, 100.6, 99.9])
+        dimension = _fractal_dimension(highs, lows, 10)
+        self.assertGreater(dimension, 1.0)
+        self.assertLessEqual(dimension, 1.0 + 1e-15)
+        self.assertLess(np.exp(-4.6 * (dimension - 1.0)), 1.0)
 
     def test_the_zero_lag_frama_de_lags_before_the_fractal_dimension(self):
         # zero_lag replaces high, low and close with calculate_zero_lag first, which makes the
@@ -614,6 +629,20 @@ class UtilsIndicatorsTest(QaTestCase):
         frame = ohlcv_frame([1.0, 2, 3, 4, 5, 6])
         for period in (3, 5, 7):
             with self.subTest(period=period), self.assertRaisesRegex(ValueError, "must be even"):
+                frama(frame, period)
+
+    def test_a_fractal_dimension_period_below_two_is_refused(self):
+        # The `period < 2` clause is a separate contract from the evenness clause, and the
+        # existing case only drives odd periods, which the evenness clause already catches.
+        # Zero is even. Without its own case the clause can be dropped and the caller gets
+        # numpy's internal "zero-size array to reduction operation maximum which has no
+        # identity" instead of the documented domain error.
+        frame = ohlcv_frame([1.0, 2, 3, 4, 5, 6])
+        for period in (0, -4):
+            with (
+                self.subTest(period=period),
+                self.assertRaisesRegex(ValueError, "must be an even integer >= 2"),
+            ):
                 frama(frame, period)
 
     def test_the_alligator_lines_are_the_shifted_smoothed_averages_of_the_median_price(self):

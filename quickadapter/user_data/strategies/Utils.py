@@ -3796,10 +3796,18 @@ def _fractal_dimension(
 
     ``HL3`` spans the whole window while ``HL1`` and ``HL2`` each span a half, so
     ``HL1 <= HL3`` and ``HL2 <= HL3``, hence ``HL1 + HL2 <= 2 * HL3`` and
-    ``D <= 1`` for every reachable input (measured: max 0.99994 over 300000
-    windows). The clip therefore returns exactly ``1.0`` on every path, so
-    ``alpha`` in :func:`frama` is identically ``exp(-4.6 * 0) == 1.0`` and
-    ``frama`` reproduces ``close`` after its seed.
+    ``D <= 1`` for every reachable input. In exact arithmetic the clip would then
+    return ``1.0`` on every path. In floating point it does not: the ratio lands
+    on ``1.0 + O(1e-16)`` for some windows, and ``np.clip(D, 1.0, 2.0)`` is a
+    no-op above the lower bound, so it passes that value through. ``alpha`` in
+    :func:`frama` is therefore ``exp(-4.6 * (D - 1))``, which is ``1.0`` to within
+    a few ULP rather than exactly ``1.0``, and ``frama`` reproduces ``close``
+    after its seed up to that same rounding. Measured on one deterministic
+    10-bar window, ``D`` is ``1.0000000000000002`` and ``alpha`` is
+    ``0.999999999999999``.
+
+    Nothing downstream may treat ``alpha`` as a literal ``1.0`` or ``frama`` as
+    bit-exact ``close``; a short-circuit on ``alpha == 1`` would not fire.
 
     This is the current, asserted behaviour, not the formulation in Ehlers' paper:
     that one takes the range over ``period // 2`` consecutive sub-ranges, whose sum
