@@ -34,9 +34,19 @@ class EvalWeightsTest(QaTestCase):
     def _compose(self, base, labels):
         return QuickAdapterRegressorV3._compose_eval_weights(base, labels, context=CONTEXT)
 
-    def test_eval_weights_have_unit_mean(self):
+    def test_eval_weights_are_proportional_to_the_label_weights(self):
+        # Asserting only the unit mean is satisfied by any positive vector, including one
+        # that has thrown the label weights away and binarised the positives to all-ones —
+        # which has mean 1.0 too and shipped green. The uneven fixture is the whole point:
+        # measured, the labels [3, 1, 2, 1] give [1.714, 0.571, 1.143, 0.571] while the
+        # binarised version gives [1, 1, 1, 1].
         result = self._compose(np.ones(4), np.array([3.0, 1.0, 2.0, 1.0]))
+
         self.assertAlmostEqual(float(np.mean(result)), 1.0)
+        np.testing.assert_allclose(
+            result / result[0], np.array([1.0, 1.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0]), rtol=1e-12
+        )
+        self.assertFalse(np.allclose(result, np.ones(4)), "the labels were discarded")
 
     def test_eval_weights_ignore_the_support_policy_entirely(self):
         # Every training threshold is unreachable here, and nothing is raised.
@@ -146,7 +156,7 @@ class EnforceSupportTest(QaTestCase):
     def test_the_fallback_policy_turns_a_support_failure_into_base_weights(self):
         with self.assertLogs(
             "quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3", "WARNING"
-        ):
+        ) as captured:
             result = self._enforce(
                 np.ones(4),
                 np.ones(4),
@@ -154,6 +164,12 @@ class EnforceSupportTest(QaTestCase):
                 min_effective_sample_size=4.5,
             )
         self.assertAlmostEqual(float(np.mean(result)), 1.0)
+        # assertLogs alone only proves THAT a warning fired. Under `fallback` the operator
+        # has no exception to read, so the warning is the whole diagnostic: it must name the
+        # threshold that actually failed, not merely announce that something did.
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("effective_sample_size=4 < min_effective_sample_size=4.5", captured.output[0])
+        self.assertNotIn("pivot_equivalent_count=0", captured.output[0])
 
 
 class ComposeTrainWeightsTest(QaTestCase):

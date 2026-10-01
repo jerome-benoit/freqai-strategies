@@ -1,4 +1,4 @@
-"""Indicator kernel contracts: extrema counting, log returns, smoothing and the callback hash."""
+"""Indicator kernel contracts: extrema counting, log returns, smoothing and the callback hash.; requires the Freqtrade QA image."""
 
 import functools
 import hashlib
@@ -12,6 +12,7 @@ from qa_support import QaTestCase, ohlcv_frame
 from Utils import (
     MA_MODES,
     PRICE_MODES,
+    _fractal_dimension,
     alligator,
     bottom_log_return,
     calculate_min_extrema,
@@ -478,20 +479,52 @@ class UtilsIndicatorsTest(QaTestCase):
         self.assertTrue(np.isnan(result[:5]).all())
         assert_allclose(result[5:], np.full(15, 7.0), rtol=0.0, atol=0.0)
 
-    def test_frama_recurses_toward_close_on_a_series_with_a_real_range(self):
-        # The other frama fixtures are all CONSTANT frames, and _fractal_dimension returns
-        # 1.0 whenever either half-range is zero. So alpha collapses to exp(-4.6 * 0) == 1.0
-        # and neither the -4.6 scale, nor the `fd - 1` offset, nor the clip bounds are
-        # observable: a mutant that doubles alpha survives on all of them. Only a frame
-        # with a genuine high/low range in every window can see any of the three.
-        result = frama(ohlcv_frame([100.0 + i for i in range(30)]), 6).to_numpy()
+    def test_frama_reproduces_close_because_the_dimension_is_one_up_to_rounding(self):
+        # The real contract, asserted rather than implied. HL1 and HL2 each span a HALF of the
+        # window while HL3 spans all of it, so HL1 + HL2 <= 2 * HL3 and D <= 1, which makes
+        # alpha exp(-4.6 * (D - 1)) indistinguishable from 1 at this tolerance. This pins the
+        # DEGENERACY as a fact: a change that made the dimension vary, or the -4.6 scale
+        # observable, would have to update this test rather than pass unnoticed. It does NOT
+        # establish that alpha is a literal 1.0 — this fixture is monotone and happens to land
+        # on exactly 1.0, where
+        # test_the_fractal_dimension_can_exceed_one_by_rounding does not.
+        closes = np.array([100.0 + i for i in range(30)])
+        result = frama(ohlcv_frame(closes.tolist()), 6).to_numpy()
         self.assertTrue(np.isnan(result[:5]).all())
-        # Derivation of the tail: the window seeds from the mean of the first `period`
-        # closes (102.5) and each subsequent bar smooths toward the previous one, which on
-        # this unit ramp leaves close minus 0.5 after the first jump.
-        assert_allclose(result[5], 102.5, rtol=0.0, atol=1e-9)
-        assert_allclose(result[6], 106.0, rtol=0.0, atol=1e-9)
-        assert_allclose(result[7:], np.arange(107.0, 130.0), rtol=0.0, atol=1e-9)
+        assert_allclose(result[5], closes[:6].mean(), rtol=0.0, atol=1e-9)
+        assert_allclose(result[6:], closes[6:], rtol=0.0, atol=1e-9)
+
+    def test_the_fractal_dimension_is_one_within_rounding_on_every_window(self):
+        # Asserted directly on the helper. The name says "within rounding" on purpose: the
+        # clip's lower bound is not a floor in practice, because `np.clip` is a no-op for
+        # values already at or above it, and the ratio lands on 1.0 + O(1e-16) for some
+        # windows. Asserting `== 1.0` here would be pinning a rounding accident of these
+        # three fixtures rather than the contract.
+        trending_high = 100.0 + np.arange(16) * 0.5
+        trending_low = trending_high - 0.8
+        noisy = np.array([100.0 + i for i in range(16)])
+        plateaus = np.array(
+            [1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 2.0, 2.0, 2.0, 9.0, 9.0, 9.0, 3.0, 3.0, 3.0, 4.0]
+        )
+        for highs, lows in (
+            (trending_high, trending_low),
+            (noisy, noisy - 0.3),
+            (plateaus, plateaus - 1.0),
+        ):
+            with self.subTest(highs=highs[:3].tolist()):
+                self.assertAlmostEqual(_fractal_dimension(highs, lows, 16), 1.0, places=12)
+
+    def test_the_fractal_dimension_can_exceed_one_by_rounding(self):
+        # The counterexample that makes the case above honest. This window is not synthetic:
+        # the ratio computes to 1.0000000000000002, the clip leaves it untouched because it is
+        # already above the lower bound, and alpha becomes 0.999999999999999. Anything that
+        # branches on `alpha == 1.0` or promises bit-exact `close` is wrong on this input.
+        highs = np.array([100.2, 101.2, 102.7, 101.6, 102.8, 102.5, 102.5, 102.8, 100.9, 100.3])
+        lows = np.array([99.9, 100.9, 101.6, 101.1, 102.4, 102.3, 101.6, 101.7, 100.6, 99.9])
+        dimension = _fractal_dimension(highs, lows, 10)
+        self.assertGreater(dimension, 1.0)
+        self.assertLessEqual(dimension, 1.0 + 1e-15)
+        self.assertLess(np.exp(-4.6 * (dimension - 1.0)), 1.0)
 
     def test_the_zero_lag_frama_de_lags_before_the_fractal_dimension(self):
         # zero_lag replaces high, low and close with calculate_zero_lag first, which makes the
@@ -509,13 +542,15 @@ class UtilsIndicatorsTest(QaTestCase):
         )
         self.assertAlmostEqual(float(raw[3]), float(closes.iloc[:4].mean()), places=9)
 
-    def test_a_framed_gap_stops_the_fractal_dimension_at_the_window_edge(self):
-        # _fractal_dimension returns 1.0 when either half-range is zero, which pins alpha at
-        # exp(0) = 1 and makes the recursion follow close exactly. A constant frame is the
-        # only shape that reaches that branch.
+    def test_a_constant_window_gives_a_finite_fractal_dimension_instead_of_a_log_of_zero(self):
+        # _fractal_dimension short-circuits to 1.0 when either half-range is zero, and a
+        # constant frame is the only shape that reaches that branch. The case was previously
+        # named for a gap and a window edge that its fixture cannot contain, which read as if
+        # the early return were covered from a second direction. What is actually distinct
+        # here is the guard itself: without it the ratio is log(0) and alpha is -inf.
         result = frama(ohlcv_frame([7.0] * 12), 4).to_numpy()
         self.assertFalse(np.isinf(result).any())
-        assert_allclose(result[3:], np.full(9, 7.0), rtol=0.0, atol=0.0)
+        self.assertFalse(np.isnan(result[3:]).any())
 
     def test_the_smma_follows_its_own_recursion(self):
         # Seeded with the mean of the first `period` bars, then alpha = 1/period per bar.
@@ -598,6 +633,20 @@ class UtilsIndicatorsTest(QaTestCase):
         frame = ohlcv_frame([1.0, 2, 3, 4, 5, 6])
         for period in (3, 5, 7):
             with self.subTest(period=period), self.assertRaisesRegex(ValueError, "must be even"):
+                frama(frame, period)
+
+    def test_a_fractal_dimension_period_below_two_is_refused(self):
+        # The `period < 2` clause is a separate contract from the evenness clause, and the
+        # existing case only drives odd periods, which the evenness clause already catches.
+        # Zero is even. Without its own case the clause can be dropped and the caller gets
+        # numpy's internal "zero-size array to reduction operation maximum which has no
+        # identity" instead of the documented domain error.
+        frame = ohlcv_frame([1.0, 2, 3, 4, 5, 6])
+        for period in (0, -4):
+            with (
+                self.subTest(period=period),
+                self.assertRaisesRegex(ValueError, "must be an even integer >= 2"),
+            ):
                 frama(frame, period)
 
     def test_the_alligator_lines_are_the_shifted_smoothed_averages_of_the_median_price(self):

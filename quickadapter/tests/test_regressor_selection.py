@@ -1423,12 +1423,35 @@ class RegressorSelectionTest(QaTestCase):
                     series, method, "rank_extrema"
                 )
                 self.assertTrue(-1.0 <= float(minimum) <= float(maximum) <= 1.0)
-        np.testing.assert_allclose(
-            QuickAdapterRegressorV3.skimage_min_max(series, "otsu", "rank_extrema"),
-            (-0.94853515625, 0.8),
-            rtol=DISTANCE_RTOL,
-            atol=0.0,
-        )
+
+    def test_each_requested_threshold_method_yields_its_own_numbers(self):
+        # A range check cannot tell delegation from substitution: every method lands inside
+        # [-1, 1] whatever it computes. Forcing `threshold_func` to Otsu inside the consumer
+        # left the whole suite green while `mean` silently became Otsu's -0.9485 instead of
+        # -0.55, so an entry gate used a method the config never asked for.
+        #
+        # The full tuple is pinned per method, not just the differing one. On this fixture
+        # `yen` happens to coincide with `otsu`, and `li` with `mean`; that is why the whole
+        # table is asserted — rerouting any single method to any other breaks it.
+        series = pd.Series([0.1, -0.5, 0.9, -0.2, 0.3, 0.05, -0.95, 0.7])
+        expected = {
+            "mean": (-0.55, 0.8),
+            "isodata": (-0.64970703125, 0.8),
+            "li": (-0.55, 0.8),
+            "minimum": (-0.94267578125, 0.8),
+            "otsu": (-0.94853515625, 0.8),
+            "triangle": (-0.94560546875, 0.8),
+            "yen": (-0.94853515625, 0.8),
+        }
+        self.assertEqual(sorted(expected), sorted(SKIMAGE_THRESHOLD_METHODS))
+        for method, bounds in expected.items():
+            with self.subTest(method=method):
+                np.testing.assert_allclose(
+                    QuickAdapterRegressorV3.skimage_min_max(series, method, "rank_extrema"),
+                    bounds,
+                    rtol=DISTANCE_RTOL,
+                    atol=0.0,
+                )
 
     def test_an_unknown_skimage_threshold_is_named_in_the_canonical_enum_error(self):
         with self.assertRaises(ValueError) as caught:
@@ -1544,24 +1567,37 @@ class RegressorSelectionTest(QaTestCase):
 
     # ------------------------------------------------------------------ scalar validators
 
-    def test_a_non_finite_scalar_is_refused_in_warn_and_raise_modes_and_silently_dropped_in_none(
-        self,
-    ):
+    def test_a_non_finite_scalar_is_refused_in_raise_mode(self):
         for value in (np.inf, -np.inf, np.nan):
-            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "must be finite"):
+            with (
+                self.subTest(value=value, mode="raise"),
+                self.assertRaisesRegex(ValueError, "must be finite"),
+            ):
                 QuickAdapterRegressorV3._validate_scalar(value, ctx="label_p_order", mode=RAISE)
+
+    def test_a_non_finite_scalar_is_warned_and_dropped_in_warn_mode(self):
+        for value in (np.inf, -np.inf, np.nan):
+            with self.subTest(value=value, mode="warn"):
                 with self.assertLogs(LOGGER_NAME, "WARNING") as captured:
                     warned = QuickAdapterRegressorV3._validate_scalar(
                         value, ctx="label_p_order", mode=WARN
                     )
                 self.assertIsNone(warned)
                 self.assertIn("must be finite", captured.output[0])
-                with self.assertNoLogs(LOGGER_NAME, "WARNING"):
-                    self.assertIsNone(
-                        QuickAdapterRegressorV3._validate_scalar(
-                            value, ctx="label_p_order", mode=NONE
-                        )
-                    )
+
+    def test_a_non_finite_scalar_is_silently_dropped_in_none_mode(self):
+        for value in (np.inf, -np.inf, np.nan):
+            with self.subTest(value=value, mode="none"), self.assertNoLogs(LOGGER_NAME, "WARNING"):
+                self.assertIsNone(
+                    QuickAdapterRegressorV3._validate_scalar(value, ctx="label_p_order", mode=NONE)
+                )
+
+    # These three used to share one `with` block behind the raising call, so the warn and
+    # none branches never executed at all: the raise on the first line unwound the block.
+    # The suite was green and the test name claimed all three modes. Removing the non-finite
+    # warning in `_validate_scalar`, or turning its `return None` into `return 0.0`, both
+    # survived — the first because the warning was never asserted, the second because the
+    # fallback case in the file used a degenerate row below the ideal count.
 
     def test_a_predicate_violation_is_reported_with_the_supplied_constraint(self):
         with self.assertRaisesRegex(ValueError, "must be > 0"):

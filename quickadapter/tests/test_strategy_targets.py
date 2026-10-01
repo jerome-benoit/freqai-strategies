@@ -598,10 +598,47 @@ class StrategyTargetsTest(QaTestCase):
             labelled = result[EXTREMA_COLUMN].to_numpy() != 0.0
             weights = result[LABEL_WEIGHT_COLUMN]
             smoothed = result["extrema_weight_smoothed"]
+            # Without this, a frame that produced no labels at all would satisfy
+            # `(weights[labelled] > 0).all()` on an empty selection. The sibling case pins
+            # the exact counts; this one only needs the selection to be non-empty.
+            self.assertTrue(labelled.any(), "no candle was labelled, so nothing was asserted")
             self.assertTrue((weights[labelled] > 0.0).all())
             self.assertTrue((weights >= 0.0).all())
             self.assertTrue(np.isfinite(smoothed.to_numpy()).all())
-            self.assertTrue((smoothed >= 0.0).all())
+
+    def test_the_labels_and_weights_do_not_depend_on_the_frame_index(self):
+        # The strongest form of the positional-contract guard, because it runs the real
+        # strategy path. Every other fixture in this suite builds `date` as a COLUMN and
+        # leaves a zero-based RangeIndex in place, where a pivot position and a pivot index
+        # label are the same number — so returning `df.index` instead of positions passed
+        # everywhere. FreqAI hands `set_freqai_targets` a DatetimeIndex frame, where the
+        # labels are Timestamps: the weighting path raised TypeError on the first candle of
+        # every pair, and a shifted integer index dropped every pivot and returned no weight
+        # at all, with only a warning.
+        baseline = None
+        for name, index in (
+            ("datetime", "date"),
+            ("shifted_int", pd.RangeIndex(500, 500 + 200)),
+        ):
+            with self.subTest(index=name), temporary_directory() as temp:
+                model = runtime(
+                    temp, freqai={"label_weighting": {"default": {"strategy": "uniform"}}}
+                )
+                model.bot_start()
+                frame = zigzag().set_index(index, drop=False)
+                result = model.set_freqai_targets(frame, {"pair": PAIR})
+                labels = result[EXTREMA_COLUMN].fillna(0.0).to_numpy()
+                weights = result[LABEL_WEIGHT_COLUMN].to_numpy()
+                self.assertEqual(int((labels != 0.0).sum()), 184)
+                # 23 of the positive weights sit on pivots and the rest are the non-causal
+                # baseline fill, so this is not simply the pivot count. Pinning it means a
+                # column of zeros, or an all-positive column, cannot satisfy the assertion.
+                self.assertEqual(int((weights > 0.0).sum()), 195)
+                if baseline is None:
+                    baseline = (labels, weights)
+                else:
+                    np.testing.assert_array_equal(labels, baseline[0])
+                    np.testing.assert_array_equal(weights, baseline[1])
 
     def test_no_label_weight_column_appears_under_an_inactive_weighting_strategy(self):
         with temporary_directory() as temp:

@@ -244,6 +244,51 @@ class UtilsZigzagTest(QaTestCase):
                 )
         self.assertNotEqual(result.volume_rates[0], 1.0)
 
+    def test_the_volume_weighted_efficiency_ratio_weights_each_step_by_its_destination(self):
+        # The sixth COMBINED_METRIC, and the only one that had no numeric assertion: every
+        # existing check either mirrored `efficiency_ratio` or expected 1.0, which holds for
+        # ANY positive weighting. The W_LEGS fixture is monotone, so its ratio is 1.0 under
+        # every convention and cannot discriminate. Shifting the volume window by one candle
+        # — same length, different slice — left all 968 tests green.
+        #
+        # This fixture is a slow uptrend carrying a fast oscillation: the legs are short and
+        # genuinely non-monotone, so the ratio drops well below 1.0 and the window offset
+        # changes the answer. The oracle below restates the documented convention: every
+        # close-to-close step is weighted by the volume of the candle it lands ON, and the
+        # pivot bar at the start of the leg is excluded from the total.
+        steps = np.arange(120)
+        closes = 100.0 + 0.02 * steps + 0.25 * np.sin(steps / 2.0)
+        volumes = 10.0 + 5.0 * np.sin(steps / 4.0)
+
+        result = _zigzag(ohlcv_frame(closes, volumes), **PARAMS)
+
+        log_closes = np.log(closes)
+        checked = 0
+        for index in range(len(result.indices) - 1):
+            start, end = sorted((result.indices[index], result.indices[index + 1]))
+            end += 1
+            window = volumes[start + 1 : end]
+            weighted = np.diff(log_closes[start:end]) * (window / window.sum())
+            expected = abs(weighted.sum()) / np.abs(weighted).sum()
+            with self.subTest(leg=index):
+                self.assertAlmostEqual(
+                    float(result.volume_weighted_efficiency_ratios[index]),
+                    float(expected),
+                    places=12,
+                )
+            checked += 1
+        self.assertGreater(checked, 5, "the fixture must produce enough legs to be meaningful")
+        # And the convention is load-bearing here, not an identity: the one-candle shift a
+        # mutation introduces, and the unweighted ratio, both differ from the pinned value.
+        start, end = sorted((result.indices[5], result.indices[6]))
+        steps_slice = np.diff(log_closes[start : end + 1])
+        shifted = np.abs(steps_slice * (volumes[start:end] / volumes[start:end].sum())).sum()
+        self.assertNotAlmostEqual(
+            float(result.volume_weighted_efficiency_ratios[5]),
+            abs(steps_slice.sum()) / shifted,
+            places=9,
+        )
+
     def test_the_efficiency_ratio_measures_directness_of_the_leg(self):
         closes = wiggly_closes()
         result = zigzag_result(closes)
@@ -420,8 +465,55 @@ class UtilsZigzagTest(QaTestCase):
         self.assertEqual(sorted(set(label.series.tolist())), [-1.0, 0.0, 1.0])
         self.assertEqual(label.indices, [0, 29, 69])
         for position, direction in zip(label.indices, [1.0, -1.0, 1.0], strict=True):
-            self.assertEqual(label.series.loc[position], direction)
+            self.assertEqual(label.series.iloc[position], direction)
         self.assertEqual(int((label.series != 0.0).sum()), len(label.indices))
+
+    def test_pivot_indices_are_positions_not_index_labels(self):
+        # `LabelData.indices` is documented as "positions of detected pivots in series", and
+        # `compute_label_weights` consumes it that way: it casts to int and bounds the result
+        # by the row count. Every other fixture in this suite uses a zero-based RangeIndex,
+        # where a label and a position coincide, so returning `df.index` instead of positions
+        # would pass everywhere. These three indexes are what make the two distinguishable.
+        closes = price_path(*W_LEGS)
+        expected = generate_label_data(ohlcv_frame(closes), EXTREMA_COLUMN, PARAMS, LOGGER)
+        indexes = {
+            "shifted_int": pd.RangeIndex(500, 500 + len(closes)),
+            "datetime": pd.date_range("2024-01-01", periods=len(closes), freq="5min"),
+            "string": pd.Index([f"candle-{i}" for i in range(len(closes))]),
+        }
+        for name, index in indexes.items():
+            with self.subTest(index=name):
+                frame = ohlcv_frame(closes).set_axis(index)
+                label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+                self.assertEqual(label.indices, expected.indices)
+                self.assertEqual(label.indices, sorted(set(label.indices)))
+                np.testing.assert_array_equal(label.series.to_numpy(), expected.series.to_numpy())
+                self.assertTrue(label.series.index.equals(index))
+
+    def test_label_weights_survive_an_index_that_is_not_a_position(self):
+        # The consumer side of the same contract. `compute_label_weights` casts the pivot
+        # indices to int and bounds them by n_values, so index labels raise TypeError on the
+        # DatetimeIndex that FreqAI actually passes, and are dropped as out-of-range on a
+        # shifted integer index, leaving every weight at zero with only a warning.
+        from Utils import compute_label_weights
+
+        closes = price_path(*W_LEGS)
+        expected = generate_label_data(ohlcv_frame(closes), EXTREMA_COLUMN, PARAMS, LOGGER)
+        for name, index in (
+            ("shifted_int", pd.RangeIndex(500, 500 + len(closes))),
+            ("datetime", pd.date_range("2024-01-01", periods=len(closes), freq="5min")),
+        ):
+            with self.subTest(index=name):
+                frame = ohlcv_frame(closes).set_axis(index)
+                label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+                weights = compute_label_weights(
+                    len(closes),
+                    label.indices,
+                    {"efficiency_ratio": [1.0] * len(label.indices)},
+                    {"strategy": "uniform"},
+                    logger=LOGGER,
+                )
+                self.assertEqual(int((weights > 0).sum()), len(expected.indices))
 
     def test_the_label_metrics_mirror_the_pivot_metrics(self):
         frame = ohlcv_frame(price_path(*W_LEGS))
@@ -478,6 +570,34 @@ class UtilsZigzagTest(QaTestCase):
             np.diff(lookahead.to_numpy()[unresolved]).tolist(),
             [-1] * (int(unresolved.sum()) - 1),
         )
+
+    def test_a_pivot_is_never_available_before_its_confirmation_candle(self):
+        # The monotonic watermark in `add_pivot` takes the max of four terms, and the one
+        # this pins is `confirmed_at_pos`. On W_LEGS the orientation candle and the ATR
+        # warm-up end coincide, so `max(confirmed, 0, warmup, -1)` equals
+        # `max(0, warmup, -1)` and dropping the term changes nothing — which is why the
+        # case above cannot tell the two apart.
+        #
+        # A long flat stretch then a trend separates them: the ATR is finite from the fifth
+        # candle, but the orientation at row 0 is not confirmed until the trend has produced
+        # five consecutive slopes. Dropping `confirmed_at_pos` then publishes the label of
+        # row 0 long before its confirmation candle. Measured over seeded frames, that term
+        # is the difference on 509 of 1500 and makes a row available before its own candle on
+        # 41 of them, by up to 96 candles.
+        quiet = 40
+        closes = np.concatenate([np.full(quiet, 100.0), 100.0 + np.arange(1, 61) * 0.8])
+        frame = ohlcv_frame(closes)
+
+        result = _zigzag(frame, **PARAMS)
+        label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+
+        self.assertEqual(result.indices, [0])
+        self.assertEqual(int(result.known_at_positions[0]), quiet)
+        # And the separation is real, not a coincidence: the ATR warm-up term alone spans a
+        # handful of candles, so a value of `quiet` can only come from the confirmation.
+        self.assertGreater(int(result.known_at_positions[0]), 4 * NATR_PERIOD)
+        self.assertEqual(int(label.known_at_lookahead.iloc[0]), quiet)
+        self.assertTrue(np.all(result.known_at_positions >= np.arange(len(closes), dtype=np.int64)))
 
     def test_an_unregistered_label_column_raises_a_key_error_listing_the_registry(self):
         frame = ohlcv_frame(price_path(*W_LEGS))

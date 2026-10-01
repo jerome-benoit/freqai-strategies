@@ -514,9 +514,12 @@ python -m coverage run -m unittest discover -s quickadapter/tests -v
 python -m coverage report
 ```
 
-Export both variables rather than prefixing a single command: an inline
-prefix binds to that command only, so `python -m coverage report` would read
-no configuration and exit 0 while measuring nothing.
+Export both variables rather than prefixing a single command: an inline prefix
+binds to that command only, so `python -m coverage report` looks for the data
+file in its default location, finds none, and exits 1 with `No data to report.`
+The mistake is loud rather than silent — it cannot ship a green gate on a
+measurement that never happened — but it does break a run that would otherwise
+have finished.
 
 Branch coverage is required. Every guard in this codebase is an early return
 or a raise, and statement coverage marks a guard covered the instant its `if`
@@ -531,8 +534,15 @@ with the shipped configuration already in place — a measurement taken without
 is not a valid input — then update the value and the `# measured` annotation
 above it in the same commit. Raise the floor only; a drop needs the reason in
 the pull request. `quickadapter/tests/test_coverage_floor.py` refuses a
-placeholder, a missing measurement annotation, a disabled branch trace, a
-disabled namespace walk, and any `omit` of production code.
+placeholder, a missing or undated measurement annotation, a measurement below
+the floor it justifies, a floor below the current minimum, a floor that is not a
+percentage, a `precision` coarse enough to round the total past the floor, a
+disabled branch trace, a disabled namespace walk, a source tree that is not the
+measured one, a `fail_under` that has drifted into the inert `[run]` section, the
+three of coverage's default source exclusions, a coverage pragma in production
+source, a workflow that is not pointed at this `.coveragerc`, a workflow that
+stops propagating the report status, and any `omit`, `include`, `exclude_lines`,
+`exclude_also` or `partial_*` of production code.
 
 ### Quality checks
 
@@ -593,9 +603,10 @@ wrapper rejects direct host and wrong-image execution so Freqtrade imports and
 dependency versions remain exact.
 
 The BasedPyright and type-stub versions are pinned in each project's
-`.devcontainer/requirements-dev.txt`, as is `coverage` in QuickAdapter's. The Freqtrade base images
-intentionally follow their rolling `stable_freqai` and `stable_freqairl` tags,
-so record the resolved image digests when a reproducible audit is required.
+`.devcontainer/requirements-dev.txt`, as is `coverage` in QuickAdapter's.
+The Freqtrade base images intentionally follow their rolling `stable_freqai`
+and `stable_freqairl` tags, so record the resolved image digests when a
+reproducible audit is required.
 
 ## Common workflows
 

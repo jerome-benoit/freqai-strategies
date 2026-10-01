@@ -1,7 +1,9 @@
 """Canonical defaults contract between every `*_SPECS` map, its `DEFAULTS_*` map and the per-label overlay; requires the Freqtrade QA image."""
 
+import inspect
 import logging
 from typing import Any
+from unittest import mock
 
 import Utils
 from LabelTransformer import (
@@ -14,10 +16,11 @@ from LabelTransformer import (
     SMOOTHING_MODES,
     get_label_column_config,
 )
-from qa_support import QaTestCase
+from qa_support import QaTestCase, ohlcv_frame
 from Utils import (
     _ParamSpec,
     _validate_params,
+    generate_label_data,
     get_label_kind_config,
     get_label_pipeline_config,
     get_label_prediction_config,
@@ -98,6 +101,35 @@ class UtilsCanonicalDefaultsTest(QaTestCase):
             + ["_FIT_LIVE_PREDICTIONS_SPECS", "_REVERSAL_CONFIRMATION_SCALAR_SPECS"]
         )
         self.assertEqual(discovered_specs(), expected)
+
+    def test_every_zigzag_entry_point_shares_the_canonical_natr_defaults(self):
+        # One tunable pair was written down three times with no canonical source: the
+        # params.get fallbacks in _generate_extrema_label and the two _zigzag/zigzag
+        # signatures. All three now derive from the constants, so "change the default
+        # once" is true; a per-site pin would only have been a fourth copy to drift.
+        for function in (Utils._zigzag, Utils.zigzag):
+            with self.subTest(function=function.__name__):
+                parameters = inspect.signature(function).parameters
+                self.assertEqual(parameters["natr_period"].default, Utils.DEFAULT_LABEL_NATR_PERIOD)
+                self.assertEqual(
+                    parameters["natr_multiplier"].default,
+                    Utils.DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
+                )
+
+    def test_the_params_fallbacks_agree_with_the_canonical_constants(self):
+        # The third copy: the generator's own fallback, reached whenever a params dict
+        # omits the keys. Exercised through the public entry point.
+        with mock.patch.object(Utils, "_zigzag", wraps=Utils._zigzag) as spied:
+            generate_label_data(
+                ohlcv_frame([7.0] * 20),
+                LABEL_COLUMN,
+                params={},
+                logger=logging.getLogger("t"),
+            )
+        used = {call.kwargs["natr_period"] for call in spied.call_args_list}
+        multipliers = {call.kwargs["natr_multiplier"] for call in spied.call_args_list}
+        self.assertEqual(used, {Utils.DEFAULT_LABEL_NATR_PERIOD})
+        self.assertEqual(multipliers, {Utils.DEFAULT_MIN_LABEL_NATR_MULTIPLIER})
 
     def test_a_pair_of_maps_with_disagreeing_keys_would_silently_lose_a_default(self):
         # A key present in one map and absent from the other is the whole failure this

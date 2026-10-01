@@ -1,4 +1,4 @@
-"""Runtime contracts for FreqAI's native QuickAdapter prediction history."""
+"""Runtime contracts for FreqAI's native QuickAdapter prediction history.; requires the Freqtrade QA image."""
 
 import unittest
 from types import SimpleNamespace

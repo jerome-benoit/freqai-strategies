@@ -304,8 +304,17 @@ class ReversalConfirmationTest(QaTestCase):
             lo=1.0,
             hi=1.0,
         )
+        # The ORDERING is a consequence of the argument validation above (lo <= hi is refused
+        # earlier), so `max >= min` holds for any input and proves nothing about the decay.
+        # What is actually observable is the historical MAXIMUM decaying alongside the
+        # minimum. Measured with these arguments, max is [0.5, 0.25] over the two follow-up
+        # calls; dropping the decay on the max gives [1.0, 1.0] and squaring the factor does
+        # too, and both survived the suite green.
         for call in state["calls"]:
             self.assertGreaterEqual(call["max"], call["min"])
+        self.assertAlmostEqual(state["calls"][0]["max"], 1.0)
+        self.assertAlmostEqual(state["calls"][1]["max"], 0.5)
+        self.assertAlmostEqual(state["calls"][2]["max"], 0.25)
 
 
 if __name__ == "__main__":

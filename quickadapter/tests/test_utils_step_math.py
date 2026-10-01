@@ -34,7 +34,29 @@ class StepTest(QaTestCase):
     def test_an_exact_multiple_is_its_own_floor_and_ceiling(self):
         self.assertEqual(floor_to_step(9, 3), 9)
         self.assertEqual(ceil_to_step(9, 3), 9)
-        self.assertEqual(round_to_step(9, 3), 9)
+
+    def test_a_fractional_value_is_snapped_before_it_is_truncated(self):
+        # Every other case in this class passes a Python int, so the float branch of
+        # `_step_round` — which divides the value as a float, rounds the quotient, and
+        # multiplies the step back — was never executed, and coverage reported its lines
+        # missing. The exact-multiple cases cannot tell it from the identity either.
+        #
+        # 4.6 is the case that separates the two readings: rounding the quotient gives
+        # round(4.6 / 3) == 2, hence 6, while truncating the value to an integer first gives
+        # round(4 / 3) == 1, hence 3. A step below 1 is not available to widen the gap —
+        # `_validate_step_args` requires a positive integer.
+        self.assertEqual(round_to_step(4.6, 3), 6)
+        self.assertNotEqual(round_to_step(4.6, 3), round_to_step(4, 3))
+        # The same for the negative direction, where truncation moves the other way.
+        self.assertEqual(round_to_step(-4.6, 3), -6)
+        self.assertEqual(floor_to_step(4.6, 3), 3)
+        self.assertEqual(ceil_to_step(4.6, 3), 6)
+        # The step is always a multiple, whatever the input type, and the result is an int.
+        for value in (4.6, -4.6, 4.4, 0.5, 2.5, 7.0, 8.0):
+            for function in (round_to_step, floor_to_step, ceil_to_step):
+                with self.subTest(function=function.__name__, value=value):
+                    self.assertEqual(function(value, 3) % 3, 0)
+                    self.assertIsInstance(function(value, 3), int)
 
     def test_a_non_positive_step_is_refused(self):
         for step in (0, -1):
