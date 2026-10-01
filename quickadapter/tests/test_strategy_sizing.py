@@ -153,12 +153,22 @@ class DistanceTest(QaTestCase):
                     model.get_take_profit_distance(frame(), trade(), fraction)
 
     def test_both_distances_accept_the_closed_unit_interval(self):
+        # BOTH helpers. This case only called the stoploss one, so the take-profit path's
+        # endpoints were untested: relaxing its valid condition to `0.0 < fraction <= 1.0`,
+        # or returning None for a zero fraction before the range check, each left the suite
+        # green. The upper endpoint is covered by sibling tests in test_strategy_features;
+        # the lower one is only observable here.
+        model = strategy()
         for fraction, is_zero in ((0.0, True), (1.0, False)):
             with self.subTest(fraction=fraction):
-                model = strategy()
-                distance = model.get_stoploss_distance(frame(), trade(), 100.0, fraction)
-                self.assertEqual(distance == 0.0, is_zero)
-                self.assertGreaterEqual(distance, 0.0)
+                stoploss = model.get_stoploss_distance(frame(), trade(), 100.0, fraction)
+                self.assertEqual(stoploss == 0.0, is_zero)
+                self.assertGreaterEqual(stoploss, 0.0)
+                take_profit = model.get_take_profit_distance(frame(), trade(), fraction)
+                self.assertIsNotNone(take_profit, "a valid fraction must return a distance")
+                self.assertGreaterEqual(take_profit, 0.0)
+        # A zero fraction is the endpoint that can silently become an error or None.
+        self.assertEqual(model.get_take_profit_distance(frame(), trade(), 0.0), 0.0)
 
     def test_both_distances_refuse_an_invalid_duration(self):
         model = strategy(duration=0)
