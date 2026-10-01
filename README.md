@@ -514,9 +514,12 @@ python -m coverage run -m unittest discover -s quickadapter/tests -v
 python -m coverage report
 ```
 
-Export both variables rather than prefixing a single command: an inline
-prefix binds to that command only, so `python -m coverage report` would read
-no configuration and exit 0 while measuring nothing.
+Export both variables rather than prefixing a single command: an inline prefix
+binds to that command only, so `python -m coverage report` looks for the data
+file in its default location, finds none, and exits 1 with `No data to report.`
+The mistake is loud rather than silent — it cannot ship a green gate on a
+measurement that never happened — but it does break a run that would otherwise
+have finished.
 
 Branch coverage is required. Every guard in this codebase is an early return
 or a raise, and statement coverage marks a guard covered the instant its `if`

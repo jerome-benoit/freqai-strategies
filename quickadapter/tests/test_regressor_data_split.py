@@ -538,6 +538,32 @@ class TrainTestSplitCausalPurgeTest(QaTestCase):
         kept = list(self._split(with_lookahead(24, 4), horizon=0)["train_features"].index)
         self.assertIn(24, kept)
 
+    def test_the_horizon_and_the_availability_masks_are_combined_not_replaced(self):
+        # The two boundaries above are individually sound, and that is exactly the problem:
+        # one of them is exercised with no availability column and the other with a zero
+        # horizon, so `keep_mask &=` never runs with both constraints live. Rewriting the
+        # conjunction as an assignment — `keep_mask = train_known_at_position < ...` — threw
+        # the horizon mask away and left the suite green.
+        #
+        # Here both fire. A horizon of 4 keeps only rows below 26; a lookahead of 6 on row 20
+        # makes that row available exactly at the first test row, so the availability mask must
+        # remove a row the horizon mask had kept. Under an assignment the horizon constraint
+        # would be dropped and row 25 — which the horizon mask excludes — would survive.
+        lookahead = [0] * self.ROWS
+        lookahead[20] = 6
+        unfiltered = frame(self.index, **{LOOKAHEAD: lookahead, WEIGHT_LOOKAHEAD: [0] * self.ROWS})
+
+        kept = list(self._split(unfiltered, horizon=4)["train_features"].index)
+
+        self.assertNotIn(20, kept, "the availability mask must remove a row the horizon kept")
+        self.assertNotIn(25, kept, "the horizon mask must still apply when availability is present")
+        self.assertIn(19, kept)
+        self.assertIn(24, kept)
+        # With the horizon alone the same frame keeps 20, so the purge above is the
+        # availability mask's doing and not the horizon's.
+        horizon_only = list(self._split(unfiltered, horizon=0)["train_features"].index)
+        self.assertIn(20, horizon_only)
+
     def test_the_causal_guard_is_skipped_outside_causal_mode(self):
         # The counterpart, so the boundary tests above are not passing for the wrong reason:
         # with causal_mode off the same row survives.
