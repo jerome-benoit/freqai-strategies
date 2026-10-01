@@ -844,7 +844,10 @@ def _generate_extrema_label(
 
     series = pd.Series(0.0, index=dataframe.index)
     if result.indices:
-        series.loc[result.indices] = result.directions
+        # `indices` are POSITIONS, and `series` carries the caller's index (a DatetimeIndex
+        # in FreqAI), so this assignment must be positional. `.loc` would look the values up
+        # as labels and silently misalign the label series on any non-default index.
+        series.iloc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
         COMBINED_METRICS[0]: result.amplitudes,  # "amplitude"
@@ -4085,7 +4088,12 @@ def _zigzag(
     natr_warmup_end_pos = int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
     natr_values = natr.bfill().to_numpy()
 
-    indices: list[int] = df.index.tolist()
+    # Pivots are tracked as POSITIONS, never as index labels. `compute_label_weights`
+    # consumes `ZigzagResult.indices` as row offsets (it casts to int and bounds them by
+    # `n_values`), and FreqAI hands the strategy a DatetimeIndex frame, so index labels
+    # would be Timestamps there: the weighting path raises TypeError on the first candle
+    # of every pair, and on any non-zero-based integer index it silently drops every pivot
+    # and returns all-zero weights. `LabelData.indices` documents the positional contract.
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
     closes = df.get("close").to_numpy(dtype=float)
     highs = df.get("high").to_numpy(dtype=float)
@@ -4348,7 +4356,7 @@ def _zigzag(
         latest_confirmation_pos = confirmed_at_pos
         known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = confirmed_at_pos
         last_resolved_pos = max(last_resolved_pos, resolve_through_pos)
-        if pivots_indices and indices[pos] == pivots_indices[-1]:
+        if pivots_indices and pos == pivots_indices[-1]:
             return
 
         # These swing metrics are backfilled onto the previous pivot from the
@@ -4387,7 +4395,7 @@ def _zigzag(
             pivots_efficiency_ratios[-1] = efficiency_ratio
             pivots_volume_weighted_efficiency_ratios[-1] = volume_weighted_efficiency_ratio
 
-        pivots_indices.append(indices[pos])
+        pivots_indices.append(pos)
         pivots_values_log.append(value_log)
         pivots_directions.append(direction)
 

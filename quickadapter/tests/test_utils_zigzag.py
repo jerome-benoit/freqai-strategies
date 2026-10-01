@@ -420,8 +420,55 @@ class UtilsZigzagTest(QaTestCase):
         self.assertEqual(sorted(set(label.series.tolist())), [-1.0, 0.0, 1.0])
         self.assertEqual(label.indices, [0, 29, 69])
         for position, direction in zip(label.indices, [1.0, -1.0, 1.0], strict=True):
-            self.assertEqual(label.series.loc[position], direction)
+            self.assertEqual(label.series.iloc[position], direction)
         self.assertEqual(int((label.series != 0.0).sum()), len(label.indices))
+
+    def test_pivot_indices_are_positions_not_index_labels(self):
+        # `LabelData.indices` is documented as "positions of detected pivots in series", and
+        # `compute_label_weights` consumes it that way: it casts to int and bounds the result
+        # by the row count. Every other fixture in this suite uses a zero-based RangeIndex,
+        # where a label and a position coincide, so returning `df.index` instead of positions
+        # would pass everywhere. These three indexes are what make the two distinguishable.
+        closes = price_path(*W_LEGS)
+        expected = generate_label_data(ohlcv_frame(closes), EXTREMA_COLUMN, PARAMS, LOGGER)
+        indexes = {
+            "shifted_int": pd.RangeIndex(500, 500 + len(closes)),
+            "datetime": pd.date_range("2024-01-01", periods=len(closes), freq="5min"),
+            "string": pd.Index([f"candle-{i}" for i in range(len(closes))]),
+        }
+        for name, index in indexes.items():
+            with self.subTest(index=name):
+                frame = ohlcv_frame(closes).set_axis(index)
+                label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+                self.assertEqual(label.indices, expected.indices)
+                self.assertEqual(label.indices, sorted(set(label.indices)))
+                np.testing.assert_array_equal(label.series.to_numpy(), expected.series.to_numpy())
+                self.assertTrue(label.series.index.equals(index))
+
+    def test_label_weights_survive_an_index_that_is_not_a_position(self):
+        # The consumer side of the same contract. `compute_label_weights` casts the pivot
+        # indices to int and bounds them by n_values, so index labels raise TypeError on the
+        # DatetimeIndex that FreqAI actually passes, and are dropped as out-of-range on a
+        # shifted integer index, leaving every weight at zero with only a warning.
+        from Utils import compute_label_weights
+
+        closes = price_path(*W_LEGS)
+        expected = generate_label_data(ohlcv_frame(closes), EXTREMA_COLUMN, PARAMS, LOGGER)
+        for name, index in (
+            ("shifted_int", pd.RangeIndex(500, 500 + len(closes))),
+            ("datetime", pd.date_range("2024-01-01", periods=len(closes), freq="5min")),
+        ):
+            with self.subTest(index=name):
+                frame = ohlcv_frame(closes).set_axis(index)
+                label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+                weights = compute_label_weights(
+                    len(closes),
+                    label.indices,
+                    {"efficiency_ratio": [1.0] * len(label.indices)},
+                    {"strategy": "uniform"},
+                    logger=LOGGER,
+                )
+                self.assertEqual(int((weights > 0).sum()), len(expected.indices))
 
     def test_the_label_metrics_mirror_the_pivot_metrics(self):
         frame = ohlcv_frame(price_path(*W_LEGS))
