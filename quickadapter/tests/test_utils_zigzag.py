@@ -244,6 +244,51 @@ class UtilsZigzagTest(QaTestCase):
                 )
         self.assertNotEqual(result.volume_rates[0], 1.0)
 
+    def test_the_volume_weighted_efficiency_ratio_weights_each_step_by_its_destination(self):
+        # The sixth COMBINED_METRIC, and the only one that had no numeric assertion: every
+        # existing check either mirrored `efficiency_ratio` or expected 1.0, which holds for
+        # ANY positive weighting. The W_LEGS fixture is monotone, so its ratio is 1.0 under
+        # every convention and cannot discriminate. Shifting the volume window by one candle
+        # — same length, different slice — left all 968 tests green.
+        #
+        # This fixture is a slow uptrend carrying a fast oscillation: the legs are short and
+        # genuinely non-monotone, so the ratio drops well below 1.0 and the window offset
+        # changes the answer. The oracle below restates the documented convention: every
+        # close-to-close step is weighted by the volume of the candle it lands ON, and the
+        # pivot bar at the start of the leg is excluded from the total.
+        steps = np.arange(120)
+        closes = 100.0 + 0.02 * steps + 0.25 * np.sin(steps / 2.0)
+        volumes = 10.0 + 5.0 * np.sin(steps / 4.0)
+
+        result = _zigzag(ohlcv_frame(closes, volumes), **PARAMS)
+
+        log_closes = np.log(closes)
+        checked = 0
+        for index in range(len(result.indices) - 1):
+            start, end = sorted((result.indices[index], result.indices[index + 1]))
+            end += 1
+            window = volumes[start + 1 : end]
+            weighted = np.diff(log_closes[start:end]) * (window / window.sum())
+            expected = abs(weighted.sum()) / np.abs(weighted).sum()
+            with self.subTest(leg=index):
+                self.assertAlmostEqual(
+                    float(result.volume_weighted_efficiency_ratios[index]),
+                    float(expected),
+                    places=12,
+                )
+            checked += 1
+        self.assertGreater(checked, 5, "the fixture must produce enough legs to be meaningful")
+        # And the convention is load-bearing here, not an identity: the one-candle shift a
+        # mutation introduces, and the unweighted ratio, both differ from the pinned value.
+        start, end = sorted((result.indices[5], result.indices[6]))
+        steps_slice = np.diff(log_closes[start : end + 1])
+        shifted = np.abs(steps_slice * (volumes[start:end] / volumes[start:end].sum())).sum()
+        self.assertNotAlmostEqual(
+            float(result.volume_weighted_efficiency_ratios[5]),
+            abs(steps_slice.sum()) / shifted,
+            places=9,
+        )
+
     def test_the_efficiency_ratio_measures_directness_of_the_leg(self):
         closes = wiggly_closes()
         result = zigzag_result(closes)
