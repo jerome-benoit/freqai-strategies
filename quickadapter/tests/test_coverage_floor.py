@@ -12,7 +12,7 @@ BRANCH = "branch"
 NAMESPACE_PACKAGES = "include_namespace_packages"
 OMIT = "omit"
 # The lowest floor the project will accept. Raising it is free; dropping below this is the
-# silent gate disabling that `.coveragerc` and README.md:528 both forbid.
+# silent gate disabling that `.coveragerc` and README.md:532 both forbid.
 MINIMUM_FLOOR = 67.0
 PRAGMA = re.compile(r"pragma\s*:\s*no\s*cover", re.IGNORECASE)
 # The other two of coverage.py's three DEFAULT_EXCLUDE patterns.
@@ -117,7 +117,7 @@ class CoverageFloorTest(QaTestCase):
                     self.assertNotIn(key, self.parser[section])
 
     def test_the_floor_is_never_lowered(self):
-        # `.coveragerc` and README.md:528 both say "raise only, never lower", but nothing
+        # `.coveragerc` and README.md:532 both say "raise only, never lower", but nothing
         # enforced it: `fail_under = 5` kept every test in this class green while the gate
         # stopped constraining anything. The floor is a control the project believes it has,
         # so the floor test now pins its LOWER bound. Raising it stays free, which is exactly

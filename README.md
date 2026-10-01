@@ -532,10 +532,14 @@ is not a valid input — then update the value and the `# measured` annotation
 above it in the same commit. Raise the floor only; a drop needs the reason in
 the pull request. `quickadapter/tests/test_coverage_floor.py` refuses a
 placeholder, a missing or undated measurement annotation, a measurement below
-the floor it justifies, a floor below the current minimum, a disabled branch
-trace, a disabled namespace walk, a coverage pragma in production source, a
-workflow that stops propagating the report status, and any `omit`,
-`exclude_lines`, `exclude_also` or `partial_*` of production code.
+the floor it justifies, a floor below the current minimum, a floor that is not a
+percentage, a `precision` coarse enough to round the total past the floor, a
+disabled branch trace, a disabled namespace walk, a source tree that is not the
+measured one, a `fail_under` that has drifted into the inert `[run]` section, the
+three of coverage's default source exclusions, a coverage pragma in production
+source, a workflow that is not pointed at this `.coveragerc`, a workflow that
+stops propagating the report status, and any `omit`, `include`, `exclude_lines`,
+`exclude_also` or `partial_*` of production code.
 
 ### Quality checks
 
