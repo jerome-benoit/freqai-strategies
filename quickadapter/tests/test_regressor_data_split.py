@@ -94,6 +94,15 @@ class KnownAtLookaheadTest(QaTestCase):
         result = QuickAdapterRegressorV3._known_at_lookahead(unfiltered, unfiltered)
         np.testing.assert_array_equal(result.to_numpy(), np.array([9, 9]))
 
+    def test_a_lone_column_holding_a_nan_leaves_no_usable_lookahead(self):
+        # The skip is per COLUMN, and the fixture above keeps a clean weight column, so the
+        # surviving values coincide whether or not the guard runs. It is observable only
+        # when the ONLY emitted column carries a NaN: the caller must then get None and fall
+        # back to the position-based purge, where without the guard the NaN reaches
+        # astype(np.int64) and raises IntCastingNaNError out of the function.
+        unfiltered = frame(pd.Index([0, 1]), **{LOOKAHEAD: [3.0, np.nan]})
+        self.assertIsNone(QuickAdapterRegressorV3._known_at_lookahead(unfiltered, unfiltered))
+
     def test_result_is_aligned_to_the_filtered_index(self):
         unfiltered = frame(pd.Index([0, 1, 2]), **{LOOKAHEAD: [5, 6, 7]})
         result = QuickAdapterRegressorV3._known_at_lookahead(frame(pd.Index([2, 0])), unfiltered)
@@ -323,10 +332,19 @@ class ValidationSplitTest(QaTestCase):
         result = self._split(model)
         self.assertEqual(len(result["train_weights"]), len(result["train_features"]))
         self.assertEqual(len(result["validation_weights"]), len(result["validation_features"]))
-        # A recomposition renormalises each subset to mean 1, so the recomposed train weights
-        # cannot equal the raw prefix of the base weights the caller passed in.
-        self.assertAlmostEqual(float(np.mean(result["train_weights"])), 1.0)
-        self.assertAlmostEqual(float(np.mean(result["validation_weights"])), 1.0)
+        # The ratios are the discriminating assertion: `base` is a strict ramp and the label
+        # weights are None, so a recomposition is a pure rescale and the weights reproduce
+        # the BASE ratios. np.ones has ratio 1.0 everywhere and cannot pass this, which is
+        # the whole point of the contract the production comment spells out.
+        for weights, expected in (
+            (result["train_weights"], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            (result["validation_weights"], [1.0, 8.0 / 7.0]),
+        ):
+            with self.subTest(weights=list(weights)):
+                self.assertAlmostEqual(float(np.mean(weights)), 1.0)
+                np.testing.assert_allclose(
+                    np.asarray(weights) / weights[0], np.array(expected), rtol=1e-12, atol=0.0
+                )
 
     def test_holdout_rows_available_before_the_window_end_are_kept(self):
         model = self._model(data_split_parameters={"test_size": 2, "shuffle": False})
