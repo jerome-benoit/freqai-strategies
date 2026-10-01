@@ -1544,24 +1544,37 @@ class RegressorSelectionTest(QaTestCase):
 
     # ------------------------------------------------------------------ scalar validators
 
-    def test_a_non_finite_scalar_is_refused_in_warn_and_raise_modes_and_silently_dropped_in_none(
-        self,
-    ):
+    def test_a_non_finite_scalar_is_refused_in_raise_mode(self):
         for value in (np.inf, -np.inf, np.nan):
-            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "must be finite"):
+            with (
+                self.subTest(value=value, mode="raise"),
+                self.assertRaisesRegex(ValueError, "must be finite"),
+            ):
                 QuickAdapterRegressorV3._validate_scalar(value, ctx="label_p_order", mode=RAISE)
+
+    def test_a_non_finite_scalar_is_warned_and_dropped_in_warn_mode(self):
+        for value in (np.inf, -np.inf, np.nan):
+            with self.subTest(value=value, mode="warn"):
                 with self.assertLogs(LOGGER_NAME, "WARNING") as captured:
                     warned = QuickAdapterRegressorV3._validate_scalar(
                         value, ctx="label_p_order", mode=WARN
                     )
                 self.assertIsNone(warned)
                 self.assertIn("must be finite", captured.output[0])
-                with self.assertNoLogs(LOGGER_NAME, "WARNING"):
-                    self.assertIsNone(
-                        QuickAdapterRegressorV3._validate_scalar(
-                            value, ctx="label_p_order", mode=NONE
-                        )
-                    )
+
+    def test_a_non_finite_scalar_is_silently_dropped_in_none_mode(self):
+        for value in (np.inf, -np.inf, np.nan):
+            with self.subTest(value=value, mode="none"), self.assertNoLogs(LOGGER_NAME, "WARNING"):
+                self.assertIsNone(
+                    QuickAdapterRegressorV3._validate_scalar(value, ctx="label_p_order", mode=NONE)
+                )
+
+    # These three used to share one `with` block behind the raising call, so the warn and
+    # none branches never executed at all: the raise on the first line unwound the block.
+    # The suite was green and the test name claimed all three modes. Removing the non-finite
+    # warning in `_validate_scalar`, or turning its `return None` into `return 0.0`, both
+    # survived — the first because the warning was never asserted, the second because the
+    # fallback case in the file used a degenerate row below the ideal count.
 
     def test_a_predicate_violation_is_reported_with_the_supplied_constraint(self):
         with self.assertRaisesRegex(ValueError, "must be > 0"):
