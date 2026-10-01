@@ -4,6 +4,7 @@ import configparser
 import re
 import unittest
 
+import yaml
 from qa_support import COVERAGERC, REPO_ROOT, QaTestCase
 
 FLOOR = "fail_under"
@@ -206,6 +207,36 @@ class CoverageFloorTest(QaTestCase):
         self.assertIsNotNone(step, "the coverage step is gone from the workflow")
         self.assertIn("python -m coverage report", step.group(0))
         self.assertIn("exit $status", step.group(0), "the step must exit with the report status")
+
+    def test_the_workflow_actually_dispatches_the_coverage_step(self):
+        # The previous guards constrain the CONFIGURATION and the body of the coverage step.
+        # This constrains whether the step runs AT ALL, which is the same lever one level up:
+        # flipping the QuickAdapter matrix entry to `coverage: false`, or the step's own `if:`
+        # to a constant, leaves every other test green while CI stops running the gate
+        # entirely. A job that skips the coverage step is indistinguishable from a green one.
+        #
+        # Parsed rather than grepped: a matrix entry that loses its `coverage` key, or an `if:`
+        # that stops referencing the matrix, must fail here rather than pass a substring test.
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        entries = workflow["jobs"]["strategy-qa"]["strategy"]["matrix"]["include"]
+        by_name = {entry["name"]: entry for entry in entries}
+
+        self.assertIn("QuickAdapter", by_name)
+        self.assertIs(
+            by_name["QuickAdapter"].get("coverage"),
+            True,
+            "the QuickAdapter matrix entry must request the coverage run",
+        )
+        steps = workflow["jobs"]["strategy-qa"]["steps"]
+        coverage_steps = [
+            step for step in steps if step.get("name") == "Run runtime regressions with coverage"
+        ]
+        self.assertEqual(1, len(coverage_steps), "the coverage step must exist exactly once")
+        self.assertEqual(
+            "matrix.coverage",
+            coverage_steps[0].get("if"),
+            "the coverage step must be dispatched by the matrix flag, not a constant",
+        )
 
     def test_the_source_is_the_measured_tree(self):
         self.assertEqual(

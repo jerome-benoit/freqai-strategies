@@ -58,14 +58,21 @@ def recorded_warnings() -> Iterator[tuple[logging.Logger, list[str]]]:
     logger = logging.getLogger("quickadapter.tests.config_resolution")
     handler = _WarningSink(sink)
     previous_propagate = logger.propagate
+    previous_level = logger.level
     logger.propagate = False
-    logger.setLevel(logging.NOTSET)
+    # The level is set explicitly AND restored. NOTSET makes the logger inherit the root
+    # level, and a record the logger has already filtered out never reaches a private
+    # handler — so under a root at ERROR every case asserting on warning text fails on an
+    # empty sink. Restoring it on exit matters too: leaving it changed makes later tests
+    # depend on ordering.
+    logger.setLevel(logging.WARNING)
     logger.addHandler(handler)
     try:
         yield logger, sink
     finally:
         logger.removeHandler(handler)
         logger.propagate = previous_propagate
+        logger.setLevel(previous_level)
 
 
 class UtilsConfigResolutionTest(QaTestCase):
