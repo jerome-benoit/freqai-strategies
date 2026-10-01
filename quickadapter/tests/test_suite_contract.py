@@ -41,11 +41,6 @@ class SuiteContractTest(QaTestCase):
             with self.subTest(module=src.name):
                 self.assertIn(src.resolve(), loaded)
 
-    def test_b_every_source_module_imports(self):
-        for name in PRODUCTION_NAMES:
-            with self.subTest(module=name):
-                self.assertIsNotNone(importlib.import_module(name))
-
     def test_no_package_marker_under_quickadapter(self):
         markers = sorted(
             path.relative_to(QUICKADAPTER).as_posix() for path in QUICKADAPTER.rglob("__init__.py")

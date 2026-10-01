@@ -15,6 +15,10 @@ OMIT = "omit"
 # silent gate disabling that `.coveragerc` and README.md:528 both forbid.
 MINIMUM_FLOOR = 67.0
 PRAGMA = re.compile(r"pragma\s*:\s*no\s*cover", re.IGNORECASE)
+# The other two of coverage.py's three DEFAULT_EXCLUDE patterns.
+ELLIPSIS_BODY = re.compile(r"^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)")
+TYPE_CHECKING = re.compile(r"^\s*if (typing\.)?TYPE_CHECKING:")
+INCLUDE = "include"
 MEASURED_TREE = REPO_ROOT / "quickadapter" / "user_data"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "quality.yml"
 
@@ -65,8 +69,15 @@ class CoverageFloorTest(QaTestCase):
     def test_unexecuted_files_stay_in_the_denominator(self):
         self.assertTrue(self.parser.getboolean("report", NAMESPACE_PACKAGES))
 
-    def test_precision_is_set_so_the_floor_is_interpreted_consistently(self):
-        self.assertIn(PLACES, self.parser["report"])
+    def test_precision_is_fine_enough_for_the_gate_to_compare_what_it_prints(self):
+        # coverage's predicate is `round(total, precision) < fail_under`, so precision is not
+        # cosmetic: at 0 the measured total is rounded to a whole number and a run up to half a
+        # point BELOW the floor passes. Measured with the shipped floor of 67, a true total of
+        # 66.6 fails at precision 1 and passes at precision 0, and the same divergence reaches
+        # `coverage report`'s exit code through the CLI. The key was present; its value was
+        # never read, so `precision = 0` shipped with the suite green.
+        precision = self.parser.getint("report", PLACES)
+        self.assertGreaterEqual(precision, 1)
 
     def test_the_floor_is_bound_in_the_section_coverage_reads_it_from(self):
         # coverage binds fail_under as `report:fail_under` ONLY. The same key under
@@ -78,14 +89,6 @@ class CoverageFloorTest(QaTestCase):
         self.assertIn(FLOOR, self.parser["report"])
         self.assertNotIn(FLOOR, self.parser["run"])
 
-    def test_no_production_code_is_omitted(self):
-        # An omit entry shrinks the denominator while the floor stays put, so the gate
-        # reports the same number over a smaller measurement. `omit` is accepted by coverage in
-        # both sections.
-        for section in ("run", "report"):
-            with self.subTest(section=section, key=OMIT):
-                self.assertNotIn(OMIT, self.parser[section])
-
     def test_no_production_code_is_excluded_by_any_other_key(self):
         # `omit` was only the first way to shrink the denominator: `exclude_lines`,
         # `exclude_also` and the partial_* family are the same lever under other names, and
@@ -95,11 +98,12 @@ class CoverageFloorTest(QaTestCase):
         # and partial_branches under `[run]`, so checking them in both sections is free and
         # forward-looking.
         for section, keys in (
-            ("run", (OMIT,)),
+            ("run", (OMIT, INCLUDE)),
             (
                 "report",
                 (
                     OMIT,
+                    INCLUDE,
                     "exclude_lines",
                     "exclude_also",
                     "partial_branches",
@@ -145,37 +149,63 @@ class CoverageFloorTest(QaTestCase):
                 "the annotated measurement must clear the floor it justifies",
             )
 
-    def test_no_production_source_declares_a_coverage_pragma(self):
+    def test_no_production_source_widens_coverage_s_default_exclusions(self):
         # The source side of the same lever the config-side keys above cover. coverage.py
-        # always applies a default `exclude_list` matching `# pragma: no cover`, so a pragma
-        # on an uncovered function removes its statements from the denominator. Measured:
-        # one pragma on `_normalize_final_take_profit_state` took QuickAdapterV3.py from
-        # 58.8 % to 60.2 % and the total from 69.3 % to 69.6 %, with all 968 tests green.
-        # The tree carries none today, so this is a pure and repeatable silent gain.
-        offenders = [
-            f"{path.relative_to(REPO_ROOT)}:{number}"
-            for path in sorted(MEASURED_TREE.rglob("*.py"))
-            for number, line in enumerate(path.read_text().splitlines(), start=1)
-            if PRAGMA.search(line)
-        ]
-        self.assertEqual([], offenders, f"coverage pragmas shrink the denominator: {offenders}")
+        # always applies a DEFAULT_EXCLUDE of three patterns, and each removes statements from
+        # the denominator without any config change at all: a `# pragma: no cover` comment, a
+        # `...`-only body, and an `if TYPE_CHECKING:` block. Measured for the pragma: one on
+        # `_normalize_final_take_profit_state` took QuickAdapterV3.py from 58.8 % to 60.2 % and
+        # the total from 69.3 % to 69.6 %, with the suite green.
+        #
+        # The tree is NOT free of the lever today: `if TYPE_CHECKING:` appears in Utils.py and
+        # is excluded today. A type-checking block is legitimate — it holds imports that do not
+        # run — so it is permitted up to a pinned count rather than banned outright. The other
+        # two patterns have no legitimate use here, so they must stay at zero.
+        counts = {
+            "pragma: no cover": 0,
+            "ellipsis body": 0,
+            "if TYPE_CHECKING:": 1,
+        }
+        found = dict.fromkeys(counts, 0)
+        for path in sorted(MEASURED_TREE.rglob("*.py")):
+            for line in path.read_text().splitlines():
+                if PRAGMA.search(line):
+                    found["pragma: no cover"] += 1
+                elif ELLIPSIS_BODY.match(line):
+                    found["ellipsis body"] += 1
+                elif TYPE_CHECKING.match(line):
+                    found["if TYPE_CHECKING:"] += 1
+        self.assertEqual(counts, found, "these shrink the denominator without any config change")
 
-    def test_the_workflow_propagates_the_coverage_result(self):
-        # Everything above constrains the CONFIGURATION to be meaningful; this constrains
-        # something to actually READ it. `exit $status` at the end of the coverage step is
-        # the only thing that turns a failing `coverage report` into a failing job, and
-        # deleting that one line leaves every test in this class green while the gate
-        # becomes a no-op. Verified: with `fail_under = 99`, the step exits 2 with the line
-        # and 0 without it.
-        step = WORKFLOW.read_text()
-        start = step.find("python -m coverage report")
-        self.assertNotEqual(-1, start, "the coverage job no longer runs `coverage report`")
-        tail = step[
-            start : step.find("\n- name:", start)
-            if step.find("\n- name:", start) != -1
-            else len(step)
-        ]
-        self.assertIn("exit $status", tail, "the coverage step must exit with the report status")
+    def test_the_workflow_runs_the_gate_with_this_configuration_and_propagates_it(self):
+        # Everything above constrains the CONFIGURATION to be meaningful; these two constrain
+        # something to actually read it and to act on the result.
+        #
+        # The rcfile binding: coverage looks for `.coveragerc` in the directory it runs from
+        # and does not search parents, and the QA image has no `.coveragerc`, `setup.cfg`,
+        # `tox.ini` or `pyproject.toml` at the workspace root. Deleting the one
+        # `--env COVERAGE_RCFILE=` line therefore leaves coverage with NO configuration: branch
+        # tracing off, no `source`, `fail_under = 0`, measuring the standard library and
+        # exiting 0. Nothing else in this class is sensitive to that line.
+        workflow = WORKFLOW.read_text()
+        self.assertRegex(
+            workflow,
+            r"--env COVERAGE_RCFILE=\S*\$\{\{ matrix\.context \}\}/\.coveragerc",
+            "the coverage step must be pointed at the context's .coveragerc",
+        )
+        # The propagation: `exit $status` is the only thing that turns a failing
+        # `coverage report` into a failing job. It is scoped to the COVERAGE STEP, matched on
+        # its own indent: every `- name:` in the file is indented, so searching for an
+        # unindented one silently runs off the end of the file and a decoy token anywhere
+        # later in the workflow satisfies the assertion.
+        step = re.search(
+            r"^      - name: Run runtime regressions with coverage$.*?(?=^      - name:|\n\S)",
+            workflow,
+            re.DOTALL | re.MULTILINE,
+        )
+        self.assertIsNotNone(step, "the coverage step is gone from the workflow")
+        self.assertIn("python -m coverage report", step.group(0))
+        self.assertIn("exit $status", step.group(0), "the step must exit with the report status")
 
     def test_the_source_is_the_measured_tree(self):
         self.assertEqual(

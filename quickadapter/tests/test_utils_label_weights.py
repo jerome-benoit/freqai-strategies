@@ -9,6 +9,7 @@ from qa_support import QaTestCase
 from Utils import (
     LabelWeightSupportError,
     _effective_sample_size,
+    compose_label_lookahead,
     compose_sample_weights,
     nan_average,
     non_zero_diff,
@@ -218,6 +219,40 @@ class NonZeroDiffTest(QaTestCase):
     def test_nan_propagates_unchanged(self):
         result = non_zero_diff(pd.Series([np.nan]), pd.Series([1.0]))
         self.assertTrue(np.isnan(result.iloc[0]))
+
+
+class ComposeLabelLookaheadTest(QaTestCase):
+    """The right kernel boundary, which `compose_label_lookahead` has to hold shut.
+
+    A centered smoothing kernel needs future candles that do not exist yet, so the last
+    `kernel_half_width` rows must stay unavailable until the frame grows. The bound is
+    `right_edge_start = max(0, n - kernel_half_width)` and it was untested: widening it by a
+    single row kept the whole suite green while changing the reported lookahead for that row
+    from `n - row` to 1, on every combination the function is reachable with.
+    """
+
+    def test_the_last_kernel_half_width_rows_stay_unavailable(self):
+        n, half = 300, 5
+        # A known_at of 0 everywhere, so the available position equals the row itself. The
+        # centered rolling max then returns `last row of the window` for every row, which
+        # would leave the final rows available immediately: at row n-1 the window ends at
+        # n-1, giving a lookahead of 0. The clamp holds those rows to `n` instead, so the
+        # reported lookahead is exactly `n - row` and decays to 1 at the last row.
+        result = compose_label_lookahead(
+            pd.Series(np.zeros(n, dtype=np.int64)), half, method="gaussian", mode="zero"
+        )
+
+        # The clamped window, and only it, is pinned to `n`.
+        np.testing.assert_array_equal(result.to_numpy()[n - half :], np.arange(half, 0, -1))
+        self.assertEqual(int(result.iloc[-1]), 1)
+        # One row earlier the rolling max already returns 5, not the 4 the clamp would give,
+        # so the boundary is exactly where the clamp starts and not one row off.
+        self.assertEqual(int(result.iloc[n - half - 1]), half)
+
+    def test_a_zero_half_width_returns_the_input_untouched(self):
+        values = np.array([0, 3, 1, 7], dtype=np.int64)
+        result = compose_label_lookahead(pd.Series(values), 0, method="gaussian", mode="zero")
+        np.testing.assert_array_equal(result.to_numpy(), values)
 
 
 if __name__ == "__main__":

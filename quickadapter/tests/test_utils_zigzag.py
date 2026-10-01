@@ -571,6 +571,34 @@ class UtilsZigzagTest(QaTestCase):
             [-1] * (int(unresolved.sum()) - 1),
         )
 
+    def test_a_pivot_is_never_available_before_its_confirmation_candle(self):
+        # The monotonic watermark in `add_pivot` takes the max of four terms, and the one
+        # this pins is `confirmed_at_pos`. On W_LEGS the orientation candle and the ATR
+        # warm-up end coincide, so `max(confirmed, 0, warmup, -1)` equals
+        # `max(0, warmup, -1)` and dropping the term changes nothing — which is why the
+        # case above cannot tell the two apart.
+        #
+        # A long flat stretch then a trend separates them: the ATR is finite from the fifth
+        # candle, but the orientation at row 0 is not confirmed until the trend has produced
+        # five consecutive slopes. Dropping `confirmed_at_pos` then publishes the label of
+        # row 0 long before its confirmation candle. Measured over seeded frames, that term
+        # is the difference on 509 of 1500 and makes a row available before its own candle on
+        # 41 of them, by up to 96 candles.
+        quiet = 40
+        closes = np.concatenate([np.full(quiet, 100.0), 100.0 + np.arange(1, 61) * 0.8])
+        frame = ohlcv_frame(closes)
+
+        result = _zigzag(frame, **PARAMS)
+        label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+
+        self.assertEqual(result.indices, [0])
+        self.assertEqual(int(result.known_at_positions[0]), quiet)
+        # And the separation is real, not a coincidence: the ATR warm-up term alone spans a
+        # handful of candles, so a value of `quiet` can only come from the confirmation.
+        self.assertGreater(int(result.known_at_positions[0]), 4 * NATR_PERIOD)
+        self.assertEqual(int(label.known_at_lookahead.iloc[0]), quiet)
+        self.assertTrue(np.all(result.known_at_positions >= np.arange(len(closes), dtype=np.int64)))
+
     def test_an_unregistered_label_column_raises_a_key_error_listing_the_registry(self):
         frame = ohlcv_frame(price_path(*W_LEGS))
 

@@ -481,11 +481,13 @@ class UtilsIndicatorsTest(QaTestCase):
 
     def test_frama_reproduces_close_because_the_dimension_is_one_up_to_rounding(self):
         # The real contract, asserted rather than implied. HL1 and HL2 each span a HALF of the
-        # window while HL3 spans all of it, so HL1 + HL2 <= 2 * HL3, D <= 1, and the clip
-        # returns exactly 1.0 on every path. alpha is therefore exp(-4.6 * 0) == 1.0 and
-        # frama reproduces close after its seed. This pins the DEGENERACY as a fact: a change
-        # that made the dimension vary, or the -4.6 scale observable, would have to update
-        # this test rather than pass unnoticed.
+        # window while HL3 spans all of it, so HL1 + HL2 <= 2 * HL3 and D <= 1, which makes
+        # alpha exp(-4.6 * (D - 1)) indistinguishable from 1 at this tolerance. This pins the
+        # DEGENERACY as a fact: a change that made the dimension vary, or the -4.6 scale
+        # observable, would have to update this test rather than pass unnoticed. It does NOT
+        # establish that alpha is a literal 1.0 — this fixture is monotone and happens to land
+        # on exactly 1.0, where
+        # test_the_fractal_dimension_can_exceed_one_by_rounding does not.
         closes = np.array([100.0 + i for i in range(30)])
         result = frama(ohlcv_frame(closes.tolist()), 6).to_numpy()
         self.assertTrue(np.isnan(result[:5]).all())

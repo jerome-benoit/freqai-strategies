@@ -460,12 +460,20 @@ class StrategyFeaturesTest(QaTestCase):
                 start=FIRST_CANDLE + datetime.timedelta(minutes=STEP_MINUTES * offset),
             )
 
+        # Each refusal is checked IMMEDIATELY. Asserting only at the end cannot work here:
+        # every probe rotates the frame timestamp on purpose, and
+        # `_invalidate_pair_caches` wipes the pair's entries on a signature change, so by the
+        # final assertion only the last probe's signature survives and an earlier refusal
+        # that had memoised is invisible. Making the two NaN refusal branches memoise left
+        # the suite green for exactly that reason.
         for offset, natr in ((1, np.nan), (2, -1.0)):
             with self.subTest(natr=natr):
                 deviation = model._calculate_candle_deviation(
                     unreadable_candle(offset, natr), PAIR, 0.0, 1.0
                 )
                 self.assertTrue(np.isnan(deviation))
+                self.assertEqual(model._candle_deviation_cache, {})
+                self.assertEqual(model._candle_threshold_cache, {})
         for offset, column in ((3, "close"), (4, "open")):
             holed = unreadable_candle(offset, 1.0)
             holed.loc[0, column] = np.nan
@@ -474,10 +482,13 @@ class StrategyFeaturesTest(QaTestCase):
                     self.assertTrue(
                         np.isnan(model._calculate_candle_threshold(holed, PAIR, side, 0.0, 1.0))
                     )
-        # A refusal is not a value: only the zero-volatility deviation is memoised, while
-        # every unreadable deviation and threshold leaves no entry behind.
+                    # Only the THRESHOLD cache must stay empty here: computing a threshold
+                    # legitimately memoises the deviation it derives, and that deviation is
+                    # readable because the hole is in the price, not in the NATR.
+                    self.assertEqual(model._candle_threshold_cache, {})
+        # And the legitimate memoisation from the flat candle is still there, so the two
+        # assertions above are not passing because the cache is simply never written to.
         self.assertEqual(len(model._candle_deviation_cache), 1)
-        self.assertEqual(model._candle_threshold_cache, {})
 
     def test_the_weighted_close_lies_between_the_low_and_the_high(self):
         candle = candles([110.0], opens=[100.0], highs=[120.0], lows=[95.0]).iloc[0]

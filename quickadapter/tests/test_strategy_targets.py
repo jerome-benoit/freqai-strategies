@@ -598,6 +598,10 @@ class StrategyTargetsTest(QaTestCase):
             labelled = result[EXTREMA_COLUMN].to_numpy() != 0.0
             weights = result[LABEL_WEIGHT_COLUMN]
             smoothed = result["extrema_weight_smoothed"]
+            # Without this, a frame that produced no labels at all would satisfy
+            # `(weights[labelled] > 0).all()` on an empty selection. The sibling case pins
+            # the exact counts; this one only needs the selection to be non-empty.
+            self.assertTrue(labelled.any(), "no candle was labelled, so nothing was asserted")
             self.assertTrue((weights[labelled] > 0.0).all())
             self.assertTrue((weights >= 0.0).all())
             self.assertTrue(np.isfinite(smoothed.to_numpy()).all())

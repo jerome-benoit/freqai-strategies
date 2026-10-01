@@ -844,9 +844,10 @@ def _generate_extrema_label(
 
     series = pd.Series(0.0, index=dataframe.index)
     if result.indices:
-        # `indices` are POSITIONS, and `series` carries the caller's index (a DatetimeIndex
-        # in FreqAI), so this assignment must be positional. `.loc` would look the values up
-        # as labels and silently misalign the label series on any non-default index.
+        # `indices` are POSITIONS and `series` carries the caller's index, so this assignment
+        # must be positional. `.loc` would read the positions as labels, which raises KeyError
+        # on the DatetimeIndex FreqAI passes and on any shifted integer index, and on a
+        # PERMUTED integer index writes the directions onto the wrong rows without raising.
         series.iloc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {

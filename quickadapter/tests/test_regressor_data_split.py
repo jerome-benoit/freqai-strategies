@@ -445,5 +445,115 @@ class ConstructionContractTest(QaTestCase):
             )
 
 
+class TrainTestSplitCausalPurgeTest(QaTestCase):
+    """The OUTER split, which is the shipped default.
+
+    `causal_mode` defaults to True, the split method defaults to `train_test_split`
+    and `config-template.json` ships `"test_size": 0.333`, so
+    `_make_train_test_split_datasets` with a non-zero test size is the path a stock
+    configuration takes. Every other test drives `_add_validation_split` or `test_size: 0`
+    instead, which left the whole causal purge block — and both of its boundary
+    comparisons — with no coverage at all: relaxing `<` to `<=` on either of them kept the
+    suite green.
+    """
+
+    ROWS = 40
+    TEST_ROWS = 10
+
+    class _Kitchen:
+        pair = PAIR
+
+        @staticmethod
+        def build_data_dictionary(
+            train_features, test_features, train_labels, test_labels, train_weights, test_weights
+        ):
+            return {
+                "train_features": train_features,
+                "test_features": test_features,
+                "train_labels": train_labels,
+                "test_labels": test_labels,
+                "train_weights": train_weights,
+                "test_weights": test_weights,
+            }
+
+    def setUp(self):
+        super().setUp()
+        self.index = pd.Index(range(self.ROWS))
+        # `_known_at_lookahead` reads the availability columns from the UNFILTERED frame, so
+        # that is where they have to live. With no availability column present it returns
+        # None, the guard logs once and skips its second comparison entirely — so the horizon
+        # boundary and the known_at boundary are exercised from separate fixtures below.
+        self.unfiltered = frame(self.index)
+        self.features = frame(self.index, f=np.arange(self.ROWS, dtype=float))
+        self.labels = frame(self.index, y=np.arange(self.ROWS, dtype=float))
+        self.weights = SampleWeightInputs(
+            base=np.ones(self.ROWS),
+            label=None,
+            label_weighting_config=WEIGHTING_CONFIG,
+        )
+
+    def _split(self, unfiltered: pd.DataFrame, horizon: int = 0, **params):
+        model = regressor(
+            data_split_parameters={"test_size": self.TEST_ROWS, "shuffle": False, **params},
+            _label_horizon_candles=lambda pair=None: horizon,
+        )
+        return model._make_train_test_split_datasets(
+            self.features, self.labels, self.weights, self._Kitchen(), unfiltered
+        )
+
+    def test_the_horizon_boundary_purges_the_training_row_exactly_at_the_cutoff(self):
+        # train_test_split without shuffle puts the LAST 10 rows in the test set, so
+        # first_test_position is 30. With a horizon of 3 the strict comparison keeps a
+        # training row only while position < 27, so row 26 is the last survivor and row 27 is
+        # purged. `<=` would keep row 27 as well, which is the off-by-one the guard exists
+        # to prevent: that row's label horizon reaches into the test window.
+        result = self._split(self.unfiltered, horizon=3)
+        kept = list(result["train_features"].index)
+        self.assertEqual(max(kept), 26)
+        self.assertNotIn(27, kept)
+        self.assertEqual(list(result["test_features"].index), list(range(30, 40)))
+
+    def test_a_zero_horizon_purges_nothing_by_position(self):
+        # The floor of the same comparison: with no horizon the last training row sits
+        # immediately before the test window and is kept, so row 29 must survive.
+        result = self._split(self.unfiltered, horizon=0)
+        self.assertEqual(list(result["train_features"].index), list(range(30)))
+
+    def test_a_row_known_exactly_at_the_first_test_row_is_purged(self):
+        # The second, independent boundary. A label that becomes available at position
+        # position + lookahead must be strictly before the first test row, so a training row
+        # at position 25 with a lookahead of 5 is available exactly at 30 and is purged.
+        # Without the availability column the whole branch is skipped and this never bites.
+        def with_lookahead(row: int, value: int):
+            values = [0] * self.ROWS
+            values[row] = value
+            return frame(self.index, **{LOOKAHEAD: values, WEIGHT_LOOKAHEAD: [0] * self.ROWS})
+
+        unfiltered = with_lookahead(25, 5)
+        result = self._split(unfiltered, horizon=0)
+        kept = list(result["train_features"].index)
+        self.assertNotIn(25, kept, "available exactly at the first test row, so it must be purged")
+        self.assertIn(24, kept)
+        # A row one candle earlier is available at 29, strictly inside the training window.
+        kept = list(self._split(with_lookahead(24, 4), horizon=0)["train_features"].index)
+        self.assertIn(24, kept)
+
+    def test_the_causal_guard_is_skipped_outside_causal_mode(self):
+        # The counterpart, so the boundary tests above are not passing for the wrong reason:
+        # with causal_mode off the same row survives.
+        lookahead = [0] * self.ROWS
+        lookahead[25] = 5
+        unfiltered = frame(self.index, **{LOOKAHEAD: lookahead, WEIGHT_LOOKAHEAD: [0] * self.ROWS})
+        model = regressor(
+            data_split_parameters={"test_size": self.TEST_ROWS, "shuffle": False},
+            _causal_mode=False,
+            _label_horizon_candles=lambda pair=None: 0,
+        )
+        result = model._make_train_test_split_datasets(
+            self.features, self.labels, self.weights, self._Kitchen(), unfiltered
+        )
+        self.assertEqual(list(result["train_features"].index), list(range(30)))
+
+
 if __name__ == "__main__":
     unittest.main()

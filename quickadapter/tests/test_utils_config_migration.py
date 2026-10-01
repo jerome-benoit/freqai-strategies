@@ -147,23 +147,44 @@ class UtilsConfigMigrationTest(QaTestCase):
                 # A key with nowhere to go must say why; a plain rename has nothing to explain.
                 self.assertEqual(new_path is None, guidance is not None)
 
-    def test_l_section_renames_are_ordered_before_the_key_moves_that_feed_on_them(self):
-        # An entry whose old path sits under an earlier entry's new path is unreachable unless
-        # the earlier one has already run, which is what the ordering comment on the table
-        # guarantees. Reordering the table would break every pair this finds.
-        inherited = 0
-        for index, (old_path, _, _, _) in enumerate(CONFIG_DEPRECATIONS):
-            for earlier_index, (_, earlier_new, _, _) in enumerate(CONFIG_DEPRECATIONS[:index]):
-                if earlier_new is None:
-                    continue
-                if old_path == earlier_new or old_path.startswith(f"{earlier_new}."):
-                    inherited += 1
-                    self.assertLess(
-                        earlier_index,
-                        index,
-                        f"{old_path} can only be reached after {earlier_index} is applied",
-                    )
-        self.assertGreater(inherited, 0, "the table no longer encodes a rename chain")
+    def test_a_renamed_section_reaches_its_keys_through_the_second_hop(self):
+        # The table is order-dependent by construction: entry 0 renames
+        # `freqai.extrema_weighting` to `freqai.label_weighting`, and entries 21-27 then move
+        # keys from there to `freqai.label_pipeline`. A key written under the ORIGINAL section
+        # therefore only lands in its final home if the section rename has already run.
+        #
+        # The previous version of this test asserted `earlier_index < index` with
+        # `earlier_index` drawn from `enumerate(CONFIG_DEPRECATIONS[:index])`, which is true by
+        # construction, so reordering the table kept it green while silently stranding the key.
+        config = {
+            "freqai": {
+                "extrema_weighting": {
+                    "normalization": "minmax",
+                    "gamma": 2.0,
+                }
+            }
+        }
+
+        migrate_config(config, LOGGER)
+
+        self.assertEqual(
+            config["freqai"]["label_pipeline"],
+            {"normalization": "minmax", "gamma": 2.0},
+        )
+        self.assertNotIn("extrema_weighting", config["freqai"])
+
+    def test_the_table_still_encodes_a_rename_chain(self):
+        # The structural half, which is a fact about the table rather than about behaviour:
+        # at least one entry's old path must sit under an earlier entry's new path, or the
+        # behavioural test above has stopped testing a chain.
+        inherited = [
+            old_path
+            for old_path, _, _, _ in CONFIG_DEPRECATIONS
+            for _, earlier_new, _, _ in CONFIG_DEPRECATIONS
+            if earlier_new is not None
+            and (old_path == earlier_new or old_path.startswith(f"{earlier_new}."))
+        ]
+        self.assertGreater(len(inherited), 0, "the table no longer encodes a rename chain")
 
     def test_m_a_deprecation_path_warns_once_per_process_across_config_objects(self):
         first = {"freqai": {"extrema_smoothing": {"factor": 0.5}}}

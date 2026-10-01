@@ -324,12 +324,30 @@ class LabelTransformerTest(QaTestCase):
     def test_a_flat_config_dict_is_read_as_the_default_block(self):
         # The regressor hands over whatever get_label_pipeline_config produced, which may carry
         # pipeline keys at the top level instead of under "default".
+        #
+        # A round trip alone is satisfied by ANY invertible pipeline, including one that
+        # ignores the flat dict entirely and falls back to `DEFAULTS_LABEL_PIPELINE`
+        # (standardization "none", normalization "maxabs"). Two mutations proved it: dropping
+        # the config merge and dropping the key filter each left the suite green while the
+        # fitted scaler changed. So this asserts what the config bought, and that the
+        # unknown key was dropped rather than carried.
         matrix = label_matrix()
         fitted = LabelTransformer(
             label_transformer={"standardization": "zscore", "normalization": "minmax", "ignored": 1}
         )
         fitted.fit(matrix)
         scaled, *_ = fitted.transform(matrix)
+
+        self.assertEqual(fitted._config.default["standardization"], "zscore")
+        self.assertEqual(fitted._config.default["normalization"], "minmax")
+        self.assertNotIn("ignored", fitted._config.default)
+        # minmax pins the extremes, and that is what the `DEFAULTS_LABEL_PIPELINE` fallback
+        # (none/maxabs) cannot produce: maxabs maps into (0, 1], so its minimum is strictly
+        # positive. The column's MEAN is deliberately not asserted — minmax is affine and runs
+        # after zscore, so centring does not survive it.
+        column = scaled[:, 0]
+        self.assertAlmostEqual(float(column.min()), -1.0, places=12)
+        self.assertAlmostEqual(float(column.max()), 1.0, places=12)
         recovered, *_ = fitted.inverse_transform(scaled)
         np.testing.assert_allclose(recovered, matrix, rtol=ROUND_TRIP_RTOL, atol=ROUND_TRIP_ATOL)
 

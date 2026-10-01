@@ -2,8 +2,7 @@
 
 Covers the config-to-object boundary: which misconfigurations are fatal and which
 are downgraded with a warning, plus the hermetic Optuna sampler mapping and the
-label candle pool that feeds label selection. Requires the Freqtrade QA image.
-; requires the Freqtrade QA image."""
+label candle pool that feeds label selection; requires the Freqtrade QA image."""
 
 import json
 import random
