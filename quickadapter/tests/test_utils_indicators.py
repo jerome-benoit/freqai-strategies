@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import pandas as pd
 from numpy.testing import assert_allclose, assert_array_equal
-from qa_support import QaTestCase
+from qa_support import QaTestCase, ohlcv_frame
 from Utils import (
     MA_MODES,
     PRICE_MODES,
@@ -37,19 +37,6 @@ from Utils import (
 # quantities: midpoint and get_distance are rtol=1e-9/atol=0.0, calculate_quantile is the
 # scalars tier, and ewo(normalize=True) is percent-scaled so it takes rtol=1e-9/atol=1e-12.
 _QUANTILE_PLACES = 12
-
-
-def candles(closes: list[float], *, spread: float = 1.0) -> pd.DataFrame:
-    """Return a frame whose close is `closes` and whose high/low bracket it by `spread`."""
-    close = pd.Series(closes, dtype=float)
-    return pd.DataFrame(
-        {
-            "open": close,
-            "high": close + spread,
-            "low": close - spread,
-            "close": close,
-        }
-    )
 
 
 def sawtooth(peaks: int) -> pd.Series:
@@ -204,7 +191,7 @@ class UtilsIndicatorsTest(QaTestCase):
                 self.assertEqual(calculate_n_extrema(series), 0)
 
     def test_the_log_returns_are_the_closed_form_on_a_positive_series(self):
-        frame = candles([100.0, 102, 101, 103, 105, 104, 106, 108])
+        frame = ohlcv_frame([100.0, 102, 101, 103, 105, 104, 106, 108])
         close = frame.get("close")
         for period in (1, 2, 3, 5):
             with self.subTest(period=period):
@@ -232,7 +219,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # negative price leaves a hole in the series rather than emitting -inf. assertAlmostEqual
         # cannot express this; the positions are checked with np.isnan and the no-infinity
         # invariant separately.
-        frame = candles([100.0, 0.0, 102, 0.0, 103, 0.0, 105, 106, 107, 108, 109, 110])
+        frame = ohlcv_frame([100.0, 0.0, 102, 0.0, 103, 0.0, 105, 106, 107, 108, 109, 110])
         for indicator in (top_log_return, bottom_log_return):
             with self.subTest(indicator=indicator.__name__):
                 result = indicator(frame, 3).to_numpy()
@@ -243,7 +230,7 @@ class UtilsIndicatorsTest(QaTestCase):
 
     def test_a_fully_non_positive_price_leaves_the_whole_series_missing(self):
         for values in ([0.0] * 12, [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0]):
-            frame = candles(values)
+            frame = ohlcv_frame(values)
             with self.subTest(values=values):
                 for indicator in (top_log_return, bottom_log_return, price_retracement_percent):
                     result = indicator(frame, 3).to_numpy()
@@ -251,7 +238,7 @@ class UtilsIndicatorsTest(QaTestCase):
                     self.assertFalse(np.isinf(result).any())
 
     def test_a_period_below_one_is_refused_by_the_log_return_indicators(self):
-        frame = candles([100.0, 101, 102, 103])
+        frame = ohlcv_frame([100.0, 101, 102, 103])
         for indicator in (top_log_return, bottom_log_return, price_retracement_percent):
             for period in (0, -1):
                 with (
@@ -262,7 +249,7 @@ class UtilsIndicatorsTest(QaTestCase):
 
     def test_the_retracement_is_the_log_position_within_the_rolling_range(self):
         closes = [100.0, 102, 101, 103, 105, 104, 106, 108]
-        frame = candles(closes)
+        frame = ohlcv_frame(closes)
         close = frame.get("close")
         low = close.rolling(3, min_periods=3).min().shift(1)
         high = close.rolling(3, min_periods=3).max().shift(1)
@@ -278,7 +265,7 @@ class UtilsIndicatorsTest(QaTestCase):
     def test_a_flat_range_retraces_to_the_bottom_rather_than_dividing_by_zero(self):
         # A constant close makes the log(high/low) denominator exactly 0.0; the result is
         # pinned to 0.0 instead of a division, and stays on the series index.
-        frame = candles([100.0] * 8)
+        frame = ohlcv_frame([100.0] * 8)
         result = price_retracement_percent(frame, 3)
         self.assertTrue(result.index.equals(frame.index))
         assert_allclose(
@@ -293,7 +280,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # np.isclose on the denominator admits any range smaller than 1e-8 in log space,
         # so a ramp whose total range is 1e-7 still reads as flat.
         for span in (0.0, 1e-9, 1e-7):
-            frame = candles([100.0 + span * step for step in range(8)])
+            frame = ohlcv_frame([100.0 + span * step for step in range(8)])
             with self.subTest(span=span):
                 result = price_retracement_percent(frame, 3).to_numpy()[3:]
                 assert_allclose(result, np.zeros(5), rtol=0.0, atol=0.0)
@@ -431,7 +418,7 @@ class UtilsIndicatorsTest(QaTestCase):
         self.assertEqual(len(set(callables)), len(PRICE_MODES))
 
     def test_an_unknown_price_name_falls_back_to_the_close(self):
-        frame = candles([10.0, 11.0, 12.0])
+        frame = ohlcv_frame([10.0, 11.0, 12.0])
         close = frame.get("close")
         for name in ("bogus", "", "CLOSE", None):
             with self.subTest(name=repr(name)):
@@ -448,7 +435,7 @@ class UtilsIndicatorsTest(QaTestCase):
                 assert_allclose(
                     result.to_numpy()[warmup:], np.full(20 - warmup, 7.0), rtol=0.0, atol=0.0
                 )
-            smoothed = frama(candles([7.0] * 20), period)
+            smoothed = frama(ohlcv_frame([7.0] * 20), period)
             self.assertEqual(int(smoothed.isna().sum()), period - 1)
             assert_allclose(
                 smoothed.to_numpy()[period - 1 :],
@@ -472,7 +459,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # _fractal_dimension returns nan once its window contains a nan high, and the
         # recursion skips on nan, so the tail stays missing rather than diverging: the
         # output after the gap is all nan and never an infinity.
-        frame = candles([7.0] * 20)
+        frame = ohlcv_frame([7.0] * 20)
         frame.loc[8, "high"] = np.nan
         result = frama(frame, 6).to_numpy()
         self.assertFalse(np.isinf(result).any())
@@ -483,7 +470,7 @@ class UtilsIndicatorsTest(QaTestCase):
     def test_frama_survives_an_intact_series_across_the_same_window(self):
         # The counterpart to the gap case: without the nan the recursion runs to the end, so
         # the missing tail above is caused by the gap and not by the period.
-        result = frama(candles([7.0] * 20), 6).to_numpy()
+        result = frama(ohlcv_frame([7.0] * 20), 6).to_numpy()
         self.assertTrue(np.isnan(result[:5]).all())
         assert_allclose(result[5:], np.full(15, 7.0), rtol=0.0, atol=0.0)
 
@@ -491,7 +478,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # zero_lag replaces high, low and close with calculate_zero_lag first, which makes the
         # seed the mean of the de-lagged closes rather than the raw ones. Ignoring the flag
         # leaves a different seed, so the first finite bar alone distinguishes the two.
-        frame = candles([float(value) for value in range(1, 13)])
+        frame = ohlcv_frame([float(value) for value in range(1, 13)])
         de_lagged = frama(frame, 4, zero_lag=True).to_numpy()
         raw = frama(frame, 4, zero_lag=False).to_numpy()
         self.assertFalse(np.array_equal(de_lagged, raw, equal_nan=True))
@@ -507,7 +494,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # _fractal_dimension returns 1.0 when either half-range is zero, which pins alpha at
         # exp(0) = 1 and makes the recursion follow close exactly. A constant frame is the
         # only shape that reaches that branch.
-        result = frama(candles([7.0] * 12), 4).to_numpy()
+        result = frama(ohlcv_frame([7.0] * 12), 4).to_numpy()
         self.assertFalse(np.isinf(result).any())
         assert_allclose(result[3:], np.full(9, 7.0), rtol=0.0, atol=0.0)
 
@@ -589,7 +576,7 @@ class UtilsIndicatorsTest(QaTestCase):
                 smma(series, period)
 
     def test_an_odd_fractal_dimension_period_is_refused(self):
-        frame = candles([1.0, 2, 3, 4, 5, 6])
+        frame = ohlcv_frame([1.0, 2, 3, 4, 5, 6])
         for period in (3, 5, 7):
             with self.subTest(period=period), self.assertRaisesRegex(ValueError, "must be even"):
                 frama(frame, period)
@@ -634,7 +621,7 @@ class UtilsIndicatorsTest(QaTestCase):
                 )
 
     def test_the_oscillator_is_the_gap_between_its_two_averages(self):
-        frame = candles([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
         close = frame.get("close")
         for mamode in MA_MODES:
             for ma1_length, ma2_length in ((3, 6), (2, 8)):
@@ -653,7 +640,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # The longer period dominates the warmup: the gap is missing for exactly as many bars
         # as the slow average needs, so a shallow crossover cannot appear before the data
         # supports it.
-        frame = candles([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
         close = frame.get("close")
         for ma1_length, ma2_length in ((2, 6), (3, 8), (4, 10)):
             with self.subTest(ma1=ma1_length, ma2=ma2_length):
@@ -663,7 +650,7 @@ class UtilsIndicatorsTest(QaTestCase):
                 self.assertFalse(np.isinf(raw).any())
 
     def test_a_normalised_oscillator_is_the_raw_gap_as_a_percent_of_price(self):
-        frame = candles([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
         raw = ewo(frame, 3, 6)
         close = frame.get("close").to_numpy()
         assert_allclose(
@@ -675,7 +662,7 @@ class UtilsIndicatorsTest(QaTestCase):
         )
 
     def test_the_zero_lag_oscillator_is_not_the_causal_one(self):
-        frame = candles([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
         causal = ewo(frame, 3, 6)
         differs = False
         for mamode in MA_MODES:
@@ -691,7 +678,7 @@ class UtilsIndicatorsTest(QaTestCase):
         # zero-lagged input. The expectation is built from get_ma_fn and calculate_zero_lag
         # separately, so a get_zl_ma_fn that forwarded the raw series would not reproduce it.
         # The ema name is excluded because zero_lag substitutes zlema for it outright.
-        frame = candles([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
         close = frame.get("close")
         registry_modes = tuple(name for name in MA_MODES if name != MA_MODES[1])
         for mamode in registry_modes:
@@ -711,7 +698,7 @@ class UtilsIndicatorsTest(QaTestCase):
     def test_the_zero_lag_ema_oscillator_is_the_zero_lag_ema_gap(self):
         # The ema branch of zero_lag substitutes zlema itself rather than going through
         # get_zl_ma_fn, so it leads the shared registry path.
-        frame = candles([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
         close = frame.get("close")
         expected = zlema(close, 3).to_numpy() - zlema(close, 6).to_numpy()
         assert_allclose(
@@ -723,7 +710,7 @@ class UtilsIndicatorsTest(QaTestCase):
         )
 
     def test_the_oscillator_of_a_constant_series_collapses_to_zero(self):
-        frame = candles([7.0] * 20)
+        frame = ohlcv_frame([7.0] * 20)
         for mamode in MA_MODES:
             with self.subTest(mamode=mamode):
                 raw = ewo(frame, 3, 6, mamode=mamode)

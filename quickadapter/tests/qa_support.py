@@ -3,12 +3,14 @@
 import copy
 import importlib
 import unittest
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import Utils
 from freqtrade.enums import RunMode
 
@@ -74,6 +76,33 @@ def temporary_directory() -> Iterator[Path]:
     """Yield a temporary directory that is removed on exit. The only call shape."""
     with TemporaryDirectory() as path:
         yield Path(path)
+
+
+def ohlcv_frame(
+    closes: Sequence[float] | np.ndarray,
+    volume: float | np.ndarray = 10.0,
+    spread: float | np.ndarray = 0.001,
+) -> pd.DataFrame:
+    """Return an OHLCV frame whose close is `closes`, bracketed by a relative `spread`.
+
+    `closes` stays first-positional and accepts a plain sequence as well as an
+    array; the spread is RELATIVE so the high/low bracket scales with the price
+    instead of vanishing on a large series.
+    """
+    values = np.asarray(closes, dtype=float)
+    count = values.size
+    spreads = np.broadcast_to(np.asarray(spread, dtype=float), (count,))
+    volumes = np.broadcast_to(np.asarray(volume, dtype=float), (count,))
+    return pd.DataFrame(
+        {
+            "open": values,
+            "high": values * (1.0 + spreads),
+            "low": values * (1.0 - spreads),
+            "close": values,
+            "volume": volumes,
+            "date": pd.date_range("2024-01-01", periods=count, freq="5min"),
+        }
+    )
 
 
 # Captured once, after Utils finished its import-time registrations, so a test that
