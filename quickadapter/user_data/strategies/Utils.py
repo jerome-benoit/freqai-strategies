@@ -834,8 +834,8 @@ def _generate_extrema_label(
     params: dict[str, Any],
     logger: Logger | None = None,
 ) -> LabelData:
-    natr_period = params.get("natr_period", 14)
-    natr_multiplier = params.get("natr_multiplier", 9.0)
+    natr_period = params.get("natr_period", DEFAULT_LABEL_NATR_PERIOD)
+    natr_multiplier = params.get("natr_multiplier", DEFAULT_MIN_LABEL_NATR_MULTIPLIER)
     result = _zigzag(
         dataframe,
         natr_period=natr_period,
@@ -1045,6 +1045,7 @@ DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 DEFAULT_MIN_LABEL_PERIOD_CANDLES: Final[int] = 12
 DEFAULT_MAX_LABEL_PERIOD_CANDLES: Final[int] = 24
 DEFAULT_MIN_LABEL_NATR_MULTIPLIER: Final[float] = 9.0
+DEFAULT_LABEL_NATR_PERIOD: Final[int] = 14
 DEFAULT_MAX_LABEL_NATR_MULTIPLIER: Final[float] = 12.0
 
 
@@ -3788,9 +3789,22 @@ def zlema(series: pd.Series, period: int) -> pd.Series:
 def _fractal_dimension(
     highs: NDArray[np.floating], lows: NDArray[np.floating], period: int
 ) -> float:
-    """Original fractal dimension computation implementation per Ehlers' paper."""
-    if period % 2 != 0:
-        raise ValueError(f"Invalid period value {period!r}: must be even")
+    """Fractal dimension over the two half-window ranges of a ``period`` window.
+
+    ``HL3`` spans the whole window while ``HL1`` and ``HL2`` each span a half, so
+    ``HL1 <= HL3`` and ``HL2 <= HL3``, hence ``HL1 + HL2 <= 2 * HL3`` and
+    ``D <= 1`` for every reachable input (measured: max 0.99994 over 300000
+    windows). The clip therefore returns exactly ``1.0`` on every path, so
+    ``alpha`` in :func:`frama` is identically ``exp(-4.6 * 0) == 1.0`` and
+    ``frama`` reproduces ``close`` after its seed.
+
+    This is the current, asserted behaviour, not the formulation in Ehlers' paper:
+    that one takes the range over ``period // 2`` consecutive sub-ranges, whose sum
+    can exceed twice the full range. Adopting it is an algorithmic change and is
+    deliberately not made here.
+    """
+    if period % 2 != 0 or period < 2:
+        raise ValueError(f"Invalid period value {period!r}: must be an even integer >= 2")
 
     half_period = period // 2
 
@@ -4045,8 +4059,8 @@ class ZigzagResult:
 
 def _zigzag(
     df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
+    natr_period: int = DEFAULT_LABEL_NATR_PERIOD,
+    natr_multiplier: float = DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
     normalize: bool = False,
     *,
     logger: Logger | None = None,
@@ -4584,8 +4598,8 @@ def _zigzag(
 
 def zigzag(
     df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
+    natr_period: int = DEFAULT_LABEL_NATR_PERIOD,
+    natr_multiplier: float = DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
     normalize: bool = False,
     *,
     logger: Logger | None = None,
