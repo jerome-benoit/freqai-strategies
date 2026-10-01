@@ -48,13 +48,24 @@ class StepTest(QaTestCase):
             with self.subTest(value=repr(value)), self.assertRaises(ValueError):
                 round_to_step(value, 3)
 
-    def test_an_exact_half_rounds_to_even(self):
-        # The step algebra uses Python's round, which is half-to-EVEN, not half-up:
-        # 2.5 goes to 2 and 3.5 to 4. Pinned because half-up is the common assumption.
+    def test_an_exact_half_rounds_to_even_for_floats(self):
+        # Covers the FLOAT branch only. The int branch has its own tie handler, which no
+        # float input can reach, and the two halves must not be read as covered by one.
         self.assertEqual(round_to_step(2.5, 1), 2)
         self.assertEqual(round_to_step(3.5, 1), 4)
         self.assertEqual(round_to_step(0.5, 1), 0)
         self.assertEqual(round_to_step(1.5, 1), 2)
+
+    def test_an_exact_half_rounds_to_even_for_integers_too(self):
+        # An int-typed value takes the other branch entirely, whose tie handler rounds up
+        # when the remainder is exactly half of the step. Only an ODD quotient discriminates,
+        # because half-to-even then rounds away from zero: (3,2) is 1.5 steps and must go to
+        # 4, where a naive q*step would give 2. An even quotient like (5,2) is 2.5 steps and
+        # agrees either way, so it is listed only as a control.
+        for value, step, expected in ((3, 2, 4), (6, 4, 8), (9, 6, 12), (5, 2, 4), (7, 4, 8)):
+            with self.subTest(value=value, step=step):
+                self.assertEqual(round_to_step(value, step), expected)
+                self.assertEqual(round_to_step(value, step) % step, 0)
 
 
 class LargestDivisorTest(QaTestCase):

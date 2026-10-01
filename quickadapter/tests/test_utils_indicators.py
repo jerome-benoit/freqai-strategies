@@ -478,6 +478,21 @@ class UtilsIndicatorsTest(QaTestCase):
         self.assertTrue(np.isnan(result[:5]).all())
         assert_allclose(result[5:], np.full(15, 7.0), rtol=0.0, atol=0.0)
 
+    def test_frama_recurses_toward_close_on_a_series_with_a_real_range(self):
+        # The other frama fixtures are all CONSTANT frames, and _fractal_dimension returns
+        # 1.0 whenever either half-range is zero. So alpha collapses to exp(-4.6 * 0) == 1.0
+        # and neither the -4.6 scale, nor the `fd - 1` offset, nor the clip bounds are
+        # observable: a mutant that doubles alpha survives on all of them. Only a frame
+        # with a genuine high/low range in every window can see any of the three.
+        result = frama(ohlcv_frame([100.0 + i for i in range(30)]), 6).to_numpy()
+        self.assertTrue(np.isnan(result[:5]).all())
+        # Derivation of the tail: the window seeds from the mean of the first `period`
+        # closes (102.5) and each subsequent bar smooths toward the previous one, which on
+        # this unit ramp leaves close minus 0.5 after the first jump.
+        assert_allclose(result[5], 102.5, rtol=0.0, atol=1e-9)
+        assert_allclose(result[6], 106.0, rtol=0.0, atol=1e-9)
+        assert_allclose(result[7:], np.arange(107.0, 130.0), rtol=0.0, atol=1e-9)
+
     def test_the_zero_lag_frama_de_lags_before_the_fractal_dimension(self):
         # zero_lag replaces high, low and close with calculate_zero_lag first, which makes the
         # seed the mean of the de-lagged closes rather than the raw ones. Ignoring the flag
