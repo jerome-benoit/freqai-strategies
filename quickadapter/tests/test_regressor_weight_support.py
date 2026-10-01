@@ -146,7 +146,7 @@ class EnforceSupportTest(QaTestCase):
     def test_the_fallback_policy_turns_a_support_failure_into_base_weights(self):
         with self.assertLogs(
             "quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3", "WARNING"
-        ):
+        ) as captured:
             result = self._enforce(
                 np.ones(4),
                 np.ones(4),
@@ -154,6 +154,12 @@ class EnforceSupportTest(QaTestCase):
                 min_effective_sample_size=4.5,
             )
         self.assertAlmostEqual(float(np.mean(result)), 1.0)
+        # assertLogs alone only proves THAT a warning fired. Under `fallback` the operator
+        # has no exception to read, so the warning is the whole diagnostic: it must name the
+        # threshold that actually failed, not merely announce that something did.
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("effective_sample_size=4 < min_effective_sample_size=4.5", captured.output[0])
+        self.assertNotIn("pivot_equivalent_count=0", captured.output[0])
 
 
 class ComposeTrainWeightsTest(QaTestCase):
