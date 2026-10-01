@@ -481,12 +481,58 @@ PYTHONPATH=/workspace/quickadapter/user_data/strategies \
   python -m unittest discover -s quickadapter/tests -v
 ```
 
+Both commands must be run from the repository root, which is what the
+container's `--workdir /workspace` provides. To select one concern, pass a
+pattern that matches the whole `module.Class.method` name; a bare substring
+selects more than you want, and a pattern that matches nothing runs zero tests
+and fails with exit code 5:
+
+```shell
+PYTHONPATH=quickadapter/user_data/strategies \
+  python -m unittest discover -s quickadapter/tests -k 'test_utils_zigzag.*' -v
+```
+
 CI runs type checks and runtime regressions in one QA matrix entry per strategy.
 The shared runtime step sets each strategy's `PYTHONPATH`. QuickAdapter needs
 this for direct `unittest` discovery because its model imports `LabelTransformer`
 and `Utils` by bare names; ReforceXY resolves its imports without it, so the
-setting is optional there. The reward-space analysis suite runs separately
-with `uv`, without a Freqtrade image.
+setting is optional there. QuickAdapter's regressions additionally run under
+`coverage.py`; the reward-space analysis suite runs separately with `uv`,
+without a Freqtrade image.
+
+### Coverage gate
+
+QuickAdapter is the only project with a coverage gate. Its configuration is
+`quickadapter/.coveragerc`, selected explicitly because coverage.py looks for
+`.coveragerc` in the directory it is run from and does not search parents:
+
+```shell
+export PYTHONPATH=quickadapter/user_data/strategies
+export COVERAGE_RCFILE=quickadapter/.coveragerc COVERAGE_FILE=/tmp/.coverage
+
+python -m coverage run -m unittest discover -s quickadapter/tests -v
+python -m coverage report
+```
+
+Export both variables rather than prefixing a single command: an inline
+prefix binds to that command only, so `python -m coverage report` would read
+no configuration and exit 0 while measuring nothing.
+
+Branch coverage is required. Every guard in this codebase is an early return
+or a raise, and statement coverage marks a guard covered the instant its `if`
+is evaluated. `include_namespace_packages` is required for the opposite
+reason: without it coverage skips directories that have no `__init__.py`, so
+the `user_data` trees would be absent from the report and the gate would
+measure whatever happened to be imported.
+
+`fail_under` is an absolute floor, never per-module. To change it, re-measure
+with the shipped configuration already in place — a measurement taken without
+`branch` and `include_namespace_packages` reports a different denominator and
+is not a valid input — then update the value and the `# measured` annotation
+above it in the same commit. Raise the floor only; a drop needs the reason in
+the pull request. `quickadapter/tests/test_coverage_floor.py` refuses a
+placeholder, a missing measurement annotation, a disabled branch trace, a
+disabled namespace walk, and any `omit` of production code.
 
 ### Quality checks
 
@@ -547,9 +593,9 @@ wrapper rejects direct host and wrong-image execution so Freqtrade imports and
 dependency versions remain exact.
 
 The BasedPyright and type-stub versions are pinned in each project's
-`.devcontainer/requirements-dev.txt`. The Freqtrade base images intentionally
-follow their rolling `stable_freqai` and `stable_freqairl` tags, so record the
-resolved image digests when a reproducible audit is required.
+`.devcontainer/requirements-dev.txt`, as is `coverage` in QuickAdapter's. The Freqtrade base images
+intentionally follow their rolling `stable_freqai` and `stable_freqairl` tags,
+so record the resolved image digests when a reproducible audit is required.
 
 ## Common workflows
 

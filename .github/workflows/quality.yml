@@ -34,7 +34,7 @@ jobs:
   strategy-qa:
     name: QA (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -43,10 +43,12 @@ jobs:
             context: quickadapter
             project: quickadapter
             image: freqai-strategies-quickadapter-qa:ci
+            coverage: true
           - name: ReforceXY
             context: ReforceXY
             project: reforcexy
             image: freqai-strategies-reforcexy-qa:ci
+            coverage: false
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,6 +66,7 @@ jobs:
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
       - name: Run runtime regressions
+        if: ${{ !matrix.coverage }}
         run: |
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
@@ -72,6 +75,26 @@ jobs:
             --entrypoint python \
             "${{ matrix.image }}" \
             -m unittest discover -s "${{ matrix.context }}/tests" -v
+      - name: Run runtime regressions with coverage
+        if: matrix.coverage
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
+            --workdir /workspace \
+            --env PYTHONPATH=/workspace/${{ matrix.context }}/user_data/strategies \
+            --env COVERAGE_RCFILE=/workspace/${{ matrix.context }}/.coveragerc \
+            --env COVERAGE_FILE=/tmp/.coverage \
+            --entrypoint sh \
+            "${{ matrix.image }}" \
+            -c '
+              set -eu
+              python -m coverage run -m unittest discover -s "${{ matrix.context }}/tests" -v
+              echo "::group::Coverage"
+              status=0
+              python -m coverage report || status=$?
+              echo "::endgroup::"
+              exit $status
+            '
 
   reward-space-analysis:
     name: Reward space analysis

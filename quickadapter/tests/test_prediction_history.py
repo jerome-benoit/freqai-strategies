@@ -1,8 +1,6 @@
 """Runtime contracts for FreqAI's native QuickAdapter prediction history."""
 
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -11,45 +9,16 @@ import pandas as pd
 from freqtrade.enums import RunMode
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
+from qa_support import CONFIG_TEMPLATE, PAIR, QaTestCase, model_config, temporary_directory
 
 from quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3 import QuickAdapterRegressorV3
 
-PAIR = "BTC/USDT"
 MARKER = "_freqai_strategies_produced"
 
 
-def model_config(path: str) -> dict:
-    return {
-        "user_data_dir": Path(path),
-        "timeframe": "5m",
-        "stake_amount": "unlimited",
-        "runmode": RunMode.DRY_RUN,
-        "exchange": {"pair_whitelist": [PAIR]},
-        "pairlists": [{"method": "StaticPairList"}],
-        "freqai": {
-            "enabled": True,
-            "identifier": "quickadapter-runtime-regression",
-            "continual_learning": True,
-            "train_period_days": 1,
-            "backtest_period_days": 1,
-            "conv_width": 1,
-            "fit_live_predictions_candles": 2,
-            "feature_parameters": {
-                "include_timeframes": ["5m"],
-                "include_corr_pairlist": [],
-                "label_period_candles": 1,
-                "shuffle_after_split": False,
-            },
-            "data_split_parameters": {"test_size": 0, "shuffle": False},
-            "model_training_parameters": {"n_estimators": 2, "n_jobs": 1},
-            "label_prediction": {"method": "none"},
-        },
-    }
-
-
-class PredictionHistoryTest(unittest.TestCase):
+class PredictionHistoryTest(QaTestCase):
     def test_native_append_restart_and_causal_calibration(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with temporary_directory() as temp:
             config = model_config(temp)
             model = QuickAdapterRegressorV3(config=config)
             model.live = True
@@ -141,7 +110,7 @@ class PredictionHistoryTest(unittest.TestCase):
             )
 
     def test_backtest_does_not_use_future_model_but_resumes_from_earlier_artifact(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with temporary_directory() as temp:
             config = model_config(temp)
             pair = PAIR
 
@@ -181,9 +150,7 @@ class PredictionHistoryTest(unittest.TestCase):
             backtest_config = dict(config)
             backtest_config["runmode"] = RunMode.BACKTEST
             backtest_config["timerange"] = "20260101-20260105"
-            backtest_config["config_files"] = [
-                "/workspace/quickadapter/user_data/config-template.json"
-            ]
+            backtest_config["config_files"] = [str(CONFIG_TEMPLATE)]
             backtest = QuickAdapterRegressorV3(config=backtest_config)
             backtest.live = False
             for day, offset, save_model in (
