@@ -86,15 +86,7 @@ jobs:
             --env COVERAGE_FILE=/tmp/.coverage \
             --entrypoint sh \
             "${{ matrix.image }}" \
-            -c '
-              set -eu
-              python -m coverage run -m unittest discover -s "${{ matrix.context }}/tests" -v
-              echo "::group::Coverage"
-              status=0
-              python -m coverage report || status=$?
-              echo "::endgroup::"
-              exit $status
-            '
+            /workspace/scripts/run-coverage.sh -s "${{ matrix.context }}/tests" -v
 
   reward-space-analysis:
     name: Reward space analysis

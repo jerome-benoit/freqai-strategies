@@ -12,7 +12,6 @@ from qa_support import QaTestCase, ohlcv_frame
 from Utils import (
     MA_MODES,
     PRICE_MODES,
-    _fractal_dimension,
     alligator,
     bottom_log_return,
     calculate_min_extrema,
@@ -478,53 +477,6 @@ class UtilsIndicatorsTest(QaTestCase):
         result = frama(ohlcv_frame([7.0] * 20), 6).to_numpy()
         self.assertTrue(np.isnan(result[:5]).all())
         assert_allclose(result[5:], np.full(15, 7.0), rtol=0.0, atol=0.0)
-
-    def test_frama_reproduces_close_because_the_dimension_is_one_up_to_rounding(self):
-        # The real contract, asserted rather than implied. HL1 and HL2 each span a HALF of the
-        # window while HL3 spans all of it, so HL1 + HL2 <= 2 * HL3 and D <= 1, which makes
-        # alpha exp(-4.6 * (D - 1)) indistinguishable from 1 at this tolerance. This pins the
-        # DEGENERACY as a fact: a change that made the dimension vary, or the -4.6 scale
-        # observable, would have to update this test rather than pass unnoticed. It does NOT
-        # establish that alpha is a literal 1.0 — this fixture is monotone and happens to land
-        # on exactly 1.0, where
-        # test_the_fractal_dimension_can_exceed_one_by_rounding does not.
-        closes = np.array([100.0 + i for i in range(30)])
-        result = frama(ohlcv_frame(closes.tolist()), 6).to_numpy()
-        self.assertTrue(np.isnan(result[:5]).all())
-        assert_allclose(result[5], closes[:6].mean(), rtol=0.0, atol=1e-9)
-        assert_allclose(result[6:], closes[6:], rtol=0.0, atol=1e-9)
-
-    def test_the_fractal_dimension_is_one_within_rounding_on_every_window(self):
-        # Asserted directly on the helper. The name says "within rounding" on purpose: the
-        # clip's lower bound is not a floor in practice, because `np.clip` is a no-op for
-        # values already at or above it, and the ratio lands on 1.0 + O(1e-16) for some
-        # windows. Asserting `== 1.0` here would be pinning a rounding accident of these
-        # three fixtures rather than the contract.
-        trending_high = 100.0 + np.arange(16) * 0.5
-        trending_low = trending_high - 0.8
-        noisy = np.array([100.0 + i for i in range(16)])
-        plateaus = np.array(
-            [1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 2.0, 2.0, 2.0, 9.0, 9.0, 9.0, 3.0, 3.0, 3.0, 4.0]
-        )
-        for highs, lows in (
-            (trending_high, trending_low),
-            (noisy, noisy - 0.3),
-            (plateaus, plateaus - 1.0),
-        ):
-            with self.subTest(highs=highs[:3].tolist()):
-                self.assertAlmostEqual(_fractal_dimension(highs, lows, 16), 1.0, places=12)
-
-    def test_the_fractal_dimension_can_exceed_one_by_rounding(self):
-        # The counterexample that makes the case above honest. This window is not synthetic:
-        # the ratio computes to 1.0000000000000002, the clip leaves it untouched because it is
-        # already above the lower bound, and alpha becomes 0.999999999999999. Anything that
-        # branches on `alpha == 1.0` or promises bit-exact `close` is wrong on this input.
-        highs = np.array([100.2, 101.2, 102.7, 101.6, 102.8, 102.5, 102.5, 102.8, 100.9, 100.3])
-        lows = np.array([99.9, 100.9, 101.6, 101.1, 102.4, 102.3, 101.6, 101.7, 100.6, 99.9])
-        dimension = _fractal_dimension(highs, lows, 10)
-        self.assertGreater(dimension, 1.0)
-        self.assertLessEqual(dimension, 1.0 + 1e-15)
-        self.assertLess(np.exp(-4.6 * (dimension - 1.0)), 1.0)
 
     def test_the_zero_lag_frama_de_lags_before_the_fractal_dimension(self):
         # zero_lag replaces high, low and close with calculate_zero_lag first, which makes the

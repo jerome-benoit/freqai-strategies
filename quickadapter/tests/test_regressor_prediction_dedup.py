@@ -1,7 +1,6 @@
 """Provability ranking and per-candle deduplication of historic FreqAI predictions.; requires the Freqtrade QA image."""
 
 import unittest
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -33,11 +32,12 @@ _EXPIRED_FORMS: dict[str, dict[str, Any]] = {
 }
 
 
-def drawer_stub(history: pd.DataFrame) -> SimpleNamespace:
-    """A drawer exposing exactly what the patched attach method reads and writes."""
-    stub = SimpleNamespace(historic_predictions={PAIR: history}, model_return_values={})
-    stub._ensure_date_pred_dtype = FreqaiDataDrawer._ensure_date_pred_dtype
-    return stub
+def drawer_stub(history: pd.DataFrame) -> FreqaiDataDrawer:
+    """Use native drawer methods without its disk and model initialization."""
+    drawer = object.__new__(FreqaiDataDrawer)
+    drawer.historic_predictions = {PAIR: history}
+    drawer.model_return_values = {}
+    return drawer
 
 
 class RegressorPredictionDedupTest(QaTestCase):

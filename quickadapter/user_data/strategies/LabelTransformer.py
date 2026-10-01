@@ -330,6 +330,18 @@ class LabelTransformer(BaseTransform):
         self._fitted = False
 
     @staticmethod
+    def _median(values: NDArray[np.floating]) -> float:
+        """Median of nonempty fitting values without overflowing the central sum."""
+        middle = values.size // 2
+        if values.size % 2:
+            return float(np.partition(values, middle)[middle])
+        partitioned = np.partition(values, (middle - 1, middle))
+        lower, upper = float(partitioned[middle - 1]), float(partitioned[middle])
+        total = lower + upper
+        # Halve only an overflowing sum; subnormal midpoints need the original sum.
+        return total / 2.0 if np.isfinite(total) else lower / 2.0 + upper / 2.0
+
+    @staticmethod
     def _apply_scaler(
         values: NDArray[np.floating],
         mask: NDArray[np.bool_],
@@ -486,9 +498,9 @@ class LabelTransformer(BaseTransform):
             state.robust_scaler.fit(values.reshape(-1, 1))
             return
         if method == STANDARDIZATION_TYPES[3]:  # mmad
-            state.median = float(np.median(values))
-            mad = np.median(np.abs(values - state.median))
-            state.mad = float(mad) if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
+            state.median = self._median(values)
+            mad = self._median(np.abs(values - state.median))
+            state.mad = mad if np.isfinite(mad) and not np.isclose(mad, 0.0) else 1.0
             return
         if method == STANDARDIZATION_TYPES[4]:  # power_yj
             state.power_transformer = PowerTransformer(method="yeo-johnson", standardize=True)
