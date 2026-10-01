@@ -72,12 +72,38 @@ class CoverageFloorTest(QaTestCase):
         self.assertNotIn(FLOOR, self.parser["run"])
 
     def test_no_production_code_is_omitted(self):
-        # An omit entry would shrink the denominator while the floor stayed put, so the
-        # gate would report the same number over a smaller measurement. Both sections are
-        # checked: coverage accepts omit as run:omit as well as report:omit.
+        # An omit entry shrinks the denominator while the floor stays put, so the gate
+        # reports the same number over a smaller measurement. `omit` is accepted by coverage in
+        # both sections.
         for section in ("run", "report"):
-            with self.subTest(section=section):
+            with self.subTest(section=section, key=OMIT):
                 self.assertNotIn(OMIT, self.parser[section])
+
+    def test_no_production_code_is_excluded_by_any_other_key(self):
+        # `omit` was only the first way to shrink the denominator: `exclude_lines`,
+        # `exclude_also` and the partial_* family are the same lever under other names, and
+        # adding `exclude_also = ^\s*raise\b` was measured to raise the reported total from
+        # 69.2 % to 70.1 % with every other floor test still green. Measured against coverage
+        # 7.16.2, all of these are `[report]`-only; it REJECTS exclude_lines, exclude_also
+        # and partial_branches under `[run]`, so checking them in both sections is free and
+        # forward-looking.
+        for section, keys in (
+            ("run", (OMIT,)),
+            (
+                "report",
+                (
+                    OMIT,
+                    "exclude_lines",
+                    "exclude_also",
+                    "partial_branches",
+                    "partial_also",
+                    "partial_branches_always",
+                ),
+            ),
+        ):
+            for key in keys:
+                with self.subTest(section=section, key=key):
+                    self.assertNotIn(key, self.parser[section])
 
     def test_the_source_is_the_measured_tree(self):
         self.assertEqual(

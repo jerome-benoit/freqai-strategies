@@ -8,14 +8,17 @@ from qa_support import REPO_ROOT, QaTestCase
 
 QUICKADAPTER = REPO_ROOT / "quickadapter"
 MEASURED_SOURCE = QUICKADAPTER / "user_data"
-_STRATEGY_SOURCES = tuple(sorted((MEASURED_SOURCE / "strategies").glob("*.py")))
-_MODEL_SOURCES = tuple(sorted((MEASURED_SOURCE / "freqaimodels").glob("*.py")))
-# Strategies modules are imported by bare name, which is what production does. The regressor is
-# not on PYTHONPATH and is reachable only as a dotted path. Deriving the names from the tree is
-# what keeps this contract true when a source file is added.
+_SOURCES = tuple(sorted(MEASURED_SOURCE.rglob("*.py")))
+# The measured tree is `quickadapter/user_data` WHOLESALE, so the contract walks it recursively:
+# a flat module such as `user_data/helpers.py` enters the denominator and must not be invisible here.
+# Strategies modules are imported by bare name, which is what production does; anything else is
+# reachable only as a dotted path under `quickadapter.user_data`. Deriving the names from the tree
+# is what keeps the contract true when a source file is added.
 PRODUCTION_NAMES = tuple(
-    [src.stem for src in _STRATEGY_SOURCES]
-    + [f"quickadapter.user_data.freqaimodels.{src.stem}" for src in _MODEL_SOURCES]
+    src.stem
+    if src.parent.name == "strategies"
+    else src.relative_to(QUICKADAPTER.parent).with_suffix("").as_posix().replace("/", ".")
+    for src in _SOURCES
 )
 # A dotted strategies import is banned, so neither branch below may ever build one.
 _FORBIDDEN_PREFIXES = ("quickadapter.user_data.strategies.", "quickadapter.tests.")
@@ -34,7 +37,7 @@ class SuiteContractTest(QaTestCase):
             for module in list(sys.modules.values())
             if getattr(module, "__file__", None)
         }
-        for src in (*_STRATEGY_SOURCES, *_MODEL_SOURCES):
+        for src in _SOURCES:
             with self.subTest(module=src.name):
                 self.assertIn(src.resolve(), loaded)
 
