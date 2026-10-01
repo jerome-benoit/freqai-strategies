@@ -55,11 +55,15 @@ class UtilsIndicatorsTest(QaTestCase):
         self.assertEqual(digest, digest.lower())
         int(digest, 16)
 
-    def test_the_callback_hash_is_stable_across_calls(self):
+        # Determinism is asserted against a DISTINCT closure, not against a second
+        # evaluation of the same call: the hash is a pure function of the bytecode, so
+        # comparing it to itself would pass even for an implementation returning a
+        # constant digest for every callable.
         def beta(value):
             return value * 2
 
         self.assertEqual(get_callable_sha256(beta), get_callable_sha256(beta))
+        self.assertNotEqual(get_callable_sha256(beta), digest)
 
     def test_different_bytecode_hashes_differently(self):
         # Same-shaped but structurally different bodies: arity and the constant/opcode

@@ -199,6 +199,23 @@ class UtilsFormattingTest(QaTestCase):
         # sibling reference is rendered in full twice while an ancestor reference is not.
         shared = {"k": 1}
         self.assertEqual("{a: {k: 1}, b: {k: 1}}", format_dict({"a": shared, "b": shared}))
+        # The same holds for the sequence path, which keeps its own add and discard.
+        shared_list = [1, 2]
+        self.assertEqual(
+            "{a: [1, 2], b: [1, 2]}", format_dict({"a": shared_list, "b": shared_list})
+        )
+        shared_set = {1, 2}
+        self.assertEqual("{a: {1, 2}, b: {1, 2}}", format_dict({"a": shared_set, "b": shared_set}))
+        self.assertEqual("{l: [[1, 2], [1, 2]]}", format_dict({"l": [shared_list, shared_list]}))
+        self.assertEqual(
+            "{a: [1, 2], b: {c: [1, 2]}}", format_dict({"a": shared_list, "b": {"c": shared_list}})
+        )
+        # A context reused across two renders gives the same answer both times, which is only
+        # true when the first render discarded the ids it added.
+        reused = _ctx()
+        self.assertEqual("[1, [1, 2]]", _format_value([1, shared_list], reused, 0))
+        self.assertEqual("[1, [1, 2]]", _format_value([1, shared_list], reused, 0))
+        self.assertEqual(set(), reused.seen)
         # Identity, not equality, is what seen tracks: two distinct objects with equal contents
         # render exactly as the single repeated object does.
         self.assertEqual(
@@ -317,6 +334,10 @@ class UtilsFormattingTest(QaTestCase):
             def __repr__(self) -> str:
                 return "<unregistered>"
 
+            def __str__(self) -> str:
+                return "<str form that repr must win over>"
+
+        # repr, not str: the two disagree here so a str fallback would render the other form.
         self.assertEqual("{a: <unregistered>}", format_dict({"a": Unregistered()}))
         self.assertEqual(
             "{a: frozenset({1}), b: bytearray(b'x')}",

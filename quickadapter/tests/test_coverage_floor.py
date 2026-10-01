@@ -61,10 +61,23 @@ class CoverageFloorTest(QaTestCase):
     def test_precision_is_set_so_the_floor_is_interpreted_consistently(self):
         self.assertIn(PLACES, self.parser["report"])
 
+    def test_the_floor_is_bound_in_the_section_coverage_reads_it_from(self):
+        # coverage binds fail_under as `report:fail_under` ONLY. The same key under
+        # [run] is silently inert, which would leave the gate dead while the value, the
+        # provenance and the placeholder checks all still passed, because they read the
+        # file as text. Executed: moving the line (and its comment) into [run] with the
+        # value raised to 99 kept all eight tests green while the CI step exited 0 at
+        # 69.2%. Section membership is therefore asserted, not inferred.
+        self.assertIn(FLOOR, self.parser["report"])
+        self.assertNotIn(FLOOR, self.parser["run"])
+
     def test_no_production_code_is_omitted(self):
         # An omit entry would shrink the denominator while the floor stayed put, so the
-        # gate would report the same number over a smaller measurement.
-        self.assertNotIn(OMIT, self.parser["report"])
+        # gate would report the same number over a smaller measurement. Both sections are
+        # checked: coverage accepts omit as run:omit as well as report:omit.
+        for section in ("run", "report"):
+            with self.subTest(section=section):
+                self.assertNotIn(OMIT, self.parser[section])
 
     def test_the_source_is_the_measured_tree(self):
         self.assertEqual(

@@ -484,8 +484,8 @@ PYTHONPATH=/workspace/quickadapter/user_data/strategies \
 Both commands must be run from the repository root, which is what the
 container's `--workdir /workspace` provides. To select one concern, pass a
 pattern that matches the whole `module.Class.method` name; a bare substring
-selects more than you want, and a pattern that matches nothing runs zero
-tests and still exits 0:
+selects more than you want, and a pattern that matches nothing runs zero tests
+and fails with exit code 5:
 
 ```shell
 PYTHONPATH=quickadapter/user_data/strategies \
@@ -592,8 +592,8 @@ must be regular files; symbolic links and other special files are rejected. The
 wrapper rejects direct host and wrong-image execution so Freqtrade imports and
 dependency versions remain exact.
 
-The BasedPyright, type-stub and `coverage` versions are pinned in each
-project's `.devcontainer/requirements-dev.txt`. The Freqtrade base images
+The BasedPyright and type-stub versions are pinned in each project's
+`.devcontainer/requirements-dev.txt`, as is `coverage` in QuickAdapter's. The Freqtrade base images
 intentionally follow their rolling `stable_freqai` and `stable_freqairl` tags,
 so record the resolved image digests when a reproducible audit is required.
 
