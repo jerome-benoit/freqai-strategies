@@ -1,4 +1,4 @@
-"""Provability ranking and per-candle deduplication of historic FreqAI predictions."""
+"""Provability ranking and per-candle deduplication of historic FreqAI predictions.; requires the Freqtrade QA image."""
 
 import unittest
 from types import SimpleNamespace

@@ -1,4 +1,4 @@
-"""Label scaling pipeline contract: round trip, non-finite handling and fit-time refusal."""
+"""Label scaling pipeline contract: round trip, non-finite handling and fit-time refusal.; requires the Freqtrade QA image."""
 
 import unittest
 

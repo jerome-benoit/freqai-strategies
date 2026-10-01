@@ -1,4 +1,4 @@
-"""Guards the import identity and coverage denominator of the measured source."""
+"""Guards the import identity and coverage denominator of the measured source.; requires the Freqtrade QA image."""
 
 import importlib
 import sys

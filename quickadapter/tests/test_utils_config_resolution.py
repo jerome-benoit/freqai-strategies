@@ -1,4 +1,4 @@
-"""Strategy-facing config resolvers: defaults precedence, warning text, and per-call isolation."""
+"""Strategy-facing config resolvers: defaults precedence, warning text, and per-call isolation.; requires the Freqtrade QA image."""
 
 import copy
 import logging

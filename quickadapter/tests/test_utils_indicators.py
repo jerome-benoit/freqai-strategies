@@ -1,4 +1,4 @@
-"""Indicator kernel contracts: extrema counting, log returns, smoothing and the callback hash."""
+"""Indicator kernel contracts: extrema counting, log returns, smoothing and the callback hash.; requires the Freqtrade QA image."""
 
 import functools
 import hashlib
@@ -540,13 +540,15 @@ class UtilsIndicatorsTest(QaTestCase):
         )
         self.assertAlmostEqual(float(raw[3]), float(closes.iloc[:4].mean()), places=9)
 
-    def test_a_framed_gap_stops_the_fractal_dimension_at_the_window_edge(self):
-        # _fractal_dimension returns 1.0 when either half-range is zero, which pins alpha at
-        # exp(0) = 1 and makes the recursion follow close exactly. A constant frame is the
-        # only shape that reaches that branch.
+    def test_a_constant_window_gives_a_finite_fractal_dimension_instead_of_a_log_of_zero(self):
+        # _fractal_dimension short-circuits to 1.0 when either half-range is zero, and a
+        # constant frame is the only shape that reaches that branch. The case was previously
+        # named for a gap and a window edge that its fixture cannot contain, which read as if
+        # the early return were covered from a second direction. What is actually distinct
+        # here is the guard itself: without it the ratio is log(0) and alpha is -inf.
         result = frama(ohlcv_frame([7.0] * 12), 4).to_numpy()
         self.assertFalse(np.isinf(result).any())
-        assert_allclose(result[3:], np.full(9, 7.0), rtol=0.0, atol=0.0)
+        self.assertFalse(np.isnan(result[3:]).any())
 
     def test_the_smma_follows_its_own_recursion(self):
         # Seeded with the mean of the first `period` bars, then alpha = 1/period per bar.

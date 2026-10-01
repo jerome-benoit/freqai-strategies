@@ -1,4 +1,4 @@
-"""Deprecated-config migration: in-place rewrite, precedence and warn-once."""
+"""Deprecated-config migration: in-place rewrite, precedence and warn-once.; requires the Freqtrade QA image."""
 
 import logging
 import unittest
