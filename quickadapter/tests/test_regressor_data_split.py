@@ -594,5 +594,119 @@ class TrainTestSplitCausalPurgeTest(QaTestCase):
         self.assertEqual(list(result["train_features"].index), list(range(30)))
 
 
+class TimeSeriesSplitCausalPurgeTest(QaTestCase):
+    """The chronological split, whose entire body had no test at all.
+
+    `_make_timeseries_split_datasets` is reachable through the documented
+    `data_split_parameters.method='timeseries_split'`, and coverage reported 0 of its 62
+    statements executed. Its own availability comparison at
+    QuickAdapterRegressorV3.py:3108 could go from strict to inclusive, or be deleted, with
+    the suite green.
+
+    Deliberately NOT a subclass of the class above. That one's expectations are written around
+    a ten-row test tail starting at position 30, where TimeSeriesSplit's last fold here is five
+    rows starting at 35; inheriting it made five tests assert the wrong geometry and fail. The
+    two blocks are siblings with their own arithmetic, so each carries its own fixtures.
+    """
+
+    ROWS = 40
+    N_SPLITS = 3
+    TEST_SIZE = 5
+    GAP = 2
+
+    class _Kitchen:
+        pair = PAIR
+
+        @staticmethod
+        def build_data_dictionary(
+            train_features, test_features, train_labels, test_labels, train_weights, test_weights
+        ):
+            return {
+                "train_features": train_features,
+                "test_features": test_features,
+                "train_labels": train_labels,
+                "test_labels": test_labels,
+                "train_weights": train_weights,
+                "test_weights": test_weights,
+            }
+
+    def setUp(self):
+        super().setUp()
+        self.index = pd.Index(range(self.ROWS))
+        self.unfiltered = frame(self.index)
+        self.features = frame(self.index, f=np.arange(self.ROWS, dtype=float))
+        self.labels = frame(self.index, y=np.arange(self.ROWS, dtype=float))
+        self.weights = SampleWeightInputs(
+            base=np.ones(self.ROWS),
+            label=None,
+            label_weighting_config=WEIGHTING_CONFIG,
+        )
+
+    def _split(self, unfiltered: pd.DataFrame, horizon: int = 0, **params):
+        model = regressor(
+            data_split_parameters={
+                "method": "timeseries_split",
+                "n_splits": self.N_SPLITS,
+                "test_size": self.TEST_SIZE,
+                # The code refuses a gap smaller than the horizon under causal_mode, so the
+                # horizon cases widen the gap to match rather than tripping that guard.
+                "gap": max(self.GAP, horizon),
+                **params,
+            },
+            _label_horizon_candles=lambda pair=None: horizon,
+        )
+        return model._make_timeseries_split_datasets(
+            self.features, self.labels, self.weights, self._Kitchen(), unfiltered
+        )
+
+    def test_the_last_fold_is_the_chronological_tail(self):
+        result = self._split(self.unfiltered, horizon=0)
+        test_index = list(result["test_features"].index)
+        self.assertEqual(test_index, list(range(self.ROWS - self.TEST_SIZE, self.ROWS)))
+        self.assertTrue(max(result["train_features"].index) < min(test_index))
+
+    def test_a_row_known_at_or_after_the_first_test_row_is_purged(self):
+        # The boundary this block exists for, and the one coverage could not see at all.
+        #
+        # `gap=2` removes the two rows before the test fold from the training set BEFORE the
+        # availability comparison runs, so the last row that comparison can act on is
+        # `first_test - gap - 1` = 32. Measured: train ends at 32, test is 35..39. The lookahead
+        # is placed there for that reason — on row 33 or 34 it is indistinguishable from no
+        # lookahead at all, because those rows are already gone before the comparison.
+        last_train = self.ROWS - self.TEST_SIZE - self.GAP - 1
+        first_test = self.ROWS - self.TEST_SIZE
+
+        def with_lookahead(row: int, value: int):
+            values = [0] * self.ROWS
+            values[row] = value
+            return frame(self.index, **{LOOKAHEAD: values, WEIGHT_LOOKAHEAD: [0] * self.ROWS})
+
+        # Available at last_train, +1, +2 — all strictly before the cutoff — and exactly at it.
+        for value, expected in ((0, True), (1, True), (2, True), (3, False)):
+            with self.subTest(lookahead=value):
+                kept = list(
+                    self._split(with_lookahead(last_train, value), horizon=0)[
+                        "train_features"
+                    ].index
+                )
+                self.assertEqual(
+                    last_train in kept,
+                    expected,
+                    f"lookahead {value} lands at {last_train + value}, cutoff {first_test}",
+                )
+
+    def test_the_availability_comparison_is_strict_at_the_cutoff(self):
+        # The isolating case: a single row whose label becomes knowable exactly on the first
+        # test row. Relaxing `<` to `<=` keeps it, and nothing else in the suite says so.
+        last_train = self.ROWS - self.TEST_SIZE - self.GAP - 1
+        values = [0] * self.ROWS
+        values[last_train] = self.GAP + 1
+        unfiltered = frame(self.index, **{LOOKAHEAD: values, WEIGHT_LOOKAHEAD: [0] * self.ROWS})
+
+        kept = list(self._split(unfiltered, horizon=0)["train_features"].index)
+
+        self.assertNotIn(last_train, kept)
+
+
 if __name__ == "__main__":
     unittest.main()
