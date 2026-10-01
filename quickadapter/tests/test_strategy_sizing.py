@@ -1,13 +1,11 @@
 """Position sizing and throttle contracts; requires the Freqtrade QA image."""
 
 import datetime
-import hashlib
 import math
 import unittest
 
 import numpy as np
 import pandas as pd
-import Utils
 from qa_support import QaTestCase
 from QuickAdapterV3 import QuickAdapterV3
 
@@ -256,33 +254,43 @@ class ThrottleCallbackTest(QaTestCase):
         self.assertEqual(len(model.last_candle_start_secs), 2)
 
     def test_stale_keys_are_evicted_beyond_ten_candles(self):
-        # Two callbacks with DIFFERENT bodies are required: the key is a digest of the
-        # bytecode, so two `lambda: None` bodies share one key and there is never a
-        # second key to go stale. Register two, let the first go stale, and assert the
-        # stale key is ABSENT from the dict rather than that its length happens to be 1.
+        # Two callbacks are required: a single call can only ever produce one key, and the
+        # eviction loop compares the triggering key — whose timestamp it just wrote —
+        # against the rest of the dict, so with one key there is nothing to evict.
+        #
+        # They must differ by a SMALL-INT constant, not a string. get_callable_sha256
+        # hashes co_code, which carries opcodes and opargs only and never the constant
+        # VALUES: in CPython 3.14 a string constant is loaded through a constant-index
+        # oparg, so `return "stale"` and `return "fresh"` compile to byte-identical
+        # bytecode and share a key, while 3.14 inlines small ints into the oparg and
+        # `append(1)` differs from `append(2)`.
         model = strategy(candle_secs=300)
         start = datetime.datetime(2026, 1, 1, 12, 0, tzinfo=datetime.UTC)
+        fired = []
 
         def stale():
-            return "stale"
+            fired.append(1)
 
         def fresh():
-            return "fresh"
+            fired.append(2)
 
         model.throttle_callback(PAIR, start, stale)
+        stale_key = next(iter(model.last_candle_start_secs))
+        self.assertEqual(fired, [1])
+
         model.throttle_callback(PAIR, start, fresh)
+        self.assertEqual(fired, [1, 2])
         self.assertEqual(len(model.last_candle_start_secs), 2)
 
-        # Eleven candles on: the first key is older than the ten-candle budget, the second
-        # was written during this call and is fresh.
+        # Eleven candles on: the budget is ten * candle_duration_secs = 50 minutes at
+        # 300-second candles, and 55 clears it. The key just written is fresh.
         later = start + datetime.timedelta(minutes=11 * 5)
         model.throttle_callback(PAIR, later, fresh)
+        self.assertEqual(fired, [1, 2, 2])
         self.assertEqual(len(model.last_candle_start_secs), 1)
-
-        remaining = next(iter(model.last_candle_start_secs))
-        self.assertNotEqual(
-            remaining,
-            hashlib.sha256(f"{PAIR}\x00{Utils.get_callable_sha256(stale)}".encode()).hexdigest(),
+        self.assertNotIn(
+            stale_key,
+            model.last_candle_start_secs,
             "the stale callback's key survived eviction",
         )
 
