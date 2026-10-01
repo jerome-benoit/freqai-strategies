@@ -132,6 +132,32 @@ class StrategyTargetsTest(QaTestCase):
                         self.assertEqual(fired(result, "enter_short"), expected)
                         self.assertEqual(fired(result, "enter_long"), [])
 
+    def test_the_extrema_comparison_is_strict_at_the_threshold(self):
+        # The truth tables above only ever use strictly separated values, so they would
+        # pass against a non-strict `<` too. Equality is the boundary: an extremum
+        # exactly AT its threshold must NOT enter, in either direction.
+        model = object.__new__(QuickAdapterV3)
+        at_long = entry_frame([1], [1], [0.0], minima=0.0, maxima=5.0)
+        self.assertEqual(
+            fired(model.populate_entry_trend(at_long, {"pair": PAIR}), "enter_long"), []
+        )
+
+        at_short = entry_frame([1], [1], [0.0], minima=-5.0, maxima=0.0)
+        self.assertEqual(
+            fired(model.populate_entry_trend(at_short, {"pair": PAIR}), "enter_short"), []
+        )
+
+        # One ULP past the threshold in each direction does enter, which shows the
+        # equality cases above are the comparison and not a broken fixture.
+        just_under = entry_frame([1], [1], [np.nextafter(0.0, -np.inf)], minima=0.0, maxima=5.0)
+        self.assertEqual(
+            fired(model.populate_entry_trend(just_under, {"pair": PAIR}), "enter_long"), [0]
+        )
+        just_over = entry_frame([1], [1], [np.nextafter(0.0, np.inf)], minima=-5.0, maxima=0.0)
+        self.assertEqual(
+            fired(model.populate_entry_trend(just_over, {"pair": PAIR}), "enter_short"), [0]
+        )
+
     def test_a_prediction_other_than_one_is_not_an_entry(self):
         model = object.__new__(QuickAdapterV3)
         frame = entry_frame([-1, 2, 1.0], [1, 1, 1], [-1.0, -1.0, -1.0], maxima=2.0)

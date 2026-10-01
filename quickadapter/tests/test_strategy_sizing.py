@@ -1,11 +1,13 @@
 """Position sizing and throttle contracts; requires the Freqtrade QA image."""
 
 import datetime
+import hashlib
 import math
 import unittest
 
 import numpy as np
 import pandas as pd
+import Utils
 from qa_support import QaTestCase
 from QuickAdapterV3 import QuickAdapterV3
 
@@ -254,12 +256,35 @@ class ThrottleCallbackTest(QaTestCase):
         self.assertEqual(len(model.last_candle_start_secs), 2)
 
     def test_stale_keys_are_evicted_beyond_ten_candles(self):
+        # Two callbacks with DIFFERENT bodies are required: the key is a digest of the
+        # bytecode, so two `lambda: None` bodies share one key and there is never a
+        # second key to go stale. Register two, let the first go stale, and assert the
+        # stale key is ABSENT from the dict rather than that its length happens to be 1.
         model = strategy(candle_secs=300)
         start = datetime.datetime(2026, 1, 1, 12, 0, tzinfo=datetime.UTC)
-        model.throttle_callback(PAIR, start, lambda: None)
+
+        def stale():
+            return "stale"
+
+        def fresh():
+            return "fresh"
+
+        model.throttle_callback(PAIR, start, stale)
+        model.throttle_callback(PAIR, start, fresh)
+        self.assertEqual(len(model.last_candle_start_secs), 2)
+
+        # Eleven candles on: the first key is older than the ten-candle budget, the second
+        # was written during this call and is fresh.
+        later = start + datetime.timedelta(minutes=11 * 5)
+        model.throttle_callback(PAIR, later, fresh)
         self.assertEqual(len(model.last_candle_start_secs), 1)
-        model.throttle_callback(PAIR, start + datetime.timedelta(minutes=11 * 5), lambda: None)
-        self.assertEqual(len(model.last_candle_start_secs), 1)
+
+        remaining = next(iter(model.last_candle_start_secs))
+        self.assertNotEqual(
+            remaining,
+            hashlib.sha256(f"{PAIR}\x00{Utils.get_callable_sha256(stale)}".encode()).hexdigest(),
+            "the stale callback's key survived eviction",
+        )
 
     def test_pairs_are_throttled_independently(self):
         model = strategy(candle_secs=300)
