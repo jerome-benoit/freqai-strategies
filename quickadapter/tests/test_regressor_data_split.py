@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+from freqtrade.exceptions import DependencyException
 from qa_support import QaTestCase, model_config, temporary_directory
 from Utils import (
     LABEL_COLUMNS,
@@ -302,6 +303,18 @@ class ValidationSplitTest(QaTestCase):
         )
         result = self._split(model)
         self.assertTrue(result["validation_features"].empty)
+
+    def test_an_oversized_validation_count_is_refused(self):
+        # test_size is bounded by the rows remaining after the outer holdout, and the bound
+        # is `>=`: eight training rows admit at most a seven-row validation tail. Removing the
+        # guard, or relaxing it to `>`, previously left the suite green.
+        for test_size in (8, 9):
+            with self.subTest(test_size=test_size):
+                model = self._model(
+                    data_split_parameters={"test_size": test_size, "shuffle": False}
+                )
+                with self.assertRaisesRegex(DependencyException, "is not smaller than the 8"):
+                    self._split(model)
 
     def test_the_chronological_tail_is_reserved_not_sampled(self):
         model = self._model(data_split_parameters={"test_size": 2, "shuffle": False})
