@@ -1,5 +1,6 @@
-"""Position sizing and throttle contracts; requires the Freqtrade QA image."""
+"""Trade callbacks, position sizing and throttle contracts; requires the Freqtrade QA image."""
 
+import copy
 import datetime
 import math
 import unittest
@@ -9,9 +10,10 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 from freqtrade.enums import RunMode
-from freqtrade.persistence import Trade
+from freqtrade.persistence import Order, Trade
 from qa_support import PAIR, QaTestCase, model_config, temporary_directory
 from QuickAdapterV3 import QuickAdapterV3
+from Utils import EXTREMA_COLUMN
 
 
 def strategy(*, duration=10, natr=2.0, fraction=0.5, candle_secs=300):
@@ -188,7 +190,10 @@ class RuntimeSizingTest(QaTestCase):
         config = model_config(
             directory,
             runmode=RunMode.BACKTEST,
-            exit_pricing={"trade_natr_method": "quantile_interpolation"},
+            exit_pricing={
+                "trade_natr_method": "quantile_interpolation",
+                "final_take_profit_retracement_fraction": 0.25,
+            },
         )
         self.model = QuickAdapterV3(config)
         self.model.freqai_info = config["freqai"]
@@ -203,6 +208,11 @@ class RuntimeSizingTest(QaTestCase):
                 "close": [100.0] * 3,
                 "natr_label_period_candles": [1.0, 4.0, 8.0],
                 "label_natr_multiplier": [3.0] * 3,
+                "do_predict": [1] * 3,
+                "DI_catch": [1] * 3,
+                EXTREMA_COLUMN: [0.0] * 3,
+                "minima_threshold": [-0.5] * 3,
+                "maxima_threshold": [0.5] * 3,
             }
         )
         self.model.dp = SimpleNamespace(
@@ -213,8 +223,8 @@ class RuntimeSizingTest(QaTestCase):
             ),
         )
 
-    def position(self, short=False):
-        return Trade(
+    def position(self, short=False, exit_stage=0):
+        position = Trade(
             pair=PAIR,
             open_rate=100.0,
             open_date=self.now - datetime.timedelta(minutes=5),
@@ -227,6 +237,39 @@ class RuntimeSizingTest(QaTestCase):
             fee_close=0.0,
             orders=[],
         )
+        position.orders = [
+            Order(
+                ft_order_side=position.exit_side,
+                ft_is_open=False,
+                status="closed",
+                filled=0.1,
+                ft_order_tag=f"take_profit_{position.trade_direction}_{stage}",
+            )
+            for stage in range(exit_stage)
+        ]
+        return position
+
+    def custom_data(self, position, store=None):
+        # Isolate database persistence only; all trade/exit calculations remain native.
+        store = {} if store is None else store
+        self.enterContext(
+            mock.patch.object(
+                position,
+                "get_custom_data",
+                side_effect=lambda key, default=None: store.get(key, default),
+            )
+        )
+        self.enterContext(
+            mock.patch.object(
+                position,
+                "set_custom_data",
+                side_effect=lambda key, value: store.update({key: value}),
+            )
+        )
+        return store
+
+    def exit(self, position, rate=100.0):
+        return self.model.custom_exit(PAIR, position, self.now, rate, 0.0)
 
     def test_stoploss_distance_uses_current_not_entry_price(self):
         # Entry NATR 4 has mean rank 0.25 in [4, 8], giving interpolated NATR 7.
@@ -297,6 +340,157 @@ class RuntimeSizingTest(QaTestCase):
                     stake_reduction = -100.0 * QuickAdapterV3.partial_exit_stages[0][1]
                     direction = "short" if short else "long"
                     self.assertEqual(after, (stake_reduction, f"take_profit_{direction}_0"))
+
+    def test_expired_models_exit_before_order_stage_and_date_guards(self):
+        self.frame.loc[self.frame.index[-1], "date"] = pd.NaT
+        self.frame["do_predict"] = 2
+        self.frame["DI_catch"] = 0
+        for short in (False, True):
+            with self.subTest(short=short):
+                position = self.position(short)
+                position.orders.append(
+                    Order(
+                        ft_order_side=position.exit_side, ft_is_open=True, status="open", filled=0.0
+                    )
+                )
+                store = self.custom_data(position, {"n_outliers": 17})
+                self.assertEqual(self.exit(position), "model_expired")
+                self.assertEqual(store, {"n_outliers": 17})
+
+    def test_outliers_count_once_per_valid_candle(self):
+        position = self.position()
+        store = self.custom_data(position, {"last_outlier_date": "not-a-date"})
+        self.frame["DI_catch"] = 0
+        self.assertIsNone(self.exit(position))
+        self.assertIsNone(self.exit(position))
+        self.assertEqual(store["n_outliers"], 1)
+        self.assertEqual(store["last_outlier_date"], self.now.isoformat())
+        self.now += datetime.timedelta(minutes=5)
+        self.frame.loc[self.frame.index[-1], "date"] = self.now
+        self.assertIsNone(self.exit(position))
+        self.assertEqual(store["n_outliers"], 2)
+        self.assertEqual(store["last_outlier_date"], self.now.isoformat())
+        self.frame.loc[self.frame.index[-1], "date"] = pd.NaT
+        self.assertIsNone(self.exit(position))
+        self.assertEqual(store["n_outliers"], 2)
+
+    def test_reversal_exits_require_strict_scores_and_real_price_confirmation(self):
+        self.model.reversal_confirmation.update(
+            {
+                "lookback_period_candles": 0,
+                "decay_fraction": 1.0,
+                "min_natr_multiplier_fraction": 0.5,
+                "max_natr_multiplier_fraction": 0.5,
+            }
+        )
+        for short, boundary, score, rate, tag in (
+            (False, 0.5, 0.6, 80.0, "maxima_detected_long"),
+            (True, -0.5, -0.6, 120.0, "minima_detected_short"),
+        ):
+            with self.subTest(short=short):
+                position = self.position(short)
+                self.custom_data(position)
+                self.frame[EXTREMA_COLUMN] = boundary
+                self.assertIsNone(self.exit(position, rate))
+                self.frame[EXTREMA_COLUMN] = score
+                self.assertIsNone(self.exit(position, 100.0))
+                for prediction, inlier in ((0, 1), (1, 0)):
+                    self.frame["do_predict"] = prediction
+                    self.frame["DI_catch"] = inlier
+                    self.assertIsNone(self.exit(position, rate))
+                self.frame["do_predict"] = 1
+                self.frame["DI_catch"] = 1
+                self.assertEqual(self.exit(position, rate), tag)
+
+    def test_final_exit_guards_preserve_unarmed_state(self):
+        original = self.frame.copy()
+        for guard in ("empty", "open_order", "partial_stage", "invalid_date"):
+            with self.subTest(guard=guard):
+                self.frame = original.copy()
+                position = self.position(exit_stage=0 if guard == "partial_stage" else 3)
+                store = self.custom_data(position)
+                if guard == "empty":
+                    self.frame = self.frame.iloc[:0]
+                elif guard == "open_order":
+                    position.orders.append(
+                        Order(
+                            ft_order_side=position.exit_side,
+                            ft_is_open=True,
+                            status="open",
+                            filled=0.0,
+                        )
+                    )
+                elif guard == "invalid_date":
+                    self.frame.loc[self.frame.index[-1], "date"] = pd.NaT
+                self.assertIsNone(self.exit(position, 150.0))
+                self.assertEqual(store, {})
+
+    def test_final_exit_trails_survive_restart_and_confirm_on_a_later_candle(self):
+        key = QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY
+        for short, target, arm, best, retrace, tag in (
+            (False, 121.0, 130.0, 135.0, 110.0, "take_profit_long_final"),
+            (True, 79.0, 70.0, 65.0, 90.0, "take_profit_short_final"),
+        ):
+            with self.subTest(short=short):
+                self.now = datetime.datetime(2026, 1, 1, 0, 10, tzinfo=datetime.UTC)
+                self.frame.loc[self.frame.index[-1], "date"] = self.now
+                position = self.position(short, exit_stage=3)
+                store = self.custom_data(position)
+                # Entry NATR rank gives 7%; final fraction 1 and one-candle factor 1.
+                np.testing.assert_allclose(
+                    self.model.get_take_profit_target(self.frame, position, 3),
+                    (target, 21.0),
+                    rtol=1e-12,
+                    atol=0.0,
+                )
+                self.assertIsNone(self.exit(position, 100.0))
+                self.assertNotIn(key, store)
+                self.assertEqual(store["history"]["take_profit_price"], [(3, target)])
+                self.assertIsNone(self.exit(position, arm))
+                self.assertEqual(store[key]["best_rate"], arm)
+                self.assertAlmostEqual(store[key]["retracement_distance"], 5.25, places=12)
+                self.now += datetime.timedelta(minutes=5)
+                self.frame.loc[self.frame.index[-1], "date"] = self.now
+                self.assertIsNone(self.exit(position, best))
+                self.assertEqual(store[key]["best_rate"], best)
+                provider = self.model.dp
+                config = copy.deepcopy(self.model.config)
+                self.model = QuickAdapterV3(config)
+                self.model.freqai_info = config["freqai"]
+                self.model.bot_start()
+                self.model.dp = provider
+                position = self.position(short, exit_stage=3)
+                self.custom_data(position, store)
+                self.assertIsNone(self.exit(position, retrace))
+                self.assertEqual(store[key]["best_rate"], best)
+                self.now += datetime.timedelta(minutes=5)
+                self.frame.loc[self.frame.index[-1], "date"] = self.now
+                self.assertEqual(self.exit(position, retrace), tag)
+
+    def test_invalid_final_exit_state_is_cleared_then_rearmed(self):
+        key = QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY
+        position = self.position(exit_stage=3)
+        store = self.custom_data(position, {key: {"best_rate": "corrupt"}})
+        self.assertIsNone(self.exit(position, 100.0))
+        self.assertIsNone(store[key])
+        self.assertIsNone(self.exit(position, 130.0))
+        self.assertEqual(store[key]["best_rate"], 130.0)
+        self.assertAlmostEqual(store[key]["retracement_distance"], 5.25, places=12)
+
+    def test_an_unmeasurable_final_trail_does_not_arm_or_exit(self):
+        position = self.position(short=True, exit_stage=3)
+        store = self.custom_data(position)
+        # Target 79 is crossed, but a zero current rate cannot seed a positive trail.
+        self.assertIsNone(self.exit(position, 0.0))
+        self.assertNotIn(QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY, store)
+        self.assertEqual(store["history"]["take_profit_price"], [(3, 79.0)])
+
+    def test_a_missing_final_take_profit_target_leaves_state_unarmed(self):
+        position = self.position(exit_stage=3)
+        store = self.custom_data(position)
+        self.frame["natr_label_period_candles"] = np.nan
+        self.assertIsNone(self.exit(position, 150.0))
+        self.assertEqual(store, {})
 
 
 class ThrottleCallbackTest(QaTestCase):

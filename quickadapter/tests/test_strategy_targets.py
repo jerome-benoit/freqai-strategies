@@ -667,14 +667,11 @@ class StrategyTargetsTest(QaTestCase):
             self.assertTrue(np.isfinite(smoothed.to_numpy()).all())
 
     def test_the_labels_and_weights_do_not_depend_on_the_frame_index(self):
-        # The strongest form of the positional-contract guard, because it runs the real
-        # strategy path. Every other fixture in this suite builds `date` as a COLUMN and
-        # leaves a zero-based RangeIndex in place, where a pivot position and a pivot index
-        # label are the same number — so returning `df.index` instead of positions passed
-        # everywhere. FreqAI hands `set_freqai_targets` a DatetimeIndex frame, where the
-        # labels are Timestamps: the weighting path raised TypeError on the first candle of
-        # every pair, and a shifted integer index dropped every pivot and returned no weight
-        # at all, with only a warning.
+        # Exercise the real strategy path with datetime and shifted integer indexes.
+        # The zero-based fixtures cannot distinguish pivot positions from index labels.
+        # This offset-500 fixture puts every pivot label outside the positional range;
+        # smaller shifts can instead retain weights on incorrect rows. No particular
+        # index type is assumed for native FreqAI inputs.
         baseline = None
         for name, index in (
             ("datetime", "date"),
