@@ -2,7 +2,6 @@
 
 import unittest
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -270,43 +269,31 @@ class ExitSignalTest(QaTestCase):
                 self.assertFalse(_raised(result["exit_long"])[0])
                 self.assertFalse(_raised(result["exit_short"])[0])
 
-    def test_a_rejected_prediction_closes_the_open_position_of_its_own_side(self):
-        # do_predict == 2 is a rejected prediction: the open trade must be closed, and
-        # its side decides which flag is set, not the recorded action.
-        frame = _frame([1], do_predict=2)
-        for is_short, expected in ((False, "exit_long"), (True, "exit_short")):
-            with self.subTest(is_short=is_short):
-                trade = SimpleNamespace(is_short=is_short)
-                with mock.patch(
-                    "ReforceXY.user_data.strategies.RLAgentStrategy.Trade.get_trades_proxy",
-                    return_value=[trade],
-                ):
-                    result = self._strategy().populate_exit_trend(
-                        frame.copy(), {"pair": "BTC/USDT"}
-                    )
-                self.assertTrue(_raised(result[expected])[0])
-                other = "exit_short" if expected == "exit_long" else "exit_long"
-                self.assertFalse(_raised(result[other])[0])
-
-    def test_a_rejected_prediction_ignores_closed_positions(self):
-        # Reached through freqtrade's own backtest collections rather than by asserting
-        # the call arguments, so a strategy that filtered differently would still pass.
-        # With `is_open` dropped the proxy returns closed trades too, and this goes red.
-        closed = SimpleNamespace(pair="BTC/USDT", is_open=False, is_short=False)
-        opened = SimpleNamespace(pair="BTC/USDT", is_open=True, is_short=True)
-        for open_trades, expected_short in (([], False), ([opened], True)):
-            with self.subTest(open_short=expected_short):
+    def test_an_expired_model_closes_only_open_positions_for_the_current_pair(self):
+        closed = LocalTrade(pair="BTC/USDT", is_open=False, is_short=False)
+        long = LocalTrade(pair="BTC/USDT", is_open=True, is_short=False)
+        short = LocalTrade(pair="BTC/USDT", is_open=True, is_short=True)
+        unrelated_long = LocalTrade(pair="ETH/USDT", is_open=True, is_short=False)
+        unrelated_short = LocalTrade(pair="ETH/USDT", is_open=True, is_short=True)
+        for open_trades, expected in (
+            ([], (False, False)),
+            ([short], (False, True)),
+            ([long, unrelated_short], (True, False)),
+            ([short, unrelated_long], (False, True)),
+            ([unrelated_long], (False, False)),
+            ([unrelated_short], (False, False)),
+        ):
+            with self.subTest(expected=expected, trades=open_trades):
                 with (
                     mock.patch.object(Trade, "use_db", False),
                     mock.patch.object(LocalTrade, "bt_trades", [closed]),
                     mock.patch.object(LocalTrade, "bt_trades_open", open_trades),
                 ):
                     result = self._strategy().populate_exit_trend(
-                        _frame([Actions.Neutral.value], do_predict=2),
-                        {"pair": "BTC/USDT"},
+                        _frame([Actions.Neutral.value], do_predict=2), {"pair": "BTC/USDT"}
                     )
-                self.assertEqual([False], _raised(result["exit_long"]))
-                self.assertEqual([expected_short], _raised(result["exit_short"]))
+                self.assertEqual([expected[0]], _raised(result["exit_long"]))
+                self.assertEqual([expected[1]], _raised(result["exit_short"]))
 
     def test_a_row_without_a_prediction_raises_no_exit(self):
         result = self._strategy().populate_exit_trend(
@@ -318,16 +305,6 @@ class ExitSignalTest(QaTestCase):
         )
         self.assertEqual([False, False], _raised(result["exit_long"]))
         self.assertEqual([False, False], _raised(result["exit_short"]))
-
-    def test_a_rejected_prediction_with_no_open_trade_raises_no_exit(self):
-        frame = _frame([1], do_predict=2)
-        with mock.patch(
-            "ReforceXY.user_data.strategies.RLAgentStrategy.Trade.get_trades_proxy",
-            return_value=[],
-        ):
-            result = self._strategy().populate_exit_trend(frame, {"pair": "BTC/USDT"})
-        self.assertFalse(_raised(result["exit_long"])[0])
-        self.assertFalse(_raised(result["exit_short"])[0])
 
 
 class FeatureEngineeringTest(QaTestCase):

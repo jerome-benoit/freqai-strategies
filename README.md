@@ -395,11 +395,13 @@ Freqtrade's `proposed_leverage` before clamping.
 Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
 it is loaded only when continual training starts. Missing or incompatible replay
-data prevents continuation but does not prevent inference. Reset trained models
-or use a new `freqai.identifier` to migrate incompatible artifacts, including
-deployments without the chronological training marker. Training disables
-`shuffle_after_split`. HPO studies and saved best parameters are reused only
-when their objective identity matches.
+data prevents continuation but does not prevent inference. The deployment
+generation covers frozen feature coordinates and PBRS reward semantics. Older
+generations, including `chronological-frozen-pipelines-v2`, remain usable for
+inference but cannot continue training. Reset trained models or use a new
+`freqai.identifier` to migrate. Training disables `shuffle_after_split`. HPO
+studies and saved best parameters are reused only when their objective identity
+matches.
 
 Backtests continue only from a saved policy whose training cutoff precedes
 the current window's end and its last available candle boundary. A later
@@ -423,6 +425,9 @@ ambiguous close-bearing legacy row during history restoration.
 Rows with an invalid `date_pred` are discarded with a per-pair warning and the
 discarded-row count; valid duplicates retain the same precedence.
 See the model docstrings for continuation, HPO and statistics details.
+
+An expired model closes only open positions for the current pair, using each
+position's own side; positions for other pairs cannot generate its exit signals.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.
@@ -465,7 +470,8 @@ Non-positive or non-finite equity produces NaN diagnostics rather than a zero
 return. These diagnostics do not change the training reward or realized capital.
 Rewards combine the fill-time base components with a potential-based shaping
 delta over the returned next observation. Termination liquidates any remaining
-position once and clears the terminal potential. `get_env_history()` returns one
+position once and sets terminal shaping to `-prev_potential`, even for tiny
+nonzero potentials. `get_env_history()` returns one
 metrics/price row per transition. Its `execution_tick` is the transition/action/fill
 key before the tick increment; its `tick` is the returned post-increment price and
 observation row (normally `execution_tick + 1`). Exit-efficiency extrema include
@@ -483,11 +489,13 @@ effective additives are disabled. It is a conservative configuration check, not
 a guarantee about fitted policies: theoretical invariance also requires an
 observable state potential, the learner's discount, and appropriate boundaries.
 
-An absent learner `gamma` uses the canonical discount. An effective `gamma: null`
-is rejected before constructing or replacing environments. Validation follows
-HPO overrides and the resumed learner's gamma, so a valid higher-priority value
-can supersede a null base value. Learner and environment receive the same
-effective discount.
+An absent configured `gamma` uses the canonical discount. The effective discount
+must be a finite Python/NumPy integer or floating scalar in `[0, 1]`, normalized
+to a Python float. Null, booleans, strings, complex values and arrays are rejected
+before constructing or replacing environments. Validation follows HPO overrides
+and the resumed learner's gamma, so a valid higher-priority value can supersede
+an invalid base value. A persisted learner with missing or invalid gamma cannot
+continue training. Learner and environment use the same effective discount.
 The corrected reward objective invalidates persisted HPO studies and best
 parameters from the previous objective identity; incompatible studies are reset
 and stale best-parameter payloads are ignored rather than warm-started.
@@ -523,8 +531,9 @@ Each strategy QA matrix entry runs its type check and canonical coverage suite.
 ReforceXY additionally runs once with `FREQAI_QA_SHUFFLE_SEED=1`. This permutes
 methods within test classes, not module or class order. `QaTestCase` restores the
 action-mask cache and the Python, NumPy and CPU Torch RNG states before and after
-each test. Tests must isolate other mutable state themselves; the alternate order
-does not prove the absence of all global-state leaks.
+each test. Lifecycle probes cover successful cases, body failures and setup or
+teardown errors. Tests must isolate other mutable state themselves; the alternate
+order does not prove the absence of all global-state leaks.
 
 The ReforceXY gate measures **only `ReforceXY/user_data`**, with branch coverage
 and non-imported namespace files included. Tests, the analytical package and

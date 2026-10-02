@@ -159,35 +159,82 @@ class SuiteContractTest(unittest.TestCase):
         finally:
             reseed(previous)
 
-    def test_the_restore_puts_the_process_globals_back(self):
+    def test_the_lifecycle_restores_globals_before_body_and_after_all_outcomes(self):
         cache = _PRODUCTION.ReforceXY._action_masks_cache
-        # Dirty every global the way a test that trains a model would.
-        cache[("dirty", 0.5)] = None
-        random.seed(1234)
-        np.random.seed(1234)
-        torch.manual_seed(1234)
 
-        self.addCleanup(QaTestCase._restore_process_globals)
-        QaTestCase._restore_process_globals()
+        def snapshot():
+            return (
+                dict(cache),
+                random.getstate(),
+                np.random.get_state(),
+                torch.random.get_rng_state().clone(),
+            )
 
-        self.assertEqual(
-            dict(_ACTION_MASKS_CACHE_AT_IMPORT),
-            dict(cache),
-            "_action_masks_cache was not restored",
-        )
-        self.assertEqual(_RANDOM_STATE_AT_IMPORT, random.getstate())
-        self.assertEqual(
-            _NUMPY_STATE_AT_IMPORT[1].tolist(),
-            np.random.get_state()[1].tolist(),
-            "the numpy bit generator was not rewound",
-        )
-        self.assertEqual(
-            int(_NUMPY_STATE_AT_IMPORT[2]),
-            int(np.random.get_state()[2]),
-            "the numpy stream position advanced and was not restored",
-        )
-        if _TORCH_STATE_AT_IMPORT is not None:
-            self.assertTrue(torch.equal(torch.random.get_rng_state(), _TORCH_STATE_AT_IMPORT))
+        entry = snapshot()
+
+        def restore_entry():
+            cache.clear()
+            cache.update(entry[0])
+            random.setstate(entry[1])
+            np.random.set_state(entry[2])
+            torch.random.set_rng_state(entry[3])
+
+        self.addCleanup(restore_entry)
+
+        def dirty():
+            cache[("lifecycle-probe", 0.5)] = None
+            random.seed(1234)
+            np.random.seed(1234)
+            torch.manual_seed(1234)
+
+        def assert_baseline(state):
+            self.assertEqual(state[0], dict(_ACTION_MASKS_CACHE_AT_IMPORT))
+            self.assertEqual(state[1], _RANDOM_STATE_AT_IMPORT)
+            self.assertEqual(state[2][0], _NUMPY_STATE_AT_IMPORT[0])
+            np.testing.assert_array_equal(state[2][1], _NUMPY_STATE_AT_IMPORT[1])
+            self.assertEqual(state[2][2:], _NUMPY_STATE_AT_IMPORT[2:])
+            if _TORCH_STATE_AT_IMPORT is not None:
+                self.assertTrue(torch.equal(state[3], _TORCH_STATE_AT_IMPORT))
+
+        class Probe(QaTestCase):
+            def __init__(self, outcome):
+                super().__init__()
+                self.outcome = outcome
+                self.observed = []
+
+            def setUp(self):
+                super().setUp()
+                self.observed.append(snapshot())
+                if self.outcome == "setup-error":
+                    dirty()
+                    raise RuntimeError("intentional setup-error")
+
+            def runTest(self):
+                self.observed.append(snapshot())
+                dirty()
+                if self.outcome == "body-failure":
+                    self.fail("intentional body-failure")
+
+            def tearDown(self):
+                if self.outcome == "teardown-error":
+                    dirty()
+                    raise RuntimeError("intentional teardown-error")
+
+        for outcome in ("success", "body-failure", "setup-error", "teardown-error"):
+            with self.subTest(outcome=outcome):
+                dirty()
+                result = unittest.TestResult()
+                probe = Probe(outcome)
+                probe.run(result)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(probe.observed), 1 if outcome == "setup-error" else 2)
+                for state in probe.observed:
+                    assert_baseline(state)
+                assert_baseline(snapshot())
+                self.assertEqual(len(result.failures), int(outcome == "body-failure"))
+                self.assertEqual(len(result.errors), int(outcome.endswith("error")))
+                for _, traceback in result.failures + result.errors:
+                    self.assertIn(f"intentional {outcome}", traceback)
 
 
 if __name__ == "__main__":

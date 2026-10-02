@@ -3,12 +3,15 @@
 import math
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pandas as pd
 from qa_support import QaTestCase, model_config
 from sb3_contrib import MaskablePPO
+from sb3_contrib.common.maskable.evaluation import evaluate_policy
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv, Positions, ReforceXY
 
@@ -143,6 +146,48 @@ class PbrsTransitionsTest(QaTestCase):
                         self.assertNotEqual(additive, 0.0)
                     self.assertEqual(info["pbrs_invariant"], mode == "canonical")
 
+    def test_tiny_terminal_potentials_reconcile_reward_history_and_discounted_sum(self):
+        for mode, explicit_exit in (
+            ("canonical", False),
+            ("retain_previous", False),
+            ("retain_previous", True),
+        ):
+            with self.subTest(mode=mode, explicit_exit=explicit_exit):
+                shaped = self.env(fee=0.0015, hold_potential_ratio=1e-10, exit_potential_mode=mode)
+                base = self.env(fee=0.0015, hold_potential_enabled=False, exit_potential_mode=mode)
+                shaping = []
+                for tick in range(20):
+                    action = Actions.Long_enter if tick == 0 else Actions.Neutral
+                    if explicit_exit and tick == 2:
+                        action = Actions.Long_exit
+                    _, reward, done, truncated, _ = shaped.step(action.value)
+                    _, base_reward, base_done, base_truncated, _ = base.step(action.value)
+                    self.assertEqual((done, truncated), (base_done, base_truncated))
+                    expected = 0.8 * shaped._last_next_potential - shaped._last_prev_potential
+                    self.assertEqual(shaped._last_reward_shaping, expected)
+                    self.assertAlmostEqual(reward - base_reward, expected, places=14)
+                    shaping.append(expected)
+                    if done or truncated:
+                        break
+                self.assertTrue(done or truncated)
+                self.assertGreater(abs(shaped._last_prev_potential), 0.0)
+                self.assertLess(abs(shaped._last_prev_potential), 1e-8)
+                self.assertEqual(shaped._last_next_potential, 0.0)
+                self.assertEqual(shaped._last_reward_shaping, -shaped._last_prev_potential)
+                self.assertAlmostEqual(
+                    math.fsum(0.8**t * f for t, f in enumerate(shaping)), 0.0, places=20
+                )
+                self.assertAlmostEqual(shaped._total_reward_shaping, math.fsum(shaping), places=20)
+                self.assertEqual(len(shaped.trade_history), 2)
+                history = shaped.get_env_history()
+                self.assertEqual(history.iloc[-1]["reward_shaping"], -shaped._last_prev_potential)
+                self.assertEqual(history.iloc[-1]["next_potential"], 0.0)
+
+    def test_standalone_environment_rejects_invalid_potential_discounts(self):
+        for gamma in (None, math.nan, math.inf, -math.inf, -0.1, 1.1, True, "0.8"):
+            with self.subTest(gamma=gamma), self.assertRaises(ValueError):
+                self.env(potential_gamma=gamma)
+
     def test_reset_discards_the_previous_episode_potential_and_additive_totals(self):
         env = self.env(
             exit_potential_mode="retain_previous", entry_additive_enabled=True, fee=0.0015
@@ -241,6 +286,48 @@ class DiscountResolutionTest(QaTestCase):
         with self.assertRaises(ValueError):
             model.pack_env_dict("BTC/USDT", {"gamma": None})
 
+    def test_effective_discount_requires_a_finite_real_scalar_in_unit_interval(self):
+        model = self.model(gamma=0.83)
+        for gamma in (
+            math.nan,
+            math.inf,
+            -math.inf,
+            -0.1,
+            1.1,
+            True,
+            np.bool_(False),
+            "0.8",
+            0.8 + 0j,
+            [0.8],
+            np.array(0.8),
+            np.nextafter(np.longdouble(1), np.longdouble(math.inf)),
+        ):
+            with self.subTest(gamma=gamma), self.assertRaises(ValueError):
+                model.pack_env_dict("BTC/USDT", {"gamma": gamma})
+        for gamma in (0, 1, np.int64(1), np.float32(0.79), np.float64(0.83)):
+            with self.subTest(gamma=gamma):
+                kwargs = model.pack_env_dict("BTC/USDT", {"gamma": gamma})
+                resolved = kwargs["config"]["freqai"]["rl_config"]["model_reward_parameters"][
+                    "potential_gamma"
+                ]
+                self.assertIs(type(resolved), float)
+                self.assertEqual(resolved, float(gamma))
+                prices = pd.DataFrame({"open": [100.0] * 16})
+                env = MyRLEnv(df=prices.copy(), prices=prices, **kwargs)
+                self.addCleanup(env.close)
+                learner = MaskablePPO(
+                    "MlpPolicy",
+                    env,
+                    gamma=resolved,
+                    n_steps=8,
+                    batch_size=8,
+                    n_epochs=1,
+                    device="cpu",
+                )
+                learner.learn(8)
+                self.assertEqual(learner.gamma, env._potential_gamma)
+                self.assertGreater(learner._n_updates, 0)
+
     def test_invalid_replacement_discount_does_not_close_running_environments(self):
         model = self.model(gamma=0.83)
         features = pd.DataFrame({"f": np.arange(16, dtype=float)})
@@ -250,8 +337,13 @@ class DiscountResolutionTest(QaTestCase):
         model.set_train_and_eval_environments(data, prices, prices, kitchen)
         running_train, running_eval = model.train_env, model.eval_env
         first = running_train.reset()
-        with self.assertRaises(ValueError):
-            model.set_train_and_eval_environments(data, prices, prices, kitchen, {"gamma": None})
+        for gamma in (None, math.nan, math.inf, -math.inf, -0.1, 1.1, True, "0.8"):
+            with self.subTest(gamma=gamma), self.assertRaises(ValueError):
+                model.set_train_and_eval_environments(
+                    data, prices, prices, kitchen, {"gamma": gamma}
+                )
+            self.assertIs(model.train_env, running_train)
+            self.assertIs(model.eval_env, running_eval)
         self.assertIs(model.train_env, running_train)
         self.assertIs(model.eval_env, running_eval)
         second, _, done, _ = running_train.step([Actions.Neutral.value])
@@ -271,6 +363,61 @@ class DiscountResolutionTest(QaTestCase):
         learner.learn(8)
         self.assertEqual(learner.gamma, env._potential_gamma)
         self.assertGreater(learner._n_updates, 0)
+
+    def test_persisted_numpy_learner_discount_overrides_finite_and_null_base(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gamma = np.float32(0.79)
+            prices = pd.DataFrame({"open": [100.0] * 16})
+            for base in (0.95, None):
+                with self.subTest(base=base):
+                    owner = self.model(gamma=base)
+                    kwargs = owner.pack_env_dict("BTC/USDT", {"gamma": gamma})
+                    env = MyRLEnv(df=prices.copy(), prices=prices, **kwargs)
+                    self.addCleanup(env.close)
+                    learner = MaskablePPO(
+                        "MlpPolicy",
+                        env,
+                        gamma=gamma,
+                        n_steps=8,
+                        batch_size=8,
+                        n_epochs=1,
+                        device="cpu",
+                    )
+                    learner.learn(8)
+                    archive = Path(temp) / f"learner-{base}"
+                    learner.save(archive)
+                    loaded = MaskablePPO.load(archive)
+                    self.assertIsInstance(loaded.gamma, np.floating)
+                    previous_updates = loaded._n_updates
+                    observed = []
+
+                    def evaluate(policy, environment, observed=observed, **parameters):
+                        observed.append(
+                            (
+                                policy.gamma,
+                                policy.get_env().get_attr("_potential_gamma"),
+                                environment.get_attr("_potential_gamma"),
+                            )
+                        )
+                        return evaluate_policy(policy, environment, **parameters)
+
+                    data = {"train_features": prices.copy(), "test_features": prices.copy()}
+                    kitchen = SimpleNamespace(pair="BTC/USDT", data_path=Path(temp) / f"fit-{base}")
+                    kitchen.data_path.mkdir()
+                    with mock.patch(
+                        "ReforceXY.user_data.freqaimodels.ReforceXY.evaluate_policy",
+                        side_effect=evaluate,
+                    ):
+                        continued = owner.fit(
+                            data,
+                            kitchen,
+                            prices_train=prices,
+                            prices_test=prices,
+                            deployment_state=(loaded, None),
+                        )
+                    self.assertEqual(observed, [(gamma, [float(gamma)], [float(gamma)])])
+                    self.assertEqual(float(continued.gamma), float(gamma))
+                    self.assertGreater(loaded._n_updates, previous_updates)
 
 
 if __name__ == "__main__":

@@ -433,7 +433,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _LOG_2: Final[float] = math.log(2.0)
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
-    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-v2"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-pbrs-v3"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
     DEFAULT_DISCOUNT_GAMMA: Final[float] = 0.95
@@ -549,7 +549,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     # Bump on objective changes that make persisted trials or best params incompatible.
     _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = (
-        "terminal-liquidation-risk-normalized-trained-policy-v4"
+        "terminal-liquidation-risk-normalized-trained-policy-v5"
     )
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
@@ -952,13 +952,21 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     @staticmethod
     def _resolve_discount_gamma(model_params: Mapping[str, Any]) -> float:
-        """Resolve discount after precedence, rejecting explicit null instead of defaulting."""
+        """Validate the winning Python/NumPy real scalar discount and normalize to float."""
         gamma = model_params.get("gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA)
         if gamma is None:
             raise ValueError(
                 "Config [global]: effective model_training_parameters.gamma must not be null"
             )
-        return cast("float", gamma)
+        if (
+            isinstance(gamma, (bool, np.bool_))
+            or not isinstance(gamma, (int, float, np.integer, np.floating))
+            or not 0 <= gamma <= 1
+        ):
+            raise ValueError(
+                "Config [global]: effective discount gamma must be a finite real scalar in [0, 1]"
+            )
+        return float(gamma)
 
     def set_train_and_eval_environments(
         self,
@@ -1315,6 +1323,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             cached = self.dd.meta_data_dictionary.get(pair, {})
             metadata = cached.get(METADATA)
             feature_pipeline = cached.get(FEATURE_PIPELINE)
+            prefix: Path | None = None
             if model is None or metadata is None or feature_pipeline is None:
                 # The current kitchen points to the new window, not deployed files.
                 previous_dk = copy.copy(dk)
@@ -1324,21 +1333,23 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if metadata is None:
                     with Path(f"{prefix}_{METADATA}.json").open("r") as fp:
                         metadata = rapidjson.load(fp, number_mode=METADATA_NUMBER_MODE)
-                if feature_pipeline is None:
-                    with Path(f"{prefix}_{FEATURE_PIPELINE}.pkl").open("rb") as fp:
-                        feature_pipeline = cloudpickle.load(fp)
-                if model is None:
-                    model = self.MODELCLASS.load(Path(f"{prefix}_model"))
-                    self._restore_replay(model, metadata, previous_dk.data_path, pair)
             if (
                 metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
                 != self._DEPLOYMENT_COORDINATE_GENERATION
             ):
                 raise ValueError(
-                    "persisted deployment coordinate generation is missing or incompatible"
+                    "persisted deployment coordinate/reward generation is missing or incompatible"
                 )
+            if feature_pipeline is None:
+                assert prefix is not None
+                with Path(f"{prefix}_{FEATURE_PIPELINE}.pkl").open("rb") as fp:
+                    feature_pipeline = cloudpickle.load(fp)
+            if model is None:
+                assert prefix is not None
+                model = self.MODELCLASS.load(Path(f"{prefix}_model"))
             if not isinstance(model, self.MODELCLASS):
                 raise ValueError("persisted policy type differs from the configured model")
+            ReforceXY._resolve_discount_gamma({"gamma": getattr(model, "gamma", None)})
             for name, expected, actual in (
                 ("features", dk.training_features_list, metadata["training_features_list"]),
                 ("labels", dk.label_list, metadata["label_list"]),
@@ -1350,6 +1361,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             ):
                 if list(expected) != list(actual):
                     raise ValueError(f"persisted {name} differ in names or order")
+            if cached_model is None:
+                self._restore_replay(model, metadata, Path(previous["data_path"]), pair)
             if cached_model is not None:
                 # SB3 archives preserve policy/optimizer state but exclude envs and loggers.
                 with BytesIO() as archive:
@@ -1570,9 +1583,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         model = deployment_state[0] if deployment_state is not None else None
         effective_params = dict(model_params)
         if model is not None:
-            learner_gamma = getattr(model, "gamma", None)
-            if isinstance(learner_gamma, (int, float)) and np.isfinite(learner_gamma):
-                effective_params["gamma"] = float(learner_gamma)
+            effective_params["gamma"] = getattr(model, "gamma", None)
         effective_params["gamma"] = ReforceXY._resolve_discount_gamma(effective_params)
         # Preserve raw prices and the resumed learner's discount in its environments.
         try:
@@ -3087,8 +3098,12 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         # === PBRS COMMON PARAMETERS ===
-        self._potential_gamma = float(
-            model_reward_parameters.get("potential_gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA)
+        self._potential_gamma = ReforceXY._resolve_discount_gamma(
+            {
+                "gamma": model_reward_parameters.get(
+                    "potential_gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA
+                )
+            }
         )
         if np.isclose(self._potential_gamma, 0.0):
             logger.warning(
@@ -4111,15 +4126,6 @@ class MyRLEnv(Base5ActionRLEnv):
         computed_reward_shaping = self._last_reward_shaping
         terminal_reward_shaping = -prev_potential
         reward_shaping_delta = terminal_reward_shaping - computed_reward_shaping
-        last_next_potential = self._last_next_potential
-
-        if np.isclose(computed_reward_shaping, terminal_reward_shaping) and np.isclose(
-            last_next_potential, 0.0
-        ):
-            self._last_potential = 0.0
-            self._last_next_potential = 0.0
-            return reward
-
         self._last_potential = 0.0
         self._last_next_potential = 0.0
         self._last_reward_shaping = terminal_reward_shaping
@@ -5424,7 +5430,7 @@ def convert_optuna_params_to_model_params(
             {
                 "n_steps": int(optuna_params.get("n_steps")),
                 "batch_size": int(optuna_params.get("batch_size")),
-                "gamma": float(optuna_params.get("gamma")),
+                "gamma": ReforceXY._resolve_discount_gamma(optuna_params),
                 "learning_rate": lr,
                 "ent_coef": float(optuna_params.get("ent_coef")),
                 "clip_range": cr,
@@ -5464,7 +5470,7 @@ def convert_optuna_params_to_model_params(
 
         model_params.update(
             {
-                "gamma": float(optuna_params.get("gamma")),
+                "gamma": ReforceXY._resolve_discount_gamma(optuna_params),
                 "batch_size": int(optuna_params.get("batch_size")),
                 "learning_rate": lr,
                 "buffer_size": int(optuna_params.get("buffer_size")),
