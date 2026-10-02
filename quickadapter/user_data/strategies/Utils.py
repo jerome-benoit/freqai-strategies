@@ -1048,8 +1048,8 @@ DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
 DEFAULT_MIN_LABEL_PERIOD_CANDLES: Final[int] = 12
 DEFAULT_MAX_LABEL_PERIOD_CANDLES: Final[int] = 24
-DEFAULT_MIN_LABEL_NATR_MULTIPLIER: Final[float] = 9.0
 DEFAULT_LABEL_NATR_PERIOD: Final[int] = 14
+DEFAULT_MIN_LABEL_NATR_MULTIPLIER: Final[float] = 9.0
 DEFAULT_MAX_LABEL_NATR_MULTIPLIER: Final[float] = 12.0
 
 
@@ -3793,27 +3793,16 @@ def zlema(series: pd.Series, period: int) -> pd.Series:
 def _fractal_dimension(
     highs: NDArray[np.floating], lows: NDArray[np.floating], period: int
 ) -> float:
-    """Fractal dimension over the two half-window ranges of a ``period`` window.
+    """Fractal dimension using unnormalized half-window ranges.
 
-    ``HL3`` spans the whole window while ``HL1`` and ``HL2`` each span a half, so
-    ``HL1 <= HL3`` and ``HL2 <= HL3``, hence ``HL1 + HL2 <= 2 * HL3`` and
-    ``D <= 1`` for every reachable input. In exact arithmetic the clip would then
-    return ``1.0`` on every path. In floating point it does not: the ratio lands
-    on ``1.0 + O(1e-16)`` for some windows, and ``np.clip(D, 1.0, 2.0)`` is a
-    no-op above the lower bound, so it passes that value through. ``alpha`` in
-    :func:`frama` is therefore ``exp(-4.6 * (D - 1))``, which is ``1.0`` to within
-    a few ULP rather than exactly ``1.0``, and ``frama`` reproduces ``close``
-    after its seed up to that same rounding. Measured on one deterministic
-    10-bar window, ``D`` is ``1.0000000000000002`` and ``alpha`` is
-    ``0.999999999999999``.
+    In exact arithmetic, finite half-window ranges satisfy
+    ``HL1 + HL2 <= 2 * HL3``, so clipping gives dimension one. Floating-point
+    rounding can leave the dimension slightly above that bound.
 
-    Nothing downstream may treat ``alpha`` as a literal ``1.0`` or ``frama`` as
-    bit-exact ``close``; a short-circuit on ``alpha == 1`` would not fire.
-
-    This is the current, asserted behaviour, not the formulation in Ehlers' paper:
-    that one takes the range over ``period // 2`` consecutive sub-ranges, whose sum
-    can exceed twice the full range. Adopting it is an algorithmic change and is
-    deliberately not made here.
+    Ehlers' normalized formulation divides each half-window range by
+    ``period / 2`` and the full-window range by ``period`` before computing
+    the dimension. This implementation does not use that normalization.
+    Reference: https://www.mesasoftware.com/papers/FRAMA.pdf
     """
     if period % 2 != 0 or period < 2:
         raise ValueError(f"Invalid period value {period!r}: must be an even integer >= 2")
@@ -3842,7 +3831,9 @@ def _fractal_dimension(
 
 def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Series:
     """
-    Original FRAMA implementation per Ehlers' paper with optional zero lag.
+    FRAMA-style filter using unnormalized ranges, with optional zero lag.
+
+    See :func:`_fractal_dimension` for the distinction from Ehlers' formulation.
     """
     if period % 2 != 0:
         raise ValueError(f"Invalid period value {period!r}: must be even")

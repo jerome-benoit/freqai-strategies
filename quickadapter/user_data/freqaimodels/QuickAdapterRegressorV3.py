@@ -3493,14 +3493,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         history = self.dd.historic_predictions[pair]
         if self.live:
             history = _dedupe_historic_predictions_on_date_pred(history, pair)
-            history = self._calibration_history(dk, pair, history, fit_live_predictions_candles)
-            remaining = fit_live_predictions_candles - len(history)
+            calibration_history = self._calibration_history(
+                dk, pair, history, fit_live_predictions_candles
+            )
+            remaining = fit_live_predictions_candles - len(calibration_history)
             warmed_up = remaining <= 0
             if not warmed_up:
                 logger.warning(
                     f"[{pair}] Fit live predictions not warmed up: {remaining} produced observations until warmup completion"
                 )
-        pred_df = history.tail(fit_live_predictions_candles).reset_index(drop=True)
+        else:
+            calibration_history = history
+        pred_df = calibration_history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
         di_values = pred_df.get("DI_values")
         if di_values is not None:
@@ -3636,11 +3640,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                         f"{current_dates.index[0]}; defaulting to inf"
                     )
         elif pair not in self._session_fitted_pairs:
-            historic = self.dd.historic_predictions.get(pair)
-            if historic is not None and "holdout_rmse" in historic:
+            decision_time = self._calibration_decision_time(dk, pair, history)
+            if decision_time is not None and "holdout_rmse" in history:
+                # Model metadata can predate the current calibration period, but not
+                # come from a future or unproduced prediction.
+                produced = (
+                    _produced_prediction_mask(history)
+                    & history["date_pred"].le(decision_time).to_numpy()
+                )
                 holdout_values = pd.to_numeric(
-                    historic.loc[_produced_prediction_mask(historic), "holdout_rmse"],
-                    errors="coerce",
+                    history.loc[produced, "holdout_rmse"], errors="coerce"
                 ).dropna()
                 if not holdout_values.empty:
                     current_holdout_rmse = float(holdout_values.iloc[-1])

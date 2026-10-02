@@ -1,11 +1,12 @@
 """Guards the coverage gate itself; requires the Freqtrade QA image."""
 
 import configparser
+import os
 import re
+import subprocess
 import unittest
 
-import yaml
-from qa_support import COVERAGERC, REPO_ROOT, QaTestCase
+from qa_support import COVERAGERC, REPO_ROOT, QaTestCase, temporary_directory
 
 FLOOR = "fail_under"
 PLACES = "precision"
@@ -21,7 +22,7 @@ ELLIPSIS_BODY = re.compile(r"^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.
 TYPE_CHECKING = re.compile(r"^\s*if (typing\.)?TYPE_CHECKING:")
 INCLUDE = "include"
 MEASURED_TREE = REPO_ROOT / "quickadapter" / "user_data"
-WORKFLOW = REPO_ROOT / ".github" / "workflows" / "quality.yml"
+COVERAGE_RUNNER = REPO_ROOT / "scripts" / "run-coverage.sh"
 
 
 class CoverageFloorTest(QaTestCase):
@@ -178,65 +179,52 @@ class CoverageFloorTest(QaTestCase):
                     found["if TYPE_CHECKING:"] += 1
         self.assertEqual(counts, found, "these shrink the denominator without any config change")
 
-    def test_the_workflow_runs_the_gate_with_this_configuration_and_propagates_it(self):
-        # Everything above constrains the CONFIGURATION to be meaningful; these two constrain
-        # something to actually read it and to act on the result.
-        #
-        # The rcfile binding: coverage looks for `.coveragerc` in the directory it runs from
-        # and does not search parents, and the QA image has no `.coveragerc`, `setup.cfg`,
-        # `tox.ini` or `pyproject.toml` at the workspace root. Deleting the one
-        # `--env COVERAGE_RCFILE=` line therefore leaves coverage with NO configuration: branch
-        # tracing off, no `source`, `fail_under = 0`, measuring the standard library and
-        # exiting 0. Nothing else in this class is sensitive to that line.
-        workflow = WORKFLOW.read_text()
-        self.assertRegex(
-            workflow,
-            r"--env COVERAGE_RCFILE=\S*\$\{\{ matrix\.context \}\}/\.coveragerc",
-            "the coverage step must be pointed at the context's .coveragerc",
-        )
-        # The propagation: `exit $status` is the only thing that turns a failing
-        # `coverage report` into a failing job. It is scoped to the COVERAGE STEP, matched on
-        # its own indent: every `- name:` in the file is indented, so searching for an
-        # unindented one silently runs off the end of the file and a decoy token anywhere
-        # later in the workflow satisfies the assertion.
-        step = re.search(
-            r"^      - name: Run runtime regressions with coverage$.*?(?=^      - name:|\n\S)",
-            workflow,
-            re.DOTALL | re.MULTILINE,
-        )
-        self.assertIsNotNone(step, "the coverage step is gone from the workflow")
-        self.assertIn("python -m coverage report", step.group(0))
-        self.assertIn("exit $status", step.group(0), "the step must exit with the report status")
+    def _run_coverage(self, floor, *, tests_pass=True):
+        with temporary_directory() as directory:
+            source = directory / "source"
+            tests = directory / "tests"
+            source.mkdir()
+            tests.mkdir()
+            (source / "sample.py").write_text(
+                "def choose(flag):\n    if flag:\n        return 1\n    return 2\n"
+            )
+            expected = 1 if tests_pass else 2
+            (tests / "test_sample.py").write_text(
+                "import unittest\nfrom sample import choose\n"
+                "class SampleTest(unittest.TestCase):\n"
+                "    def test_one_branch(self):\n"
+                f"        self.assertEqual(choose(True), {expected})\n"
+            )
+            rcfile = directory / ".coveragerc"
+            rcfile.write_text(
+                f"[run]\nbranch = True\nsource = {source}\n[report]\nfail_under = {floor}\n"
+            )
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(source),
+                "COVERAGE_RCFILE": str(rcfile),
+                "COVERAGE_FILE": str(directory / ".coverage"),
+            }
+            return subprocess.run(
+                ["sh", str(COVERAGE_RUNNER), "-s", str(tests), "-v"],
+                cwd=directory,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
 
-    def test_the_workflow_actually_dispatches_the_coverage_step(self):
-        # The previous guards constrain the CONFIGURATION and the body of the coverage step.
-        # This constrains whether the step runs AT ALL, which is the same lever one level up:
-        # flipping the QuickAdapter matrix entry to `coverage: false`, or the step's own `if:`
-        # to a constant, leaves every other test green while CI stops running the gate
-        # entirely. A job that skips the coverage step is indistinguishable from a green one.
-        #
-        # Parsed rather than grepped: a matrix entry that loses its `coverage` key, or an `if:`
-        # that stops referencing the matrix, must fail here rather than pass a substring test.
-        workflow = yaml.safe_load(WORKFLOW.read_text())
-        entries = workflow["jobs"]["strategy-qa"]["strategy"]["matrix"]["include"]
-        by_name = {entry["name"]: entry for entry in entries}
+    def test_the_runner_propagates_the_actual_coverage_report_status(self):
+        # The same passing suite covers only one branch: 100 fails, 50 passes.
+        for floor, expected_status in ((100, 2), (50, 0)):
+            with self.subTest(floor=floor):
+                result = self._run_coverage(floor)
+                self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
 
-        self.assertIn("QuickAdapter", by_name)
-        self.assertIs(
-            by_name["QuickAdapter"].get("coverage"),
-            True,
-            "the QuickAdapter matrix entry must request the coverage run",
-        )
-        steps = workflow["jobs"]["strategy-qa"]["steps"]
-        coverage_steps = [
-            step for step in steps if step.get("name") == "Run runtime regressions with coverage"
-        ]
-        self.assertEqual(1, len(coverage_steps), "the coverage step must exist exactly once")
-        self.assertEqual(
-            "matrix.coverage",
-            coverage_steps[0].get("if"),
-            "the coverage step must be dispatched by the matrix flag, not a constant",
-        )
+    def test_the_runner_preserves_a_test_failure_even_above_the_coverage_floor(self):
+        result = self._run_coverage(50, tests_pass=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
     def test_the_source_is_the_measured_tree(self):
         self.assertEqual(

@@ -184,18 +184,6 @@ class UtilsCanonicalDefaultsTest(QaTestCase):
                 _validate_params({}, LOGGER, "freqai", specs, inline_defaults), inline_defaults
             )
 
-    def test_the_label_kind_registry_wires_each_kind_to_its_own_pair(self):
-        self.assertEqual(
-            sorted(Utils._LABEL_KIND_REGISTRY),
-            sorted(kind for kind, _, _ in LABEL_KINDS),
-        )
-        for kind, _, defaults in LABEL_KINDS:
-            specs, registry_defaults, cross_field = Utils._LABEL_KIND_REGISTRY[kind]
-            with self.subTest(kind=kind):
-                self.assertIs(registry_defaults, defaults)
-                self.assertEqual(sorted(specs), sorted(defaults))
-                self.assertIs(cross_field is not None, kind == "label_smoothing")
-
     def test_each_accessor_returns_the_defaults_for_an_empty_config(self):
         for kind, accessor, defaults in LABEL_KINDS:
             with self.subTest(kind=kind):

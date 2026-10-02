@@ -75,6 +75,14 @@ def transformer(standardization: str = "none", normalization: str = "none", **ov
 
 
 class LabelTransformerTest(QaTestCase):
+    def test_robust_scaling_centers_on_the_median_and_divides_by_the_iqr(self):
+        series = np.array([0.0, 1.0, 2.0, 3.0, 100.0])
+        fitted = transformer("robust", "none")
+        fitted.fit(series)
+        scaled, *_ = fitted.transform(series)
+        # Median 2, quartiles 1 and 3: the outlier does not set the scale.
+        np.testing.assert_allclose(scaled, [-1.0, -0.5, 0.0, 0.5, 49.0], rtol=1e-12)
+
     def test_inverse_transform_recovers_the_input_for_every_scaler_pair(self):
         matrix = label_matrix()
         for standardization in STANDARDIZATION_TYPES:
@@ -217,14 +225,20 @@ class LabelTransformerTest(QaTestCase):
         self.assertLess(float(np.max(np.abs(scaled[:, 1]))), np.max(np.abs(matrix[:, 1])))
         np.testing.assert_allclose(scaled[:, 2], matrix[:, 2], rtol=0.0, atol=0.0)
 
-    def test_a_constant_column_scales_to_zero_because_the_mad_collapses_to_one(self):
-        column = np.full((8, 1), 2.5)
-        fitted = transformer("mmad", "none")
-        fitted.fit(column)
-        scaled, *_ = fitted.transform(column)
-        np.testing.assert_allclose(scaled, 0.0, rtol=0.0, atol=0.0)
-        recovered, *_ = fitted.inverse_transform(scaled)
-        np.testing.assert_allclose(recovered, column, rtol=0.0, atol=0.0)
+    def test_constant_columns_scale_to_zero_and_round_trip_exactly(self):
+        smallest = np.nextafter(0.0, 1.0)
+        for value in (2.5, 1.7e308, -1.7e308, smallest, -smallest):
+            for rows in (1, 2, 3):
+                for normalization in ("none", "maxabs"):
+                    with self.subTest(value=value, rows=rows, normalization=normalization):
+                        column = np.full((rows, 1), value)
+                        fitted = transformer("mmad", normalization)
+                        with np.errstate(over="raise", invalid="raise"):
+                            fitted.fit(column)
+                            scaled, *_ = fitted.transform(column)
+                            recovered, *_ = fitted.inverse_transform(scaled)
+                        np.testing.assert_array_equal(scaled, np.zeros_like(column))
+                        np.testing.assert_array_equal(recovered, column)
 
     def test_a_mad_below_the_isclose_tolerance_is_treated_as_collapsed(self):
         rng = np.random.default_rng(3)
@@ -233,22 +247,11 @@ class LabelTransformerTest(QaTestCase):
         fitted.fit(column)
         scaled, *_ = fitted.transform(column)
         self.assertTrue(np.all(np.isfinite(scaled)))
-        # The true MAD is 5.45e-11, which would scale the residual to O(1e10); the collapse to
-        # 1.0 keeps the output at the residual's own scale, so this distinguishes the guard.
+        # Dividing by the tiny MAD would produce order-one standardized residuals;
+        # the collapsed scale keeps them near their original magnitude.
         self.assertLess(float(np.max(np.abs(scaled))), 1e-6)
         recovered, *_ = fitted.inverse_transform(scaled)
         np.testing.assert_allclose(recovered, column, rtol=ROUND_TRIP_RTOL, atol=ROUND_TRIP_ATOL)
-
-    def test_a_non_finite_mad_is_replaced_instead_of_dividing_by_it(self):
-        # np.median of two equal near-maximal floats overflows to inf, so the median absolute
-        # deviation is non-finite too. Dividing by the replacement leaves -inf, whereas dividing
-        # by the inf MAD itself would emit NaN.
-        column = np.array([[1.7e308], [1.7e308]])
-        fitted = transformer("mmad", "none")
-        fitted.fit(column)
-        scaled, *_ = fitted.transform(column)
-        self.assertFalse(np.any(np.isnan(scaled)))
-        self.assertTrue(np.all(np.isneginf(scaled)))
 
     def test_sigmoid_is_the_identity_when_its_scale_is_zero_or_not_finite(self):
         series = label_series()

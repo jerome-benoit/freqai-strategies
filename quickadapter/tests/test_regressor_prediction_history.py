@@ -644,26 +644,21 @@ class RegressorPredictionHistoryTest(QaTestCase):
         self.assertFalse(pd.isna(extra["DI_cutoff"]))
 
     def test_a_healthy_di_sample_keeps_its_fitted_cutoff(self):
-        model, dk, _ = calibrated(candles=4, di=[0.5, 1.25, 1.75, 2.5])
+        di = [0.5, 1.25, 1.75, 2.5]
+        expected_params = sp.stats.weibull_min.fit(di, floc=0)
+        expected_cutoff = sp.stats.weibull_min.ppf(0.999, *expected_params)
+        model, dk, _ = calibrated(candles=4, di=di)
         extra = dk.data["extra_returns_per_train"]
 
         model.fit_live_predictions(dk, PAIR)
 
-        # The fallback is not taken: the published cutoff is the Weibull quantile of the
-        # parameters the same call recorded, so the substitution is the only divergence.
-        self.assertNotEqual(extra["DI_cutoff"], DI_CUTOFF_DEFAULT)
-        self.assertTrue(np.isfinite(extra["DI_cutoff"]))
         np.testing.assert_allclose(
-            extra["DI_cutoff"],
-            sp.stats.weibull_min.ppf(
-                0.999,
-                extra["DI_value_param1"],
-                extra["DI_value_param2"],
-                extra["DI_value_param3"],
-            ),
+            [extra[f"DI_value_param{i}"] for i in (1, 2, 3)],
+            expected_params,
             rtol=1e-12,
             atol=0.0,
         )
+        np.testing.assert_allclose(extra["DI_cutoff"], expected_cutoff, rtol=1e-12, atol=0.0)
 
     def test_missing_and_non_positive_di_values_never_yield_a_nan_cutoff(self):
         for di in ([np.nan] * 4, [0.0, 0.0, 0.0, 0.0], [-1.0, -2.0, -3.0, -4.0]):
@@ -727,15 +722,45 @@ class RegressorPredictionHistoryTest(QaTestCase):
                     QuickAdapterRegressorV3.optuna_validate_value(extra["holdout_rmse"])
                 )
 
-    def test_a_replayed_produced_holdout_score_is_used_when_present(self):
-        model, dk, _ = calibrated(candles=2, holdout=[np.nan, 1.75])
-        model._holdout_rmse = {PAIR: float("inf")}
-        model._session_fitted_pairs = set()
-        extra = dk.data["extra_returns_per_train"]
+    def test_replayed_holdout_is_as_of_the_decision_and_independent_of_calibration(self):
+        persisted = history(
+            [
+                "2026-01-01 00:00",
+                "2026-01-01 00:00",
+                "2026-01-01 00:05",
+                "2026-01-01 00:04",
+                "2026-01-01 00:10",
+                "2026-01-01 00:15",
+            ],
+            [True, True, True, False, True, True],
+            values=[-0.5, 0.5, 0.0, 5.0, 9.0, 7.0],
+            holdout=[0.25, 0.5, np.nan, 888.0, 999.0, 777.0],
+        )
+        persisted.loc[5, "date_pred"] = pd.NaT
+        for order in (list(range(6)), [4, 2, 0, 3, 1, 5]):
+            with self.subTest(order=order):
+                model, dk, _ = calibrated(candles=2)
+                model.dd.historic_predictions[PAIR] = persisted.iloc[order].reset_index(drop=True)
+                model.dd.pair_dict[PAIR]["extras"][CALIBRATION_START_KEY] = (
+                    "2026-01-01T00:05:00+00:00"
+                )
+                model._calibration_current_candles[PAIR] = pd.Timestamp(
+                    "2026-01-01 00:05", tz="UTC"
+                )
+                model._holdout_rmse = {PAIR: float("inf")}
+                model._session_fitted_pairs = set()
+                model.fit_live_predictions(dk, PAIR)
+                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], 0.5)
+                self.assertEqual(dk.data["labels_mean"][LABEL], 0.0)
 
-        model.fit_live_predictions(dk, PAIR)
-
-        self.assertEqual(extra["holdout_rmse"], 1.75)
+    def test_unavailable_replayed_holdout_does_not_resurrect_an_older_score(self):
+        for latest, expected in ((np.inf, np.inf), (np.nan, 0.5)):
+            with self.subTest(latest=latest):
+                model, dk, _ = calibrated(candles=2, holdout=[0.5, latest])
+                model._holdout_rmse = {PAIR: np.inf}
+                model._session_fitted_pairs = set()
+                model.fit_live_predictions(dk, PAIR)
+                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], expected)
 
     def test_an_unfitted_pair_with_no_replay_column_reports_infinite(self):
         model, dk, _ = calibrated(candles=2)

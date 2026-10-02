@@ -177,6 +177,10 @@ ignored with a warning. Matching column patterns are applied from least to most
 specific; equally specific patterns follow declaration order, so the later one
 wins.
 
+MMAD standardization preserves finite constant columns: with `none` or `maxabs`
+normalization they transform to zero and invert exactly, including near-limit
+and subnormal floats.
+
 ### Continual learning
 
 In backtests, continual training uses only a saved model whose training cutoff
@@ -207,6 +211,12 @@ old remains eligible. Downtime and expired-model rows are excluded; genuine
 zero and outlier-rejected predictions count. Predictions align to candle dates;
 candles without predictions have `do_predict=0` and downtime zeros display but
 never calibrate.
+
+After a restart, persisted `holdout_rmse` is recovered from the latest produced
+prediction available at the decision time, independently of the calibration
+window. A newer unavailable score remains unavailable rather than reviving an
+older finite score. Recovery does not warm up adaptive thresholds; a model fitted
+in the current session keeps its in-memory score.
 
 ### Backtest evaluation protocol
 
@@ -502,24 +512,24 @@ without a Freqtrade image.
 
 ### Coverage gate
 
-QuickAdapter is the only project with a coverage gate. Its configuration is
-`quickadapter/.coveragerc`, selected explicitly because coverage.py looks for
-`.coveragerc` in the directory it is run from and does not search parents:
+Within the strategy QA matrix, QuickAdapter is the only strategy whose runtime
+regressions enforce a coverage gate. The standalone reward-space analysis suite
+has its own gate; see [its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
+QuickAdapter's configuration is `quickadapter/.coveragerc`, selected explicitly
+because coverage.py looks for `.coveragerc` in the directory it is run from and
+does not search parents:
 
 ```shell
 export PYTHONPATH=quickadapter/user_data/strategies
 export COVERAGE_RCFILE=quickadapter/.coveragerc COVERAGE_FILE=/tmp/.coverage
 
-python -m coverage run -m unittest discover -s quickadapter/tests -v
-python -m coverage report
+sh scripts/run-coverage.sh -s quickadapter/tests -v
 ```
 
-Export both variables rather than prefixing a single command: an inline prefix
-binds to that command only, so `python -m coverage report` looks for the data
-file in its default location, finds none, and exits 1 with `No data to report.`
-The mistake is loud rather than silent — it cannot ship a green gate on a
-measurement that never happened — but it does break a run that would otherwise
-have finished.
+The shared runner gives both coverage commands the same environment. When running
+`coverage run` and `coverage report` separately, export both variables for both
+commands: prefixing only the run command does not configure the later report,
+which then looks in its default data path and fails with `No data to report.`
 
 Branch coverage is required. Every guard in this codebase is an early return
 or a raise, and statement coverage marks a guard covered the instant its `if`
@@ -540,9 +550,10 @@ percentage, a `precision` coarse enough to round the total past the floor, a
 disabled branch trace, a disabled namespace walk, a source tree that is not the
 measured one, a `fail_under` that has drifted into the inert `[run]` section, the
 three of coverage's default source exclusions, a coverage pragma in production
-source, a workflow that is not pointed at this `.coveragerc`, a workflow that
-stops propagating the report status, and any `omit`, `include`, `exclude_lines`,
-`exclude_also` or `partial_*` of production code.
+source, and any `omit`, `include`, `exclude_lines`, `exclude_also` or
+`partial_*` of production code. The shared `scripts/run-coverage.sh` runner is
+exercised with real passing and failing coverage reports and a failing test suite;
+the checks assert process exit status, not workflow token spelling.
 
 ### Quality checks
 

@@ -199,9 +199,12 @@ class ComposeTrainWeightsTest(QaTestCase):
 
     def test_a_composed_set_that_passes_support_is_returned(self):
         result = self._compose(
-            np.ones(4), np.array([1.0, 1.0, 1.0, 1.0]), min_effective_sample_size=4.0
+            np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+            np.array([3.0, 1.0, 2.0, 1.0, 0.0]),
+            min_effective_sample_size=3.0,
         )
-        self.assertEqual(result.size, 4)
+        # Surviving products [3, 2, 6, 4] have mean 3.75; the dropped row stays zero.
+        np.testing.assert_allclose(result, [1.0, 2.0 / 3.0, 2.0, 4.0 / 3.0, 0.0], rtol=1e-12)
 
     def test_a_composed_set_that_breaches_support_routes_through_the_policy(self):
         with self.assertRaisesRegex(ValueError, "effective_sample_size"):

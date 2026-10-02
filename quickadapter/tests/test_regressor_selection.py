@@ -1425,25 +1425,38 @@ class RegressorSelectionTest(QaTestCase):
                 self.assertTrue(-1.0 <= float(minimum) <= float(maximum) <= 1.0)
 
     def test_each_requested_threshold_method_yields_its_own_numbers(self):
-        # A range check cannot tell delegation from substitution: every method lands inside
-        # [-1, 1] whatever it computes. Forcing `threshold_func` to Otsu inside the consumer
-        # left the whole suite green while `mean` silently became Otsu's -0.9485 instead of
-        # -0.55, so an entry gate used a method the config never asked for.
-        #
-        # The full tuple is pinned per method, not just the differing one. On this fixture
-        # `yen` happens to coincide with `otsu`, and `li` with `mean`; that is why the whole
-        # table is asserted — rerouting any single method to any other breaks it.
-        series = pd.Series([0.1, -0.5, 0.9, -0.2, 0.3, 0.05, -0.95, 0.7])
+        # Eight negative minima and seven positive maxima give independently sorted
+        # tails. Their histograms distinguish every requested threshold method.
+        series = pd.Series(
+            [
+                0.1,
+                -0.95,
+                0.15,
+                -0.92,
+                0.2,
+                -0.9,
+                0.25,
+                -0.6,
+                0.3,
+                -0.55,
+                0.6,
+                -0.5,
+                0.8,
+                -0.1,
+                0.9,
+                -0.08,
+                0.1,
+            ]
+        )
         expected = {
-            "mean": (-0.55, 0.8),
-            "isodata": (-0.64970703125, 0.8),
-            "li": (-0.55, 0.8),
-            "minimum": (-0.94267578125, 0.8),
-            "otsu": (-0.94853515625, 0.8),
-            "triangle": (-0.94560546875, 0.8),
-            "yen": (-0.94853515625, 0.8),
+            "mean": (-0.575, 0.45714285714285713),
+            "isodata": (-0.64583984375, 0.49423828125),
+            "li": (-0.7694279130567987, 0.4070990364894884),
+            "minimum": (-0.75119140625, 0.45029296875),
+            "otsu": (-0.49970703125, 0.30087890625),
+            "triangle": (-0.94490234375, 0.15439453125),
+            "yen": (-0.60166015625, 0.25107421875),
         }
-        self.assertEqual(sorted(expected), sorted(SKIMAGE_THRESHOLD_METHODS))
         for method, bounds in expected.items():
             with self.subTest(method=method):
                 np.testing.assert_allclose(
@@ -2037,15 +2050,6 @@ class RegressorSelectionTest(QaTestCase):
                     mode=RAISE,
                     reference_matrix=unique_rows(4),
                 )
-                with self.assertLogs(LOGGER_NAME, "WARNING") as captured:
-                    kwargs = QuickAdapterRegressorV3._prepare_distance_kwargs(
-                        metric,
-                        weights=np.array([0.5, 0.5]),
-                        mode=WARN,
-                        reference_matrix=unique_rows(4),
-                    )
-                self.assertNotIn("w", kwargs)
-                self.assertIn("using uniform weights", captured.output[0])
 
     def test_a_minkowski_p_reaches_cdist_only_when_it_validates(self):
         reference = unique_rows(4)

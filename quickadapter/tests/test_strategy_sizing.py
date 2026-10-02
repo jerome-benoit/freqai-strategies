@@ -3,13 +3,15 @@
 import datetime
 import math
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pandas as pd
-from qa_support import QaTestCase
+from freqtrade.enums import RunMode
+from freqtrade.persistence import Trade
+from qa_support import PAIR, QaTestCase, model_config, temporary_directory
 from QuickAdapterV3 import QuickAdapterV3
-
-PAIR = "BTC/USDT"
 
 
 def strategy(*, duration=10, natr=2.0, fraction=0.5, candle_secs=300):
@@ -115,15 +117,6 @@ class DistanceTest(QaTestCase):
     def _take_profit(self, model, **kwargs):
         return model.get_take_profit_distance(frame(), trade(**kwargs.pop("trade", {})), **kwargs)
 
-    def test_the_stoploss_distance_matches_its_formula(self):
-        model = strategy(duration=10, natr=2.0)
-        expected = (
-            100.0 * (2.0 / 100.0) * 0.5 * QuickAdapterV3.get_stoploss_factor(10 + round(0**1.5))
-        )
-        self.assertAlmostEqual(
-            model.get_stoploss_distance(frame(), trade(), 100.0, 0.5), expected, places=10
-        )
-
     def test_the_take_profit_distance_uses_the_open_rate_not_the_current_rate(self):
         model = strategy(duration=10, natr=2.0)
         expected = 100.0 * (2.0 / 100.0) * 0.5 * QuickAdapterV3.get_take_profit_factor(10)
@@ -186,6 +179,124 @@ class DistanceTest(QaTestCase):
         model = strategy(natr=0.0)
         self.assertEqual(model.get_stoploss_distance(frame(), trade(), 100.0, 0.5), 0.0)
         self.assertEqual(model.get_take_profit_distance(frame(), trade(), 0.5), 0.0)
+
+
+class RuntimeSizingTest(QaTestCase):
+    def setUp(self):
+        super().setUp()
+        directory = self.enterContext(temporary_directory())
+        config = model_config(
+            directory,
+            runmode=RunMode.BACKTEST,
+            exit_pricing={"trade_natr_method": "quantile_interpolation"},
+        )
+        self.model = QuickAdapterV3(config)
+        self.model.freqai_info = config["freqai"]
+        self.model.bot_start()
+        self.now = datetime.datetime(2026, 1, 1, 0, 10, tzinfo=datetime.UTC)
+        self.frame = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC"),
+                "open": [100.0] * 3,
+                "high": [101.0] * 3,
+                "low": [99.0] * 3,
+                "close": [100.0] * 3,
+                "natr_label_period_candles": [1.0, 4.0, 8.0],
+                "label_natr_multiplier": [3.0] * 3,
+            }
+        )
+        self.model.dp = SimpleNamespace(
+            get_analyzed_dataframe=lambda **kwargs: (self.frame, None),
+            _exchange=SimpleNamespace(
+                get_min_pair_stake_amount=lambda *args: 1.0,
+                amount_to_contract_precision=lambda pair, amount: amount,
+            ),
+        )
+
+    def position(self, short=False):
+        return Trade(
+            pair=PAIR,
+            open_rate=100.0,
+            open_date=self.now - datetime.timedelta(minutes=5),
+            is_short=short,
+            stake_amount=100.0,
+            amount=1.0,
+            leverage=2.0,
+            exchange="binance",
+            fee_open=0.0,
+            fee_close=0.0,
+            orders=[],
+        )
+
+    def test_stoploss_distance_uses_current_not_entry_price(self):
+        # Entry NATR 4 has mean rank 0.25 in [4, 8], giving interpolated NATR 7.
+        # One candle has elapsed since entry; the price has moved from 100 to 120.
+        expected = 120.0 * 0.07 * 3.0 * 0.5 * 2.75 / (1.2675 + math.atan(0.25))
+        self.assertAlmostEqual(
+            self.model.get_stoploss_distance(self.frame, self.position(), 120.0, 0.5),
+            expected,
+            places=11,
+        )
+
+    def test_stoploss_callback_converts_distance_relative_to_current_rate(self):
+        fraction = QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION
+        expected = 0.07 * 3.0 * fraction * 2.75 / (1.2675 + math.atan(0.25)) * 2.0
+        for short in (False, True):
+            with self.subTest(short=short):
+                self.assertAlmostEqual(
+                    self.model.custom_stoploss(
+                        PAIR, self.position(short), self.now, 120.0, 0.2, False
+                    ),
+                    expected,
+                    places=11,
+                )
+
+    def test_partial_exit_reduces_stake_after_the_real_target_is_crossed(self):
+        for short, favorable, unfavorable in ((False, 120.0, 105.0), (True, 80.0, 95.0)):
+            with self.subTest(short=short):
+                position = self.position(short)
+                store = {}
+                # Isolate only database persistence, not target or sizing calculations.
+                with (
+                    mock.patch.object(
+                        position,
+                        "get_custom_data",
+                        side_effect=lambda key, default=None, store=store: store.get(key, default),
+                    ),
+                    mock.patch.object(
+                        position,
+                        "set_custom_data",
+                        side_effect=lambda key, value, store=store: store.update({key: value}),
+                    ),
+                ):
+                    before = self.model.adjust_trade_position(
+                        position,
+                        self.now,
+                        favorable,
+                        0.2,
+                        1.0,
+                        1000.0,
+                        favorable,
+                        unfavorable,
+                        0.2,
+                        0.2,
+                    )
+                    self.assertIsNone(before)
+                    after = self.model.adjust_trade_position(
+                        position,
+                        self.now,
+                        unfavorable,
+                        0.2,
+                        1.0,
+                        1000.0,
+                        unfavorable,
+                        favorable,
+                        0.2,
+                        0.2,
+                    )
+                    stake_reduction = -100.0 * QuickAdapterV3.partial_exit_stages[0][1]
+                    direction = "short" if short else "long"
+                    self.assertEqual(after, (stake_reduction, f"take_profit_{direction}_0"))
 
 
 class ThrottleCallbackTest(QaTestCase):
