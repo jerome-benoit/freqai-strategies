@@ -3,7 +3,6 @@
 import copy
 import math
 import tempfile
-import unittest
 from datetime import datetime as dt
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -12,9 +11,9 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
-from freqtrade.enums import RunMode
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
+from qa_support import QaTestCase, RecordingPolicy, model_config
 from sb3_contrib import MaskablePPO
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import (
@@ -27,67 +26,7 @@ from ReforceXY.user_data.freqaimodels.ReforceXY import (
 from ReforceXY.user_data.strategies.RLAgentStrategy import RLAgentStrategy
 
 
-class RecordingPolicy:
-    def __init__(self):
-        self.observations = []
-        self.masks = []
-
-    def predict(self, observation, **kwargs):
-        self.observations.append(observation.copy())
-        self.masks.append(kwargs.get("action_masks"))
-        return np.array([0]), None
-
-
-def model_config(path):
-    return {
-        "user_data_dir": Path(path),
-        "timeframe": "5m",
-        "stake_amount": "unlimited",
-        "runmode": RunMode.DRY_RUN,
-        "exchange": {"pair_whitelist": ["BTC/USDT"]},
-        "freqai": {
-            "enabled": True,
-            "identifier": "contract-test",
-            "train_period_days": 1,
-            "backtest_period_days": 1,
-            "conv_width": 1,
-            "activate_tensorboard": False,
-            "feature_parameters": {
-                "include_timeframes": ["5m"],
-                "include_corr_pairlist": [],
-                "label_period_candles": 1,
-                "principal_component_analysis": False,
-                "noise_standard_deviation": 0,
-                "buffer_train_data_candles": 0,
-                "shuffle_after_split": False,
-            },
-            "data_split_parameters": {"test_size": 0.25, "shuffle": False},
-            "model_training_parameters": {
-                "n_steps": 8,
-                "batch_size": 8,
-                "n_epochs": 1,
-                "device": "cpu",
-                "policy_kwargs": {"net_arch": [8]},
-            },
-            "rl_config": {
-                "model_type": "MaskablePPO",
-                "policy_type": "MlpPolicy",
-                "cpu_count": 1,
-                "drop_ohlc_from_features": False,
-                "model_reward_parameters": {"rr": 2.0, "profit_aim": 0.03},
-                "train_cycles": 1,
-                "n_envs": 1,
-                "n_eval_envs": 1,
-                "n_eval_steps": 16,
-                "n_eval_episodes": 1,
-                "check_envs": False,
-                "add_state_info": False,
-            },
-        },
-    }
-
-
-class ReviewContractsTest(unittest.TestCase):
+class ReviewContractsTest(QaTestCase):
     def model(self, *, hold=False, hpo=False):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

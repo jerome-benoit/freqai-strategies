@@ -506,18 +506,18 @@ CI runs type checks and runtime regressions in one QA matrix entry per strategy.
 The shared runtime step sets each strategy's `PYTHONPATH`. QuickAdapter needs
 this for direct `unittest` discovery because its model imports `LabelTransformer`
 and `Utils` by bare names; ReforceXY resolves its imports without it, so the
-setting is optional there. QuickAdapter's regressions additionally run under
+setting is optional there. Both strategies' regressions run under
 `coverage.py`; the reward-space analysis suite runs separately with `uv`,
 without a Freqtrade image.
 
 ### Coverage gate
 
-Within the strategy QA matrix, QuickAdapter is the only strategy whose runtime
-regressions enforce a coverage gate. The standalone reward-space analysis suite
-has its own gate; see [its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
-QuickAdapter's configuration is `quickadapter/.coveragerc`, selected explicitly
-because coverage.py looks for `.coveragerc` in the directory it is run from and
-does not search parents:
+Within the strategy QA matrix, QuickAdapter and ReforceXY both enforce a
+coverage gate. The standalone reward-space analysis suite has its own gate; see
+[its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
+Each strategy's configuration is that strategy's `.coveragerc`, selected
+explicitly because coverage.py looks for `.coveragerc` in the directory it is run
+from and does not search parents:
 
 ```shell
 export PYTHONPATH=quickadapter/user_data/strategies
@@ -538,12 +538,39 @@ reason: without it coverage skips directories that have no `__init__.py`, so
 the `user_data` trees would be absent from the report and the gate would
 measure whatever happened to be imported.
 
+```shell
+# ReforceXY
+export COVERAGE_RCFILE=ReforceXY/.coveragerc COVERAGE_FILE=/tmp/.coverage
+
+sh scripts/run-coverage.sh -s ReforceXY/tests -v
+```
+
+Some of the measured tree cannot be reached by a test, and the total therefore
+has a ceiling below 100 %. Six sites are recorded here rather than excluded with
+`omit`, which the floor guard bans — an exclusion key would shrink the
+denominator without the trade-off being visible:
+
+- **Unreachable while the runner is CPU-only.** `_configure_gpu_memory:757-767`
+  (`:751-756` returns before the out-of-range arm is evaluated) and
+  `MyRLEnv.close:4616-4617` (`th.cuda.empty_cache()`). A GPU runner would make
+  both testable.
+- **Version-dependent.** `ReforceXY.py:307`'s `_repair_historic_predictions is
+  None` branch, arc `307→316`; `:309-315` itself is covered. A Freqtrade
+  revision adding the hook would make it reachable.
+- **Dead at any revision.** The `except OverflowError` arm of
+  `_potential_transform` (`:3399-3400`); `:249`, the `raise RuntimeError` for an
+  asynchronous drawer method, guarded by `iscoroutinefunction` rather than by the
+  version probe; and `create_sampler`'s `case _: assert_never(sampler)`
+  (`:2244-2245`), since `_Samplers` has exactly two members and `:2218` raises
+  for anything else.
+
 `fail_under` is an absolute floor, never per-module. To change it, re-measure
 with the shipped configuration already in place — a measurement taken without
 `branch` and `include_namespace_packages` reports a different denominator and
 is not a valid input — then update the value and the `# measured` annotation
 above it in the same commit. Raise the floor only; a drop needs the reason in
-the pull request. `quickadapter/tests/test_coverage_floor.py` refuses a
+the pull request. `quickadapter/tests/test_coverage_floor.py` and
+`ReforceXY/tests/test_coverage_floor.py` refuse a
 placeholder, a missing or undated measurement annotation, a measurement below
 the floor it justifies, a floor below the current minimum, a floor that is not a
 percentage, a `precision` coarse enough to round the total past the floor, a
@@ -614,7 +641,7 @@ wrapper rejects direct host and wrong-image execution so Freqtrade imports and
 dependency versions remain exact.
 
 The BasedPyright and type-stub versions are pinned in each project's
-`.devcontainer/requirements-dev.txt`, as is `coverage` in QuickAdapter's.
+`.devcontainer/requirements-dev.txt`, as is `coverage` in both QA images.
 The Freqtrade base images intentionally follow their rolling `stable_freqai`
 and `stable_freqairl` tags, so record the resolved image digests when a
 reproducible audit is required.

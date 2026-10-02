@@ -48,7 +48,7 @@ jobs:
             context: ReforceXY
             project: reforcexy
             image: freqai-strategies-reforcexy-qa:ci
-            coverage: false
+            coverage: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,6 +87,17 @@ jobs:
             --entrypoint sh \
             "${{ matrix.image }}" \
             /workspace/scripts/run-coverage.sh -s "${{ matrix.context }}/tests" -v
+      - name: Run runtime regressions under three orderings
+        if: matrix.context == 'ReforceXY'
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
+            --workdir /workspace \
+            --entrypoint sh \
+            "${{ matrix.image }}" \
+            -c 'for seed in 1 2 3; do
+                 FREQAI_QA_SHUFFLE_SEED=$seed python -m unittest discover -s ReforceXY/tests || exit 1
+               done'
 
   reward-space-analysis:
     name: Reward space analysis

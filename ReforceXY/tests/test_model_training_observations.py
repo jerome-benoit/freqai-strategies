@@ -1,7 +1,6 @@
 """Regression contracts for learning eligibility, replay and temporal observations."""
 
 import tempfile
-import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -14,12 +13,12 @@ from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
+from qa_support import QaTestCase, RecordingPolicy, model_config
 
-from ReforceXY.tests.test_review_contracts import RecordingPolicy, model_config
 from ReforceXY.user_data.freqaimodels.ReforceXY import ReforceXY
 
 
-class TrainingObservationsTest(unittest.TestCase):
+class TrainingObservationsTest(QaTestCase):
     def test_dqn_eligibility_restart_and_chronology(self):
         for algorithm in ("DQN", "QRDQN"):
             with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temp:
