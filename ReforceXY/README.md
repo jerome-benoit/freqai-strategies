@@ -31,6 +31,10 @@ for operations that require them. Review the timezone in
 [docker-compose.yml](docker-compose.yml) and the
 [API/security and maintenance guidance](../README.md#start-safely).
 
+The template uses JSON with comments. To enable optional `rateLimit` values in
+`exchange.ccxt_config` or `exchange.ccxt_async_config`, uncomment the complete
+example line, including its trailing comma. Keep `enableRateLimit` enabled.
+
 The supplied profile enables HPO, eight training environments and state
 observations. For a smaller first run, disable `freqai.rl_config_optuna.enabled`,
 use `n_envs=1` and `multiprocessing=false`; these are intentional overrides,
