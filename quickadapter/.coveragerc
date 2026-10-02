@@ -8,5 +8,5 @@ relative_files = True
 show_missing = True
 precision = 1
 include_namespace_packages = True
-# measured 2026-10-01 at 71.5% — raise only, never lower
+# measured 2026-10-02 at 71.6% — raise only, never lower
 fail_under = 68

@@ -549,8 +549,9 @@ the floor it justifies, a floor below the current minimum, a floor that is not a
 percentage, a `precision` coarse enough to round the total past the floor, a
 disabled branch trace, a disabled namespace walk, a source tree that is not the
 measured one, a `fail_under` that has drifted into the inert `[run]` section, the
-three of coverage's default source exclusions, a coverage pragma in production
-source, and any `omit`, `include`, `exclude_lines`, `exclude_also` or
+source-level `no cover` or `no branch` pragmas (with or without a colon),
+ellipsis-only bodies, additional `TYPE_CHECKING` blocks beyond the existing
+import-only block, and any `omit`, `include`, `exclude_lines`, `exclude_also` or
 `partial_*` of production code. The shared `scripts/run-coverage.sh` runner is
 exercised with real passing and failing coverage reports and a failing test suite;
 the checks assert process exit status, not workflow token spelling.

@@ -46,6 +46,25 @@ def runtime(tmp, **overrides):
     return model
 
 
+def causal_target_strategy(tmp, smoothing_method):
+    """Explicit label and weight settings for the smoothing dependency fixture."""
+    model = runtime(
+        tmp,
+        freqai={
+            "feature_parameters": {
+                "label_period_candles": 1,
+                "label_natr_multiplier": 10.5,
+                "label_horizon_candles": 18,
+                "causal_mode": True,
+            },
+            "label_smoothing": {"default": {"method": smoothing_method, "window_candles": 5}},
+            "label_weighting": {"default": {"strategy": "uniform", "fill_method": "zero"}},
+        },
+    )
+    model.bot_start()
+    return model
+
+
 def candles(rows: int = 6, **columns) -> pd.DataFrame:
     """A strictly rising OHLCV frame, extended with the named columns."""
     index = np.arange(rows)
@@ -558,17 +577,58 @@ class StrategyTargetsTest(QaTestCase):
             self.assertNotIn(EXTREMA_COLUMN, frame.columns)
             self.assertTrue(result[EXTREMA_COLUMN].notna().any())
 
-    def test_every_labelled_candle_carries_at_least_one_candle_of_lookahead(self):
+    def test_smoothed_availability_covers_both_passes_of_the_five_candle_kernel(self):
         with temporary_directory() as temp:
-            model = runtime(temp)
-            model.bot_start()
-            result = model.set_freqai_targets(zigzag(), {"pair": PAIR})
-            horizon = result[LABEL_HORIZON_COLUMN].to_numpy()
-            labelled = result[EXTREMA_COLUMN].to_numpy() != 0.0
-            self.assertTrue(labelled.any())
-            self.assertTrue(np.isfinite(horizon).all())
-            self.assertTrue((horizon == np.round(horizon)).all())
-            self.assertTrue((horizon[labelled] >= 1).all())
+            frame = zigzag()
+            raw = causal_target_strategy(temp, "none").set_freqai_targets(
+                frame.copy(), {"pair": PAIR}
+            )
+            smoothed = causal_target_strategy(temp, "gaussian").set_freqai_targets(
+                frame.copy(), {"pair": PAIR}
+            )
+            # Two passes through a length-five FIR kernel span nine input candles:
+            # offsets -4 through +4, not the single-pass centered radius of two.
+            positions = np.arange(len(frame))
+            for horizon_column in (
+                LABEL_HORIZON_COLUMN,
+                "s-extrema_weight_known_at_lookahead",
+            ):
+                with self.subTest(horizon_column=horizon_column):
+                    raw_available_at = positions + raw[horizon_column].to_numpy()
+                    expected = [
+                        max(raw_available_at[row - 4 : row + 5]) - row
+                        for row in range(4, len(frame) - 4)
+                    ]
+                    np.testing.assert_array_equal(smoothed[horizon_column].iloc[4:-4], expected)
+
+    def test_smoothed_labels_and_weights_are_reproducible_at_their_declared_availability(self):
+        with temporary_directory() as temp:
+            model = causal_target_strategy(temp, "gaussian")
+            frame = zigzag()
+            full = model.set_freqai_targets(frame.copy(), {"pair": PAIR})
+            for value_column, horizon_column in (
+                (EXTREMA_COLUMN, LABEL_HORIZON_COLUMN),
+                (LABEL_WEIGHT_COLUMN, "s-extrema_weight_known_at_lookahead"),
+            ):
+                for row in (26, 34, 43):
+                    with self.subTest(value_column=value_column, row=row):
+                        available_at = row + int(full[horizon_column].iloc[row])
+                        prefix = model.set_freqai_targets(
+                            frame.iloc[: available_at + 1].copy(), {"pair": PAIR}
+                        )
+                        self.assertAlmostEqual(
+                            prefix[value_column].iloc[row], full[value_column].iloc[row], places=12
+                        )
+                        # These rows change when only one future candle is present,
+                        # so the prefix comparison cannot pass on an inert fixture.
+                        premature = model.set_freqai_targets(
+                            frame.iloc[: row + 2].copy(), {"pair": PAIR}
+                        )
+                        self.assertNotAlmostEqual(
+                            premature[value_column].iloc[row],
+                            full[value_column].iloc[row],
+                            places=12,
+                        )
 
     def test_a_flat_price_series_produces_no_labels_and_no_label_weights(self):
         flat = pd.DataFrame(

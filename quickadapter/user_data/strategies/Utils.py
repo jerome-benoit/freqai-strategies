@@ -4088,12 +4088,12 @@ def _zigzag(
     natr_warmup_end_pos = int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
     natr_values = natr.bfill().to_numpy()
 
-    # Pivots are tracked as POSITIONS, never as index labels. `compute_label_weights`
-    # consumes `ZigzagResult.indices` as row offsets (it casts to int and bounds them by
-    # `n_values`), and FreqAI hands the strategy a DatetimeIndex frame, so index labels
-    # would be Timestamps there: the weighting path raises TypeError on the first candle
-    # of every pair, and on any non-zero-based integer index it silently drops every pivot
-    # and returns all-zero weights. `LabelData.indices` documents the positional contract.
+    # Pivots are row positions, never index labels: LabelData.indices defines this contract.
+    # compute_label_weights consumes integer offsets in [0, n_values).
+    # Datetime labels are not integer row offsets and can raise conversion errors.
+    # Shifted integer labels can move weights to different rows; out-of-range labels
+    # are discarded, leaving all-zero weights only if no valid weighted pivots remain.
+    # This positional contract is independent of downstream index-alignment validation.
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
     closes = df.get("close").to_numpy(dtype=float)
     highs = df.get("high").to_numpy(dtype=float)

@@ -7,7 +7,7 @@ import optuna
 import pandas as pd
 from EnumErrors import enum_error_message
 from LabelTransformer import EXTREMA_SELECTION_METHODS, SKIMAGE_THRESHOLD_METHODS
-from qa_support import REGRESSOR_MODULE, QaTestCase
+from qa_support import REGRESSOR_MODULE, QaTestCase, model_config, temporary_directory
 
 from quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3 import QuickAdapterRegressorV3
 
@@ -1252,13 +1252,19 @@ class RegressorSelectionTest(QaTestCase):
         self.assertEqual(minima.tolist(), [-1.0])
         self.assertEqual(maxima.tolist(), [1.0])
 
-    def test_ranking_keeps_the_most_extreme_peaks_first(self):
+    def test_ranking_distinguishes_interior_peaks_from_full_series_extrema(self):
         series = pd.Series([0.1, -0.5, 0.9, -0.2, 0.3, 0.05, -0.95, 0.7])
-        for selection_method in ("rank_extrema", "rank_peaks"):
+        # The final 0.7 is a raw extremum but not an interior peak; 0.3 is a peak.
+        for selection_method, maxima_indices, maxima_values in (
+            ("rank_extrema", [2, 7], [0.9, 0.7]),
+            ("rank_peaks", [2, 4], [0.9, 0.3]),
+        ):
             with self.subTest(selection_method=selection_method):
                 minima, maxima = QuickAdapterRegressorV3.get_pred_min_max(series, selection_method)
+                self.assertEqual(minima.index.tolist(), [6, 1, 3])
                 self.assertEqual(minima.tolist(), [-0.95, -0.5, -0.2])
-                self.assertEqual(maxima.iloc[0], 0.9)
+                self.assertEqual(maxima.index.tolist(), maxima_indices)
+                self.assertEqual(maxima.tolist(), maxima_values)
 
     def test_the_keep_fraction_shrinks_the_candidate_pool_to_the_extremes(self):
         wave = pd.Series([0.0, 1.0, 0.0, -1.0, 0.0, 2.0, 0.0, -2.0, 0.0])
@@ -1385,11 +1391,28 @@ class RegressorSelectionTest(QaTestCase):
 
     # ------------------------------------------------------------------ threshold surfaces
 
-    def test_the_median_surface_medianises_the_candidate_sets(self):
+    def test_the_median_prediction_thresholds_use_the_selected_candidate_sets(self):
         series = pd.Series([0.1, -0.5, 0.9, -0.2, 0.3, 0.05, -0.95, 0.7])
-        minimum, maximum = QuickAdapterRegressorV3.median_min_max(series, "rank_extrema")
-        self.assertAlmostEqual(float(minimum), -0.5, places=9)
-        self.assertAlmostEqual(float(maximum), 0.8, places=9)
+        with temporary_directory() as temp:
+            model = QuickAdapterRegressorV3(config=model_config(temp))
+            for selection_method, expected in (
+                ("rank_extrema", (-0.5, 0.8)),
+                ("rank_peaks", (-0.5, 0.6)),
+            ):
+                with self.subTest(selection_method=selection_method):
+                    minimum, maximum = model.min_max_pred(
+                        "prediction",
+                        {
+                            "selection_method": selection_method,
+                            "threshold_method": "median",
+                            "keep_fraction": 1.0,
+                        },
+                        pd.DataFrame({"prediction": series}),
+                        fit_live_predictions_candles=8,
+                        label_period_candles=1,
+                    )
+                    self.assertAlmostEqual(float(minimum), expected[0], places=9)
+                    self.assertAlmostEqual(float(maximum), expected[1], places=9)
 
     def test_the_soft_extremum_surface_hardens_itself_as_alpha_grows(self):
         series = pd.Series([0.1, -0.5, 0.9, -0.2, 0.3, 0.05, -0.95, 0.7])
