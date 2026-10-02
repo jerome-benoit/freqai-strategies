@@ -595,19 +595,7 @@ class TrainTestSplitCausalPurgeTest(QaTestCase):
 
 
 class TimeSeriesSplitCausalPurgeTest(QaTestCase):
-    """The chronological split, whose entire body had no test at all.
-
-    `_make_timeseries_split_datasets` is reachable through the documented
-    `data_split_parameters.method='timeseries_split'`, and coverage reported 0 of its 62
-    statements executed. Its own availability comparison at
-    QuickAdapterRegressorV3.py:3108 could go from strict to inclusive, or be deleted, with
-    the suite green.
-
-    Deliberately NOT a subclass of the class above. That one's expectations are written around
-    a ten-row test tail starting at position 30, where TimeSeriesSplit's last fold here is five
-    rows starting at 35; inheriting it made five tests assert the wrong geometry and fail. The
-    two blocks are siblings with their own arithmetic, so each carries its own fixtures.
-    """
+    """Final-fold gap and label-availability boundaries for chronological splitting."""
 
     ROWS = 40
     N_SPLITS = 3
@@ -659,11 +647,19 @@ class TimeSeriesSplitCausalPurgeTest(QaTestCase):
             self.features, self.labels, self.weights, self._Kitchen(), unfiltered
         )
 
-    def test_the_last_fold_is_the_chronological_tail(self):
-        result = self._split(self.unfiltered, horizon=0)
-        test_index = list(result["test_features"].index)
-        self.assertEqual(test_index, list(range(self.ROWS - self.TEST_SIZE, self.ROWS)))
-        self.assertTrue(max(result["train_features"].index) < min(test_index))
+    def test_the_last_fold_preserves_the_gap_and_the_chronological_tail(self):
+        # With no emitted availability, these cases exercise only the splitter gap.
+        # A horizon of three widens a zero requested gap to three, ending training at row 31.
+        # The availability-column purge is exercised separately below.
+        for horizon, gap, expected_train in (
+            (0, 2, list(range(33))),
+            (3, 3, list(range(32))),
+            (3, 0, list(range(32))),
+        ):
+            with self.subTest(horizon=horizon, gap=gap):
+                result = self._split(self.unfiltered, horizon=horizon, gap=gap)
+                self.assertEqual(list(result["train_features"].index), expected_train)
+                self.assertEqual(list(result["test_features"].index), [35, 36, 37, 38, 39])
 
     def test_a_row_known_at_or_after_the_first_test_row_is_purged(self):
         # The boundary this block exists for, and the one coverage could not see at all.

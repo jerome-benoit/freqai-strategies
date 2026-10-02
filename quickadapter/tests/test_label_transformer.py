@@ -83,6 +83,13 @@ class LabelTransformerTest(QaTestCase):
         # Median 2, quartiles 1 and 3: the outlier does not set the scale.
         np.testing.assert_allclose(scaled, [-1.0, -0.5, 0.0, 0.5, 49.0], rtol=1e-12)
 
+    def test_mmad_uses_the_midpoint_medians_for_an_even_nonconstant_sample(self):
+        series = np.array([0.0, 2.0, 4.0, 100.0])
+        fitted = transformer("mmad", "none", mmad_scaling_factor=1.0)
+        scaled, *_ = fitted.fit_transform(series)
+        # Median 3; sorted absolute deviations [1, 1, 3, 97] have MAD 2.
+        np.testing.assert_allclose(scaled, [-1.5, -0.5, 0.5, 48.5], rtol=1e-12, atol=0.0)
+
     def test_inverse_transform_recovers_the_input_for_every_scaler_pair(self):
         matrix = label_matrix()
         for standardization in STANDARDIZATION_TYPES:

@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import unittest
+from pathlib import Path
 
 from qa_support import COVERAGERC, REPO_ROOT, QaTestCase, temporary_directory
 
@@ -16,7 +17,7 @@ OMIT = "omit"
 # The lowest floor the project will accept. Raising it is free; dropping below this is the
 # silent gate disabling that `.coveragerc` and README.md:532 both forbid.
 MINIMUM_FLOOR = 67.0
-PRAGMA = re.compile(r"pragma\s*:\s*no\s*cover", re.IGNORECASE)
+PRAGMA = re.compile(r"#\s*pragma\s*:?\s*no\s*(?:cover|branch)\b", re.IGNORECASE)
 # The other two of coverage.py's three DEFAULT_EXCLUDE patterns.
 ELLIPSIS_BODY = re.compile(r"^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)")
 TYPE_CHECKING = re.compile(r"^\s*if (typing\.)?TYPE_CHECKING:")
@@ -151,42 +152,37 @@ class CoverageFloorTest(QaTestCase):
                 "the annotated measurement must clear the floor it justifies",
             )
 
-    def test_no_production_source_widens_coverage_s_default_exclusions(self):
-        # The source side of the same lever the config-side keys above cover. coverage.py
-        # always applies a DEFAULT_EXCLUDE of three patterns, and each removes statements from
-        # the denominator without any config change at all: a `# pragma: no cover` comment, a
-        # `...`-only body, and an `if TYPE_CHECKING:` block. Measured for the pragma: one on
-        # `_normalize_final_take_profit_state` took QuickAdapterV3.py from 58.8 % to 60.2 % and
-        # the total from 69.3 % to 69.6 %, with the suite green.
-        #
-        # The tree is NOT free of the lever today: `if TYPE_CHECKING:` appears in Utils.py and
-        # is excluded today. A type-checking block is legitimate — it holds imports that do not
-        # run — so it is permitted up to a pinned count rather than banned outright. The other
-        # two patterns have no legitimate use here, so they must stay at zero.
+    def _assert_source_exclusions(self, tree: Path, *, type_checking_blocks: int = 0):
+        # Statement and partial-branch exemptions can change the gate without a config edit.
+        # The measured tree permits its one import-only TYPE_CHECKING block, but no pragmas
+        # or ellipsis-only bodies. Synthetic consumer trees have no type-only imports.
         counts = {
-            "pragma: no cover": 0,
+            "coverage pragma": 0,
             "ellipsis body": 0,
-            "if TYPE_CHECKING:": 1,
+            "if TYPE_CHECKING:": type_checking_blocks,
         }
         found = dict.fromkeys(counts, 0)
-        for path in sorted(MEASURED_TREE.rglob("*.py")):
+        for path in sorted(tree.rglob("*.py")):
             for line in path.read_text().splitlines():
                 if PRAGMA.search(line):
-                    found["pragma: no cover"] += 1
+                    found["coverage pragma"] += 1
                 elif ELLIPSIS_BODY.match(line):
                     found["ellipsis body"] += 1
                 elif TYPE_CHECKING.match(line):
                     found["if TYPE_CHECKING:"] += 1
         self.assertEqual(counts, found, "these shrink the denominator without any config change")
 
-    def _run_coverage(self, floor, *, tests_pass=True):
+    def test_no_production_source_widens_coverage_s_default_exclusions(self):
+        self._assert_source_exclusions(MEASURED_TREE, type_checking_blocks=1)
+
+    def _run_coverage(self, floor, *, tests_pass=True, source_text=None):
         with temporary_directory() as directory:
             source = directory / "source"
             tests = directory / "tests"
             source.mkdir()
             tests.mkdir()
             (source / "sample.py").write_text(
-                "def choose(flag):\n    if flag:\n        return 1\n    return 2\n"
+                source_text or "def choose(flag):\n    if flag:\n        return 1\n    return 2\n"
             )
             expected = 1 if tests_pass else 2
             (tests / "test_sample.py").write_text(
@@ -225,6 +221,28 @@ class CoverageFloorTest(QaTestCase):
     def test_the_runner_preserves_a_test_failure_even_above_the_coverage_floor(self):
         result = self._run_coverage(50, tests_pass=False)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_source_exemptions_that_bypass_a_real_report_are_refused(self):
+        # No branch suppresses missing arcs: combined coverage rises from 4/6 to 5/6
+        # despite one missing statement. No cover excludes the entire untaken clause.
+        baseline = self._run_coverage(80)
+        self.assertEqual(baseline.returncode, 2, baseline.stdout + baseline.stderr)
+        for kind in ("branch", "cover"):
+            for separator in (":", ""):
+                with self.subTest(kind=kind, separator=separator):
+                    pragma = f"# pragma{separator} no {kind}"
+                    if_comment = f"  {pragma}" if kind == "branch" else ""
+                    else_comment = f"  {pragma}" if kind == "cover" else ""
+                    source_text = (
+                        f"def choose(flag):\n    if flag:{if_comment}\n"
+                        f"        return 1\n    else:{else_comment}\n        return 2\n"
+                    )
+                    with temporary_directory() as source:
+                        (source / "sample.py").write_text(source_text)
+                        with self.assertRaises(AssertionError):
+                            self._assert_source_exclusions(source)
+                    result = self._run_coverage(80, source_text=source_text)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_the_source_is_the_measured_tree(self):
         self.assertEqual(

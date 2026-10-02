@@ -3,10 +3,10 @@
 import logging
 import unittest
 
-from qa_support import QaTestCase
+from qa_support import QaTestCase, model_config, temporary_directory
+from QuickAdapterV3 import QuickAdapterV3
 from Utils import (
     _MISSING,
-    CONFIG_DEPRECATIONS,
     _delete_path,
     _get_path,
     _set_path,
@@ -129,23 +129,25 @@ class UtilsConfigMigrationTest(QaTestCase):
 
         self.assertEqual(sorted(config["freqai"]), ["label_smoothing"])
 
-    def test_k_the_deprecation_table_is_a_tuple_of_well_formed_unique_entries(self):
-        self.assertIsInstance(CONFIG_DEPRECATIONS, tuple)
-        self.assertEqual(
-            len({entry[0] for entry in CONFIG_DEPRECATIONS}),
-            len(CONFIG_DEPRECATIONS),
-            "two entries share an old path, so the second can never fire",
-        )
-        for old_path, new_path, predicate, guidance in CONFIG_DEPRECATIONS:
-            with self.subTest(old_path=old_path):
-                self.assertIsInstance(old_path, str)
-                self.assertIn(".", old_path)
-                self.assertNotEqual(old_path, new_path)
-                self.assertTrue(new_path is None or (isinstance(new_path, str) and "." in new_path))
-                self.assertTrue(predicate is None or callable(predicate))
-                self.assertTrue(guidance is None or isinstance(guidance, str))
-                # A key with nowhere to go must say why; a plain rename has nothing to explain.
-                self.assertEqual(new_path is None, guidance is not None)
+    def test_legacy_reversal_decay_migrates_to_the_public_canonical_key(self):
+        config = {"reversal_confirmation": {"decay_ratio": 0.8}}
+
+        migrate_config(config, LOGGER)
+
+        self.assertEqual(config, {"reversal_confirmation": {"decay_fraction": 0.8}})
+
+    def test_strategy_resolves_migrated_decay_and_preserves_a_canonical_override(self):
+        for section, expected in (
+            ({"decay_ratio": 0.8}, 0.8),
+            ({"decay_ratio": 0.8, "decay_fraction": 0.7}, 0.7),
+        ):
+            with self.subTest(section=section), temporary_directory() as root:
+                config = model_config(root, reversal_confirmation=section)
+
+                strategy = QuickAdapterV3(config)
+
+                self.assertEqual(strategy.reversal_confirmation["decay_fraction"], expected)
+                self.assertEqual(config["reversal_confirmation"], {"decay_fraction": expected})
 
     def test_a_renamed_section_reaches_its_keys_through_the_second_hop(self):
         # The table is order-dependent by construction: entry 0 renames
@@ -173,23 +175,8 @@ class UtilsConfigMigrationTest(QaTestCase):
         )
         self.assertNotIn("extrema_weighting", config["freqai"])
 
-    def test_the_table_still_encodes_a_rename_chain(self):
-        # The structural half, which is a fact about the table rather than about behaviour:
-        # at least one entry's old path must sit under an earlier entry's new path, or the
-        # behavioural test above has stopped testing a chain.
-        inherited = [
-            old_path
-            for old_path, _, _, _ in CONFIG_DEPRECATIONS
-            for _, earlier_new, _, _ in CONFIG_DEPRECATIONS
-            if earlier_new is not None
-            and (old_path == earlier_new or old_path.startswith(f"{earlier_new}."))
-        ]
-        self.assertGreater(len(inherited), 0, "the table no longer encodes a rename chain")
-
     def test_a_two_hop_rename_reaches_its_final_key(self):
-        # The chain test above covers ONE section rename plus a key move. The table also
-        # contains two-hop chains inside a single section, and asserting that "a chain exists"
-        # plus testing one of them says nothing about the others.
+        # Section renames and two-hop key renames must both reach their final public keys.
         # `threshold_outlier` -> `outlier_threshold_quantile` -> `outlier_quantile`
         for old_key, expected in (("threshold_outlier", "outlier_quantile"),):
             with self.subTest(key=old_key):

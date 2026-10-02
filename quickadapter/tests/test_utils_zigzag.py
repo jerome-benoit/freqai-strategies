@@ -17,6 +17,8 @@ from Utils import (
     ZigzagResult,
     _adapt_label_generator,
     _zigzag,
+    compose_sample_weights,
+    compute_label_weights,
     generate_label_data,
     register_label_generator,
     soft_extremum,
@@ -71,6 +73,29 @@ def zigzag_result(closes: np.ndarray) -> ZigzagResult:
 def zigzag_on(*legs: tuple[float, float, int]) -> ZigzagResult:
     """Run ``_zigzag`` on a price path assembled from ``legs``."""
     return zigzag_result(price_path(*legs))
+
+
+def w_leg_threshold_ratios(frame: pd.DataFrame) -> np.ndarray:
+    """Measure the two completed W legs using Wilder ATR, independently of zigzag."""
+    highs = frame["high"].to_numpy()
+    lows = frame["low"].to_numpy()
+    closes = frame["close"].to_numpy()
+    true_ranges = np.maximum.reduce(
+        [highs[1:] - lows[1:], abs(highs[1:] - closes[:-1]), abs(lows[1:] - closes[:-1])]
+    )
+    atr = np.full(len(frame), np.nan)
+    atr[NATR_PERIOD] = true_ranges[:NATR_PERIOD].mean()
+    for position in range(NATR_PERIOD + 1, len(frame)):
+        atr[position] = (
+            atr[position - 1] * (NATR_PERIOD - 1) + true_ranges[position - 1]
+        ) / NATR_PERIOD
+    natr = atr / closes
+    natr[:NATR_PERIOD] = natr[NATR_PERIOD]
+    log_thresholds = np.log1p(NATR_MULTIPLIER * natr)
+    # Both endpoint candles belong to each leg. Prices use peak highs and trough lows.
+    amplitudes = [abs(np.log(lows[29] / highs[0])), abs(np.log(highs[69] / lows[29]))]
+    denominators = [np.median(log_thresholds[:30]), np.median(log_thresholds[29:70])]
+    return np.asarray(amplitudes) / denominators
 
 
 def nested_bar_frame(second_close: float, second_spread: float) -> pd.DataFrame:
@@ -225,7 +250,38 @@ class UtilsZigzagTest(QaTestCase):
         self.assertEqual(result.volume_weighted_efficiency_ratios[:2], [1.0, 1.0])
         # Constant volume makes the average volume per candle equal its median.
         self.assertEqual(result.volume_rates[:2], [1.0, 1.0])
-        self.assertTrue(np.all(np.asarray(result.amplitude_threshold_ratios[:-1]) > 0.0))
+
+    def test_amplitude_threshold_ratios_divide_each_leg_by_its_log_volatility_threshold(self):
+        frame = ohlcv_frame(price_path(*W_LEGS))
+        result = _zigzag(frame, **PARAMS)
+
+        np.testing.assert_allclose(
+            result.amplitude_threshold_ratios,
+            [*w_leg_threshold_ratios(frame), np.nan],
+            rtol=1e-12,
+            atol=0.0,
+        )
+
+    def test_generated_amplitude_threshold_ratios_preserve_relative_training_importance(self):
+        frame = ohlcv_frame(price_path(*W_LEGS))
+        label = generate_label_data(frame, EXTREMA_COLUMN, PARAMS, LOGGER)
+        label_weights = compute_label_weights(
+            len(frame),
+            label.indices,
+            label.metrics,
+            {"strategy": "amplitude_threshold_ratio", "fill_method": "zero"},
+            logger=LOGGER,
+        )
+        sample_weights = compose_sample_weights(
+            np.ones(len(frame)), label_weights, logger=LOGGER, context="W legs"
+        )
+
+        expected = w_leg_threshold_ratios(frame)
+        self.assertAlmostEqual(
+            float(sample_weights[29] / sample_weights[0]),
+            float(expected[1] / expected[0]),
+            places=12,
+        )
 
     def test_the_volume_rate_compares_the_leg_average_to_its_median(self):
         closes = price_path(*W_LEGS)
@@ -470,12 +526,10 @@ class UtilsZigzagTest(QaTestCase):
                 self.assertTrue(label.series.index.equals(index))
 
     def test_label_weights_survive_an_index_that_is_not_a_position(self):
-        # The consumer side of the same contract. `compute_label_weights` casts the pivot
-        # indices to int and bounds them by n_values, so index labels raise TypeError on the
-        # DatetimeIndex that FreqAI actually passes, and are dropped as out-of-range on a
-        # shifted integer index, leaving every weight at zero with only a warning.
-        from Utils import compute_label_weights
-
+        # The consumer casts pivot indices to int and bounds them by n_values. Datetime
+        # labels can fail conversion; shifted integer labels can shift or discard pivots.
+        # This fixture starts at 500, so every misused label is out of range and all weights
+        # would be zero. A smaller shift can instead leave nonzero weights on wrong rows.
         closes = price_path(*W_LEGS)
         expected = generate_label_data(ohlcv_frame(closes), EXTREMA_COLUMN, PARAMS, LOGGER)
         for name, index in (

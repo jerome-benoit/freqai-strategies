@@ -126,7 +126,9 @@ class EnforceSupportTest(QaTestCase):
 
     def test_one_ulp_below_a_threshold_is_refused(self):
         with self.assertRaisesRegex(ValueError, "effective_sample_size"):
-            self._enforce(np.ones(4), np.ones(4), min_effective_sample_size=4.5)
+            self._enforce(
+                np.ones(4), np.ones(4), min_effective_sample_size=np.nextafter(4.0, np.inf)
+            )
 
     def test_too_few_pivots_is_refused(self):
         with self.assertRaisesRegex(ValueError, "pivot_equivalent_count"):
