@@ -66,6 +66,7 @@ class TestSimulationParity(RewardSpaceTestBase):
         for enabled in (False, True):
             params = self.base_params(
                 hold_potential_enabled=enabled,
+                potential_gamma=0.8,
                 exit_potential_mode="retain_previous",
                 entry_additive_enabled=False,
                 exit_additive_enabled=False,
@@ -102,11 +103,19 @@ class TestSimulationParity(RewardSpaceTestBase):
                 terminal.reward_shaping, -0.25 if enabled else 0.0, tolerance=TOLERANCE.GENERIC_EQ
             )
             self.assertAlmostEqualFloat(
+                ongoing.reward_shaping, -0.05 if enabled else 0.0, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                ongoing.total - ongoing.base_reward,
+                -0.05 if enabled else 0.0,
+                tolerance=TOLERANCE.GENERIC_EQ,
+            )
+            self.assertAlmostEqualFloat(
                 terminal.pbrs_delta, terminal.reward_shaping, tolerance=TOLERANCE.GENERIC_EQ
             )
             self.assertAlmostEqualFloat(
                 terminal.total - ongoing.total,
-                -0.25 if enabled else 0.0,
+                -0.20 if enabled else 0.0,
                 tolerance=TOLERANCE.GENERIC_EQ,
             )
             self.assertEqual(terminal.entry_additive + terminal.exit_additive, 0.0)
@@ -872,37 +881,33 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Invariance flags (simulate_samples) ---------------- #
 
-    def test_canonical_invariance_flag(self):
-        """Canonical mode + no additives -> invariant flag True per-sample.
-
-        Note: `simulate_samples()` generates synthetic trajectories (coherent episodes).
-        This test only verifies the per-sample invariance flag and numeric stability; it does not
-        assert any telescoping/zero-sum property for the shaping term.
-        """
-
-        params = self.base_params(
-            exit_potential_mode="canonical",
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            hold_potential_enabled=True,
-        )
-        df = simulate_samples(
-            params={**params, "max_trade_duration_candles": 100},
-            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
-        )
-        unique_flags = set(df["pbrs_invariant"].unique().tolist())
-        self.assertEqual(unique_flags, {True}, f"Unexpected invariant flags: {unique_flags}")
-        for v in df["reward_shaping"].tolist():
-            self.assertFinite(float(v), name="reward_shaping")
-        self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
+    def test_zero_exit_modes_without_additives_match_verified_episode_flags(self):
+        for mode in ("canonical", "non_canonical"):
+            with self.subTest(mode=mode):
+                params = self.base_params(
+                    exit_potential_mode=mode,
+                    entry_additive_enabled=False,
+                    exit_additive_enabled=False,
+                    hold_potential_enabled=True,
+                    max_trade_duration_candles=100,
+                )
+                df = simulate_samples(
+                    params=params,
+                    num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
+                    seed=SEEDS.BASE,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    max_duration_ratio=2.0,
+                    trading_mode="margin",
+                    pnl_base_std=PARAMS.PNL_STD,
+                    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                )
+                self.assertEqual(set(df["pbrs_invariant"]), {True})
+                evidence = reward_space_analysis.verify_pbrs_trajectory(
+                    df, _get_potential_gamma(params)
+                )
+                self.assertTrue(evidence["verified"], evidence["reason"])
 
     def test_non_canonical_flag_false_and_sum_nonzero(self):
         """Non-canonical mode -> invariant flags False and Σ shaping non-zero."""

@@ -475,124 +475,77 @@ candle whose price filled the event. Action fills use `execution_tick`;
 terminal liquidations use the returned post-increment tick. `terminal_liquidation`
 and `exit_pnl` remain on the transition history row.
 
+Every enabled PBRS transition, including neutral steps with retained potential,
+uses `gamma * next_potential - prev_potential`. Both `canonical` and
+`non_canonical` have zero exit potential; the latter permits optional additives.
+The `pbrs_invariant` diagnostic recognizes either zero-exit mode when both
+effective additives are disabled. It is a conservative configuration check, not
+a guarantee about fitted policies: theoretical invariance also requires an
+observable state potential, the learner's discount, and appropriate boundaries.
+
+An absent learner `gamma` uses the canonical discount. An effective `gamma: null`
+is rejected before constructing or replacing environments. Validation follows
+HPO overrides and the resumed learner's gamma, so a valid higher-priority value
+can supersede a null base value. Learner and environment receive the same
+effective discount.
+The corrected reward objective invalidates persisted HPO studies and best
+parameters from the previous objective identity; incompatible studies are reset
+and stale best-parameter payloads are ignored rather than warm-started.
+
 ## Development
 
-### Runtime regressions
+### Runtime and coverage
 
-Run each suite in its matching Freqtrade QA image, with the repository mounted
-at `/workspace` and `/workspace` as the working directory:
-
-```shell
-# ReforceXY
-python -m unittest discover -s ReforceXY/tests -v
-
-# QuickAdapter
-PYTHONPATH=/workspace/quickadapter/user_data/strategies \
-  python -m unittest discover -s quickadapter/tests -v
-```
-
-Both commands must be run from the repository root, which is what the
-container's `--workdir /workspace` provides. To select one concern, pass a
-pattern that matches the whole `module.Class.method` name; a bare substring
-selects more than you want, and a pattern that matches nothing runs zero tests
-and fails with exit code 5:
+Run a strategy's suite inside its matching Freqtrade QA image, with the checkout
+mounted at `/workspace` and that directory as the working directory. Use the
+shared runner for canonical discovery and the coverage gate:
 
 ```shell
-PYTHONPATH=quickadapter/user_data/strategies \
-  python -m unittest discover -s quickadapter/tests -k 'test_utils_zigzag.*' -v
+# Inside the ReforceXY QA image; select quickadapter inside its own QA image.
+strategy=ReforceXY
+export PYTHONPATH=/workspace/$strategy/user_data/strategies
+export COVERAGE_RCFILE=$strategy/.coveragerc COVERAGE_FILE=/tmp/.coverage
+sh scripts/run-coverage.sh -s "$strategy/tests" -v
 ```
 
-CI runs type checks and runtime regressions in one QA matrix entry per strategy.
-The shared runtime step sets each strategy's `PYTHONPATH`. QuickAdapter needs
-this for direct `unittest` discovery because its model imports `LabelTransformer`
-and `Utils` by bare names; ReforceXY resolves its imports without it, so the
-setting is optional there. Both strategies' regressions run under
-`coverage.py`; the reward-space analysis suite runs separately with `uv`,
-without a Freqtrade image.
+`COVERAGE_RCFILE` explicitly selects the strategy configuration; coverage.py does
+not search parent directories. Both coverage commands need the same configuration
+and data path. The runner propagates test and coverage-report failures.
+QuickAdapter also needs the strategy path for bare-name imports; it is optional
+for ReforceXY.
 
-### Coverage gate
+For a focused debug run without coverage, use `python -m unittest discover` with
+the same suite path and an exact `module.Class.method` pattern, for example
+`-k 'test_model_pbrs_transitions.*' -v` for ReforceXY. A pattern matching no tests
+fails with exit code 5. This debug run does not establish the coverage gate.
 
-Within the strategy QA matrix, QuickAdapter and ReforceXY both enforce a
-coverage gate. The standalone reward-space analysis suite has its own gate; see
-[its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
-Each strategy's configuration is that strategy's `.coveragerc`, selected
-explicitly because coverage.py looks for `.coveragerc` in the directory it is run
-from and does not search parents:
+Each strategy QA matrix entry runs its type check and canonical coverage suite.
+ReforceXY additionally runs once with `FREQAI_QA_SHUFFLE_SEED=1`. This permutes
+methods within test classes, not module or class order. `QaTestCase` restores the
+action-mask cache and the Python, NumPy and CPU Torch RNG states before and after
+each test. Tests must isolate other mutable state themselves; the alternate order
+does not prove the absence of all global-state leaks.
 
-```shell
-export PYTHONPATH=quickadapter/user_data/strategies
-export COVERAGE_RCFILE=quickadapter/.coveragerc COVERAGE_FILE=/tmp/.coverage
+The ReforceXY gate measures **only `ReforceXY/user_data`**, with branch coverage
+and non-imported namespace files included. Tests, the analytical package and
+QuickAdapter do not contribute to that percentage. Its minimum is **70%**, with
+an approximately 75% coverage objective. Each strategy's current measurement and
+configured floor are authoritative in its `.coveragerc`. The reward-space analysis
+suite runs separately with `uv` and has
+[its own gate](ReforceXY/reward_space_analysis/tests/README.md).
 
-sh scripts/run-coverage.sh -s quickadapter/tests -v
-```
+CPU QA does not execute CUDA device paths. Compatibility guards, including the
+rejection of asynchronous drawer methods, are testable; a coverage gap is not
+evidence that code is unreachable. Gaps remain in the measured denominator.
 
-The shared runner gives both coverage commands the same environment. When running
-`coverage run` and `coverage report` separately, export both variables for both
-commands: prefixing only the run command does not configure the later report,
-which then looks in its default data path and fails with `No data to report.`
-
-Branch coverage is required. Every guard in this codebase is an early return
-or a raise, and statement coverage marks a guard covered the instant its `if`
-is evaluated. `include_namespace_packages` is required for the opposite
-reason: without it coverage skips directories that have no `__init__.py`, so
-the `user_data` trees would be absent from the report and the gate would
-measure whatever happened to be imported.
-
-```shell
-# ReforceXY
-export COVERAGE_RCFILE=ReforceXY/.coveragerc COVERAGE_FILE=/tmp/.coverage
-
-sh scripts/run-coverage.sh -s ReforceXY/tests -v
-```
-
-Some of the measured tree cannot be reached by a test, and the total therefore
-has a ceiling below 100 %. Six sites are recorded here rather than excluded with
-`omit`, which the floor guard bans — an exclusion key would shrink the
-denominator without the trade-off being visible:
-
-- **Unreachable while the runner is CPU-only.** `_configure_gpu_memory:757-767`
-  (`:751-756` returns before the out-of-range arm is evaluated) and
-  `MyRLEnv.close:4616-4617` (`th.cuda.empty_cache()`). A GPU runner would make
-  both testable.
-- **Version-dependent.** `ReforceXY.py:307`'s `_repair_historic_predictions is
-  None` branch, arc `307→316`; `:309-315` itself is covered. A Freqtrade
-  revision adding the hook would make it reachable.
-- **Dead at any revision.** The `except OverflowError` arm of
-  `_potential_transform` (`:3399-3400`); `:249`, the `raise RuntimeError` for an
-  asynchronous drawer method, guarded by `iscoroutinefunction` rather than by the
-  version probe; and `create_sampler`'s `case _: assert_never(sampler)`
-  (`:2244-2245`), since `_Samplers` has exactly two members and `:2218` raises
-  for anything else.
-
-CI additionally runs the ReforceXY suite three times with
-`FREQAI_QA_SHUFFLE_SEED=1|2|3`. The seed reorders test METHODS within each
-class — `unittest` sorts both module and class order alphabetically and
-consults no hook for either, so cross-module ordering is not permuted. A leaked
-global is still caught: `QaTestCase` restores the process globals in `setUp`
-and again in `addCleanup`, so every test starts from the import-time state
-whatever ran before it.
-
-`fail_under` is an absolute floor, never per-module. To change it, re-measure
-with the shipped configuration already in place — a measurement taken without
-`branch` and `include_namespace_packages` reports a different denominator and
-is not a valid input — then update the value and the `# measured` annotation
-above it in the same commit. Raise the floor only; a drop needs the reason in
-the pull request. Both floor guards refuse a
-placeholder, a missing or undated measurement annotation, a measurement below
-the floor it justifies, a floor below the current minimum, a floor that is not a
-percentage, a `precision` coarse enough to round the total past the floor, a
-disabled branch trace, a disabled namespace walk, a source tree that is not the
-measured one, a `fail_under` that has drifted into the inert `[run]` section, the
-source-level `no cover` or `no branch` pragmas (with or without a colon),
-ellipsis-only bodies, additional `TYPE_CHECKING` blocks beyond the existing
-import-only block, and any `omit`, `include`, `exclude_lines`, `exclude_also` or
-`partial_*` of production code. `ReforceXY`'s guard additionally rejects `patch`,
-misspelled options, and a second measurement root (`source_pkgs`, `source_dirs`,
-`plugins`). It detects default statement and branch exclusions by parsing each
-measured file twice, with and without coverage's defaults. The shared
-`scripts/run-coverage.sh` runner is
-exercised with real passing and failing coverage reports and a failing test suite;
-the checks assert process exit status, not workflow token spelling.
+`fail_under` is an absolute aggregate floor, not a per-module floor. Re-measure
+using the shipped branch and namespace configuration before raising it; update
+the dated measurement annotation and floor together. Do not lower the ReforceXY
+minimum or narrow its measurement scope. Its guards reject alternate roots,
+plugins, exclusions, source pragmas, placeholder bodies, invalid options and
+default exclusions that would remove executable statements or branches. The
+shared runner is exercised against passing and failing coverage reports and
+failing suites by process exit status.
 
 ### Quality checks
 

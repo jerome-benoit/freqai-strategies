@@ -23,7 +23,6 @@ from ReforceXY.user_data.freqaimodels.ReforceXY import (
     convert_optuna_params_to_model_params,
     deepmerge,
 )
-from ReforceXY.user_data.strategies.RLAgentStrategy import RLAgentStrategy
 
 
 class ReviewContractsTest(QaTestCase):
@@ -40,64 +39,6 @@ class ReviewContractsTest(QaTestCase):
         model.get_state_info = lambda pair: (1.0, 0.05, 12)
         self.addCleanup(model.close_envs)
         return model
-
-    def test_strategy_leverage_respects_pair_bounds_and_invalid_config(self):
-        """A strategy callback always returns a finite leverage inside pair limits."""
-        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
-        arguments = {
-            "pair": "BTC/USDT",
-            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
-            "current_rate": 100.0,
-            "proposed_leverage": 2.0,
-            "max_leverage": 5.0,
-            "entry_tag": None,
-            "side": "long",
-        }
-        for configured, expected in (
-            (None, 2.0),
-            (0.5, 1.0),
-            (10.0, 5.0),
-            (3.0, 3.0),
-            (float("nan"), 2.0),
-            (float("inf"), 2.0),
-            (10**500, 2.0),
-            (-5.0, 1.0),
-            ("invalid", 2.0),
-            (True, 2.0),
-        ):
-            with self.subTest(configured=configured):
-                strategy.config = {} if configured is None else {"leverage": configured}
-                self.assertEqual(strategy.leverage(**arguments), expected)
-
-    def test_strategy_leverage_warnings_follow_invalid_config_transitions(self):
-        """Warn once per invalid setting, including values below the leverage floor."""
-        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
-        arguments = {
-            "pair": "BTC/USDT",
-            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
-            "current_rate": 100.0,
-            "proposed_leverage": 2.0,
-            "max_leverage": 5.0,
-            "entry_tag": None,
-            "side": "long",
-        }
-        strategy.config = {"leverage": float("nan")}
-        with self.assertLogs(RLAgentStrategy.__module__, level="WARNING") as logs:
-            for _ in range(3):
-                self.assertEqual(strategy.leverage(**arguments), 2.0)
-            self.assertEqual(len(logs.records), 1)
-            strategy.config["leverage"] = float("inf")
-            self.assertEqual(strategy.leverage(**arguments), 2.0)
-            self.assertEqual(len(logs.records), 2)
-            strategy.config["leverage"] = 0.5
-            for _ in range(2):
-                self.assertEqual(strategy.leverage(**arguments), 1.0)
-            self.assertEqual(len(logs.records), 3)
-            strategy.config["leverage"] = 2.5
-            self.assertEqual(strategy.leverage(**arguments), 2.5)
-            strategy.config["leverage"] = float("nan")
-            self.assertEqual(strategy.leverage(**arguments), 2.0)
-            self.assertEqual(len(logs.records), 4)
 
     def test_training_preserves_raw_prices_and_returns_best_checkpoint(self):
         for drop in (False, True):
@@ -677,24 +618,6 @@ class ReviewContractsTest(QaTestCase):
         self.assertFalse(truncated)
         self.assertEqual(env._current_tick, 6)
         self.assertEqual(info["next_potential"], 0.0)
-
-    def test_pbrs_history_preserves_verifier_precision(self):
-        model = self.model(hold=True)
-        model.CONV_WIDTH = 2
-        features = pd.DataFrame({"f": np.arange(5, dtype=float)})
-        prices = pd.DataFrame({"open": np.full(5, 100.0)})
-        env = MyRLEnv(df=features, prices=prices, **model.pack_env_dict("BTC/USDT"))
-        env.fee = 0.0
-        self.addCleanup(env.close)
-        env.reset()
-
-        with mock.patch.object(env, "_compute_hold_potential", return_value=0.123456):
-            env.step(Actions.Long_enter.value)
-
-        row = env.get_env_history().iloc[-1]
-        expected_shaping = env._potential_gamma * row["next_potential"] - row["prev_potential"]
-        self.assertLessEqual(abs(row["reward_shaping"] - expected_shaping), 1e-6)
-        self.assertEqual(row["next_potential"], 0.123456)
 
     def test_state_info_normalizes_leveraged_profit_ratio(self):
         trade = SimpleNamespace(

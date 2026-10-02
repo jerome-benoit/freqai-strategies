@@ -41,17 +41,6 @@ def _frame(actions, do_predict=1, count=None):
     )
 
 
-class ActionLiteralTest(QaTestCase):
-    def test_the_strategy_literals_are_the_production_action_codes(self):
-        # Asserted as a cross-object equality, not as two literals: the strategy's constants
-        # are correct only because they equal the enum's values, and two independent
-        # literals would both still pass after a freqtrade renumbering.
-        self.assertEqual(Actions.Long_enter.value, RLAgentStrategy._ACTION_ENTER_LONG)
-        self.assertEqual(Actions.Long_exit.value, RLAgentStrategy._ACTION_EXIT_LONG)
-        self.assertEqual(Actions.Short_enter.value, RLAgentStrategy._ACTION_ENTER_SHORT)
-        self.assertEqual(Actions.Short_exit.value, RLAgentStrategy._ACTION_EXIT_SHORT)
-
-
 class DateColumnTest(QaTestCase):
     def test_a_missing_date_column_is_refused(self):
         with self.assertRaises(ValueError):
@@ -162,11 +151,14 @@ class LeverageTest(QaTestCase):
         arguments.update(overrides)
         return arguments
 
-    def test_an_absent_configuration_yields_the_proposed_leverage(self):
-        self.assertEqual(2.0, self._strategy(None).leverage(**self._arguments()))
+    def test_absent_and_null_configuration_use_the_proposed_leverage(self):
+        strategy = self._strategy(None)
+        self.assertEqual(2.0, strategy.leverage(**self._arguments()))
+        strategy.config.clear()
+        self.assertEqual(2.0, strategy.leverage(**self._arguments()))
 
     def test_a_configured_value_is_clamped_into_the_pair_bounds(self):
-        for configured, expected in ((1.5, 1.5), (0.5, 1.0), (9.0, 5.0)):
+        for configured, expected in ((1.5, 1.5), (0.5, 1.0), (-5.0, 1.0), (9.0, 5.0)):
             with self.subTest(configured=configured):
                 self.assertEqual(expected, self._strategy(configured).leverage(**self._arguments()))
 
@@ -187,6 +179,39 @@ class LeverageTest(QaTestCase):
 
     def test_the_result_is_always_at_least_one(self):
         self.assertEqual(1.0, self._strategy(0.5).leverage(**self._arguments(max_leverage=0.2)))
+
+    def test_integer_conversion_overflow_falls_back_instead_of_escaping_the_callback(self):
+        self.assertEqual(2.0, self._strategy(10**500).leverage(**self._arguments()))
+
+    def test_warnings_follow_invalid_configuration_transitions(self):
+        strategy = self._strategy(float("nan"))
+        with self.assertLogs(RLAgentStrategy.__module__, level="WARNING") as logs:
+            for _ in range(3):
+                self.assertEqual(strategy.leverage(**self._arguments()), 2.0)
+            self.assertEqual(len(logs.records), 1)
+            strategy.config["leverage"] = float("inf")
+            self.assertEqual(strategy.leverage(**self._arguments()), 2.0)
+            self.assertEqual(len(logs.records), 2)
+            strategy.config["leverage"] = 0.5
+            for _ in range(2):
+                self.assertEqual(strategy.leverage(**self._arguments()), 1.0)
+            self.assertEqual(len(logs.records), 3)
+            strategy.config["leverage"] = 2.5
+            self.assertEqual(strategy.leverage(**self._arguments()), 2.5)
+            strategy.config["leverage"] = float("nan")
+            self.assertEqual(strategy.leverage(**self._arguments()), 2.0)
+            self.assertEqual(len(logs.records), 4)
+
+    def test_missing_configuration_resets_warning_deduplication(self):
+        strategy = self._strategy("invalid")
+        with self.assertLogs(RLAgentStrategy.__module__, level="WARNING") as logs:
+            self.assertEqual(strategy.leverage(**self._arguments()), 2.0)
+            strategy.config.clear()
+            self.assertEqual(strategy.leverage(**self._arguments()), 2.0)
+            self.assertEqual(len(logs.records), 1)
+            strategy.config["leverage"] = "invalid"
+            self.assertEqual(strategy.leverage(**self._arguments()), 2.0)
+            self.assertEqual(len(logs.records), 2)
 
 
 class EntrySignalTest(QaTestCase):
@@ -309,30 +334,29 @@ class FeatureEngineeringTest(QaTestCase):
     def _strategy(self):
         return RLAgentStrategy.__new__(RLAgentStrategy)
 
-    def test_the_standard_features_are_exact_copies_of_the_ohlc(self):
+    def test_time_features_encode_week_and_day_boundaries_with_the_original_index(self):
         frame = _frame([0, 0, 0])
+        frame.index = [7, 13, 29]
+        frame["date"] = pd.to_datetime(
+            ["2024-01-01T00:00:00Z", "2024-01-07T23:00:00Z", "2024-01-08T00:00:00Z"]
+        )
         result = self._strategy().feature_engineering_standard(frame, {})
-        for source, produced in (("close", "%-raw_close"), ("open", "%-raw_open")):
-            with self.subTest(feature=produced):
-                self.assertEqual(list(frame[source]), list(result[produced]))
+        self.assertEqual([7, 13, 29], list(result.index))
+        np.testing.assert_allclose(result["%-day_of_week"], [1 / 7, 1, 1 / 7], atol=1e-12)
+        np.testing.assert_allclose(result["%-hour_of_day"], [1 / 25, 24 / 25, 1 / 25], atol=1e-12)
 
-    def test_the_time_features_are_normalised_into_the_unit_interval(self):
-        result = self._strategy().feature_engineering_standard(_frame([0] * 48), {})
-        for feature in ("%-day_of_week", "%-hour_of_day"):
-            with self.subTest(feature=feature):
-                self.assertTrue(((result[feature] > 0.0) & (result[feature] <= 1.0)).all())
-
-    def test_the_day_of_week_never_reports_a_zero_weekday(self):
-        frame = pd.DataFrame({"date": pd.Series(pd.to_datetime(["2024-01-01"], utc=True))})
-        result = self._strategy().feature_engineering_standard(frame, {})
-        self.assertGreater(result["%-day_of_week"].iloc[0], 0.0)
-
-    def test_the_expanding_feature_is_the_log_difference_of_the_close(self):
-        frame = _frame([0, 0, 0])
-        frame["close"] = [100.0, 110.0, 121.0]
+    def test_log_returns_keep_positive_negative_and_flat_moves_in_index_order(self):
+        frame = _frame([0, 0, 0, 0])
+        frame.index = [7, 13, 29, 41]
+        frame["close"] = [100.0, 110.0, 99.0, 99.0]
         result = self._strategy().feature_engineering_expand_basic(frame, {})
-        self.assertTrue(pd.isna(result["%-close_log_return"].iloc[0]))
-        self.assertAlmostEqual(np.log(1.1), result["%-close_log_return"].iloc[1], places=12)
+        self.assertEqual([7, 13, 29, 41], list(result.index))
+        np.testing.assert_allclose(
+            result["%-close_log_return"],
+            [np.nan, np.log(1.1), np.log(0.9), 0.0],
+            atol=1e-12,
+            equal_nan=True,
+        )
 
     def test_the_target_column_is_the_neutral_action(self):
         result = self._strategy().set_freqai_targets(

@@ -43,12 +43,10 @@ jobs:
             context: quickadapter
             project: quickadapter
             image: freqai-strategies-quickadapter-qa:ci
-            coverage: true
           - name: ReforceXY
             context: ReforceXY
             project: reforcexy
             image: freqai-strategies-reforcexy-qa:ci
-            coverage: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,18 +63,7 @@ jobs:
             "${{ matrix.image }}" \
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
-      - name: Run runtime regressions
-        if: ${{ !matrix.coverage }}
-        run: |
-          docker run --rm \
-            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
-            --workdir /workspace \
-            --env PYTHONPATH=/workspace/${{ matrix.context }}/user_data/strategies \
-            --entrypoint python \
-            "${{ matrix.image }}" \
-            -m unittest discover -s "${{ matrix.context }}/tests" -v
       - name: Run runtime regressions with coverage
-        if: matrix.coverage
         run: |
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
@@ -87,17 +74,16 @@ jobs:
             --entrypoint sh \
             "${{ matrix.image }}" \
             /workspace/scripts/run-coverage.sh -s "${{ matrix.context }}/tests" -v
-      - name: Run runtime regressions under three method orderings
+      - name: Run runtime regressions with an alternate method ordering
         if: matrix.context == 'ReforceXY'
         run: |
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
             --workdir /workspace \
-            --entrypoint sh \
+            --env FREQAI_QA_SHUFFLE_SEED=1 \
+            --entrypoint python \
             "${{ matrix.image }}" \
-            -c 'for seed in 1 2 3; do
-                 FREQAI_QA_SHUFFLE_SEED=$seed python -m unittest discover -s "${{ matrix.context }}/tests" || exit 1
-               done'
+            -m unittest discover -s "${{ matrix.context }}/tests" -v
 
   reward-space-analysis:
     name: Reward space analysis

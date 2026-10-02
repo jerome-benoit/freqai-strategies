@@ -619,11 +619,15 @@ configuration.
 
 ### PBRS Configuration
 
-Canonical mode enforces terminal release (Φ terminal ≈ 0) and suppresses
-entry/exit additive terms.
-
-Non-canonical exit modes can introduce non-zero terminal shaping; enable
-additives only when you want those extra terms to contribute.
+Every enabled PBRS transition uses `gamma * next_potential - prev_potential`,
+including neutral self-loops that retain potential. Termination clears the
+potential in every exit mode. `canonical` suppresses entry/exit additives;
+`non_canonical` also has zero exit potential but permits those optional terms.
+Both zero-exit modes without effective additives are eligible for observed PBRS
+verification. The report's canonical classification describes the shaping form,
+not just the literal exit-mode name, and does not guarantee fitted-policy
+equivalence. Residual exit modes retain history-dependent potential and are not
+classified as generally policy-invariant.
 
 ### Real Data Comparison
 

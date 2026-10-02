@@ -28,6 +28,9 @@ class LinearScheduleTest(QaTestCase):
         schedule = SimpleLinearSchedule(0.25)
         self.assertEqual(0.25, schedule(1.0))
         self.assertEqual(0.0, schedule(0.0))
+        for progress, expected in ((0.25, 0.0625), (0.5, 0.125), (0.75, 0.1875)):
+            with self.subTest(progress=progress):
+                self.assertEqual(expected, schedule(progress))
 
     def test_a_string_initial_value_is_read_as_a_number(self):
         self.assertEqual(0.5, SimpleLinearSchedule("0.5")(1.0))
@@ -64,6 +67,8 @@ class ScheduleClassificationTest(QaTestCase):
         self.assertIsInstance(schedule, SimpleLinearSchedule)
         self.assertEqual(0.1, schedule(1.0))
         self.assertEqual(0.0, schedule(0.0))
+        self.assertAlmostEqual(0.025, schedule(0.25))
+        self.assertAlmostEqual(0.05, schedule(0.5))
 
     def test_every_other_request_builds_a_constant_schedule(self):
         for kind in (CONSTANT, UNKNOWN):
@@ -93,6 +98,8 @@ class GradientStepTest(QaTestCase):
     def test_it_is_the_ceiling_of_the_frequency_quotient_capped_by_the_frequency(self):
         self.assertEqual(4, compute_gradient_steps(8, 2))
         self.assertEqual(1, compute_gradient_steps(3, 8))
+        self.assertEqual(3, compute_gradient_steps(8, 3))
+        self.assertEqual(3, compute_gradient_steps(5, 2))
 
     def test_a_non_positive_frequency_reports_minus_one_rather_than_a_step_count(self):
         self.assertEqual(-1, compute_gradient_steps(0, 2))
@@ -174,6 +181,17 @@ class EvalFrequencyTest(QaTestCase):
         # larger than every candidate yields the largest one, never the budget itself.
         self.assertLess(model.get_eval_freq(16_000), 16_000)
         self.assertEqual(16, model.get_eval_freq(16))
+
+    def test_configured_ppo_rollout_takes_precedence_and_respects_the_callback_budget(self):
+        model = self._model(n_envs=4)
+        self.assertEqual(8, model.get_eval_freq(400, model_params={"n_steps": 8}))
+        self.assertEqual(5, model.get_eval_freq(20, model_params={"n_steps": 8}))
+        self.assertEqual(2, model.get_eval_freq(400, model_params={"n_steps": 8}, hyperopt=True))
+
+    def test_value_based_frequency_rounds_partial_vector_calls_up_before_the_cap(self):
+        model = self._model(model_type="DQN", n_envs=4, n_eval_steps=17)
+        self.assertEqual(5, model.get_eval_freq(400))
+        self.assertEqual(4, model.get_eval_freq(16))
 
     def test_more_environments_mean_fewer_callback_calls_for_the_same_budget(self):
         self.assertLess(

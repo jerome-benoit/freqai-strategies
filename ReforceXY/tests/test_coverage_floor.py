@@ -20,11 +20,8 @@ BRANCH = "branch"
 NAMESPACE_PACKAGES = "include_namespace_packages"
 OMIT = "omit"
 INCLUDE = "include"
-# This is the floor ReforceXY has actually reached, not the target. The gate is only as
-# strong as the measurement behind it, so `MINIMUM_FLOOR` starts at the calibrated value
-# and may only rise. Reaching the agreed 70% target is a separate delivery; until then a
-# lower value here would be a control the project believes it has and does not.
-MINIMUM_FLOOR = 59.0
+# Minimum accepted branch-inclusive coverage over the complete measured tree.
+MINIMUM_FLOOR = 70.0
 EXCLUSION_KEYS = (
     OMIT,
     INCLUDE,

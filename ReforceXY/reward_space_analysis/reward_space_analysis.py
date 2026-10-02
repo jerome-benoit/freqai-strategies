@@ -1434,7 +1434,7 @@ def calculate_reward(
         breakdown.exit_component += liquidation_reward
         breakdown.exit_pnl = terminal_context.current_pnl
 
-    # Apply PBRS only if enabled and not neutral self-loop
+    # Resolve effective PBRS and additive enablement for every transition.
     exit_mode = _resolve_exit_potential_mode(
         params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
         warn_invalid=True,
@@ -1459,7 +1459,9 @@ def calculate_reward(
             # Neutral self-loops retain potential except at the terminal boundary.
             breakdown.prev_potential = prev_potential
             breakdown.next_potential = 0.0 if terminated else prev_potential
-            breakdown.reward_shaping = -prev_potential if terminated else 0.0
+            breakdown.reward_shaping = (
+                _get_potential_gamma(params) * breakdown.next_potential - prev_potential
+            )
             breakdown.pbrs_delta = breakdown.reward_shaping
             breakdown.total = base_reward + breakdown.reward_shaping
             return breakdown
@@ -1734,7 +1736,9 @@ def simulate_samples(
         entry_enabled_raw,
         exit_enabled_raw,
     )
-    pbrs_invariant = bool(exit_mode == "canonical" and not (entry_enabled or exit_enabled))
+    pbrs_invariant = bool(
+        exit_mode in ("canonical", "non_canonical") and not (entry_enabled or exit_enabled)
+    )
 
     max_idle_duration_candles = get_max_idle_duration_candles(
         params, max_trade_duration_candles=max_trade_duration_candles
@@ -4441,7 +4445,7 @@ def write_complete_statistical_analysis(
                 }
             )
             canonical_configuration = classification_metadata_valid and (
-                exit_potential_mode == "canonical"
+                exit_potential_mode in ("canonical", "non_canonical")
                 and not (entry_additive_effective or exit_additive_effective)
             )
             observed_additive_issues = []
@@ -4475,7 +4479,7 @@ def write_complete_statistical_analysis(
                 )
             elif not canonical_configuration:
                 reasons = []
-                if exit_potential_mode != "canonical":
+                if exit_potential_mode not in ("canonical", "non_canonical"):
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
                 if entry_additive_effective or exit_additive_effective:
                     additive_types = []
