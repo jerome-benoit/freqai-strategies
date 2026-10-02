@@ -214,6 +214,15 @@ be overridden via `--params`.
 - **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker
   counts for RandomForest and permutation importance (-1 = all cores).
 
+Programmatic reward parameters accept Python and NumPy real integer/floating
+scalars. Strict validation checks a numeric gamma in its native precision before
+normalizing it. Analysis-specific numeric string/bool coercion is retained; it
+does not replace the stricter runtime configuration contract. Direct gamma
+calculation falls back to 0.95 for invalid/non-finite input and clamps finite
+out-of-range values; relaxed parameter validation records its resets/clamps.
+For a trained or resumed learner, supply its effective discount as
+`potential_gamma`, not a stale reward/config gamma.
+
 Inferential helpers are available through the programmatic API only and require
 `independent_observations=True`. Programmatic callers may pass `stats_seed`
 to isolate bootstrap resampling from the simulation seed; the descriptive CLI
@@ -259,12 +268,24 @@ The exit factor is computed as:
 
 **Note:** In ReforceXY, `risk_reward_ratio` maps to `rr`.
 
+The CLI does not import the runtime config template. To reproduce its reward
+settings, use `--profit_aim 0.025 --max_trade_duration_candles 96
+--idle_penalty_ratio 0` with the same effective gamma and entry/exit fees. These
+are explicit scenario overrides, not different canonical reward defaults.
+
 **Formula:**
 
-Let `pnl_target = profit_aim · risk_reward_ratio` and
-`pnl_ratio = pnl / pnl_target` when `pnl_target > 0`. For losses, let
-`effective_rr = risk_reward_ratio` if positive, or `2.0` otherwise (the runtime
-fallback). Then `loss_threshold = pnl_target / effective_rr` and
+For complete reward calculations, let `pnl_target = profit_aim · risk_reward_ratio`;
+replace it by `0.01` when the product is nonpositive, as in the runtime. This
+effective target is also used for representativity statistics and the manifest.
+The supplied profit aim and risk/reward ratio remain unchanged in idle/hold
+penalties. Low-level helpers receiving an explicit nonpositive target retain
+their neutral coefficient/zero-signal guards.
+
+Let `pnl_ratio = pnl / pnl_target` when `pnl_target > 0`. The low-level loss
+coefficient uses `effective_rr = risk_reward_ratio` if positive, or `2.0` otherwise.
+That helper fallback does not make a zero ratio valid for the complete reward
+path. Then `loss_threshold = pnl_target / effective_rr` and
 `loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · effective_rr`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
@@ -294,6 +315,14 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 - If `pnl < 0`:
   `efficiency_coefficient = 1 + efficiency_weight · (efficiency_center - ratio)`
 - Else: `efficiency_coefficient = 1`
+
+The calculated coefficient is clamped to a finite nonnegative value. Validated
+analysis parameters additionally require
+`efficiency_weight · max(efficiency_center, 1 − efficiency_center) ≤ 1`: strict
+validation rejects combinations that could need a clamp at either ratio endpoint;
+relaxed validation records an adjustment and disables weighting (`weight = 0`).
+This accepted-domain restriction is stronger than the runtime's per-state clamp;
+direct calculation preserves the runtime formula without applying that validator.
 
 In synthetic `unrealized_pnl` mode, sampled market prices accumulate each
 candle's return independently of the transformed, retained price. The
@@ -328,7 +357,7 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | Parameter                    | Default | Description                                                                               |
 | ---------------------------- | ------- | ----------------------------------------------------------------------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap                                                                        |
-| `max_idle_duration_candles`  | None    | Idle hazard threshold (4× trade duration fallback); the idle clock keeps counting past it |
+| `max_idle_duration_candles`  | None    | Missing/None derives 4× trade cap; explicit zero uses denominator 1 and does not disable the penalty |
 | `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                        |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                     |
 | `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                        |

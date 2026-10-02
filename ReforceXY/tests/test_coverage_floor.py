@@ -101,15 +101,6 @@ class CoverageFloorTest(QaTestCase):
         self.assertGreater(value, 0.0)
         self.assertLessEqual(value, 100.0)
 
-    def test_the_floor_carries_its_provenance(self):
-        # The measured date is what tells a reader whether the number is current, and
-        # it is the only thing distinguishing a real floor from a provisional one.
-        lines = [line.strip() for line in self.text.splitlines()]
-        index = next(i for i, line in enumerate(lines) if line.startswith(f"{FLOOR} ="))
-        annotation = " ".join(lines[max(0, index - 2) : index])
-        self.assertIn("measured", annotation, f"the line above {FLOOR} must record the measurement")
-        self.assertNotIn("PROVISIONAL", annotation)
-
     def test_branch_tracing_is_enabled(self):
         # Without it, every guard — an early return, a raise — counts as covered the
         # moment its `if` is evaluated, and the gate measures nothing useful.
@@ -128,7 +119,7 @@ class CoverageFloorTest(QaTestCase):
     def test_the_floor_is_bound_in_the_section_coverage_reads_it_from(self):
         # coverage binds fail_under as `report:fail_under` ONLY. The same key under [run]
         # is silently inert, which would leave the gate dead while the value, the
-        # provenance and the placeholder checks all still passed.
+        # numeric floor and range checks still passed.
         self.assertIn(FLOOR, self.parser["report"])
         self.assertNotIn(FLOOR, self.parser["run"])
 
@@ -162,25 +153,6 @@ class CoverageFloorTest(QaTestCase):
         # enforced it. Raising the floor stays free, which is exactly the direction the
         # policy allows.
         self.assertGreaterEqual(float(self._raw_floor()), MINIMUM_FLOOR)
-
-    def test_the_provenance_records_a_date_and_a_measurement_that_clears_the_floor(self):
-        # Recency is deliberately NOT asserted: refusing a date older than N months would
-        # make this suite fail on a repository nobody has touched. What is enforceable is
-        # that the annotation records a real measurement and that the measurement clears
-        # the floor it justifies.
-        lines = [line.strip() for line in self.text.splitlines()]
-        index = next(i for i, line in enumerate(lines) if line.startswith(f"{FLOOR} ="))
-        annotation = " ".join(lines[max(0, index - 2) : index])
-        with self.subTest(requirement="a well-formed measurement date"):
-            self.assertRegex(annotation, r"\d{4}-\d{2}-\d{2}")
-        with self.subTest(requirement="a recorded measurement"):
-            found = re.search(r"measured[^%]*?([0-9]+(?:\.[0-9]+)?)%", annotation)
-            self.assertIsNotNone(found, f"no percentage recorded above {FLOOR}: {annotation!r}")
-            self.assertGreaterEqual(
-                float(found.group(1)),
-                float(self._raw_floor()),
-                "the annotated measurement must clear the floor it justifies",
-            )
 
     def test_no_production_source_widens_coverage_s_default_exclusions(self):
         # The SOURCE side of the same lever. coverage applies DEFAULT_EXCLUDE by

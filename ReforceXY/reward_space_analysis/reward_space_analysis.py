@@ -254,7 +254,7 @@ _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     "exit_additive_gain": {"min": 0.0},
 }
 
-RewardParamValue = float | str | bool | None
+RewardParamValue = float | np.integer[Any] | np.floating[Any] | str | bool | None
 RewardParams = dict[str, RewardParamValue]
 
 
@@ -399,7 +399,7 @@ def _get_float_param(
     if isinstance(value, bool):
         return float(int(value))
     # Numeric
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, np.integer, np.floating)):
         try:
             fval = float(value)
         except (ValueError, TypeError):
@@ -475,43 +475,47 @@ def _get_int_param(params: RewardParams, key: str, default: RewardParamValue | N
         default: Fallback value. If None, looks up from DEFAULT_MODEL_REWARD_PARAMETERS.
 
     Behavior:
-    - Accept bool/int/float/str numeric representations.
+    - Accept Python/NumPy real scalars and bool/str numeric representations.
     - Non-finite floats -> fallback to default coerced to int (or 0).
     - Strings: strip then parse float/int; on failure fallback.
     - None -> fallback.
-    - Final value is clamped to a signed 64-bit range implicitly by int().
+    - Return a Python int without an implicit fixed-width clamp.
     """
     if default is None:
         default = DEFAULT_MODEL_REWARD_PARAMETERS.get(key)
     value = params.get(key, default)
     if value is None:
-        return int(default) if isinstance(default, (int, float)) else 0
+        return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
         if not np.isfinite(value):
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
         try:
             return int(value)
         except (OverflowError, ValueError):
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
     if isinstance(value, str):
         stripped = value.strip()
         if stripped == "":
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
         try:
             if any(ch in stripped for ch in (".", "e", "E")):
                 fval = float(stripped)
                 if not np.isfinite(fval):
-                    return int(default) if isinstance(default, (int, float)) else 0
+                    return (
+                        int(default)
+                        if isinstance(default, (int, float, np.integer, np.floating))
+                        else 0
+                    )
                 return int(fval)
             return int(stripped)
         except (ValueError, OverflowError):
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
     # Unsupported type
-    return int(default) if isinstance(default, (int, float)) else 0
+    return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
 
 
 def _get_str_param(params: RewardParams, key: str, default: str | None = None) -> str:
@@ -539,6 +543,12 @@ def _compute_duration_ratio(trade_duration: int, max_trade_duration_candles: int
     return trade_duration / max(1, max_trade_duration_candles)
 
 
+def _resolve_pnl_target(profit_aim: float, risk_reward_ratio: float) -> float:
+    """Resolve the effective target used by runtime rewards and analysis diagnostics."""
+    target = float(profit_aim * risk_reward_ratio)
+    return 0.01 if target <= 0.0 else target
+
+
 def _is_short_allowed(trading_mode: str) -> bool:
     mode = trading_mode.lower()
     if mode in TRADING_MODES[1:]:  # "margin", "futures"
@@ -563,7 +573,7 @@ def get_max_idle_duration_candles(
 ) -> int:
     mtd = (
         int(max_trade_duration_candles)
-        if isinstance(max_trade_duration_candles, (int, float))
+        if isinstance(max_trade_duration_candles, (int, float, np.integer, np.floating))
         else None
     )
     if mtd is None or mtd <= 0:
@@ -573,8 +583,6 @@ def get_max_idle_duration_candles(
 
     default_mid = int(DEFAULT_IDLE_DURATION_MULTIPLIER * int(mtd))
     mid = _get_int_param(params, "max_idle_duration_candles", default_mid)
-    if mid <= 0:
-        mid = default_mid
     return int(mid)
 
 
@@ -638,6 +646,14 @@ def validate_reward_parameters(
             continue
 
         original_val = sanitized[key]
+        # Check the native discount before normalization can round it into [0, 1].
+        if (
+            key == "potential_gamma"
+            and strict
+            and isinstance(original_val, (int, float, np.integer, np.floating))
+            and not bounds["min"] <= original_val <= bounds["max"]
+        ):
+            raise ValueError(f"Param: '{key}'={original_val!r} outside [0, 1]")
         # Robust coercion to float using helper (handles None/str/bool/non-finite)
         coerced_val = _get_float_param({key: original_val}, key, np.nan)
 
@@ -819,7 +835,7 @@ class RewardContext:
     Attributes
     ----------
     current_pnl : float
-        Unrealized PnL at the current tick (state s').
+        Unrealized PnL of the represented execution or marked next state.
     """
 
     current_pnl: float
@@ -1316,7 +1332,7 @@ def calculate_reward(
     elif "rr" in params:
         risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
 
-    pnl_target = float(profit_aim * risk_reward_ratio)
+    pnl_target = _resolve_pnl_target(profit_aim, risk_reward_ratio)
 
     idle_factor = base_factor * (profit_aim / risk_reward_ratio)
     hold_factor = idle_factor
@@ -2214,7 +2230,7 @@ def _compute_representativity_stats(
     risk_reward_ratio: float,
 ) -> dict[str, Any]:
     """Compute representativity statistics for the reward space."""
-    pnl_target = float(profit_aim * risk_reward_ratio)
+    pnl_target = _resolve_pnl_target(profit_aim, risk_reward_ratio)
     total = len(df)
     # Map numeric position codes to readable labels to avoid casting Neutral (0.5) to 0
     pos_label_map = {0.0: "Short", 0.5: "Neutral", 1.0: "Long"}
@@ -4866,7 +4882,7 @@ def main() -> None:
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": len(df),
             "seed": int(args.seed),
-            "pnl_target": float(profit_aim * risk_reward_ratio),
+            "pnl_target": _resolve_pnl_target(profit_aim, risk_reward_ratio),
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
             "effective": effective_params,

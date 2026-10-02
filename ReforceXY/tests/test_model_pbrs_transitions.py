@@ -13,18 +13,21 @@ from qa_support import QaTestCase, model_config
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.evaluation import evaluate_policy
 
+from ReforceXY.reward_space_analysis import reward_space_analysis as analysis
 from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv, Positions, ReforceXY
 
 
 class PbrsTransitionsTest(QaTestCase):
-    def env(self, *, short=False, fee=0.0, **parameters):
-        prices = pd.DataFrame({"open": [100.0, 100.0] + [90.0 if short else 110.0] * 10})
+    def env(self, *, short=False, fee=0.0, profit_aim=0.03, open_prices=None, **parameters):
+        if open_prices is None:
+            open_prices = [100.0, 100.0] + [90.0 if short else 110.0] * 10
+        prices = pd.DataFrame({"open": open_prices})
         env = MyRLEnv(
             df=prices.copy(),
             prices=prices,
             df_raw=prices.copy(),
             window_size=1,
-            reward_kwargs={"rr": 2.0, "profit_aim": 0.03},
+            reward_kwargs={"rr": 2.0, "profit_aim": profit_aim},
             fee=fee,
             can_short=True,
             config={
@@ -48,6 +51,182 @@ class PbrsTransitionsTest(QaTestCase):
         self.addCleanup(env.close)
         env.reset()
         return env
+
+    def test_analysis_matches_real_rewards_across_modes_and_parameter_boundaries(self):
+        """Compare independent rewards on real fills, marks and terminal liquidation.
+
+        The reference carries its own stored potential. Only the physical next state
+        is observed before liquidation; neither reward implementation is replaced.
+        Tight component tolerances also detect the tiny-terminal correction regression.
+        """
+        # short, terminal loss, explicit exit, gamma, ratio, additives, masking, aim, idle cap
+        scenarios = (
+            (False, False, False, 0.8, 0.4, True, False, 0.03, 12),
+            (True, True, True, 0.8, 1e-10, False, True, 0.03, 12),
+            (False, False, True, 0.0, 0.4, True, False, 0.03, 12),
+            (True, False, False, 1.0, 1e-10, True, True, 0.03, 12),
+            (False, True, False, 1e-12, 1e-10, True, True, 0.03, 12),
+            (True, True, True, 1e-9, 0.4, False, False, 0.03, 12),
+            (False, False, True, np.float32(0.8), np.float32(0.4), True, False, 0.03, 0),
+            (True, False, False, np.int64(1), 0.4, False, True, 0.0, 12),
+            (False, False, True, np.longdouble(0.8), 0.4, True, False, -0.03, 12),
+        )
+        components = (
+            ("invalid_penalty", "_last_invalid_penalty"),
+            ("idle_penalty", "_last_idle_penalty"),
+            ("hold_penalty", "_last_hold_penalty"),
+            ("exit_component", "_last_exit_reward"),
+            ("entry_additive", "_last_entry_additive"),
+            ("exit_additive", "_last_exit_additive"),
+            ("reward_shaping", "_last_reward_shaping"),
+            ("prev_potential", "_last_prev_potential"),
+            ("next_potential", "_last_next_potential"),
+        )
+        for mode in ReforceXY._EXIT_POTENTIAL_MODES:
+            for scenario in scenarios:
+                short, terminal_loss, explicit, gamma, ratio, additives, masking, aim, idle_cap = (
+                    scenario
+                )
+                with self.subTest(mode=mode, scenario=scenario):
+                    opens = [
+                        100.0,
+                        100.0,
+                        100.0,
+                        104.0,
+                        110.0,
+                        90.0,
+                        108.0,
+                        105.0,
+                        100.0,
+                        98.0,
+                        112.0,
+                        107.0,
+                        96.0,
+                        115.0,
+                        103.0,
+                        108.0,
+                    ]
+                    if short != terminal_loss:
+                        opens = [200.0 - price for price in opens]
+                    parameters = {
+                        "exit_potential_mode": mode,
+                        "potential_gamma": gamma,
+                        "hold_potential_enabled": True,
+                        "hold_potential_ratio": ratio,
+                        "hold_potential_gain": np.float32(1.0),
+                        "efficiency_weight": np.float32(1.0),
+                        "entry_additive_enabled": additives,
+                        "exit_additive_enabled": additives,
+                        "max_trade_duration_candles": np.int64(3),
+                        "max_idle_duration_candles": np.int64(idle_cap),
+                    }
+                    env = self.env(open_prices=opens, profit_aim=aim, fee=0.0015, **parameters)
+                    env.action_masking = masking
+                    params = {
+                        **analysis.DEFAULT_MODEL_REWARD_PARAMETERS,
+                        **parameters,
+                        "entry_fee_rate": env.fee,
+                        "exit_fee_rate": env.fee,
+                    }
+                    references = {
+                        "direct": params,
+                        "strict": analysis.validate_reward_parameters(params, strict=True)[0],
+                        "relaxed": analysis.validate_reward_parameters(params, strict=False)[0],
+                    }
+                    potentials = dict.fromkeys(references, 0.0)
+                    for tick in range(len(opens)):
+                        action = Actions.Neutral
+                        if tick == 2:
+                            action = Actions.Short_enter if short else Actions.Long_enter
+                        elif explicit and tick == 4:
+                            action = Actions.Short_exit if short else Actions.Long_exit
+                        elif tick == 6:
+                            action = Actions.Long_exit if short else Actions.Short_exit
+                        context = analysis.RewardContext(
+                            env.get_unrealized_profit(),
+                            env.get_trade_duration(),
+                            env.get_idle_duration(),
+                            env.get_max_unrealized_profit(),
+                            env.get_min_unrealized_profit(),
+                            analysis.Positions(env._position.value),
+                            analysis.Actions(action.value),
+                        )
+                        next_context = None
+                        compute_components = env._compute_pbrs_components
+
+                        def observe_next_state(
+                            *, observed_env=env, compute=compute_components, **transition
+                        ):
+                            nonlocal next_context
+                            pnl = transition["next_pnl"]
+                            next_context = analysis.RewardContext(
+                                pnl,
+                                transition["next_trade_duration"],
+                                observed_env.get_idle_duration(),
+                                max(observed_env.get_max_unrealized_profit(), pnl),
+                                min(observed_env.get_min_unrealized_profit(), pnl),
+                                analysis.Positions(transition["next_position"].value),
+                                analysis.Actions.Neutral,
+                            )
+                            return compute(**transition)
+
+                        with mock.patch.object(
+                            env, "_compute_pbrs_components", side_effect=observe_next_state
+                        ):
+                            _, reward, done, truncated, info = env.step(action.value)
+                        self.assertIsNotNone(next_context)
+                        for validation, reference_params in references.items():
+                            with self.subTest(validation=validation, tick=tick):
+                                expected = analysis.calculate_reward(
+                                    context,
+                                    reference_params,
+                                    100.0,
+                                    aim,
+                                    2.0,
+                                    short_allowed=True,
+                                    action_masking=masking,
+                                    prev_potential=potentials[validation],
+                                    next_context=next_context,
+                                    terminated=done or truncated,
+                                )
+                                self.assertTrue(
+                                    math.isclose(
+                                        reward, expected.total, rel_tol=1e-12, abs_tol=1e-12
+                                    ),
+                                    (reward, expected.total),
+                                )
+                                for field, attribute in components:
+                                    actual = getattr(env, attribute)
+                                    predicted = getattr(expected, field)
+                                    # Relative error for composed arithmetic; absolute floor
+                                    # below tiny shaping signals, unlike report tolerance.
+                                    self.assertTrue(
+                                        math.isclose(
+                                            actual, predicted, rel_tol=1e-12, abs_tol=1e-20
+                                        ),
+                                        (field, actual, predicted),
+                                    )
+                                self.assertEqual(
+                                    info["terminal_liquidation"], expected.terminal_liquidation
+                                )
+                                if expected.exit_pnl is not None:
+                                    self.assertAlmostEqual(
+                                        info["exit_pnl"], expected.exit_pnl, places=12
+                                    )
+                                potentials[validation] = expected.next_potential
+                        if done or truncated:
+                            break
+                    self.assertTrue(done or truncated)
+                    self.assertEqual(set(potentials.values()), {0.0})
+
+    def test_analysis_rejects_gamma_outside_bounds_before_float_rounding(self):
+        """Extended-precision out-of-range discounts cannot become valid by rounding."""
+        for gamma in (
+            np.nextafter(np.longdouble(1), np.longdouble(math.inf)),
+            np.nextafter(np.longdouble(0), np.longdouble(-1)),
+        ):
+            with self.subTest(gamma=gamma), self.assertRaises(ValueError):
+                analysis.validate_reward_parameters({"potential_gamma": gamma}, strict=True)
 
     def test_retained_potential_shapes_every_nonterminal_neutral_step(self):
         for mode in ("retain_previous", "progressive_release", "spike_cancel"):

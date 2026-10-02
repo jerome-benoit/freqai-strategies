@@ -227,6 +227,7 @@ Columns:
 | statistics-rank-direction-141                 | statistics  | Rank-biserial effect follows the named first-group advantage                         | statistics/test_statistics.py::test_pnl_rank_biserial_direction_matches_named_first_group           | Checks both directions                                                                                                                                                         |
 | statistics-bootstrap-count-142                | statistics  | Zero and negative resample counts fail for variable and constant data                | statistics/test_statistics.py::test_bootstrap_rejects_nonpositive_resample_count                    | Rejects missing bootstrap                                                                                                                                                      |
 | api-unmasked-sample-probabilities-144         | api         | Unmasked sample probabilities match marginal valid-action frequencies                | api/test_api_helpers.py::test_unmasked_sampling_probabilities_match_action_frequencies              | Spot/futures entries, long/short exits, and neutral probability                                                                                                                |
+| cli-effective-reward-boundaries-145 | cli | Effective profit-target fallback and explicit zero idle denominator reach artifacts | cli/test_cli_params_and_csv.py::test_zero_target_and_idle_cap_reach_rewards_and_manifest | Metadata and near-target market coverage agree with runtime boundaries |
 
 ### Non-Owning Smoke / Reference Checks
 
@@ -326,6 +327,16 @@ grep -R "pbrs_delta" -n .
 Detailed assertions reside in targeted directories (components, robustness)
 while integration tests focus on report formatting. The mapping above defines
 current ownership; multi-path and non-owning references are called out explicitly.
+
+Real runtime/reference parity is owned by
+`ReforceXY/tests/test_model_pbrs_transitions.py::PbrsTransitionsTest::test_analysis_matches_real_rewards_across_modes_and_parameter_boundaries`.
+Run it in the Freqtrade RL QA image through the canonical runtime suite; the
+standalone analysis environment deliberately does not require Freqtrade/SB3.
+The comparator exercises direct/strict/relaxed parameter paths, real fills and
+terminal liquidation, carries reference potential independently, and checks tiny
+shaping components more tightly than the report-verification tolerance.
+Raw random shaping sums are not discounted invariance oracles. Complete-episode
+discounted identities and report continuity checks retain their existing owners.
 
 ## When to Run Tests
 

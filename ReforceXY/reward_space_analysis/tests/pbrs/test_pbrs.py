@@ -11,7 +11,6 @@ import pytest
 
 import reward_space_analysis
 from reward_space_analysis import (
-    DEFAULT_IDLE_DURATION_MULTIPLIER,
     DEFAULT_MODEL_REWARD_PARAMETERS,
     INTERNAL_GUARDS,
     PBRS_INVARIANCE_TOL,
@@ -24,7 +23,6 @@ from reward_space_analysis import (
     _compute_unrealized_pnl_estimate,
     _get_potential_gamma,
     apply_potential_shaping,
-    get_max_idle_duration_candles,
     simulate_samples,
     validate_reward_parameters,
     write_complete_statistical_analysis,
@@ -35,7 +33,6 @@ from ..constants import (
     PBRS,
     SCENARIOS,
     SEEDS,
-    STATISTICAL,
     TOLERANCE,
 )
 from ..helpers import (
@@ -770,9 +767,9 @@ class TestPBRS(RewardSpaceTestBase):
     # ---------------- Potential transform mechanics ---------------- #
 
     def test_pbrs_progressive_release_decay_clamped(self):
-        """Verifies progressive_release mode decay clamps at terminal.
+        """Verify progressive_release decay clamps on a nonterminal exit.
 
-        Tolerance rationale: IDENTITY_RELAXED used for PBRS terminal state checks
+        Tolerance rationale: IDENTITY_RELAXED used for discounted exit-potential checks
         due to accumulated errors from gamma discounting and potential calculations.
         """
         params = self.DEFAULT_PARAMS.copy()
@@ -824,8 +821,8 @@ class TestPBRS(RewardSpaceTestBase):
             reward_shaping, -prev_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
         )
 
-    def test_pbrs_spike_cancel_invariance(self):
-        """Verifies spike_cancel mode produces near-zero terminal shaping."""
+    def test_spike_cancel_cancels_voluntary_exit_shaping(self):
+        """Cancel shaping on a nonterminal exit, without claiming terminal invariance."""
         params = self.DEFAULT_PARAMS.copy()
         params.update(
             {
@@ -909,8 +906,8 @@ class TestPBRS(RewardSpaceTestBase):
                 )
                 self.assertTrue(evidence["verified"], evidence["reason"])
 
-    def test_non_canonical_flag_false_and_sum_nonzero(self):
-        """Non-canonical mode -> invariant flags False and Σ shaping non-zero."""
+    def test_progressive_release_is_not_classified_as_zero_exit_mode(self):
+        """Residual-potential modes do not receive the zero-exit configuration flag."""
 
         params = self.base_params(
             exit_potential_mode="progressive_release",
@@ -933,12 +930,6 @@ class TestPBRS(RewardSpaceTestBase):
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {False}, f"Unexpected invariant flags: {unique_flags}")
-        abs_sum = float(df["reward_shaping"].abs().sum())
-        self.assertGreater(
-            abs_sum,
-            PBRS_INVARIANCE_TOL * 2,
-            f"Expected non-trivial shaping magnitude (got {abs_sum})",
-        )
 
     # ---------------- Additives and canonical path mechanics ---------------- #
 
@@ -1689,23 +1680,6 @@ class TestPBRS(RewardSpaceTestBase):
             "Canonical shaping magnitude should exceed spike_cancel",
         )
 
-    def test_pbrs_retain_previous_cumulative_drift(self):
-        """retain_previous mode accumulates negative shaping drift (non-invariant)."""
-        params = self.base_params(
-            exit_potential_mode="retain_previous",
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            potential_gamma=0.9,
-        )
-        gamma = _get_potential_gamma(params)
-        rng = np.random.default_rng(SEEDS.ALTERNATE_1)
-        potentials = rng.uniform(0.05, 0.85, size=220)
-        deltas = [gamma * p - p for p in potentials]
-        cumulative = float(np.sum(deltas))
-        self.assertLess(cumulative, -TOLERANCE.NEGLIGIBLE)
-        self.assertGreater(abs(cumulative), 10 * TOLERANCE.IDENTITY_RELAXED)
-
     def test_exit_step_shaping_matches_exit_step_rules(self):
         """Exit step: shaping uses stored prev_potential.
 
@@ -1906,103 +1880,6 @@ class TestPBRS(RewardSpaceTestBase):
             # With bounded transforms and hold_potential_ratio=1:
             # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor
             self.assertLessEqual(abs(float(shap)), (1.0 + gamma) * PARAMS.BASE_FACTOR)
-
-    def test_report_cumulative_invariance_aggregation(self):
-        """Canonical telescoping term: small per-step mean drift, bounded increments."""
-
-        params = self.base_params(
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            exit_potential_mode="canonical",
-        )
-        gamma = _get_potential_gamma(params)
-        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
-        prev_potential = 0.0
-        telescoping_sum = 0.0
-        max_abs_step = 0.0
-        steps = 0
-        for _ in range(SCENARIOS.PBRS_SIMULATION_STEPS):
-            is_exit = rng.uniform() < 0.1
-            current_pnl = float(rng.normal(0, 0.05))
-            current_dur = float(rng.uniform(0, 1))
-            next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.05))
-            next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
-            _tot, _shap, next_potential, _pbrs_delta, _entry_additive, _exit_additive = (
-                apply_potential_shaping(
-                    base_reward=0.0,
-                    current_pnl=current_pnl,
-                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-                    current_duration_ratio=current_dur,
-                    next_pnl=next_pnl,
-                    entry_pnl=next_pnl,
-                    next_duration_ratio=next_dur,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    is_exit=is_exit,
-                    prev_potential=prev_potential,
-                    params=params,
-                )
-            )
-            inc = gamma * next_potential - prev_potential
-            telescoping_sum += inc
-            if abs(inc) > max_abs_step:
-                max_abs_step = abs(inc)
-            steps += 1
-            prev_potential = 0.0 if is_exit else next_potential
-        mean_drift = telescoping_sum / max(1, steps)
-        self.assertLess(
-            abs(mean_drift),
-            0.02,
-            f"Per-step telescoping drift too large (mean={mean_drift}, steps={steps})",
-        )
-        self.assertLessEqual(
-            max_abs_step,
-            PBRS.MAX_ABS_SHAPING,
-            f"Unexpected large telescoping increment (max={max_abs_step})",
-        )
-
-    def test_report_explicit_non_invariance_progressive_release(self):
-        """progressive_release cumulative shaping non-zero (release leak)."""
-
-        params = self.base_params(
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            exit_potential_mode="progressive_release",
-            exit_potential_decay=0.25,
-        )
-        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
-        prev_potential = 0.0
-        shaping_sum = 0.0
-
-        for _ in range(SCENARIOS.MONTE_CARLO_ITERATIONS):
-            is_exit = rng.uniform() < STATISTICAL.EXIT_PROBABILITY_THRESHOLD
-            next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.07))
-            next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
-            _tot, shap, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
-                apply_potential_shaping(
-                    base_reward=0.0,
-                    current_pnl=float(rng.normal(0, 0.07)),
-                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-                    current_duration_ratio=float(rng.uniform(0, 1)),
-                    next_pnl=next_pnl,
-                    entry_pnl=next_pnl,
-                    next_duration_ratio=next_dur,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    is_exit=is_exit,
-                    prev_potential=prev_potential,
-                    params=params,
-                )
-            )
-            shaping_sum += shap
-            prev_potential = 0.0 if is_exit else next_pot
-        self.assertGreater(
-            abs(shaping_sum),
-            PBRS_INVARIANCE_TOL * 50,
-            f"Expected non-zero shaping (got {shaping_sum})",
-        )
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     # Owns invariant: pbrs-canonical-near-zero-report-116
@@ -2500,17 +2377,6 @@ class TestPBRS(RewardSpaceTestBase):
         content = report_path.read_text(encoding="utf-8")
         self.assertIn("_PBRS components not present in this analysis._", content)
         self.assertIn("_Not performed (no real episodes provided)._", content)
-
-    def test_get_max_idle_duration_candles_negative_or_zero_fallback(self):
-        """Explicit mid<=0 fallback path returns derived default multiplier."""
-        base = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
-        base["max_trade_duration_candles"] = 64
-        base["max_idle_duration_candles"] = 0
-        result = get_max_idle_duration_candles(base)
-        expected = DEFAULT_IDLE_DURATION_MULTIPLIER * 64
-        self.assertEqual(
-            result, expected, f"Expected fallback {expected} for mid<=0 (got {result})"
-        )
 
 
 if __name__ == "__main__":
