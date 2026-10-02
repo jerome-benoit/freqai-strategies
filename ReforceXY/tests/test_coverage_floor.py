@@ -24,7 +24,7 @@ INCLUDE = "include"
 # strong as the measurement behind it, so `MINIMUM_FLOOR` starts at the calibrated value
 # and may only rise. Reaching the agreed 70% target is a separate delivery; until then a
 # lower value here would be a control the project believes it has and does not.
-MINIMUM_FLOOR = 57.0
+MINIMUM_FLOOR = 59.0
 EXCLUSION_KEYS = (
     OMIT,
     INCLUDE,
