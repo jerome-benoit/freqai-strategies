@@ -357,11 +357,14 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | Parameter                    | Default | Description                                                                               |
 | ---------------------------- | ------- | ----------------------------------------------------------------------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap                                                                        |
-| `max_idle_duration_candles`  | None    | Missing/None derives 4× trade cap; explicit zero uses denominator 1 and does not disable the penalty |
+| `max_idle_duration_candles`  | None    | Idle hazard threshold; missing/None derives 4× trade cap; idle clock keeps counting past it |
 | `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                        |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                     |
 | `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                        |
 | `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                                     |
+
+An explicit zero threshold uses denominator 1 and does not disable the idle
+penalty.
 
 #### Validation
 
@@ -655,8 +658,9 @@ potential in every exit mode. `canonical` suppresses entry/exit additives;
 Both zero-exit modes without effective additives are eligible for observed PBRS
 verification. The report's canonical classification describes the shaping form,
 not just the literal exit-mode name, and does not guarantee fitted-policy
-equivalence. Residual exit modes retain history-dependent potential and are not
-classified as generally policy-invariant.
+equivalence. The remaining exit modes (`progressive_release`, `spike_cancel`,
+`retain_previous`) can retain history-dependent potential after a voluntary exit;
+they are not classified as generally policy-invariant.
 
 ### Real Data Comparison
 

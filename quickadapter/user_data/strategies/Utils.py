@@ -844,10 +844,9 @@ def _generate_extrema_label(
 
     series = pd.Series(0.0, index=dataframe.index)
     if result.indices:
-        # `indices` are POSITIONS and `series` carries the caller's index, so this assignment
-        # must be positional. `.loc` would read the positions as labels, which raises KeyError
-        # on the DatetimeIndex FreqAI passes and on any shifted integer index, and on a
-        # PERMUTED integer index writes the directions onto the wrong rows without raising.
+        # Pivot indices are row positions, independently of the caller's index.
+        # Label-based assignment can fail when labels are absent or place directions
+        # on the wrong rows for a reordered or shifted integer index.
         series.iloc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
@@ -3793,15 +3792,12 @@ def zlema(series: pd.Series, period: int) -> pd.Series:
 def _fractal_dimension(
     highs: NDArray[np.floating], lows: NDArray[np.floating], period: int
 ) -> float:
-    """Fractal dimension using unnormalized half-window ranges.
+    """Fractal dimension from Ehlers' normalized half-window ranges.
 
-    In exact arithmetic, finite half-window ranges satisfy
-    ``HL1 + HL2 <= 2 * HL3``, so clipping gives dimension one. Floating-point
-    rounding can leave the dimension slightly above that bound.
-
-    Ehlers' normalized formulation divides each half-window range by
-    ``period / 2`` and the full-window range by ``period`` before computing
-    the dimension. This implementation does not use that normalization.
+    Each half-window range is divided by ``period / 2`` and the full-window
+    range by ``period``. Their lengths cancel to a factor two in the range
+    ratio. Degenerate zero ranges use dimension one; finite dimensions are
+    clipped to ``[1, 2]``.
     Reference: https://www.mesasoftware.com/papers/FRAMA.pdf
     """
     if period % 2 != 0 or period < 2:
@@ -3825,15 +3821,18 @@ def _fractal_dimension(
     if (HL1 + HL2) == 0 or HL3 == 0:
         return 1.0
 
-    D = (np.log(HL1 + HL2) - np.log(HL3)) / np.log(2)
+    # Normalizing the half/full window lengths adds log2(2) to the log ratio.
+    D = 1.0 + (np.log(HL1 + HL2) - np.log(HL3)) / np.log(2)
     return np.clip(D, 1.0, 2.0)
 
 
 def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Series:
-    """
-    FRAMA-style filter using unnormalized ranges, with optional zero lag.
+    """Fractal adaptive moving average using normalized ranges.
 
-    See :func:`_fractal_dimension` for the distinction from Ehlers' formulation.
+    Filter closes, seed with their first-period mean at ``period - 1``, and
+    estimate each dimension from the preceding ``period`` candles. Optional
+    zero lag preprocesses highs, lows and closes before these operations.
+    See :func:`_fractal_dimension` for the normalized dimension.
     """
     if period % 2 != 0:
         raise ValueError(f"Invalid period value {period!r}: must be even")

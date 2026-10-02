@@ -330,7 +330,9 @@ current ownership; multi-path and non-owning references are called out explicitl
 
 Real runtime/reference parity is owned by
 `ReforceXY/tests/test_model_pbrs_transitions.py::PbrsTransitionsTest::test_analysis_matches_real_rewards_across_modes_and_parameter_boundaries`.
-Run it in the Freqtrade RL QA image through the canonical runtime suite; the
+Native-precision rejection of out-of-range analytical discounts is owned by
+`ReforceXY/tests/test_model_pbrs_transitions.py::PbrsTransitionsTest::test_analysis_rejects_gamma_outside_bounds_before_float_rounding`.
+Run these tests in the Freqtrade RL QA image through the canonical runtime suite; the
 standalone analysis environment deliberately does not require Freqtrade/SB3.
 The comparator exercises direct/strict/relaxed parameter paths, real fills and
 terminal liquidation, carries reference potential independently, and checks tiny

@@ -269,7 +269,7 @@ class ExitSignalTest(QaTestCase):
                 self.assertFalse(_raised(result["exit_long"])[0])
                 self.assertFalse(_raised(result["exit_short"])[0])
 
-    def test_an_expired_model_closes_only_open_positions_for_the_current_pair(self):
+    def test_an_expired_model_signals_exits_only_for_open_positions_of_the_current_pair(self):
         closed = LocalTrade(pair="BTC/USDT", is_open=False, is_short=False)
         long = LocalTrade(pair="BTC/USDT", is_open=True, is_short=False)
         short = LocalTrade(pair="BTC/USDT", is_open=True, is_short=True)

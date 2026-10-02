@@ -396,8 +396,8 @@ Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
 it is loaded only when continual training starts. Missing or incompatible replay
 data prevents continuation but does not prevent inference. The deployment
-generation covers frozen feature coordinates and PBRS reward semantics. Older
-generations, including `chronological-frozen-pipelines-v2`, remain usable for
+generation covers frozen feature coordinates and PBRS reward semantics. Otherwise
+compatible older generations, including `chronological-frozen-pipelines-v2`, support
 inference but cannot continue training. Reset trained models or use a new
 `freqai.identifier` to migrate. Training disables `shuffle_after_split`. HPO
 studies and saved best parameters are reused only when their objective identity
@@ -426,8 +426,8 @@ Rows with an invalid `date_pred` are discarded with a per-pair warning and the
 discarded-row count; valid duplicates retain the same precedence.
 See the model docstrings for continuation, HPO and statistics details.
 
-An expired model closes only open positions for the current pair, using each
-position's own side; positions for other pairs cannot generate its exit signals.
+An expired model emits exit signals only for open positions of the current pair,
+using each position's side; other pairs cannot generate its exit signals.
 
 With `hold_potential_enabled=true`, ReforceXY enables `add_state_info` before
 constructing environments so training and inference use the same observations.
@@ -515,6 +515,11 @@ export PYTHONPATH=/workspace/$strategy/user_data/strategies
 export COVERAGE_RCFILE=$strategy/.coveragerc COVERAGE_FILE=/tmp/.coverage
 sh scripts/run-coverage.sh -s "$strategy/tests" -v
 ```
+
+QuickAdapter regressions cover normalized FRAMA with an independent numerical
+oracle and `custom_exit` with native Freqtrade trades and filled orders. Callback
+cases include model expiration, outliers, reversal confirmation and persisted
+final take-profit trails for long and short positions, including restart behavior.
 
 `COVERAGE_RCFILE` explicitly selects the strategy configuration; coverage.py does
 not search parent directories. Both coverage commands need the same configuration
