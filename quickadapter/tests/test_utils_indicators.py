@@ -4,6 +4,7 @@ import functools
 import hashlib
 import itertools
 import unittest
+from decimal import Decimal, localcontext
 
 import numpy as np
 import pandas as pd
@@ -502,15 +503,56 @@ class UtilsIndicatorsTest(QaTestCase):
         )
         self.assertAlmostEqual(float(raw[3]), float(closes.iloc[:4].mean()), places=9)
 
-    def test_a_constant_window_gives_a_finite_fractal_dimension_instead_of_a_log_of_zero(self):
-        # _fractal_dimension short-circuits to 1.0 when either half-range is zero, and a
-        # constant frame is the only shape that reaches that branch. The case was previously
-        # named for a gap and a window edge that its fixture cannot contain, which read as if
-        # the early return were covered from a second direction. What is actually distinct
-        # here is the guard itself: without it the ratio is log(0) and alpha is -inf.
-        result = frama(ohlcv_frame([7.0] * 12), 4).to_numpy()
-        self.assertFalse(np.isinf(result).any())
-        self.assertFalse(np.isnan(result[3:]).any())
+    def test_frama_adapts_to_normalized_window_ranges(self):
+        # Independent high-precision slopes from Ehlers, with this API's close price,
+        # historical window and mean seed. Flat ranges also exercise the zero guard.
+        fixtures = (
+            ("oscillation", [1.0, 3.0] * 12, 0.25),
+            ("trend", list(range(1, 25)), 0.25),
+            ("mixed", [1, 2, 1, 4, 3, 7, 2, 5, 1, 2, 8, 3] * 2, 0.25),
+            ("flat", [7.0] * 24, 0.0),
+            ("flat_halves", [7, 7, 9, 9, 11, 11, 10, 10] * 3, 0.0),
+        )
+        for name, prices, spread in fixtures:
+            frame = pd.DataFrame(
+                {
+                    "high": np.asarray(prices) + spread,
+                    "low": np.asarray(prices) - spread,
+                    "close": prices,
+                },
+                index=pd.Index([f"bar-{i}" for i in range(len(prices))]),
+            )
+            for period in (4, 6, 8):
+                with self.subTest(shape=name, period=period), localcontext() as context:
+                    context.prec = 60
+                    highs = [Decimal(str(value)) for value in frame["high"]]
+                    lows = [Decimal(str(value)) for value in frame["low"]]
+                    closes = [Decimal(str(value)) for value in frame["close"]]
+                    half = period // 2
+                    expected = np.full(len(frame), np.nan)
+                    previous = sum(closes[:period]) / Decimal(period)
+                    expected[period - 1] = float(previous)
+                    for i in range(period, len(frame)):
+                        start = i - period
+                        split = start + half
+                        n1 = (max(highs[start:split]) - min(lows[start:split])) / half
+                        n2 = (max(highs[split:i]) - min(lows[split:i])) / half
+                        n3 = (max(highs[start:i]) - min(lows[start:i])) / period
+                        dimension = (
+                            ((n1 + n2).ln() - n3.ln()) / Decimal(2).ln()
+                            if n1 + n2 > 0 and n3 > 0
+                            else Decimal(1)
+                        )
+                        dimension = min(Decimal(2), max(Decimal(1), dimension))
+                        alpha = (Decimal("-4.6") * (dimension - 1)).exp()
+                        alpha = min(Decimal(1), max(Decimal("0.01"), alpha))
+                        previous = alpha * closes[i] + (1 - alpha) * previous
+                        expected[i] = float(previous)
+                    result = frama(frame, period)
+                    self.assertTrue(result.index.equals(frame.index))
+                    assert_allclose(
+                        result.to_numpy(), expected, rtol=1e-12, atol=0.0, equal_nan=True
+                    )
 
     def test_the_smma_follows_its_own_recursion(self):
         # Seeded with the mean of the first `period` bars, then alpha = 1/period per bar.

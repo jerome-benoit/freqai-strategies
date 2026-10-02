@@ -491,6 +491,11 @@ PYTHONPATH=/workspace/quickadapter/user_data/strategies \
   python -m unittest discover -s quickadapter/tests -v
 ```
 
+QuickAdapter regressions cover normalized FRAMA with an independent numerical
+oracle and `custom_exit` with native Freqtrade trades and filled orders. Callback
+cases include model expiration, outliers, reversal confirmation and persisted
+final take-profit trails for long and short positions, including restart behavior.
+
 Both commands must be run from the repository root, which is what the
 container's `--workdir /workspace` provides. To select one concern, pass a
 pattern that matches the whole `module.Class.method` name; a bare substring
