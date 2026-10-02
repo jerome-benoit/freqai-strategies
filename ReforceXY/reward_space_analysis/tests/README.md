@@ -11,7 +11,7 @@ The suite enforces:
 - PBRS shaping mechanics (canonical exit semantics, near-zero classification)
 - Robustness under extreme / invalid parameter settings
 - Statistical metrics integrity (bootstrap, constant distributions)
-- CLI parameter propagation & report formatting
+- CLI input validation and artifact lifecycle
 - Cross-component smoke scenarios
 
 Single ownership per invariant is tracked in the Coverage Mapping section of
@@ -28,7 +28,7 @@ this README.
 | `cli/`         | cli         | CLI parameter propagation & artifacts       |
 | `pbrs/`        | pbrs        | Potential-based shaping invariance & modes  |
 | `statistics/`  | statistics  | Statistical metrics, tests, bootstrap       |
-| `integration/` | integration | Smoke scenarios & report formatting         |
+| `integration/` | integration | Cross-component reward behavior and workflows |
 | `helpers/`     | (none)      | Helper utilities (data loading, assertions) |
 
 Markers are declared in `pyproject.toml` and enforced with `--strict-markers`.
@@ -119,8 +119,8 @@ All tests should follow the standardized docstring format in
 - Tolerance rationale (required for non-default tolerances)
 - See also (related tests/docs)
 
-**Template provides three complexity levels** (minimal, standard, complex) with
-examples for property-based tests, regression tests, and integration tests.
+The template gives field guidelines and a real canonical-exit docstring example,
+including PBRS mode and trajectory limits.
 
 ### Markers
 
@@ -203,11 +203,9 @@ Columns:
 | robustness-exit-pnl-only-117                  | robustness  | Only exit actions have non-zero PnL                                                  | robustness/test_robustness.py::test_pnl_invariant_exit_only                                         |                                                                                                                                                                                |
 | pbrs-absence-shift-placeholder-118            | pbrs        | Placeholder shift line present when shaping shift is absent                          | pbrs/test_pbrs.py::test_pbrs_absence_and_distribution_shift_placeholder                             |                                                                                                                                                                                |
 | components-pbrs-breakdown-fields-119          | components  | PBRS breakdown fields finite and mathematically aligned                              | components/test_reward_components.py::test_pbrs_breakdown_fields_finite_and_aligned                 | Tests base_reward, pbrs_delta and invariance_correction alignment                                                                                                              |
-| integration-pbrs-metrics-section-120          | integration | PBRS Metrics section present in report with tracing metrics                          | integration/test_report_formatting.py::test_report_includes_pbrs_metrics_section                    |                                                                                                                                                                                |
 | cli-pbrs-csv-columns-121                      | cli         | PBRS columns in reward_samples.csv when shaping enabled                              | cli/test_cli_params_and_csv.py::test_csv_contains_pbrs_columns_when_shaping_present                 | Verifies finite reward_base, reward_pbrs_delta and reward_invariance_correction values                                                                                         |
 | statistics-bh-finite-family-122               | statistics  | Undefined tests excluded from finite-only BH family; marked non-applicable           | statistics/test_statistics.py::test_bh_excludes_undefined_tests_from_finite_family                  |                                                                                                                                                                                |
 | statistics-independence-contract-123          | statistics  | Inferential helpers require independent_observations=True                            | statistics/test_statistics.py::test_inference_helpers_require_independent_observations              | Covers hypothesis tests and bootstrap intervals                                                                                                                                |
-| report-independent-sections-124               | integration | CI, diagnostics and shift sections do not depend on hypothesis-test output           | integration/test_report_formatting.py::test_statistical_sections_do_not_depend_on_hypothesis_tests  | Also verifies the reported bootstrap resample count                                                                                                                            |
 | pbrs-discounted-evidence-125                  | pbrs        | Verification requires local identity, continuity and discounted terminal boundary    | pbrs/test_pbrs.py::test_pbrs_canonical_discontinuous_potentials_report                              | Discontinuous potentials are not verified                                                                                                                                      |
 | statistics-proportional-histograms-126        | statistics  | Proportional histograms ignore sample count; moved mass yields positive KL/JS        | statistics/test_statistics.py::test_distribution_shift_proportional_histograms_ignore_sample_count  | KL and JS remain finite and non-negative                                                                                                                                       |
 | pbrs-near-bound-clamp-127                     | pbrs        | Relaxed near-bound clamps apply exact endpoints and retain all reasons               | pbrs/test_pbrs.py::test_validate_reward_parameters_records_near_bound_clamps_exactly                | Includes numeric-string coercion                                                                                                                                               |
@@ -256,6 +254,8 @@ The following tests also check outcomes owned elsewhere:
 | 094 | deprecated | CLI encoding/data migration removed in refactor                       |
 | 095 | deprecated | Report CLI propagation assertions merged into test_cli_params_and_csv |
 | 114 | reserved   | Gap retained for potential future statistics invariant                |
+| 120 | reserved | No active behavior invariant; prose-only report checks are not ownership. |
+| 124 | reserved | No active behavior invariant; prose-only report checks are not ownership. |
 
 ## Adding New Invariants
 
@@ -307,25 +307,35 @@ assert abs(exit_factor - expected) < TOLERANCE.IDENTITY_RELAXED
 
 ## Duplication Audit
 
-Each invariant shortname must appear in exactly one taxonomy directory path:
+Use the **complete invariant ID** and its Coverage Mapping row, not a shortname
+or the number of matching directory paths. From the repository root:
 
 ```shell
 cd ReforceXY/reward_space_analysis/tests
-grep -R "<shortname>" -n .
+invariant=pbrs-canonical-exit-semantic-106
+grep -R -n -F --include='*.py' -- "$invariant" .
 ```
 
-Expect a single directory path. Examples:
+Resolve the mapped owner
+`pbrs/test_pbrs.py::test_exit_step_shaping_matches_exit_step_rules` and inspect
+its actual assertions. Inline IDs/ownership declarations are optional in the
+existing suite, so no search hit (grep status 1) does not invalidate that mapping.
+Classify each hit as an owning declaration or non-owning reference; documentation
+mentions and reserved entries are not additional owners.
 
-```shell
-grep -R "near_zero" -n .
-grep -R "pbrs_delta" -n .
-```
+Check one registered mapping owner per active ID, the owner's behavior against
+the invariant statement, and any competing ownership declarations. Multi-path
+coverage and non-owning smoke checks are allowed when identified by the mapping,
+its notes or the Non-Owning Smoke / Reference Checks table. A shortname such as
+`near_zero` or `pbrs_delta` spans unrelated IDs and cannot prove duplication.
+Do not delete a valid reference because it is in another taxonomy directory.
 
 ## Coverage Parity Notes
 
-Detailed assertions reside in targeted directories (components, robustness)
-while integration tests focus on report formatting. The mapping above defines
-current ownership; multi-path and non-owning references are called out explicitly.
+Detailed numerical assertions reside in their targeted directories. Integration
+checks exercise cross-component behavior; matching report text is not numerical
+correctness. The mapping defines current ownership and allowed non-owning or
+multi-path coverage.
 
 ## When to Run Tests
 

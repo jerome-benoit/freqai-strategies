@@ -354,7 +354,7 @@ logger = logging.getLogger(__name__)
 class ReforceXY(BaseReinforcementLearningModel):
     """
     Custom Freqtrade Freqai reinforcement learning prediction model.
-    Model specific config:
+    User configuration: ReforceXY/README.md. Example fragment:
     {
         "freqaimodel": "ReforceXY",
         "strategy": "RLAgentStrategy",
@@ -400,7 +400,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "n_trials": 100,                    // Number of trials
                 "n_startup_trials": 15,             // Number of initial random trials for TPESampler
                 "timeout_hours": 0,                 // Maximum time in hours for hyperopt (0 = no timeout)
-                "continuous": false,                // If true, perform continuous optimization
+                "continuous": false,                // If true, delete/recreate the study on each optimize call
                 "warm_start": false,                // If true, enqueue previous best params if exists
                 "sampler": "tpe",                   // Optuna sampler (tpe|auto)
                 "storage": "sqlite",                // Optuna storage backend (sqlite|file)

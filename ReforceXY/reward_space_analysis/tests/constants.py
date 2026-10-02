@@ -207,9 +207,8 @@ class TestSeeds:
         FEATURE_SMALL_5: Seed for small feature test (5)
         FEATURE_SMALL_3: Seed for small feature test (3)
 
-        # Report formatting seeds
-        REPORT_FORMAT_1: Seed for report formatting test 1 (234)
-        REPORT_FORMAT_2: Seed for report formatting test 2 (321)
+        # PBRS trajectory seed
+        REPORT_FORMAT_2: Seed for deterministic PBRS trajectory sweeps (321)
 
         # Additional seeds for various test scenarios
         ALTERNATE_1: Alternate seed for robustness tests (555)
@@ -237,8 +236,7 @@ class TestSeeds:
     FEATURE_SMALL_5: int = 5
     FEATURE_SMALL_3: int = 3
 
-    # Report formatting seeds
-    REPORT_FORMAT_1: int = 234
+    # PBRS trajectory seed
     REPORT_FORMAT_2: int = 321
 
     # Additional seeds
@@ -331,10 +329,6 @@ class TestScenarios:
         PBRS_SWEEP_ITERATIONS: Number of iterations for PBRS sweep tests (120)
         BOOTSTRAP_MINIMAL_ITERATIONS: Minimal bootstrap iterations for quick tests (25)
         BOOTSTRAP_EXTENDED_ITERATIONS: Extended bootstrap iterations (200)
-        SAMPLE_SIZE_REPORT_MINIMAL: Minimal sample size for report smoke tests (10)
-        REPORT_DURATION_SCALE_UP: Duration scale applied to synthetic real episodes (1.01)
-        REPORT_DURATION_SCALE_DOWN: Duration scale applied to synthetic real episodes (0.99)
-        REPORT_PNL_MEAN_SHIFT: PnL mean shift applied to synthetic real episodes (0.001)
 
         # API smoke parameters
         API_MAX_IDLE_DURATION_CANDLES: Idle duration cap used in _sample_action tests (20)
@@ -374,10 +368,6 @@ class TestScenarios:
     PBRS_SWEEP_ITERATIONS: int = 120
     BOOTSTRAP_MINIMAL_ITERATIONS: int = 25
     BOOTSTRAP_EXTENDED_ITERATIONS: int = 200
-    SAMPLE_SIZE_REPORT_MINIMAL: int = 10
-    REPORT_DURATION_SCALE_UP: float = 1.01
-    REPORT_DURATION_SCALE_DOWN: float = 0.99
-    REPORT_PNL_MEAN_SHIFT: float = 0.001
 
     # API smoke parameters
     API_MAX_IDLE_DURATION_CANDLES: int = 20

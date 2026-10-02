@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Utility tests narrowed to data loading behaviors.
-
-Moved tests:
-- Report formatting invariants -> integration/test_report_formatting.py
-- Additives deterministic contribution -> components/test_additives.py
-- CLI CSV + params propagation -> cli/test_cli_params_and_csv.py
-"""
+"""Regression checks for data loading and numerical helper behavior."""
 
 import pickle
 import unittest

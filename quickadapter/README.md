@@ -1,0 +1,346 @@
+# QuickAdapter
+
+QuickAdapterV3 uses QuickAdapterRegressorV3 to predict smoothed Zigzag extrema
+morphology, not returns. Regressor error is a model diagnostic, not a profit score.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Decision cycle](#decision-cycle)
+- [Supplied profile versus runtime fallbacks](#supplied-profile-versus-runtime-fallbacks)
+- [Models and HPO](#models-and-hpo)
+- [Continual learning](#continual-learning)
+- [Prediction warmup and restarts](#prediction-warmup-and-restarts)
+- [Configuration reference](#configuration-reference)
+
+## Quick start
+
+From the repository root:
+
+```shell
+cd quickadapter
+cp user_data/config-template.json user_data/config.json
+```
+
+Review the exchange, pairs, sizing and `freqai` configuration in
+`user_data/config.json`; keep dry-run enabled while checking behavior. Add private
+exchange credentials only for operations that require them. Review the timezone
+in [docker-compose.yml](docker-compose.yml) and the
+[API/security and maintenance guidance](../README.md#start-safely).
+
+```shell
+docker compose up -d --build
+```
+
+The build follows the moving `stable_freqai` base. Record its resolved digest
+and installed dependency versions when comparing runs.
+
+## Decision cycle
+
+1. FreqAI builds features, trains the chosen regressor on labeled historical
+   data and supplies an `&s-extrema` prediction for each decision candle.
+2. A long entry requires `do_predict=1`, `DI_catch=1` and
+   `&s-extrema < minima_threshold`. A short entry instead requires
+   `&s-extrema > maxima_threshold`, with the same validity gates. Equality does
+   not trigger an entry. Adaptive thresholds need the real-prediction warmup
+   described below.
+3. Entry confirmation also checks the current order price for the configured
+   volatility-adjusted reversal, available history, global capacity and per-side
+   capacity. A prediction signal alone does not guarantee a trade. Spot rejects
+   shorts; margin/futures can allow them. With both sides allowed, an odd finite
+   global capacity is rounded up before halving for each side; the global limit
+   still applies. `max_open_trades=-1` means unlimited capacity.
+4. Open trades use the custom volatility-based stoploss, which never loosens,
+   including after partial exits. The strategy stoploss is -2.5%; leverage,
+   execution and exchange conditions affect the actual outcome.
+5. Three take-profit stages request 40%, 30% and 20% of the stake remaining at
+   each stage. Exchange minimums can turn a partial request into a full close.
+   The final target arms a persisted trailing full exit: a material adverse
+   retracement exits, not elapsed stagnation alone. Open orders block new staged
+   adjustments.
+6. Model expiration (`do_predict=2`) requests an exit. A valid opposite extrema
+   signal requests an exit only after price-reversal confirmation. Outlier
+   predictions are counted per candle; that count is not itself an unconditional
+   exit rule. Custom safety and stoploss exits remain separate from entry signals.
+
+Inspect prediction status, thresholds, confirmation logs and open exposure when
+no entries occur. Do not disable safety gates merely to increase trade count.
+
+## Supplied profile versus runtime fallbacks
+
+[config-template.json](user_data/config-template.json) is the supplied profile,
+not a copy of every runtime fallback. An explicit configured value takes
+precedence; the reference below describes the fallback when a value is absent
+or falls back through its documented validation. Review normalized startup logs
+and Freqtrade overrides for the effective configuration.
+
+The template enables dry-run and spot trading on 5m candles. It selects XGBoost,
+21-day training windows, 2-day backtest prediction windows, a 0.333 holdout,
+Kaiser–Bessel-derived label smoothing (window 6, beta 10), Isodata thresholding,
+and HPO with 100 trials and 6 workers. These differ intentionally from runtime
+fallbacks such as holdout 0.1, Gaussian smoothing (window 5, beta 8), mean
+thresholding and HPO disabled (50 trials, 1 worker when enabled).
+
+The template explicitly sets `freqai.fit_live_predictions_candles=864`; its
+runtime fallback is 100. The strategy startup candle count follows this value.
+At 5m, 864 candles span a nominal 72 hours; that is an observation horizon, not
+a promise of readiness 72 wall-clock hours after startup. Initial training,
+missing predictions, expired models and history gaps affect readiness.
+
+`label_prediction.method=none` does not choose another calibration algorithm:
+it skips adaptive minima/maxima threshold computation. With the supplied static
+thresholds -2/+2, ordinary threshold-driven entries normally do not occur.
+Independently configured static thresholds can permit them; stoploss and model
+expiration exits are not disabled by this setting.
+
+## Models and HPO
+
+`freqai.regressor` selects one of `xgboost`, `lightgbm`,
+`histgradientboostingregressor`, `ngboost` or `catboost`. All run through the
+same strategy decision/threshold workflow; this is not a performance ranking.
+Use model-specific training parameters supported by the selected backend.
+
+`freqai.optuna_hyperopt.enabled=false` disables regressor and dynamic label
+HPO. When enabled, trial, worker and timeout budgets apply. Label HPO selects
+morphology parameters, not held-out trading profit. `holdout_rmse` reports
+weighted error on the original label scale before deployment refit; unavailable
+holdouts produce infinity. Use the [evaluation protocol](../docs/evaluation.md)
+for economic comparison and the limitations of threshold replay in native
+backtests. Changing fitted pipelines, label weighting or study schemas can
+require a new `freqai.identifier` or an intentional reset; see the reference.
+
+## Configuration formats
+
+The `label_weighting`, `label_smoothing`, `label_pipeline` and
+`label_prediction` sections accept either the flat paths listed above or a
+per-label format using `default` and `columns.<glob>`. Do not mix both formats in
+one section: once `default` or `columns` is present, sibling flat keys are
+ignored with a warning. Matching column patterns are applied from least to most
+specific; equally specific patterns follow declaration order, so the later one
+wins.
+
+## Continual learning
+
+In backtests, continual training uses only a saved model whose training cutoff
+precedes the current window's end and its last available candle boundary. A
+later model left under the same identifier is not reused when a backtest is
+extended into the past. Live and dry-run restarts still restore compatible
+deployed models.
+
+## Prediction warmup and restarts
+
+In live and dry-run modes, each pair requires
+`freqai.fit_live_predictions_candles` real model predictions before adaptive
+thresholds become available. The Nth observation first affects the next
+prediction update, not the candle that produced it. FreqAI bootstrap
+predictions made from the initial training frame do not count. Warmup progress
+from persisted real predictions is restored after a restart. FreqAI saves
+prediction history after training attempts and on clean shutdown. After an
+abrupt stop or hard reboot, predictions since the last history save may be
+lost, so those observations must accumulate again. Legacy rows missing
+provenance, including rows in partly marked histories, count only when their
+nonzero, nonexpired prediction status distinguishes them from bootstrap;
+ambiguous rejected rows and explicit false markers do not count.
+
+A pair starts a new warmup when the time since its last observation, or a gap
+within its observations, is greater than
+`fit_live_predictions_candles × timeframe`. An observation exactly one horizon
+old remains eligible. Downtime and expired-model rows are excluded; genuine
+zero and outlier-rejected predictions count. Predictions align to candle dates;
+candles without predictions have `do_predict=0` and downtime zeros display but
+never calibrate.
+
+After a restart, persisted `holdout_rmse` is recovered from the latest produced
+prediction available at the decision time, independently of the calibration
+window. A newer unavailable score remains unavailable rather than reviving an
+older finite score. Recovery does not warm up adaptive thresholds; a model fitted
+in the current session keeps its in-memory score.
+
+## Configuration reference
+
+Runtime validation and canonical fallback definitions live in
+[Utils.py](user_data/strategies/Utils.py) and
+[QuickAdapterRegressorV3.py](user_data/freqaimodels/QuickAdapterRegressorV3.py).
+General exchange/FreqAI settings remain governed by
+[Freqtrade's parameter reference][freqai-parameters]. The shipped JSON profile
+is the authoritative example of explicit overrides.
+
+- [Protections](#protections)
+- [Leverage](#leverage)
+- [Exit pricing](#exit-pricing)
+- [Reversal confirmation](#reversal-confirmation)
+- [Regressor model](#regressor-model)
+- [Model training parameters](#model-training-parameters)
+- [Data split parameters](#data-split-parameters)
+- [Label smoothing](#label-smoothing)
+- [Label weighting](#label-weighting)
+- [Label pipeline](#label-pipeline)
+- [Feature parameters](#feature-parameters)
+- [Label prediction](#label-prediction)
+- [Optuna / HPO](#optuna--hpo)
+
+### Protections
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| custom_protections.trade_duration_candles | 72 | int >= 1 | Estimated trade duration in candles. Scales protections stop duration candles and trade limit. |
+| custom_protections.lookback_period_fraction | 0.5 | float (0,1] | Fraction of Freqtrade's [`fit_live_predictions_candles`][freqai-parameters] used to calculate `lookback_period_candles` for _MaxDrawdown_ and _StoplossGuard_ protections. |
+| custom_protections.cooldown.enabled | true | bool | Enable/disable _CooldownPeriod_ protection. |
+| custom_protections.cooldown.stop_duration_candles | 4 | int >= 1 | Number of candles to wait before allowing new trades after a trade is closed. |
+| custom_protections.drawdown.enabled | true | bool | Enable/disable _MaxDrawdown_ protection. |
+| custom_protections.drawdown.max_allowed_drawdown | 0.2 | float (0,1) | Maximum allowed drawdown. |
+| custom_protections.stoploss.enabled | true | bool | Enable/disable _StoplossGuard_ protection. |
+
+### Leverage
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| leverage | `proposed_leverage` | float [1.0, max_leverage] | Leverage. Fallback to `proposed_leverage` for the pair. |
+
+### Exit pricing
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| exit_pricing.trade_natr_method | `moving_average` | enum {`moving_average`,`quantile_interpolation`,`weighted_average`} | Trade NATR (Normalized Average True Range) aggregation for stoploss and take-profit distances. `moving_average` uses KAMA to preserve nonnegative volatility. The stoploss never loosens, including after partial exits, and remains unchanged on order fills. |
+| exit_pricing.final_take_profit_retracement_fraction | 0.25 | float (0,1] | Fraction of the final take-profit target distance used as the frozen trailing retracement distance after the final target arms the exit. The final exit tracks the best subsequent per-candle rate and exits only after this material adverse move; elapsed stagnation alone does not exit. Plot annotations show only the current trail boundary from the candle that established it; earlier boundaries are not retained. |
+
+### Reversal confirmation
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| reversal_confirmation.lookback_period_candles | 0 | int >= 0 | Prior confirming candles; 0 = none. With confirmation enabled, unmeasurable history rejects entries, while a valid current exit may still reduce exposure. |
+| reversal_confirmation.decay_fraction | 0.5 | float (0,1] | Geometric per-candle volatility adjusted reversal threshold relaxation factor. |
+| reversal_confirmation.min_natr_multiplier_fraction | 0.0095 | float [0,1] | Lower bound fraction (< upper bound) for volatility adjusted reversal threshold. |
+| reversal_confirmation.max_natr_multiplier_fraction | 0.0125 | float [0,1] | Upper bound fraction (> lower bound) for volatility adjusted reversal threshold. |
+
+### Regressor model
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.fit_live_predictions_candles | 100 | int >= 1 | Required real-prediction calibration window per pair; also strategy startup candles and protection lookback basis. The template explicitly supplies 864. See [prediction warmup](#prediction-warmup-and-restarts). |
+| freqai.regressor | `xgboost` | enum {`xgboost`,`lightgbm`,`histgradientboostingregressor`,`ngboost`,`catboost`} | Machine learning regressor. With validation and early stopping enabled, NGBoost uses the iteration with the best validation score for prediction and to determine the final refit size. |
+| freqai.continual_learning | false | bool | Continue training the deployed XGBoost, LightGBM or CPU CatBoost model. GPU CatBoost and other regressors train from scratch. With two-stage selection (see `test_size`), HPO and selection train from scratch; only the final refit continues the deployed model, adding the selected number of boosting rounds. Continued training reuses the saved feature and label transformations, including after restart. Missing or incompatible transformations or deployment metadata prevent continuation. Reset trained models or use a new `freqai.identifier` to change pipeline settings or recover from incompatible saved state. |
+
+### Model training parameters
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.model_training_parameters.gpu_vram_gb | 80 | int > 0 | Available GPU VRAM (GB) for CatBoost, not total. Any positive value is floored to the nearest supported tier `<= value` (tiers 8, 10, 12, 16, 24, 32, 40, 48, 64, 80; values below 8 use tier 8). Constrains `depth`, `border_count`, and `max_ctr_complexity` ranges. |
+
+### Data split parameters
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.data_split_parameters.method | `train_test_split` | enum {`train_test_split`,`timeseries_split`} | Data splitting strategy. `train_test_split` for sequential split, `timeseries_split` for chronological split with configurable gap. |
+| freqai.data_split_parameters.test_size | 0.1 | float [0,1) \| int >= 0 \| null | Outer holdout size; `0` disables the holdout (single-stage fit, `train_test_split` only). The same parameter reserves the chronological tail of the remaining training rows as inner validation for HPO and early stopping; a fractional value is relative to those remaining rows, not the original window. The holdout is predicted once and reported as weighted `holdout_rmse` in the original label scale; it measures the cold-started pre-refit selection model, not the refitted deployed model. `null` (sklearn dynamic sizing) applies only to `timeseries_split`; `train_test_split` requires a float or int; inner validation then falls back to `0.1`. |
+| freqai.data_split_parameters.n_splits | 5 | int >= 2 | Controls train/test proportions for `timeseries_split` (higher = larger train set). |
+| freqai.data_split_parameters.gap | 0 | int >= 0 | Samples to exclude between train/test for `timeseries_split`. `0` auto-derives the gap (source and lower-bound rule depend on `causal_mode`; see `causal_mode`). Not used by `train_test_split`. |
+| freqai.data_split_parameters.max_train_size | null | int >= 1 \| null | Maximum training set size for `timeseries_split`. When set, creates a sliding window instead of expanding train set. `null` = no limit. |
+
+### Label smoothing
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.label_smoothing.method | `gaussian` | enum {`none`,`gaussian`,`kaiser`,`kaiser_bessel_derived`,`triang`,`smm`,`sma`,`savgol`,`gaussian_filter1d`} | Label smoothing method (`smm`=median, `sma`=mean, `savgol`=Savitzky–Golay). |
+| freqai.label_smoothing.window_candles | 5 | int >= 1 | Requested smoothing window in candles. Runtime raises values below 3; Gaussian, Kaiser, triangular, SMM and SMA use the next odd length, `kaiser_bessel_derived` uses the next even length, and `savgol` uses an odd length greater than `polyorder`. `none` does not smooth. For `gaussian_filter1d`, this value only gates series shorter than the requested window; `sigma` defines the kernel. |
+| freqai.label_smoothing.beta | 8.0 | float > 0 | Shape parameter for `kaiser` and `kaiser_bessel_derived` kernels. |
+| freqai.label_smoothing.polyorder | 3 | int >= 0 | Polynomial order for `savgol` smoothing. |
+| freqai.label_smoothing.mode | `mirror` | `savgol`: enum {`mirror`,`constant`,`nearest`,`wrap`,`interp`}; `gaussian_filter1d`: enum {`mirror`,`constant`,`nearest`,`wrap`} | Boundary mode for `savgol` and `gaussian_filter1d`; ignored otherwise. |
+| freqai.label_smoothing.sigma | 1.0 | float > 0 | Gaussian `sigma` for `gaussian_filter1d` smoothing. |
+
+### Label weighting
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.label_weighting.strategy | `none` | enum {`none`,`uniform`,`amplitude`,`amplitude_threshold_ratio`,`volume_rate`,`speed`,`efficiency_ratio`,`volume_weighted_efficiency_ratio`,`combined`} | Label weighting metric: none (`none`), uniform unit weight on every detected pivot (`uniform`), swing amplitude (`amplitude`), swing amplitude / median volatility-threshold ratio (`amplitude_threshold_ratio`), swing volume per candle (`volume_rate`), swing speed (`speed`), swing efficiency ratio (`efficiency_ratio`), swing volume-weighted efficiency ratio (`volume_weighted_efficiency_ratio`), or combined metrics aggregation (`combined`). Switching between `none` and any other strategy requires deleting trained models to realign training emphasis. |
+| freqai.label_weighting.metric_coefficients | {} | dict[str, finite float > 0] | Per-metric coefficients for `combined` strategy. Keys: `amplitude`, `amplitude_threshold_ratio`, `volume_rate`, `speed`, `efficiency_ratio`, `volume_weighted_efficiency_ratio`. Invalid entries are ignored; when none remain, all metrics are selected with coefficient `1.0`. |
+| freqai.label_weighting.aggregation | `arithmetic_mean` | enum {`arithmetic_mean`,`geometric_mean`,`harmonic_mean`,`quadratic_mean`,`weighted_median`,`softmax`} | Metric aggregation method for `combined` strategy. `arithmetic_mean`=(Σ(w·m)/Σ(w)), `geometric_mean`=(∏(m^w))^(1/Σw), `harmonic_mean`=Σ(w)/(Σ(w/m)), `quadratic_mean`=(Σ(w·m²)/Σ(w))^(1/2), `weighted_median`=Q₀.₅(m,w), `softmax`=Σ(m·s_i) where s_i=w_i·exp(m_i/T)/Σ(w_j·exp(m_j/T)). |
+| freqai.label_weighting.softmax_temperature | 1.0 | float > 0 | Temperature T for `softmax` aggregation, controls distribution sharpness. |
+| freqai.label_weighting.fill_method | `zero` | enum {`zero`,`epsilon`,`gaussian`,`epsilon_gaussian`} | Off-pivot weighting scheme. `zero` hard-zeros off-pivot rows; `epsilon` applies the epsilon floor `fill_epsilon * <fill_epsilon_baseline>(pivot_weights)`; `gaussian` applies per-pivot Gaussian bumps; `epsilon_gaussian` sums the `epsilon` floor and the `gaussian` bumps. Pivot rows take the max of their raw weight and the off-pivot field at their index (no-op for `zero`). Under `causal_mode=true` the epsilon baseline is computed causally (see `causal_mode`). Switching away from `zero` may require retuning tree-leaf regularization (`min_child_weight`, `lambda`) and resetting any prior Optuna study. Changing this parameter requires deleting trained models. |
+| freqai.label_weighting.fill_epsilon | 0.000001 | float [0,1] | Off-pivot fraction of the pivot baseline. Ignored when `fill_method` not in {`epsilon`,`epsilon_gaussian`}. |
+| freqai.label_weighting.fill_epsilon_baseline | `mean` | enum {`mean`,`median`} | Pivot baseline statistic. `mean` tracks central tendency; `median` is robust against pivot-weight skew. Ignored when `fill_method` not in {`epsilon`,`epsilon_gaussian`}. |
+| freqai.label_weighting.fill_sigma_candles | 25.0 | float >= 0.5 | Gaussian standard deviation in candles for the per-pivot bumps. Acts as the upper bound on per-pivot sigma when `fill_bandwidth == "knn"`. Lower bound 0.5 prevents severe underflow in the Gaussian tail. Under `causal_mode=true` the bumps use a finite support `ceil(4 * fill_sigma_candles)` (see `causal_mode`). Ignored when `fill_method` not in {`gaussian`,`epsilon_gaussian`}. Gaussian weight availability also waits for resolution of possible pivots throughout that support; pure-Gaussian uniform pivot centers retain their own confirmation time. |
+| freqai.label_weighting.fill_sigma_min_candles | 0.5 | float >= 0.5 | Lower bound on per-pivot sigma in candles when `fill_bandwidth == "knn"`. Clipped to `fill_sigma_candles` when larger. Ignored when `fill_method` not in {`gaussian`,`epsilon_gaussian`} or `fill_bandwidth != "knn"`. |
+| freqai.label_weighting.fill_bandwidth | `fixed` | enum {`fixed`,`knn`} | Per-pivot Gaussian bandwidth selector. `fixed` applies a constant `fill_sigma_candles` to every pivot. `knn` adapts each pivot's sigma to local pivot density via `sigma_p = clip(fill_bandwidth_alpha * d_k(p), fill_sigma_min_candles, fill_sigma_candles)` where `d_k(p)` is the index distance to the `k`-th nearest pivot neighbor ([Loftsgaarden and Quesenberry][knn-density]; [Silverman, §5.2][silverman-density]). Mitigates the crushing of weaker pivots by stronger neighbors in dense clusters. Ignored when `fill_method` not in {`gaussian`,`epsilon_gaussian`}. |
+| freqai.label_weighting.fill_bandwidth_neighbors | 1 | int >= 1 | `k` for the k-nearest-neighbor bandwidth selector. Ignored when `fill_method` not in {`gaussian`,`epsilon_gaussian`} or `fill_bandwidth != "knn"`. |
+| freqai.label_weighting.fill_bandwidth_alpha | 0.5 | float > 0 | Multiplicative factor on the k-th neighbor distance. Smaller values produce sharper, more separated Gaussians; larger values approach the `fixed` behavior. Ignored when `fill_method` not in {`gaussian`,`epsilon_gaussian`} or `fill_bandwidth != "knn"`. |
+| freqai.label_weighting.support_policy | `fallback` | enum {`fallback`,`raise`} | Policy when active label weighting fails support checks (evaluated on the training rows surviving upstream filtering). `raise` aborts the fit; `fallback` logs a `WARNING` and uses sanitized base sample weights for that fit. Eval (test/val) weights bypass this policy and fall back only when label support collapses; shape or alignment errors remain fatal. |
+| freqai.label_weighting.min_pivot_equivalent_count | 3 | int >= 1 | Minimum number of surviving pivot-equivalent label weights required after filtering. Pivot-equivalent rows are weights at least 10% of the surviving maximum label weight. |
+| freqai.label_weighting.min_positive_label_weight_fraction | 0.01 | float [0,1] | Minimum fraction of filtered training rows with finite positive label weights. |
+| freqai.label_weighting.min_effective_sample_size | 3.0 | float >= 1 | Minimum Kish effective sample size of the final composed training weights. |
+
+### Label pipeline
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.label_pipeline.standardization | `none` | enum {`none`,`zscore`,`robust`,`mmad`,`power_yj`} | Standardization method applied to labels before normalization. `none`=w, `zscore`=(w-μ)/σ, `robust`=(w-median)/(Q₃-Q₁), `mmad`=(w-median)/(MAD·k), `power_yj`=YJ(w). |
+| freqai.label_pipeline.robust_quantiles | [0.25, 0.75] | list[float] where 0 <= Q1 < Q3 <= 1 | Quantile range for robust standardization, Q1 and Q3. |
+| freqai.label_pipeline.mmad_scaling_factor | 1.4826 | float > 0 | Scaling factor for MMAD standardization. |
+| freqai.label_pipeline.normalization | `maxabs` | enum {`maxabs`,`minmax`,`sigmoid`,`none`} | Normalization method applied to labels. `maxabs`=w/max(\|w\|), `minmax`=low+(w-min)/(max-min)·(high-low), `sigmoid`=2·σ(scale·w)-1, `none`=w. |
+| freqai.label_pipeline.minmax_range | [-1.0, 1.0] | list[float], low < high | Target range for `minmax` normalization, min and max. |
+| freqai.label_pipeline.sigmoid_scale | 1.0 | float > 0 | Scale parameter for `sigmoid` normalization, controls steepness. |
+| freqai.label_pipeline.gamma | 1.0 | float (0,10] | Contrast exponent applied to labels after normalization: >1 emphasizes extrema, values between 0 and 1 soften. |
+
+### Feature parameters
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.feature_parameters.label_period_candles | min/max midpoint | int >= 1 | Zigzag labeling NATR period. |
+| freqai.feature_parameters.label_horizon_candles | `label_period_candles` | int >= 1 | Conservative fixed purge horizon in candles: the magnitude of the causal guards' purge and of the default `timeseries_split` gap (see `causal_mode` for how the guards consume it). When unset, falls back to `label_period_candles`. |
+| freqai.feature_parameters.causal_mode | true | bool | Causal split-guard master toggle. When `true` (default): (1) rejects `data_split_parameters.shuffle=true`, `feature_parameters.shuffle_after_split=true`, and `feature_parameters.reverse_train_test_order=true` (two of these rejections are independent of this toggle: `timeseries_split` rejects `shuffle_after_split` structurally, and an active holdout `test_size != 0` rejects all three at evaluation); (2) for `timeseries_split`, auto-sets `gap=label_horizon_candles` when `gap` is unset or `0` and rejects an explicit `gap<label_horizon_candles`; (3) for `train_test_split`, applies the same fixed `label_horizon_candles` purge around the train/test boundary; (4) both split methods additionally drop any train row whose label-aware availability reaches the test boundary; (5) label weighting becomes causal: the `epsilon` baseline at each row uses only pivot weights available with that row's label. `false` is deprecated: the causal split-guard rejections are lifted, but the toggle-independent ones remain (`timeseries_split` still rejects `shuffle_after_split`, and an active holdout still rejects all three at evaluation); `timeseries_split` `gap` auto-sets from `label_period_candles`, and Gaussian fills keep unbounded tails. |
+| freqai.feature_parameters.min_label_period_candles | 12 | int >= 1 | Minimum labeling NATR period used for reversals labeling HPO. |
+| freqai.feature_parameters.max_label_period_candles | 24 | int >= 1 | Maximum labeling NATR period used for reversals labeling HPO. |
+| freqai.feature_parameters.label_natr_multiplier | min/max midpoint | float > 0 | Zigzag labeling NATR multiplier. |
+| freqai.feature_parameters.min_label_natr_multiplier | 9.0 | float > 0 | Minimum labeling NATR multiplier used for reversals labeling HPO. |
+| freqai.feature_parameters.max_label_natr_multiplier | 12.0 | float > 0 | Maximum labeling NATR multiplier used for reversals labeling HPO. |
+| freqai.feature_parameters.label_frequency_candles | `auto` | int [2, 10000] \| `auto` | Reversals labeling frequency. `auto` = max(2, 2 \* number of whitelisted pairs). |
+| freqai.feature_parameters.label_weights | uniform | list of 7 finite floats >= 0; sum > 0 | Per-objective weights for trial selection methods, normalized internally. Objectives: (1) number of detected reversals, (2) median swing amplitude, (3) median (swing amplitude / median volatility-threshold ratio), (4) median swing ratio of mean volume per candle to median volume (dimensionless), (5) median swing speed, (6) median swing efficiency ratio, (7) median swing volume-weighted efficiency ratio. Zero-weight objectives do not contribute to power means, including negative and zero orders; positive-weight zero values retain their usual power-mean semantics. Clustering excludes zero-weight dimensions before estimating the cluster count and forming clusters; positive weights score clusters and candidates without rescaling cluster coordinates. Weights are validated before constant-objective projection; an all-zero projected vector falls back to uniform weights. |
+| freqai.feature_parameters.label_p_order | null | `minkowski`: finite float > 0; `power_mean`: finite float; null otherwise | Lp exponent for parameterized distance metrics. Used by `minkowski` distance (default 2.0) and `power_mean` distance (default 1.0). The KNN `power_mean` aggregation exponent is configured by `label_density_aggregation_param`. Ignored by other metrics. |
+| freqai.feature_parameters.label_method | `compromise_programming` | enum {`compromise_programming`,`topsis`,`kmeans`,`kmeans2`,`knn`,`medoid`} | HPO `label` Pareto front trial selection method. `kmedoids` is unavailable in the current Python 3.14 image. |
+| freqai.feature_parameters.label_distance_metric | `euclidean` | enum {`euclidean`,`minkowski`,`chebyshev`,`cityblock`,`sqeuclidean`,`seuclidean`,`mahalanobis`,`harmonic_mean`,`geometric_mean`,`arithmetic_mean`,`quadratic_mean`,`cubic_mean`,`power_mean`,`weighted_sum`} | Distance metric for `compromise_programming` and `topsis` methods. Invalid values warn and fall back to `euclidean`. |
+| freqai.feature_parameters.label_cluster_metric | `euclidean` | enum {`euclidean`,`minkowski`,`chebyshev`,`cityblock`,`sqeuclidean`,`seuclidean`,`mahalanobis`} | Distance metric for `kmeans` and `kmeans2`. Invalid values warn and fall back to `euclidean`. |
+| freqai.feature_parameters.label_cluster_selection_method | `topsis` | enum {`compromise_programming`,`topsis`} | Cluster selection method for clustering-based label methods. |
+| freqai.feature_parameters.label_cluster_trial_selection_method | `topsis` | enum {`compromise_programming`,`topsis`} | Best cluster trial selection method for clustering-based label methods. |
+| freqai.feature_parameters.label_density_metric | method-dependent | enum {`euclidean`,`minkowski`,`chebyshev`,`cityblock`,`sqeuclidean`,`seuclidean`,`mahalanobis`} | Distance metric for `knn` and `medoid` methods. Invalid values warn and fall back to the method's natural default (`minkowski` for `knn`, `euclidean` for `medoid`). |
+| freqai.feature_parameters.label_density_aggregation | `power_mean` | enum {`power_mean`,`quantile`,`min`,`max`} | Aggregation method for KNN neighbor distances. |
+| freqai.feature_parameters.label_density_n_neighbors | 5 | int >= 1 | Number of neighbors for KNN. |
+| freqai.feature_parameters.label_density_aggregation_param | aggregation-dependent | `power_mean`: finite float; `quantile`: float [0,1]; null otherwise | Tunable for KNN neighbor distance aggregation: Lp exponent (`power_mean`) or quantile value (`quantile`). |
+| freqai.feature_parameters.scaler | `minmax` | enum {`minmax`,`maxabs`,`standard`,`robust`} | Feature scaling method. `minmax`=MinMaxScaler, `maxabs`=MaxAbsScaler, `standard`=StandardScaler, `robust`=RobustScaler. Changing this parameter requires deleting trained models. |
+| freqai.feature_parameters.range | [-1.0, 1.0] | list[float], low < high | Target range for `minmax` scaler, min and max. Changing this parameter requires deleting trained models. |
+
+### Label prediction
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.label_prediction.method | `thresholding` | enum {`none`,`thresholding`} | `thresholding` computes adaptive thresholds. `none` skips calibration; the supplied ±2 static thresholds normally prevent threshold-driven entries. It is not an alternative entry strategy. Independently supplied static thresholds can change that result; safety/stoploss exits remain available. |
+| freqai.label_prediction.selection_method | `rank_extrema` | enum {`rank_extrema`,`rank_peaks`,`partition`} | Extrema selection method. `rank_extrema` ranks extrema values, `rank_peaks` ranks detected peak values, `partition` uses sign-based partitioning. |
+| freqai.label_prediction.threshold_method | `mean` | enum {`mean`,`isodata`,`li`,`minimum`,`otsu`,`triangle`,`yen`,`median`,`soft_extremum`} | Thresholding method for prediction thresholds. |
+| freqai.label_prediction.soft_extremum_alpha | 12.0 | float >= 0 | Alpha for `soft_extremum` threshold method. |
+| freqai.label_prediction.outlier_quantile | 0.999 | float (0,1) | Quantile threshold for predictions outlier filtering. |
+| freqai.label_prediction.keep_fraction | 0.0075 | float (0,1] | Fraction of extrema used for thresholds. 1 uses all, lower values keep only most significant. Applies to `rank_extrema` and `rank_peaks`; ignored for `partition`. |
+
+### Optuna / HPO
+
+| Path | Runtime fallback | Type / Range | Description |
+| --- | --- | --- | --- |
+| freqai.optuna_hyperopt.enabled | false | bool | Enables regressor and dynamic label HPO. |
+| freqai.optuna_hyperopt.sampler | `tpe` | enum {`tpe`,`auto`} | HPO sampler algorithm for `hp` namespace. `tpe` uses [TPESampler](https://optuna.readthedocs.io/en/stable/reference/samplers/generated/optuna.samplers.TPESampler.html) with multivariate, group, and constant_liar (when multiple workers), `auto` uses [AutoSampler](https://hub.optuna.org/samplers/auto_sampler). |
+| freqai.optuna_hyperopt.label_sampler | `auto` | enum {`auto`,`tpe`,`nsgaii`,`nsgaiii`} | HPO sampler algorithm for multi-objective `label` namespace. `nsgaii` uses [NSGAIISampler](https://optuna.readthedocs.io/en/stable/reference/samplers/generated/optuna.samplers.NSGAIISampler.html), `nsgaiii` uses [NSGAIIISampler](https://optuna.readthedocs.io/en/stable/reference/samplers/generated/optuna.samplers.NSGAIIISampler.html). |
+| freqai.optuna_hyperopt.storage | `file` | enum {`file`,`sqlite`} | HPO storage backend. |
+| freqai.optuna_hyperopt.continuous | true | bool | Continuous HPO. Forced for both namespaces in backtest and hyperopt, resetting the study on each optimization. |
+| freqai.optuna_hyperopt.warm_start | true | bool | Warm start HPO with previous best value(s). Persisted values are loaded and saved only in live and dry-run modes; non-live runs reuse only values produced earlier in the same run. |
+| freqai.optuna_hyperopt.n_startup_trials | 15 | int >= 0 | HPO startup trials. |
+| freqai.optuna_hyperopt.n_trials | 50 | int >= 1 | Maximum HPO trials. |
+| freqai.optuna_hyperopt.n_jobs | 1 | int >= 1 | Parallel HPO workers. |
+| freqai.optuna_hyperopt.timeout | 7200 | int >= 0 | HPO wall-clock timeout in seconds. |
+| freqai.optuna_hyperopt.label_candles_step | 1 | int >= 1 | Step for Zigzag NATR period `label` search space. |
+| freqai.optuna_hyperopt.space_reduction | false | bool | Enable/disable `hp` search space reduction based on previous best parameters. |
+| freqai.optuna_hyperopt.space_fraction | 0.4 | float [0,1] | Fraction of the `hp` search space to use with `space_reduction`. Lower values create narrower search ranges around the best parameters. |
+| freqai.optuna_hyperopt.min_resource | 3 | int >= 1 | Minimum resource per [HyperbandPruner](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.pruners.HyperbandPruner.html) rung. |
+| freqai.optuna_hyperopt.seed | 1 | int [0, 4294967295] | HPO RNG seed used by the Optuna samplers and label-candle shuffling. |
+| freqai.optuna_hyperopt.reset_label_study_on_schema_mismatch | true | bool | Reset a persisted `label` study when its selection schema is missing, invalid, or incompatible. `true` performs a destructive reset, deleting the study before recreating it; `false` preserves its trials and stored metadata, permits caller-managed reuse in memory, and does not persist selected params until the schema is reconciled. Both fail closed: an inspection error, or (under `true`) a deletion error, aborts study creation. Has no effect when `continuous=true` or outside live/dry-run modes, where studies are always reset. |
+| freqai.optuna_hyperopt.vary_model_seed_by_trial | true | bool | Add `trial.number` to each regressor's configured model seed (or its default seed of `1`) during HPO. `true` samples model randomness across trials; `false` evaluates every trial and the final fit with the same model seed. This does not change `freqai.optuna_hyperopt.seed`. |
+
+[freqai-parameters]: https://www.freqtrade.io/en/stable/freqai-parameter-table/#general-configuration-parameters
+[knn-density]: https://doi.org/10.1214/aoms/1177700079
+[silverman-density]: https://doi.org/10.1201/9781315140919
