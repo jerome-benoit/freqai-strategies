@@ -67,8 +67,9 @@ observations. Do not set `rl_config.action_masking` independently: it cannot
 add masking support to another algorithm and can make reward invalid-action
 handling inconsistent with the selected model.
 
-Reward `max_trade_duration_candles` / `max_idle_duration_candles` normalize
-duration-dependent reward components; they are not live exit timers.
+Reward `freqai.rl_config.model_reward_parameters.max_trade_duration_candles`
+and `freqai.rl_config.model_reward_parameters.max_idle_duration_candles`
+normalize duration-dependent reward components; they are not live exit timers.
 `max_training_drawdown_pct` limits training episodes, not exchange losses.
 `RLAgentStrategy` does not turn these training settings into a live stoploss.
 Review strategy protections, position size and execution risk separately.
@@ -83,8 +84,9 @@ drawdown value 0.02 is not a replacement for reviewing that live risk limit.
 100 trials with no timeout. Runtime fallbacks differ: one environment, no
 multiprocessing or stacking, HPO disabled and optional action statistics disabled.
 
-Explicit configuration overrides runtime fallbacks; the tables below distinguish
-both from the template. Inspect normalized startup logs. Set `test_size`
+Explicit configuration overrides schema defaults and constructor fallbacks. The
+tables distinguish those defaults and requirements from the supplied profile;
+inspect normalized startup logs. Set `test_size`
 explicitly: the local HPO enablement check falls back to 0.1 when omitted, but
 the native split is 25% when both `test_size` and `train_size` are omitted.
 Do not treat the HPO gate fallback as an effective data-split default.
@@ -169,9 +171,12 @@ removal.
 and final fit; environment and algorithm update boundaries round the actual
 budget. It is not an exact episode count. Trials are serialized (one Optuna
 worker), although each learner can use several environments. Bound `n_trials`
-and choose a positive `timeout_hours` when a wall-clock cap is needed. The
-supplied zero timeout means no cap. Evaluation environments/episodes also cost
-resources; a larger budget is not evidence of better economics.
+and use a positive `timeout_hours` for a soft HPO wall-clock budget checked
+between trials. Optuna does not interrupt a running trial when that budget
+expires, so the current trial can exceed it. The subsequent final fit and
+evaluation are outside this timeout. The supplied zero timeout disables the HPO
+timeout. Evaluation environments/episodes also cost resources; a larger budget
+is not evidence of better economics.
 
 The objective maximizes the best mean deterministic evaluation **episode reward**
 across periodic and final evaluations. Progress may display the latest mean
@@ -261,16 +266,26 @@ not locally validated. General exchange/FreqAI options use the
 [Freqtrade parameter reference](https://www.freqtrade.io/en/stable/freqai-parameter-table/).
 Reward formulas and tunable descriptions are in the [reward reference](reward_space_analysis/README.md#reward-tunables-reference); live environment defaults are defined by `ReforceXY.DEFAULT_*` and the native RL base.
 
+
+Normal Freqtrade startup injects declared JSON-schema defaults before the FreqAI
+model is initialized. In the runtime table, **Schema** values apply to omitted
+keys after validation; **direct-constructor** values describe initialization
+without that injection. Other fallback entries apply when a native or app field
+remains omitted. Supplied values take precedence over defaults. These schema
+values were verified with Freqtrade 2026.8 and 2026.9; see the
+[versioned native schema](https://github.com/freqtrade/freqtrade/blob/2026.8/freqtrade/config_schema/config_schema.py).
+Moving base images can change them; record the runtime version.
+
 - [Runtime, observations and evaluation](#runtime-observations-and-evaluation)
 - [HPO settings](#hpo-settings)
 - [Model constructor and policy parameters](#model-constructor-and-policy-parameters)
 
 ### Runtime, observations and evaluation
 
-| Path | Runtime fallback / requirement | Type / constraints | Supplied profile | Behavior |
+| Path | Schema default / constructor fallback / requirement | Type / constraints | Supplied profile | Behavior |
 | --- | --- | --- | --- | --- |
-| freqai.rl_config.model_type | Required; no runtime fallback | String: app-supported PPO, RecurrentPPO, MaskablePPO, DQN, QRDQN | MaskablePPO | Native loader also accepts A2C/TRPO/ARS, but ReforceXY HPO explicitly does not support them; do not present them as supported app HPO choices. |
-| freqai.rl_config.policy_type | Required; no runtime fallback | Algorithm-compatible SB3 policy name | MlpPolicy | Use MlpLstmPolicy with RecurrentPPO; MlpPolicy with ordinary PPO/MaskablePPO/DQN/QRDQN. Forwarded to model constructor, not renamed by app. |
+| freqai.rl_config.model_type | Schema: PPO; direct constructor requires the key | String: app-supported PPO, RecurrentPPO, MaskablePPO, DQN, QRDQN | MaskablePPO | Omitting the key selects PPO, not the supplied MaskablePPO profile. Native loader also accepts A2C/TRPO/ARS, but ReforceXY HPO explicitly does not support them; do not present them as supported app HPO choices. |
+| freqai.rl_config.policy_type | Schema: MlpPolicy; direct constructor requires the key | Algorithm-compatible SB3 policy name | MlpPolicy | Use MlpLstmPolicy with RecurrentPPO; MlpPolicy with ordinary PPO/MaskablePPO/DQN/QRDQN. The schema does not adapt the default to model_type. Forwarded to model constructor, not renamed by app. |
 | freqai.continual_learning | false | Boolean | Omitted | Requires frame_stacking=0. Nonzero effective stacking disables continuation. Keeps deployed fitted feature coordinates/pipeline and policy; architecture changes require new identifier/reset; HPO remains cold/current-window. |
 | freqai.rl_config.train_cycles | 25 | Integer intended; int(value), clamped to minimum 1; no app upper bound | 25 | Requested budget is training rows × cycles, rounded to environment/model update boundaries; shared by each HPO trial and final fit. Not an exact number of completed episodes. |
 | freqai.data_split_parameters.test_size | Gate fallback 0.1; actual omitted split 25% if train_size also omitted | 0 disables evaluation/HPO; otherwise sklearn-valid holdout fraction/count with nonempty training and test datasets | 0.333 | Set explicitly. HPO additionally requires both freqai.enabled and rl_config_optuna.enabled. Native split forced chronological. |
@@ -288,18 +303,18 @@ Reward formulas and tunable descriptions are in the [reward reference](reward_sp
 | freqai.rl_config.max_no_improvement_evals | 0 | Integer intended; 0 disables; no local range/type validation | 0 | Adds SB3 StopTrainingOnNoModelImprovement for ordinary fit evaluation, not HPO trial callbacks. |
 | freqai.rl_config.min_evals | 0 | Integer intended; no local range/type validation | 0 | Wait evaluations before no-improvement stopping is counted; relevant only with max_no_improvement_evals enabled. |
 | freqai.rl_config.check_envs | true | Boolean | true | Gym API smoke validation of training env and, with test_size>0, eval env. |
-| freqai.rl_config.tensorboard_throttle | 1 | Integer >=1; invalid reset to 1 | Omitted | Training calls between InfoMetricsCallback logs; relevant when activate_tensorboard enabled. |
+| freqai.rl_config.tensorboard_throttle | 1 | Integer >=1; invalid reset to 1 | Omitted | When activate_tensorboard is enabled, InfoMetricsCallback collects metrics when aggregate num_timesteps is divisible by this value (1 collects on every callback call). This is a timestep-modulo filter, not a callback-call interval: with n_envs=8 and throttle=8, every call passes. TensorBoard write/flush frequency is separate. |
 | freqai.rl_config.plot_new_best | false | Boolean | false | TensorBoard rollout plot on a new best ordinary-fit checkpoint; disabled with training multiprocessing. |
 | freqai.rl_config.plot_window | 2000 | Integer intended; positive truncates; <=0 retains full history; no local type validation | Omitted | Environment history rows retained in rollout plot. |
-| freqai.rl_config.progress_bar | false | Boolean | Omitted | Enables training progress callback and Optuna progress display. |
+| freqai.rl_config.progress_bar | Schema: true; direct-constructor fallback: false | Boolean | Omitted | Enables training progress callback and Optuna progress display; omitted validated configuration enables it. |
 | freqai.rl_config.add_state_info | false | Boolean | true | Adds unlevered unrealized PnL, position, trade duration to observations; unsupported in backtesting. hold_potential_enabled automatically enables it, so hold potential also cannot be backtested. |
 | freqai.rl_config.cpu_count | 1 | Positive integer suitable for torch threads; no app validation | 4 | Native torch thread count capped by half max_system_threads; separate from environment count. |
-| freqai.rl_config.max_training_drawdown_pct | 0.8 | Numeric intended; no local range validation; do not claim enforced [0,1] | 0.02 | Native equity floor is 1-value; training episode risk cutoff, not a live exchange stoploss. |
+| freqai.rl_config.max_training_drawdown_pct | Schema: 0.02; direct-constructor fallback: 0.8 | Numeric intended; no local range validation; do not claim enforced [0,1] | 0.02 | Native equity floor is 1-value, so an omitted validated value gives 0.98. Training episode risk cutoff, not a live exchange stoploss. |
 | freqai.fit_live_predictions_candles | 0 | Nonnegative integer; bool rejected; invalid raises ValueError | Omitted | 0 disables action mean/population std statistics; live uses persisted produced observations, backtest prior rows; statistics do not gate RL actions. |
-| freqai.rl_config.model_reward_parameters | Required; no application fallback | Dictionary; rr and profit_aim are required members | rr=2, profit_aim=0.025, max_trade_duration_candles=96, idle_penalty_ratio=0 | The native base requires the map and both members; analyzer defaults do not supply them. Optional reward settings have their own environment fallbacks. Reward shaping and duration normalization are not live order timeouts. Model gamma overrides potential_gamma when environments are constructed. |
-| freqai.rl_config.model_reward_parameters.rr | Required; no application fallback | Numeric reward-to-risk factor | 2 | Native reward target uses rr × profit_aim. Include explicitly; omitting the member fails environment construction. |
-| freqai.rl_config.model_reward_parameters.profit_aim | Required; no application fallback | Numeric profit target | 0.025 | Include explicitly; omitting the member fails environment construction. This reward target does not place a live take-profit order. |
-| freqai.rl_config.model_reward_parameters.max_trade_duration_candles | 128 | Integer-convertible value; no local range validation | 96 | Duration scale for reward penalties, not a live timeout. |
+| freqai.rl_config.model_reward_parameters | Required map; no schema or application fallback | Dictionary; rr and profit_aim are schema-defaulted members | rr=2, profit_aim=0.025, max_trade_duration_candles=96, idle_penalty_ratio=0 | Include the map. Schema validation supplies omitted rr/profit_aim members; a direct native constructor requires both. Analyzer defaults do not supply this map. Optional reward settings have their own environment fallbacks. Reward shaping and duration normalization are not live order timeouts. Model gamma overrides potential_gamma when environments are constructed. |
+| freqai.rl_config.model_reward_parameters.rr | Schema: 1; direct constructor requires the member | Numeric reward-to-risk factor | 2 | The schema injects an omitted member into an existing reward map; direct environment construction without it raises. Native reward target uses rr × profit_aim. |
+| freqai.rl_config.model_reward_parameters.profit_aim | Schema: 0.025; direct constructor requires the member | Numeric profit target | 0.025 | The schema injects an omitted member into an existing reward map; direct environment construction without it raises. This reward target does not place a live take-profit order. |
+| freqai.rl_config.model_reward_parameters.max_trade_duration_candles | 128 | Integer-convertible value; no local range validation | 96 | Duration scale for reward penalties, not a live timeout. The schema accepts the top-level homonym `freqai.rl_config.max_trade_duration_candles`, but ReforceXY ignores it; only this reward-map member takes effect. |
 | freqai.rl_config.model_reward_parameters.max_idle_duration_candles | 4 × effective max_trade_duration_candles | Integer-convertible value; no local range validation | Omitted (384 from the supplied trade scale) | Idle duration scale for reward penalties, not a live timer. |
 
 ### HPO settings
@@ -309,7 +324,7 @@ Reward formulas and tunable descriptions are in the [reward reference](reward_sp
 | freqai.rl_config_optuna.enabled | false | Boolean | true | Requires freqai.enabled=true and test_size>0; optimize PPO/RecurrentPPO/MaskablePPO/DQN/QRDQN. |
 | freqai.rl_config_optuna.n_trials | 100 | Integer intended; forwarded to Optuna, no local range validation | 100 | New trial budget per optimize call; does not mean lifetime cap on reusable study; serialized n_jobs=1. |
 | freqai.rl_config_optuna.n_startup_trials | 15 | Integer intended; forwarded to TPE, no local range validation | 15 | TPE random-startup trials; not passed to AutoSampler. |
-| freqai.rl_config_optuna.timeout_hours | 0 | Numeric hours; no local range validation | 0 | 0 means no timeout; nonzero multiplied by 3600 and sent to study.optimize. Use a positive value for a wall-clock budget; timeout does not replace train_cycles. |
+| freqai.rl_config_optuna.timeout_hours | 0 | Numeric hours; no local range validation | 0 | 0 disables the HPO timeout; nonzero values are multiplied by 3600 and passed to study.optimize. Positive values set a soft budget checked between trials: a running trial may exceed it, and the subsequent final fit/evaluation are outside it. Does not replace train_cycles. |
 | freqai.rl_config_optuna.continuous | false | Boolean | Omitted | IMPORTANT: true deletes/recreates the study each optimize call, not endless trial execution. false reuses compatible objective-identity study. |
 | freqai.rl_config_optuna.warm_start | false | Boolean | Omitted | Enqueues saved compatible best parameters. A purge-triggered run enqueues previous best even if warm_start=false. |
 | freqai.rl_config_optuna.sampler | tpe | tpe \| auto; invalid raises ValueError | Omitted | tpe uses multivariate/group TPE; auto loads OptunaHub auto sampler and its dependencies. |

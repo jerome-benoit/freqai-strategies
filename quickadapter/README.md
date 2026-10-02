@@ -9,6 +9,7 @@ morphology, not returns. Regressor error is a model diagnostic, not a profit sco
 - [Decision cycle](#decision-cycle)
 - [Supplied profile versus runtime fallbacks](#supplied-profile-versus-runtime-fallbacks)
 - [Models and HPO](#models-and-hpo)
+- [Configuration formats](#configuration-formats)
 - [Continual learning](#continual-learning)
 - [Prediction warmup and restarts](#prediction-warmup-and-restarts)
 - [Configuration reference](#configuration-reference)

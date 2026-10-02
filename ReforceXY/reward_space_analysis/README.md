@@ -571,9 +571,9 @@ Flags hierarchy:
 | Both skipped             | ✓                         | ✓                           | No                 | No                 | Marked "(skipped)" |
 
 Auto-skip if `num_samples < 4`.
-The table describes computation, not file presence: skipping PD can still
-produce header-only CSVs. See [the export contract](#data-exports).
-
+The table describes requested computation on usable data, not guaranteed results
+or file presence. Skipping PD can still produce header-only CSVs; fallback
+analysis can leave unavailable importances. See [the export contract](#data-exports).
 Reusing an output directory removes only stale analyzer-owned
 `feature_importance.csv` and the three `partial_dependence_{trade_duration,idle_duration,pnl}.csv`
 files before writing the new report; unrelated files are retained.
@@ -659,7 +659,7 @@ descriptive.
 | File                       | Description                                          |
 | -------------------------- | ---------------------------------------------------- |
 | `reward_samples.csv`       | Raw synthetic samples                                |
-| `feature_importance.csv` | Computed rankings or a header-only unavailable-analysis placeholder; see conditions below. |
+| `feature_importance.csv` | Finite importance estimates, a header-only placeholder, or fallback rows with empty importance fields (NaN); see conditions below. |
 | `partial_dependence_*.csv` | Computed curves or header-only placeholders; see conditions below. |
 | `manifest.json`            | Runtime manifest (simulation + reward params + hash) |
 
@@ -672,16 +672,28 @@ Header-only PD files are **placeholders, not computed curves**. Their header is
 | Feature analysis explicitly skipped | Not created | Not created, regardless of the PD flag. |
 | Fewer than 4 rows, PD requested | Not created | Three header-only placeholders. |
 | Fewer than 4 rows, PD skipped | Not created | Not created. |
-| At least 4 rows, sklearn available, PD skipped | Computed feature analysis | Three header-only placeholders. |
 | At least 4 rows, sklearn unavailable | Header-only placeholder | Three header-only placeholders, even with PD skipped. |
-| At least 4 rows, sklearn available, PD requested | Computed feature analysis | Curves only for returned PD features; do not assume three populated files. |
+| At least 4 rows, model fitted with finite importance estimates, PD skipped | Computed importance estimates | Three header-only placeholders. |
+| At least 4 rows, model fitted with finite importance estimates, PD requested | Computed importance estimates | Curves only for returned PD features; possibly none. |
+| At least 4 rows, sklearn available, no fitted model after preprocessing/split/fitting | Header-only if no usable features; otherwise rows with empty importance fields (NaN). | Three header-only placeholders if PD skipped; otherwise not created. |
+| At least 4 rows, model fitted but importance estimates unavailable | Rows with empty importance fields (NaN). | Three header-only placeholders if PD skipped; otherwise curves only for independently returned PD features, possibly none. |
 
 The three reserved PD names use `trade_duration`, `idle_duration` and `pnl`.
-The report summary distinguishes placeholders from computed data. Existing
-analyzer-owned feature/PD artifacts are removed before a new report, as described
-under [Skipping Feature Analysis](#skipping-feature-analysis); unrelated files
-are retained. `reward_samples.csv`, the report and the manifest are separate
-outputs; the manifest is produced after reporting succeeds.
+At least 4 rows and scikit-learn availability are not sufficient for valid
+importance estimates. The helper drops constant and wholly NaN feature columns;
+fewer than two usable features, remaining feature NaNs, or split/fitting failure
+leave no fitted model. Empty feature sets produce header-only CSVs; retained
+features produce rows with NaN importances, serialized as empty numeric fields.
+Even with a fitted model, failed or undefined permutation importance can leave
+NaN estimates; requested PD computations are independent and may still succeed.
+
+The summary distinguishes PD placeholders from computed curves. For feature
+importance, inspect the numeric columns: a nonempty CSV or the footer label
+"Complete feature importance rankings" does not certify finite estimates or a
+successful fit. Existing analyzer-owned feature/PD artifacts are removed before
+a new report, as described under [Skipping Feature Analysis](#skipping-feature-analysis);
+unrelated files are retained. `reward_samples.csv`, the report and the manifest are
+separate outputs; the manifest is produced after reporting succeeds.
 
 
 The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in

@@ -391,7 +391,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "max_no_improvement_evals": 0,      // Maximum consecutive evaluations without a new best model
                 "min_evals": 0,                     // Number of evaluations before start to count evaluations without improvements
                 "check_envs": true,                 // Check that an environment follows Gym API
-                "tensorboard_throttle": 1,          // Number of training calls between tensorboard logs
+                "tensorboard_throttle": 1,          // Collect info metrics when aggregate num_timesteps is divisible by this value
                 "plot_new_best": false,             // Enable tensorboard rollout plot upon finding a new best model
                 "plot_window": 2000,                // Environment history window used for tensorboard rollout plot
             },
@@ -399,7 +399,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "enabled": false,                   // Enable hyperopt
                 "n_trials": 100,                    // Number of trials
                 "n_startup_trials": 15,             // Number of initial random trials for TPESampler
-                "timeout_hours": 0,                 // Maximum time in hours for hyperopt (0 = no timeout)
+                "timeout_hours": 0,                 // Soft HPO hours checked between trials; final fit/evaluation excluded (0 disables)
                 "continuous": false,                // If true, delete/recreate the study on each optimize call
                 "warm_start": false,                // If true, enqueue previous best params if exists
                 "sampler": "tpe",                   // Optuna sampler (tpe|auto)

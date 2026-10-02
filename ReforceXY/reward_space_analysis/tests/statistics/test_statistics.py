@@ -685,6 +685,67 @@ class TestStatistics(RewardSpaceTestBase):
                 independent_observations=False,
             )
 
+    def test_report_projects_constant_intervals_only_with_declared_independence(self):
+        """Project constant intervals only after independence is declared.
+
+        Owns statistics-report-inference-projection-146. Zero-PnL exits with
+        constant shaping have no eligible hypothesis tests. Rewriting the same
+        report with False or the undeclared default must remove its intervals.
+        Point-mass bounds are a non-owning reference to
+        statistics-constant-dist-exact-ci-113a; no rounding tolerance is needed.
+        """
+        expected_means = {
+            "reward": -PARAMS.BASE_FACTOR,
+            "reward_idle": 0.0,
+            "reward_hold": 0.0,
+            "reward_exit": 0.0,
+            "pnl": 0.0,
+            "reward_shaping": -PARAMS.BASE_FACTOR,
+            "reward_entry_additive": 0.0,
+            "reward_exit_additive": 0.0,
+        }
+        df = pd.DataFrame(
+            {
+                **expected_means,
+                "reward_invalid": 0.0,
+                "trade_duration": PARAMS.TRADE_DURATION_SHORT,
+                "idle_duration": 0.0,
+                "position": reward_space_analysis.Positions.Long.value,
+                "action": reward_space_analysis.Actions.Long_exit.value,
+                "duration_ratio": PARAMS.TRADE_DURATION_SHORT
+                / self.DEFAULT_PARAMS["max_trade_duration_candles"],
+                "idle_ratio": 0.0,
+            },
+            index=range(SCENARIOS.SAMPLE_SIZE_CONST_DF),
+        )
+        for declaration in (True, False, None):
+            with self.subTest(independent_observations=declaration):
+                inference_kwargs = (
+                    {} if declaration is None else {"independent_observations": declaration}
+                )
+                reward_space_analysis.write_complete_statistical_analysis(
+                    df,
+                    self.output_path,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    seed=SEEDS.BASE,
+                    bootstrap_resamples=SCENARIOS.BOOTSTRAP_EXTENDED_ITERATIONS,
+                    skip_feature_analysis=True,
+                    **inference_kwargs,
+                )
+                content = (self.output_path / "statistical_analysis.md").read_text(encoding="utf-8")
+                rows = []
+                for line in content.splitlines():
+                    cells = [cell.strip() for cell in line.split("|")[1:-1]]
+                    if len(cells) == 5 and cells[0] in expected_means:
+                        rows.append((cells[0], *(float(cell) for cell in cells[1:])))
+                expected = (
+                    [(metric, mean, mean, mean, 0.0) for metric, mean in expected_means.items()]
+                    if declaration is True
+                    else []
+                )
+                self.assertCountEqual(rows, expected)
+
     def test_stats_bootstrap_rejects_invalid_bounds(self):
         """Non-finite or reversed bounds are errors, never repaired by the validator."""
         for bounds in (

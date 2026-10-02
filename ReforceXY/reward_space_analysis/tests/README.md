@@ -225,6 +225,7 @@ Columns:
 | statistics-rank-direction-141                 | statistics  | Rank-biserial effect follows the named first-group advantage                         | statistics/test_statistics.py::test_pnl_rank_biserial_direction_matches_named_first_group           | Checks both directions                                                                                                                                                         |
 | statistics-bootstrap-count-142                | statistics  | Zero and negative resample counts fail for variable and constant data                | statistics/test_statistics.py::test_bootstrap_rejects_nonpositive_resample_count                    | Rejects missing bootstrap                                                                                                                                                      |
 | api-unmasked-sample-probabilities-144         | api         | Unmasked sample probabilities match marginal valid-action frequencies                | api/test_api_helpers.py::test_unmasked_sampling_probabilities_match_action_frequencies              | Spot/futures entries, long/short exits, and neutral probability                                                                                                                |
+| statistics-report-inference-projection-146 | statistics | Constant confidence intervals require declared independence, even with an empty hypothesis map | statistics/test_statistics.py::test_report_projects_constant_intervals_only_with_declared_independence | Numeric projection; True → False → default rewrites the same report; non-owning bounds reference: statistics-constant-dist-exact-ci-113a |
 
 ### Non-Owning Smoke / Reference Checks
 
@@ -245,6 +246,7 @@ The following tests also check outcomes owned elsewhere:
 | pbrs/test_pbrs.py::test_pbrs_non_canonical_full_report_reason_aggregation      | Non-canonical report reasons                | robustness/test_robustness.py::test_decomposition_integrity                                              |
 | pbrs/test_pbrs.py::test_pbrs_non_canonical_mode_only_reason                    | Non-canonical exit mode without additives   | robustness/test_robustness.py::test_decomposition_integrity                                              |
 | statistics/test_statistics.py::test_stats_mean_decomposition_consistency       | Mean decomposition consistency              | robustness/test_robustness.py::test_decomposition_integrity                                              |
+| statistics/test_statistics.py::test_report_projects_constant_intervals_only_with_declared_independence | Exact point-mass interval bounds | statistics/test_statistics.py::test_stats_bootstrap_constant_distribution_exact_bounds |
 
 ### Deprecated / Reserved IDs
 
@@ -255,7 +257,7 @@ The following tests also check outcomes owned elsewhere:
 | 095 | deprecated | Report CLI propagation assertions merged into test_cli_params_and_csv |
 | 114 | reserved   | Gap retained for potential future statistics invariant                |
 | 120 | reserved | No active behavior invariant; prose-only report checks are not ownership. |
-| 124 | reserved | No active behavior invariant; prose-only report checks are not ownership. |
+| 124 | reserved | No prose owner; numeric confidence-interval projection is owned by statistics-report-inference-projection-146. |
 
 ## Adding New Invariants
 
