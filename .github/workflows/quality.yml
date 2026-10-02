@@ -87,7 +87,7 @@ jobs:
             --entrypoint sh \
             "${{ matrix.image }}" \
             /workspace/scripts/run-coverage.sh -s "${{ matrix.context }}/tests" -v
-      - name: Run runtime regressions under three orderings
+      - name: Run runtime regressions under three method orderings
         if: matrix.context == 'ReforceXY'
         run: |
           docker run --rm \

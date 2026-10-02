@@ -1,9 +1,12 @@
 """Guards the import identity and coverage denominator of the measured source.; requires the Freqtrade QA image."""
 
+import hashlib
 import importlib
+import os
 import random
 import sys
 import unittest
+from functools import cmp_to_key
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +47,17 @@ for _name in PRODUCTION_NAMES:
     importlib.import_module(_name)
 
 
+def _seeded_cmp(seed: str):
+    """The comparator qa_support builds for a given seed, rebuilt without touching _SEED."""
+
+    def compare(a: str, b: str) -> int:
+        ka = int.from_bytes(hashlib.blake2b(f"{seed}:{a}".encode(), digest_size=8).digest())
+        kb = int.from_bytes(hashlib.blake2b(f"{seed}:{b}".encode(), digest_size=8).digest())
+        return (ka > kb) - (ka < kb)
+
+    return compare
+
+
 def _source_files_under(root: Path) -> list[tuple[str, Path]]:
     """Registered modules whose `__file__` is a `.py` under `root`, as (name, resolved path)."""
     found = []
@@ -58,20 +72,30 @@ def _source_files_under(root: Path) -> list[tuple[str, Path]]:
 
 
 class SuiteContractTest(unittest.TestCase):
-    def test_each_measured_source_file_is_registered_under_exactly_one_dotted_name(self):
-        registered = [
-            path
-            for name, path in _source_files_under(MEASURED_TREE.parent)
-            if name.startswith("ReforceXY.user_data")
-        ]
+    def test_each_measured_source_file_is_registered_under_exactly_one_name(self):
+        # Shape-agnostic on purpose: filtering by the dotted prefix would discard the
+        # bare-stem registration this very comment calls out as the threat, and the guard
+        # would stay green with the shadow copy live.
+        registered = [path for _, path in _source_files_under(MEASURED_TREE)]
         for src in _SOURCES:
             with self.subTest(module=src.name):
                 matches = [path for path in registered if path == src.resolve()]
                 self.assertEqual(
                     1,
                     len(matches),
-                    "a measured file under exactly one dotted name; a second registration is a "
+                    "a measured file under exactly one module name; a second registration is a "
                     "shadow copy carrying its own module state",
+                )
+
+    def test_no_measured_file_is_registered_under_a_bare_stem(self):
+        # CI puts `user_data/strategies` on PYTHONPATH, so a bare `import RLAgentStrategy`
+        # would resolve. A dotted name is the only one the production import uses.
+        for name, _ in _source_files_under(MEASURED_TREE):
+            with self.subTest(module=name):
+                self.assertTrue(
+                    name.startswith("ReforceXY.user_data."),
+                    "a measured file registered under a bare stem has a second module object, "
+                    "and every process-global restore would clean the copy under test never uses",
                 )
 
     def test_every_test_module_is_registered_under_its_bare_stem(self):
@@ -122,10 +146,33 @@ class SuiteContractTest(unittest.TestCase):
             "process globals it restores leak between tests",
         )
 
-    def test_the_shuffle_is_installed_on_the_loader(self):
+    def test_the_order_is_alphabetical_exactly_when_no_seed_is_set(self):
         # `sortTestMethodsUsing` is a staticmethod on the LOADER; a TestCase has no such
         # hook, and a plain function would bind as a method and raise TypeError at discovery.
+        # What is asserted here is the ORDER the loader produces, not the identity of the
+        # function it holds — a constant comparator installed by the same line would satisfy
+        # an identity check and defeat the shuffle.
+        names = ["test_c", "test_a", "test_b", "test_d"]
+        ordered = sorted(names, key=cmp_to_key(_shuffle_cmp))
+        if os.environ.get("FREQAI_QA_SHUFFLE_SEED", ""):
+            # A seeded run must NOT be alphabetical; the other guard in this class
+            # proves it is deterministic for a given seed.
+            self.assertNotEqual(sorted(names), ordered)
+        else:
+            self.assertEqual(sorted(names), ordered)
         self.assertIs(_shuffle_cmp, unittest.TestLoader.sortTestMethodsUsing)
+
+    def test_a_seeded_order_differs_from_alphabetical(self):
+        names = ["test_c", "test_a", "test_b", "test_d"]
+        alphabetical = sorted(names)
+        for seed in ("1", "2", "3"):
+            with self.subTest(seed=seed):
+                shuffled = sorted(names, key=cmp_to_key(_seeded_cmp(seed)))
+                self.assertNotEqual(
+                    alphabetical,
+                    shuffled,
+                    f"seed {seed} left the method order alphabetical, so the shuffle is inert",
+                )
 
     def test_the_restore_puts_the_process_globals_back(self):
         cache = _PRODUCTION.ReforceXY._action_masks_cache
@@ -147,6 +194,12 @@ class SuiteContractTest(unittest.TestCase):
         self.assertEqual(
             _NUMPY_STATE_AT_IMPORT[1].tolist(),
             np.random.get_state()[1].tolist(),
+            "the numpy bit generator was not rewound",
+        )
+        self.assertEqual(
+            int(_NUMPY_STATE_AT_IMPORT[2]),
+            int(np.random.get_state()[2]),
+            "the numpy stream position advanced and was not restored",
         )
         if _TORCH_STATE_AT_IMPORT is not None:
             self.assertTrue(torch.equal(torch.random.get_rng_state(), _TORCH_STATE_AT_IMPORT))

@@ -70,10 +70,12 @@ _BASE_CONFIG: dict[str, Any] = {
             "add_state_info": False,
         },
         # `create_sampler` resolves `auto` through optunahub.load_module, which is an
-        # outbound fetch to hub.optuna.org, so the sampler is pinned for every test. The
-        # pin is only half the guarantee: `create_sampler` also defaults to "tpe" and
-        # raises for anything outside `_Samplers`, so no config value reaches the network.
-        # There is no `pruner` key: `create_pruner` is a staticmethod taking three ints.
+        # outbound fetch to hub.optuna.org, so the sampler is pinned here. The pin holds
+        # only while callers go through `**overrides`: two tests assign `rl_config_optuna`
+        # wholesale and would discard it. The guarantee that survives that is in the
+        # production default — `create_sampler` falls back to "tpe" and raises for anything
+        # outside `_Samplers`, so no config value reaches the network either way. There is
+        # no `pruner` key: `create_pruner` is a staticmethod taking three ints.
         "rl_config_optuna": {"enabled": False, "sampler": "tpe"},
     },
 }

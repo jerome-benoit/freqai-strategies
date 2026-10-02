@@ -40,7 +40,7 @@ class LinearScheduleTest(QaTestCase):
         self.assertEqual(0.0, schedule(-0.5))
 
     def test_it_reports_the_value_it_was_built_from(self):
-        self.assertIn("0.5", repr(SimpleLinearSchedule(0.5)))
+        self.assertEqual("SimpleLinearSchedule(initial_value=0.5)", repr(SimpleLinearSchedule(0.5)))
 
 
 class ScheduleClassificationTest(QaTestCase):
@@ -63,7 +63,10 @@ class ScheduleClassificationTest(QaTestCase):
         self.assertTrue(math.isnan(final))
 
     def test_a_linear_request_builds_the_linear_schedule(self):
-        self.assertIsInstance(get_schedule(LINEAR, 0.1), SimpleLinearSchedule)
+        schedule = get_schedule(LINEAR, 0.1)
+        self.assertIsInstance(schedule, SimpleLinearSchedule)
+        self.assertEqual(0.1, schedule(1.0))
+        self.assertEqual(0.0, schedule(0.0))
 
     def test_every_other_request_builds_a_constant_schedule(self):
         for kind in (CONSTANT, UNKNOWN):
@@ -108,16 +111,21 @@ class GradientStepTest(QaTestCase):
 
 
 class ArchitectureTest(QaTestCase):
-    def test_the_on_policy_family_gets_a_separate_actor_and_critic_width(self):
+    def test_the_on_policy_family_returns_an_entry_per_network_and_shares_one_width(self):
+        # Production gives pi and vf the SAME width at every size, so the invariant is that
+        # they agree, not that they differ; a test named for a separation that does not
+        # exist would pass on the wrong widths.
         for size in ReforceXY._NET_ARCH_SIZES:
             with self.subTest(size=size):
                 arch = get_net_arch("MaskablePPO", size)
                 self.assertEqual({"pi", "vf"}, set(arch))
+                self.assertEqual(arch["pi"], arch["vf"])
+                self.assertEqual([128, 128], arch["pi"]) if size == "small" else None
 
     def test_the_value_based_family_gets_a_shared_width_list(self):
         for model_type in ("DQN", "QR-DQN"):
             with self.subTest(model_type=model_type):
-                self.assertIsInstance(get_net_arch(model_type, "small"), list)
+                self.assertEqual([128, 128], get_net_arch(model_type, "small"))
 
     def test_a_grown_size_is_wider_than_a_small_one(self):
         self.assertGreater(
@@ -175,10 +183,17 @@ class EvalFrequencyTest(QaTestCase):
     def test_the_value_based_family_uses_the_evaluation_step_budget(self):
         self.assertEqual(16, self._model(model_type="DQN", n_eval_steps=16).get_eval_freq(16_000))
 
-    def test_hyperopt_reduces_the_interval_but_never_below_one(self):
+    def test_hyperopt_reduces_the_interval_by_the_configured_factor(self):
+        model = self._model(model_type="DQN", n_eval_steps=16)
+        self.assertEqual(16, model.get_eval_freq(16_000))
         self.assertEqual(
-            1, self._model(model_type="DQN", n_eval_steps=1).get_eval_freq(16_000, hyperopt=True)
+            round(16 / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR),
+            model.get_eval_freq(16_000, hyperopt=True),
         )
+
+    def test_the_reduced_interval_never_falls_below_one(self):
+        model = self._model(model_type="DQN", n_eval_steps=1)
+        self.assertEqual(1, model.get_eval_freq(16_000, hyperopt=True))
 
 
 if __name__ == "__main__":

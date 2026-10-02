@@ -564,6 +564,14 @@ denominator without the trade-off being visible:
   (`:2244-2245`), since `_Samplers` has exactly two members and `:2218` raises
   for anything else.
 
+CI additionally runs the ReforceXY suite three times with
+`FREQAI_QA_SHUFFLE_SEED=1|2|3`. The seed reorders test METHODS within each
+class — `unittest` sorts both module and class order alphabetically and
+consults no hook for either, so cross-module ordering is not permuted. A leaked
+global is still caught: `QaTestCase` restores the process globals in `setUp`
+and again in `addCleanup`, so every test starts from the import-time state
+whatever ran before it.
+
 `fail_under` is an absolute floor, never per-module. To change it, re-measure
 with the shipped configuration already in place — a measurement taken without
 `branch` and `include_namespace_packages` reports a different denominator and
