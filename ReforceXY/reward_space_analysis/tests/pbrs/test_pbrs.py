@@ -1556,6 +1556,113 @@ class TestPBRS(RewardSpaceTestBase):
             },
         )
 
+    def test_native_integer_durations_preserve_exact_values(self):
+        """Validation preserves exact duration values and adjustment metadata."""
+        values = (
+            2**53 + 1,
+            np.int64(2**53 + 1),
+            np.int64(2**63 - 1),
+            np.uint64(2**64 - 1),
+            2**200 + 1,
+        )
+        for key in ("max_trade_duration_candles", "max_idle_duration_candles"):
+            for strict in (True, False):
+                for value in values:
+                    with self.subTest(key=key, strict=strict, value=value):
+                        normalized, adjustments = validate_reward_parameters(
+                            {key: value}, strict=strict
+                        )
+                        self.assertEqual(normalized[key], int(value))
+                        if isinstance(value, np.integer):
+                            self.assertEqual(adjustments[key]["adjusted"], int(value))
+
+    def test_native_duration_bounds_precede_truncation(self):
+        """Native floating durations truncate only after their bounds are checked."""
+        values = [np.float32(3.75), np.float64(3.75)]
+        if np.finfo(np.longdouble).nmant > np.finfo(np.float64).nmant:
+            values.extend(
+                [np.longdouble("9007199254740993.0"), np.longdouble("9007199254740993.5")]
+            )
+        for key, below_minimum, minimum in (
+            ("max_trade_duration_candles", np.longdouble("0.5"), 1),
+            ("max_idle_duration_candles", np.longdouble("-0.5"), 0),
+        ):
+            for value in values:
+                for strict in (True, False):
+                    with self.subTest(key=key, strict=strict, value=value):
+                        normalized, _ = validate_reward_parameters({key: value}, strict=strict)
+                        self.assertEqual(normalized[key], int(value))
+            with self.subTest(key=key, below_minimum=below_minimum):
+                with self.assertRaises(ValueError):
+                    validate_reward_parameters({key: below_minimum}, strict=True)
+                normalized, _ = validate_reward_parameters({key: below_minimum}, strict=False)
+                self.assertEqual(normalized[key], minimum)
+
+    def test_native_finite_gamma_clamps_the_public_reward(self):
+        """Finite native discounts outside the domain use endpoints, not a fallback."""
+        values = [(np.float64(2.0), 0.0), (np.float64(-1.0), -0.025)]
+        if np.finfo(np.longdouble).maxexp > np.finfo(np.float64).maxexp:
+            values.extend([(np.longdouble("1e400"), 0.0), (np.longdouble("-1e400"), -0.025)])
+        context = reward_space_analysis.RewardContext(
+            0.0, 0, 1, 0.0, 0.0, Positions.Neutral, Actions.Neutral
+        )
+        for gamma, expected_shaping in values:
+            with self.subTest(gamma=gamma):
+                params = self.base_params(
+                    potential_gamma=gamma,
+                    hold_potential_enabled=True,
+                    exit_potential_mode="retain_previous",
+                    idle_penalty_ratio=0.0,
+                )
+                with self.assertWarns(reward_space_analysis.RewardDiagnosticsWarning):
+                    reward = reward_space_analysis.calculate_reward(
+                        context,
+                        params,
+                        100.0,
+                        0.03,
+                        2.0,
+                        short_allowed=True,
+                        action_masking=True,
+                        prev_potential=0.025,
+                    )
+                self.assertEqual(reward.reward_shaping, expected_shaping)
+                self.assertEqual(reward.total, expected_shaping)
+
+    def test_relaxed_native_gamma_clamps_before_reward_calculation(self):
+        """Relaxed finite-native clamps reach the reward; strict validation still rejects."""
+        values = [(np.float64(2.0), 1.0), (np.float64(-1.0), 0.0)]
+        if np.finfo(np.longdouble).maxexp > np.finfo(np.float64).maxexp:
+            values.extend([(np.longdouble("1e400"), 1.0), (np.longdouble("-1e400"), 0.0)])
+        context = reward_space_analysis.RewardContext(
+            0.0, 0, 1, 0.0, 0.0, Positions.Neutral, Actions.Neutral
+        )
+        for gamma, expected_gamma in values:
+            with self.subTest(gamma=gamma):
+                with self.assertRaises(ValueError):
+                    validate_reward_parameters({"potential_gamma": gamma}, strict=True)
+                normalized, adjustments = validate_reward_parameters(
+                    {"potential_gamma": gamma}, strict=False
+                )
+                self.assertEqual(normalized["potential_gamma"], expected_gamma)
+                self.assertEqual(adjustments["potential_gamma"]["adjusted"], expected_gamma)
+                params = self.base_params(
+                    **normalized,
+                    hold_potential_enabled=True,
+                    exit_potential_mode="retain_previous",
+                    idle_penalty_ratio=0.0,
+                )
+                reward = reward_space_analysis.calculate_reward(
+                    context,
+                    params,
+                    100.0,
+                    0.03,
+                    2.0,
+                    short_allowed=True,
+                    action_masking=True,
+                    prev_potential=0.025,
+                )
+                self.assertEqual(reward.reward_shaping, expected_gamma * 0.025 - 0.025)
+
     def test_validate_reward_parameters_records_near_bound_clamps_exactly(self):
         """Relaxed validation applies near-bound clamps without approximate-equality suppression."""
         cases = (

@@ -595,6 +595,8 @@ def validate_reward_parameters(
     Returns a sanitized copy plus adjustments mapping (param -> original/adjusted/reason).
     Behavior:
     - Boolean-like keys are coerced to bool.
+    - Native duration bounds are checked before conversion directly to Python int.
+    - Finite out-of-range gamma is clamped before float conversion in relaxed mode.
     - Numeric-bounded keys are coerced to float when provided as str/bool/None.
       * In strict mode: raise on non-numeric or out-of-bounds.
       * In relaxed mode: fallback to min bound or 0.0 with adjustment reason.
@@ -654,6 +656,42 @@ def validate_reward_parameters(
             and not bounds["min"] <= original_val <= bounds["max"]
         ):
             raise ValueError(f"Param: '{key}'={original_val!r} outside [0, 1]")
+        # Duration conversion and finite gamma clamps must precede binary64 narrowing.
+        native_duration = key in ("max_trade_duration_candles", "max_idle_duration_candles")
+        if (native_duration or key == "potential_gamma") and isinstance(
+            original_val, (int, float, np.integer, np.floating)
+        ):
+            native_finite = isinstance(original_val, (int, np.integer)) or np.isfinite(original_val)
+            if native_finite and (
+                native_duration or not bounds["min"] <= original_val <= bounds["max"]
+            ):
+                adjusted_native = original_val
+                reason_parts = []
+                if "min" in bounds and adjusted_native < bounds["min"]:
+                    if strict:
+                        raise ValueError(f"Param: '{key}'={original_val} below min {bounds['min']}")
+                    adjusted_native = bounds["min"]
+                    reason_parts.append(f"min={bounds['min']}")
+                if "max" in bounds and adjusted_native > bounds["max"]:
+                    if strict:
+                        raise ValueError(f"Param: '{key}'={original_val} above max {bounds['max']}")
+                    adjusted_native = bounds["max"]
+                    reason_parts.append(f"max={bounds['max']}")
+                adjusted_native = (
+                    int(adjusted_native) if native_duration else float(adjusted_native)
+                )
+                if not isinstance(original_val, (int, float)):
+                    reason_parts.insert(0, "numeric_coerce")
+                sanitized[key] = adjusted_native
+                if reason_parts:
+                    adjustments[key] = {
+                        "original": original_val,
+                        "adjusted": adjusted_native,
+                        "reason": ",".join(reason_parts),
+                        "validation_mode": "strict" if strict else "relaxed",
+                    }
+                continue
+
         # Robust coercion to float using helper (handles None/str/bool/non-finite)
         coerced_val = _get_float_param({key: original_val}, key, np.nan)
 
@@ -750,7 +788,7 @@ def validate_reward_parameters(
             }
     for key in ("max_trade_duration_candles", "max_idle_duration_candles"):
         if key in sanitized:
-            sanitized[key] = int(_get_float_param(sanitized, key))
+            sanitized[key] = _get_int_param(sanitized, key)
 
     return sanitized, adjustments
 
@@ -3263,6 +3301,18 @@ def _get_potential_gamma(params: RewardParams) -> float:
     - Guarantee returned float ∈ [0,1].
     """
     raw_gamma = params.get("potential_gamma")
+    bounds = _PARAMETER_BOUNDS["potential_gamma"]
+    if isinstance(raw_gamma, (int, float, np.integer, np.floating)):
+        native_finite = isinstance(raw_gamma, (int, np.integer)) or np.isfinite(raw_gamma)
+        if native_finite and not bounds["min"] <= raw_gamma <= bounds["max"]:
+            gamma = float(bounds["min"] if raw_gamma < bounds["min"] else bounds["max"])
+            warnings.warn(
+                f"PBRS: potential_gamma={raw_gamma} outside [0,1]; clamped to {gamma}",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            return gamma
+
     gamma = _get_float_param(params, "potential_gamma", np.nan)
     if not np.isfinite(gamma):
         if "potential_gamma" in params:

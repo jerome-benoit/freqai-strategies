@@ -215,11 +215,17 @@ be overridden via `--params`.
   counts for RandomForest and permutation importance (-1 = all cores).
 
 Programmatic reward parameters accept Python and NumPy real integer/floating
-scalars. Strict validation checks a numeric gamma in its native precision before
-normalizing it. Analysis-specific numeric string/bool coercion is retained; it
-does not replace the stricter runtime configuration contract. Direct gamma
-calculation falls back to 0.95 for invalid/non-finite input and clamps finite
-out-of-range values; relaxed parameter validation records its resets/clamps.
+scalars. Native duration scalars are checked against their bounds before direct
+conversion to Python integers, without binary64 narrowing or a fixed-width cap.
+Adjustment metadata for finite native durations records the final normalized
+integer. Strict validation checks a numeric gamma in its native precision before
+normalizing it.
+Analysis-specific numeric string/bool coercion is retained; it does not replace
+the stricter runtime configuration contract. Direct gamma calculation falls back
+to 0.95 for invalid/non-finite input and clamps finite out-of-range values before
+narrowing, including extended-precision scalars. Relaxed parameter validation
+records its resets/clamps and also checks finite native gamma bounds before
+narrowing.
 For a trained or resumed learner, supply its effective discount as
 `potential_gamma`, not a stale reward/config gamma.
 
