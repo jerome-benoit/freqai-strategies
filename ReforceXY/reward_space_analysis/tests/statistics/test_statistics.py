@@ -746,6 +746,83 @@ class TestStatistics(RewardSpaceTestBase):
                 )
                 self.assertCountEqual(rows, expected)
 
+    def test_report_certifies_feature_importance_only_from_finite_estimates(self):
+        """Report availability must agree with real fit state and numerical exports.
+
+        Owns statistics-report-feature-availability-147. Constant exit shaping
+        gives finite zero importances with a normal holdout, but undefined
+        permutation estimates with one test row. A single varying predictor or
+        no varying predictors leaves no fitted model. No exact prose is pinned.
+        """
+        cases = (
+            ("finite", SCENARIOS.SAMPLE_SIZE_CONST_DF, True, True),
+            ("single_feature", SCENARIOS.SAMPLE_SIZE_CONST_DF, False, False),
+            ("empty_features", SCENARIOS.SAMPLE_SIZE_CONST_DF, False, False),
+            ("undefined", SCENARIOS.SAMPLE_SIZE_FEATURE_UNDEFINED, True, False),
+        )
+        for case, count, fitted, complete in cases:
+            with self.subTest(case=case):
+                pnl = np.linspace(-PARAMS.PNL_SMALL, PARAMS.PNL_SMALL, count)
+                duration = np.linspace(0.0, PARAMS.TRADE_DURATION_SHORT, count)
+                if case == "single_feature":
+                    duration[:] = PARAMS.TRADE_DURATION_SHORT
+                elif case == "empty_features":
+                    pnl[:] = 0.0
+                    duration[:] = PARAMS.TRADE_DURATION_SHORT
+                df = pd.DataFrame(
+                    {
+                        "reward": -PARAMS.BASE_FACTOR,
+                        "reward_shaping": -PARAMS.BASE_FACTOR,
+                        "reward_invalid": 0.0,
+                        "reward_idle": 0.0,
+                        "reward_hold": 0.0,
+                        "reward_exit": 0.0,
+                        "reward_entry_additive": 0.0,
+                        "reward_exit_additive": 0.0,
+                        "pnl": pnl,
+                        "trade_duration": duration,
+                        "idle_duration": 0.0,
+                        "position": reward_space_analysis.Positions.Long.value,
+                        "action": reward_space_analysis.Actions.Long_exit.value,
+                        "duration_ratio": duration
+                        / self.DEFAULT_PARAMS["max_trade_duration_candles"],
+                        "idle_ratio": 0.0,
+                    }
+                )
+                importance, stats, _, model = reward_space_analysis._perform_feature_analysis(
+                    df, SEEDS.BASE, skip_partial_dependence=True, rf_n_jobs=1, perm_n_jobs=1
+                )
+                self.assertEqual(stats["model_fitted"], fitted)
+                self.assertEqual(model is not None, fitted)
+                self.assertEqual(importance.empty, case == "empty_features")
+                estimates = importance[["importance_mean", "importance_std"]].to_numpy()
+                if complete:
+                    np.testing.assert_array_equal(estimates, np.zeros_like(estimates))
+                elif not importance.empty:
+                    self.assertTrue(np.isnan(estimates).all())
+                reward_space_analysis.write_complete_statistical_analysis(
+                    df,
+                    self.output_path,
+                    PARAMS.PROFIT_AIM,
+                    PARAMS.RISK_REWARD_RATIO,
+                    SEEDS.BASE,
+                    skip_partial_dependence=True,
+                    rf_n_jobs=1,
+                    perm_n_jobs=1,
+                )
+                exported = pd.read_csv(self.output_path / "feature_importance.csv")
+                pd.testing.assert_frame_equal(
+                    exported, importance, check_dtype=False, check_exact=True
+                )
+                content = (self.output_path / "statistical_analysis.md").read_text(encoding="utf-8")
+                entry = next(
+                    line
+                    for line in content.splitlines()
+                    if line.startswith("- `feature_importance.csv`")
+                )
+                self.assertEqual("complete" in entry.lower(), complete)
+                self.assertEqual("unavailable" in entry.lower(), not complete)
+
     def test_stats_bootstrap_rejects_invalid_bounds(self):
         """Non-finite or reversed bounds are errors, never repaired by the validator."""
         for bounds in (

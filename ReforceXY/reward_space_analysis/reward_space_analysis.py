@@ -4738,8 +4738,17 @@ def write_complete_statistical_analysis(
                 f.write(
                     "- `feature_importance.csv` - Header-only placeholder; feature analysis unavailable\n"
                 )
-            else:
+            elif (
+                analysis_stats is not None
+                and analysis_stats["model_fitted"]
+                and np.isfinite(importance_df["importance_mean"]).all()
+                and np.isfinite(importance_df["importance_std"]).all()
+            ):
                 f.write("- `feature_importance.csv` - Complete feature importance rankings\n")
+            else:
+                f.write(
+                    "- `feature_importance.csv` - Importance estimates unavailable; feature rows retained\n"
+                )
         if partial_dependence_placeholders:
             f.write("- `partial_dependence_*.csv` - Header-only placeholders; no computed curves\n")
         elif computed_partial_dependence:

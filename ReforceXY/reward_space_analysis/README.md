@@ -685,13 +685,15 @@ features produce rows with NaN importances, serialized as empty numeric fields.
 Even with a fitted model, failed or undefined permutation importance can leave
 NaN estimates; requested PD computations are independent and may still succeed.
 
-The summary distinguishes PD placeholders from computed curves. For feature
-importance, inspect the numeric columns: a nonempty CSV or the footer label
-"Complete feature importance rankings" does not certify finite estimates or a
-successful fit. Existing analyzer-owned feature/PD artifacts are removed before
-a new report, as described under [Skipping Feature Analysis](#skipping-feature-analysis);
-unrelated files are retained. `reward_samples.csv`, the report and the manifest are
-separate outputs; the manifest is produced after reporting succeeds.
+The summary distinguishes PD placeholders from computed curves. The footer labels
+feature importance as complete only when the model is fitted and every value in
+both `importance_mean` and `importance_std` is finite. Otherwise it identifies
+unavailable estimates, retaining feature rows when present or marking a header-only
+placeholder. A complete ranking does not certify predictive validity. Existing
+analyzer-owned feature/PD artifacts are removed before a new report, as described
+under [Skipping Feature Analysis](#skipping-feature-analysis); unrelated files are
+retained. `reward_samples.csv`, the report and the manifest are separate outputs;
+the manifest is produced after reporting succeeds.
 
 The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in
 `reward_samples.csv` report marginal probabilities of valid actions when applicable.

@@ -323,6 +323,7 @@ class TestScenarios:
         SAMPLE_SIZE_MEDIUM: Medium sample size for standard tests (400)
         SAMPLE_SIZE_LARGE: Large sample size for statistical power (800)
         SAMPLE_SIZE_CONST_DF: Sample size for constant dataframes (64)
+        SAMPLE_SIZE_FEATURE_UNDEFINED: Four rows leave one test row and undefined R² (4)
         SAMPLE_SIZE_SHIFT_SCALE: Sample size for shift/scale tests (256)
         PBRS_SIMULATION_STEPS: Number of steps for PBRS simulation tests (500)
         MONTE_CARLO_ITERATIONS: Monte Carlo simulation iterations (160)
@@ -360,6 +361,7 @@ class TestScenarios:
     SAMPLE_SIZE_MEDIUM: int = 400
     SAMPLE_SIZE_LARGE: int = 800
     SAMPLE_SIZE_CONST_DF: int = 64
+    SAMPLE_SIZE_FEATURE_UNDEFINED: int = 4
     SAMPLE_SIZE_SHIFT_SCALE: int = 256
 
     # Specialized test scenario sizes
