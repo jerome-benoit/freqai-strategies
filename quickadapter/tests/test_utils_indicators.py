@@ -7,6 +7,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+import talib.abstract as ta
 from numpy.testing import assert_allclose, assert_array_equal
 from qa_support import QaTestCase, ohlcv_frame
 from Utils import (
@@ -25,7 +26,6 @@ from Utils import (
     get_distance,
     get_ma_fn,
     get_price_fn,
-    get_zl_ma_fn,
     midpoint,
     price_retracement_percent,
     smma,
@@ -395,23 +395,31 @@ class UtilsIndicatorsTest(QaTestCase):
             with self.subTest(plateau=plateau):
                 self.assertNotIn(plateau, fractal_highs)
 
-    def test_each_moving_average_name_resolves_to_its_own_callable(self):
-        callables = [get_ma_fn(name) for name in MA_MODES]
-        for name, function in zip(MA_MODES, callables, strict=True):
-            with self.subTest(name=name):
-                self.assertTrue(callable(function))
-                self.assertIs(get_ma_fn(name), function)
-        self.assertEqual(len(set(callables)), len(MA_MODES))
-        self.assertEqual(len({get_zl_ma_fn(name) for name in MA_MODES}), len(MA_MODES))
+    def test_weighted_and_adaptive_average_names_produce_the_named_native_average(self):
+        prices = pd.Series([1.0, 1.2, 1.1, 1.4, 1.3, 1.7, 1.6, 1.9, 1.8, 2.1, 2.0, 2.3])
+        for name, native_average in (("wma", ta.WMA), ("kama", ta.KAMA)):
+            for period in (3, 6):
+                with self.subTest(name=name, period=period):
+                    assert_allclose(
+                        get_ma_fn(name)(prices, timeperiod=period),
+                        native_average(prices, timeperiod=period),
+                        rtol=1e-12,
+                        atol=0.0,
+                        equal_nan=True,
+                    )
 
     def test_an_unknown_moving_average_name_falls_back_to_the_simple_average(self):
-        # The registry is a .get with the SMA default, so an unrecognised name is not an
-        # error: it silently resolves to the first entry. Pinned because a raise here would
-        # break every caller that forwards a user-supplied mamode.
-        sma = get_ma_fn(MA_MODES[0])
+        prices = pd.Series([1.0, 1.2, 1.1, 1.4, 1.3, 1.7, 1.6, 1.9, 1.8, 2.1, 2.0, 2.3])
+        expected = ta.SMA(prices, timeperiod=6)
         for name in ("bogus", "", "SMA", "sma ", None, 0):
             with self.subTest(name=repr(name)):
-                self.assertIs(get_ma_fn(name), sma)
+                assert_allclose(
+                    get_ma_fn(name)(prices, timeperiod=6),
+                    expected,
+                    rtol=1e-12,
+                    atol=0.0,
+                    equal_nan=True,
+                )
 
     def test_each_price_name_resolves_to_its_own_callable(self):
         callables = [get_price_fn(name) for name in PRICE_MODES]
@@ -641,13 +649,23 @@ class UtilsIndicatorsTest(QaTestCase):
                 )
 
     def test_the_oscillator_is_the_gap_between_its_two_averages(self):
-        frame = ohlcv_frame([100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108])
+        frame = ohlcv_frame(
+            [100.0, 101, 102, 101.5, 103, 104, 103.5, 105, 106, 105.5, 107, 108] * 5
+        )
         close = frame.get("close")
-        for mamode in MA_MODES:
+        for mamode, native_average in (
+            ("sma", ta.SMA),
+            ("ema", ta.EMA),
+            ("wma", ta.WMA),
+            ("dema", ta.DEMA),
+            ("tema", ta.TEMA),
+            ("trima", ta.TRIMA),
+            ("kama", ta.KAMA),
+            ("t3", ta.T3),
+        ):
             for ma1_length, ma2_length in ((3, 6), (2, 8)):
                 with self.subTest(mamode=mamode, ma1=ma1_length, ma2=ma2_length):
-                    average = get_ma_fn(mamode)
-                    expected = average(close, ma1_length) - average(close, ma2_length)
+                    expected = native_average(close, ma1_length) - native_average(close, ma2_length)
                     assert_allclose(
                         ewo(frame, ma1_length, ma2_length, mamode=mamode),
                         expected,

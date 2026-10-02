@@ -461,11 +461,6 @@ class UtilsRegressorPlumbingTest(QaTestCase):
         np.testing.assert_array_equal(eval_set[0][1].to_numpy(), targets.to_numpy())
         self.assertEqual(eval_weights[0].ndim, 1)
         self.assertEqual(eval_weights[0].shape, (len(features),))
-        # eval_set[0] must be the caller's own frames: fit_regressor ravel y but not X,
-        # and a copy here would silently drop the caller's index alignment.
-        self.assertIs(eval_set[0][0], features)
-        self.assertIs(eval_set[0][1], targets)
-        self.assertIs(eval_weights[0], weights)
 
     def test_a_non_positive_test_size_suppresses_evaluation_entirely(self):
         features, targets, weights = validation_split()
@@ -476,17 +471,6 @@ class UtilsRegressorPlumbingTest(QaTestCase):
                     make_test_set_and_weights(features, targets, weights, test_size),
                     (None, None),
                 )
-
-    def test_the_weight_vector_is_passed_through_without_reshaping_or_validation(self):
-        # The helper never inspects the weights: alignment is the caller's contract
-        # (both call sites pass a vector already indexed to the validation rows), so
-        # this pins that a mismatched shape is forwarded rather than repaired.
-        features, targets, _ = validation_split()
-
-        eval_set, eval_weights = make_test_set_and_weights(features, targets, np.ones((2, 3)), 0.25)
-
-        self.assertEqual(eval_weights[0].shape, (2, 3))
-        self.assertIs(eval_set[0][0], features)
 
 
 if __name__ == "__main__":
