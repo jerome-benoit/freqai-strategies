@@ -13,7 +13,6 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from freqtrade.enums import RunMode
 
 PAIR = "BTC/USDT"
@@ -113,24 +112,6 @@ def temporary_directory() -> Iterator[Path]:
         yield Path(path)
 
 
-def ohlcv_frame(closes, volume: float = 10.0, spread: float = 0.001) -> pd.DataFrame:
-    """Return an OHLCV frame whose close is `closes`, bracketed by a relative `spread`."""
-    values = np.asarray(closes, dtype=float)
-    count = values.size
-    spreads = np.broadcast_to(np.asarray(spread, dtype=float), (count,))
-    volumes = np.broadcast_to(np.asarray(volume, dtype=float), (count,))
-    return pd.DataFrame(
-        {
-            "open": values,
-            "high": values * (1.0 + spreads),
-            "low": values * (1.0 - spreads),
-            "close": values,
-            "volume": volumes,
-            "date": pd.date_range("2024-01-01", periods=count, freq="5min"),
-        }
-    )
-
-
 class RecordingPolicy:
     """A stand-in for an SB3 policy that records what it was asked to predict."""
 
@@ -144,54 +125,6 @@ class RecordingPolicy:
         return np.array([0]), None
 
 
-def rl_env(
-    prices,
-    *,
-    reward_kwargs: dict[str, Any] | None = None,
-    fee: float = 0.0015,
-    can_short: bool = True,
-    config: dict[str, Any] | None = None,
-    window_size: int = 1,
-    index=None,
-):
-    """Return a reset `MyRLEnv` over a one-column price frame.
-
-    `reward_kwargs` and `config` reach `MyRLEnv.__init__` verbatim; callers own every
-    value they pass, because the defaults here are the ones the shipped config uses and a
-    test that needs a different one must say so.
-    """
-    from ReforceXY.user_data.freqaimodels.ReforceXY import MyRLEnv
-
-    frame = pd.DataFrame({"open": list(prices)}, index=index)
-    env_config = {
-        "stake_amount": "unlimited",
-        "freqai": {
-            "rl_config": {
-                "add_state_info": False,
-                "max_training_drawdown_pct": 0.99,
-                "model_reward_parameters": {},
-            }
-        },
-    }
-    if config is not None:
-        env_config = _merge(env_config, config)
-    env = MyRLEnv(
-        df=frame.copy(),
-        prices=frame,
-        df_raw=frame.copy(),
-        window_size=window_size,
-        reward_kwargs=reward_kwargs
-        if reward_kwargs is not None
-        else {"rr": 2.0, "profit_aim": 0.03},
-        fee=fee,
-        can_short=can_short,
-        config=env_config,
-        live=True,
-    )
-    env.reset()
-    return env
-
-
 # --- test-order independence ------------------------------------------------------
 #
 # `unittest.TestLoader.sortTestMethodsUsing` is a staticmethod ON THE LOADER; a
@@ -203,6 +136,19 @@ def rl_env(
 # alphabetical discovery exactly, so the patch is unconditional and every invocation is
 # covered.
 _SEED = os.getenv("FREQAI_QA_SHUFFLE_SEED", "")
+
+
+def reseed(value: str) -> str:
+    """Set the loader's shuffle seed and return its previous value.
+
+    Exists so the suite contract can exercise the comparator the loader really
+    holds, rather than a copy of it. Call it only while nothing else is
+    discovering tests, and restore the returned value afterwards.
+    """
+    global _SEED
+    previous = _SEED
+    _SEED = value
+    return previous
 
 
 def _shuffle_cmp(a: str, b: str) -> int:

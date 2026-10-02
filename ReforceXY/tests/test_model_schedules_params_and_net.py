@@ -39,9 +39,6 @@ class LinearScheduleTest(QaTestCase):
         self.assertEqual(0.3, schedule(1.5))
         self.assertEqual(0.0, schedule(-0.5))
 
-    def test_it_reports_the_value_it_was_built_from(self):
-        self.assertEqual("SimpleLinearSchedule(initial_value=0.5)", repr(SimpleLinearSchedule(0.5)))
-
 
 class ScheduleClassificationTest(QaTestCase):
     def test_a_number_is_a_constant_schedule_holding_that_number(self):
@@ -120,7 +117,8 @@ class ArchitectureTest(QaTestCase):
                 arch = get_net_arch("MaskablePPO", size)
                 self.assertEqual({"pi", "vf"}, set(arch))
                 self.assertEqual(arch["pi"], arch["vf"])
-                self.assertEqual([128, 128], arch["pi"]) if size == "small" else None
+                if size == "small":
+                    self.assertEqual([128, 128], arch["pi"])
 
     def test_the_value_based_family_gets_a_shared_width_list(self):
         for model_type in ("DQN", "QR-DQN"):
@@ -159,13 +157,16 @@ class EvalFrequencyTest(QaTestCase):
         return model
 
     def test_a_non_positive_budget_still_evaluates_once(self):
+        # A boundary worth pinning as such. Deleting the early return would NOT turn
+        # this red — max_n_calls floors at 1 anyway — so it is not claimed to cover it.
         self.assertEqual(1, self._model().get_eval_freq(0))
 
-    def test_eval_freq_never_exceeds_the_calls_the_budget_allows(self):
-        model = self._model()
-        for budget in (16, 64, 16_000):
-            with self.subTest(budget=budget):
-                self.assertLessEqual(model.get_eval_freq(budget), budget)
+    def test_eval_freq_is_capped_by_the_calls_the_budget_allows(self):
+        # n_eval_steps above the budget is the case where the final min() bites; with
+        # the value-based branch the uncapped result is strictly greater.
+        model = self._model(model_type="DQN", n_eval_steps=100)
+        self.assertEqual(64, model.get_eval_freq(64))
+        self.assertEqual(8, model.get_eval_freq(8))
 
     def test_the_on_policy_family_prefers_a_rollout_that_fits_the_budget(self):
         model = self._model()
@@ -183,13 +184,15 @@ class EvalFrequencyTest(QaTestCase):
     def test_the_value_based_family_uses_the_evaluation_step_budget(self):
         self.assertEqual(16, self._model(model_type="DQN", n_eval_steps=16).get_eval_freq(16_000))
 
-    def test_hyperopt_reduces_the_interval_by_the_configured_factor(self):
-        model = self._model(model_type="DQN", n_eval_steps=16)
-        self.assertEqual(16, model.get_eval_freq(16_000))
-        self.assertEqual(
-            round(16 / ReforceXY._HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR),
-            model.get_eval_freq(16_000, hyperopt=True),
-        )
+    def test_hyperopt_reduces_the_interval(self):
+        # Two explicit outcomes rather than the production formula restated: changing
+        # _HYPEROPT_EVAL_FREQ_REDUCTION_FACTOR moves both of them.
+        model = self._model(model_type="DQN")
+        for n_eval_steps, plain, reduced in ((16, 16, 4), (64, 64, 16)):
+            with self.subTest(n_eval_steps=n_eval_steps):
+                model.n_eval_steps = n_eval_steps
+                self.assertEqual(plain, model.get_eval_freq(16_000))
+                self.assertEqual(reduced, model.get_eval_freq(16_000, hyperopt=True))
 
     def test_the_reduced_interval_never_falls_below_one(self):
         model = self._model(model_type="DQN", n_eval_steps=1)

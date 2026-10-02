@@ -1,12 +1,9 @@
 """Guards the import identity and coverage denominator of the measured source.; requires the Freqtrade QA image."""
 
-import hashlib
 import importlib
-import os
 import random
 import sys
 import unittest
-from functools import cmp_to_key
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +19,7 @@ from qa_support import (
     STRATEGY_MODULE,
     TESTS_ROOT,
     QaTestCase,
-    _shuffle_cmp,
+    reseed,
 )
 
 PRODUCTION_NAMES = (PRODUCTION_MODULE, STRATEGY_MODULE)
@@ -32,11 +29,10 @@ PRODUCTION_NAMES = (PRODUCTION_MODULE, STRATEGY_MODULE)
 # truthiness of `__file__` first.
 _SOURCES = tuple(sorted(MEASURED_TREE.rglob("*.py")))
 
-# This class derives from unittest.TestCase, NOT from QaTestCase, and so runs no restore.
-# That is deliberate: a check of the restore itself must observe what the restore left
-# behind, not the state setUp already put back. It is one of the two exemptions from the
-# inheritance rule below, together with test_coverage_floor.py.
-_EXEMPT_MODULES = {"test_suite_contract", "test_coverage_floor"}
+# SuiteContractTest derives from unittest.TestCase, NOT from QaTestCase, and so runs no
+# restore. That is deliberate: a check of the restore itself must observe what the restore
+# left behind, not the state setUp already put back. It is the ONLY exemption from the
+# inheritance rule below — not its module, which is why the guard names this class.
 
 # Imported here, at module scope, so the parity contract holds on its own: unittest discovery
 # imports every test module before running any test, so a lazy import inside a method would
@@ -45,17 +41,6 @@ _EXEMPT_MODULES = {"test_suite_contract", "test_coverage_floor"}
 # this contract pins.
 for _name in PRODUCTION_NAMES:
     importlib.import_module(_name)
-
-
-def _seeded_cmp(seed: str):
-    """The comparator qa_support builds for a given seed, rebuilt without touching _SEED."""
-
-    def compare(a: str, b: str) -> int:
-        ka = int.from_bytes(hashlib.blake2b(f"{seed}:{a}".encode(), digest_size=8).digest())
-        kb = int.from_bytes(hashlib.blake2b(f"{seed}:{b}".encode(), digest_size=8).digest())
-        return (ka > kb) - (ka < kb)
-
-    return compare
 
 
 def _source_files_under(root: Path) -> list[tuple[str, Path]]:
@@ -124,55 +109,55 @@ class SuiteContractTest(unittest.TestCase):
             "top-level status and `from qa_support import ...` fails under discovery",
         )
 
-    def test_only_the_meta_modules_bypass_the_shared_base_case(self):
+    def test_only_the_restore_observer_bypasses_the_shared_base_case(self):
         # `cls.__module__ == module.__name__` is the attribution rule that separates a class
         # defined here from one merely imported here: without it, `from unittest import
         # TestCase` or a re-exported base would be reported as a bypass.
-        offenders = []
+        offenders = set()
         for name, _ in _source_files_under(TESTS_ROOT):
-            if name in _EXEMPT_MODULES:
-                continue
-            for attr, cls in vars(sys.modules[name]).items():
+            for cls in vars(sys.modules[name]).values():
                 if not isinstance(cls, type) or cls.__module__ != name:
                     continue
-                if cls is unittest.TestCase or not issubclass(cls, unittest.TestCase):
+                if not issubclass(cls, unittest.TestCase) or cls is SuiteContractTest:
                     continue
                 if not issubclass(cls, QaTestCase):
-                    offenders.append(f"{name}.{attr}")
+                    offenders.add(f"{name}.{cls.__qualname__}")
         self.assertEqual(
             [],
-            offenders,
-            "every TestCase outside the two meta-modules must derive from QaTestCase, or the "
+            sorted(offenders),
+            "every TestCase except SuiteContractTest must derive from QaTestCase, or the "
             "process globals it restores leak between tests",
         )
 
-    def test_the_order_is_alphabetical_exactly_when_no_seed_is_set(self):
-        # `sortTestMethodsUsing` is a staticmethod on the LOADER; a TestCase has no such
-        # hook, and a plain function would bind as a method and raise TypeError at discovery.
-        # What is asserted here is the ORDER the loader produces, not the identity of the
-        # function it holds — a constant comparator installed by the same line would satisfy
-        # an identity check and defeat the shuffle.
-        names = ["test_c", "test_a", "test_b", "test_d"]
-        ordered = sorted(names, key=cmp_to_key(_shuffle_cmp))
-        if os.environ.get("FREQAI_QA_SHUFFLE_SEED", ""):
-            # A seeded run must NOT be alphabetical; the other guard in this class
-            # proves it is deterministic for a given seed.
-            self.assertNotEqual(sorted(names), ordered)
-        else:
-            self.assertEqual(sorted(names), ordered)
-        self.assertIs(_shuffle_cmp, unittest.TestLoader.sortTestMethodsUsing)
-
-    def test_a_seeded_order_differs_from_alphabetical(self):
-        names = ["test_c", "test_a", "test_b", "test_d"]
-        alphabetical = sorted(names)
-        for seed in ("1", "2", "3"):
-            with self.subTest(seed=seed):
-                shuffled = sorted(names, key=cmp_to_key(_seeded_cmp(seed)))
-                self.assertNotEqual(
-                    alphabetical,
-                    shuffled,
-                    f"seed {seed} left the method order alphabetical, so the shuffle is inert",
-                )
+    def test_the_loader_order_is_seeded_and_repeatable(self):
+        # Asserted through the loader that consumes the comparator, on a probe class that
+        # only supplies names: a copy of the comparator would leave every one of these
+        # green, so it is what makes this guard able to fail at all.
+        names = [f"test_{index:02d}" for index in range(32)]
+        probe = type("OrderProbe", (), {name: (lambda self: None) for name in reversed(names)})
+        loader = unittest.TestLoader()
+        previous = reseed("")
+        try:
+            self.assertEqual(
+                names, loader.getTestCaseNames(probe), "unseeded order is not alphabetical"
+            )
+            orders = []
+            for seed in ("1", "2", "3"):
+                with self.subTest(seed=seed):
+                    reseed(seed)
+                    ordered = loader.getTestCaseNames(probe)
+                    self.assertNotEqual(names, ordered, f"seed {seed} left the order alphabetical")
+                    self.assertEqual(
+                        ordered, loader.getTestCaseNames(probe), "order is not repeatable"
+                    )
+                    orders.append(tuple(ordered))
+            self.assertGreater(
+                len(set(orders)),
+                1,
+                "changing the seed must change the loader's method order",
+            )
+        finally:
+            reseed(previous)
 
     def test_the_restore_puts_the_process_globals_back(self):
         cache = _PRODUCTION.ReforceXY._action_masks_cache

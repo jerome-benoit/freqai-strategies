@@ -96,7 +96,7 @@ jobs:
             --entrypoint sh \
             "${{ matrix.image }}" \
             -c 'for seed in 1 2 3; do
-                 FREQAI_QA_SHUFFLE_SEED=$seed python -m unittest discover -s ReforceXY/tests || exit 1
+                 FREQAI_QA_SHUFFLE_SEED=$seed python -m unittest discover -s "${{ matrix.context }}/tests" || exit 1
                done'
 
   reward-space-analysis:

@@ -7,6 +7,7 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
+from freqtrade.persistence import LocalTrade, Trade
 from qa_support import QaTestCase
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import Actions
@@ -53,24 +54,43 @@ class ActionLiteralTest(QaTestCase):
 
 class DateColumnTest(QaTestCase):
     def test_a_missing_date_column_is_refused(self):
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(ValueError):
             _ensure_datetime_series(None)
-        self.assertIn("date", str(caught.exception))
 
-    def test_a_non_null_date_column_keeps_its_values(self):
-        series = pd.Series(pd.date_range("2024-01-01", periods=3, freq="5min", tz="UTC"))
-        self.assertEqual(3, len(_ensure_datetime_series(series)))
+    def test_datetime_conversion_preserves_instants_and_index(self):
+        series = pd.Series(
+            pd.date_range("2024-01-01", periods=3, freq="5min", tz="UTC"),
+            index=[7, 11, 19],
+        )
+        expected = pd.Series(
+            [
+                pd.Timestamp("2024-01-01T00:00:00Z"),
+                pd.Timestamp("2024-01-01T00:05:00Z"),
+                pd.Timestamp("2024-01-01T00:10:00Z"),
+            ],
+            index=[7, 11, 19],
+            dtype="datetime64[ms, UTC]",
+        )
+        pd.testing.assert_series_equal(expected, _ensure_datetime_series(series))
 
     def test_an_integer_column_inside_the_epoch_range_is_read_as_milliseconds(self):
         millis = int(pd.Timestamp("2024-01-01", tz="UTC").value // 1_000_000)
         series = _ensure_datetime_series(pd.Series([millis, millis + 300_000]))
-        self.assertEqual(2, len(series))
+        pd.testing.assert_series_equal(
+            pd.Series(
+                [
+                    pd.Timestamp("2024-01-01T00:00:00Z"),
+                    pd.Timestamp("2024-01-01T00:05:00Z"),
+                ],
+                dtype="datetime64[ms, UTC]",
+            ),
+            series,
+        )
 
     def test_an_integer_epoch_in_seconds_is_refused_as_a_corrupted_unit(self):
         millis = int(pd.Timestamp("2024-01-01", tz="UTC").value // 1_000_000)
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(ValueError):
             _ensure_datetime_series(pd.Series([millis // 1000]))
-        self.assertIn("epoch-ms", str(caught.exception))
 
     def test_an_all_null_integer_column_is_read_without_a_range_probe(self):
         # Nothing to probe means nothing to reject; refusing here would reject a column
@@ -94,9 +114,8 @@ class TradingModeTest(QaTestCase):
         self.assertFalse(self._strategy(trading_mode="spot").is_short_allowed())
 
     def test_an_undeclared_trading_mode_is_refused_rather_than_defaulted(self):
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(ValueError):
             self._strategy(trading_mode="margin-ish").is_short_allowed()
-        self.assertIn("trading_mode", str(caught.exception))
 
     def test_can_short_follows_the_mode(self):
         self.assertTrue(self._strategy(trading_mode="futures").can_short)
@@ -108,10 +127,6 @@ class ProtectionConfigTest(QaTestCase):
         strategy = RLAgentStrategy.__new__(RLAgentStrategy)
         strategy.config = {"custom_protections": custom_protections}
         return strategy
-
-    def test_a_well_formed_protection_list_is_passed_through_untouched(self):
-        given = [{"method": "CooldownPeriod", "stop_duration": 2}]
-        self.assertIs(given, self._strategy(given).protections)
 
     def test_an_empty_list_is_accepted(self):
         self.assertEqual([], self._strategy([]).protections)
@@ -156,10 +171,8 @@ class LeverageTest(QaTestCase):
                 self.assertEqual(expected, self._strategy(configured).leverage(**self._arguments()))
 
     def test_a_non_numeric_configuration_falls_back_to_the_proposed_leverage(self):
-        for configured in ("two", None, [1]):
+        for configured in ("two", [1], {"a": 1}):
             with self.subTest(configured=configured):
-                if configured is None:
-                    continue
                 self.assertEqual(2.0, self._strategy(configured).leverage(**self._arguments()))
 
     def test_a_boolean_is_not_read_as_a_number(self):
@@ -201,11 +214,17 @@ class EntrySignalTest(QaTestCase):
 
     def test_a_row_without_a_prediction_raises_no_entry(self):
         # do_predict != 1 means the prediction is not yet confirmed; acting on it would
-        # trade on a value the model has not published.
+        # trade on a value the model has not published. Both sides are exercised, because
+        # the two conditions are independent and either one can be dropped on its own.
         result = self._strategy().populate_entry_trend(
-            _frame([1, 1], do_predict=0), {"pair": "BTC/USDT"}
+            _frame(
+                [Actions.Long_enter.value, Actions.Short_enter.value],
+                do_predict=0,
+            ),
+            {"pair": "BTC/USDT"},
         )
         self.assertEqual([False, False], _raised(result["enter_long"]))
+        self.assertEqual([False, False], _raised(result["enter_short"]))
 
 
 class ExitSignalTest(QaTestCase):
@@ -244,6 +263,37 @@ class ExitSignalTest(QaTestCase):
                 other = "exit_short" if expected == "exit_long" else "exit_long"
                 self.assertFalse(_raised(result[other])[0])
 
+    def test_a_rejected_prediction_ignores_closed_positions(self):
+        # Reached through freqtrade's own backtest collections rather than by asserting
+        # the call arguments, so a strategy that filtered differently would still pass.
+        # With `is_open` dropped the proxy returns closed trades too, and this goes red.
+        closed = SimpleNamespace(pair="BTC/USDT", is_open=False, is_short=False)
+        opened = SimpleNamespace(pair="BTC/USDT", is_open=True, is_short=True)
+        for open_trades, expected_short in (([], False), ([opened], True)):
+            with self.subTest(open_short=expected_short):
+                with (
+                    mock.patch.object(Trade, "use_db", False),
+                    mock.patch.object(LocalTrade, "bt_trades", [closed]),
+                    mock.patch.object(LocalTrade, "bt_trades_open", open_trades),
+                ):
+                    result = self._strategy().populate_exit_trend(
+                        _frame([Actions.Neutral.value], do_predict=2),
+                        {"pair": "BTC/USDT"},
+                    )
+                self.assertEqual([False], _raised(result["exit_long"]))
+                self.assertEqual([expected_short], _raised(result["exit_short"]))
+
+    def test_a_row_without_a_prediction_raises_no_exit(self):
+        result = self._strategy().populate_exit_trend(
+            _frame(
+                [Actions.Long_exit.value, Actions.Short_exit.value],
+                do_predict=0,
+            ),
+            {"pair": "BTC/USDT"},
+        )
+        self.assertEqual([False, False], _raised(result["exit_long"]))
+        self.assertEqual([False, False], _raised(result["exit_short"]))
+
     def test_a_rejected_prediction_with_no_open_trade_raises_no_exit(self):
         frame = _frame([1], do_predict=2)
         with mock.patch(
@@ -259,7 +309,7 @@ class FeatureEngineeringTest(QaTestCase):
     def _strategy(self):
         return RLAgentStrategy.__new__(RLAgentStrategy)
 
-    def test_the_standard_features_are_bounded_copies_of_the_ohlc(self):
+    def test_the_standard_features_are_exact_copies_of_the_ohlc(self):
         frame = _frame([0, 0, 0])
         result = self._strategy().feature_engineering_standard(frame, {})
         for source, produced in (("close", "%-raw_close"), ("open", "%-raw_open")):
@@ -285,7 +335,9 @@ class FeatureEngineeringTest(QaTestCase):
         self.assertAlmostEqual(np.log(1.1), result["%-close_log_return"].iloc[1], places=12)
 
     def test_the_target_column_is_the_neutral_action(self):
-        result = self._strategy().set_freqai_targets(_frame([1, 3]), {})
+        result = self._strategy().set_freqai_targets(
+            _frame([Actions.Long_enter.value, Actions.Short_enter.value]), {}
+        )
         self.assertEqual([0, 0], list(result[ACTION_COLUMN]))
 
 

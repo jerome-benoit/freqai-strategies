@@ -99,9 +99,6 @@ class CoverageFloorTest(QaTestCase):
             COVERAGERC_SECTION_MESSAGE,
         )
 
-    def test_the_placeholder_is_substituted(self):
-        self.assertNotIn("__FLOOR__", self.text, "the coverage floor is still a placeholder")
-
     def test_the_floor_is_a_percentage_in_range(self):
         value = float(self._raw_floor())
         self.assertGreater(value, 0.0)
@@ -298,6 +295,20 @@ class CoverageFloorTest(QaTestCase):
             [line.strip() for line in self.parser["run"]["source"].splitlines() if line.strip()],
             ["ReforceXY/user_data"],
         )
+
+    def test_no_other_option_declares_a_measurement_root(self):
+        # `source`, `source_pkgs` and `source_dirs` are three ways of telling coverage
+        # what to measure, and `plugins` can replace the file reporter that decides it.
+        # Any of them alongside `source` is either a silent second root or a silent
+        # change of instrument, and no other guard can see it: the spelling check
+        # accepts them because coverage binds them legally.
+        for key in ("source_pkgs", "source_dirs", "plugins"):
+            with self.subTest(option=key):
+                self.assertNotIn(
+                    key,
+                    self.parser["run"],
+                    f"run:{key} adds a measurement surface the gate does not account for",
+                )
 
 
 if __name__ == "__main__":

@@ -577,16 +577,19 @@ with the shipped configuration already in place — a measurement taken without
 `branch` and `include_namespace_packages` reports a different denominator and
 is not a valid input — then update the value and the `# measured` annotation
 above it in the same commit. Raise the floor only; a drop needs the reason in
-the pull request. `quickadapter/tests/test_coverage_floor.py` and
-`ReforceXY/tests/test_coverage_floor.py` refuse a
+the pull request. Both floor guards refuse a
 placeholder, a missing or undated measurement annotation, a measurement below
 the floor it justifies, a floor below the current minimum, a floor that is not a
 percentage, a `precision` coarse enough to round the total past the floor, a
 disabled branch trace, a disabled namespace walk, a source tree that is not the
-measured one, a `fail_under` that has drifted into the inert `[run]` section, the
-three of coverage's default source exclusions, a coverage pragma in production
-source, and any `omit`, `include`, `exclude_lines`, `exclude_also` or
-`partial_*` of production code. The shared `scripts/run-coverage.sh` runner is
+measured one, a `fail_under` that has drifted into the inert `[run]` section, any
+`omit`, `include`, `exclude_lines`, `exclude_also`, `patch` or `partial_*` under
+either section, and a misspelled option. `ReforceXY`'s guard is the stricter of
+the two: it also rejects a second measurement root (`source_pkgs`, `source_dirs`,
+`plugins`) and pins that no statement or branch leaves the denominator through
+coverage's default exclusions — the statement-level three and the branch-level
+`# pragma: no branch` / `while True:` family — which it detects by parsing each
+measured file twice, with and without `DEFAULT_EXCLUDE`. The shared `scripts/run-coverage.sh` runner is
 exercised with real passing and failing coverage reports and a failing test suite;
 the checks assert process exit status, not workflow token spelling.
 

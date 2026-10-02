@@ -27,13 +27,13 @@ from ReforceXY.user_data.strategies.RLAgentStrategy import RLAgentStrategy
 
 
 class ReviewContractsTest(QaTestCase):
-    def model(self, *, hold=False, hpo=False):
+    def model(self, *, hold=False):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         config = model_config(temp.name)
         config["freqai"]["rl_config"]["model_reward_parameters"]["hold_potential_enabled"] = hold
-        config["freqai"]["continual_learning"] = hpo
-        config["freqai"]["rl_config_optuna"] = {"enabled": hpo}
+        config["freqai"]["continual_learning"] = False
+        config["freqai"]["rl_config_optuna"] = {"enabled": False}
         model = ReforceXY(config=config)
         model.live = True
         model.can_short = True
