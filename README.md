@@ -2,10 +2,10 @@
 
 Two Freqtrade strategies with different decision models:
 
-| Strategy | Decision model | Supplied profile | Operator guide |
-| --- | --- | --- | --- |
-| QuickAdapter | Regress smoothed Zigzag morphology; enter at calibrated extrema with price confirmation. | Dry-run, spot, 5m; XGBoost; HPO enabled. | [QuickAdapter](quickadapter/README.md) |
-| ReforceXY | Reinforcement-learning policy chooses neutral, entry and exit actions. | Dry-run, spot, 5m; MaskablePPO; frame stacking and HPO enabled. | [ReforceXY](ReforceXY/README.md) |
+| Strategy     | Decision model                                                                           | Supplied profile                                                | Operator guide                         |
+| ------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------- |
+| QuickAdapter | Regress smoothed Zigzag morphology; enter at calibrated extrema with price confirmation. | Dry-run, spot, 5m; XGBoost; HPO enabled.                        | [QuickAdapter](quickadapter/README.md) |
+| ReforceXY    | Reinforcement-learning policy chooses neutral, entry and exit actions.                   | Dry-run, spot, 5m; MaskablePPO; frame stacking and HPO enabled. | [ReforceXY](ReforceXY/README.md)       |
 
 These profiles are starting configurations, not evidence of profitability.
 Training losses and episode rewards are not portfolio performance measures.
@@ -98,11 +98,11 @@ also handles `COMPOSE_PROJECT_NAME` overrides. With a customized multi-image
 stack, inspect `docker compose config --images` and set only the `freqtrade`
 service's image. Keep the same project/environment for the updater.
 
-| Variable | Built-in fallback | Meaning |
-| --- | --- | --- |
-| `FREQTRADE_CONFIG` | `<script directory>/user_data/config.json` | Configuration used for optional Telegram notifications; override for a different path. |
-| `LOCAL_DOCKER_IMAGE` | `reforcexy-freqtrade` | Local Compose image to archive and remove before recreation. |
-| `REMOTE_DOCKER_IMAGE` | `freqtradeorg/freqtrade:stable_freqairl` | Base-image tag whose image ID is checked for updates. |
+| Variable              | Built-in fallback                          | Meaning                                                                                |
+| --------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `FREQTRADE_CONFIG`    | `<script directory>/user_data/config.json` | Configuration used for optional Telegram notifications; override for a different path. |
+| `LOCAL_DOCKER_IMAGE`  | `reforcexy-freqtrade`                      | Local Compose image to archive and remove before recreation.                           |
+| `REMOTE_DOCKER_IMAGE` | `freqtradeorg/freqtrade:stable_freqairl`   | Base-image tag whose image ID is checked for updates.                                  |
 
 When that remote tag changes, the script stops the stack, archives the previous
 local image, attempts to remove its current tag, recreates the stack and prunes

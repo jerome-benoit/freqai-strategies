@@ -216,7 +216,6 @@ trusted recorded transitions with adequate history and the relevant optional
 trajectory fields. The Python-only `enforce_columns=False` loader option fills
 missing columns with NaN; it provides no protection against malicious pickle.
 
-
 ---
 
 ## CLI Parameters
@@ -225,13 +224,13 @@ missing columns with NaN; it provides no protection against malicious pickle.
 
 Boolean options do not all use the same parser form:
 
-| Options | Accepted direct CLI form | Meaning |
-| --- | --- | --- |
-| `--skip_feature_analysis`, `--skip_partial_dependence`, `--strict_diagnostics`, `--unrealized_pnl` | Bare flag, no value | Absent=false; `--flag false` is invalid. |
-| `--action_masking` | Bare flag, no value | Already true when absent; disable with `--params action_masking=false`. |
-| `--strict_validation` | Bare flag, no value | Always true in the CLI; no disable flag or accepted `--params` key. |
-| `--exit_plateau`, `--hold_potential_enabled`, `--entry_additive_enabled`, `--exit_additive_enabled` | `0` or `1` | Integer choices; direct `true`/`false` strings are invalid. |
-| `--check_invariants` | Numeric value; use `0` or `1` | Generated parser uses float despite boolean semantics; direct `true`/`false` strings are invalid. |
+| Options                                                                                             | Accepted direct CLI form      | Meaning                                                                                           |
+| --------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| `--skip_feature_analysis`, `--skip_partial_dependence`, `--strict_diagnostics`, `--unrealized_pnl`  | Bare flag, no value           | Absent=false; `--flag false` is invalid.                                                          |
+| `--action_masking`                                                                                  | Bare flag, no value           | Already true when absent; disable with `--params action_masking=false`.                           |
+| `--strict_validation`                                                                               | Bare flag, no value           | Always true in the CLI; no disable flag or accepted `--params` key.                               |
+| `--exit_plateau`, `--hold_potential_enabled`, `--entry_additive_enabled`, `--exit_additive_enabled` | `0` or `1`                    | Integer choices; direct `true`/`false` strings are invalid.                                       |
+| `--check_invariants`                                                                                | Numeric value; use `0` or `1` | Generated parser uses float despite boolean semantics; direct `true`/`false` strings are invalid. |
 
 For boolean reward parameters and `action_masking`, `--params` accepts
 `true/false`, `1/0`, `yes/no`, `y/n` and `on/off`, case-insensitively.
@@ -249,7 +248,6 @@ reward defaults are merged with explicit direct options, then `--params` takes
 highest precedence, irrespective of argument order. Repeated bulk entries for
 one key use the last value. Unknown and simulation-only bulk keys fail before
 artifacts are written.
-
 
 ### Simulation & Environment
 
@@ -656,27 +654,27 @@ descriptive.
 
 ### Data Exports
 
-| File                       | Description                                          |
-| -------------------------- | ---------------------------------------------------- |
-| `reward_samples.csv`       | Raw synthetic samples                                |
-| `feature_importance.csv` | Finite importance estimates, a header-only placeholder, or fallback rows with empty importance fields (NaN); see conditions below. |
-| `partial_dependence_*.csv` | Computed curves or header-only placeholders; see conditions below. |
-| `manifest.json`            | Runtime manifest (simulation + reward params + hash) |
+| File                       | Description                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `reward_samples.csv`       | Raw synthetic samples                                                                                                              |
+| `feature_importance.csv`   | Finite importance estimates, a header-only placeholder, or fallback rows with empty importance fields (NaN); see conditions below. |
+| `partial_dependence_*.csv` | Computed curves or header-only placeholders; see conditions below.                                                                 |
+| `manifest.json`            | Runtime manifest (simulation + reward params + hash)                                                                               |
 
 Header-only PD files are **placeholders, not computed curves**. Their header is
 `<feature>,partial_dependence`; the feature-importance placeholder header is
 `feature,importance_mean,importance_std`.
 
-| Condition | `feature_importance.csv` | PD CSVs |
-| --- | --- | --- |
-| Feature analysis explicitly skipped | Not created | Not created, regardless of the PD flag. |
-| Fewer than 4 rows, PD requested | Not created | Three header-only placeholders. |
-| Fewer than 4 rows, PD skipped | Not created | Not created. |
-| At least 4 rows, sklearn unavailable | Header-only placeholder | Three header-only placeholders, even with PD skipped. |
-| At least 4 rows, model fitted with finite importance estimates, PD skipped | Computed importance estimates | Three header-only placeholders. |
-| At least 4 rows, model fitted with finite importance estimates, PD requested | Computed importance estimates | Curves only for returned PD features; possibly none. |
-| At least 4 rows, sklearn available, no fitted model after preprocessing/split/fitting | Header-only if no usable features; otherwise rows with empty importance fields (NaN). | Three header-only placeholders if PD skipped; otherwise not created. |
-| At least 4 rows, model fitted but importance estimates unavailable | Rows with empty importance fields (NaN). | Three header-only placeholders if PD skipped; otherwise curves only for independently returned PD features, possibly none. |
+| Condition                                                                             | `feature_importance.csv`                                                              | PD CSVs                                                                                                                    |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Feature analysis explicitly skipped                                                   | Not created                                                                           | Not created, regardless of the PD flag.                                                                                    |
+| Fewer than 4 rows, PD requested                                                       | Not created                                                                           | Three header-only placeholders.                                                                                            |
+| Fewer than 4 rows, PD skipped                                                         | Not created                                                                           | Not created.                                                                                                               |
+| At least 4 rows, sklearn unavailable                                                  | Header-only placeholder                                                               | Three header-only placeholders, even with PD skipped.                                                                      |
+| At least 4 rows, model fitted with finite importance estimates, PD skipped            | Computed importance estimates                                                         | Three header-only placeholders.                                                                                            |
+| At least 4 rows, model fitted with finite importance estimates, PD requested          | Computed importance estimates                                                         | Curves only for returned PD features; possibly none.                                                                       |
+| At least 4 rows, sklearn available, no fitted model after preprocessing/split/fitting | Header-only if no usable features; otherwise rows with empty importance fields (NaN). | Three header-only placeholders if PD skipped; otherwise not created.                                                       |
+| At least 4 rows, model fitted but importance estimates unavailable                    | Rows with empty importance fields (NaN).                                              | Three header-only placeholders if PD skipped; otherwise curves only for independently returned PD features, possibly none. |
 
 The three reserved PD names use `trade_duration`, `idle_duration` and `pnl`.
 At least 4 rows and scikit-learn availability are not sufficient for valid
@@ -694,7 +692,6 @@ successful fit. Existing analyzer-owned feature/PD artifacts are removed before
 a new report, as described under [Skipping Feature Analysis](#skipping-feature-analysis);
 unrelated files are retained. `reward_samples.csv`, the report and the manifest are
 separate outputs; the manifest is produced after reporting succeeds.
-
 
 The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in
 `reward_samples.csv` report marginal probabilities of valid actions when applicable.
