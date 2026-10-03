@@ -46,7 +46,9 @@ Full test documentation: [tests/README.md](./tests/README.md).
   - [2. Parameter Sensitivity](#2-parameter-sensitivity)
   - [3. Debug Anomalies](#3-debug-anomalies)
   - [4. Real vs Synthetic](#4-real-vs-synthetic)
+- [Trusted pickle inputs](#trusted-pickle-inputs)
 - [CLI Parameters](#cli-parameters)
+  - [Boolean syntax](#boolean-syntax)
   - [Simulation & Environment](#simulation--environment)
   - [Hybrid Simulation Scalars](#hybrid-simulation-scalars)
   - [Reward & Shaping](#reward--shaping)
@@ -105,8 +107,36 @@ uv run python reward_space_analysis.py --num_samples 20000 --out_dir out
 uv run python reward_space_analysis.py --num_samples 20000 --out_dir reward_space_outputs
 ```
 
-See `statistical_analysis.md` (1–3): positive exit averages (long & short),
-negative invalid penalties, monotonic idle reduction, zero invariance failures.
+Use the report's component decomposition, state/action legality and finite-value
+checks, not a required positive exit mean. Losing exits can have negative reward.
+The default spot+masking run contains no short positions and no invalid-action
+penalties, so those branches are not evaluated by that command.
+
+Exercise distinct regimes explicitly (small diagnostic runs, not economic evidence):
+
+```shell
+# Valid short actions as well as longs
+uv run python reward_space_analysis.py --num_samples 2000 --seed 42 \
+  --trading_mode futures --skip_feature_analysis --out_dir validation_futures
+# Invalid-action penalties; attempted shorts in spot must not create short positions
+uv run python reward_space_analysis.py --num_samples 2000 --seed 42 \
+  --params action_masking=false --skip_feature_analysis --out_dir validation_unmasked
+# Active canonical shaping with no additive terms
+uv run python reward_space_analysis.py --num_samples 2000 --seed 42 \
+  --exit_potential_mode canonical --hold_potential_enabled 1 \
+  --entry_additive_enabled 0 --exit_additive_enabled 0 \
+  --skip_feature_analysis --out_dir validation_canonical
+```
+
+Inspect actual action counts before judging an unexercised branch. The invalid
+component follows the configured penalty; the complete shaped reward need not
+have the same sign. Idle-penalty monotonicity applies to its component under
+fixed parameters, not arbitrary total trajectory rewards. PBRS verification
+requires complete ordered trajectories, local shaping identities, adjacent
+potential continuity and the discounted terminal boundary. A verified observed
+trajectory is not a proof of universal policy invariance. Neither retained-exit
+modes nor additive-enabled configurations qualify merely because correction is
+zero; both zero-exit modes without effective additives remain eligible.
 
 ### 2. Parameter Sensitivity
 
@@ -133,6 +163,8 @@ Focus: feature importance, shaping activation, invariance drift, extrema.
 
 ### 4. Real vs Synthetic
 
+Read [Trusted pickle inputs](#trusted-pickle-inputs) before importing an artifact.
+
 ```shell
 uv run python reward_space_analysis.py \
   --num_samples 100000 \
@@ -142,9 +174,81 @@ uv run python reward_space_analysis.py \
 
 Generates shift metrics for comparison (see Outputs section).
 
+## Trusted pickle inputs
+
+Only load pickle files produced by a source you trust. Deserialization can
+execute arbitrary code **before** column validation. Neither schema checks nor
+the recorded SHA-256 makes an untrusted pickle safe.
+
+The CLI requires these numeric columns: `pnl`, `trade_duration`,
+`idle_duration`, `position`, `action` and `reward`.
+Positions use Short=0, Long=1, Neutral=0.5; actions use Neutral=0,
+Long_enter=1, Long_exit=2, Short_enter=3, Short_exit=4. Store numeric values,
+not enum objects. Missing required columns fail the CLI. Nonnumeric values and
+infinities become NaN with warnings; this is not full semantic validation of a
+trading trajectory.
+
+Accepted envelopes:
+
+- A pandas DataFrame or other DataFrame-compatible records/column arrays.
+- A dictionary with `transitions` containing a DataFrame or iterable of records.
+- A list of episode dictionaries with such `transitions` members. Entries
+  without `transitions` are skipped with a warning.
+
+A complete, locally controlled format example (not empirical trading evidence):
+
+```shell
+uv run python - <<'PY'
+from pathlib import Path
+import pickle
+
+rows = [{"pnl": 0.0, "trade_duration": 0, "idle_duration": 1,
+         "position": 0.5, "action": 0, "reward": 0.0}]
+Path("trusted_episodes.pkl").write_bytes(pickle.dumps({"transitions": rows}))
+PY
+uv run python reward_space_analysis.py \
+  --num_samples 64 --seed 42 --skip_feature_analysis \
+  --real_episodes trusted_episodes.pkl --out_dir format_check
+```
+
+One row demonstrates loading only: it cannot support a meaningful distribution
+comparison or PBRS trajectory verification. For operational comparison, use
+trusted recorded transitions with adequate history and the relevant optional
+trajectory fields. The Python-only `enforce_columns=False` loader option fills
+missing columns with NaN; it provides no protection against malicious pickle.
+
 ---
 
 ## CLI Parameters
+
+### Boolean syntax
+
+Boolean options do not all use the same parser form:
+
+| Options                                                                                             | Accepted direct CLI form      | Meaning                                                                                           |
+| --------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| `--skip_feature_analysis`, `--skip_partial_dependence`, `--strict_diagnostics`, `--unrealized_pnl`  | Bare flag, no value           | Absent=false; `--flag false` is invalid.                                                          |
+| `--action_masking`                                                                                  | Bare flag, no value           | Already true when absent; disable with `--params action_masking=false`.                           |
+| `--strict_validation`                                                                               | Bare flag, no value           | Always true in the CLI; no disable flag or accepted `--params` key.                               |
+| `--exit_plateau`, `--hold_potential_enabled`, `--entry_additive_enabled`, `--exit_additive_enabled` | `0` or `1`                    | Integer choices; direct `true`/`false` strings are invalid.                                       |
+| `--check_invariants`                                                                                | Numeric value; use `0` or `1` | Generated parser uses float despite boolean semantics; direct `true`/`false` strings are invalid. |
+
+For boolean reward parameters and `action_masking`, `--params` accepts
+`true/false`, `1/0`, `yes/no`, `y/n` and `on/off`, case-insensitively.
+Prefer `true/false` or `1/0`. Presence flags are not bulk reward parameters.
+For example:
+
+```shell
+uv run python reward_space_analysis.py --num_samples 64 --seed 42 \
+  --hold_potential_enabled 0 --skip_feature_analysis \
+  --params hold_potential_enabled=true action_masking=false --out_dir bool_override
+```
+
+This resolves hold potential to true and action masking to false. Canonical
+reward defaults are merged with explicit direct options, then `--params` takes
+highest precedence, irrespective of argument order. Repeated bulk entries for
+one key use the last value. Unknown and simulation-only bulk keys fail before
+artifacts are written.
 
 ### Simulation & Environment
 
@@ -162,9 +266,9 @@ Generates shift metrics for comparison (see Outputs section).
   synthetic PnL generation (pre-scaling). (Simulation-only).
 - **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL
   volatility scale proportional to trade duration ratio. (Simulation-only).
-- **`--real_episodes`** (path, optional) – Episodes pickle for real vs synthetic
-  distribution shift metrics. (Simulation-only; triggers additional outputs when
-  provided).
+- **`--real_episodes`** (path, optional) – Trusted episodes pickle for real vs
+  synthetic distribution shift metrics. See [the schema and security warning](#trusted-pickle-inputs).
+  (Simulation-only; triggers additional outputs when provided).
 - **`--unrealized_pnl`** (flag, default: false) – Track a sampled market
   price separately from the retained price within each trade; map its fee-aware
   PnL through duration-based tanh scaling before retaining the mark. Retained
@@ -178,7 +282,8 @@ be overridden via `--params`.
 - **`--profit_aim`** (float, default: 0.03) – Profit target threshold (e.g.
   0.03=3%).
 - **`--risk_reward_ratio`** (float, default: 2.0) – Risk-reward multiplier.
-- **`--action_masking`** (bool, default: true) – With masking enabled, sample
+- **`--action_masking`** (bare flag, default: true) – Disable via
+  `--params action_masking=false`. With masking enabled, sample
   only valid actions. When disabled, sample an invalid action with 10% probability
   and apply the configured invalid-action penalty. Invalid actions leave the held
   position unchanged, except for an independent terminal liquidation.
@@ -196,13 +301,12 @@ be overridden via `--params`.
 
 ### Diagnostics & Validation
 
-- **`--check_invariants`** (bool, default: true) – Enable runtime invariant
-  checks (diagnostics become advisory if disabled). Toggle rarely; disabling may
-  hide reward drift or invariance violations.
-- **`--strict_validation`** (flag, default: true) – Enforce parameter bounds,
-  finite checks, and exact `exit_potential_mode` choices; raises when enabled.
-  Relaxed API validation clamps bounds and canonicalizes an invalid exit mode with
-  a recorded adjustment.
+- **`--check_invariants`** (numeric 0/1, default: true) – Enable runtime
+  invariant checks; `0` makes diagnostics advisory and can hide violations.
+- **`--strict_validation`** (bare flag, always true in CLI) – Enforce parameter
+  bounds, finite checks and exact `exit_potential_mode` choices. The CLI cannot
+  disable this. Relaxed Python API validation may clamp/canonicalize with
+  recorded adjustments; it is not available through `--params`.
 - **`--strict_diagnostics`** (flag, default: false) – Raise on extreme distribution
   moments instead of warning. In both modes, constants retain exact mean/std,
   while undefined higher moments, normality tests and Q-Q fits remain N/A.
@@ -213,6 +317,32 @@ be overridden via `--params`.
   runtime only.
 - **`--rf_n_jobs`** / **`--perm_n_jobs`** (int, default: -1) – Parallel worker
   counts for RandomForest and permutation importance (-1 = all cores).
+
+Programmatic reward parameters accept Python and NumPy real integer/floating
+scalars. Native duration scalars are checked against their bounds before direct
+conversion to Python integers, without binary64 narrowing or a fixed-width cap.
+Adjustment metadata for finite native durations records the final normalized
+integer. Strict validation checks a numeric gamma in its native precision before
+normalizing it.
+Simulation consumes extended integer durations without a binary64 cap. Ordinary
+fractional duration caps retain float-product truncation; extended caps use the
+supplied ratio's exact rational value. Duration relationship tables keep candle
+units when their float bounds and labels are safe. At larger scales, the same
+12 right-closed uniform bins use exact assignment and explicitly declared
+`duration / max_trade_duration_candles` coordinates; the first bin includes zero.
+Report configuration retains exact integer durations without changing Python's
+integer-string digit limit. Non-finite explicit Python/NumPy trade-duration
+overrides in the idle-cap helper use the configured duration, then the canonical
+default; an explicit idle threshold retains precedence.
+
+Analysis-specific numeric string/bool coercion is retained; it does not replace
+the stricter runtime configuration contract. Direct gamma calculation falls back
+to 0.95 for invalid/non-finite input and clamps finite out-of-range values before
+narrowing, including extended-precision scalars. Relaxed parameter validation
+records its resets/clamps and also checks finite native gamma bounds before
+narrowing.
+For a trained or resumed learner, supply its effective discount as
+`potential_gamma`, not a stale reward/config gamma.
 
 Inferential helpers are available through the programmatic API only and require
 `independent_observations=True`. Programmatic callers may pass `stats_seed`
@@ -259,12 +389,24 @@ The exit factor is computed as:
 
 **Note:** In ReforceXY, `risk_reward_ratio` maps to `rr`.
 
+The CLI does not import the runtime config template. To reproduce its reward
+settings, use `--profit_aim 0.025 --max_trade_duration_candles 96
+--idle_penalty_ratio 0` with the same effective gamma and entry/exit fees. These
+are explicit scenario overrides, not different canonical reward defaults.
+
 **Formula:**
 
-Let `pnl_target = profit_aim · risk_reward_ratio` and
-`pnl_ratio = pnl / pnl_target` when `pnl_target > 0`. For losses, let
-`effective_rr = risk_reward_ratio` if positive, or `2.0` otherwise (the runtime
-fallback). Then `loss_threshold = pnl_target / effective_rr` and
+For complete reward calculations, let `pnl_target = profit_aim · risk_reward_ratio`;
+replace it by `0.01` when the product is nonpositive, as in the runtime. This
+effective target is also used for representativity statistics and the manifest.
+The supplied profit aim and risk/reward ratio remain unchanged in idle/hold
+penalties. Low-level helpers receiving an explicit nonpositive target retain
+their neutral coefficient/zero-signal guards.
+
+Let `pnl_ratio = pnl / pnl_target` when `pnl_target > 0`. The low-level loss
+coefficient uses `effective_rr = risk_reward_ratio` if positive, or `2.0` otherwise.
+That helper fallback does not make a zero ratio valid for the complete reward
+path. Then `loss_threshold = pnl_target / effective_rr` and
 `loss_ratio = |pnl| / loss_threshold = |pnl_ratio| · effective_rr`.
 
 - If `pnl_target ≤ 0`: `pnl_target_coefficient = 1.0`
@@ -294,6 +436,14 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 - If `pnl < 0`:
   `efficiency_coefficient = 1 + efficiency_weight · (efficiency_center - ratio)`
 - Else: `efficiency_coefficient = 1`
+
+The calculated coefficient is clamped to a finite nonnegative value. Validated
+analysis parameters additionally require
+`efficiency_weight · max(efficiency_center, 1 − efficiency_center) ≤ 1`: strict
+validation rejects combinations that could need a clamp at either ratio endpoint;
+relaxed validation records an adjustment and disables weighting (`weight = 0`).
+This accepted-domain restriction is stronger than the runtime's per-state clamp;
+direct calculation preserves the runtime formula without applying that validator.
 
 In synthetic `unrealized_pnl` mode, sampled market prices accumulate each
 candle's return independently of the transformed, retained price. The
@@ -328,11 +478,14 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 | Parameter                    | Default | Description                                                                               |
 | ---------------------------- | ------- | ----------------------------------------------------------------------------------------- |
 | `max_trade_duration_candles` | 128     | Trade duration cap                                                                        |
-| `max_idle_duration_candles`  | None    | Idle hazard threshold (4× trade duration fallback); the idle clock keeps counting past it |
+| `max_idle_duration_candles`  | None    | Idle hazard threshold; missing/None derives 4× trade cap; idle clock keeps counting past it |
 | `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                        |
 | `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                     |
 | `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                        |
 | `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                                     |
+
+An explicit zero threshold uses denominator 1 and does not disable the idle
+penalty.
 
 #### Validation
 
@@ -466,7 +619,9 @@ Flags hierarchy:
 | Both skipped             | ✓                         | ✓                           | No                 | No                 | Marked "(skipped)" |
 
 Auto-skip if `num_samples < 4`.
-
+The table describes requested computation on usable data, not guaranteed results
+or file presence. Skipping PD can still produce header-only CSVs; fallback
+analysis can leave unavailable importances. See [the export contract](#data-exports).
 Reusing an output directory removes only stale analyzer-owned
 `feature_importance.csv` and the three `partial_dependence_{trade_duration,idle_duration,pnl}.csv`
 files before writing the new report; unrelated files are retained.
@@ -487,8 +642,9 @@ uv run python reward_space_analysis.py --num_samples 50000 --seed 777
 
 ### Overrides vs --params
 
-Direct flags and `--params` produce identical outcomes; conflicts resolved by
-bulk `--params` values.
+Valid direct options and equivalent `--params` overrides produce the same
+parameter values, but boolean syntax differs: see [Boolean syntax](#boolean-syntax).
+Bulk overrides win conflicts; a bare presence flag does not accept `false`.
 
 ```shell
 uv run python reward_space_analysis.py --win_reward_factor 3.0 --idle_penalty_ratio 2.0 --num_samples 15000
@@ -548,12 +704,46 @@ descriptive.
 
 ### Data Exports
 
-| File                       | Description                                          |
-| -------------------------- | ---------------------------------------------------- |
-| `reward_samples.csv`       | Raw synthetic samples                                |
-| `feature_importance.csv`   | Feature importance rankings                          |
-| `partial_dependence_*.csv` | Partial dependence data                              |
-| `manifest.json`            | Runtime manifest (simulation + reward params + hash) |
+| File                       | Description                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `reward_samples.csv`       | Raw synthetic samples                                                                                                              |
+| `feature_importance.csv`   | Finite importance estimates, a header-only placeholder, or fallback rows with empty importance fields (NaN); see conditions below. |
+| `partial_dependence_*.csv` | Computed curves or header-only placeholders; see conditions below.                                                                 |
+| `manifest.json`            | Runtime manifest (simulation + reward params + hash)                                                                               |
+
+Header-only PD files are **placeholders, not computed curves**. Their header is
+`<feature>,partial_dependence`; the feature-importance placeholder header is
+`feature,importance_mean,importance_std`.
+
+| Condition                                                                             | `feature_importance.csv`                                                              | PD CSVs                                                                                                                    |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Feature analysis explicitly skipped                                                   | Not created                                                                           | Not created, regardless of the PD flag.                                                                                    |
+| Fewer than 4 rows, PD requested                                                       | Not created                                                                           | Three header-only placeholders.                                                                                            |
+| Fewer than 4 rows, PD skipped                                                         | Not created                                                                           | Not created.                                                                                                               |
+| At least 4 rows, sklearn unavailable                                                  | Header-only placeholder                                                               | Three header-only placeholders, even with PD skipped.                                                                      |
+| At least 4 rows, model fitted with finite importance estimates, PD skipped            | Computed importance estimates                                                         | Three header-only placeholders.                                                                                            |
+| At least 4 rows, model fitted with finite importance estimates, PD requested          | Computed importance estimates                                                         | Curves only for returned PD features; possibly none.                                                                       |
+| At least 4 rows, sklearn available, no fitted model after preprocessing/split/fitting | Header-only if no usable features; otherwise rows with empty importance fields (NaN). | Three header-only placeholders if PD skipped; otherwise not created.                                                       |
+| At least 4 rows, model fitted but importance estimates unavailable                    | Rows with empty importance fields (NaN).                                              | Three header-only placeholders if PD skipped; otherwise curves only for independently returned PD features, possibly none. |
+
+The three reserved PD names use `trade_duration`, `idle_duration` and `pnl`.
+At least 4 rows and scikit-learn availability are not sufficient for valid
+importance estimates. The helper drops constant and wholly NaN feature columns;
+fewer than two usable features, remaining feature NaNs, or split/fitting failure
+leave no fitted model. Empty feature sets produce header-only CSVs; retained
+features produce rows with NaN importances, serialized as empty numeric fields.
+Even with a fitted model, failed or undefined permutation importance can leave
+NaN estimates; requested PD computations are independent and may still succeed.
+
+The summary distinguishes PD placeholders from computed curves. The footer labels
+feature importance as complete only when the model is fitted and every value in
+both `importance_mean` and `importance_std` is finite. Otherwise it identifies
+unavailable estimates, retaining feature rows when present or marking a header-only
+placeholder. A complete ranking does not certify predictive validity. Existing
+analyzer-owned feature/PD artifacts are removed before a new report, as described
+under [Skipping Feature Analysis](#skipping-feature-analysis); unrelated files are
+retained. `reward_samples.csv`, the report and the manifest are separate outputs;
+the manifest is produced after reporting succeeds.
 
 The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in
 `reward_samples.csv` report marginal probabilities of valid actions when applicable.
@@ -619,13 +809,20 @@ configuration.
 
 ### PBRS Configuration
 
-Canonical mode enforces terminal release (Φ terminal ≈ 0) and suppresses
-entry/exit additive terms.
-
-Non-canonical exit modes can introduce non-zero terminal shaping; enable
-additives only when you want those extra terms to contribute.
+Every enabled PBRS transition uses `gamma * next_potential - prev_potential`,
+including neutral self-loops that retain potential. Termination clears the
+potential in every exit mode. `canonical` suppresses entry/exit additives;
+`non_canonical` also has zero exit potential but permits those optional terms.
+Both zero-exit modes without effective additives are eligible for observed PBRS
+verification. The report's canonical classification describes the shaping form,
+not just the literal exit-mode name, and does not guarantee fitted-policy
+equivalence. The remaining exit modes (`progressive_release`, `spike_cancel`,
+`retain_previous`) can retain history-dependent potential after a voluntary exit;
+they are not classified as generally policy-invariant.
 
 ### Real Data Comparison
+
+Only import trusted files with [the required schema](#trusted-pickle-inputs).
 
 ```shell
 uv run python reward_space_analysis.py \
@@ -688,7 +885,10 @@ Run tests; inspect overrides; confirm trading mode, PBRS settings, clamps.
 
 ### Slow Execution
 
-Lower samples; skip PD/feature analysis; reduce resamples; ensure SSD.
+Lower `--num_samples`; use `--skip_partial_dependence` or
+`--skip_feature_analysis`; bound `--rf_n_jobs` and `--perm_n_jobs`. Bootstrap
+resamples are Python-API-only (`bootstrap_resamples` with declared independent
+observations), not a CLI control; the descriptive CLI does not bootstrap.
 
 ### Memory Errors
 

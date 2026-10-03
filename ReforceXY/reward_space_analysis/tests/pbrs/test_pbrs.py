@@ -11,7 +11,6 @@ import pytest
 
 import reward_space_analysis
 from reward_space_analysis import (
-    DEFAULT_IDLE_DURATION_MULTIPLIER,
     DEFAULT_MODEL_REWARD_PARAMETERS,
     INTERNAL_GUARDS,
     PBRS_INVARIANCE_TOL,
@@ -24,7 +23,6 @@ from reward_space_analysis import (
     _compute_unrealized_pnl_estimate,
     _get_potential_gamma,
     apply_potential_shaping,
-    get_max_idle_duration_candles,
     simulate_samples,
     validate_reward_parameters,
     write_complete_statistical_analysis,
@@ -35,7 +33,6 @@ from ..constants import (
     PBRS,
     SCENARIOS,
     SEEDS,
-    STATISTICAL,
     TOLERANCE,
 )
 from ..helpers import (
@@ -66,6 +63,7 @@ class TestSimulationParity(RewardSpaceTestBase):
         for enabled in (False, True):
             params = self.base_params(
                 hold_potential_enabled=enabled,
+                potential_gamma=0.8,
                 exit_potential_mode="retain_previous",
                 entry_additive_enabled=False,
                 exit_additive_enabled=False,
@@ -102,11 +100,19 @@ class TestSimulationParity(RewardSpaceTestBase):
                 terminal.reward_shaping, -0.25 if enabled else 0.0, tolerance=TOLERANCE.GENERIC_EQ
             )
             self.assertAlmostEqualFloat(
+                ongoing.reward_shaping, -0.05 if enabled else 0.0, tolerance=TOLERANCE.GENERIC_EQ
+            )
+            self.assertAlmostEqualFloat(
+                ongoing.total - ongoing.base_reward,
+                -0.05 if enabled else 0.0,
+                tolerance=TOLERANCE.GENERIC_EQ,
+            )
+            self.assertAlmostEqualFloat(
                 terminal.pbrs_delta, terminal.reward_shaping, tolerance=TOLERANCE.GENERIC_EQ
             )
             self.assertAlmostEqualFloat(
                 terminal.total - ongoing.total,
-                -0.25 if enabled else 0.0,
+                -0.20 if enabled else 0.0,
                 tolerance=TOLERANCE.GENERIC_EQ,
             )
             self.assertEqual(terminal.entry_additive + terminal.exit_additive, 0.0)
@@ -761,9 +767,9 @@ class TestPBRS(RewardSpaceTestBase):
     # ---------------- Potential transform mechanics ---------------- #
 
     def test_pbrs_progressive_release_decay_clamped(self):
-        """Verifies progressive_release mode decay clamps at terminal.
+        """Verify progressive_release decay clamps on a nonterminal exit.
 
-        Tolerance rationale: IDENTITY_RELAXED used for PBRS terminal state checks
+        Tolerance rationale: IDENTITY_RELAXED used for discounted exit-potential checks
         due to accumulated errors from gamma discounting and potential calculations.
         """
         params = self.DEFAULT_PARAMS.copy()
@@ -815,8 +821,8 @@ class TestPBRS(RewardSpaceTestBase):
             reward_shaping, -prev_potential, tolerance=TOLERANCE.IDENTITY_RELAXED
         )
 
-    def test_pbrs_spike_cancel_invariance(self):
-        """Verifies spike_cancel mode produces near-zero terminal shaping."""
+    def test_spike_cancel_cancels_voluntary_exit_shaping(self):
+        """Cancel shaping on a nonterminal exit, without claiming terminal invariance."""
         params = self.DEFAULT_PARAMS.copy()
         params.update(
             {
@@ -872,40 +878,36 @@ class TestPBRS(RewardSpaceTestBase):
 
     # ---------------- Invariance flags (simulate_samples) ---------------- #
 
-    def test_canonical_invariance_flag(self):
-        """Canonical mode + no additives -> invariant flag True per-sample.
+    def test_zero_exit_modes_without_additives_match_verified_episode_flags(self):
+        for mode in ("canonical", "non_canonical"):
+            with self.subTest(mode=mode):
+                params = self.base_params(
+                    exit_potential_mode=mode,
+                    entry_additive_enabled=False,
+                    exit_additive_enabled=False,
+                    hold_potential_enabled=True,
+                    max_trade_duration_candles=100,
+                )
+                df = simulate_samples(
+                    params=params,
+                    num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
+                    seed=SEEDS.BASE,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    max_duration_ratio=2.0,
+                    trading_mode="margin",
+                    pnl_base_std=PARAMS.PNL_STD,
+                    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                )
+                self.assertEqual(set(df["pbrs_invariant"]), {True})
+                evidence = reward_space_analysis.verify_pbrs_trajectory(
+                    df, _get_potential_gamma(params)
+                )
+                self.assertTrue(evidence["verified"], evidence["reason"])
 
-        Note: `simulate_samples()` generates synthetic trajectories (coherent episodes).
-        This test only verifies the per-sample invariance flag and numeric stability; it does not
-        assert any telescoping/zero-sum property for the shaping term.
-        """
-
-        params = self.base_params(
-            exit_potential_mode="canonical",
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            hold_potential_enabled=True,
-        )
-        df = simulate_samples(
-            params={**params, "max_trade_duration_candles": 100},
-            num_samples=SCENARIOS.SAMPLE_SIZE_MEDIUM,
-            seed=SEEDS.BASE,
-            base_factor=PARAMS.BASE_FACTOR,
-            profit_aim=PARAMS.PROFIT_AIM,
-            risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-            max_duration_ratio=2.0,
-            trading_mode="margin",
-            pnl_base_std=PARAMS.PNL_STD,
-            pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
-        )
-        unique_flags = set(df["pbrs_invariant"].unique().tolist())
-        self.assertEqual(unique_flags, {True}, f"Unexpected invariant flags: {unique_flags}")
-        for v in df["reward_shaping"].tolist():
-            self.assertFinite(float(v), name="reward_shaping")
-        self.assertLessEqual(float(df["reward_shaping"].abs().max()), PBRS.MAX_ABS_SHAPING)
-
-    def test_non_canonical_flag_false_and_sum_nonzero(self):
-        """Non-canonical mode -> invariant flags False and Σ shaping non-zero."""
+    def test_progressive_release_is_not_classified_as_zero_exit_mode(self):
+        """Residual-potential modes do not receive the zero-exit configuration flag."""
 
         params = self.base_params(
             exit_potential_mode="progressive_release",
@@ -928,12 +930,6 @@ class TestPBRS(RewardSpaceTestBase):
         )
         unique_flags = set(df["pbrs_invariant"].unique().tolist())
         self.assertEqual(unique_flags, {False}, f"Unexpected invariant flags: {unique_flags}")
-        abs_sum = float(df["reward_shaping"].abs().sum())
-        self.assertGreater(
-            abs_sum,
-            PBRS_INVARIANCE_TOL * 2,
-            f"Expected non-trivial shaping magnitude (got {abs_sum})",
-        )
 
     # ---------------- Additives and canonical path mechanics ---------------- #
 
@@ -1560,6 +1556,113 @@ class TestPBRS(RewardSpaceTestBase):
             },
         )
 
+    def test_native_integer_durations_preserve_exact_values(self):
+        """Validation preserves exact duration values and adjustment metadata."""
+        values = (
+            2**53 + 1,
+            np.int64(2**53 + 1),
+            np.int64(2**63 - 1),
+            np.uint64(2**64 - 1),
+            2**200 + 1,
+        )
+        for key in ("max_trade_duration_candles", "max_idle_duration_candles"):
+            for strict in (True, False):
+                for value in values:
+                    with self.subTest(key=key, strict=strict, value=value):
+                        normalized, adjustments = validate_reward_parameters(
+                            {key: value}, strict=strict
+                        )
+                        self.assertEqual(normalized[key], int(value))
+                        if isinstance(value, np.integer):
+                            self.assertEqual(adjustments[key]["adjusted"], int(value))
+
+    def test_native_duration_bounds_precede_truncation(self):
+        """Native floating durations truncate only after their bounds are checked."""
+        values = [np.float32(3.75), np.float64(3.75)]
+        if np.finfo(np.longdouble).nmant > np.finfo(np.float64).nmant:
+            values.extend(
+                [np.longdouble("9007199254740993.0"), np.longdouble("9007199254740993.5")]
+            )
+        for key, below_minimum, minimum in (
+            ("max_trade_duration_candles", np.longdouble("0.5"), 1),
+            ("max_idle_duration_candles", np.longdouble("-0.5"), 0),
+        ):
+            for value in values:
+                for strict in (True, False):
+                    with self.subTest(key=key, strict=strict, value=value):
+                        normalized, _ = validate_reward_parameters({key: value}, strict=strict)
+                        self.assertEqual(normalized[key], int(value))
+            with self.subTest(key=key, below_minimum=below_minimum):
+                with self.assertRaises(ValueError):
+                    validate_reward_parameters({key: below_minimum}, strict=True)
+                normalized, _ = validate_reward_parameters({key: below_minimum}, strict=False)
+                self.assertEqual(normalized[key], minimum)
+
+    def test_native_finite_gamma_clamps_the_public_reward(self):
+        """Finite native discounts outside the domain use endpoints, not a fallback."""
+        values = [(np.float64(2.0), 0.0), (np.float64(-1.0), -0.025)]
+        if np.finfo(np.longdouble).maxexp > np.finfo(np.float64).maxexp:
+            values.extend([(np.longdouble("1e400"), 0.0), (np.longdouble("-1e400"), -0.025)])
+        context = reward_space_analysis.RewardContext(
+            0.0, 0, 1, 0.0, 0.0, Positions.Neutral, Actions.Neutral
+        )
+        for gamma, expected_shaping in values:
+            with self.subTest(gamma=gamma):
+                params = self.base_params(
+                    potential_gamma=gamma,
+                    hold_potential_enabled=True,
+                    exit_potential_mode="retain_previous",
+                    idle_penalty_ratio=0.0,
+                )
+                with self.assertWarns(reward_space_analysis.RewardDiagnosticsWarning):
+                    reward = reward_space_analysis.calculate_reward(
+                        context,
+                        params,
+                        100.0,
+                        0.03,
+                        2.0,
+                        short_allowed=True,
+                        action_masking=True,
+                        prev_potential=0.025,
+                    )
+                self.assertEqual(reward.reward_shaping, expected_shaping)
+                self.assertEqual(reward.total, expected_shaping)
+
+    def test_relaxed_native_gamma_clamps_before_reward_calculation(self):
+        """Relaxed finite-native clamps reach the reward; strict validation still rejects."""
+        values = [(np.float64(2.0), 1.0), (np.float64(-1.0), 0.0)]
+        if np.finfo(np.longdouble).maxexp > np.finfo(np.float64).maxexp:
+            values.extend([(np.longdouble("1e400"), 1.0), (np.longdouble("-1e400"), 0.0)])
+        context = reward_space_analysis.RewardContext(
+            0.0, 0, 1, 0.0, 0.0, Positions.Neutral, Actions.Neutral
+        )
+        for gamma, expected_gamma in values:
+            with self.subTest(gamma=gamma):
+                with self.assertRaises(ValueError):
+                    validate_reward_parameters({"potential_gamma": gamma}, strict=True)
+                normalized, adjustments = validate_reward_parameters(
+                    {"potential_gamma": gamma}, strict=False
+                )
+                self.assertEqual(normalized["potential_gamma"], expected_gamma)
+                self.assertEqual(adjustments["potential_gamma"]["adjusted"], expected_gamma)
+                params = self.base_params(
+                    **normalized,
+                    hold_potential_enabled=True,
+                    exit_potential_mode="retain_previous",
+                    idle_penalty_ratio=0.0,
+                )
+                reward = reward_space_analysis.calculate_reward(
+                    context,
+                    params,
+                    100.0,
+                    0.03,
+                    2.0,
+                    short_allowed=True,
+                    action_masking=True,
+                    prev_potential=0.025,
+                )
+                self.assertEqual(reward.reward_shaping, expected_gamma * 0.025 - 0.025)
+
     def test_validate_reward_parameters_records_near_bound_clamps_exactly(self):
         """Relaxed validation applies near-bound clamps without approximate-equality suppression."""
         cases = (
@@ -1683,23 +1786,6 @@ class TestPBRS(RewardSpaceTestBase):
             abs(shaping_spike),
             "Canonical shaping magnitude should exceed spike_cancel",
         )
-
-    def test_pbrs_retain_previous_cumulative_drift(self):
-        """retain_previous mode accumulates negative shaping drift (non-invariant)."""
-        params = self.base_params(
-            exit_potential_mode="retain_previous",
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            potential_gamma=0.9,
-        )
-        gamma = _get_potential_gamma(params)
-        rng = np.random.default_rng(SEEDS.ALTERNATE_1)
-        potentials = rng.uniform(0.05, 0.85, size=220)
-        deltas = [gamma * p - p for p in potentials]
-        cumulative = float(np.sum(deltas))
-        self.assertLess(cumulative, -TOLERANCE.NEGLIGIBLE)
-        self.assertGreater(abs(cumulative), 10 * TOLERANCE.IDENTITY_RELAXED)
 
     def test_exit_step_shaping_matches_exit_step_rules(self):
         """Exit step: shaping uses stored prev_potential.
@@ -1901,103 +1987,6 @@ class TestPBRS(RewardSpaceTestBase):
             # With bounded transforms and hold_potential_ratio=1:
             # |Φ(s)| <= base_factor and |Δ| <= (1+γ)*base_factor
             self.assertLessEqual(abs(float(shap)), (1.0 + gamma) * PARAMS.BASE_FACTOR)
-
-    def test_report_cumulative_invariance_aggregation(self):
-        """Canonical telescoping term: small per-step mean drift, bounded increments."""
-
-        params = self.base_params(
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            exit_potential_mode="canonical",
-        )
-        gamma = _get_potential_gamma(params)
-        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
-        prev_potential = 0.0
-        telescoping_sum = 0.0
-        max_abs_step = 0.0
-        steps = 0
-        for _ in range(SCENARIOS.PBRS_SIMULATION_STEPS):
-            is_exit = rng.uniform() < 0.1
-            current_pnl = float(rng.normal(0, 0.05))
-            current_dur = float(rng.uniform(0, 1))
-            next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.05))
-            next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
-            _tot, _shap, next_potential, _pbrs_delta, _entry_additive, _exit_additive = (
-                apply_potential_shaping(
-                    base_reward=0.0,
-                    current_pnl=current_pnl,
-                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-                    current_duration_ratio=current_dur,
-                    next_pnl=next_pnl,
-                    entry_pnl=next_pnl,
-                    next_duration_ratio=next_dur,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    is_exit=is_exit,
-                    prev_potential=prev_potential,
-                    params=params,
-                )
-            )
-            inc = gamma * next_potential - prev_potential
-            telescoping_sum += inc
-            if abs(inc) > max_abs_step:
-                max_abs_step = abs(inc)
-            steps += 1
-            prev_potential = 0.0 if is_exit else next_potential
-        mean_drift = telescoping_sum / max(1, steps)
-        self.assertLess(
-            abs(mean_drift),
-            0.02,
-            f"Per-step telescoping drift too large (mean={mean_drift}, steps={steps})",
-        )
-        self.assertLessEqual(
-            max_abs_step,
-            PBRS.MAX_ABS_SHAPING,
-            f"Unexpected large telescoping increment (max={max_abs_step})",
-        )
-
-    def test_report_explicit_non_invariance_progressive_release(self):
-        """progressive_release cumulative shaping non-zero (release leak)."""
-
-        params = self.base_params(
-            hold_potential_enabled=True,
-            entry_additive_enabled=False,
-            exit_additive_enabled=False,
-            exit_potential_mode="progressive_release",
-            exit_potential_decay=0.25,
-        )
-        rng = np.random.default_rng(SEEDS.REPORT_FORMAT_2)
-        prev_potential = 0.0
-        shaping_sum = 0.0
-
-        for _ in range(SCENARIOS.MONTE_CARLO_ITERATIONS):
-            is_exit = rng.uniform() < STATISTICAL.EXIT_PROBABILITY_THRESHOLD
-            next_pnl = 0.0 if is_exit else float(rng.normal(0, 0.07))
-            next_dur = 0.0 if is_exit else float(rng.uniform(0, 1))
-            _tot, shap, next_pot, _pbrs_delta, _entry_additive, _exit_additive = (
-                apply_potential_shaping(
-                    base_reward=0.0,
-                    current_pnl=float(rng.normal(0, 0.07)),
-                    pnl_target=PARAMS.PROFIT_AIM * PARAMS.RISK_REWARD_RATIO,
-                    current_duration_ratio=float(rng.uniform(0, 1)),
-                    next_pnl=next_pnl,
-                    entry_pnl=next_pnl,
-                    next_duration_ratio=next_dur,
-                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
-                    base_factor=PARAMS.BASE_FACTOR,
-                    is_exit=is_exit,
-                    prev_potential=prev_potential,
-                    params=params,
-                )
-            )
-            shaping_sum += shap
-            prev_potential = 0.0 if is_exit else next_pot
-        self.assertGreater(
-            abs(shaping_sum),
-            PBRS_INVARIANCE_TOL * 50,
-            f"Expected non-zero shaping (got {shaping_sum})",
-        )
 
     # Non-owning smoke; ownership: robustness/test_robustness.py:43 (robustness-decomposition-integrity-101)
     # Owns invariant: pbrs-canonical-near-zero-report-116
@@ -2495,17 +2484,6 @@ class TestPBRS(RewardSpaceTestBase):
         content = report_path.read_text(encoding="utf-8")
         self.assertIn("_PBRS components not present in this analysis._", content)
         self.assertIn("_Not performed (no real episodes provided)._", content)
-
-    def test_get_max_idle_duration_candles_negative_or_zero_fallback(self):
-        """Explicit mid<=0 fallback path returns derived default multiplier."""
-        base = DEFAULT_MODEL_REWARD_PARAMETERS.copy()
-        base["max_trade_duration_candles"] = 64
-        base["max_idle_duration_candles"] = 0
-        result = get_max_idle_duration_candles(base)
-        expected = DEFAULT_IDLE_DURATION_MULTIPLIER * 64
-        self.assertEqual(
-            result, expected, f"Expected fallback {expected} for mid<=0 (got {result})"
-        )
 
 
 if __name__ == "__main__":

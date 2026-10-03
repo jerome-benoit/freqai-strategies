@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Tests for public API and helper functions."""
 
+import ast
 import math
 import random
+import sys
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -23,7 +26,9 @@ from reward_space_analysis import (
     _get_str_param,
     _sample_action,
     build_argument_parser,
+    get_max_idle_duration_candles,
     parse_overrides,
+    validate_reward_parameters,
     write_complete_statistical_analysis,
 )
 
@@ -36,6 +41,111 @@ pytestmark = pytest.mark.api
 
 class TestAPIAndHelpers(RewardSpaceTestBase):
     """Public API + helper utility tests."""
+
+    def test_nonfinite_explicit_duration_uses_configured_then_default_idle_cap(self):
+        """Non-finite native overrides must not bypass configured/default precedence."""
+        for scalar in (float, np.float32, np.float64, np.longdouble):
+            for raw in ("nan", "inf", "-inf"):
+                value = scalar(raw)
+                for params, expected in (
+                    ({"max_trade_duration_candles": 7}, 28),
+                    ({}, 512),
+                    ({"max_trade_duration_candles": 0}, 512),
+                    ({"max_trade_duration_candles": 7, "max_idle_duration_candles": 13}, 13),
+                ):
+                    with self.subTest(scalar=scalar, raw=raw, params=params):
+                        self.assertEqual(
+                            get_max_idle_duration_candles(params, max_trade_duration_candles=value),
+                            expected,
+                        )
+        self.assertEqual(
+            get_max_idle_duration_candles(
+                {"max_trade_duration_candles": 7}, max_trade_duration_candles=np.float32(3.75)
+            ),
+            12,
+        )
+        self.assertEqual(
+            get_max_idle_duration_candles({}, max_trade_duration_candles=10**400),
+            4 * 10**400,
+        )
+
+    def test_simulation_consumes_extended_native_duration_without_narrowing(self):
+        """Validated large durations remain usable by trajectory and hazard consumers."""
+        values = [10**308, 10**400]
+        if np.finfo(np.longdouble).maxexp > 1024:
+            values.append(np.longdouble("1e400"))
+        for value in values:
+            with self.subTest(value_type=type(value), magnitude=int(value).bit_length()):
+                params, _ = validate_reward_parameters(
+                    self.base_params(max_trade_duration_candles=value),
+                    strict=True,
+                )
+                df = simulate_samples_with_defaults(
+                    params,
+                    num_samples=32,
+                    seed=42,
+                    trading_mode="spot",
+                )
+                self.assertEqual(
+                    df.attrs["reward_params"]["max_trade_duration_candles"], int(value)
+                )
+                self.assertTrue(
+                    np.isfinite(df[["reward", "duration_ratio", "idle_ratio"]]).all().all()
+                )
+                held = df[df["position"] == Positions.Long.value]
+                self.assertGreater(held["trade_duration"].max(), 0)
+                self.assertTrue(held["sample_exit_prob"].eq(0.002).all())
+                self.assertTrue(df.iloc[-1]["terminated"])
+                self.assertEqual(df.iloc[-1]["next_position"], Positions.Neutral.value)
+
+    def test_simulation_preserves_small_fractional_duration_caps(self):
+        """Keep ordinary float-product truncation, including zero and rounded boundaries."""
+        for duration, ratio, expected in ((1, 0.5, 0), (3, 1 / 3, 1), (7, 1 / 7, 1), (10, 0.3, 3)):
+            with self.subTest(duration=duration, ratio=ratio):
+                df = simulate_samples_with_defaults(
+                    self.base_params(max_trade_duration_candles=duration),
+                    num_samples=8,
+                    seed=42,
+                    trading_mode="spot",
+                    max_duration_ratio=ratio,
+                )
+                self.assertEqual(df["next_trade_duration"].max(), expected)
+
+    def test_public_report_preserves_unbounded_duration_configuration(self):
+        """The real report retains exact integer configuration beyond Python digit limits."""
+        duration = 10**4900
+        digit_limit = sys.get_int_max_str_digits()
+        df = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=duration, check_invariants=False),
+            num_samples=32,
+            seed=42,
+            trading_mode="spot",
+        )
+        write_complete_statistical_analysis(
+            df,
+            self.output_path,
+            PARAMS.PROFIT_AIM,
+            PARAMS.RISK_REWARD_RATIO,
+            42,
+            skip_feature_analysis=True,
+        )
+        report = (self.output_path / "statistical_analysis.md").read_text()
+        configuration = {
+            fields[1].strip(): fields[2].strip()
+            for line in report.splitlines()
+            if line.startswith("| max_")
+            for fields in [line.split("|")]
+        }
+        self.assertEqual(Decimal(configuration["max_trade_duration_candles"]), Decimal(duration))
+        self.assertEqual(Decimal(configuration["max_idle_duration_candles"]), Decimal(4 * duration))
+        self.assertEqual(sys.get_int_max_str_digits(), digit_limit)
+        override_row = next(
+            line for line in report.splitlines() if line.startswith("| Overrides |")
+        )
+        overrides = dict(
+            pair.split("=", 1) for pair in override_row.split("|")[2].strip().split(", ")
+        )
+        self.assertIs(ast.literal_eval(overrides["check_invariants"]), False)
 
     def test_sample_action_idle_hazard_increases_entry_rate(self):
         """_sample_action() increases entry probability past idle cap.

@@ -1,0 +1,286 @@
+"""Deprecated-config migration: in-place rewrite, precedence and warn-once.; requires the Freqtrade QA image."""
+
+import logging
+import unittest
+
+from qa_support import QaTestCase, model_config, temporary_directory
+from QuickAdapterV3 import QuickAdapterV3
+from Utils import (
+    _MISSING,
+    _delete_path,
+    _get_path,
+    _set_path,
+    as_config_section,
+    as_dict,
+    migrate_config,
+)
+
+LOGGER = logging.getLogger("test-config-migration")
+
+
+class UtilsConfigMigrationTest(QaTestCase):
+    def test_a_renamed_section_moves_the_value_and_drops_the_old_path(self):
+        # extrema_smoothing -> label_smoothing, with a key that chains into no further rename.
+        config = {"freqai": {"extrema_smoothing": {"factor": 0.5}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        self.assertNotIn("extrema_smoothing", config["freqai"])
+        self.assertEqual(config["freqai"]["label_smoothing"], {"factor": 0.5})
+        self.assertIn("'label_smoothing' instead", captured.output[0])
+
+    def test_b_migration_rewrites_the_callers_dict_in_place(self):
+        config = {"freqai": {"extrema_weighting": {"gamma": 0.5}}}
+        section = config["freqai"]["extrema_weighting"]
+
+        result = migrate_config(config, LOGGER)
+
+        # The shared-config-base hazard is the mutation, not a returned copy: the caller still
+        # holds the very object the value lived in, and finds it drained, so every other holder
+        # of that dict is affected too.
+        self.assertIsNone(result)
+        self.assertIs(config["freqai"]["label_weighting"], section)
+        self.assertEqual(section, {})
+        self.assertEqual(config["freqai"]["label_pipeline"], {"gamma": 0.5})
+
+    def test_c_a_renamed_key_within_a_section_takes_the_short_name_in_its_warning(self):
+        config = {"freqai": {"label_smoothing": {"window": 4}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        self.assertEqual(config["freqai"]["label_smoothing"], {"window_candles": 4})
+        self.assertIn("'window_candles' instead", captured.output[0])
+
+    def test_d_a_key_move_follows_the_section_rename_that_precedes_it(self):
+        config = {"freqai": {"label_weighting": {"standardization": True}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        self.assertEqual(config["freqai"]["label_pipeline"], {"standardization": True})
+        self.assertEqual(config["freqai"]["label_weighting"], {})
+        # The sections differ, so the warning names the whole new path rather than the bare key.
+        self.assertIn("'freqai.label_pipeline.standardization' instead", captured.output[0])
+
+    def test_e_a_key_already_at_its_new_path_is_left_alone(self):
+        config = {"freqai": {"label_pipeline": {"gamma": 0.7}}}
+
+        with self.assertNoLogs(LOGGER, level="WARNING"):
+            migrate_config(config, LOGGER)
+
+        self.assertEqual(config, {"freqai": {"label_pipeline": {"gamma": 0.7}}})
+
+    def test_f_a_deleted_key_is_removed_and_its_value_dropped(self):
+        config = {"exit_pricing": {"thresholds_calibration": {"low": 0.5}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        self.assertEqual(config, {"exit_pricing": {}})
+        self.assertIn("is obsolete and ignored", captured.output[0])
+        self.assertIn("armed volatility-scaled retracement", captured.output[0])
+
+    def test_g_a_predicated_entry_warns_without_touching_the_key(self):
+        config = {"freqai": {"feature_parameters": {"causal_mode": False}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        # The one entry that warns about a value rather than about a path: it has no new path,
+        # so the key survives the migration carrying the very setting the message is about.
+        self.assertEqual(config, {"freqai": {"feature_parameters": {"causal_mode": False}}})
+        self.assertIn("causal_mode=false is deprecated", captured.output[0])
+        self.assertIn("label lookahead leakage possible", captured.output[0])
+
+    def test_h_the_new_value_wins_when_both_paths_are_present(self):
+        config = {"freqai": {"extrema_smoothing": {"old": 1}, "label_smoothing": {"new": 2}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        self.assertNotIn("extrema_smoothing", config["freqai"])
+        self.assertEqual(config["freqai"]["label_smoothing"], {"new": 2})
+        self.assertIn("using 'label_smoothing'", captured.output[0])
+
+    def test_i_a_renamed_chain_resolves_to_the_final_key_carrying_the_current_value(self):
+        config = {
+            "exit_pricing": {
+                "trade_price_target": "candle_open",
+                "trade_price_target_method": "candle_close",
+            }
+        }
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        # Two entries share a path: the first pass discards the superseded name and keeps the
+        # value already sitting at the new one, which the second pass then carries on to the
+        # final name. The winner survives the whole chain.
+        self.assertEqual(config, {"exit_pricing": {"trade_natr_method": "candle_close"}})
+        self.assertEqual(len(captured.output), 2)
+
+    def test_j_a_discarded_rename_creates_no_destination_section(self):
+        config = {"freqai": {"extrema_smoothing": {"old": 1}, "label_smoothing": {"new": 2}}}
+
+        with self.assertLogs(LOGGER, level="WARNING"):
+            migrate_config(config, LOGGER)
+
+        self.assertEqual(sorted(config["freqai"]), ["label_smoothing"])
+
+    def test_legacy_reversal_decay_migrates_to_the_public_canonical_key(self):
+        config = {"reversal_confirmation": {"decay_ratio": 0.8}}
+
+        migrate_config(config, LOGGER)
+
+        self.assertEqual(config, {"reversal_confirmation": {"decay_fraction": 0.8}})
+
+    def test_strategy_resolves_migrated_decay_and_preserves_a_canonical_override(self):
+        for section, expected in (
+            ({"decay_ratio": 0.8}, 0.8),
+            ({"decay_ratio": 0.8, "decay_fraction": 0.7}, 0.7),
+        ):
+            with self.subTest(section=section), temporary_directory() as root:
+                config = model_config(root, reversal_confirmation=section)
+
+                strategy = QuickAdapterV3(config)
+
+                self.assertEqual(strategy.reversal_confirmation["decay_fraction"], expected)
+                self.assertEqual(config["reversal_confirmation"], {"decay_fraction": expected})
+
+    def test_a_renamed_section_reaches_its_keys_through_the_second_hop(self):
+        # The table is order-dependent by construction: entry 0 renames
+        # `freqai.extrema_weighting` to `freqai.label_weighting`, and entries 21-27 then move
+        # keys from there to `freqai.label_pipeline`. A key written under the ORIGINAL section
+        # therefore only lands in its final home if the section rename has already run.
+        #
+        # The previous version of this test asserted `earlier_index < index` with
+        # `earlier_index` drawn from `enumerate(CONFIG_DEPRECATIONS[:index])`, which is true by
+        # construction, so reordering the table kept it green while silently stranding the key.
+        config = {
+            "freqai": {
+                "extrema_weighting": {
+                    "normalization": "minmax",
+                    "gamma": 2.0,
+                }
+            }
+        }
+
+        migrate_config(config, LOGGER)
+
+        self.assertEqual(
+            config["freqai"]["label_pipeline"],
+            {"normalization": "minmax", "gamma": 2.0},
+        )
+        self.assertNotIn("extrema_weighting", config["freqai"])
+
+    def test_a_two_hop_rename_reaches_its_final_key(self):
+        # Section renames and two-hop key renames must both reach their final public keys.
+        # `threshold_outlier` -> `outlier_threshold_quantile` -> `outlier_quantile`
+        for old_key, expected in (("threshold_outlier", "outlier_quantile"),):
+            with self.subTest(key=old_key):
+                config = {"freqai": {"label_prediction": {old_key: 0.03}}}
+                migrate_config(config, LOGGER)
+                self.assertEqual(config["freqai"]["label_prediction"], {expected: 0.03})
+
+        # `extrema_fraction` -> `keep_extrema_fraction` -> `keep_fraction`
+        config = {"freqai": {"label_prediction": {"extrema_fraction": 0.5}}}
+        migrate_config(config, LOGGER)
+        self.assertEqual(config["freqai"]["label_prediction"], {"keep_fraction": 0.5})
+
+    def test_a_key_under_a_renamed_prediction_section_reaches_its_final_home(self):
+        # Entry 2 renames `freqai.predictions_extrema` to `freqai.label_prediction`, and
+        # entries 5-10 then move its keys. Sorted by old path, the key move would run BEFORE
+        # the section rename and strand the key: the section's deprecated key survives
+        # untouched and the threshold silently reverts to its default.
+        config = {"freqai": {"predictions_extrema": {"thresholds_smoothing": "mean"}}}
+
+        migrate_config(config, LOGGER)
+
+        self.assertEqual(config["freqai"]["label_prediction"], {"threshold_method": "mean"})
+        self.assertNotIn("predictions_extrema", config["freqai"])
+
+    def test_m_a_deprecation_path_warns_once_per_process_across_config_objects(self):
+        first = {"freqai": {"extrema_smoothing": {"factor": 0.5}}}
+        second = {"freqai": {"extrema_smoothing": {"factor": 0.8}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(first, LOGGER)
+            migrate_config(second, LOGGER)
+
+        # Both objects are migrated; the notice is keyed on the path, so only the first caller
+        # to reach it is told. That is the whole point of the warned-once registry.
+        self.assertEqual(len(captured.output), 1)
+        self.assertEqual(second["freqai"]["label_smoothing"], {"factor": 0.8})
+
+    def test_n_two_deprecation_paths_warn_independently(self):
+        config = {"freqai": {"extrema_smoothing": {"factor": 0.5}, "predictions_extrema": {"q": 9}}}
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            migrate_config(config, LOGGER)
+
+        self.assertEqual(len(captured.output), 2)
+        self.assertTrue(any("extrema_smoothing" in line for line in captured.output))
+        self.assertTrue(any("predictions_extrema" in line for line in captured.output))
+        self.assertEqual(config["freqai"]["label_smoothing"], {"factor": 0.5})
+        self.assertEqual(config["freqai"]["label_prediction"], {"q": 9})
+
+    def test_o_get_path_walks_nested_mappings_and_signals_a_miss_with_the_sentinel(self):
+        config = {"freqai": {"label_pipeline": {"gamma": 0.5}}, "flat": 0, "none": None}
+
+        self.assertEqual(_get_path(config, "freqai.label_pipeline.gamma"), 0.5)
+        self.assertEqual(_get_path(config, "freqai"), {"label_pipeline": {"gamma": 0.5}})
+        self.assertIs(_get_path(config, "freqai.label_pipeline.absent"), _MISSING)
+        self.assertIs(_get_path(config, "absent.branch.key"), _MISSING)
+        # A scalar is not a branch: the walk stops instead of subscripting it.
+        self.assertIs(_get_path(config, "flat.deeper"), _MISSING)
+        # A stored None is a value, not an absence, and must not be confused with the sentinel.
+        self.assertIsNone(_get_path(config, "none"))
+        self.assertIsNot(_get_path(config, "none"), _MISSING)
+
+    def test_p_set_path_creates_the_intermediate_levels(self):
+        config: dict = {}
+        self.assertIsNone(_set_path(config, "a.b.c", 5))
+        self.assertEqual(config, {"a": {"b": {"c": 5}}})
+
+        config = {"enabled": False}
+        _set_path(config, "enabled", True)
+        self.assertEqual(config, {"enabled": True})
+
+        config = {"a": {"keep": 1}}
+        _set_path(config, "a.b", 2)
+        self.assertEqual(config, {"a": {"keep": 1, "b": 2}})
+
+    def test_q_delete_path_tolerates_a_missing_path(self):
+        config = {"a": {"b": 1}, "flat": 0}
+
+        self.assertTrue(_delete_path(config, "a.b"))
+        self.assertEqual(config, {"a": {}, "flat": 0})
+        self.assertFalse(_delete_path(config, "a.b"))
+        self.assertFalse(_delete_path(config, "absent.branch.key"))
+        self.assertFalse(_delete_path(config, "flat.deeper"))
+        self.assertEqual(config, {"a": {}, "flat": 0})
+
+    def test_r_as_config_section_normalizes_a_non_mapping_with_a_warning(self):
+        section = {"gamma": 0.5}
+        with self.assertNoLogs(LOGGER, level="WARNING"):
+            self.assertIs(as_config_section(section, "freqai.label_weighting", LOGGER), section)
+            # None is an absent section, not a malformed one, so it normalizes silently.
+            self.assertEqual(as_config_section(None, "freqai.label_weighting", LOGGER), {})
+
+        with self.assertLogs(LOGGER, level="WARNING") as captured:
+            result = as_config_section(0.5, "freqai.label_weighting", LOGGER)
+        self.assertEqual(result, {})
+        self.assertIn("must be a mapping, using defaults", captured.output[0])
+
+    def test_s_as_dict_passes_a_mapping_through_by_identity_and_normalizes_the_rest(self):
+        section = {"gamma": 0.5}
+        self.assertIs(as_dict(section), section)
+        for value in (None, 0.5, "gamma", [("gamma", 0.5)]):
+            with self.subTest(value=value):
+                self.assertEqual(as_dict(value), {})
+
+
+if __name__ == "__main__":
+    unittest.main()

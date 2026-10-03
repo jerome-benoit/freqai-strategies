@@ -4,7 +4,8 @@ context: |
   Tech stack: Python 3.11+, FreqAI (Freqtrade), Docker
   ML libraries: XGBoost, LightGBM, CatBoost, NGBoost, scikit-learn, NumPy, pandas
   Reinforcement learning: Stable-Baselines3 (ReforceXY strategy)
-  Testing: pytest
+  Testing: stdlib unittest in the Freqtrade QA image for both strategies;
+    pytest with uv for the ReforceXY reward-space analysis package only
   Domain: Algorithmic crypto trading strategies with machine learning
 
   Key strategies:

@@ -834,8 +834,8 @@ def _generate_extrema_label(
     params: dict[str, Any],
     logger: Logger | None = None,
 ) -> LabelData:
-    natr_period = params.get("natr_period", 14)
-    natr_multiplier = params.get("natr_multiplier", 9.0)
+    natr_period = params.get("natr_period", DEFAULT_LABEL_NATR_PERIOD)
+    natr_multiplier = params.get("natr_multiplier", DEFAULT_MIN_LABEL_NATR_MULTIPLIER)
     result = _zigzag(
         dataframe,
         natr_period=natr_period,
@@ -844,7 +844,10 @@ def _generate_extrema_label(
 
     series = pd.Series(0.0, index=dataframe.index)
     if result.indices:
-        series.loc[result.indices] = result.directions
+        # Pivot indices are row positions, independently of the caller's index.
+        # Label-based assignment can fail when labels are absent or place directions
+        # on the wrong rows for a reordered or shifted integer index.
+        series.iloc[result.indices] = result.directions
 
     metrics: dict[str, list[float]] = {
         COMBINED_METRICS[0]: result.amplitudes,  # "amplitude"
@@ -1044,6 +1047,7 @@ DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
 
 DEFAULT_MIN_LABEL_PERIOD_CANDLES: Final[int] = 12
 DEFAULT_MAX_LABEL_PERIOD_CANDLES: Final[int] = 24
+DEFAULT_LABEL_NATR_PERIOD: Final[int] = 14
 DEFAULT_MIN_LABEL_NATR_MULTIPLIER: Final[float] = 9.0
 DEFAULT_MAX_LABEL_NATR_MULTIPLIER: Final[float] = 12.0
 
@@ -3788,9 +3792,16 @@ def zlema(series: pd.Series, period: int) -> pd.Series:
 def _fractal_dimension(
     highs: NDArray[np.floating], lows: NDArray[np.floating], period: int
 ) -> float:
-    """Original fractal dimension computation implementation per Ehlers' paper."""
-    if period % 2 != 0:
-        raise ValueError(f"Invalid period value {period!r}: must be even")
+    """Fractal dimension from Ehlers' normalized half-window ranges.
+
+    Each half-window range is divided by ``period / 2`` and the full-window
+    range by ``period``. Their lengths cancel to a factor two in the range
+    ratio. Degenerate zero ranges use dimension one; finite dimensions are
+    clipped to ``[1, 2]``.
+    Reference: https://www.mesasoftware.com/papers/FRAMA.pdf
+    """
+    if period % 2 != 0 or period < 2:
+        raise ValueError(f"Invalid period value {period!r}: must be an even integer >= 2")
 
     half_period = period // 2
 
@@ -3810,13 +3821,18 @@ def _fractal_dimension(
     if (HL1 + HL2) == 0 or HL3 == 0:
         return 1.0
 
-    D = (np.log(HL1 + HL2) - np.log(HL3)) / np.log(2)
+    # Normalizing the half/full window lengths adds log2(2) to the log ratio.
+    D = 1.0 + (np.log(HL1 + HL2) - np.log(HL3)) / np.log(2)
     return np.clip(D, 1.0, 2.0)
 
 
 def frama(df: pd.DataFrame, period: int = 16, zero_lag: bool = False) -> pd.Series:
-    """
-    Original FRAMA implementation per Ehlers' paper with optional zero lag.
+    """Fractal adaptive moving average using normalized ranges.
+
+    Filter closes, seed with their first-period mean at ``period - 1``, and
+    estimate each dimension from the preceding ``period`` candles. Optional
+    zero lag preprocesses highs, lows and closes before these operations.
+    See :func:`_fractal_dimension` for the normalized dimension.
     """
     if period % 2 != 0:
         raise ValueError(f"Invalid period value {period!r}: must be even")
@@ -4045,8 +4061,8 @@ class ZigzagResult:
 
 def _zigzag(
     df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
+    natr_period: int = DEFAULT_LABEL_NATR_PERIOD,
+    natr_multiplier: float = DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
     normalize: bool = False,
     *,
     logger: Logger | None = None,
@@ -4071,7 +4087,12 @@ def _zigzag(
     natr_warmup_end_pos = int(finite_natr_positions[0]) if finite_natr_positions.size > 0 else n
     natr_values = natr.bfill().to_numpy()
 
-    indices: list[int] = df.index.tolist()
+    # Pivots are row positions, never index labels: LabelData.indices defines this contract.
+    # compute_label_weights consumes integer offsets in [0, n_values).
+    # Datetime labels are not integer row offsets and can raise conversion errors.
+    # Shifted integer labels can move weights to different rows; out-of-range labels
+    # are discarded, leaving all-zero weights only if no valid weighted pivots remain.
+    # This positional contract is independent of downstream index-alignment validation.
     thresholds: NDArray[np.floating] = natr_values * natr_multiplier
     closes = df.get("close").to_numpy(dtype=float)
     highs = df.get("high").to_numpy(dtype=float)
@@ -4334,7 +4355,7 @@ def _zigzag(
         latest_confirmation_pos = confirmed_at_pos
         known_at_positions[last_resolved_pos + 1 : resolve_through_pos + 1] = confirmed_at_pos
         last_resolved_pos = max(last_resolved_pos, resolve_through_pos)
-        if pivots_indices and indices[pos] == pivots_indices[-1]:
+        if pivots_indices and pos == pivots_indices[-1]:
             return
 
         # These swing metrics are backfilled onto the previous pivot from the
@@ -4373,7 +4394,7 @@ def _zigzag(
             pivots_efficiency_ratios[-1] = efficiency_ratio
             pivots_volume_weighted_efficiency_ratios[-1] = volume_weighted_efficiency_ratio
 
-        pivots_indices.append(indices[pos])
+        pivots_indices.append(pos)
         pivots_values_log.append(value_log)
         pivots_directions.append(direction)
 
@@ -4584,8 +4605,8 @@ def _zigzag(
 
 def zigzag(
     df: pd.DataFrame,
-    natr_period: int = 14,
-    natr_multiplier: float = 9.0,
+    natr_period: int = DEFAULT_LABEL_NATR_PERIOD,
+    natr_multiplier: float = DEFAULT_MIN_LABEL_NATR_MULTIPLIER,
     normalize: bool = False,
     *,
     logger: Logger | None = None,

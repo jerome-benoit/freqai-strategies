@@ -1,0 +1,12 @@
+[run]
+branch = True
+source =
+    ReforceXY/user_data
+relative_files = True
+
+[report]
+show_missing = True
+precision = 1
+include_namespace_packages = True
+# measured 2026-10-02 at 76.0% — raise only, never lower
+fail_under = 70

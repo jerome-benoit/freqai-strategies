@@ -34,7 +34,7 @@ jobs:
   strategy-qa:
     name: QA (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -63,12 +63,24 @@ jobs:
             "${{ matrix.image }}" \
             /workspace/scripts/check_basedpyright.py \
             --project "${{ matrix.project }}"
-      - name: Run runtime regressions
+      - name: Run runtime regressions with coverage
         run: |
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
             --workdir /workspace \
             --env PYTHONPATH=/workspace/${{ matrix.context }}/user_data/strategies \
+            --env COVERAGE_RCFILE=/workspace/${{ matrix.context }}/.coveragerc \
+            --env COVERAGE_FILE=/tmp/.coverage \
+            --entrypoint sh \
+            "${{ matrix.image }}" \
+            /workspace/scripts/run-coverage.sh -s "${{ matrix.context }}/tests" -v
+      - name: Run runtime regressions with an alternate method ordering
+        if: matrix.context == 'ReforceXY'
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
+            --workdir /workspace \
+            --env FREQAI_QA_SHUFFLE_SEED=1 \
             --entrypoint python \
             "${{ matrix.image }}" \
             -m unittest discover -s "${{ matrix.context }}/tests" -v
