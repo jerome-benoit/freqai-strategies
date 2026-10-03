@@ -242,7 +242,6 @@ Columns:
 | statistics-candle-duration-units-158 | statistics | Ordinary duration relationship tables retain candle-valued boundaries | statistics/test_statistics.py::test_ordinary_duration_relationship_bins_retain_candle_units | Unchanged ordinary output scale |
 | statistics-nullable-duration-bins-159 | statistics | Nullable numeric duration observations remain excluded from aggregates at extended scales | statistics/test_statistics.py::test_extended_duration_bins_preserve_nullable_observation_semantics | Counts and reward means use only nonmissing observations |
 
-
 ### Non-Owning Smoke / Reference Checks
 
 Tests that check an invariant owned elsewhere identify its owner in a comment
